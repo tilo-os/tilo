@@ -13,12 +13,25 @@ use winit::keyboard::{Key, NamedKey};
 use ui::widget::TextInput;
 use ui::Widget;
 
+use crate::actions;
 use crate::app::{
     ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
 use crate::call::{CallAction, OverlayDrag};
-use crate::doc::{ChatDoc, NewMessage, NOW};
+use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
+
+/// Mint a fresh, collision-resistant message id at authoring time. Carried in
+/// the [`ChatAction::SendMessage`](crate::actions::ChatAction) payload so the
+/// insert replays byte-identically on every peer.
+fn new_message_id() -> String {
+    format!("m_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Mint a fresh channel id at authoring time (carried in the create action).
+fn new_channel_id() -> String {
+    format!("c_{}", uuid::Uuid::new_v4().simple())
+}
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -343,7 +356,11 @@ impl ChatApp {
                 self.apply_menu_action(target, action, doc);
             }
             Hit::AddChannel { workspace, category } => {
-                let id = ChatDoc::create_channel(doc, &workspace, &category, "new-channel", ChannelKind::Text);
+                let id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&workspace, &category, &id, "new-channel", ChannelKind::Text),
+                );
                 self.begin_rename(MenuTarget::Channel(id));
             }
             Hit::AddCategory(ws) => {
@@ -365,7 +382,9 @@ impl ChatApp {
             Hit::RenameConfirm => self.commit_rename(doc),
             Hit::Reaction { msg, emoji } => {
                 if self.can_participate() {
-                    ChatDoc::toggle_reaction(doc, &self.active_channel, &msg, &emoji, &self.me.id);
+                    let action = self.reaction_toggle_action(&msg, &emoji);
+                    self.perform_action(doc, action);
+                    self.reload(doc);
                 }
             }
             Hit::AddReaction { msg, anchor } => {
@@ -391,7 +410,9 @@ impl ChatApp {
             Hit::EmojiChoice(e) => {
                 if let Some(target) = self.emoji_target.take() {
                     if self.can_participate() {
-                        ChatDoc::toggle_reaction(doc, &self.active_channel, &target, &e, &self.me.id);
+                        let action = self.reaction_toggle_action(&target, &e);
+                        self.perform_action(doc, action);
+                        self.reload(doc);
                     }
                 } else {
                     self.insert_text(doc, &e);
@@ -622,11 +643,19 @@ impl ChatApp {
         match target {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
-            MenuTarget::Message(id) => {
-                if action == MenuAction::EditMessage {
-                    self.begin_edit(id);
+            MenuTarget::Message(id) => match action {
+                MenuAction::EditMessage => self.begin_edit(id),
+                MenuAction::PinMessage => {
+                    let channel = self.active_channel.clone();
+                    let pinned = self.message(&id).map(|m| m.pinned).unwrap_or(false);
+                    self.perform_action(doc, actions::pin_message_action(&channel, &id, !pinned));
                 }
-            }
+                MenuAction::DeleteMessage => {
+                    let channel = self.active_channel.clone();
+                    self.perform_action(doc, actions::delete_message_action(&channel, &id));
+                }
+                _ => {}
+            },
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
                     let id = ChatDoc::create_category(doc, &ws, "New Category");
@@ -641,11 +670,20 @@ impl ChatApp {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
-                ChatDoc::delete_channel(doc, id);
+                self.perform_action(doc, actions::delete_channel_action(id));
                 if self.active_channel == id {
                     self.active_channel.clear(); // reload picks a new one
                 }
             }
+            MenuAction::Archive => {
+                let archived = self.channel(id).map(|c| c.archived).unwrap_or(false);
+                self.perform_action(doc, actions::archive_channel_action(id, !archived));
+                if !archived && self.active_channel == id {
+                    self.active_channel.clear(); // an archived channel leaves the view
+                }
+            }
+            // Reordering is a sibling `order` swap — structural view ordering,
+            // left as a direct write (not part of the exported action set).
             MenuAction::MoveUp => ChatDoc::reorder_channel(doc, id, true),
             MenuAction::MoveDown => ChatDoc::reorder_channel(doc, id, false),
             _ => {}
@@ -660,11 +698,19 @@ impl ChatApp {
             MenuAction::Delete => ChatDoc::delete_category(doc, id),
             MenuAction::ToggleCollapse => ChatDoc::toggle_category_collapsed(doc, id),
             MenuAction::NewChannelHere => {
-                let new_id = ChatDoc::create_channel(doc, &ws, id, "new-channel", ChannelKind::Text);
+                let new_id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&ws, id, &new_id, "new-channel", ChannelKind::Text),
+                );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             MenuAction::NewVoiceChannelHere => {
-                let new_id = ChatDoc::create_channel(doc, &ws, id, "New Voice", ChannelKind::Voice);
+                let new_id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&ws, id, &new_id, "New Voice", ChannelKind::Voice),
+                );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             _ => {}
@@ -691,7 +737,11 @@ impl ChatApp {
             let text = text.trim();
             if !text.is_empty() {
                 match target {
-                    MenuTarget::Channel(id) => ChatDoc::rename_channel(doc, &id, text),
+                    MenuTarget::Channel(id) => {
+                        self.perform_action(doc, actions::rename_channel_action(&id, text))
+                    }
+                    // Categories are structural view grouping (not part of the
+                    // exported channel/message action set) — a direct write.
                     MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, text),
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
@@ -939,7 +989,8 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        ChatDoc::edit_message(doc, &self.active_channel, &id, &text, now_secs());
+        let channel = self.active_channel.clone();
+        self.perform_action(doc, actions::edit_message_action(&channel, &id, &text, now_secs()));
         self.reload(doc);
     }
 
@@ -965,10 +1016,16 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        ChatDoc::push_message(
+        // The message ROW insert is the action: id + timestamp minted here at
+        // authoring time and carried in the payload, dispatched through the same
+        // executor path Ctrl+K uses (undo boundary + byte-identical replay). The
+        // draft clear is presentation (ephemeral per-channel composer state) and
+        // stays a direct write inside the same event.
+        let channel = self.active_channel.clone();
+        let author = self.me.id.clone();
+        self.perform_action(
             doc,
-            &self.active_channel,
-            NewMessage { author: self.me.id.clone(), ts: now_secs(), text, parent, ..Default::default() },
+            actions::send_message_action(&channel, &new_message_id(), &author, now_secs(), &text, parent, None),
         );
         ChatDoc::clear_draft(doc, &key);
         self.caret = 0;
@@ -1019,16 +1076,22 @@ impl ChatApp {
         } else {
             return false;
         };
-        ChatDoc::push_message(
+        // Sharing a file is the message ROW insert (the action) carrying the
+        // attachment by reference; the file's bytes + transport are external and
+        // hydrate on demand. Same authored-id + executor path as a text send.
+        let channel = self.active_channel.clone();
+        let author = self.me.id.clone();
+        self.perform_action(
             doc,
-            &self.active_channel,
-            NewMessage {
-                author: self.me.id.clone(),
-                ts: now_secs(),
-                text: String::new(),
-                attachment: Some(attachment),
-                ..Default::default()
-            },
+            actions::send_message_action(
+                &channel,
+                &new_message_id(),
+                &author,
+                now_secs(),
+                "",
+                None,
+                Some(attachment),
+            ),
         );
         self.scroll = 0.0;
         self.reload(doc);
@@ -1039,7 +1102,7 @@ impl ChatApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::ChatDoc;
+    use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
@@ -1048,6 +1111,73 @@ mod tests {
         let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
         (app, doc)
+    }
+
+    /// Covenant — one source of truth: the on-screen "Delete channel" context-menu
+    /// affordance builds the **byte-identical** [`EncodedAction`] the Ctrl+K
+    /// palette's delete spec exports for the same channel. Drives the real menu →
+    /// `apply_channel_action` path and reads the framework host's `last_dispatched`.
+    #[test]
+    fn delete_channel_affordance_matches_palette_spec() {
+        let (mut app, mut doc) = app_with_doc();
+
+        // The palette's delete spec for c_crit (built before the mutation).
+        let resources = crate::actions::provide_resources(&app.chat_resource_ctx(), &doc);
+        let ws = &resources[0];
+        let crit = ws
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.channel:c_crit")
+            .expect("c_crit is a channel resource");
+        let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
+        let from_spec = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("delete is an immediate action"),
+        };
+
+        // Drive the real on-screen affordance (right-click menu → Delete).
+        app.on_hit(
+            Hit::MenuAction {
+                target: MenuTarget::Channel("c_crit".into()),
+                action: MenuAction::Delete,
+            },
+            &mut doc,
+        );
+        let dispatched = app.last_dispatched().expect("the affordance dispatched an action");
+
+        assert_eq!(dispatched.type_id, from_spec.type_id);
+        assert_eq!(
+            dispatched.payload, from_spec.payload,
+            "the delete-channel affordance and its Ctrl+K spec build the identical action"
+        );
+        // And it really deleted the channel (the affordance is on the real path).
+        assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != "c_crit"));
+    }
+
+    /// The send affordance dispatches a `SendMessage` action carrying the typed
+    /// text — the row insert crosses the executor, not a raw `push_message`.
+    #[test]
+    fn send_affordance_dispatches_a_send_message_action() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        let me = app.me.id.clone();
+        ChatDoc::set_draft(&mut doc, "c_general", "hi from the composer");
+        app.reload(&doc);
+        app.on_hit(Hit::Send, &mut doc);
+        let dispatched = app.last_dispatched().expect("send dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::CHAT_ACTION_TYPE);
+        let action: crate::actions::ChatAction =
+            serde_json::from_slice(&dispatched.payload).expect("payload decodes to ChatAction");
+        match action {
+            crate::actions::ChatAction::SendMessage { channel, text, author, .. } => {
+                assert_eq!(channel, "c_general");
+                assert_eq!(text, "hi from the composer");
+                assert_eq!(author, me);
+            }
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
     }
 
     #[test]
