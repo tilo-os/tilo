@@ -297,11 +297,12 @@ mod tests {
         }
     }
 
-    /// A base document seeded as the app's first `sync` leaves it, so editing a
-    /// profile field is a genuine change from the default.
+    /// A populated demo document (sample drives + an installable qOS image +
+    /// the default profile), so editing a profile field is a genuine change and
+    /// the customizable source publishes its resource tree.
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        ImagerDoc::seed(&mut doc, &sample_targets());
+        ImagerDoc::seed_demo(&mut doc);
         doc.commit();
         doc
     }
