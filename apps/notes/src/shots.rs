@@ -237,7 +237,13 @@ pub fn render_to_path(
     let mut app = NotesApp::spawn(root.clone()).map_err(|e| e.to_string())?;
 
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
+    // so the same frame can be graded in both light and dark (default dark).
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     // The `presence` scenario seeds two simulated peers so the shot shows
     // the live presence layer — labeled carets, a fading typing swipe,
     // a peer name pill, sidebar presence-in-nav mist, and an off-screen
