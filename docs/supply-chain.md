@@ -18,7 +18,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   `cosign verify-attestation --key keys/cosign.pub --type spdxjson <image>`.
 - **Reproducible builds (verified).** Two independent builds of the same commit
   produce a **byte-identical image** (confirmed: built twice, same image ID).
-  Achieved by: base pinned by **digest** (both stages), Rust resolve pinned
+  Achieved by: base pinned by **digest** against our mirror (below), Rust resolve pinned
   (the tracked `Cargo.lock`), a deterministic compile (`CARGO_INCREMENTAL=0`,
   `--remap-path-prefix=/build=.`, `LC_ALL=C.UTF-8`, `TZ=UTC`), and a
   `SOURCE_DATE_EPOCH` derived from the HEAD commit time with layer/image
@@ -38,6 +38,25 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
   commit that into `os/rpms-snapshot.env`. Otherwise the build fails
   `No match for argument: <pkg>`. The package list is auto-derived from
   `os/Containerfile`, so there is no separate list to maintain.
+- **Cross-time reproducibility (mirrored base image).** Pinning the base by
+  digest is not enough on its own: Fedora rebuilds the `fedora-bootc` tag daily
+  and garbage-collects the manifest it replaces almost immediately, so a
+  `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
+  a day (`manifest unknown`) and every build fails at its first `FROM` — the
+  `snapshot-rpms` job included, which made the package set unrefreshable too.
+  So the base is **mirrored into `code.sandbox.example/qos/fedora-bootc`** and every
+  Containerfile takes it as `--build-arg BASE_REF`, pinned in
+  `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
+  resolving. The copy uses `skopeo copy --all --preserve-digests`, so the
+  multi-arch index survives and the mirrored digest is the digest Fedora
+  published — the mirror adds durability, not a second artifact to trust.
+  **To refresh the base:** edit `BASE_SOURCE` if the Fedora release is
+  changing, dispatch `mirror-base`, commit the `BASE_REF` it prints, then
+  re-run `snapshot-rpms` and commit the new `RPMS_REF` — the frozen package set
+  is resolved against the base and has to follow it. The mirror job refuses to
+  report a reference that is not a multi-arch index or whose `ostree.linux`
+  does not match the Fedora release `BASE_SOURCE` claims, so a silent major
+  bump fails the job instead of shipping.
 
 ## ⚠️ Operational caveat — first signed image
 
