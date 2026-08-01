@@ -69,6 +69,20 @@ impl EditorDoc {
         Self::buffer_text(doc, node).and_then(|t| doc.text(&t).ok())
     }
 
+    /// The node ids of every buffer that currently exists in the document. The
+    /// document is the source of truth for which buffers exist, so this is how
+    /// the app surfaces a buffer created by a Ctrl+K "New file" action or by a
+    /// peer that it does not yet track in its in-memory session.
+    pub fn buffer_keys(doc: &AutoCommit) -> Vec<NodeId> {
+        let buffers = match doc.get(&ROOT, "buffers") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return Vec::new(),
+        };
+        doc.keys(&buffers)
+            .filter_map(|k| k.parse::<NodeId>().ok())
+            .collect()
+    }
+
     /// Get-or-create the Map that scopes the embedded terminal's CRDT state.
     /// The `TerminalWidget` stores its grid + cursor under whatever object it's
     /// handed as "root"; giving it a dedicated sub-map keeps its keys
