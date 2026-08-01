@@ -214,6 +214,12 @@ pub struct RemoteApp {
     /// True once the in-memory workspace has been mirrored into the CRDT.
     seeded: bool,
 
+    /// Framework-owned action dispatch: the single path by which a saved
+    /// connection is added, edited, renamed, favourited, or deleted. It brackets
+    /// the undo boundary and applies each action through the executor, so the
+    /// on-screen affordances and the Ctrl+K palette share one replayable path.
+    actions: ui::ActionHost,
+
     /// Eased open/closed state of the primary navigation rail. On a wide
     /// window the rail is docked and open; on a narrow window it collapses
     /// into an overlay flap (closed by default, summoned by the hamburger).
@@ -273,6 +279,7 @@ impl RemoteApp {
             pointer: Point::ZERO,
             dirty: true,
             seeded: false,
+            actions: ui::ActionHost::new(),
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
@@ -389,12 +396,26 @@ impl RemoteApp {
                 self.selected = Some(id);
             }
             Action::ToggleFavorite(id) => {
-                self.workspace.toggle_favorite(id);
-                self.persist(state);
+                // Compute the absolute target *before* the in-memory flip so the
+                // action carries a value, not a read-then-flip — deterministic
+                // replay. The on-screen star and the Ctrl+K row build the same
+                // SetFavorite action.
+                if let Some(target) = self.workspace.get(id).map(|c| !c.favorite) {
+                    self.workspace.toggle_favorite(id);
+                    self.actions.dispatch(
+                        state,
+                        crate::actions::REMOTE_ACTION_TYPE,
+                        &crate::actions::set_favorite_action(id, target),
+                    );
+                }
             }
             Action::Delete(id) => {
                 self.workspace.remove(id);
-                RemoteDoc::remove(state, id);
+                self.actions.dispatch(
+                    state,
+                    crate::actions::REMOTE_ACTION_TYPE,
+                    &crate::actions::delete_action(id),
+                );
                 if self.selected == Some(id) {
                     self.selected = self.workspace.filtered(&self.search).first().map(|c| c.id);
                 }
@@ -631,18 +652,16 @@ impl RemoteApp {
             conn.presence = existing.presence;
             conn.last_used = existing.last_used.clone();
         }
+        // One focused action for the edited fields — not a whole-workspace
+        // re-mirror. favourite/presence/last_used are preserved by the action's
+        // deterministic read of the current document (see [`crate::actions`]).
+        let action = crate::actions::upsert_action(&conn);
         self.workspace.upsert(conn);
-        self.persist(state);
+        self.actions
+            .dispatch(state, crate::actions::REMOTE_ACTION_TYPE, &action);
         self.selected = Some(id);
         self.screen = Screen::List;
         self.focus = None;
-    }
-
-    /// Mirror the full workspace into the shared document.
-    fn persist(&self, state: &mut AutoCommit) {
-        for c in self.workspace.connections() {
-            RemoteDoc::upsert(state, c);
-        }
     }
 
     /// Insert a character into the focused field (form or search).
@@ -695,6 +714,13 @@ impl RemoteApp {
     /// Push a clickable region for this frame.
     fn push_hit(&mut self, rect: Rect, action: Action) {
         self.hits.push(Hit { rect, action });
+    }
+
+    /// The last action an on-screen affordance dispatched, for the
+    /// affordance == [`ActionSpec`](qos_actions::ActionSpec) covenant test.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 }
 
@@ -846,6 +872,21 @@ fn seed_qos_devices() -> Vec<QosDevice> {
 // ===========================================================================
 
 impl Widget for RemoteApp {
+    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
+    /// delete) so the shell's one action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Remote action, so it records one undo boundary bracketing it.
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
@@ -3069,6 +3110,65 @@ mod tests {
         let before = app.workspace.get(id).unwrap().favorite;
         app.apply(Action::ToggleFavorite(id), &mut doc());
         assert_ne!(app.workspace.get(id).unwrap().favorite, before);
+    }
+
+    #[test]
+    fn favorite_affordance_dispatches_the_ctrl_k_action() {
+        // Affordance == ActionSpec: the on-screen star dispatches the exact same
+        // SetFavorite envelope the Ctrl+K row builds — one source of truth on the
+        // real dispatch path (through the app's embedded `ActionHost`).
+        let mut app = RemoteApp::new_demo();
+        let mut state = AutoCommit::new();
+        // Publish the demo list into the CRDT so the connection exists there too.
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.workspace.connections()[0].id;
+        let target = !app.workspace.get(id).unwrap().favorite;
+
+        app.apply(Action::ToggleFavorite(id), &mut state);
+
+        let dispatched = app.last_dispatched().expect("the star dispatched an action");
+        assert_eq!(
+            dispatched,
+            &crate::actions::encode(&crate::actions::set_favorite_action(id, target)),
+            "the star and the Ctrl+K row build the byte-identical action",
+        );
+        assert!(
+            app.take_committed_action().is_some(),
+            "the dispatch armed exactly one undo boundary for the host to record",
+        );
+    }
+
+    #[test]
+    fn delete_affordance_dispatches_the_delete_action() {
+        let mut app = RemoteApp::new_demo();
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        let id = app.workspace.connections()[0].id;
+
+        app.apply(Action::Delete(id), &mut state);
+
+        assert!(RemoteDoc::list(&state).iter().all(|c| c.id != id), "removed from the CRDT");
+        let dispatched = app.last_dispatched().expect("delete dispatched an action");
+        assert_eq!(
+            dispatched,
+            &crate::actions::encode(&crate::actions::delete_action(id)),
+        );
+    }
+
+    #[test]
+    fn save_form_dispatches_upsert_into_the_crdt() {
+        let mut app = RemoteApp::new();
+        let mut state = AutoCommit::new();
+        app.apply(Action::NewConnection, &mut state);
+        app.draft.name = "Test".into();
+        app.draft.host = "1.2.3.4".into();
+        app.draft.port = "22".into();
+        app.apply(Action::SaveForm, &mut state);
+
+        let doc_list = RemoteDoc::list(&state);
+        assert_eq!(doc_list.len(), 1, "the saved connection reached the shared document");
+        assert_eq!(doc_list[0].name, "Test");
+        assert!(app.last_dispatched().is_some(), "save routed through an action");
     }
 
     #[test]
