@@ -16,7 +16,7 @@
 //! per action means its single change is `seq == 1` on every replica, so the
 //! change hash is content-addressed identical everywhere.
 
-use automerge::transaction::CommitOptions;
+use automerge::transaction::{CommitOptions, Transactable};
 
 use crate::action::{Action, ActionError, ActionId, EncodedAction, Doc, ExecutionLocus};
 use crate::envelope::ActionEnvelope;
@@ -48,6 +48,33 @@ fn envelope_for(doc: &mut Doc, action: &dyn Action, encoded: EncodedAction) -> A
 /// then restore the doc's previous actor. This is the single mutation path
 /// shared by [`apply_local`], [`replay`], and [`dispatch`] so origin and peers
 /// all commit the byte-identical change.
+///
+/// # Why a no-op action must not be committed
+///
+/// Each dispatch pins a *fresh* random actor id for the action's change. That id
+/// only becomes a permanent member of the document's actor table if the action
+/// actually writes an op: automerge introduces the actor at the first op of the
+/// transaction and prunes it again if the transaction turns out empty. But
+/// [`AutoCommit::commit_with`](automerge::AutoCommit::commit_with) *always* opens
+/// a transaction ("even no changes triggers a change"), so committing a no-op
+/// action would introduce the fresh actor into the document's actor table, mirror
+/// it into the `AutoCommit`'s patch-log actor table, then immediately prune it
+/// from the document — leaving the patch log referencing an actor the document no
+/// longer has. Because the pinned ids are random, each one sorts into an arbitrary
+/// slot, and automerge-0.8's `migrate_actors` (which reconciles the patch log's
+/// actor table on the *next* transaction and only knows how to *insert* actors,
+/// never remove one) then hits that stranded "ghost" actor and panics with
+/// `PatchLogMismatch`. Stacking several dispatches on one document with nothing
+/// draining the patch log between them is exactly where a no-op lands, so it is
+/// where the panic surfaced.
+///
+/// A no-op action (a change-guarded write whose value already held, a toggle
+/// whose precondition was already satisfied) is ordinary and must be safe. We
+/// detect the empty result via [`pending_ops`](Transactable::pending_ops) and
+/// abandon it without committing — leaving the document's content untouched and
+/// its actor bookkeeping consistent (see [`abort_pinned_change`]). Only a
+/// change-producing action is committed, under the pinned actor + timestamp,
+/// exactly as before.
 fn apply_under_envelope(
     doc: &mut Doc,
     action: &dyn Action,
@@ -59,13 +86,48 @@ fn apply_under_envelope(
     // change under the pinned actor.
     doc.set_actor(env.actor());
     if let Err(e) = action.apply(doc) {
-        doc.rollback();
-        doc.set_actor(prev_actor);
+        abort_pinned_change(doc, prev_actor);
         return Err(e);
     }
-    doc.commit_with(CommitOptions::default().with_time(env.timestamp));
-    doc.set_actor(prev_actor);
+    if doc.pending_ops() > 0 {
+        // The action produced ops: commit them as the pinned actor's single
+        // change under the pinned timestamp, so the change is content-addressed
+        // identical on origin and on every replaying replica.
+        doc.commit_with(CommitOptions::default().with_time(env.timestamp));
+        doc.set_actor(prev_actor);
+    } else {
+        // No ops: a genuine no-op this turn. Do not `commit_with` (it would pin
+        // then prune this action's fresh actor and desync the patch log — see
+        // the function docs). Leave the document exactly as the action found it.
+        abort_pinned_change(doc, prev_actor);
+    }
     Ok(())
+}
+
+/// Abandon a dispatch that produced no committed change, leaving the document —
+/// and, crucially, the `AutoCommit` patch log — exactly as consistent as a
+/// dispatch that never ran. Used for both the no-op result and the mid-apply
+/// error path.
+///
+/// The hazard this guards against: if the action opened a transaction under its
+/// freshly-pinned actor but that transaction is discarded (a write that erred
+/// mid-way, or a mutating call that produced no op), automerge prunes the now
+/// unused fresh actor from the document while the `AutoCommit` patch log still
+/// names it — the stranded "ghost" that makes the next apply's `migrate_actors`
+/// panic with `PatchLogMismatch`. [`rollback`](automerge::AutoCommit::rollback)
+/// discards the open transaction; [`reset_diff_cursor`](automerge::AutoCommit::reset_diff_cursor)
+/// then reinstalls a fresh patch log seeded from the document's current actor
+/// table, so no ghost can survive regardless of whether a transaction was opened.
+///
+/// The reset only discards an *incremental diff index* (a rendering optimization
+/// a host rebuilds on its next diff, and which nothing in qOS currently arms on
+/// an app document); document content and history are untouched, so replay stays
+/// byte-identical. It runs only on this abandon path — a change-producing
+/// dispatch keeps its patch log intact.
+fn abort_pinned_change(doc: &mut Doc, prev_actor: automerge::ActorId) {
+    doc.rollback();
+    doc.reset_diff_cursor();
+    doc.set_actor(prev_actor);
 }
 
 /// Apply `action` to the local replica and return its replayable envelope.
