@@ -44,10 +44,6 @@ namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp     = "qos-default"
 landlock    = "strict"
 
-[sandbox.fs]
-read  = ["~/.local/share/dev.qos.editor", "/var/workspace/<scope=current>"]
-write = ["~/.local/share/dev.qos.editor"]
-
 [sandbox.net]
 mode = "off"
 
