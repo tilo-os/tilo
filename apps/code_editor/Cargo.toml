@@ -13,6 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS resource + action model: the serializable, replayable buffer-creation
+# action Code exports, plus the Resource tree it publishes to Ctrl+K.
+qos-actions = { path = "../../crates/collab/actions" }
 # The IDE's terminal panel embeds the real system terminal as a widget, rather
 # than shipping a second, weaker terminal implementation.
 terminal = { path = "../terminal" }
