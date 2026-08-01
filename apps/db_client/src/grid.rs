@@ -17,11 +17,13 @@ pub const ROW_H: f64 = 26.0;
 const CELL_PAD: f64 = 10.0;
 const MIN_COL_W: f64 = 70.0;
 
-/// View state for a grid: sort column + direction and vertical scroll.
+/// View state for a grid: sort column + direction and both-axis scroll.
 pub struct GridView {
     pub sort_col: Option<usize>,
     pub sort_asc: bool,
     pub scroll_row: usize,
+    /// Horizontal scroll offset in logical px (for results wider than the pane).
+    pub scroll_x: f64,
     /// Hovered row index (in display order), for row highlight.
     pub hover_row: Option<usize>,
     /// Cached column pixel widths (computed from content on each result set).
@@ -37,6 +39,7 @@ impl GridView {
             sort_col: None,
             sort_asc: true,
             scroll_row: 0,
+            scroll_x: 0.0,
             hover_row: None,
             col_widths: Vec::new(),
             order: Vec::new(),
@@ -76,6 +79,7 @@ impl GridView {
             }
         }
         self.scroll_row = 0;
+        self.scroll_x = 0.0;
         self.recompute_order(result);
     }
 
@@ -119,18 +123,32 @@ impl GridView {
         self.scroll_row = next.clamp(0, max_scroll as isize) as usize;
     }
 
+    /// Scroll horizontally by `delta_px`, clamped so the last column can't be
+    /// pulled past the right edge of the pane.
+    pub fn scroll_h(&mut self, delta_px: f64) {
+        self.scroll_x = (self.scroll_x + delta_px).clamp(0.0, self.max_scroll_x());
+    }
+
+    /// How far the content can scroll horizontally (0 when it fits).
+    pub fn max_scroll_x(&self) -> f64 {
+        (self.total_width() - self.rect.width()).max(0.0)
+    }
+
     /// Total horizontal width of all columns.
     fn total_width(&self) -> f64 {
         self.col_widths.iter().sum()
     }
 
     /// Hit-test a header click; returns the column index if `p` is on a
-    /// header cell.
+    /// header cell. Accounts for the horizontal scroll offset.
     pub fn header_hit(&self, p: Point) -> Option<usize> {
         if p.y < self.rect.y0 || p.y > self.rect.y0 + HEADER_H {
             return None;
         }
-        let mut x = self.rect.x0;
+        if p.x < self.rect.x0 || p.x > self.rect.x1 {
+            return None;
+        }
+        let mut x = self.rect.x0 - self.scroll_x;
         for (ci, w) in self.col_widths.iter().enumerate() {
             if p.x >= x && p.x < x + w {
                 return Some(ci);
@@ -184,17 +202,27 @@ impl GridView {
         }
 
         let total_w = self.total_width();
-        // Clip to the grid rect so overflow rows/cols don't bleed.
-        let clip = r;
+        // Base X, shifted left by the horizontal scroll offset. Everything
+        // inside is clipped to the grid rect so scrolled-off columns and any
+        // column straddling an edge never bleed outside the pane.
+        let x0 = r.x0 - self.scroll_x;
+        let content_right = (x0 + total_w).min(r.x1);
+        let body_bottom = (r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H).min(r.y1);
 
-        // Header background.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &r);
+
+        // Header background spans the full visible width.
         let header_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
         scene.fill(Fill::NonZero, transform, p.header_bg, None, &header_rect);
 
         // Column headers.
-        let mut x = r.x0;
+        let mut x = x0;
         for (ci, col) in result.columns.iter().enumerate() {
             let w = self.col_widths[ci];
+            if x + w < r.x0 {
+                x += w; // fully scrolled off the left
+                continue;
+            }
             if x > r.x1 {
                 break;
             }
@@ -219,7 +247,7 @@ impl GridView {
                 transform,
                 p.grid_line,
                 None,
-                &Line::new(Point::new(x + w, r.y0), Point::new(x + w, r.y1.min(r.y0 + HEADER_H + self.visible_rows() as f64 * ROW_H))),
+                &Line::new(Point::new(x + w, r.y0), Point::new(x + w, body_bottom)),
             );
             x += w;
         }
@@ -231,7 +259,7 @@ impl GridView {
             None,
             &Line::new(
                 Point::new(r.x0, r.y0 + HEADER_H),
-                Point::new((r.x0 + total_w).min(r.x1), r.y0 + HEADER_H),
+                Point::new(content_right, r.y0 + HEADER_H),
             ),
         );
 
@@ -244,7 +272,7 @@ impl GridView {
             }
             let row_idx = self.order[oidx];
             let y = r.y0 + HEADER_H + vi as f64 * ROW_H;
-            let row_rect = Rect::new(r.x0, y, (r.x0 + total_w).min(r.x1), y + ROW_H);
+            let row_rect = Rect::new(r.x0, y, content_right, y + ROW_H);
 
             // Zebra striping + hover.
             if Some(oidx) == self.hover_row {
@@ -254,8 +282,12 @@ impl GridView {
             }
 
             let row = &result.rows[row_idx];
-            let mut cx = r.x0;
+            let mut cx = x0;
             for (ci, w) in self.col_widths.iter().enumerate() {
+                if cx + w < r.x0 {
+                    cx += w;
+                    continue;
+                }
                 if cx > r.x1 {
                     break;
                 }
@@ -265,13 +297,29 @@ impl GridView {
             }
         }
 
+        scene.pop_layer();
+
+        // Horizontal scrollbar when the result is wider than the pane.
+        let max_x = self.max_scroll_x();
+        if max_x > 0.5 {
+            let track_y = r.y1 - 4.0;
+            let track = Rect::new(r.x0, track_y, r.x1, track_y + 3.0);
+            scene.fill(Fill::NonZero, transform, p.row_alt, None, &track.to_rounded_rect(1.5));
+            let frac = (r.width() / total_w).clamp(0.08, 1.0);
+            let thumb_w = r.width() * frac;
+            let travel = r.width() - thumb_w;
+            let tx = r.x0 + (self.scroll_x / max_x) * travel;
+            let thumb = Rect::new(tx, track_y, tx + thumb_w, track_y + 3.0);
+            scene.fill(Fill::NonZero, transform, theme.text_dim, None, &thumb.to_rounded_rect(1.5));
+        }
+
         // Outer border.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
             theme.border_standard,
             None,
-            &clip.to_rounded_rect(0.0),
+            &r.to_rounded_rect(0.0),
         );
     }
 }
