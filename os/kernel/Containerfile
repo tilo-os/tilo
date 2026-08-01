@@ -38,7 +38,7 @@ FROM ${RPMS_REF} AS rpms
 # SAME base digest as os/Containerfile so the produced modules link against
 # the exact glibc + userspace the OS image ships.  A drift here would show
 # up as "invalid module format" at boot.
-FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53 AS build
+FROM quay.io/fedora/fedora-bootc@sha256:c466de539ec94fe2ea996785b8cda08b274316cd6bf21d5e13bd4d9a7f7aee5b AS build
 
 # Toolchain for a kernel RPM build.  All from the frozen repo.
 #   kernel-devel / kernel-headers  — matched headers so external module
