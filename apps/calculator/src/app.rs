@@ -19,8 +19,6 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
-use qos_actions::{ActionEnvelope, ActionTransport};
-
 use crate::actions::{self, CalculatorAction, GraphKind};
 use crate::draw::{self, Align};
 use crate::graph2d::Graph2dScreen;
@@ -29,14 +27,6 @@ use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
 
 const TOPBAR_H: f64 = 60.0;
-
-/// A no-op transport for locally-applied actions. The action executor hands each
-/// applied envelope to a transport to replicate to peers; a solo calculator has
-/// no peer wiring, so it discards. A collaborative session swaps in a real one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 pub struct CalculatorApp {
     model: CalcModel,
@@ -71,16 +61,13 @@ pub struct CalculatorApp {
     last_edit_time: Option<std::time::Instant>,
     node: Option<NodeId>,
 
-    /// Document heads captured just before the first `qos_actions` action of the
-    /// current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// an affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build
-    /// the byte-identical action — one source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
+    /// [`CalculatorAction`] through this: the host brackets the undo boundary,
+    /// applies the action through the executor (so it replays byte-identically on
+    /// peers, exactly as the Ctrl+K palette does), and records the last one so a
+    /// test can prove an affordance and its [`ActionSpec`](qos_actions::ActionSpec)
+    /// build the identical action.
+    actions: ui::ActionHost,
 }
 
 /// How long editing must pause before a burst of keystrokes is sealed into one
@@ -136,8 +123,7 @@ impl CalculatorApp {
             model_dirty: false,
             last_edit_time: None,
             node: None,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -217,19 +203,10 @@ impl CalculatorApp {
     /// Only ever call this for an action that genuinely mutates the document —
     /// the affordances gate on a real change (a non-empty history to clear, an
     /// existing row to toggle/delete) — because the executor commits even a
-    /// no-op action, and an empty change wedges the next dispatch.
+    /// no-op action, and an empty change wedges the next dispatch. This app
+    /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: CalculatorAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change and this event's presentation writes.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "calculator action dispatch failed");
-        }
+        self.actions.dispatch(doc, actions::CALCULATOR_ACTION_TYPE, &action);
     }
 
     /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
@@ -1048,7 +1025,7 @@ impl Widget for CalculatorApp {
     /// its history / graph action, so it records one undo boundary for the whole
     /// gesture (see [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn test_id(&self) -> Option<&str> {
