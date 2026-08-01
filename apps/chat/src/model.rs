@@ -7,6 +7,8 @@
 //! plus the pure helper logic (message grouping, reply counts, reaction
 //! toggling) that has no business reaching into Automerge.
 
+use serde::{Deserialize, Serialize};
+
 /// String identifier (UUID or stable seed key). Used as Automerge map
 /// keys so it must round-trip as a plain string.
 pub type Id = String;
@@ -19,7 +21,7 @@ pub const ME: &str = "u_me";
 /// within this many seconds of each other (Slack/Discord convention).
 pub const GROUP_WINDOW_SECS: i64 = 5 * 60;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChannelKind {
     Text,
     Voice,
@@ -114,6 +116,10 @@ pub struct Channel {
     /// filled in [`crate::app::ChatApp::reload`] from the read watermark; the
     /// active channel is always shown as 0.
     pub unread: u32,
+    /// Archived channels are hidden from the sidebar to cut clutter but stay in
+    /// the document (and reachable via the Ctrl+K command palette to unarchive).
+    /// Convergent state — a plain scalar flag toggled by an action.
+    pub archived: bool,
 }
 
 /// One person currently connected to a voice channel, with their live
@@ -190,7 +196,7 @@ pub struct User {
     pub status: Presence,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Attachment {
     /// An image projected from the P2P FUSE filesystem. `w`/`h` are the real
     /// pixel dimensions read from the file header; the bytes are decoded and
@@ -279,6 +285,9 @@ pub struct Message {
     pub parent: Option<Id>,
     pub reactions: Vec<Reaction>,
     pub attachment: Option<Attachment>,
+    /// Pinned messages are flagged in the shared document so every peer sees the
+    /// same pins. A plain scalar flag toggled by an action.
+    pub pinned: bool,
 }
 
 impl Message {
@@ -405,6 +414,7 @@ mod tests {
             parent: parent.map(|s| s.to_string()),
             reactions: vec![],
             attachment: None,
+            pinned: false,
         }
     }
 
