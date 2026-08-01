@@ -10,6 +10,7 @@
 //! user's real, persisted tunnels); `app_root_demo()` is the sample-seeded
 //! build used by the `--shots` renderer so the screenshot is populated.
 
+pub mod actions;
 pub mod app;
 pub mod config;
 pub mod doc;
