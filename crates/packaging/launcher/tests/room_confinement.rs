@@ -297,13 +297,26 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
 
     // Outside the profile: the user's own files, the shadow file, the
     // collaborative mount, the host's programs.
-    for outside in [
-        "/etc/shadow",
-        "/etc/passwd",
-        "/var/workspace",
-        "/usr/bin/env",
-        "/root",
-    ] {
+    // `/home` and the invoking user's own home directory are named
+    // explicitly. The cross-room tests run with `XDG_DATA_HOME` in a
+    // tempdir under `/tmp`, which the sandbox covers with a tmpfs — so
+    // on their own they would leave open the reading that the only
+    // thing proven is that `/tmp` is a tmpfs. This closes it: the
+    // user's home is not in the namespace either.
+    let real_home = std::env::var("HOME").expect("HOME is set for the test process");
+    let outside_the_profile: Vec<String> = [
+        "/etc/shadow".to_string(),
+        "/etc/passwd".to_string(),
+        "/var/workspace".to_string(),
+        "/usr/bin/env".to_string(),
+        "/root".to_string(),
+        "/home".to_string(),
+        real_home.clone(),
+        format!("{real_home}/.ssh"),
+        format!("{real_home}/.local/share"),
+    ]
+    .into();
+    for outside in &outside_the_profile {
         let line = run_in_room(payload.path(), Some("room-a"), &["read", outside]);
         assert!(
             line.starts_with("ERR "),
