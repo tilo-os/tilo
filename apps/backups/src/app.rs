@@ -34,6 +34,7 @@ use ui::widget::{
 };
 use ui::{card_column_width, card_columns};
 
+use crate::actions::{self, BACKUPS_ACTION_TYPE};
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::{
     Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapStatus, SnapType,
@@ -135,6 +136,10 @@ pub struct BackupsApp {
     /// `--shots` hook: force the overlay rail open so its narrow state can be
     /// captured headlessly (`QOS_BACKUPS_RAIL_OPEN=1`).
     force_rail_open: bool,
+    /// Framework-owned action dispatch: every retention-policy edit goes through
+    /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl Default for BackupsApp {
@@ -180,7 +185,32 @@ impl BackupsApp {
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
             force_rail_open: std::env::var("QOS_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
+            actions: ui::ActionHost::new(),
         }
+    }
+
+    /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
+    /// action host. This is the single production funnel both the on-screen +/-
+    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it dispatches
+    /// the byte-identical [`BackupsAction`](crate::actions::BackupsAction) the
+    /// Ctrl+K increment/decrement spec exports.
+    pub(crate) fn bump_retention(
+        &mut self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        field: PolicyField,
+        delta: i64,
+    ) {
+        let cur = BackupsDoc::retention(doc, root, field);
+        self.actions
+            .dispatch(doc, BACKUPS_ACTION_TYPE, &actions::bump_retention_action(field, cur, delta));
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
@@ -1510,7 +1540,7 @@ impl BackupsApp {
                 }
             }
             Hit::Policy(field, delta) => {
-                BackupsDoc::bump_policy(doc, root, field, delta);
+                self.bump_retention(doc, root, field, delta);
                 self.policy_focus = PolicyField::ALL.iter().position(|f| *f == field).unwrap_or(0);
             }
             Hit::FileRow(i) => self.file_sel = i,
@@ -1733,6 +1763,19 @@ impl Widget for BackupsApp {
         Some("backups_app")
     }
 
+    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
+    /// (see [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1777,7 +1820,7 @@ impl BackupsApp {
             Key::Named(NamedKey::ArrowLeft) => {
                 if self.ui.view == View::Schedules {
                     let f = PolicyField::ALL[self.policy_focus];
-                    BackupsDoc::bump_policy(doc, root, f, -1);
+                    self.bump_retention(doc, root, f, -1);
                     self.load_cache(doc, root);
                 } else {
                     self.cycle_view(-1, doc, root);
@@ -1787,7 +1830,7 @@ impl BackupsApp {
             Key::Named(NamedKey::ArrowRight) => {
                 if self.ui.view == View::Schedules {
                     let f = PolicyField::ALL[self.policy_focus];
-                    BackupsDoc::bump_policy(doc, root, f, 1);
+                    self.bump_retention(doc, root, f, 1);
                     self.load_cache(doc, root);
                 } else {
                     self.cycle_view(1, doc, root);
@@ -1811,14 +1854,14 @@ impl BackupsApp {
                     "n" | "N" => { self.start_job(); *handled = true; }
                     "+" | "=" => {
                         if self.ui.view == View::Schedules {
-                            BackupsDoc::bump_policy(doc, root, PolicyField::ALL[self.policy_focus], 1);
+                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
                             self.load_cache(doc, root);
                             *handled = true;
                         }
                     }
                     "-" | "_" => {
                         if self.ui.view == View::Schedules {
-                            BackupsDoc::bump_policy(doc, root, PolicyField::ALL[self.policy_focus], -1);
+                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
                             self.load_cache(doc, root);
                             *handled = true;
                         }
