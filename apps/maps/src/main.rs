@@ -108,7 +108,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.maps");
-    let app = ui::App::new(state, maps::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, maps::app_root()).with_autosave(autosave);
+    // Register Maps' actions so the shell's Ctrl+K palette can decode + replay the
+    // same saved-place / route / offline-region actions the on-screen affordances
+    // dispatch.
+    maps::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
