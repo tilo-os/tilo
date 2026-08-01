@@ -34,7 +34,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{WIDTH_MAX_PX, WIDTH_MIN_PX, Widget};
+use crate::widget::{DEFAULT_STRIP_USABLE_PX, Widget, max_group_px, min_group_px};
 
 /// Visible thickness of the painted accent rule when idle, in px.
 pub const HANDLE_VISIBLE_PX: f64 = 2.0;
@@ -42,6 +42,12 @@ pub const HANDLE_VISIBLE_PX: f64 = 2.0;
 /// concept's "thicker while interactable" affordance — the rule
 /// thickens, no other geometry changes.
 pub const HANDLE_HOVER_PX: f64 = 3.0;
+/// Width of the taffy slot the handle occupies between two groups, in px.
+/// This is the strip's inter-group gap: the row declares no gap of its own
+/// and lets the handle supply the whole footprint, so anything that walks
+/// the strip's canvas (`GroupRow::usable_per_group`) has to step by this
+/// between adjacent groups.
+pub const HANDLE_SLOT_PX: f64 = 8.0;
 /// Half-width of the invisible hit region (px). The full hit area is
 /// `2 * HANDLE_HIT_HALF_PX` wide, straddling the gap centre. 8 px each
 /// side → 16 px total, which is the smallest touch-friendly target
@@ -57,8 +63,8 @@ pub const HANDLE_HIT_HALF_PX: f64 = 8.0;
 #[derive(Clone, Copy, Debug)]
 struct DragOrigin {
     cursor_x: f64,
-    left_w: u32,
-    right_w: u32,
+    left_w: f64,
+    right_w: f64,
 }
 
 /// Drag handle between two adjacent groups. The `GroupRow` constructs
@@ -107,13 +113,22 @@ pub struct ResizeHandle {
     /// Using a pulse rather than direct mutation lets the handle
     /// stay structurally independent from `WindowGroup` — testing
     /// the math doesn't require a full group fixture.
-    pending: Option<(u32, u32)>,
+    pending: Option<(f64, f64)>,
     /// One-shot pulse for end-of-drag persistence. Set on
     /// MouseInput::Released after a drag was in flight; the row
     /// drains via [`Self::take_pending_commit`] and calls
     /// `stamp_pending_width_change` on both neighbours so the
     /// shell harvests the final widths into persisted state.
     pending_commit: bool,
+    /// `(min, max)` logical px a neighbour width may take, derived from
+    /// the usable width of the output the two neighbours sit on and
+    /// pushed down by the row every `build_layout`. The bounds are not
+    /// constants because a group's legal width range is a fraction of its
+    /// display: 300..1200 px was simultaneously too coarse on a laptop
+    /// panel and a hard ceiling at 31 % of a 4K one. Seeded from
+    /// [`DEFAULT_STRIP_USABLE_PX`] so a handle tested in isolation still
+    /// has a definite range.
+    bounds: (f64, f64),
 }
 
 impl ResizeHandle {
@@ -126,7 +141,23 @@ impl ResizeHandle {
             rect: Rect::ZERO,
             pending: None,
             pending_commit: false,
+            bounds: (
+                min_group_px(DEFAULT_STRIP_USABLE_PX),
+                max_group_px(DEFAULT_STRIP_USABLE_PX),
+            ),
         }
+    }
+
+    /// Tell the handle how wide the usable part of its neighbours' output
+    /// is, so its clamps track the display instead of a fixed pixel
+    /// range. Called by [`crate::widget::GroupRow::build_layout`].
+    pub fn set_strip_usable_px(&mut self, px: f64) {
+        self.bounds = (min_group_px(px), max_group_px(px));
+    }
+
+    /// The `(min, max)` logical px a neighbour width may take.
+    pub fn bounds(&self) -> (f64, f64) {
+        self.bounds
     }
 
     /// Refresh the handle's neighbour rects. Called by the row's
@@ -163,9 +194,10 @@ impl ResizeHandle {
     /// Drain a mid-drag width pulse. Returns `Some((new_left_px,
     /// new_right_px))` when the handle has computed new widths for
     /// its two neighbours; the row applies these to the adjacent
-    /// groups via `set_width(WindowWidth::Custom(px))`. Take-pattern
+    /// groups via `set_width_px`, which converts each straight back to a
+    /// fraction of that group's output. Take-pattern
     /// so a subsequent poll without another drag tick returns `None`.
-    pub fn take_pending(&mut self) -> Option<(u32, u32)> {
+    pub fn take_pending(&mut self) -> Option<(f64, f64)> {
         self.pending.take()
     }
 
@@ -179,38 +211,41 @@ impl ResizeHandle {
 
     /// Compute new neighbour widths from a horizontal drag delta `dx`
     /// applied to the captured press-time widths. Both clamping rules
-    /// hold: each width stays inside `[WIDTH_MIN_PX, WIDTH_MAX_PX]`,
-    /// and the *sum* of the two widths stays constant — if pushing
-    /// the left neighbour past its min would otherwise shrink it
-    /// further, the right neighbour absorbs the rest (it grows by
-    /// the actual amount left moved, not the requested amount). The
-    /// inverse holds at the right neighbour's bounds. This keeps
-    /// the gap centred at the user's cursor wherever the cursor
-    /// lands, even when one side is pinned to its min/max.
+    /// hold: each width stays inside `[min, max]` — the range
+    /// [`Self::set_strip_usable_px`] derived from the neighbours' output
+    /// — and the *sum* of the two widths stays constant: if pushing the
+    /// left neighbour past its min would otherwise shrink it further, the
+    /// right neighbour absorbs the rest (it grows by the actual amount
+    /// left moved, not the requested amount). The inverse holds at the
+    /// right neighbour's bounds. This keeps the gap centred at the user's
+    /// cursor wherever the cursor lands, even when one side is pinned.
     ///
     /// Pure function so unit tests can pin the math without staging
     /// a full event sequence.
-    pub fn compute_widths(left_origin: u32, right_origin: u32, dx: i32) -> (u32, u32) {
-        let sum = left_origin as i64 + right_origin as i64;
-        let raw_left = left_origin as i64 + dx as i64;
+    pub fn compute_widths(
+        left_origin: f64,
+        right_origin: f64,
+        dx: f64,
+        min: f64,
+        max: f64,
+    ) -> (f64, f64) {
+        let sum = left_origin + right_origin;
+        let raw_left = left_origin + dx;
         // Clamp the LEFT neighbour into bounds first.
-        let left_clamped =
-            raw_left.clamp(WIDTH_MIN_PX as i64, WIDTH_MAX_PX as i64);
+        let left_clamped = raw_left.clamp(min, max);
         // The right neighbour absorbs whatever's left of the pair
         // sum. We then clamp the right side; if that clamp moves
         // anything, we feed the delta back into the left side so the
         // pair sum is preserved.
         let right_after = sum - left_clamped;
-        let right_clamped =
-            right_after.clamp(WIDTH_MIN_PX as i64, WIDTH_MAX_PX as i64);
+        let right_clamped = right_after.clamp(min, max);
         let final_left = sum - right_clamped;
         // Final left must still be within bounds (the sum invariant
         // guarantees this when both bounds are symmetric, which they
-        // are here at MIN/MAX). Defensive clamp covers degenerate
-        // cases where the press-time sum sat outside `[2*MIN, 2*MAX]`.
-        let final_left =
-            final_left.clamp(WIDTH_MIN_PX as i64, WIDTH_MAX_PX as i64);
-        (final_left as u32, right_clamped as u32)
+        // are here at min/max). Defensive clamp covers degenerate
+        // cases where the press-time sum sat outside `[2*min, 2*max]`.
+        let final_left = final_left.clamp(min, max);
+        (final_left, right_clamped)
     }
 }
 
@@ -241,7 +276,7 @@ impl Widget for ResizeHandle {
         let node = taffy
             .new_leaf(Style {
                 size: Size {
-                    width: Dimension::length(8.0),
+                    width: Dimension::length(HANDLE_SLOT_PX as f32),
                     height: Dimension::percent(1.0),
                 },
                 flex_grow: 0.0,
@@ -323,9 +358,10 @@ impl Widget for ResizeHandle {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.hover = self.rect.contains(pt) && self.drag.is_none();
                 if let Some(origin) = self.drag {
-                    let dx = (pt.x - origin.cursor_x).round() as i32;
+                    let dx = pt.x - origin.cursor_x;
+                    let (min, max) = self.bounds;
                     let (new_left, new_right) =
-                        Self::compute_widths(origin.left_w, origin.right_w, dx);
+                        Self::compute_widths(origin.left_w, origin.right_w, dx, min, max);
                     self.pending = Some((new_left, new_right));
                     *handled = true;
                     // OS cursor feedback is now driven by `cursor_shape`
@@ -345,11 +381,10 @@ impl Widget for ResizeHandle {
                 // current at the moment of press. We use rect width
                 // rather than calling back into the groups so the
                 // handle stays independent of `WindowGroup`'s
-                // internal `WindowWidth::Custom` representation.
-                let left_w = (self.left_rect.width().max(0.0) as u32)
-                    .clamp(WIDTH_MIN_PX, WIDTH_MAX_PX);
-                let right_w = (self.right_rect.width().max(0.0) as u32)
-                    .clamp(WIDTH_MIN_PX, WIDTH_MAX_PX);
+                // internal fraction representation.
+                let (min, max) = self.bounds;
+                let left_w = self.left_rect.width().max(0.0).clamp(min, max);
+                let right_w = self.right_rect.width().max(0.0).clamp(min, max);
                 // The captured cursor x is read off the most recent
                 // CursorMoved (which `GroupRow::handle_event` always
                 // dispatches before any MouseInput on the same
@@ -418,73 +453,113 @@ impl Widget for ResizeHandle {
 mod tests {
     use super::*;
 
+    /// A strip whose usable width is 2000 px. Chosen because
+    /// `min_group_px(2000)` is exactly 300 — the floor the old fixed
+    /// pixel model used — so the clamp cases below still read against a
+    /// familiar bound while the *ceiling* is now the strip itself rather
+    /// than a hard-coded 1200.
+    const USABLE: f64 = 2000.0;
+
+    fn bounds() -> (f64, f64) {
+        (min_group_px(USABLE), max_group_px(USABLE))
+    }
+
+    #[test]
+    fn bounds_track_the_strip_not_a_fixed_pixel_range() {
+        // The whole point of the change: the legal width range is a
+        // property of the display, so the ceiling on a 3840-px output is
+        // far above what a 1600-px one allows. A fixed `[300, 1200]`
+        // could not express either.
+        assert_eq!(max_group_px(1600.0), 1600.0);
+        assert_eq!(max_group_px(3840.0), 3840.0);
+        // The floor is a fraction too, with an absolute backstop so a
+        // narrow output doesn't yield an unusable sliver.
+        assert_eq!(min_group_px(3840.0), 576.0);
+        assert_eq!(min_group_px(1200.0), 240.0);
+    }
+
+    #[test]
+    fn handle_adopts_the_strips_bounds() {
+        // The row pushes the usable width down; the handle's clamps must
+        // follow it rather than staying on the constructor's default.
+        let mut h = ResizeHandle::new();
+        h.set_strip_usable_px(3840.0);
+        assert_eq!(h.bounds(), (min_group_px(3840.0), 3840.0));
+    }
+
     #[test]
     fn compute_widths_symmetric_drag_within_bounds() {
-        // Two 600-px Normal groups; user drags the handle 100 px to
-        // the right → left grows to 700, right shrinks to 500. Sum
-        // stays at 1200. Both stay inside `[300, 1200]`.
-        let (l, r) = ResizeHandle::compute_widths(600, 600, 100);
-        assert_eq!(l, 700);
-        assert_eq!(r, 500);
-        assert_eq!(l + r, 1200);
+        // Two 600-px groups; user drags the handle 100 px to the right →
+        // left grows to 700, right shrinks to 500. Sum stays at 1200.
+        // Both stay inside the strip's bounds.
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(600.0, 600.0, 100.0, min, max);
+        assert_eq!(l, 700.0);
+        assert_eq!(r, 500.0);
+        assert_eq!(l + r, 1200.0);
     }
 
     #[test]
     fn compute_widths_clamps_left_at_min() {
         // Left starts at 400, right at 600. A leftward drag of 500
-        // would push left to -100; clamp pins it to 300 (min) and
+        // would push left to -100; clamp pins it to the strip's min and
         // the right neighbour absorbs the remainder — right grows
         // by exactly 100 (the actual left movement), settling at
         // 700. The user-requested 500 px shrink is NOT applied to
         // the right side, which would otherwise have ballooned to
         // 1100. Sum stays at 1000.
-        let (l, r) = ResizeHandle::compute_widths(400, 600, -500);
-        assert_eq!(l, WIDTH_MIN_PX, "left pinned at min");
-        assert_eq!(r, 700, "right absorbs only the actual movement (100)");
-        assert_eq!(l as u32 + r, 400 + 600, "pair sum is preserved");
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(400.0, 600.0, -500.0, min, max);
+        assert_eq!(l, min, "left pinned at the strip's min");
+        assert_eq!(r, 700.0, "right absorbs only the actual movement (100)");
+        assert_eq!(l + r, 400.0 + 600.0, "pair sum is preserved");
     }
 
     #[test]
     fn compute_widths_clamps_right_at_min() {
         // Symmetric of the above: a rightward drag past the right
-        // neighbour's min pins right at 300 and left absorbs the
+        // neighbour's min pins right at the min and left absorbs the
         // rest. Sum preserved.
-        let (l, r) = ResizeHandle::compute_widths(600, 400, 500);
-        assert_eq!(r, WIDTH_MIN_PX, "right pinned at min");
-        assert_eq!(l, 700, "left absorbs the actual movement (100)");
-        assert_eq!(l + r, 600 + 400, "pair sum is preserved");
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(600.0, 400.0, 500.0, min, max);
+        assert_eq!(r, min, "right pinned at the strip's min");
+        assert_eq!(l, 700.0, "left absorbs the actual movement (100)");
+        assert_eq!(l + r, 600.0 + 400.0, "pair sum is preserved");
     }
 
     #[test]
     fn compute_widths_clamps_left_at_max() {
-        // Left starts at 1100, right at 600. A rightward drag of
-        // 500 would push left to 1600; clamp pins it to 1200 (max),
-        // right shrinks by exactly the actual movement (100) to 500.
-        let (l, r) = ResizeHandle::compute_widths(1100, 600, 500);
-        assert_eq!(l, WIDTH_MAX_PX, "left pinned at max");
-        assert_eq!(r, 500, "right shrinks by the actual movement (100)");
-        assert_eq!(l + r, 1100 + 600, "pair sum is preserved");
+        // Left starts 100 px short of the strip's max, right at 600. A
+        // rightward drag of 500 would push left past the max; clamp pins
+        // it there, right shrinks by exactly the actual movement (100).
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(max - 100.0, 600.0, 500.0, min, max);
+        assert_eq!(l, max, "left pinned at the strip's max");
+        assert_eq!(r, 500.0, "right shrinks by the actual movement (100)");
+        assert_eq!(l + r, max - 100.0 + 600.0, "pair sum is preserved");
     }
 
     #[test]
     fn compute_widths_zero_dx_is_identity() {
         // No drag → no change. Specifically: a CursorMoved on the
         // press frame (dx = 0) must not perturb either neighbour.
-        let (l, r) = ResizeHandle::compute_widths(450, 750, 0);
-        assert_eq!(l, 450);
-        assert_eq!(r, 750);
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(450.0, 750.0, 0.0, min, max);
+        assert_eq!(l, 450.0);
+        assert_eq!(r, 750.0);
     }
 
     #[test]
     fn compute_widths_handles_extreme_negative_drag() {
         // A drag larger than the pair sum (e.g. 10 000 px left)
         // must still produce a valid clamped pair: left at min,
-        // right at min(sum - min, MAX) — whichever is smaller.
-        let (l, r) = ResizeHandle::compute_widths(500, 500, -10_000);
-        assert_eq!(l, WIDTH_MIN_PX);
-        assert!(r <= WIDTH_MAX_PX);
-        assert!(r >= WIDTH_MIN_PX);
-        assert_eq!(l + r, 1000, "pair sum preserved even at extreme drags");
+        // right at min(sum - min, max) — whichever is smaller.
+        let (min, max) = bounds();
+        let (l, r) = ResizeHandle::compute_widths(500.0, 500.0, -10_000.0, min, max);
+        assert_eq!(l, min);
+        assert!(r <= max);
+        assert!(r >= min);
+        assert_eq!(l + r, 1000.0, "pair sum preserved even at extreme drags");
     }
 
     #[test]
@@ -544,8 +619,8 @@ mod tests {
             &mut handled, &mut focus, node, &taffy,
         );
         let pulse = h.take_pending().expect("mid-drag must publish a width pulse");
-        assert_eq!(pulse.0, 650, "left grew by exactly dx");
-        assert_eq!(pulse.1, 550, "right shrank by exactly dx");
+        assert_eq!(pulse.0, 650.0, "left grew by exactly dx");
+        assert_eq!(pulse.1, 550.0, "right shrank by exactly dx");
         assert!(h.take_pending().is_none(), "take-pattern: second poll is None");
 
         // Release — drag ends, commit pulse fires once.

@@ -34,10 +34,11 @@ const SEARCH_QUERY_PATH: &str = "files.search_query";
 /// it and `commit_rename` reads the chosen name back out.
 const RENAME_QUERY_PATH: &str = "files.rename_query";
 
-/// Width (logical px) at/above which the body docks the places list beside the
-/// file view; below it the body becomes a single-pane push (places ↔ file view
-/// with a Back arrow). Chosen so a comfortably-wide window keeps the sidebar
-/// docked while a phone-portrait / half-tiled window collapses to one pane.
+/// Width (logical px) at/above which the places list docks beside the file
+/// view; below it the places list becomes an overlay drawer *over* the file
+/// view, summoned by the hamburger chip. The file list is the content either
+/// way — the places list is navigation, so it never takes the window from it
+/// (`ui/HIG.md` §1a).
 const BODY_BREAKPOINT_PX: f64 = 640.0;
 
 /// Ensure a `Text` object exists at `key` on `root`, returning its id. The
@@ -95,7 +96,7 @@ pub struct FileExplorerWidget {
     /// The responsive body: `[ places | file view ]`. Held persistently (NOT
     /// rebuilt inside `build_layout`) so its docked/push state and eased
     /// reveal survive the per-structure-change rebuild of the panes — the two
-    /// panes are swapped in via `NavShell::set_overview` / `set_detail` each
+    /// panes are swapped in via `NavShell::set_sidebar` / `set_content` each
     /// rebuild. Wide docks the places list beside the file view; narrow shows
     /// one at a time (places → tap a place → the file view pushes in with a
     /// Back arrow). See the module note on live child swap in `ui::NavShell`.
@@ -217,13 +218,17 @@ impl FileExplorerWidget {
             rename_seed_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
-            // in on the first `build_layout`. Overview width matches the
-            // historical fixed sidebar so the docked (wide) layout is
-            // pixel-stable; below the breakpoint the body switches to a
-            // single-pane push (places ↔ file view + Back).
-            nav: NavShell::new(Box::new(Text::new("")), Box::new(Text::new("")))
-                .with_overview_width(places_sidebar::SIDEBAR_WIDTH)
-                .with_breakpoint(BODY_BREAKPOINT_PX),
+            // in on the first `build_layout`. The places list is the shell's
+            // *sidebar*, not a content overview: docked beside the file view
+            // when wide, an overlay drawer over it when narrow. Sidebar width
+            // matches the historical fixed sidebar so the docked layout is
+            // pixel-stable.
+            nav: NavShell::sidebar_over_content(
+                Box::new(Text::new("")),
+                Box::new(Text::new("")),
+            )
+            .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
+            .with_breakpoint(BODY_BREAKPOINT_PX),
             chrome_above: None,
             chrome_below: None,
             cmds: new_sink(),
@@ -346,13 +351,13 @@ impl FileExplorerWidget {
             }
         };
         let sp = &theme.tokens.spacing;
-        // In the narrow (push) layout the shell paints a Back chip over the
-        // detail pane's top-left; reserve a strip so the list header + rows
-        // start clear of it instead of under it. Wide docks both panes with no
-        // chip, so no reservation there.
-        let back_chip_reserve = if self.nav.mode() == ShellMode::Narrow { 44.0 } else { 0.0 };
+        // In the narrow layout the shell paints the hamburger chip over the
+        // content pane's top-left (it summons the places drawer); reserve a
+        // strip so the list header + rows start clear of it instead of under
+        // it. Wide docks the places list, with no chip over the content.
+        let chip_reserve = if self.nav.mode() == ShellMode::Narrow { 44.0 } else { 0.0 };
         // A plain (percent-height) column: this pane is the root of `NavShell`'s
-        // inner layout, sized to the detail rect, so it must FILL that rect
+        // inner layout, sized to the content rect, so it must FILL that rect
         // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
         // zero) needs a flex parent to distribute space and would collapse to
         // its content height here — leaving the `Scrollable` zero-height. Inside
@@ -360,7 +365,7 @@ impl FileExplorerWidget {
         // optional error row.
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
-            .with_extra_top_padding(back_chip_reserve)
+            .with_extra_top_padding(chip_reserve)
             .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button
@@ -880,14 +885,26 @@ impl FileExplorerWidget {
         crate::places_sidebar::debug_begin_drag(&self.favs, from, to)
     }
 
-    /// Push the file view in over the places list (the narrow / single-pane
-    /// master→detail transition), settled deterministically for a headless
-    /// screenshot. In the wide layout both panes are already shown, so this is
-    /// a no-op there.
+    /// Open the places drawer over the file view (the narrow layout's
+    /// hamburger action), settled deterministically for a headless
+    /// screenshot. In the wide layout the places list is already docked.
     #[doc(hidden)]
-    pub fn debug_show_detail(&mut self) {
-        self.nav.show_detail();
+    pub fn debug_open_places_drawer(&mut self) {
+        self.nav.open_sidebar();
         self.nav.snap();
+    }
+
+    /// Whether the places drawer / docked sidebar is currently revealed.
+    #[doc(hidden)]
+    pub fn debug_places_open(&self) -> bool {
+        self.nav.is_sidebar_open()
+    }
+
+    /// The file-view pane's resolved rect — what a test asserts against to
+    /// prove the file list is actually on screen.
+    #[doc(hidden)]
+    pub fn debug_content_rect(&self) -> vello::kurbo::Rect {
+        self.nav.overview_rect()
     }
 
     /// The responsive body's current mode (docked-wide vs push-narrow) — for
@@ -897,12 +914,7 @@ impl FileExplorerWidget {
         self.nav.mode()
     }
 
-    /// Whether the narrow body is currently showing the pushed-in file view
-    /// (vs the places list). For tests of the master→detail push.
-    #[doc(hidden)]
-    pub fn debug_detail_shown(&self) -> bool {
-        self.nav.is_detail_shown()
-    }
+
 
     /// Select the given displayed-entry indices (headless shots demo).
     #[doc(hidden)]
@@ -1536,13 +1548,13 @@ impl Widget for FileExplorerWidget {
     ) -> taffy::NodeId {
         // Rebuild the spanning chrome + swap the freshly-built body panes into
         // the persistent `nav`. `nav` keeps its docked/push state across the
-        // swap (see `NavShell::set_overview`/`set_detail`), so a rebuild
+        // swap (see `NavShell::set_sidebar`/`set_content`), so a rebuild
         // triggered by navigation/sort/search doesn't snap the body back to the
         // places list mid-interaction.
         let mut above = self.build_chrome_above(theme);
         let mut below = self.build_chrome_below(theme);
-        self.nav.set_overview(self.build_places_pane());
-        self.nav.set_detail(self.build_content_pane(theme));
+        self.nav.set_sidebar(Some(self.build_places_pane()));
+        self.nav.set_content(self.build_content_pane(theme));
 
         let above_node = above.build_layout(taffy, theme, node_map);
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
@@ -1831,12 +1843,12 @@ impl Widget for FileExplorerWidget {
             self.structure_dirty = true;
         }
 
-        // In the single-pane (narrow) layout, navigating to a new location
-        // pushes the file view in over the places list, with a Back arrow to
-        // return — the HIG master→detail flow. Wide keeps both panes abreast,
-        // so `show_detail` is a harmless no-op there.
+        // Picking a destination dismisses the narrow drawer so the file list
+        // it navigated to is what the user is left looking at — the Adwaita
+        // overlay-sidebar behaviour. Wide keeps the places list docked, so
+        // there is nothing to dismiss there.
         if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
-            self.nav.show_detail();
+            self.nav.close_sidebar();
         }
     }
 
@@ -2231,6 +2243,7 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
 
+        use automerge::ReadDoc;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         // First seed creates the object; measure growth from there.
@@ -2622,10 +2635,11 @@ mod command_path_tests {
 
 #[cfg(test)]
 mod responsive_body_tests {
-    //! The places list + file view are unified onto the shared responsive
-    //! `NavShell`: a comfortably-wide window docks them side by side; a narrow
-    //! window collapses to a single pane (places → tap a place → the file view
-    //! pushes in with a Back arrow). Drives the real production path
+    //! The places list is a *navigation* sidebar over the file view, on the
+    //! shared `NavShell`: a comfortably-wide window docks it beside the files;
+    //! a narrow window turns it into an overlay drawer over them. The file
+    //! list is the content at every width — it is never pushed off the window
+    //! to make room for the list of places. Drives the real production path
     //! (`build_layout` → `apply_layout` at a size, then `handle_event`).
     use super::*;
     use std::collections::HashMap;
@@ -2709,6 +2723,24 @@ mod responsive_body_tests {
             });
         }
 
+        /// The laid-out rect of a named widget in the live tree. Asserting on
+        /// the *file view's* own rect is what makes the narrow test about the
+        /// files rather than about whichever pane happens to be full-width.
+        fn rect_of(&self, name: &str) -> Option<vello::kurbo::Rect> {
+            fn find(w: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
+                if w.name() == name {
+                    return Some(w.get_rect());
+                }
+                for c in w.children() {
+                    if let Some(r) = find(c, name) {
+                        return Some(r);
+                    }
+                }
+                None
+            }
+            find(&self.w, name)
+        }
+
         fn escape(&mut self) {
             let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
             ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
@@ -2748,47 +2780,116 @@ mod responsive_body_tests {
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
     }
 
+    /// The regression: at ~600 px the window showed the breadcrumb and the
+    /// FAVOURITES / SYSTEM list and **no files at all**, while the footer
+    /// underneath read "27 items". The places list had been declared a content
+    /// overview, so the narrow layout promoted it to the full-screen page and
+    /// pushed the file view off the window.
     #[test]
-    fn narrow_navigation_pushes_the_file_view_then_escape_returns() {
+    fn narrow_shows_the_files_not_the_places_list() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+
+        assert!(
+            !h.w.debug_places_open(),
+            "the places drawer starts closed, so the files are what you see",
+        );
+        // The file view's OWN rect, not "whichever pane is full-width": under
+        // the original bug the places list was the full-width pane and the file
+        // view was laid out off the right edge of the window.
+        let files = h
+            .rect_of("FileView")
+            .expect("the file view must be in the tree at a narrow width");
+        assert!(
+            files.width() > 0.0 && files.height() > 0.0,
+            "the file view must be laid out at a real size; got {files:?}",
+        );
+        assert!(
+            files.x0 >= 0.0 && files.x1 <= 600.0,
+            "and inside the window rather than pushed off it: {files:?}",
+        );
+        assert_eq!(
+            h.w.debug_content_rect().width(),
+            600.0,
+            "the content pane spans the whole narrow window",
+        );
+    }
+
+    /// The drawer draws *over* the files rather than displacing them, and the
+    /// files stay full-width behind it (HIG §1a).
+    #[test]
+    fn narrow_places_drawer_overlays_the_files_without_displacing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        let before = h.w.debug_content_rect();
+
+        h.w.debug_open_places_drawer();
+        h.lay_out(600.0, 720.0);
+        h.w.debug_open_places_drawer();
+        assert!(h.w.debug_places_open(), "the drawer is revealed");
+        assert_eq!(
+            h.w.debug_content_rect(),
+            before,
+            "the file view must not move or shrink when the drawer opens",
+        );
+    }
+
+    /// Picking a destination in the narrow drawer dismisses it, leaving the
+    /// user on the files they navigated to.
+    #[test]
+    fn narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 520.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
-        assert!(!h.w.debug_detail_shown(), "narrow starts on the places list");
+        h.w.debug_open_places_drawer();
+        assert!(h.w.debug_places_open());
 
-        // A place-navigation (what tapping a place in the list emits) must push
-        // the file view in. Inject the command the places list pushes, then
-        // pump an event so `handle_event` drains it + applies the push wiring.
+        // A place-navigation (what tapping a place in the list emits). Inject
+        // the command the places list pushes, then pump an event so
+        // `handle_event` drains it and applies the dismissal wiring.
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
         assert_eq!(h.w.current_path(), dir.path().join("sub"), "the navigation applied");
         assert!(
-            h.w.debug_detail_shown(),
-            "narrow navigation pushes the file view in over the places list"
+            !h.w.debug_places_open(),
+            "navigating dismisses the drawer so the files are what remains",
         );
-
-        // Escape pops back to the places list (NavShell self-routes it).
-        h.escape();
-        assert!(
-            !h.w.debug_detail_shown(),
-            "Escape returns from the file view to the places list"
+        assert_eq!(
+            h.w.debug_content_rect().width(),
+            520.0,
+            "and the file view still owns the whole window",
         );
     }
 
     #[test]
-    fn wide_navigation_keeps_both_panes_abreast() {
+    fn wide_docks_the_places_list_beside_the_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert!(h.w.debug_places_open(), "wide docks the places list open");
+
+        let content = h.w.debug_content_rect();
+        assert_eq!(
+            content.x1, 1200.0,
+            "the file view runs to the window's right edge",
+        );
+        assert!(
+            content.x0 > 0.0,
+            "and starts after the docked places list: {content:?}",
+        );
 
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
-        // Wide keeps both panes shown; there is no separate pushed screen, so
-        // the detail is not treated as a pushed pane.
         assert!(
-            !h.w.debug_detail_shown(),
-            "the wide layout shows both panes; navigation does not push a separate screen"
+            h.w.debug_places_open(),
+            "wide navigation leaves the docked list in place — nothing to dismiss",
         );
     }
 }

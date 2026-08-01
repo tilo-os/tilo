@@ -37,8 +37,50 @@ fn append_workspace_sets_active() {
 
 #[test]
 fn window_width_clamp() {
-    assert_eq!(WindowWidth::Custom(50).pixels(), 300);
-    assert_eq!(WindowWidth::Custom(9999).pixels(), 1200);
+    // A width is a fraction of the strip, so out-of-range fractions clamp
+    // into the legal share band rather than into a pixel band.
+    assert_eq!(WindowWidth::Fraction(5).permille(), 150);
+    assert_eq!(WindowWidth::Fraction(9999).permille(), 1000);
+    // And the resolved pixels track the display: the same clamped fraction
+    // is a different pixel count on each, which is the point.
+    assert_eq!(WindowWidth::Fraction(9999).resolve(1600.0), 1600.0);
+    assert_eq!(WindowWidth::Fraction(9999).resolve(3840.0), 3840.0);
+}
+
+/// A workspace persisted by the pixel model still loads, and its widths
+/// come back as the share of the screen the user had — not as a pixel count
+/// that would mean something different on their next monitor.
+#[test]
+fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
+    // The old model ran 300..1200 px with 1200 as the whole strip, so its
+    // tier constants were a third / a half / two thirds of it.
+    assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
+    assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
+    assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
+
+    let legacy = r#"{ "id": 7, "tabs": [], "active_tab": 0, "width": { "Custom": 600 } }"#;
+    let g: WindowGroup = serde_json::from_str(legacy).expect("legacy width must load");
+    assert_eq!(
+        g.width,
+        WindowWidth::Fraction(500),
+        "a persisted 600 px width is half the strip, whatever the display",
+    );
+    assert_eq!(g.width.resolve(1600.0), 800.0);
+    assert_eq!(g.width.resolve(3840.0), 1920.0);
+}
+
+/// The current shape round-trips through the persisted JSON unchanged, so a
+/// manual resize survives a restart.
+#[test]
+fn fraction_widths_round_trip_through_persisted_json() {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(742);
+    let json = serde_json::to_string(&tree).expect("serialize");
+    let back: WorkspaceTree = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(
+        back.workspaces[0].strips[0].window_groups[0].width,
+        WindowWidth::Fraction(742),
+    );
 }
 
 // Reference the remaining imports so the test file compiles cleanly even before
