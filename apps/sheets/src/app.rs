@@ -341,6 +341,11 @@ impl SheetsApp {
     /// does. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: SheetsAction) {
         self.actions.dispatch(doc, actions::SHEETS_ACTION_TYPE, &action);
+        // Reconcile the observed document's patch log after the executor's
+        // actor-pinned commit, so a later write in the same event (a bulk
+        // paste/fill/sum dispatches many actions before the next read) doesn't
+        // trip Automerge's actor migration.
+        let _ = doc.get_heads();
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -4543,6 +4548,77 @@ mod tests {
         app.dispatch_command(&mut doc, "insert_col", None);
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 0)), "", "column A is now blank");
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (1, 0)), "Category", "header shifted to B1");
+    }
+
+    /// Covenant — one source of truth: an on-screen affordance dispatches the
+    /// byte-identical [`EncodedAction`] its Ctrl+K [`ActionSpec`] builds. Driving
+    /// the real sheet-tab "Delete" context-menu handler sets `last_dispatched`
+    /// to exactly what the workbook resource tree's delete spec encodes.
+    #[test]
+    fn tab_delete_affordance_matches_the_action_spec() {
+        let (mut app, mut doc) = seeded_app();
+        let count_before = SheetsDoc::sheet_count(&mut doc);
+        assert!(count_before >= 2, "seeded workbook has multiple sheets");
+
+        // Capture the Ctrl+K delete spec for sheet 1 from the live resource tree,
+        // *before* the affordance mutates the workbook (the tree shrinks after).
+        let from_spec = {
+            let resources = ui::widget::Widget::resources(&app, &doc);
+            let sheet1 = &resources[0].children[1];
+            let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
+            match &spec.input {
+                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("delete is an immediate action"),
+            }
+        };
+
+        // The on-screen tab context-menu "Delete" on sheet 1 (the real handler).
+        app.run_tab_action(&mut doc, 1, TabAction::Delete);
+
+        let dispatched = app
+            .last_dispatched()
+            .expect("the affordance dispatched an action");
+        assert_eq!(
+            dispatched, &from_spec,
+            "the tab-menu Delete builds the same EncodedAction as its Ctrl+K ActionSpec"
+        );
+        assert_eq!(
+            SheetsDoc::sheet_count(&mut doc),
+            count_before - 1,
+            "the affordance really removed the sheet"
+        );
+    }
+
+    /// Covenant on the real app path: a cell edit routed through the grid's
+    /// `SetCell` command dispatches a `SheetsAction::SetCell` carrying the exact
+    /// coordinates and value — the single CRDT-mutation path that undo, peer
+    /// replay, and Ctrl+K all share. The `last_dispatched` envelope decodes back
+    /// to the action the affordance built.
+    #[test]
+    fn cell_edit_affordance_dispatches_a_matching_set_cell_action() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 9)); // A10, an empty cell
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: (0, 9), raw: "hello".into() },
+                GridCmd::Commit,
+            ],
+        );
+        let dispatched = app
+            .last_dispatched()
+            .expect("the cell edit dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::SHEETS_ACTION_TYPE);
+        let action: crate::actions::SheetsAction =
+            serde_json::from_slice(&dispatched.payload).expect("payload decodes to SheetsAction");
+        match action {
+            crate::actions::SheetsAction::SetCell { sheet, col, row, raw, .. } => {
+                assert_eq!((sheet, col, row), (0, 0, 9), "wrote the selected cell A10");
+                assert_eq!(raw, "hello");
+            }
+            other => panic!("cell edit built the wrong action: {other:?}"),
+        }
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 9)), "hello");
     }
 
     #[test]
