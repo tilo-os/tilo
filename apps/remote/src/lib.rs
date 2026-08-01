@@ -32,6 +32,7 @@
 //!
 //! [`kind`]: model::ConnectionKind
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
