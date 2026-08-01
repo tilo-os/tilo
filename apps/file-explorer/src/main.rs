@@ -48,10 +48,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         match scenario.as_deref() {
             Some("grid") => widget.set_view_mode(file_explorer::model::ViewMode::Grid),
             Some("select") => widget.debug_select(&[7, 8]),
-            // Push the file view in over the places list (narrow master→detail).
-            // Set BEFORE layout so `apply_layout` places the pushed geometry —
-            // snapping post-layout would leave the panes at their pre-push rects.
-            Some("detail") => widget.debug_show_detail(),
+            // Summon the places drawer over the file view (the narrow
+            // layout's hamburger action). Set BEFORE layout so `apply_layout`
+            // places the revealed drawer — snapping post-layout would leave
+            // the panes at their pre-reveal rects.
+            Some("places") => widget.debug_open_places_drawer(),
             _ => {}
         }
         render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;

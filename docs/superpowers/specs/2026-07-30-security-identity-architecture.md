@@ -132,6 +132,57 @@ The recovery key is created and displayed **at the moment encryption is enabled*
 that can be printed or photographed, and enrollment does not complete until the user confirms they
 have it. The TPM keyslot is a convenience; the recovery key is the guarantee.
 
+### 3.6 The credential ladder
+
+**One secret in day-to-day use. Not two, and not one-plus-occasional-surprises.**
+
+This is a hard requirement, not an aspiration, because a system that asks for a second credential
+"only sometimes" trains people to expect prompts — and a user who expects prompts is a user who
+types their passphrase into whatever asks.
+
+| Credential | When | Why it can be short |
+|---|---|---|
+| **PIN** | Every boot, every unlock | The TPM throttles guesses in hardware |
+| **Passphrase** | Only on machines with no TPM at all | Nothing throttles guesses, so it must carry the entropy itself |
+| **Recovery key** | Account recovery, dead TPM, forgotten PIN | Never typed in normal operation |
+
+The PIN cascades rather than repeating. Entering it unseals the device key; the device key unlocks
+the disk, authorises the session, and unwraps the credential vault. One entry, one cascade — not
+the same secret demanded three times by three subsystems that don't know about each other.
+
+**Machines without a TPM type exactly one secret too.** It is a passphrase rather than a PIN,
+because without hardware throttling the secret itself must be strong enough to resist offline
+guessing. Same number of prompts, longer string. That is the honest shape of the degradation: it
+costs typing, not safety, and it does not cost a *second* prompt.
+
+**A short PIN is only safe if guess-throttling actually works.** The TPM's dictionary-attack
+lockout is what makes four digits defensible, and its reset authorisation must be set to a real
+value — left at the empty default, an attacker simply resets the counter and the PIN becomes
+four digits of nothing. Lockout parameters are vendor-set and often generous, so they must be
+read and, where possible, tightened at enrollment rather than assumed.
+
+### 3.7 Why the passphrase should never appear
+
+The usual reason a Linux machine surprises you with a passphrase prompt is that a firmware update
+changed the boot measurements and invalidated the seal. Sealing to *signed policy* rather than to
+literal measurement values fixes this: the updater ships a signature for the new expected state, so
+a legitimate firmware or kernel update re-satisfies the policy instead of breaking it.
+
+This is usually filed as a security mechanism. It is equally a usability one — it is the difference
+between a recovery credential that stays in a drawer and one the user keeps somewhere convenient
+because they need it every few weeks.
+
+### 3.8 Where the single PIN stops
+
+Disk unlock is a **device** capability; a home directory is a **user** capability. On a
+single-user machine these collapse into one PIN and one cascade, which is the case to optimise
+for. On a multi-user machine the device unlocks once and each user still authenticates to their own
+home — one PIN *per person*, which is correct rather than a regression.
+
+The cascade must therefore be built as "device credential unlocks device-scoped things, user
+credential unlocks user-scoped things," which happens to be one prompt when there is one user. A
+cascade built as "the PIN unlocks everything" would have to be dismantled to add a second person.
+
 ---
 
 ## 4. Boot chain

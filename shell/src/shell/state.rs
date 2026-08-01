@@ -357,22 +357,106 @@ impl AppKind {
 /// backend, the `nirios` window title).
 pub const APP_ID_PREFIX: &str = "org.nirios";
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// Reference width the pre-fraction pixel model was scaled against, used
+/// only to migrate persisted `Custom(pixels)` values.
+///
+/// That model ran 300..=1200 px, so 1200 was "the whole strip" and the
+/// tier constants (400 / 600 / 800) were a third, a half and two thirds of
+/// it. Reading a legacy pixel count as a fraction of 1200 therefore keeps
+/// the *proportion* the user was actually looking at, which is the thing
+/// worth preserving — a persisted `Custom(600)` becomes half the strip,
+/// not "whichever tier is now called Normal".
+const LEGACY_PIXEL_REFERENCE_WIDTH: u32 = 1200;
+
+/// Persisted width of a [`WindowGroup`], as a fraction of the usable width
+/// of the strip it sits in. Mirrors [`ui::widget::WindowWidth`]; the two
+/// are kept as separate types because this one is the serde/CRDT shape and
+/// that one is the layout shape (see `to_ui_width` / `from_ui_width` in
+/// `shell/src/shell`).
+///
+/// Fractions rather than pixels because a strip is as wide as the display:
+/// a stored pixel count meant a different share of the screen on every
+/// monitor, could not survive a restart onto a different one, and — with
+/// the old 1200 px ceiling — capped the widest attainable window at 31 %
+/// of a 4K panel.
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum WindowWidth {
     Narrow,
     Normal,
     Wide,
-    Custom(u32),
+    /// An arbitrary fraction of the strip's usable width, in per-mille.
+    /// What a manual resize persists.
+    Fraction(u16),
 }
 
 impl WindowWidth {
-    pub fn pixels(&self) -> u32 {
+    /// The fraction this width represents, in per-mille of the strip's
+    /// usable width. Delegates to the toolkit so the shell's persisted
+    /// tiers and the laid-out ones cannot drift apart.
+    pub fn permille(&self) -> u16 {
+        self.to_ui().permille()
+    }
+
+    /// Resolve to logical pixels against a strip of `strip_usable_px`.
+    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
+        self.to_ui().resolve(strip_usable_px)
+    }
+
+    /// The toolkit width this persisted width maps to.
+    pub fn to_ui(self) -> ui::widget::WindowWidth {
         match self {
-            WindowWidth::Narrow => 400,
-            WindowWidth::Normal => 600,
-            WindowWidth::Wide => 800,
-            WindowWidth::Custom(p) => (*p).clamp(300, 1200),
+            WindowWidth::Narrow => ui::widget::WindowWidth::Narrow,
+            WindowWidth::Normal => ui::widget::WindowWidth::Normal,
+            WindowWidth::Wide => ui::widget::WindowWidth::Wide,
+            WindowWidth::Fraction(p) => ui::widget::WindowWidth::Fraction(p),
         }
+    }
+
+    /// The persisted width for a toolkit width.
+    pub fn from_ui(w: ui::widget::WindowWidth) -> Self {
+        match w {
+            ui::widget::WindowWidth::Narrow => WindowWidth::Narrow,
+            ui::widget::WindowWidth::Normal => WindowWidth::Normal,
+            ui::widget::WindowWidth::Wide => WindowWidth::Wide,
+            ui::widget::WindowWidth::Fraction(p) => WindowWidth::Fraction(p),
+        }
+    }
+
+    /// Migrate a width persisted by the pixel model — see
+    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`].
+    pub fn from_legacy_pixels(px: u32) -> Self {
+        WindowWidth::Fraction(ui::widget::permille_for_px(
+            px as f64,
+            LEGACY_PIXEL_REFERENCE_WIDTH as f64,
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for WindowWidth {
+    /// Accepts both the current shape and the pixel shape written before
+    /// widths became fractions, so an existing `~/.local/state` workspace
+    /// still loads. A legacy `{"Custom": 600}` migrates to the fraction of
+    /// [`LEGACY_PIXEL_REFERENCE_WIDTH`] it represented.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        enum Raw {
+            Narrow,
+            Normal,
+            Wide,
+            Fraction(u16),
+            /// Legacy: an absolute pixel count.
+            Custom(u32),
+        }
+        Ok(match Raw::deserialize(d)? {
+            Raw::Narrow => WindowWidth::Narrow,
+            Raw::Normal => WindowWidth::Normal,
+            Raw::Wide => WindowWidth::Wide,
+            Raw::Fraction(p) => WindowWidth::Fraction(p.clamp(
+                ui::widget::WIDTH_MIN_PERMILLE,
+                ui::widget::WIDTH_MAX_PERMILLE,
+            )),
+            Raw::Custom(px) => WindowWidth::from_legacy_pixels(px),
+        })
     }
 }
 
@@ -2245,7 +2329,7 @@ impl WorkspaceTree {
     ///   `{ id: Uint, name: String, strips: List<Map> }` (unit B + C),
     /// - each strip entry: `{ id: Uint, window_groups: List<Map> }` (unit C),
     /// - each window-group entry:
-    ///   `{ id: Uint, maximized: Bool, width_pixels: Uint }` (unit C).
+    ///   `{ id: Uint, maximized: Bool, width_permille: Uint }` (unit C).
     ///
     /// Tabs, `active_strip`, `active_group`, and collaborators stay
     /// cache-only — unit D wires those.
@@ -2298,7 +2382,7 @@ impl WorkspaceTree {
                 }
             }
             // Unit C: nested strips + window_groups so per-group
-            // maximized + width_pixels writes have a doc-side path
+            // maximized + width_permille writes have a doc-side path
             // to land in.
             let strips_id = self
                 .doc
@@ -2331,8 +2415,8 @@ impl WorkspaceTree {
                     );
                     let _ = self.doc.put(
                         &group_entry,
-                        "width_pixels",
-                        ScalarValue::Uint(group.width.pixels() as u64),
+                        "width_permille",
+                        ScalarValue::Uint(group.width.permille() as u64),
                     );
                     // Unit D: tabs as a List of Maps with the tab's
                     // identifying scalars + a `tile_json` blob carrying
@@ -2464,7 +2548,7 @@ impl WorkspaceTree {
         }
 
         // Unit C: reconstruct nested per-window-group `maximized` +
-        // `width_pixels` from the doc. Walks each workspace's
+        // `width_permille` from the doc. Walks each workspace's
         // `strips` list, then each strip's `window_groups` list, and
         // for every group entry tries to find the cached counterpart
         // by id. If the cache has the group, the doc values overwrite
@@ -2534,14 +2618,37 @@ impl WorkspaceTree {
                             },
                             _ => false,
                         };
-                        let width_pixels =
+                        // Peers publish a *fraction* of their strip, so the
+                        // width means the same share of this replica's own
+                        // display rather than importing the sender's pixel
+                        // count. `width_pixels` is the shape a pre-fraction
+                        // peer (or an older doc) carries; migrate it rather
+                        // than dropping the group's width on the floor.
+                        let width = match self
+                            .doc
+                            .get(&group_entry, "width_permille")
+                            .ok()
+                            .flatten()
+                        {
+                            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                                ScalarValue::Uint(v) if *v > 0 => {
+                                    Some(WindowWidth::Fraction(*v as u16))
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        }
+                        .or_else(|| {
                             match self.doc.get(&group_entry, "width_pixels").ok().flatten() {
                                 Some((Value::Scalar(s), _)) => match s.as_ref() {
-                                    ScalarValue::Uint(v) => *v as u32,
-                                    _ => 0,
+                                    ScalarValue::Uint(v) if *v > 0 => {
+                                        Some(WindowWidth::from_legacy_pixels(*v as u32))
+                                    }
+                                    _ => None,
                                 },
-                                _ => 0,
-                            };
+                                _ => None,
+                            }
+                        });
 
                         // Patch into the cached tree, synthesizing
                         // missing structure as needed.
@@ -2600,15 +2707,14 @@ impl WorkspaceTree {
 
                         if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                             g.maximized = maximized;
-                            // Round-tripping `WindowWidth::Pixels` is
-                            // lossy — Narrow/Normal/Wide map to fixed
-                            // pixel values, but the inverse mapping
-                            // would silently coerce a user's custom
-                            // resize back to one of the presets. Pick
-                            // `Custom` always; it clamps 300..=1200
-                            // internally.
-                            if width_pixels > 0 {
-                                g.width = WindowWidth::Custom(width_pixels);
+                            // The doc carries the fraction, not the tier:
+                            // mapping a fraction back onto Narrow/Normal/
+                            // Wide would silently coerce a peer's manual
+                            // resize to whichever preset happened to be
+                            // closest. `Fraction` always; it clamps into
+                            // the legal per-mille range on the way in.
+                            if let Some(w) = width {
+                                g.width = w;
                             }
                             if !doc_tabs.is_empty() {
                                 let mut new_tabs: Vec<Tab> = Vec::with_capacity(doc_tabs.len());
@@ -2676,11 +2782,7 @@ impl WorkspaceTree {
                                 id: group_id,
                                 tabs: synthesized_tabs,
                                 active_tab,
-                                width: if width_pixels > 0 {
-                                    WindowWidth::Custom(width_pixels)
-                                } else {
-                                    WindowWidth::Normal
-                                },
+                                width: width.unwrap_or(WindowWidth::Normal),
                                 maximized,
                             });
                         }
@@ -2748,19 +2850,22 @@ impl WorkspaceTree {
         }
     }
 
-    /// Mirror a `WindowGroup.width` resize into the doc as a raw pixel
-    /// scalar. Stored as `width_pixels: Uint` because the cache uses
-    /// the `WindowWidth::Custom(p)` variant after a manual resize and
-    /// peers don't need to round-trip the preset (`Narrow`/`Normal`/
-    /// `Wide`) — they receive the resolved pixel value and clamp it
-    /// on the cache side. Same null-tolerance as
+    /// Mirror a `WindowGroup.width` resize into the doc as a fraction of
+    /// the strip. Stored as `width_permille: Uint` rather than a pixel
+    /// count precisely because peers do not share a display: a fraction
+    /// reproduces the same share of the receiver's own screen, where a
+    /// pixel count would reproduce the sender's monitor. Peers don't need
+    /// the preset (`Narrow`/`Normal`/`Wide`) round-tripped — they receive
+    /// the fraction and clamp it on the cache side. Same null-tolerance as
     /// [`Self::doc_set_maximized`].
-    pub fn doc_set_width(&mut self, group_id: u64, new_pixels: u32) {
+    pub fn doc_set_width(&mut self, group_id: u64, new_permille: u16) {
         use automerge::{ScalarValue, transaction::Transactable};
         if let Some((entry, _, _, _)) = self.locate_group(group_id) {
-            let _ = self
-                .doc
-                .put(&entry, "width_pixels", ScalarValue::Uint(new_pixels as u64));
+            let _ = self.doc.put(
+                &entry,
+                "width_permille",
+                ScalarValue::Uint(new_permille as u64),
+            );
         }
     }
 
@@ -3351,7 +3456,7 @@ impl WorkspaceTree {
     /// Mirror a [`Self::reorder_group_within_strip`] cache move into the
     /// automerge doc: delete the group's existing entry from the strip's
     /// `window_groups` list and re-insert a fresh map carrying the group's
-    /// full content (id, `maximized`, `width_pixels`, and its `tabs`) at
+    /// full content (id, `maximized`, `width_permille`, and its `tabs`) at
     /// `new_index`. Rebuilt from the passed-in cache [`WindowGroup`] rather
     /// than read back out of the doc, so it can't drift from what the cache
     /// just committed.
@@ -3428,8 +3533,8 @@ impl WorkspaceTree {
                 );
                 let _ = self.doc.put(
                     &group_entry,
-                    "width_pixels",
-                    ScalarValue::Uint(group.width.pixels() as u64),
+                    "width_permille",
+                    ScalarValue::Uint(group.width.permille() as u64),
                 );
                 if let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) {
                     for (l, tab) in group.tabs.iter().enumerate() {
@@ -4282,15 +4387,16 @@ mod bootstrap_default_tests {
             .window_groups
             .first()
             .expect("at least one group");
-        let wide_enough = match first_group.width {
-            WindowWidth::Wide => true,
-            WindowWidth::Custom(w) => w >= 900,
-            _ => false,
-        };
+        // Widths are fractions of the strip, so "wide enough" is a share
+        // of the display rather than a pixel count — which is the whole
+        // point: the old `Custom(w) => w >= 900` could not be satisfied at
+        // all on a 4K panel, where 900 px is under a quarter of the screen.
+        let share = first_group.width.permille();
         assert!(
-            wide_enough,
-            "default group should be Wide+ so the white card fills more than \
-             half the viewport; got {:?}",
+            share >= ui::widget::WIDTH_NORMAL_PERMILLE,
+            "default group should fill at least the Normal share of the \
+             strip so the white card dominates the viewport; got {:?} \
+             ({share}/1000)",
             first_group.width
         );
     }
@@ -5014,20 +5120,20 @@ mod automerge_foundation_tests {
 
     #[test]
     fn width_change_propagates_via_apply_changes() {
-        // Unit-C convergence: peer A drags a resize handle, the
-        // harvester writes `WindowWidth::Custom(p)` to the cache and
-        // mirrors `width_pixels: Uint(p)` to the doc; peer B observes
-        // the new pixel value after `apply_changes`.
+        // Peer A drags a resize handle; the harvester writes
+        // `WindowWidth::Fraction(p)` to the cache and mirrors
+        // `width_permille: Uint(p)` to the doc; peer B observes the same
+        // *share* after `apply_changes`.
         //
-        // The `Custom` branch clamps to 300..=1200 inside `pixels()`,
-        // so we pick a value already inside that range to avoid the
-        // clamp masking a propagation bug.
+        // A share rather than a pixel count is the point: B's monitor is
+        // not A's, so replicating pixels would reproduce A's screen on B's.
         let mut tree_a = WorkspaceTree::bootstrap_default();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
-        let new_pixels: u32 = 720;
+        let new_share: u16 = 600;
 
-        tree_a.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Custom(new_pixels);
-        tree_a.doc_set_width(target_group, new_pixels);
+        tree_a.workspaces[0].strips[0].window_groups[0].width =
+            WindowWidth::Fraction(new_share);
+        tree_a.doc_set_width(target_group, new_share);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
@@ -5044,10 +5150,14 @@ mod automerge_foundation_tests {
             "tree B should observe the window group after sync"
         );
         assert_eq!(
-            target.unwrap().width.pixels(),
-            new_pixels,
-            "width pixels should round-trip via doc"
+            target.unwrap().width,
+            WindowWidth::Fraction(new_share),
+            "the width share should round-trip via doc"
         );
+        // And that share means the same proportion of whatever display B
+        // has, which is the property a pixel count could not carry.
+        assert_eq!(target.unwrap().width.resolve(1600.0), 960.0);
+        assert_eq!(target.unwrap().width.resolve(3840.0), 2304.0);
     }
 
     #[test]
