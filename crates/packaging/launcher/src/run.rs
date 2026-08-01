@@ -942,7 +942,7 @@ pub fn run_with(
         // readable — a bind Landlock does not name is visible and
         // returns EACCES on every open, which reads from inside the app
         // as a corrupted system rather than as a policy.
-        for path in crate::profile::landlock_ro_paths() {
+        for path in crate::profile::landlock_ro_paths(egress.shares_host_network()) {
             argv.push("--ro".to_string());
             argv.push(path.display().to_string());
         }
@@ -1080,7 +1080,7 @@ pub fn run_with(
     // bwrap execs as its command; the shim restricts itself and then
     // execs the real entrypoint. That shim is a follow-up.
     let landlock_plan = crate::landlock::plan_from_paths(
-        &crate::profile::landlock_ro_paths(),
+        &crate::profile::landlock_ro_paths(egress.shares_host_network()),
         &[PathBuf::from(crate::appdir::SANDBOX_APP_DIR)],
     );
     let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
@@ -1183,13 +1183,41 @@ pub fn run_with_captured(
     // has nothing listening behind it.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
-    let mut argv = build_bwrap_argv(
+    // Entrypoint + trailing arguments, resolved the same way `run_with`
+    // resolves them. This path used to build a GUI argv unconditionally
+    // and drop `opts.mode` and `opts.open_document` on the floor, so a
+    // caller asking for a CLI launch got the GUI binary with no
+    // arguments — a silent disagreement between the two entries into the
+    // same sandbox.
+    let (entry_bin, passthrough): (String, Vec<String>) = match &opts.mode {
+        LaunchMode::Gui => (
+            manifest
+                .entrypoint
+                .gui_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string(),
+            opts.open_document
+                .as_ref()
+                .map(|p| vec![p.display().to_string()])
+                .unwrap_or_default(),
+        ),
+        LaunchMode::Cli { passthrough_argv, .. } => (
+            manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string(),
+            passthrough_argv.clone(),
+        ),
+    };
+    let mut argv = crate::sandbox::build_bwrap_argv_for_entry(
         manifest,
         payload_root,
         runtime_arg,
         &binds,
         dbus_plan.as_ref(),
         identity_arg,
+        &entry_bin,
         &capabilities,
     );
     if let Some(bind) = &net_gate {
@@ -1211,6 +1239,9 @@ pub fn run_with_captured(
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
+    // Everything after the entrypoint token is opaque to bwrap and
+    // becomes the child's argv[1..].
+    argv.extend(passthrough);
 
     let bwrap = opts
         .bwrap_bin

@@ -292,7 +292,12 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
+    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), and
+    // env vars are process-global: run in parallel, the second clears
+    // the override the first just set and the first fails. Pre-existing
+    // flake, unrelated to what either test is about.
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_proxy_binary_honours_env_override() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
@@ -305,6 +310,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
         unsafe {
             std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
