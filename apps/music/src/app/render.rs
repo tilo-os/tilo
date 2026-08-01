@@ -264,6 +264,25 @@ impl Widget for MusicApp {
         self.actions.take_committed()
     }
 
+    /// Fold the user's library into the unified Ctrl+K palette: a snapshot
+    /// [`LibrarySearchProvider`](crate::search_type::LibrarySearchProvider)
+    /// makes every saved song / album / artist / playlist findable there as a
+    /// typed result, alongside the actions the app exports. The provider is
+    /// synchronous and offline-safe; the live YouTube-Music search is async and
+    /// lives in the app's own search view.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_type::LibrarySearchProvider::new(&self.lib))]
+    }
+
+    /// Route a chosen palette row onto the real navigate/play path. The row's
+    /// opaque `action_id` is a `music://…` deep link, so this is the same
+    /// router the OS-search host and an in-app hit both use
+    /// ([`MusicApp::open_deep_link`]) — playing a song, or opening an album /
+    /// artist / playlist page.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        self.open_deep_link(action_id, doc);
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

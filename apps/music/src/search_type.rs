@@ -29,6 +29,9 @@
 //! activated hit onto the real navigation/play path. That routing is wired and
 //! tested now so the seam is live, not decorative.
 
+use ui::icons::Icon;
+use ui::search::{SearchProvider, SearchResult};
+
 use crate::backend::{MusicBackend, SearchTop};
 use crate::model::Library;
 
@@ -387,6 +390,100 @@ fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Global-search framework bridge (`ui::search`).
+//
+// The seam above ([`SearchHit`], [`MusicSearchProvider`]) is Music's rich,
+// backend-facing shape. The block below is the thin adapter that plugs it into
+// the *shared* framework every qOS app registers with — [`ui::search`] — so a
+// song / album / artist / playlist appears in the one Ctrl+K palette
+// [`ui::app::App`] drives, ranked on an even footing with every other app's
+// hits, and activating a row routes onto Music's real play/navigate path
+// (see [`crate::MusicApp::open_deep_link`]). This is the reference wiring the
+// [`apps/contacts`] `SearchProvider` pins, applied to Music's four types.
+// ---------------------------------------------------------------------------
+
+/// The palette group-header (kind) label for a Music result type — the plural
+/// of the singular [`SearchableType::display_name`], so a Ctrl+K section reads
+/// "Songs" / "Albums" / "Artists" / "Playlists".
+pub fn kind_label(type_id: &str) -> &'static str {
+    match type_id {
+        SONG_TYPE_ID => "Songs",
+        ALBUM_TYPE_ID => "Albums",
+        ARTIST_TYPE_ID => "Artists",
+        PLAYLIST_TYPE_ID => "Playlists",
+        _ => "Music",
+    }
+}
+
+/// The leading glyph a Music result type carries in the palette. The icon set
+/// has no person/disc glyph, so songs and artists share the note; albums use
+/// the stacked-layers glyph and playlists the list glyph — the kind header
+/// disambiguates either way.
+fn kind_icon(type_id: &str) -> Icon {
+    match type_id {
+        ALBUM_TYPE_ID => Icon::Layers,
+        PLAYLIST_TYPE_ID => Icon::List,
+        _ => Icon::Music,
+    }
+}
+
+impl SearchHit {
+    /// Adapt a Music hit onto the framework's typed [`SearchResult`]. The hit's
+    /// `music://…` deep link becomes the opaque `action_id` the framework
+    /// round-trips back on activation — Music routes it through
+    /// [`crate::MusicApp::open_deep_link`].
+    fn into_search_result(self) -> SearchResult {
+        let mut r = SearchResult::new(kind_label(self.type_id), self.title, self.deep_link)
+            .with_icon(kind_icon(self.type_id));
+        if !self.subtitle.is_empty() {
+            r = r.with_subtitle(self.subtitle);
+        }
+        r
+    }
+}
+
+/// The [`ui::search::SearchProvider`] Music registers into the global Ctrl+K
+/// palette. It contributes the user's **own library** — synced across their
+/// devices — as typed Song/Album/Artist/Playlist rows.
+///
+/// It is deliberately library-scoped and synchronous: a [`SearchProvider`] is
+/// queried on the UI thread, so it must never block on the network. The live
+/// YouTube-Music search (which does real HTTP) stays in Music's own search
+/// view, driven off-thread by the [`crate::stream`] worker. The deep links this
+/// provider emits and the live view emits are the same shape, so a future
+/// shell-level Ctrl+K can register this provider directly and every activation
+/// still lands on the one router.
+///
+/// Holds an owned snapshot of the [`Library`] (cheap to rebuild whenever the
+/// search surface opens), mirroring [`apps/contacts`]' provider. An empty
+/// library contributes zero rows — nothing is fabricated.
+pub struct LibrarySearchProvider {
+    lib: Library,
+}
+
+impl LibrarySearchProvider {
+    /// Snapshot the current library into a provider.
+    pub fn new(lib: &Library) -> Self {
+        Self { lib: lib.clone() }
+    }
+}
+
+impl SearchProvider for LibrarySearchProvider {
+    fn name(&self) -> &str {
+        // Default group label / diagnostic name; individual rows carry their own
+        // per-type kind ("Songs", "Albums", …) so the overlay sections them.
+        "Music"
+    }
+
+    fn search(&self, query: &str) -> Vec<SearchResult> {
+        library_hits(&self.lib, query)
+            .into_iter()
+            .map(SearchHit::into_search_result)
+            .collect()
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -497,5 +594,54 @@ mod tests {
         assert_eq!(artist_subtitle(0), "Artist");
         assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
         assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
+    }
+
+    #[test]
+    fn library_provider_registers_typed_rows_into_the_search_framework() {
+        use ui::search::SearchRegistry;
+        let lib = seed::sample_library();
+
+        // It IS a `ui::search::SearchProvider`: register it into the shared
+        // registry the global Ctrl+K palette drives, alongside every other app.
+        let mut registry = SearchRegistry::new();
+        registry.register(Box::new(LibrarySearchProvider::new(&lib)));
+        assert_eq!(registry.provider_count(), 1);
+
+        // A real library track surfaces as a typed "Songs" row whose opaque
+        // action_id is the play deep link the app routes on activation.
+        let track = lib.tracks.values().next().unwrap().clone();
+        let song = registry
+            .query(&track.title)
+            .into_iter()
+            .find(|r| r.action_id == SearchHit::track_link(&track.id))
+            .expect("the track is findable as a framework SearchResult");
+        assert_eq!(song.kind, "Songs");
+        assert_eq!(song.title, track.title);
+        assert_eq!(song.icon, Some(Icon::Music));
+        assert!(DeepLink::parse(&song.action_id).is_some(), "action_id is a routable deep link");
+
+        // All four types section under their plural kind headers.
+        let album = lib.albums.values().next().unwrap().clone();
+        assert!(registry.query_grouped(&album.title).iter().any(|g| g.kind == "Albums"
+            && g.results.iter().any(|r| r.action_id == SearchHit::album_link(&album.id))));
+
+        let artist = lib.artists.values().next().unwrap().clone();
+        assert!(registry.query_grouped(&artist.name).iter().any(|g| g.kind == "Artists"
+            && g.results.iter().any(|r| r.action_id == SearchHit::artist_link(&artist.id))));
+
+        let pl = lib.playlists.first().unwrap().clone();
+        assert!(registry.query_grouped(&pl.name).iter().any(|g| g.kind == "Playlists"
+            && g.results.iter().any(|r| r.action_id == SearchHit::playlist_link(&pl.id))));
+    }
+
+    #[test]
+    fn library_provider_fabricates_nothing_on_empty_library_or_query() {
+        // An empty (default) library contributes zero rows for any query.
+        let empty = LibrarySearchProvider::new(&Library::default());
+        assert!(empty.search("anything").is_empty());
+        // A seeded library still browses nothing on a blank query (no catalog
+        // dump into the palette).
+        let seeded = LibrarySearchProvider::new(&seed::sample_library());
+        assert!(seeded.search("   ").is_empty());
     }
 }
