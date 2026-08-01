@@ -15847,6 +15847,7 @@ dependencies = [
  "anyhow",
  "ashpd",
  "automerge",
+ "qos-actions",
  "serde",
  "serde_json",
  "serial_test",
