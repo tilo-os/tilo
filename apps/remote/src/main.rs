@@ -55,7 +55,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.remote");
-    let app = ui::App::new(state, remote::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, remote::app_root()).with_autosave(autosave);
+    // Register Remote's actions so the shell's Ctrl+K palette can decode + replay
+    // the same connection actions the on-screen affordances dispatch.
+    remote::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
