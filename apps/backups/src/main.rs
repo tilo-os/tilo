@@ -47,7 +47,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.backups");
-    let app = ui::App::new(state, backups::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, backups::app_root()).with_autosave(autosave);
+    // Register the retention-policy actions so the shell's Ctrl+K palette can
+    // decode + replay the same actions the on-screen +/- affordances dispatch.
+    backups::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
