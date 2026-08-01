@@ -76,18 +76,6 @@ struct RecState {
     started: i64,
 }
 
-/// Sink for the local half of an [action](crate::actions) dispatch. A local,
-/// on-screen affordance mutates the document through the qOS action executor
-/// (which pins each action's actor so the change is content-addressed identical
-/// to a peer's replay and dedupes on merge); the peer then receives it through
-/// ordinary CRDT sync, so this side has nothing extra to replicate and drops the
-/// envelope. The Ctrl+K palette dispatches through the host's transport, which a
-/// collaborative session swaps for a peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
@@ -176,13 +164,10 @@ pub struct CameraApp {
     dirty: bool,
     initialized: bool,
 
-    // Action model: doc heads captured just before an on-screen affordance
-    // dispatched a `qos_actions` action, so the host records exactly one undo
-    // boundary bracketing it (drained via `take_committed_action`). Rising-edge.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The most recent action an affordance dispatched — used to prove the
+    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
+    /// dispatches each action, and remembers the last one so a test can prove a
     /// button and its palette `ActionSpec` build the same `EncodedAction`.
-    last_dispatched: Option<EncodedAction>,
+    actions: ui::ActionHost,
 }
 
 impl Default for CameraApp {
@@ -242,8 +227,7 @@ impl CameraApp {
             regions: Vec::new(),
             dirty: true,
             initialized: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -358,17 +342,8 @@ impl CameraApp {
     /// host records **one** undo boundary bracketing it
     /// ([`ui::widget::Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::CameraAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "camera action dispatch failed");
-        }
+        self.actions
+            .dispatch(doc, crate::actions::CAMERA_ACTION_TYPE, &action);
     }
 
     /// The context Ctrl+K needs to build Camera's resource tree: the gallery
@@ -815,7 +790,7 @@ impl Widget for CameraApp {
     /// its metadata action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -2681,6 +2656,6 @@ impl CameraApp {
 
     /// The `EncodedAction` the most recent affordance dispatched.
     pub(crate) fn test_last_dispatched(&self) -> Option<EncodedAction> {
-        self.last_dispatched.clone()
+        self.actions.last_dispatched().cloned()
     }
 }
