@@ -44,6 +44,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, Widget};
 
+use crate::actions::{ImagerAction, IMAGER_ACTION_TYPE};
 use crate::doc::ImagerDoc;
 use crate::model::{
     fmt_eta, fmt_rate, fmt_size, Action, InstallMode, InstallProfile, JobPhase, Progress, Source,
@@ -148,6 +149,12 @@ pub struct ImagerApp {
     /// it gets caret / selection / clipboard for free. Its value mirrors
     /// `profile.user.password`, which stays the serialized source of truth.
     password: TextInput,
+    /// Framework-owned action dispatch (the only action-dispatch state the app
+    /// holds). Every guided-customization profile edit dispatches its
+    /// [`ImagerAction`] through this host, which brackets the undo boundary and
+    /// applies it through the executor so it records one Ctrl+Z step and replays
+    /// byte-identically on peers. See [`crate::actions`].
+    actions: ui::ActionHost,
 }
 
 impl Default for ImagerApp {
@@ -184,6 +191,7 @@ impl ImagerApp {
                 p.set_plain_chrome(true); // the wizard draws the field box itself
                 p
             },
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -232,6 +240,26 @@ impl ImagerApp {
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
         self.source.as_ref().map(|s| s.installable).unwrap_or(false)
+    }
+
+    /// The label for the customization resource Ctrl+K publishes, or `None` when
+    /// the current source has no profile to configure (a plain ISO, or nothing
+    /// selected) so the palette shows nothing to act on. Used by the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    pub(crate) fn customization_source_label(&self) -> Option<String> {
+        if !self.customizable() {
+            return None;
+        }
+        Some(self.source.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "qOS image".into()))
+    }
+
+    /// The last profile [`EncodedAction`](qos_actions::EncodedAction) an
+    /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
+    /// test.
+    #[doc(hidden)]
+    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     fn confirm_matches(&self) -> bool {
@@ -1414,12 +1442,32 @@ impl ImagerApp {
             }
         }
         if f == Field::Confirm {
+            // The typed device-name confirmation is a transient arming gesture
+            // for the (external) write — presentation, not a document action.
             let conf = self.confirm.clone();
             ImagerDoc::set_confirm(state, &conf);
-        } else {
-            ImagerDoc::set_profile(state, &self.profile);
+        } else if let Some(action) = self.profile_field_action(f) {
+            // A guided-customization edit: dispatch the same absolute-set action
+            // the Ctrl+K field spec exports, applied through the executor.
+            self.actions.dispatch(state, IMAGER_ACTION_TYPE, &action);
         }
         self.dirty = true;
+    }
+
+    /// The absolute-set [`ImagerAction`] for a profile text field, carrying the
+    /// field's freshly-edited value. `None` for [`Field::Confirm`], which is a
+    /// transient wizard input rather than a profile edit. The single source of
+    /// truth shared by the on-screen field and the Ctrl+K field specs.
+    fn profile_field_action(&self, f: Field) -> Option<ImagerAction> {
+        Some(match f {
+            Field::Hostname => ImagerAction::SetHostname { value: self.profile.hostname.clone() },
+            Field::FullName => ImagerAction::SetFullName { value: self.profile.user.full_name.clone() },
+            Field::Username => ImagerAction::SetUsername { value: self.profile.user.username.clone() },
+            Field::Password => ImagerAction::SetPassword { value: self.profile.user.password.clone() },
+            Field::Timezone => ImagerAction::SetTimezone { value: self.profile.timezone.clone() },
+            Field::Keyboard => ImagerAction::SetKeyboard { value: self.profile.keyboard.clone() },
+            Field::Confirm => return None,
+        })
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
@@ -1461,18 +1509,34 @@ impl ImagerApp {
                 self.dirty = true;
             }
             Hit::ToggleAutologin => {
+                // Update the local snapshot for an immediate redraw, then
+                // dispatch the same action the Ctrl+K "autologin" spec exports —
+                // one source of truth, applied through the executor (undo +
+                // replication for free). The next `sync` re-reads it from the doc.
                 self.profile.user.autologin = !self.profile.user.autologin;
-                ImagerDoc::set_profile(state, &self.profile);
+                self.actions.dispatch(
+                    state,
+                    IMAGER_ACTION_TYPE,
+                    &ImagerAction::SetAutologin { on: self.profile.user.autologin },
+                );
                 self.dirty = true;
             }
             Hit::ToggleEncrypt => {
                 self.profile.encrypt = !self.profile.encrypt;
-                ImagerDoc::set_profile(state, &self.profile);
+                self.actions.dispatch(
+                    state,
+                    IMAGER_ACTION_TYPE,
+                    &ImagerAction::SetEncrypt { on: self.profile.encrypt },
+                );
                 self.dirty = true;
             }
             Hit::TogglePersist => {
-                self.profile.mode = if self.profile.mode == InstallMode::Persistent { InstallMode::Live } else { InstallMode::Persistent };
-                ImagerDoc::set_profile(state, &self.profile);
+                self.profile.mode = crate::actions::toggled_install_mode(self.profile.mode);
+                self.actions.dispatch(
+                    state,
+                    IMAGER_ACTION_TYPE,
+                    &ImagerAction::SetInstallMode { mode: self.profile.mode.key().to_string() },
+                );
                 self.dirty = true;
             }
             Hit::ExportConfig => self.export_config(state),
@@ -1679,9 +1743,17 @@ impl Widget for ImagerApp {
                                 let (mut h, mut ft) = (false, None);
                                 self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
                                 // Mirror the edited value back into the profile
-                                // (the serialized source of truth) and the doc.
+                                // (the serialized source of truth) and dispatch
+                                // the SetPassword action so it undoes + replicates
+                                // like every other profile edit.
                                 self.profile.user.password = self.password.value().to_string();
-                                ImagerDoc::set_profile(state, &self.profile);
+                                self.actions.dispatch(
+                                    state,
+                                    IMAGER_ACTION_TYPE,
+                                    &ImagerAction::SetPassword {
+                                        value: self.profile.user.password.clone(),
+                                    },
+                                );
                                 *handled = true;
                                 self.dirty = true;
                             }
@@ -1739,6 +1811,20 @@ impl Widget for ImagerApp {
             }
             _ => {}
         }
+    }
+
+    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`]. Empty unless an installable qOS image is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// The framework host drains the undo boundary an on-screen profile control
+    /// dispatched, so it records exactly one boundary bracketing it — the same
+    /// path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {
@@ -2003,5 +2089,45 @@ mod tests {
         app.write_another(&mut doc);
         assert_eq!(app.step, Step::Source);
         assert_eq!(app.progress.phase, JobPhase::Idle);
+    }
+
+    /// The affordance == `ActionSpec` covenant on the *real* production path: the
+    /// on-screen Customize encryption toggle applies to the document, records
+    /// exactly one undo boundary, and dispatches the byte-identical
+    /// `EncodedAction` the Ctrl+K palette would — one source of truth.
+    #[test]
+    fn encrypt_toggle_dispatches_the_palette_action_and_records_one_undo_boundary() {
+        use qos_actions::ActionInput;
+        let (mut app, mut doc) = seeded_app();
+        // The seeded qOS source is customizable; encryption defaults off.
+        assert!(app.customizable());
+        assert!(!app.profile.encrypt);
+
+        // The action Ctrl+K would dispatch right now: enable encryption.
+        let label = app.customization_source_label().unwrap();
+        let resources = crate::actions::provide_resources(&label, &ImagerDoc::profile(&doc));
+        let spec = resources[0].actions.iter().find(|a| a.id == "encrypt").unwrap();
+        let palette_action = match &spec.input {
+            ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("encrypt is an immediate action"),
+        };
+
+        // Drive the on-screen toggle through the real hit-dispatch handler.
+        app.dispatch_hit(&mut doc, Hit::ToggleEncrypt);
+
+        // It applied to the document...
+        assert!(ImagerDoc::profile(&doc).encrypt, "the toggle enabled encryption in the doc");
+        // ...recorded exactly one undo boundary...
+        assert!(
+            app.take_committed_action().is_some(),
+            "one undo boundary bracketed the toggle"
+        );
+        // ...and dispatched the byte-identical action Ctrl+K would.
+        let dispatched = app.last_dispatched().expect("the toggle dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::IMAGER_ACTION_TYPE);
+        assert_eq!(
+            dispatched, &palette_action,
+            "the toggle and Ctrl+K are one source of truth"
+        );
     }
 }

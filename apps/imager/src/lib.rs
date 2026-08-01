@@ -25,6 +25,7 @@
 //! `--shots` leaves it unset and seeds a scenario so the screenshot is
 //! deterministic offline.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
