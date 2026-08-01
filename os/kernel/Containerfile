@@ -30,15 +30,20 @@
 # .forgejo/workflows/snapshot-rpms.yml picks it up on the next re-snapshot
 # and the frozen repo grows accordingly.  See os/rpms-snapshot.env for the
 # current pin; the workflow passes it as --build-arg RPMS_REF.
+#
+# BASE_REF is the mirrored Fedora bootc base (os/base-snapshot.env), declared
+# here with RPMS_REF because an ARG between two FROMs is scoped to the previous
+# stage rather than global.
+ARG BASE_REF
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 
 # ---- Stage 1: kernel builder ----------------------------------------------
-# SAME base digest as os/Containerfile so the produced modules link against
-# the exact glibc + userspace the OS image ships.  A drift here would show
-# up as "invalid module format" at boot.
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS build
+# SAME base as os/Containerfile — one BASE_REF for both — so the produced
+# modules link against the exact glibc + userspace the OS image ships.  A drift
+# here would show up as "invalid module format" at boot.
+FROM ${BASE_REF} AS build
 
 # Toolchain for a kernel RPM build.  All from the frozen repo.
 #   kernel-devel / kernel-headers  — matched headers so external module
