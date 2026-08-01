@@ -18,21 +18,33 @@
 //! [sandbox.net]
 //! mode          = "off"           # "off" | "on" | "isolated"
 //!
-//! [sandbox.fs]
-//! read          = ["~/Documents", "/usr/share/fonts"]
-//! write         = ["<scope=current>/scratch"]
-//!
 //! [sandbox.services]
 //! collab        = "required@1"     # or "optional@1"
 //! fs            = "optional@1"
 //! ```
 //!
-//! Path placeholders supported in `sandbox.fs.read` / `.write`:
-//! - `~/` — expands to `$HOME`.
-//! - `<scope=current>` — expands to the current process working dir.
-//!   (When the per-cluster scope is finalised by the compositor, this
-//!   placeholder will be resolved against the cluster root instead;
-//!   the launcher's CWD is a reasonable interim stand-in for now.)
+//! ### `[sandbox.fs]` is not part of the vocabulary
+//!
+//! A manifest used to name the paths it wanted, and the launcher bound
+//! them — so the sandbox enforced a policy written by the thing it was
+//! sandboxing. `write = ["~"]`, `write = ["/"]` and
+//! `write = ["~/.local/share/dev.qos.totp"]` were all accepted and all
+//! faithfully bound read-write. Signing did not help: it proves who
+//! wrote the manifest, not that what it asks for is reasonable.
+//!
+//! So the field is gone, and a manifest that still carries one is
+//! refused rather than ignored — see [`enforce_fs_policy`]. Ignoring it
+//! would leave the app running with less access than it expected, which
+//! surfaces as a mysterious bug instead of a policy.
+//!
+//! What replaces it:
+//!
+//! - **Writes** — [`crate::appdir`]. The launcher gives the app one
+//!   directory, per room, and points `HOME`/`XDG_*` at it.
+//! - **Reads** — [`crate::profile`]. One fixed system list, identical for
+//!   every package.
+//! - **Anything else** — [`crate::capabilities`], a grant the user
+//!   consented to. One route, not two.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -307,12 +319,78 @@ fn default_net_mode() -> String {
     "off".to_string()
 }
 
+/// `[sandbox.fs]` — **retired**. Decoded only so that a manifest still
+/// carrying it can be named in a refusal.
+///
+/// Nothing reads these fields to build a sandbox. They exist so
+/// [`enforce_fs_policy`] can tell the user *which* entry in *which*
+/// package is the problem, which a serde "unknown field" error cannot.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Fs {
     #[serde(default)]
     pub read: Vec<String>,
     #[serde(default)]
     pub write: Vec<String>,
+}
+
+/// A manifest asking for filesystem access it is not allowed to ask for.
+///
+/// One variant per field so the message can say what to do instead —
+/// the two cases have different answers, and "declare fewer paths" is
+/// not one of them.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FsPolicyViolation {
+    #[error(
+        "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
+         choose where it writes.\n  \
+         The launcher gives every app one directory — per room, per package — binds it at \
+         {app_dir} and points HOME, XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and \
+         XDG_CACHE_HOME inside it. Remove the `[sandbox.fs]` block; anything the app writes \
+         under those paths already lands there.\n  \
+         Access to a path outside it is a capability the user grants at runtime, not a line \
+         in a manifest."
+    )]
+    Write { package: String, entry: String, app_dir: &'static str },
+    #[error(
+        "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
+         choose what it reads.\n  \
+         Every app gets the same system read profile (loader and C library, fonts, GPU loader \
+         manifests, CA bundle, timezone data). Remove the `[sandbox.fs]` block.\n  \
+         Anything the profile does not cover — a user's documents, /usr/bin, /var/workspace, a \
+         device node — is a capability the user grants at runtime, not a line in a manifest."
+    )]
+    Read { package: String, entry: String },
+}
+
+/// Refuse a manifest that names filesystem paths.
+///
+/// Called at launch (`crate::run`) and at install (`pkg::validate`), on
+/// purpose: an install-time check alone would be bypassed by anything
+/// that hands the launcher a manifest path directly — which is exactly
+/// what `qos-launcher run --manifest` does, and what a package that was
+/// installed before this rule existed still has on disk.
+///
+/// **No first-party exception.** Every manifest in the tree is ours and
+/// every one of them asked for something plausible; that is how the
+/// original hole stayed invisible. A rule with a bypass for the packages
+/// that ship with the OS is a rule about strangers, not a boundary.
+pub fn enforce_fs_policy(manifest: &MinimalManifest) -> Result<(), FsPolicyViolation> {
+    // Writes first: a package asking for `/` is the more alarming of the
+    // two and should be the line the user reads.
+    if let Some(entry) = manifest.sandbox.fs.write.first() {
+        return Err(FsPolicyViolation::Write {
+            package: manifest.package_id.clone(),
+            entry: entry.clone(),
+            app_dir: crate::appdir::SANDBOX_APP_DIR,
+        });
+    }
+    if let Some(entry) = manifest.sandbox.fs.read.first() {
+        return Err(FsPolicyViolation::Read {
+            package: manifest.package_id.clone(),
+            entry: entry.clone(),
+        });
+    }
+    Ok(())
 }
 
 /// Required/optional service version requirement. We treat the version
@@ -384,58 +462,17 @@ pub enum ManifestError {
     Parse(String),
 }
 
-/// Expand `~/` and `<scope=current>` placeholders against the process's
-/// environment. Pure-ish (reads `$HOME` and CWD) — kept here so tests
-/// can run it directly. Unknown placeholders pass through unchanged.
-pub fn expand_path(raw: &str) -> PathBuf {
-    let mut s = raw.to_string();
-    if let Some(rest) = s.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            let mut buf = PathBuf::from(home);
-            buf.push(rest);
-            return buf;
-        }
-    }
-    if let Some(rest) = s.strip_prefix("<scope=current>") {
-        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut buf = cwd;
-        // Allow either "<scope=current>/foo" or "<scope=current>foo".
-        let rel = rest.trim_start_matches('/');
-        buf.push(rel);
-        return buf;
-    }
-    // GUI apps typically need `$XDG_RUNTIME_DIR/wayland-*` bound in.
-    // Expand it (and a small allowlist of similar env vars) so
-    // manifests stay portable across users.
-    for (var, prefix) in [
-        ("XDG_RUNTIME_DIR", "$XDG_RUNTIME_DIR"),
-        ("XDG_CONFIG_HOME", "$XDG_CONFIG_HOME"),
-        ("XDG_DATA_HOME", "$XDG_DATA_HOME"),
-        ("XDG_CACHE_HOME", "$XDG_CACHE_HOME"),
-    ] {
-        if let Some(rest) = s.strip_prefix(prefix) {
-            if let Some(value) = std::env::var_os(var) {
-                let mut buf = PathBuf::from(value);
-                let rel = rest.trim_start_matches('/');
-                if !rel.is_empty() {
-                    buf.push(rel);
-                }
-                return buf;
-            }
-        }
-    }
-    // Last-ditch: replace HOME-style `~` mid-string is not supported.
-    if s.starts_with('~') {
-        // bare "~" with no slash — return $HOME if set.
-        if s.len() == 1 {
-            if let Some(home) = std::env::var_os("HOME") {
-                return PathBuf::from(home);
-            }
-        }
-    }
-    s.shrink_to_fit();
-    PathBuf::from(s)
-}
+// `expand_path` used to live here. It turned a manifest string into a
+// host path — `~/` against `$HOME`, `$XDG_*` against the environment,
+// `<scope=current>` against the launcher's CWD — with no `..` handling,
+// no canonicalisation and no allowlist, and unknown placeholders passed
+// through unchanged. Whatever came out was bound, source and
+// destination, read-write for every `fs.write` entry.
+//
+// It is deleted rather than hardened because there is nothing left to
+// call it: no manifest field feeds a path into the sandbox any more. A
+// hardened expander would still be a mechanism for turning package text
+// into a mount, waiting for the next field that wants one.
 
 #[cfg(test)]
 mod tests {
@@ -657,17 +694,92 @@ bin = "bin/notes"
         assert!(m.sandbox.portals.is_empty());
     }
 
-    #[test]
-    fn expand_path_replaces_home_and_scope() {
-        // SAFETY: tests run in a single thread per-process by default for
-        // env mutation here; the test asserts only on the structure.
-        // Use a value unlikely to collide with the real $HOME.
-        unsafe { std::env::set_var("HOME", "/tmp/qos-launcher-test-home") };
-        let p = expand_path("~/Documents");
-        assert_eq!(p, PathBuf::from("/tmp/qos-launcher-test-home/Documents"));
+    fn manifest_with(block: &str) -> MinimalManifest {
+        let src = format!(
+            "package_id = \"com.example.hostile\"\nversion = \"1\"\n\
+             [entrypoint]\nbin = \"bin/x\"\n{block}"
+        );
+        toml::from_str(&src).expect("a manifest declaring fs paths still decodes")
+    }
 
-        let scope = expand_path("<scope=current>/scratch");
-        let cwd = std::env::current_dir().unwrap();
-        assert_eq!(scope, cwd.join("scratch"));
+    /// The six shapes the original hole made possible. Each is refused,
+    /// and the refusal names the package and the entry — a message that
+    /// says only "invalid manifest" leaves a packager guessing.
+    #[test]
+    fn every_path_a_package_could_name_is_refused() {
+        for entry in [
+            "~",
+            "/",
+            "~/.ssh",
+            "~/../../etc",
+            "~/.local/share/dev.qos.totp",
+            "$XDG_DATA_HOME/dev.qos.totp",
+        ] {
+            let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
+            let err = enforce_fs_policy(&m).expect_err("{entry} must be refused");
+            let text = err.to_string();
+            assert!(
+                text.contains("com.example.hostile") && text.contains(entry),
+                "the refusal must name the package and the entry: {text}"
+            );
+        }
+    }
+
+    /// A read is refused on the same terms. The read profile is not a
+    /// filter a manifest gets to add to — an entry the profile already
+    /// covers is refused too, because the point is that the field is
+    /// gone, not that its contents are checked.
+    #[test]
+    fn a_declared_read_is_refused_whether_or_not_the_profile_covers_it() {
+        for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
+            let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
+            let err = enforce_fs_policy(&m).expect_err("{entry} must be refused");
+            assert!(
+                err.to_string().contains(entry),
+                "the refusal must name the entry: {err}"
+            );
+        }
+    }
+
+    /// A manifest with no `[sandbox.fs]` block is the normal case and
+    /// must stay silent — an empty list is not a declaration.
+    #[test]
+    fn a_manifest_that_names_no_path_passes() {
+        let m = manifest_with("[sandbox.net]\nmode = \"off\"\n");
+        assert!(enforce_fs_policy(&m).is_ok());
+        let empty = manifest_with("[sandbox.fs]\nread = []\nwrite = []\n");
+        assert!(
+            enforce_fs_policy(&empty).is_ok(),
+            "an explicitly empty block declares nothing"
+        );
+    }
+
+    /// Every manifest the OS ships goes through the same check as a
+    /// stranger's. The moment one of ours is exempt, the rule is about
+    /// strangers rather than about apps.
+    #[test]
+    fn no_shipped_manifest_names_a_path() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        let apps = repo.join("apps");
+        let mut checked = 0usize;
+        for entry in std::fs::read_dir(&apps).expect("apps/ is readable") {
+            let path = entry.expect("dir entry").path().join("qos-app.toml");
+            if !path.exists() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("manifest readable");
+            let m: MinimalManifest = toml::from_str(&text)
+                .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+            enforce_fs_policy(&m)
+                .unwrap_or_else(|e| panic!("{} is refused by its own OS: {e}", path.display()));
+            checked += 1;
+        }
+        assert!(
+            checked >= 40,
+            "expected the shipped app fleet, found {checked} manifests"
+        );
     }
 }

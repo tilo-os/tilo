@@ -41,6 +41,26 @@ pub enum ManifestError {
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
     BadPublisherSignature(String),
+    #[error(
+        "package `{package}` declares `sandbox.fs.write = [{entry:?}]`, and an app does not \
+         choose where it writes.\n  \
+         The launcher gives every app one directory — per room, per package — and points HOME, \
+         XDG_DATA_HOME, XDG_CONFIG_HOME, XDG_STATE_HOME and XDG_CACHE_HOME inside it. Remove \
+         the `[sandbox.fs]` block; anything the app writes under those paths already lands \
+         there.\n  \
+         Access to a path outside it is a capability the user grants at runtime, not a line in \
+         a manifest."
+    )]
+    FsWriteDeclared { package: String, entry: String },
+    #[error(
+        "package `{package}` declares `sandbox.fs.read = [{entry:?}]`, and an app does not \
+         choose what it reads.\n  \
+         Every app gets the same system read profile (loader and C library, fonts, GPU loader \
+         manifests, CA bundle, timezone data). Remove the `[sandbox.fs]` block.\n  \
+         Anything the profile does not cover — a user's documents, /usr/bin, /var/workspace, a \
+         device node — is a capability the user grants at runtime, not a line in a manifest."
+    )]
+    FsReadDeclared { package: String, entry: String },
 }
 
 /// Validate the manifest against the schema rules that don't
@@ -50,6 +70,25 @@ pub enum ManifestError {
 /// `component.wasm` file) live in [`crate::pack::pack`] and
 /// [`validate_manifest_with_payload`].
 pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
+    // Filesystem policy first. It is the check most likely to reject a
+    // package a publisher believed was fine, so it should be the line
+    // they read rather than the fourth error after a semver nit.
+    //
+    // Writes before reads: a package asking for `/` is the more alarming
+    // of the two.
+    if let Some(entry) = m.sandbox.fs.write.first() {
+        return Err(ManifestError::FsWriteDeclared {
+            package: m.package.id.clone(),
+            entry: entry.clone(),
+        });
+    }
+    if let Some(entry) = m.sandbox.fs.read.first() {
+        return Err(ManifestError::FsReadDeclared {
+            package: m.package.id.clone(),
+            entry: entry.clone(),
+        });
+    }
+
     Version::parse(&m.package.version)
         .map_err(|e| ManifestError::BadVersion(m.package.version.clone(), e.to_string()))?;
 
