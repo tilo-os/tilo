@@ -15818,6 +15818,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "media",
+ "qos-actions",
  "serde",
  "serde_json",
  "taffy",
