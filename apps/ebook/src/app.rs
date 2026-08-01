@@ -36,6 +36,9 @@ use vello::peniko::{
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use std::time::{Duration, Instant};
+
+use ui::animation::{Animated, Curve};
 use ui::gesture::{DragSelect, Granularity};
 use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -223,6 +226,43 @@ impl Pane {
     /// Screen-y for a flow-y within this pane.
     fn screen_y(&self, ly: f32) -> f64 {
         self.y + (ly - self.win_start) as f64
+    }
+}
+
+/// An in-flight page-turn slide for the paged / two-up modes. The incoming page
+/// eases in from the side it was turned from (`dir` is `+1` for a forward turn,
+/// `-1` for a backward one) while fading up, so a turn reads as motion rather
+/// than an instant jump. Continuous scroll never uses this — it just scrolls.
+#[derive(Clone, Copy)]
+struct PageTurn {
+    anim: Animated<f64>,
+    dir: f64,
+}
+
+impl PageTurn {
+    /// How long a page-turn slide runs.
+    const DURATION: Duration = Duration::from_millis(240);
+    /// Peak horizontal travel of the incoming page, as a fraction of page width.
+    const SLIDE_FRAC: f64 = 0.14;
+
+    fn start(dir: f64) -> Self {
+        Self {
+            anim: Animated::new(0.0, 1.0, Self::DURATION, Curve::EaseOut),
+            dir,
+        }
+    }
+
+    /// The `(horizontal offset px, opacity)` of the incoming page at `now` for a
+    /// page of width `page_w`. Offset decays to `0` and opacity rises to `1` as
+    /// the slide completes.
+    fn visual(&self, now: Instant, page_w: f64) -> (f64, f32) {
+        let p = self.anim.current(now);
+        let offset = self.dir * (1.0 - p) * page_w * Self::SLIDE_FRAC;
+        (offset, (0.35 + 0.65 * p) as f32)
+    }
+
+    fn done(&self, now: Instant) -> bool {
+        self.anim.done(now)
     }
 }
 
@@ -531,6 +571,22 @@ pub struct BooksApp {
     /// After a backward chapter roll in continuous mode, land at the foot of the
     /// new chapter once it has been laid out (mirrors `pending_last_page`).
     pending_scroll_end: bool,
+    /// An in-flight page-turn slide (paged / two-up only), or `None` when the
+    /// page is settled. Drives the eased incoming-page reveal in `draw` and keeps
+    /// the event loop pumping frames via `needs_animation_frame`.
+    page_turn: Option<PageTurn>,
+
+    // --- draggable annotation markers -------------------------------------
+    /// Per-frame grab handles for each highlight group's margin marker:
+    /// `(hit_rect, group)`. Rebuilt every `draw` (like `sel_runs`) so a press can
+    /// begin a drag or, on a plain tap, open the highlight's comments.
+    hi_markers: Vec<(Rect, Uuid)>,
+    /// An in-flight margin-marker drag re-anchoring a highlight to another
+    /// paragraph, and the group it moves. The shared `ui::MarkerDrag` owns the
+    /// grab offset + moved-threshold; this reader interprets the drop position as
+    /// a `DocPos` and re-anchors via the annotation action model.
+    marker_drag: Option<ui::MarkerDrag>,
+    marker_group: Option<Uuid>,
 
     // --- caches pulled from the CRDT (refreshed in sync / after events) ----
     settings: Settings,
@@ -675,6 +731,10 @@ impl BooksApp {
             scroll_y: 0.0,
             flow_extent: (0.0, 0.0),
             pending_scroll_end: false,
+            page_turn: None,
+            hi_markers: Vec::new(),
+            marker_drag: None,
+            marker_group: None,
             settings: Settings::default(),
             fonts: default_fonts(),
             default_font_id: String::new(),
@@ -1257,6 +1317,7 @@ impl BooksApp {
                     self.scroll_continuous(self.flow_extent.1 * 0.9);
                     return;
                 }
+                let before = (self.chapter, self.page);
                 let stride = self.settings.mode.page_stride();
                 let pc = self.cur_page_count.max(1);
                 if self.page + stride < pc {
@@ -1267,6 +1328,10 @@ impl BooksApp {
                     self.selected_block = None;
                     self.layout = None;
                 }
+                if (self.chapter, self.page) != before {
+                    // The new page eases in from the right — a forward turn.
+                    self.page_turn = Some(PageTurn::start(1.0));
+                }
             }
             Action::PrevPage => {
                 self.comment_group = None;
@@ -1274,6 +1339,7 @@ impl BooksApp {
                     self.scroll_continuous(-self.flow_extent.1 * 0.9);
                     return;
                 }
+                let before = (self.chapter, self.page);
                 let stride = self.settings.mode.page_stride();
                 if self.page >= stride {
                     self.page -= stride;
@@ -1285,6 +1351,10 @@ impl BooksApp {
                     self.selected_block = None;
                     self.pending_last_page = true;
                     self.layout = None;
+                }
+                if (self.chapter, self.page) != before {
+                    // The new page eases in from the left — a backward turn.
+                    self.page_turn = Some(PageTurn::start(-1.0));
                 }
             }
             Action::SetMode(mode) => {
@@ -1890,7 +1960,13 @@ impl BooksApp {
     /// signature, and whether the body is monospace.
     fn body_font(&self) -> (FontChoice, f32, u64, bool) {
         let f = self.active_font();
-        let choice = font_choice(&f.kind);
+        let choice = match font_choice(&f.kind) {
+            // A named face that isn't installed would fall through to cosmic-text's
+            // default *sans* — the wrong reading face for a book. Substitute the
+            // generic serif, which fontconfig always resolves to a real serif.
+            FontChoice::Named(n) if !family_is_installed(&n) => FontChoice::Serif,
+            other => other,
+        };
         let mono = f.kind.is_mono();
         (choice, f.size_mult, font_sig(&f), mono)
     }
@@ -2082,6 +2158,57 @@ impl BooksApp {
                     && p.ch < a.end
             })
             .map(|a| a.group)
+    }
+
+    /// The highlight-group margin marker under `p`, if any, with its grab origin
+    /// (the marker's top-left). Topmost recorded wins. Rebuilt each frame in
+    /// `draw_pane`.
+    fn marker_at(&self, p: Point) -> Option<(Uuid, (f64, f64))> {
+        self.hi_markers
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(p))
+            .map(|(r, g)| (*g, (r.x0, r.y0)))
+    }
+
+    /// Re-anchor a highlight group to the paragraph under `drop`, preserving the
+    /// mark's length (clamped to the target paragraph) and its comments. Returns
+    /// whether it moved. Only a single-block highlight re-anchors — a multi-block
+    /// one has no single paragraph to land on, so its marker opens comments
+    /// instead. The move goes through the annotation action model
+    /// ([`crate::actions::move_annotation_action`]) so it replays on peers and
+    /// records one undo boundary, exactly like every other annotation edit.
+    fn reanchor_highlight(&mut self, group: Uuid, drop: Point, doc: &mut AutoCommit) -> bool {
+        let Some(target) = self.hit_doc_pos(drop) else {
+            return false;
+        };
+        let pieces: Vec<Annotation> = self
+            .annotations
+            .iter()
+            .filter(|a| a.group == group && a.kind == AnnoKind::Highlight)
+            .cloned()
+            .collect();
+        // Re-anchoring collapses onto one paragraph, so only a single-piece
+        // highlight moves cleanly.
+        let [piece] = pieces.as_slice() else {
+            return false;
+        };
+        let Some(layout) = self.layout.as_ref() else {
+            return false;
+        };
+        let Some(tb) = layout.blocks.iter().find(|b| b.index == target.block) else {
+            return false;
+        };
+        if tb.char_len == 0 || target.block == piece.block {
+            return false;
+        }
+        let span = (piece.end.saturating_sub(piece.start)).clamp(1, tb.char_len);
+        let excerpt: String = tb.text.chars().take(span.min(120)).collect();
+        self.perform_action(
+            doc,
+            crate::actions::move_annotation_action(piece.id, self.chapter, tb.index, 0, span, &excerpt),
+        );
+        true
     }
 
     /// A highlight group the current text selection overlaps, if any — powers
@@ -2678,6 +2805,15 @@ impl Widget for BooksApp {
                 if p != self.cursor {
                     self.cursor = p;
                     self.dirty = true; // hover feedback
+                    // Margin-marker drag: track the pointer so a release past the
+                    // threshold re-anchors the highlight (vs a plain tap → comments).
+                    if self.mouse_down {
+                        if let Some(md) = self.marker_drag.as_mut() {
+                            md.update((p.x, p.y));
+                            *handled = true;
+                            return;
+                        }
+                    }
                     // Colour-picker drag: steer the SV square / hue strip.
                     if self.mouse_down && self.pick_drag.is_some() {
                         self.apply_pick_drag(p, doc);
@@ -2766,6 +2902,21 @@ impl Widget for BooksApp {
                     }
                 }
 
+                // A press on a highlight's margin marker begins a re-anchor drag
+                // (draggable annotation markers), taking priority over text
+                // selection. A press that doesn't move opens the highlight's
+                // comments on release instead; a drag re-anchors it.
+                if self.view == View::Reader && top.is_none() {
+                    if let Some((group, origin)) = self.marker_at(self.cursor) {
+                        self.marker_drag =
+                            Some(ui::MarkerDrag::begin(group.to_string(), (self.cursor.x, self.cursor.y), origin));
+                        self.marker_group = Some(group);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+
                 // A press on page text (nothing else on top) runs through the
                 // shared selection-gesture core: it laddders single → double
                 // (word) → triple and reports the granularity + whether Shift is
@@ -2837,6 +2988,23 @@ impl Widget for BooksApp {
                 ..
             } => {
                 self.mouse_down = false;
+                // A margin-marker release resolves the drag: a real move re-anchors
+                // the highlight to the paragraph under the pointer; a plain tap
+                // opens its comment overlay. Either way it owns this release.
+                if let Some(md) = self.marker_drag.take() {
+                    let group = self.marker_group.take();
+                    if let Some(group) = group {
+                        if md.moved() {
+                            self.reanchor_highlight(group, self.cursor, doc);
+                        } else {
+                            self.dispatch(Action::OpenComments(group), doc);
+                        }
+                    }
+                    self.refresh_from_doc(doc);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 self.drag_select.release();
                 let was_drag = self.dragging_sel;
                 if self.pick_drag.take().is_some() {
@@ -2926,8 +3094,10 @@ impl Widget for BooksApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while either rail flap is
-        // mid-slide so the overlay reveal + scrim fade are smooth.
+        // mid-slide (so the overlay reveal + scrim fade are smooth) or a page
+        // turn is easing the incoming page into place.
         self.flaps_animating()
+            || self.page_turn.map_or(false, |pt| !pt.done(Instant::now()))
     }
 
     fn mark_drawn(&mut self) {
@@ -4265,6 +4435,7 @@ impl BooksApp {
         let chapter = self.chapter;
         self.reader_body = (body_y0, body_y1);
         self.sel_runs.clear();
+        self.hi_markers.clear();
         self.hi_bands.clear();
         self.page_first_doc = None;
         self.page_last_doc = None;
@@ -4274,6 +4445,35 @@ impl BooksApp {
         let mut sel_anchor: Option<(f64, f64)> = None;
         // On-page bounds of the highlight whose comment overlay is open.
         let mut comment_box: Option<(f64, f64, f64, f64)> = None;
+
+        // Page-turn slide: while a forward/backward turn eases in, the whole page
+        // content offsets in from the turned-from side and fades up, clipped to
+        // the paper interior so it never bleeds into the running header or chrome.
+        // A settled turn clears itself, so the steady state is byte-for-byte the
+        // un-animated draw. Continuous scroll never turns, so it is untouched.
+        let now = Instant::now();
+        let turning = match self.page_turn {
+            Some(pt) if !pt.done(now) && !mode.is_continuous() => true,
+            Some(_) => {
+                self.page_turn = None;
+                false
+            }
+            None => false,
+        };
+        let (turn_dx, turn_alpha) = match (turning, self.page_turn) {
+            (true, Some(pt)) => pt.visual(now, paper_w),
+            _ => (0.0, 1.0),
+        };
+        let content_t = if turn_dx != 0.0 { t * Affine::translate((turn_dx, 0.0)) } else { t };
+        if turning {
+            let clip = Rect::new(
+                paper_x + 1.0,
+                content_y - 3.0,
+                paper_x + paper_w - 1.0,
+                content_y + content_h as f64 + 3.0,
+            );
+            scene.push_layer(Fill::NonZero, BlendMode::default(), turn_alpha, t, &RoundedRect::from_rect(clip, 6.0));
+        }
         for pane in &panes {
             if pane.partial {
                 // Continuous scroll shows partial lines at the edges — clip them
@@ -4284,10 +4484,10 @@ impl BooksApp {
                     pane.x + pane.w as f64 + 8.0,
                     content_y + content_h as f64 + 2.0,
                 );
-                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &RoundedRect::from_rect(clip, 2.0));
+                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, content_t, &RoundedRect::from_rect(clip, 2.0));
             }
             let (a, cb) = self.draw_pane(
-                scene, t, tr, &layout, &annos, &palette, &base_family, base_mono, chapter, sel_ord, comment_group, pane, theme,
+                scene, content_t, tr, &layout, &annos, &palette, &base_family, base_mono, chapter, sel_ord, comment_group, pane, theme,
             );
             if pane.partial {
                 scene.pop_layer();
@@ -4301,6 +4501,9 @@ impl BooksApp {
                     None => cb,
                 });
             }
+        }
+        if turning {
+            scene.pop_layer();
         }
         self.comment_anchor = comment_box;
         // A drag that auto-advanced a page extends the head to this page's edge.
@@ -4417,6 +4620,9 @@ impl BooksApp {
             .iter()
             .filter(|a| a.chapter == chapter && a.kind == AnnoKind::Highlight && a.start < a.end)
             .collect();
+        // Topmost band `(y, colour)` per highlight group on this column, for the
+        // draggable margin markers drawn after the bands.
+        let mut group_top: HashMap<Uuid, (f64, HiColor)> = HashMap::new();
         for b in &layout.blocks {
             if matches!(b.kind, LayoutKind::Separator) {
                 continue;
@@ -4483,6 +4689,14 @@ impl BooksApp {
                         let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
                         paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
                         self.hi_bands.push(band);
+                        group_top
+                            .entry(a.group)
+                            .and_modify(|e| {
+                                if band.y0 < e.0 {
+                                    *e = (band.y0, a.color);
+                                }
+                            })
+                            .or_insert((band.y0, a.color));
                         if comment_group == Some(a.group) {
                             comment_box = Some(match comment_box {
                                 Some((x0, y0, x1, y1)) => (x0.min(band.x0), y0.min(band.y0), x1.max(band.x1), y1.max(band.y1)),
@@ -4499,6 +4713,24 @@ impl BooksApp {
                     }
                 }
             }
+        }
+
+        // ---- draggable highlight markers (left-margin grab handles) -----
+        // One grip per highlight group in this column, at the top of its first
+        // band. A press on it begins a drag that re-anchors the highlight to the
+        // paragraph it is dropped on (through the annotation action model); a
+        // plain tap opens the highlight's comments. Recorded in `hi_markers` so
+        // the press handler can hit-test it ahead of a text selection.
+        for (group, (gy, color)) in &group_top {
+            let mx0 = content_x - 15.0;
+            let handle = Rect::new(mx0, *gy, mx0 + 7.0, *gy + 22.0);
+            let hovered =
+                self.marker_group == Some(*group) || handle.inflate(5.0, 5.0).contains(self.cursor);
+            paint::fill_round(scene, t, handle, 3.5, ReaderPalette::highlight_swatch(*color));
+            if hovered {
+                paint::stroke_round(scene, t, handle.inflate(2.0, 2.0), 4.5, palette.ink_dim, 1.4);
+            }
+            self.hi_markers.push((handle.inflate(6.0, 5.0), *group));
         }
 
         // ---- glyphs + decorations (on top of bands) ---------------------
@@ -6225,6 +6457,24 @@ fn run_sub_x(x0: f64, w: f64, cs: usize, cl: usize, lo: usize, hi: usize) -> (f6
     (at(lo), at(hi))
 }
 
+/// The set of installed font-family names, enumerated once per process.
+///
+/// A book renders best in serif, so a *named* face the reader picked (or that a
+/// stale setting still points at) which is **not installed** must not silently
+/// fall through to cosmic-text's default proportional sans face — it degrades to
+/// a generic serif instead (see [`BooksApp::body_font`]). The lookup is cached
+/// because building a `FontSystem` to enumerate faces is not free.
+fn installed_families() -> &'static std::collections::HashSet<String> {
+    use std::sync::OnceLock;
+    static FAMS: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    FAMS.get_or_init(|| TextRenderer::new().system_families().into_iter().collect())
+}
+
+/// Whether `name` names a family the text system can actually shape.
+fn family_is_installed(name: &str) -> bool {
+    installed_families().contains(name)
+}
+
 /// A stable signature of a font's layout-affecting attributes (family + size
 /// multiplier) for the layout cache key.
 fn font_sig(f: &FontEntry) -> u64 {
@@ -6657,6 +6907,47 @@ mod interaction_tests {
         assert_eq!(BooksDoc::read_settings(&doc).font_id, "serif", "serif selection persisted");
     }
 
+    /// A *named* reading face that is not installed must not silently fall
+    /// through to cosmic-text's default sans — a book reads in serif, so an
+    /// absent named face degrades to the generic serif (which fontconfig always
+    /// resolves to a real serif). An installed family is honoured verbatim, so
+    /// the substitution only fires when the face is genuinely missing.
+    #[test]
+    fn absent_named_font_falls_back_to_generic_serif() {
+        use crate::model::{FontEntry, FontKind};
+        let mut app = app_with_sample();
+        app.fonts.push(FontEntry::new(
+            "ghost",
+            FontKind::Named("Nonexistent Phantom Face 9Z".into()),
+            "Ghost",
+            1.0,
+            true,
+        ));
+        app.settings.font_id = "ghost".into();
+        let (fam, _, _, _) = app.body_font();
+        assert_eq!(
+            fam,
+            ui::text_render::FontChoice::Serif,
+            "an absent named face degrades to a real serif, not the default sans",
+        );
+
+        // A genuinely installed family is used as-is.
+        let real = TextRenderer::new()
+            .system_families()
+            .into_iter()
+            .next()
+            .expect("the text system enumerates at least one installed family");
+        app.fonts
+            .push(FontEntry::new("real", FontKind::Named(real.clone()), "Real", 1.0, true));
+        app.settings.font_id = "real".into();
+        let (fam2, _, _, _) = app.body_font();
+        assert_eq!(
+            fam2,
+            ui::text_render::FontChoice::Named(real),
+            "an installed named family is honoured verbatim (no gratuitous substitution)",
+        );
+    }
+
     #[test]
     fn disabling_a_scheme_hides_it_from_quick_settings() {
         let mut app = app_with_sample();
@@ -7019,6 +7310,161 @@ mod interaction_tests {
         } else {
             assert_eq!(app.chapter, c0 + 1, "or rolls to the next chapter");
         }
+    }
+
+    /// A paged turn eases the incoming page in (a slide + fade) instead of
+    /// snapping: the turn schedules animation frames and the incoming page starts
+    /// offset off its resting x, decaying toward zero. Continuous scroll never
+    /// animates a page turn — it just scrolls.
+    #[test]
+    fn turning_a_page_animates_an_eased_slide() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_eq!(app.settings.mode, ReadMode::Paged, "paged is the default mode");
+        assert!(!app.needs_animation_frame(), "a settled reader schedules no animation frames");
+        assert!(app.cur_page_count >= 2, "the sample chapter paginates into several pages");
+
+        // A forward turn (pages to spare) advances and starts the slide.
+        let (c0, p0) = (app.chapter, app.page);
+        app.dispatch(Action::NextPage, &mut doc);
+        assert_ne!((app.chapter, app.page), (c0, p0), "the page advanced");
+        assert!(app.needs_animation_frame(), "the turn schedules animation frames");
+        let pt = app.page_turn.expect("a page-turn slide is in flight");
+        let (dx, alpha) = pt.visual(std::time::Instant::now(), 500.0);
+        assert!(dx > 0.0, "a forward turn slides the incoming page in from the right: {dx}");
+        assert!(alpha < 1.0, "the incoming page fades up as it arrives: {alpha}");
+
+        // Continuous scroll scrolls instead of turning, so no slide is scheduled.
+        app.dispatch(Action::SetMode(ReadMode::Continuous), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 700.0); // settles + clears the prior turn
+        assert!(app.page_turn.is_none(), "the paged turn cleared after settling");
+        app.dispatch(Action::NextPage, &mut doc);
+        assert!(app.page_turn.is_none(), "continuous mode never starts a page-turn slide");
+    }
+
+    /// A highlight's margin marker is a draggable handle: grabbing it and dropping
+    /// it on another paragraph re-anchors the highlight there through the
+    /// annotation action model (one row moves, its comments are untouched). A
+    /// plain tap on the same marker opens the highlight's comments.
+    #[test]
+    fn dragging_a_highlight_marker_reanchors_it_and_keeps_its_comments() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+
+        // Highlight a range within the first paragraph (single block → movable).
+        let r0 = app.sel_runs[0];
+        let end_run = app.sel_runs.iter().filter(|r| r.block == r0.block).last().cloned().unwrap();
+        ptr_move(&mut app, &mut doc, Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0));
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, Point::new((end_run.x0 + end_run.x1) / 2.0, (end_run.y0 + end_run.y1) / 2.0));
+        ptr_up(&mut app, &mut doc);
+        app.dispatch(Action::SetColor(HiColor::Green), &mut doc);
+        app.refresh_from_doc(&doc);
+        let hl = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("a highlight now exists");
+        let group = hl.group;
+        let src_block = hl.block;
+
+        // Attach a comment so the re-anchor can be shown not to disturb it.
+        let comment = Annotation {
+            id: uuid::Uuid::new_v4(),
+            doc_id: app.book_id(),
+            kind: AnnoKind::Note,
+            chapter: 0,
+            block: src_block,
+            start: hl.start,
+            end: hl.end,
+            excerpt: "x".into(),
+            note: "keep me".into(),
+            color: HiColor::Green,
+            created: 5,
+            group,
+        };
+        BooksDoc::upsert_annotation(&mut doc, &comment);
+        app.refresh_from_doc(&doc);
+
+        // A frame records the group's draggable margin marker.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let marker_rect = app
+            .hi_markers
+            .iter()
+            .find(|(_, g)| *g == group)
+            .map(|(r, _)| *r)
+            .expect("the highlight has a draggable margin marker");
+
+        // A target paragraph in a different block.
+        let target = app
+            .sel_runs
+            .iter()
+            .find(|r| r.block != src_block)
+            .cloned()
+            .expect("another paragraph is visible on the page");
+        let target_block = target.block;
+        let target_pt = Point::new((target.x0 + target.x1) / 2.0, (target.y0 + target.y1) / 2.0);
+
+        // Grab the marker and drag it onto the target paragraph.
+        ptr_move(&mut app, &mut doc, marker_rect.center());
+        ptr_down(&mut app, &mut doc);
+        assert!(app.marker_drag.is_some(), "pressing the marker began a re-anchor drag");
+        ptr_move(&mut app, &mut doc, target_pt);
+        ptr_up(&mut app, &mut doc);
+        app.refresh_from_doc(&doc);
+
+        // The highlight re-anchored to the dropped paragraph — the SAME row moved
+        // (its id is preserved, proving it went through `MoveAnnotation`, not a
+        // delete + re-create).
+        let moved = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight && a.group == group)
+            .expect("the highlight still exists");
+        assert_eq!(moved.id, hl.id, "the same highlight row moved (not recreated)");
+        assert_eq!(moved.block, target_block, "the highlight re-anchored to the dropped paragraph");
+        assert_ne!(moved.block, src_block, "it actually moved off its origin");
+        // Its comment survived the move.
+        assert!(
+            BooksDoc::list_annotations(&doc)
+                .into_iter()
+                .any(|a| a.kind == AnnoKind::Note && a.group == group && a.note == "keep me"),
+            "the highlight's comment survived the re-anchor",
+        );
+    }
+
+    /// A plain tap on a highlight's margin marker (no drag) opens its comments,
+    /// so the marker doubles as the comment affordance.
+    #[test]
+    fn tapping_a_highlight_marker_opens_its_comments() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let r0 = app.sel_runs[0];
+        let end_run = app.sel_runs.iter().filter(|r| r.block == r0.block).last().cloned().unwrap();
+        ptr_move(&mut app, &mut doc, Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0));
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, Point::new((end_run.x0 + end_run.x1) / 2.0, (end_run.y0 + end_run.y1) / 2.0));
+        ptr_up(&mut app, &mut doc);
+        app.dispatch(Action::SetColor(HiColor::Green), &mut doc);
+        app.refresh_from_doc(&doc);
+        let group = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("a highlight")
+            .group;
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let marker = app
+            .hi_markers
+            .iter()
+            .find(|(_, g)| *g == group)
+            .map(|(r, _)| r.center())
+            .expect("the highlight has a marker");
+        // Press + release without moving.
+        ptr_move(&mut app, &mut doc, marker);
+        ptr_down(&mut app, &mut doc);
+        ptr_up(&mut app, &mut doc);
+        assert_eq!(app.comment_group, Some(group), "a tap on the marker opened the highlight's comments");
     }
 
     #[test]
