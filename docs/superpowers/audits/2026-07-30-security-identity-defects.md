@@ -185,12 +185,16 @@ Observed twice:
 - Repinned 2026-07-30 to `sha256:c466de53…`; `snapshot-rpms` succeeded with it (run 662). By
   2026-08-01 that one-day-old digest was also gone (run 726), confirmed independently with
   `skopeo inspect`.
+- Meanwhile `main` carried a third digest, `sha256:a0fc5a3b…`, and every `build-image` run against
+  it on 2026-08-01 failed the same way (runs 722, 724, 727, 730, 733, 736, 738). The OS image had
+  not been buildable from `main` all morning, and nothing about it was specific to any of those
+  commits.
 
 `docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
 `os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
 evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
 integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
-`--build-arg BASE=<whatever-resolves-today>` away from becoming an unpinned build under deadline
+"just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
 **Fix direction:** mirror the base into `code.sandbox.example/qos/fedora-bootc` and pin against the
