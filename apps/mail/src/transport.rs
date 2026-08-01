@@ -203,6 +203,7 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         read: false,
         starred: false,
         folder,
+        labels: Vec::new(),
     })
 }
 
