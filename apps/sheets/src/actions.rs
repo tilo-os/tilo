@@ -61,6 +61,25 @@ pub const SHEETS_ACTION_TYPE: &str = "sheets.action";
 /// deterministic.
 const APPLY_CURRENCY: Currency = Currency::USD;
 
+/// One cell's write within a batched [`SheetsAction::SetCells`]: its raw
+/// value/formula and, when `fmt` is `Some`, the format to set alongside it. An
+/// empty `raw` clears the cell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CellWrite {
+    pub col: u32,
+    pub row: u32,
+    pub raw: String,
+    pub fmt: Option<String>,
+}
+
+/// One cell's format within a batched [`SheetsAction::SetFormats`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FormatWrite {
+    pub col: u32,
+    pub row: u32,
+    pub fmt: String,
+}
+
 /// Every collaborative operation Sheets exports on the shared workbook.
 ///
 /// Determinism contract: coordinates and values are carried in the payload;
@@ -81,14 +100,21 @@ pub enum SheetsAction {
         fmt: Option<String>,
     },
     /// Set a cell's display format only (the value is untouched). `"general"`
-    /// clears the format. Range formatting dispatches one of these per cell
-    /// within a single event, so it is one undo boundary.
+    /// clears the format.
     SetFormat {
         sheet: usize,
         col: u32,
         row: u32,
         fmt: String,
     },
+    /// Write a batch of cells in one change — a paste, a fill-down/right, or an
+    /// AutoSum totals row. One action per bulk operation keeps it a single undo
+    /// boundary, a single actor-pinned change, and a byte-identical replay,
+    /// rather than a change per cell.
+    SetCells { sheet: usize, cells: Vec<CellWrite> },
+    /// Set the format of a batch of cells in one change — range formatting from
+    /// the Format menu or the palette. One undo boundary for the whole range.
+    SetFormats { sheet: usize, cells: Vec<FormatWrite> },
     /// Append a new blank sheet named `name`.
     AddSheet { name: String },
     /// Insert a new blank sheet named `name` at index `at` (clamped to the end).
@@ -149,6 +175,21 @@ impl Action for SheetsAction {
                 fmt,
             } => {
                 SheetsDoc::set_cell_format(doc, *sheet, (*col, *row), CellFormat::from_str(fmt));
+            }
+            SheetsAction::SetCells { sheet, cells } => {
+                // Applied in the payload's given order — the builder emits cells
+                // in a stable order, so replay reproduces the identical change.
+                for w in cells {
+                    SheetsDoc::set_cell_raw(doc, *sheet, (w.col, w.row), &w.raw);
+                    if let Some(f) = &w.fmt {
+                        SheetsDoc::set_cell_format(doc, *sheet, (w.col, w.row), CellFormat::from_str(f));
+                    }
+                }
+            }
+            SheetsAction::SetFormats { sheet, cells } => {
+                for w in cells {
+                    SheetsDoc::set_cell_format(doc, *sheet, (w.col, w.row), CellFormat::from_str(&w.fmt));
+                }
             }
             SheetsAction::AddSheet { name } => {
                 SheetsDoc::add_sheet(doc, name);
@@ -307,6 +348,44 @@ pub fn set_format_action(sheet: usize, addr: Addr, fmt: CellFormat) -> SheetsAct
         col: addr.0,
         row: addr.1,
         fmt: fmt.as_str(),
+    }
+}
+
+/// Write a batch of cells (paste / fill / AutoSum totals) in one change. Each
+/// entry is `(addr, raw, optional format)`; an empty `raw` clears the cell.
+pub fn set_cells_action(
+    sheet: usize,
+    cells: impl IntoIterator<Item = (Addr, String, Option<CellFormat>)>,
+) -> SheetsAction {
+    SheetsAction::SetCells {
+        sheet,
+        cells: cells
+            .into_iter()
+            .map(|(addr, raw, fmt)| CellWrite {
+                col: addr.0,
+                row: addr.1,
+                raw,
+                fmt: fmt.map(|f| f.as_str()),
+            })
+            .collect(),
+    }
+}
+
+/// Set the format of a batch of cells (range formatting) in one change.
+pub fn set_formats_action(
+    sheet: usize,
+    cells: impl IntoIterator<Item = (Addr, CellFormat)>,
+) -> SheetsAction {
+    SheetsAction::SetFormats {
+        sheet,
+        cells: cells
+            .into_iter()
+            .map(|(addr, fmt)| FormatWrite {
+                col: addr.0,
+                row: addr.1,
+                fmt: fmt.as_str(),
+            })
+            .collect(),
     }
 }
 
@@ -666,6 +745,35 @@ mod tests {
 
         assert_eq!(a.get_heads(), b.get_heads(), "restructure replayed identically");
         assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 1)), "Rent");
+    }
+
+    /// A batched multi-cell write (a paste / fill) is one change and replays
+    /// byte-identically on a peer — the whole batch, one actor, equal heads.
+    #[test]
+    fn batched_set_cells_replays_byte_identical() {
+        let mut a = seeded();
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+
+        let action = set_cells_action(
+            0,
+            vec![
+                ((0, 5), "=A1+1".to_string(), None),
+                ((1, 5), "42".to_string(), Some(CellFormat::Number)),
+                ((2, 5), "note".to_string(), Some(CellFormat::Text)),
+            ],
+        );
+        let encoded = encode(&action);
+        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
+        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+
+        assert_eq!(a.get_heads(), b.get_heads(), "the whole batch replayed identically");
+        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (0, 5)), "=A1+1");
+        assert_eq!(SheetsDoc::cell_raw(&mut b, 0, (1, 5)), "42");
+        let snap = SheetsDoc::snapshot_sheet(&mut b, 0, Currency::USD);
+        assert_eq!(snap.fmt.get(&(1, 5)).copied(), Some(CellFormat::Number));
     }
 
     /// Single source of truth: the palette's delete / rename / insert specs

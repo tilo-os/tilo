@@ -341,11 +341,6 @@ impl SheetsApp {
     /// does. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: SheetsAction) {
         self.actions.dispatch(doc, actions::SHEETS_ACTION_TYPE, &action);
-        // Reconcile the observed document's patch log after the executor's
-        // actor-pinned commit, so a later write in the same event (a bulk
-        // paste/fill/sum dispatches many actions before the next read) doesn't
-        // trip Automerge's actor migration.
-        let _ = doc.get_heads();
     }
 
     /// The presentation context the Ctrl+K resource tree is built from: the open
@@ -565,36 +560,35 @@ impl SheetsApp {
     }
 
     fn apply_cmds(&mut self, doc: &mut AutoCommit, cmds: Vec<GridCmd>) {
-        let mut mutated = false;
         let cur = self.default_currency();
         let sheet = self.active_sheet;
+        // Collect the event's cell writes into one batched action, so undo, peer
+        // replay, and the Ctrl+K palette all share one path and a burst of edits
+        // is a single change. Smart type inference runs here (authoring-side) and
+        // the normalized raw + inferred format are baked in, keeping
+        // `Action::apply` a pure write.
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for cmd in cmds {
             match cmd {
                 GridCmd::SetCell { addr, raw } => {
-                    // Every cell write is a SheetsAction, so undo, peer replay,
-                    // and the Ctrl+K palette all share one path. Smart type
-                    // inference runs here (authoring-side) and the normalized raw
-                    // + inferred format are baked into the action, keeping
-                    // `Action::apply` a pure write.
-                    let action = if raw.is_empty() {
-                        actions::set_cell_action(sheet, addr, "", None)
+                    if raw.is_empty() {
+                        writes.push((addr, String::new(), None));
                     } else {
                         let inferred = infer_entry(&raw, cur);
                         // Adopt the inferred format only when it is non-General;
                         // otherwise leave any user-chosen format the entry fits.
                         let fmt = (inferred.format != CellFormat::General).then_some(inferred.format);
-                        actions::set_cell_action(sheet, addr, &inferred.raw, fmt)
-                    };
-                    self.perform_action(doc, action);
-                    mutated = true;
+                        writes.push((addr, inferred.raw, fmt));
+                    }
                 }
                 GridCmd::Commit => {
-                    // The undo boundary is bracketed by the action host, so a
-                    // burst of cell edits in one event is already one checkpoint.
+                    // The undo boundary is bracketed by the action host, so the
+                    // whole batch is one checkpoint.
                 }
             }
         }
-        if mutated {
+        if !writes.is_empty() {
+            self.perform_action(doc, actions::set_cells_action(sheet, writes));
             self.reload(doc);
         }
     }
@@ -604,8 +598,10 @@ impl SheetsApp {
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
         let sheet = self.active_sheet;
-        for addr in self.grid.selected_cells() {
-            self.perform_action(doc, actions::set_format_action(sheet, addr, fmt));
+        let cells: Vec<(Addr, CellFormat)> =
+            self.grid.selected_cells().into_iter().map(|a| (a, fmt)).collect();
+        if !cells.is_empty() {
+            self.perform_action(doc, actions::set_formats_action(sheet, cells));
         }
         self.reload(doc);
         self.status = format!(
@@ -617,8 +613,14 @@ impl SheetsApp {
 
     fn clear_format(&mut self, doc: &mut AutoCommit) {
         let sheet = self.active_sheet;
-        for addr in self.grid.selected_cells() {
-            self.perform_action(doc, actions::set_format_action(sheet, addr, CellFormat::General));
+        let cells: Vec<(Addr, CellFormat)> = self
+            .grid
+            .selected_cells()
+            .into_iter()
+            .map(|a| (a, CellFormat::General))
+            .collect();
+        if !cells.is_empty() {
+            self.perform_action(doc, actions::set_formats_action(sheet, cells));
         }
         self.reload(doc);
         self.status = format!("Cleared format on {}", self.grid.selection_label());
@@ -693,15 +695,15 @@ impl SheetsApp {
             let dc = target.0 as i64 - cb.src.0 as i64;
             let dr = target.1 as i64 - cb.src.1 as i64;
             let sheet = self.active_sheet;
-            // A cut moves the block: clear the whole source first, then write.
+            // Collect the whole paste into one batched change. A cut moves the
+            // block: clear the source first (pushed ahead of the writes so an
+            // overlapping target still lands last), then write.
+            let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
             if cb.cut {
                 for r in 0..rows {
                     for c in 0..cols {
                         let addr = (cb.src.0 + c, cb.src.1 + r);
-                        self.perform_action(
-                            doc,
-                            actions::set_cell_action(sheet, addr, "", Some(CellFormat::General)),
-                        );
+                        writes.push((addr, String::new(), Some(CellFormat::General)));
                     }
                 }
             }
@@ -714,13 +716,11 @@ impl SheetsApp {
                     } else {
                         shift_formula_refs(raw, dc, dr)
                     };
-                    self.perform_action(
-                        doc,
-                        actions::set_cell_action(sheet, addr, &out_raw, Some(*fmt)),
-                    );
+                    writes.push((addr, out_raw, Some(*fmt)));
                     last = addr;
                 }
             }
+            self.perform_action(doc, actions::set_cells_action(sheet, writes));
             if !cb.cut {
                 self.clipboard = Some(cb);
             }
@@ -751,20 +751,21 @@ impl SheetsApp {
             return false;
         }
         let sheet = self.active_sheet;
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         let mut last = target;
         for (ri, line) in body.split('\n').enumerate() {
             for (ci, field) in line.split('\t').enumerate() {
                 let addr = (target.0 + ci as u32, target.1 + ri as u32);
-                let action = if field.is_empty() {
-                    actions::set_cell_action(sheet, addr, "", Some(CellFormat::General))
+                if field.is_empty() {
+                    writes.push((addr, String::new(), Some(CellFormat::General)));
                 } else {
                     let inferred = infer_entry(field, cur);
-                    actions::set_cell_action(sheet, addr, &inferred.raw, Some(inferred.format))
-                };
-                self.perform_action(doc, action);
+                    writes.push((addr, inferred.raw, Some(inferred.format)));
+                }
                 last = addr;
             }
         }
+        self.perform_action(doc, actions::set_cells_action(sheet, writes));
         self.grid.select_range_public(target, last);
         true
     }
@@ -815,14 +816,16 @@ impl SheetsApp {
             return;
         }
         let sheet = self.active_sheet;
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for c in c0..=c1 {
             let src_raw = self.grid.cell_raw_at((c, r0));
             let src_fmt = self.grid.cell_fmt_at((c, r0));
             for r in (r0 + 1)..=r1 {
                 let out_raw = shift_formula_refs(&src_raw, 0, (r - r0) as i64);
-                self.perform_action(doc, actions::set_cell_action(sheet, (c, r), &out_raw, Some(src_fmt)));
+                writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
+        self.perform_action(doc, actions::set_cells_action(sheet, writes));
         self.reload(doc);
         self.status = format!("Filled down {}", self.grid.selection_label());
     }
@@ -838,14 +841,16 @@ impl SheetsApp {
             return;
         }
         let sheet = self.active_sheet;
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for r in r0..=r1 {
             let src_raw = self.grid.cell_raw_at((c0, r));
             let src_fmt = self.grid.cell_fmt_at((c0, r));
             for c in (c0 + 1)..=c1 {
                 let out_raw = shift_formula_refs(&src_raw, (c - c0) as i64, 0);
-                self.perform_action(doc, actions::set_cell_action(sheet, (c, r), &out_raw, Some(src_fmt)));
+                writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
+        self.perform_action(doc, actions::set_cells_action(sheet, writes));
         self.reload(doc);
         self.status = format!("Filled right {}", self.grid.selection_label());
     }
@@ -1192,14 +1197,16 @@ impl SheetsApp {
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let target_r = r1 + 1;
         let sheet = self.active_sheet;
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
         for c in c0..=c1 {
             let formula = format!(
                 "=SUM({}:{})",
                 crate::model::addr_to_a1(c, r0),
                 crate::model::addr_to_a1(c, r1),
             );
-            self.perform_action(doc, actions::set_cell_action(sheet, (c, target_r), &formula, None));
+            writes.push(((c, target_r), formula, None));
         }
+        self.perform_action(doc, actions::set_cells_action(sheet, writes));
         self.reload(doc);
         self.grid.select_range_public((c0, target_r), (c1, target_r));
         self.status = format!("Summed selection into row {}", target_r + 1);
@@ -4612,9 +4619,11 @@ mod tests {
         let action: crate::actions::SheetsAction =
             serde_json::from_slice(&dispatched.payload).expect("payload decodes to SheetsAction");
         match action {
-            crate::actions::SheetsAction::SetCell { sheet, col, row, raw, .. } => {
-                assert_eq!((sheet, col, row), (0, 0, 9), "wrote the selected cell A10");
-                assert_eq!(raw, "hello");
+            crate::actions::SheetsAction::SetCells { sheet, cells } => {
+                assert_eq!(sheet, 0);
+                assert_eq!(cells.len(), 1, "one cell edited");
+                assert_eq!((cells[0].col, cells[0].row), (0, 9), "wrote the selected cell A10");
+                assert_eq!(cells[0].raw, "hello");
             }
             other => panic!("cell edit built the wrong action: {other:?}"),
         }
