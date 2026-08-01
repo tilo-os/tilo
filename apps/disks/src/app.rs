@@ -27,7 +27,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
 
-use crate::actions::{self, Op};
+use crate::ops::{self, Op};
 use crate::doc::DisksDoc;
 use crate::model::{
     fmt_hours, fmt_size, AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartStatus,
@@ -1462,7 +1462,7 @@ impl DisksApp {
             let refresh = action.changes_topology();
             let done_label = action.label().trim_end_matches('…').to_string();
             thread::spawn(move || {
-                let res = actions::run(op, &leaf, fstype.as_deref());
+                let res = ops::run(op, &leaf, fstype.as_deref());
                 let text = match res {
                     Ok(msg) => msg,
                     Err(e) => format!("{done_label} failed — {e}"),
