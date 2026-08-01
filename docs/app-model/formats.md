@@ -118,10 +118,6 @@ namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read  = []
-write = []
-
 [sandbox.net]
 mode = "off"
 
