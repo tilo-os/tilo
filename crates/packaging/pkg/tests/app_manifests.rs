@@ -212,27 +212,31 @@ fn allowlisted_egress_names_at_least_one_host() {
     }
 }
 
-/// A GUI app that never binds the compositor socket into its sandbox has
-/// no display and cannot draw — the launch succeeds and the window never
-/// appears, which is the worst kind of failure to debug.
+/// The Wayland socket used to be a per-manifest `fs.read` entry, and a
+/// GUI app that forgot it launched into a namespace with no display.
+/// The launcher binds it now (`--wayland-socket`, normalised to
+/// `wayland-0` inside the sandbox), so the invariant to hold is the
+/// opposite one: no manifest names it, because no manifest names any
+/// path at all.
 #[test]
-fn gui_apps_bind_the_compositor_socket() {
+fn no_manifest_names_a_filesystem_path() {
+    let mut checked = 0usize;
     for dir in app_dirs() {
         let m = load(&dir);
-        let ep = m.entrypoint.as_ref().expect("[entrypoint]");
-        if !matches!(ep.r#type, EntrypointType::Gui | EntrypointType::Both) {
-            continue;
-        }
         assert!(
-            m.sandbox
-                .fs
-                .read
-                .iter()
-                .any(|p| p.contains("wayland-0")),
-            "{}: GUI entrypoint but no Wayland socket in sandbox.fs.read",
-            dir.display()
+            m.sandbox.fs.read.is_empty() && m.sandbox.fs.write.is_empty(),
+            "{}: declares sandbox.fs paths (read={:?} write={:?}). An app does \
+             not choose what it reads or where it writes — reads come from the \
+             launcher's system profile, writes go to the one directory the \
+             launcher gives it, and anything else is a capability the user \
+             grants at runtime.",
+            dir.display(),
+            m.sandbox.fs.read,
+            m.sandbox.fs.write,
         );
+        checked += 1;
     }
+    assert!(checked >= 40, "expected the shipped fleet, found {checked}");
 }
 
 /// The shell's Applications provider hides packages without a GUI
@@ -289,20 +293,28 @@ fn apps_declare_a_display_name_and_category() {
     }
 }
 
-/// Grants are supposed to be the minimum that lets the app work. Two
-/// blanket grants would make that claim meaningless, so they are barred
-/// outright: `/` and `/etc` wholesale.
+/// This test used to bar two blanket grants by name — `/` and `/etc`
+/// wholesale — and it passed on every manifest in the tree. It read:
+///
+/// ```text
+/// for pat in m.sandbox.fs.read.iter().chain(m.sandbox.fs.write.iter()) {
+///     let p = pat.trim_end_matches('/');
+///     assert!(p != "" && p != "/" && p != "/etc" && p != "/usr", ...);
+/// }
+/// ```
+///
+/// It was a denylist over a field the packager controlled, so it could
+/// only ever name the shapes someone had thought of: `~` (the whole home
+/// directory), `~/.ssh`, `~/..`, and another package's state directory
+/// all passed it. The field is gone, so the check is now the one the
+/// installer runs — every shipped package goes through exactly the
+/// validation a stranger's would, with no first-party exception.
 #[test]
-fn no_manifest_grants_the_whole_filesystem() {
+fn every_shipped_manifest_passes_the_installers_own_validation() {
     for dir in app_dirs() {
         let m = load(&dir);
-        for pat in m.sandbox.fs.read.iter().chain(m.sandbox.fs.write.iter()) {
-            let p = pat.trim_end_matches('/');
-            assert!(
-                p != "" && p != "/" && p != "/etc" && p != "/usr",
-                "{}: blanket grant {pat:?}",
-                dir.display()
-            );
-        }
+        validate_manifest(&m).unwrap_or_else(|e| {
+            panic!("{}: refused by its own installer: {e}", dir.display())
+        });
     }
 }
