@@ -518,6 +518,40 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if self.open { Some(self.rect) } else { None }
     }
 
+    /// Request the OS cursor that matches the affordance under `point`: a grab
+    /// hand over the draggable title bar (grabbing while a move is in flight),
+    /// and the directional resize cursors over the edge / corner grips. This is
+    /// what makes the move/resize handles *look* interactive (HIG §7) — without
+    /// it the frame silently accepts a drag with no hover feedback. Content sits
+    /// in an isolated inner tree the host's cursor sweep can't reach, so a point
+    /// over the body defers to the default arrow.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        use winit::window::CursorIcon;
+        if !self.open {
+            return None;
+        }
+        let edge_cursor = |e: Edge| match e {
+            Edge::Right | Edge::Left => CursorIcon::EwResize,
+            Edge::Bottom => CursorIcon::NsResize,
+            Edge::BottomRight => CursorIcon::NwseResize,
+            Edge::BottomLeft => CursorIcon::NeswResize,
+        };
+        // A drag in progress owns the cursor regardless of the exact point (the
+        // pointer can slip a few px off the grip while the button is held).
+        match self.drag {
+            Some(Drag::Move { .. }) => return Some(CursorIcon::Grabbing),
+            Some(Drag::Resize { edge, .. }) => return Some(edge_cursor(edge)),
+            None => {}
+        }
+        if let Some(edge) = self.resize_edge_at(point) {
+            return Some(edge_cursor(edge));
+        }
+        if self.title_bar_rect().contains(point) {
+            return Some(CursorIcon::Grab);
+        }
+        None
+    }
+
     fn get_rect(&self) -> Rect { self.rect }
 }
 
@@ -676,6 +710,77 @@ mod tests {
         let r = w.window_rect();
         assert!(r.width() >= MIN_WIDTH - 0.5, "clamped to MIN_WIDTH: {}", r.width());
         assert!(r.height() >= MIN_HEIGHT - 0.5, "clamped to MIN_HEIGHT: {}", r.height());
+    }
+
+    #[test]
+    fn off_screen_drag_is_clamped_to_stay_reachable() {
+        // Viewport bounds are 0..1000 x 0..800 (see `laid_out`).
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+
+        // Fling the window far past the bottom-right corner.
+        let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+        dispatch(&mut w, &cursor_at(grab));
+        dispatch(&mut w, &left_press());
+        dispatch(&mut w, &cursor_at(Point::new(grab.x + 5000.0, grab.y + 5000.0)));
+        dispatch(&mut w, &left_release());
+        let r = w.window_rect();
+        assert!(r.x0 >= 0.0 && r.y0 >= 0.0, "origin stays on screen after a huge fling: {r:?}");
+        assert!(
+            r.x0 <= 1000.0 - 80.0,
+            "at least 80px of the window's left stays horizontally reachable: {r:?}"
+        );
+        assert!(r.y0 <= 800.0, "the title bar stays within the viewport: {r:?}");
+        assert!(
+            r.x1 <= 1000.0 + 0.5 && r.y1 <= 800.0 + 0.5,
+            "the window is clamped inside the viewport, not off the bottom-right: {r:?}"
+        );
+
+        // Fling it far past the top-left (negative) corner.
+        let grab2 = Point::new(r.x0 + 40.0, r.y0 + 10.0);
+        dispatch(&mut w, &cursor_at(grab2));
+        dispatch(&mut w, &left_press());
+        dispatch(&mut w, &cursor_at(Point::new(grab2.x - 5000.0, grab2.y - 5000.0)));
+        dispatch(&mut w, &left_release());
+        let r2 = w.window_rect();
+        assert!(
+            r2.x0 >= -0.5 && r2.y0 >= -0.5,
+            "clamped to the top-left corner, not off screen: {r2:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_shape_hints_move_and_resize() {
+        use winit::window::CursorIcon;
+        let (w, _e) = laid_out(true);
+        let r = w.window_rect();
+        // Over the title bar → a grab hand (the window is draggable).
+        let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
+        assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
+        // Right / bottom edges + bottom-right corner → the matching resize cursors.
+        assert_eq!(Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)), Some(CursorIcon::EwResize));
+        assert_eq!(Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)), Some(CursorIcon::NsResize));
+        assert_eq!(Widget::cursor_shape(&w, Point::new(r.x1, r.y1)), Some(CursorIcon::NwseResize));
+        // Deep in the content body → no claim (defers to the default arrow).
+        assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
+    }
+
+    #[test]
+    fn cursor_shape_follows_an_active_drag() {
+        use winit::window::CursorIcon;
+        let (mut w, _e) = laid_out(true);
+        let start = w.window_rect();
+        // Begin a move drag on the title bar, then move the pointer well away
+        // from the grip — the grabbing cursor must follow the drag.
+        let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
+        dispatch(&mut w, &cursor_at(grab));
+        dispatch(&mut w, &left_press());
+        dispatch(&mut w, &cursor_at(Point::new(grab.x + 30.0, grab.y + 30.0)));
+        assert_eq!(
+            Widget::cursor_shape(&w, Point::new(5.0, 5.0)),
+            Some(CursorIcon::Grabbing),
+            "a move drag keeps the grabbing cursor even off the title bar"
+        );
     }
 
     #[test]
