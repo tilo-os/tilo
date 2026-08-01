@@ -2152,6 +2152,56 @@ impl App {
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
     }
 
+    /// Whether the App's own keyboard focus navigation (Tab cycling and
+    /// directional arrows) may run this frame.
+    ///
+    /// It runs when nothing is capturing the pointer as a modal, **or** when a
+    /// focus trap is active. In the trapped case [`focusable_order`] is already
+    /// scoped to the trap's subtree (see [`Self::update_focusable_order`]), so
+    /// navigation stays *inside* the modal and cannot walk out to the content
+    /// behind the scrim. Gating on the focus-trap signal — not `modal_capture`
+    /// — is deliberate: `modal_capture` governs only pointer click-through, so
+    /// gating Tab on it froze focus inside a dialog (the OK/Cancel buttons
+    /// couldn't be cycled) while a trap that set `traps_focus` without
+    /// `modal_capture` let Tab escape entirely.
+    ///
+    /// [`focusable_order`]: Self::focusable_order
+    fn keyboard_nav_allowed(&self, modal_rect: Option<vello::kurbo::Rect>) -> bool {
+        modal_rect.is_none() || self.focus_trap_active
+    }
+
+    /// Advance keyboard focus for a Tab (`shift == false`) / Shift+Tab
+    /// (`shift == true`) press: step through [`focusable_order`] wrapping
+    /// last↔first. When a modal traps focus that order is scoped to the modal,
+    /// so the cycle stays within it. Returns `true` when focus moved (there was
+    /// at least one focusable), so the caller marks the event handled.
+    ///
+    /// This is the production Tab path — the window-event loop calls it and the
+    /// focus-trap tests drive it directly, rather than re-implementing the wrap.
+    ///
+    /// [`focusable_order`]: Self::focusable_order
+    fn focus_tab(&mut self, shift: bool) -> bool {
+        let len = self.focusable_order.len();
+        if len == 0 {
+            return false;
+        }
+        let current_idx = self
+            .focused_node
+            .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
+        let next_idx = match current_idx {
+            Some(idx) => {
+                if shift {
+                    if idx == 0 { len - 1 } else { idx - 1 }
+                } else {
+                    (idx + 1) % len
+                }
+            }
+            None => 0,
+        };
+        self.set_focused_node(Some(self.focusable_order[next_idx]));
+        true
+    }
+
     /// Build a fresh [`accesskit::TreeUpdate`] from the current widget tree,
     /// node map, and focus. Pure delegation to
     /// [`crate::accesskit_bridge::build_tree_update`]; kept on `App` so the
@@ -3543,12 +3593,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     None
                 };
 
-                // Modal focus-trap: when the tree hosts an open modal
-                // overlay it reports its box rect here. While set, the App
-                // must NOT run its own global keyboard shortcuts (Tab focus
-                // cycling, Alt/arrow directional focus) — the modal owns the
-                // keyboard — and an unhandled pointer press is swallowed so
-                // clicks can't fall through to widgets behind the modal.
+                // Modal capture: when the tree hosts an open modal overlay it
+                // reports its box rect here. `modal_rect` governs pointer
+                // click-through only — an unhandled press inside the modal's
+                // lifetime is swallowed so clicks can't fall through to widgets
+                // behind it. Keyboard focus *containment* is a separate concern
+                // driven by `traps_focus()` / `focus_trap_active`: while a trap
+                // is active `focusable_order` is scoped to the modal, and
+                // `keyboard_nav_allowed` lets Tab/arrow navigation run *within*
+                // that scope (so a dialog's buttons stay reachable) instead of
+                // being switched off wholesale.
                 let modal_rect = app.root_widget.modal_capture();
 
                 if !handled {
@@ -3643,7 +3697,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled && modal_rect.is_none() {
+                if !handled && app.keyboard_nav_allowed(modal_rect) {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -3655,27 +3709,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     } = event
                     {
                         let shift = app.modifiers.state().shift_key();
-                        if !app.focusable_order.is_empty() {
-                            let current_idx = app.focused_node.and_then(|id| {
-                                app.focusable_order.iter().position(|&x| x == id)
-                            });
-                            let next_idx = match current_idx {
-                                Some(idx) => {
-                                    if shift {
-                                        if idx == 0 {
-                                            app.focusable_order.len() - 1
-                                        } else {
-                                            idx - 1
-                                        }
-                                    } else {
-                                        (idx + 1) % app.focusable_order.len()
-                                    }
-                                }
-                                None => 0,
-                            };
-                            app.set_focused_node(Some(app.focusable_order[next_idx]));
-                            handled = true;
-                        }
+                        // Cycles `focusable_order`, which is scoped to the modal
+                        // subtree while a trap is active — so Tab stays inside a
+                        // dialog and wraps last↔first there.
+                        handled = app.focus_tab(shift);
                     }
                 }
 
@@ -3698,7 +3735,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             _ => None,
                         };
                         if let (Some(d), true, true) =
-                            (dir, app.modifiers.state().alt_key(), modal_rect.is_none())
+                            (dir, app.modifiers.state().alt_key(), app.keyboard_nav_allowed(modal_rect))
                         {
                             app.navigate_focus(d);
                             handled = true;
@@ -3905,7 +3942,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     }
                 }
 
-                if !handled && modal_rect.is_none() {
+                if !handled && app.keyboard_nav_allowed(modal_rect) {
                     if let WindowEvent::KeyboardInput {
                         event:
                             winit::event::KeyEvent {
@@ -5288,26 +5325,58 @@ mod focus_trap_tests {
     }
 
     #[test]
-    fn tab_wraps_within_the_trapped_modal() {
+    fn tab_cycles_within_the_trapped_modal_via_the_real_handler() {
         let (mut app, open) = host_app();
         app.init_layout();
         open.set(true);
         app.refresh_focus_order();
+        assert!(app.focus_trap_active);
         assert_eq!(app.focusable_order.len(), 2);
-
+        let modal_set: std::collections::HashSet<_> =
+            app.focusable_order.iter().copied().collect();
         let first = app.focusable_order[0];
         let second = app.focusable_order[1];
+
+        // The window-event loop gates Tab on `keyboard_nav_allowed`. With a
+        // trap active it must be allowed EVEN while a modal captures the pointer
+        // — otherwise the dialog's buttons would be unreachable by keyboard.
+        assert!(
+            app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
+            "an active focus trap allows Tab to run (scoped to the modal)"
+        );
+
+        // Drive the SAME `focus_tab` the event loop calls. Every landing must
+        // stay inside the modal's two focusables and wrap last↔first — Tab can
+        // never reach the content behind the scrim.
         app.set_focused_node(Some(first));
-        // Emulate the Tab cycle the window-event handler performs over the
-        // (now-restricted) focusable_order.
-        let next = (app.focusable_order.iter().position(|&x| x == first).unwrap() + 1)
-            % app.focusable_order.len();
-        app.set_focused_node(Some(app.focusable_order[next]));
-        assert_eq!(app.focused_node, Some(second));
-        let wrap = (app.focusable_order.iter().position(|&x| x == second).unwrap() + 1)
-            % app.focusable_order.len();
-        app.set_focused_node(Some(app.focusable_order[wrap]));
-        assert_eq!(app.focused_node, Some(first), "Tab from last wraps to first inside the modal");
+        assert!(app.focus_tab(false), "Tab moves focus");
+        assert_eq!(app.focused_node, Some(second), "Tab advances within the modal");
+        assert!(modal_set.contains(&second));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(first), "Tab from the last wraps to the first");
+        // Shift+Tab steps backward and is equally contained.
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(second), "Shift+Tab from the first wraps to the last");
+        assert!(
+            modal_set.contains(&app.focused_node.unwrap()),
+            "Shift+Tab stays inside the modal subtree"
+        );
+    }
+
+    #[test]
+    fn pointer_capture_without_a_trap_suppresses_app_tab() {
+        // A surface that captures the pointer (FloatingWindow, context menu)
+        // but does NOT trap keyboard focus must switch OFF the App's own Tab /
+        // arrow navigation so its own key handling wins — the click-through
+        // swallow is what `modal_capture` is for, not focus containment.
+        let (mut app, _open) = host_app();
+        app.init_layout();
+        assert!(!app.focus_trap_active);
+        assert!(app.keyboard_nav_allowed(None), "with no modal, Tab runs normally");
+        assert!(
+            !app.keyboard_nav_allowed(Some(KurboRect::new(0.0, 0.0, 10.0, 10.0))),
+            "a pointer-capturing surface with no focus trap suppresses App-level Tab"
+        );
     }
 
     #[test]
