@@ -16,7 +16,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::{ActionEnvelope, ActionTransport};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -39,18 +38,6 @@ use crate::model::{
 use crate::portal::{self, ExportOutcome, ImportOutcome};
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
-
-/// The transport the app installs for its own on-screen affordances. Peers
-/// receive contact changes through ordinary CRDT sync (the executor pins each
-/// action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
@@ -459,17 +446,12 @@ pub struct ContactsApp {
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
 
-    /// Document heads captured just before the first `qos_actions` action of the
-    /// current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
-    action_commit_before: Option<Vec<ChangeHash>>,
-
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
-    /// byte-identical action — one source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch: every on-screen affordance routes its
+    /// [`ContactsAction`](crate::actions::ContactsAction) through here so it
+    /// brackets exactly one undo boundary, encodes under
+    /// [`CONTACTS_ACTION_TYPE`](crate::actions::CONTACTS_ACTION_TYPE), and replays
+    /// byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 
     /// The document heads the in-memory [`ContactStore`] was last derived from.
     /// When the document moves past this out of band — a Ctrl+K palette action,
@@ -548,8 +530,7 @@ impl ContactsApp {
             import_rx: None,
             export_rx: None,
             pending_export: None,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
     }
@@ -754,17 +735,14 @@ impl ContactsApp {
     /// caller for immediate UI feedback and reconciled from the document on the
     /// next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::ContactsAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "contacts action dispatch failed");
-        }
+        self.actions.dispatch(doc, crate::actions::CONTACTS_ACTION_TYPE, &action);
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// tests.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// The context Ctrl+K needs to build the contacts resource tree: a snapshot
@@ -3034,7 +3012,7 @@ impl Widget for ContactsApp {
     /// its contacts action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     /// Fold the address book into the unified Ctrl+K palette: a snapshot
@@ -5021,7 +4999,7 @@ mod tests {
         let (_panel, del, _cancel) = h.app.confirm_geometry();
         h.press_left(del.center());
         assert_eq!(
-            h.app.last_dispatched.as_ref(),
+            h.app.last_dispatched(),
             Some(&expected),
             "the confirm-delete button and the palette build the identical EncodedAction",
         );
@@ -5052,7 +5030,7 @@ mod tests {
             CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Favorite).unwrap();
         h.press_left(rows[fav_idx].center());
         assert_eq!(
-            h.app.last_dispatched.as_ref(),
+            h.app.last_dispatched(),
             Some(&expected),
             "the favourite affordance and the palette build the identical EncodedAction",
         );
