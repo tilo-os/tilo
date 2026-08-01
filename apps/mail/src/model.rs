@@ -72,6 +72,38 @@ impl Folder {
         }
     }
 
+    /// The stable string key this folder is stored under in the CRDT (and the
+    /// key a [`crate::actions::MailAction::Move`] carries). The inverse of
+    /// [`Folder::from_key`]. Kept here (rather than in `doc`) so the action layer
+    /// and the persistence layer share one canonical spelling.
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Folder::Inbox => "inbox",
+            Folder::Starred => "starred",
+            Folder::Sent => "sent",
+            Folder::Drafts => "drafts",
+            Folder::Archive => "archive",
+            Folder::Trash => "trash",
+            Folder::Junk => "junk",
+        }
+    }
+
+    /// Parse a folder key produced by [`Folder::as_key`]. Returns `None` for an
+    /// unrecognised key (e.g. a user-defined local folder id), so a caller can
+    /// treat it as a no-op rather than substituting a wrong folder.
+    pub fn from_key(s: &str) -> Option<Folder> {
+        Some(match s {
+            "inbox" => Folder::Inbox,
+            "starred" => Folder::Starred,
+            "sent" => Folder::Sent,
+            "drafts" => Folder::Drafts,
+            "archive" => Folder::Archive,
+            "trash" => Folder::Trash,
+            "junk" => Folder::Junk,
+            _ => return None,
+        })
+    }
+
     /// IMAP mailbox name this folder maps to on a typical server. Used by
     /// the transport layer when issuing `SELECT`.
     pub fn imap_name(self) -> &'static str {
@@ -229,6 +261,13 @@ pub struct Message {
     pub read: bool,
     pub starred: bool,
     pub folder: Folder,
+    /// User-applied labels/tags, mirrored from the CRDT (`flags/<id>/labels`).
+    /// These are set exclusively through [`crate::actions::MailAction::AddLabel`]
+    /// / [`crate::actions::MailAction::RemoveLabel`] and overlaid onto the
+    /// in-memory message by [`crate::doc::MailDoc::apply_flags`]; empty for a
+    /// message that has never been tagged.
+    #[serde(default)]
+    pub labels: Vec<String>,
 }
 
 impl Message {
@@ -675,6 +714,7 @@ mod tests {
             read: false,
             starred: false,
             folder,
+            labels: Vec::new(),
         }
     }
 
