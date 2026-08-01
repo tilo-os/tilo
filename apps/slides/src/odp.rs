@@ -226,6 +226,25 @@ fn xml_attr(s: &str) -> String {
     xml_text(s).replace('"', "&quot;")
 }
 
+/// Resolve an XML entity reference — a numeric `&#NN;` / `&#xNN;` or one of the
+/// five predefined named entities — back to its character. quick_xml delivers
+/// these as standalone `GeneralRef` events (splitting the text run), so the read
+/// loop folds them back in through this. An unknown named entity resolves to
+/// `None` (a deck we author only ever emits the predefined five, via `xml_text`).
+fn resolve_entity(r: &quick_xml::events::BytesRef) -> Option<char> {
+    if let Ok(Some(ch)) = r.resolve_char_ref() {
+        return Some(ch);
+    }
+    match r.decode().ok()?.as_ref() {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        _ => None,
+    }
+}
+
 // ===========================================================================
 // Read
 // ===========================================================================
@@ -274,6 +293,18 @@ fn parse_content(xml: &str) -> Option<Deck> {
             Ok(Event::Text(t)) => {
                 if in_text_p {
                     p_buf.push_str(&t.xml10_content().unwrap_or_default());
+                }
+                continue;
+            }
+            Ok(Event::GeneralRef(r)) => {
+                // quick_xml surfaces an entity reference (`&amp;`, `&#38;`, …) as
+                // its own event, splitting the surrounding text. Fold it back into
+                // the active run so a literal `&`, `<` or `>` survives the round
+                // trip instead of vanishing at the split.
+                if in_text_p {
+                    if let Some(ch) = resolve_entity(&r) {
+                        p_buf.push(ch);
+                    }
                 }
                 continue;
             }
