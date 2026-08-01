@@ -698,23 +698,23 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 /// through `PlannedAction` dispatch.
 fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     use std::io::Write;
-    // The renderer panics if no wgpu adapter is available (e.g. CI
-    // without llvmpipe); catch_unwind keeps the compositor alive in
-    // that environment too.
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
+    if w == 0 || h == 0 {
+        eprintln!("nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
+        return;
+    }
     let scene = fb.paint();
-    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
-        renderer.render_rgba(&scene)
-    }));
-    let rgba = match render_result {
-        Ok(rgba) => rgba,
-        Err(_) => {
-            eprintln!(
-                "nirios compositor: test_control snapshot: \
-                 OffscreenRenderer panicked (no wgpu adapter?)"
-            );
+    // `try_new` rather than `new` inside a `catch_unwind`: the shipping
+    // release profile sets `panic = "abort"`, so a caught panic is not
+    // a thing that happens — the compositor would die at the panic site
+    // instead of logging and carrying on. Asking the renderer for a
+    // `Result` is what actually keeps it alive on a machine with no
+    // wgpu adapter (e.g. CI without llvmpipe).
+    let rgba = match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+        Ok(mut renderer) => renderer.render_rgba(&scene),
+        Err(e) => {
+            eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
             return;
         }
     };

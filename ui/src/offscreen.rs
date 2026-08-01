@@ -43,6 +43,48 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
         .clone()
 }
 
+/// Why an [`OffscreenRenderer`] could not be built.
+///
+/// Every variant is an *environment* failure: the machine has no usable
+/// GPU adapter, or the driver rejected vello's pipelines. Bad arguments
+/// (a zero width or height) stay an `assert!` in the constructors —
+/// that is a caller bug, not something the environment can hand you.
+#[derive(Debug)]
+pub enum OffscreenError {
+    /// wgpu enumerated no adapter this process can use. On a headless
+    /// machine that usually means no software rasteriser is installed
+    /// (llvmpipe / lavapipe).
+    NoAdapter,
+    /// The adapter exists but vello could not build its compute
+    /// pipelines against the resulting device.
+    Renderer(vello::Error),
+    /// A thread panicked while holding the process-wide
+    /// `RenderContext`. Only reachable under `panic = "unwind"`; the
+    /// shipping release profile aborts instead of poisoning.
+    ContextPoisoned,
+}
+
+impl std::fmt::Display for OffscreenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAdapter => {
+                f.write_str("no wgpu adapter available — is llvmpipe installed?")
+            }
+            Self::Renderer(e) => write!(f, "vello could not build a renderer: {e}"),
+            Self::ContextPoisoned => f.write_str("the shared wgpu RenderContext is poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for OffscreenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Renderer(e) => Some(e),
+            Self::NoAdapter | Self::ContextPoisoned => None,
+        }
+    }
+}
+
 /// An offscreen wgpu + vello pipeline sized at `width × height`. Reuse
 /// a single instance for multiple renders to amortise adapter / device
 /// creation (which is the expensive part).
@@ -64,17 +106,46 @@ impl OffscreenRenderer {
     /// Spin up a new headless renderer at the given dimensions.
     ///
     /// Panics if no suitable adapter exists (e.g. llvmpipe isn't
-    /// installed in the test container). Callers that want a soft-fail
-    /// path should wrap this in `std::panic::catch_unwind`.
+    /// installed in the test container). **Do not try to soften that
+    /// with `std::panic::catch_unwind`** — the shipping release profile
+    /// sets `panic = "abort"` (workspace `Cargo.toml`), under which a
+    /// panic kills the process at the panic site and `catch_unwind`
+    /// never sees it. Callers that need a soft-fail path must use
+    /// [`try_new`](Self::try_new), which returns the failure instead of
+    /// panicking on it.
+    ///
+    /// `new` stays panicking because most callers are tests and example
+    /// binaries for which "no GPU, no test" is the right outcome.
     pub fn new(width: u32, height: u32) -> Self {
+        match Self::try_new(width, height) {
+            Ok(renderer) => renderer,
+            Err(e) => panic!("OffscreenRenderer::new: {e}"),
+        }
+    }
+
+    /// Fallible [`new`](Self::new): returns [`OffscreenError`] rather
+    /// than panicking when the machine has no usable wgpu adapter or
+    /// the driver rejects vello's pipelines.
+    ///
+    /// This is the constructor for any code path that has to survive a
+    /// GPU-less machine — the compositor's startup warmup, the headless
+    /// backend, the test-control snapshot writer. Those cannot rely on
+    /// `catch_unwind`: release builds are `panic = "abort"`.
+    ///
+    /// Still asserts on a zero width or height. A 0×0 render target is
+    /// a caller bug, and turning programmer errors into `Result`s only
+    /// moves them somewhere quieter.
+    pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
         let context = shared_render_context();
-        let mut ctx = context.lock().expect("shared RenderContext poisoned");
+        let mut ctx = context
+            .lock()
+            .map_err(|_| OffscreenError::ContextPoisoned)?;
         let dev_id = ctx
             .device(None)
             .block_on()
-            .expect("couldn't request a wgpu adapter — is llvmpipe installed?");
+            .ok_or(OffscreenError::NoAdapter)?;
         let device = &ctx.devices[dev_id].device;
 
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -117,13 +188,13 @@ impl OffscreenRenderer {
                 pipeline_cache: None,
             },
         )
-        .expect("vello Renderer::new");
+        .map_err(OffscreenError::Renderer)?;
 
         // Drop the lock before returning so subsequent OffscreenRenderer
         // constructions don't have to wait on it.
         drop(ctx);
 
-        Self {
+        Ok(Self {
             width,
             height,
             context,
@@ -133,7 +204,7 @@ impl OffscreenRenderer {
             readback_buf,
             padded_bytes_per_row,
             renderer,
-        }
+        })
     }
 
     /// Render `scene` with the given background colour and return the

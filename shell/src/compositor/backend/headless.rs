@@ -62,7 +62,7 @@ impl HeadlessBackend {
     /// [`OffscreenRenderer`] eagerly acquires a wgpu adapter — this
     /// returns `Err` (rather than panics) on machines without llvmpipe
     /// or another suitable adapter so the binary entry point can
-    /// surface a friendly error instead of unwinding.
+    /// surface a friendly error instead of dying at the panic site.
     pub fn new(width: u32, height: u32) -> Result<Self, Box<dyn std::error::Error>> {
         if width == 0 || height == 0 {
             return Err(format!(
@@ -70,22 +70,14 @@ impl HeadlessBackend {
             )
             .into());
         }
-        // `OffscreenRenderer::new` panics on adapter acquisition
-        // failure rather than returning a `Result`; wrap it so the
-        // headless backend honours the rest of the `Backend::new`
-        // contract (return-an-error, don't unwind into `main`).
-        let renderer = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            OffscreenRenderer::new(width, height)
-        })) {
-            Ok(r) => r,
-            Err(_) => {
-                return Err(format!(
-                    "HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height} \
-                     (no suitable wgpu adapter — is llvmpipe installed?)"
-                )
-                .into());
-            }
-        };
+        // `try_new` is the fallible constructor; `new` panics, and a
+        // `catch_unwind` around it would be inert in release builds
+        // (`panic = "abort"`). Going through the `Result` is what lets
+        // the headless backend honour the rest of the `Backend::new`
+        // contract — return an error, don't take `main` down with us.
+        let renderer = OffscreenRenderer::try_new(width, height).map_err(|e| {
+            format!("HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height}: {e}")
+        })?;
         let outputs = vec![Output::new(OutputId(0), (width, height), 1.0)];
         Ok(Self {
             renderer,
