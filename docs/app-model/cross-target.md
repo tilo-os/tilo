@@ -46,6 +46,13 @@ between the FUSE tree and a per-package fallback dir. GUI apps should
 mirror the pattern: try `runtime::fs::try_connect()`, fall back to
 `dirs::data_dir().join(package_id).join(rel)` on `NotAvailable`.
 
+That fallback needs no qOS-specific branch. On stock Linux it resolves to
+`~/.local/share/<package-id>/`; under the qOS launcher `XDG_DATA_HOME` is
+`/run/qos/app/.local/share`, so the same call lands in the one directory
+the app was given. Do not try to pick a location yourself — a qOS manifest
+cannot name a path, and an app that hard-codes one outside its own
+directory gets `EACCES` from Landlock.
+
 ### First-run UI
 
 Use `runtime::is_qos_native()` for cheap "which experience are we in"
