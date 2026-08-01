@@ -209,6 +209,18 @@ protection, because the command line is inside the signature.
 
 The initramfs is required, not optional: unlocking an encrypted root needs early userspace.
 
+**Not yet reachable, and it is load-bearing.** This is the single dependency the rest of the boot
+chain rests on, and the deployment backend the system ships on today cannot produce it: a static
+unified image embeds a command line that must name the deployment it boots, and that name changes
+on every update. Getting there needs the content-addressed deployment backend described in §4.3,
+which upstream still marks experimental.
+
+Until it lands, three things in this document are aspirations rather than descriptions: a command
+line that cannot be edited, a single measurement that transitively attests the root filesystem
+(§4.3), and generation-bound rollback protection (§4.4). Each is written here as the target; none
+of them is in force. The order matters too — this is a prerequisite, not a parallel workstream, so
+there is no version of the plan where the others land first.
+
 ### 4.3 Sealed root filesystem
 
 The root filesystem is content-addressed with a single digest authenticating file contents *and*
@@ -230,6 +242,29 @@ demands the recovery key, not a running vulnerable system.
 This is weaker than Android Verified Boot, where the rollback index lives in tamper-evident storage
 consulted by the bootloader *before* execution. Our check happens after the bootloader has already
 run. We accept this and state it; we do not claim parity.
+
+**This section depends entirely on §4.2, and on the deployment backend we do not yet have.** The
+mechanism binds a generation number to the unlock policy, which only means anything if that number
+is (a) inside a signature, so it cannot be edited, and (b) measured, so the policy can discriminate
+between generations. Both properties come from the kernel image being unified and stub-loaded.
+
+On the boot loader spec backend the system ships on today, neither holds:
+
+- **The generation number is editable.** Put it on the kernel command line and it lands in a loader
+  entry on the EFI system partition — outside every signature, writable by anything that can write
+  that partition. Shipping it there would look like compliance and provide none.
+- **The measurement register the design leans on is never extended.** The register that would carry
+  it is extended by the boot stub, and the stub only runs for a unified image. Without it the
+  register sits at its reset value, so a per-generation prediction predicts a constant that *every*
+  generation satisfies — including the rolled-back one the mechanism exists to refuse.
+
+The register covering firmware secure-boot state *is* extended either way, so sealing to firmware
+state works now. Generation binding does not.
+
+So the correct reading of this section is: **the mechanism is built and tested against an emulated
+TPM, and cannot be armed until the boot chain can hand it a measured, signature-covered generation
+number.** Arming it before then would produce a system that reports rollback protection it does not
+have, which is worse than reporting none.
 
 ### 4.5 Security policy as a signed object
 
@@ -537,3 +572,27 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
   those are different things (§4.8).
 - That an unlocked machine is as trustworthy as a locked one. It is as *usable*, and it says which
   it is (§4.6).
+- That the boot chain in §4.2–4.4 is in force. A unified kernel image is not reachable on the
+  current deployment backend, and without it the command line is editable and the register that
+  would carry the generation number is never extended. The rollback mechanism is built and tested;
+  it is not armed, and arming it early would report protection that does not exist.
+
+### What is verified, and what is only built
+
+Distinguishing these is the point of the section above, so the split is recorded plainly rather
+than left for a reader to infer.
+
+**Verified by execution:** the identity spine, with a ceremony-minted key proven to sign for its own
+recorded public key; the runtime hardening set, each mechanism checked in the binary or the running
+kernel rather than assumed from a build flag; permission denial being indistinguishable from
+absence, including an adversarial errno-comparison test that caught a real leak; the rollback
+mechanism against an emulated TPM, including a header-restore attack performed rather than argued;
+and startup resilience, proven by reproducing the abort against the previous code.
+
+**Built but never booted:** the entire boot chain. Encrypted install, the passphrase path for
+machines without a TPM, and owner-enrolled secure boot have not run on a machine, real or virtual.
+The tooling refuses to act when its preconditions are absent, which is the right failure mode, but
+a refusal that has never been exercised end to end is a claim like any other.
+
+The asymmetry is worth stating because it is the opposite of the usual one: the parts furthest from
+the hardware are the parts we have actually proven.
