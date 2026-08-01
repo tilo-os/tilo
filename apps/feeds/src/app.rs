@@ -404,11 +404,11 @@ pub struct FeedsApp {
     synced: bool,
 
     // --- action model ---------------------------------------------------
-    /// Document heads captured just before the first affordance-dispatched
-    /// action of an event, handed to the host so it brackets the action in
-    /// exactly one undo boundary ([`Widget::take_committed_action`]). Rising
-    /// edge: `None` between events, set on the first `perform_action`.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// Framework-owned action dispatch: every affordance routes its
+    /// [`FeedsAction`] through here so it brackets exactly one undo boundary,
+    /// encodes under [`FEEDS_ACTION_TYPE`](crate::actions::FEEDS_ACTION_TYPE),
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
     /// The document heads the mirrored [`Store`] was last reconciled against.
     /// When the document moves out-of-band (a Ctrl+K palette action mutates it
     /// directly, not through this widget's methods) and the fetch backlog is
@@ -485,7 +485,7 @@ impl FeedsApp {
             last_frame: Instant::now(),
             worker: None,
             synced: false,
-            action_commit_before: None,
+            actions: ui::ActionHost::new(),
             store_heads: Vec::new(),
             demo,
             now: chrono::Utc::now().timestamp(),
@@ -798,16 +798,7 @@ impl FeedsApp {
     /// before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: FeedsAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = actions::encode(&action);
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "feeds action dispatch failed");
-        }
+        self.actions.dispatch(doc, actions::FEEDS_ACTION_TYPE, &action);
         // The action just mutated the document; keep the reload watermark ahead
         // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
         // store for a change this widget already mirrored.
@@ -3122,18 +3113,6 @@ fn chrono_date(published: i64, now: i64) -> String {
 // Widget impl
 // ---------------------------------------------------------------------
 
-/// The action transport Feeds installs for its own on-screen affordances. Peers
-/// receive subscription / read-state changes through ordinary CRDT sync (the
-/// executor pins each action's actor so the change is content-addressed
-/// identical to a peer's replay and dedupes on merge), so the local affordance
-/// path has nothing extra to replicate — this sink drops the envelope. The
-/// Ctrl+K palette dispatches through the host's transport, which a collaborative
-/// session swaps for a peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 impl Widget for FeedsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.now = chrono::Utc::now().timestamp();
@@ -3201,7 +3180,7 @@ impl Widget for FeedsApp {
     /// its action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn build_layout(
