@@ -33,12 +33,14 @@
 
 pub mod actions;
 pub mod app;
+pub mod customize;
 pub mod doc;
 pub mod model;
 pub mod probe;
 pub mod write;
 
 pub use app::ImagerApp;
+pub use customize::CustomizePanel;
 pub use model::{
     Action, DiskLayout, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
     TargetKind,
