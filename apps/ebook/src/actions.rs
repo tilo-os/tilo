@@ -114,6 +114,19 @@ pub enum EbookAction {
         color: String,
         text: String,
     },
+    /// Re-anchor a single annotation row (a highlight piece or a note) to a new
+    /// passage, preserving its text, colour, and `group`. Powers the draggable
+    /// margin markers: moving a highlight to another paragraph never disturbs its
+    /// sibling rows (e.g. a highlight's comments), because it touches only the
+    /// one row named by `id`.
+    MoveAnnotation {
+        id: String,
+        chapter: usize,
+        block: usize,
+        start: usize,
+        end: usize,
+        excerpt: String,
+    },
 }
 
 impl Action for EbookAction {
@@ -285,6 +298,30 @@ impl Action for EbookAction {
                     BooksDoc::upsert_annotation(doc, &anno);
                 }
             }
+            EbookAction::MoveAnnotation {
+                id,
+                chapter,
+                block,
+                start,
+                end,
+                excerpt,
+            } => {
+                // Reposition exactly the one row; a missing id (never produced by
+                // our builder) is a no-op so a bad replay can't wedge a peer.
+                if let Ok(uuid) = id.parse::<Uuid>() {
+                    if let Some(mut a) = BooksDoc::list_annotations(doc)
+                        .into_iter()
+                        .find(|a| a.id == uuid)
+                    {
+                        a.chapter = *chapter;
+                        a.block = *block;
+                        a.start = *start;
+                        a.end = *end;
+                        a.excerpt = excerpt.clone();
+                        BooksDoc::upsert_annotation(doc, &a);
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -362,6 +399,26 @@ pub fn toggle_bookmark_action(
 
 pub fn change_color_action(group: Uuid, color: HiColor) -> EbookAction {
     EbookAction::ChangeHighlightColor { group: group.to_string(), color: color.as_str().to_string() }
+}
+
+/// Re-anchor a single annotation row (a highlight piece or a note) to a new
+/// passage. Used by the draggable margin markers.
+pub fn move_annotation_action(
+    id: Uuid,
+    chapter: usize,
+    block: usize,
+    start: usize,
+    end: usize,
+    excerpt: &str,
+) -> EbookAction {
+    EbookAction::MoveAnnotation {
+        id: id.to_string(),
+        chapter,
+        block,
+        start,
+        end,
+        excerpt: excerpt.to_string(),
+    }
 }
 
 pub fn delete_highlight_action(group: Uuid) -> EbookAction {
@@ -876,6 +933,45 @@ mod tests {
             BooksDoc::annotations_for(&a, &book_id).len(),
             BooksDoc::annotations_for(&b, &book_id).len(),
         );
+    }
+
+    /// Re-anchoring a highlight (the draggable marker's action) moves exactly the
+    /// one row it names — leaving the highlight's comments in place — and replays
+    /// byte-identically on a peer.
+    #[test]
+    fn move_annotation_reanchors_one_row_and_replays() {
+        let (_app, seeded, book_id, group) = open_with_annotations();
+        let hl = BooksDoc::annotations_for(&seeded, &book_id)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("the seeded highlight");
+        assert_eq!(hl.block, 3, "precondition: the highlight starts on block 3");
+
+        let mut a = seeded;
+        a.commit();
+        let bytes = a.save();
+        let mut b = AutoCommit::load(&bytes).unwrap();
+        assert_eq!(a.get_heads(), b.get_heads(), "precondition: same base state");
+
+        let action = move_annotation_action(hl.id, 0, 9, 0, 5, "moved");
+        let encoded = encode(&action);
+        let env = qos_actions::apply_local(&mut a, &action, encoded).unwrap();
+        qos_actions::replay(&mut b, &env, &registry()).unwrap();
+
+        assert_eq!(a.get_heads(), b.get_heads(), "the re-anchor replays byte-identically");
+        // The same highlight row moved — its id is preserved.
+        let moved = BooksDoc::annotations_for(&a, &book_id)
+            .into_iter()
+            .find(|x| x.id == hl.id)
+            .expect("the highlight still exists after the move");
+        assert_eq!(moved.block, 9, "the highlight re-anchored to the target block");
+        assert_eq!((moved.start, moved.end), (0, 5), "with the moved range");
+        // Its two comments (Note rows sharing the group) are untouched.
+        let comments = BooksDoc::annotations_for(&a, &book_id)
+            .into_iter()
+            .filter(|x| x.kind == AnnoKind::Note && x.group == group)
+            .count();
+        assert_eq!(comments, 2, "the highlight's comments survived the re-anchor");
     }
 
     /// Single source of truth: a prompted "Edit comment" spec and a directly
