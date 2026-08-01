@@ -7726,6 +7726,21 @@ mod interaction_tests {
         unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
     }
 
+    /// The OS file-association entry point: handing the reader a single `.epub`
+    /// path (as the compositor / default-app routing does, including a
+    /// `/var/workspace` FUSE path) opens straight into that book — no shelf
+    /// detour — with the real file parsed by the real loader.
+    #[test]
+    fn opening_a_book_by_path_lands_in_the_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("handed-off.epub");
+        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+        let app = BooksApp::open_path(&path);
+        assert_eq!(app.view, View::Reader, "a handed-off book opens directly in the reader");
+        assert_eq!(app.library.len(), 1, "the reader holds exactly the opened book");
+        assert!(!app.library[0].title.is_empty(), "the real epub parsed a title");
+    }
+
     #[test]
     fn populated_shelf_offers_an_add_books_affordance() {
         // A shelf that already has books still shows the trailing "Add books"
