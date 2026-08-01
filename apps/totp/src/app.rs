@@ -98,14 +98,13 @@ pub struct AuthenticatorApp {
     /// The visible (filtered/ordered) list must be recomputed — set when the
     /// vault or the search query changes.
     list_dirty: bool,
-    /// The document heads captured just before the first account action of the
-    /// current event, so the host records exactly one undo boundary bracketing
-    /// it. Drained by [`Widget::take_committed_action`]; rising-edge.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The most recent [`EncodedAction`](qos_actions::EncodedAction) an
-    /// affordance dispatched. Lets a test prove a button builds the byte-identical
-    /// action its Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) does.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
+    /// [`TotpAction`](crate::actions::TotpAction) through this: the host brackets
+    /// the undo boundary, applies the action through the executor (so it replays
+    /// byte-identically on peers, exactly as the Ctrl+K palette does), and records
+    /// the last one so a test can prove a button and its
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    actions: ui::ActionHost,
 }
 
 impl Default for AuthenticatorApp {
@@ -153,8 +152,7 @@ impl AuthenticatorApp {
             seed_mode,
             doc_dirty: false,
             list_dirty: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -187,19 +185,10 @@ impl AuthenticatorApp {
     /// stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]). Callers reload the in-memory vault
     /// from the document afterward for immediate feedback; `sync` reconciles it
-    /// again each frame (so a palette dispatch shows up the same way).
+    /// again each frame (so a palette dispatch shows up the same way). This app
+    /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::TotpAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "totp action dispatch failed");
-        }
+        self.actions.dispatch(doc, crate::actions::TOTP_ACTION_TYPE, &action);
     }
 
     /// Re-project the in-memory vault from the now-authoritative document, and —
@@ -779,7 +768,7 @@ impl Widget for AuthenticatorApp {
     /// its account action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {
@@ -794,18 +783,6 @@ impl Widget for AuthenticatorApp {
     fn needs_animation_frame(&self) -> bool {
         true
     }
-}
-
-/// The action transport the Authenticator installs for its own on-screen
-/// affordances. Peers receive account changes through ordinary CRDT sync (the
-/// executor pins each action's actor so the change is content-addressed
-/// identical to a peer's replay and dedupes on merge), so the local affordance
-/// path has nothing extra to replicate — this sink drops the envelope. The
-/// Ctrl+K palette dispatches through the host's transport, which a collaborative
-/// session swaps for a peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 #[cfg(test)]
@@ -1012,7 +989,7 @@ mod tests {
         );
         // And the host has one undo boundary to record for it.
         assert!(
-            app.action_commit_before.is_some(),
+            Widget::take_committed_action(&mut app).is_some(),
             "the add action registered exactly one undo boundary for the host"
         );
     }
