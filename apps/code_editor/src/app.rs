@@ -818,19 +818,13 @@ impl CodeApp {
         }
     }
 
-    /// Seed the Terminal panel with a representative build log the first time.
+    /// Give the Terminal panel an honest empty state until a real shell is
+    /// spawned. Opening the Terminal tab spawns the live PTY (`ensure_terminal`,
+    /// which clears this note); we never pre-fill a fabricated build log.
     fn seed_terminal(&mut self) {
-        self.panel.set_terminal(vec![
-            "$ cargo build".to_string(),
-            "   Compiling ferris-cli v0.1.0".to_string(),
-            "    Finished `dev` profile [unoptimized] target(s) in 0.84s".to_string(),
-            "$ cargo run -- --count 20".to_string(),
-            "Hello, world! \u{1F980}".to_string(),
-            "Found 8 primes below 20:".to_string(),
-            "   2    3    5    7   11   13".to_string(),
-            "  17   19".to_string(),
-            "$ ".to_string(),
-        ]);
+        self.panel.set_terminal_note(Some(
+            "No terminal running. Open the Terminal to run commands in this project.".to_string(),
+        ));
     }
 
     // ---- headless `--shots` scenario staging ------------------------------
