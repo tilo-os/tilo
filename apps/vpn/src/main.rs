@@ -52,7 +52,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.vpn");
-    let app = ui::App::new(state, vpn::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, vpn::app_root()).with_autosave(autosave);
+    // Register the VPN's actions so the shell's Ctrl+K palette can decode +
+    // replay the same connection/Tor actions the on-screen affordances dispatch.
+    vpn::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

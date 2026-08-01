@@ -25,10 +25,11 @@ use ui::widget::{ModalDialog, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::actions::{self, VPN_ACTION_TYPE};
 use crate::config::{self, Backend, CommandPlan};
 use crate::doc::VpnDoc;
 use crate::model::{
-    human_ago, sample_vault, ConnId, ConnKind, ConnStatus, Connection, Vault,
+    human_ago, sample_vault, stub_connection, ConnId, ConnKind, ConnStatus, Connection, Vault,
 };
 use crate::net::{self, Transfer};
 use crate::portal::{self, ImportOutcome};
@@ -289,6 +290,12 @@ pub struct VpnApp {
     /// Last time the real interface state was reconciled, to throttle the
     /// per-frame `ip link` / `pgrep` probes to ~1 Hz.
     last_reconcile: Option<Instant>,
+    /// Framework-owned action dispatch. Every document-mutating affordance (add
+    /// a connection, toggle Tor) dispatches its [`crate::actions::VpnAction`]
+    /// through this host, which brackets the undo boundary, encodes it, and
+    /// applies it via the executor so it replays byte-identically on peers — the
+    /// same path the Ctrl+K palette takes.
+    actions: ui::ActionHost,
 }
 
 impl Default for VpnApp {
@@ -333,6 +340,7 @@ impl VpnApp {
             is_focused: false,
             throughput: HashMap::new(),
             last_reconcile: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -518,7 +526,9 @@ impl VpnApp {
             },
             Pending::TorGlobal(on, plan) => match config::execute(&plan) {
                 Ok(out) => {
-                    VpnDoc::set_tor_global(doc, on);
+                    // The routing command is the external side effect; flipping
+                    // the stored preference is the action (undo + replay for free).
+                    self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::set_tor_global_action(on));
                     self.log(format!("$ {}  → ok {}", plan.display(), out));
                 }
                 Err(e) => self.log(format!("$ {}  → failed: {}", plan.display(), e)),
@@ -607,7 +617,10 @@ impl VpnApp {
                         }
                     }
                     let id = conn.id;
-                    VpnDoc::write_connection(doc, &conn);
+                    // The parse/persist above is the external import side effect;
+                    // adding the resulting profile to the shared document is the
+                    // same action the add form dispatches — one source of truth.
+                    self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(conn));
                     self.refresh(doc);
                     self.select(doc, id);
                     true
@@ -625,9 +638,9 @@ impl VpnApp {
         }
     }
 
-    fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
+    pub(crate) fn toggle_conn_tor(&mut self, doc: &mut AutoCommit, id: ConnId) {
         let next = self.vault.get(id).map(|c| !c.tor).unwrap_or(true);
-        VpnDoc::set_conn_tor(doc, id, next);
+        self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::set_conn_tor_action(id, next));
         self.refresh(doc);
     }
 
@@ -639,28 +652,26 @@ impl VpnApp {
         self.modal = Modal::Add;
     }
 
-    fn commit_add(&mut self, doc: &mut AutoCommit) {
-        let name = if self.add_name.trim().is_empty() {
-            format!("New {}", self.add_kind.long_name())
-        } else {
-            self.add_name.trim().to_string()
-        };
-        let mut c = Connection::new(&name, self.add_kind);
+    pub(crate) fn commit_add(&mut self, doc: &mut AutoCommit) {
+        // Build the profile from the form (shared with the palette's add action),
+        // then filling in the one field only the form carries: the endpoint.
+        let mut c = stub_connection(&self.add_name, self.add_kind);
         c.endpoint = self.add_endpoint.trim().to_string();
-        c.last_used = "Just added".to_string();
-        c.address = "10.0.0.2/32".to_string();
-        c.dns = "1.1.1.1".to_string();
-        c.allowed_ips = "0.0.0.0/0".to_string();
-        c.public_key = match self.add_kind {
-            ConnKind::WireGuard => "(import .conf to populate key)".to_string(),
-            ConnKind::OpenVpn => format!("CN={name}"),
-        };
+        let name = c.name.clone();
         let id = c.id;
-        VpnDoc::write_connection(doc, &c);
+        // Dispatch the SAME action the Ctrl+K "Add … connection" entry does.
+        self.actions.dispatch(doc, VPN_ACTION_TYPE, &actions::add_connection_action(c));
         self.modal = Modal::None;
         self.refresh(doc);
         self.select(doc, id);
         self.activity.push(format!("added {} '{}'", self.add_kind.badge(), name));
+    }
+
+    /// The last [`qos_actions::EncodedAction`] an affordance dispatched, for the
+    /// `affordance == ActionSpec` covenant test — an on-screen control and its
+    /// Ctrl+K entry must build the byte-identical action.
+    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     // ---- layout ------------------------------------------------------
@@ -1748,6 +1759,19 @@ impl Widget for VpnApp {
 
     fn name(&self) -> &str {
         "VpnApp"
+    }
+
+    /// Publish the vault + connections resource tree to the shell's Ctrl+K
+    /// palette (see [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn test_id(&self) -> Option<&str> {
