@@ -8250,6 +8250,7 @@ dependencies = [
  "chrono",
  "futures-util",
  "png 0.18.1",
+ "qos-actions",
  "reqwest 0.12.28",
  "rustls",
  "serde",

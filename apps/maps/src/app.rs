@@ -26,6 +26,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::actions::{MapsAction, MAPS_ACTION_TYPE};
 use crate::canvas::{self, MapPalette};
 use crate::doc::MapsDoc;
 use crate::draw;
@@ -172,6 +173,12 @@ pub struct MapsApp {
     rect: Rect,
     node: Option<NodeId>,
 
+    /// Framework-owned action dispatch: every collaborative doc mutation (save a
+    /// place, clear the route, add/remove an offline region) goes through this so
+    /// it brackets one undo boundary and replays byte-identically on peers — the
+    /// same path a Ctrl+K palette dispatch takes.
+    actions: ui::ActionHost,
+
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
     search_focused: bool,
@@ -307,6 +314,7 @@ impl MapsApp {
             basemap,
             rect: Rect::ZERO,
             node: None,
+            actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
             search_focused: false,
             search_input: {
@@ -656,9 +664,12 @@ impl MapsApp {
     }
 
     /// Save (or refresh) the just-requested download as a manageable region.
-    /// Re-downloading the exact same footprint updates the record in place
-    /// instead of stacking a duplicate row.
-    fn record_region(&mut self, bounds: GeoBounds, z0: u8, z1: u8, tiles: u32) {
+    /// The region **row** is a collaborative doc mutation dispatched through the
+    /// action host (its dedupe of the same footprint lives in the action's
+    /// `apply`); the tiles themselves were fetched externally by the caller.
+    fn record_region(&mut self, doc: &mut AutoCommit, bounds: GeoBounds, z0: u8, z1: u8, tiles: u32) {
+        // Id + name + tile count are resolved here, at authoring time, and carried
+        // in the action so `apply` stays free of the RNG / wall-clock.
         let name = self.region_name(bounds);
         let id = format!(
             "region-{}",
@@ -667,13 +678,7 @@ impl MapsApp {
                 .map(|d| d.as_micros())
                 .unwrap_or(0)
         );
-        self.model.regions.retain(|r| {
-            !(r.z0 == z0
-                && r.z1 == z1
-                && same_coord(r.min, bounds.min)
-                && same_coord(r.max, bounds.max))
-        });
-        self.model.regions.push(crate::model::DownloadedRegion {
+        let region = crate::model::DownloadedRegion {
             id,
             name,
             min: bounds.min,
@@ -681,18 +686,21 @@ impl MapsApp {
             z0,
             z1,
             tiles,
-        });
+        };
+        self.perform(doc, MapsAction::AddRegion(region));
     }
 
-    /// Remove a saved region: drop its record and delete the tiles no *other*
-    /// saved region still needs, freeing disk. Shared imagery is kept.
-    fn delete_region(&mut self, id: &str) {
-        let Some(pos) = self.model.regions.iter().position(|r| r.id == id) else {
+    /// Remove a saved region: dispatch the row removal as an action, and delete
+    /// the tiles no *other* saved region still needs as an external side effect.
+    /// Shared imagery is kept — the tile arithmetic reads the live region set
+    /// before the row is dropped.
+    fn delete_region(&mut self, doc: &mut AutoCommit, id: &str) {
+        let Some(region) = self.model.regions.iter().find(|r| r.id == id).cloned() else {
             return;
         };
-        let region = self.model.regions.remove(pos);
+        // Tiles any *other* saved region still needs must survive.
         let mut keep: std::collections::HashSet<TileId> = std::collections::HashSet::new();
-        for r in &self.model.regions {
+        for r in self.model.regions.iter().filter(|r| r.id != id) {
             keep.extend(Self::region_tile_ids(r));
         }
         let doomed: Vec<TileId> = Self::region_tile_ids(&region)
@@ -701,6 +709,8 @@ impl MapsApp {
             .collect();
         let freed = self.tiles.delete_tiles(&doomed);
         self.cache_bytes = self.tiles.cache_bytes();
+        // The metadata row is the action; the tile deletion above is external.
+        self.perform(doc, MapsAction::DeleteRegion { id: id.to_string() });
         self.model.status = format!("Removed “{}” · {} freed", region.name, fmt_bytes(freed));
         self.mark_dirty();
     }
@@ -708,6 +718,24 @@ impl MapsApp {
     // --- actions -----------------------------------------------------------
     fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Dispatch one collaborative [`MapsAction`] against the shared document.
+    ///
+    /// Maps holds its state as an in-memory [`MapModel`] mirrored into a single
+    /// CRDT blob, so this first flushes the live model to `doc` (usually a no-op —
+    /// `sync` already did — but it guarantees the action mutates current state and
+    /// that the [`ActionHost`](ui::ActionHost) brackets *only* the action). The
+    /// host encodes + applies it via the executor (one undo boundary, byte-
+    /// identical replay on peers); we then re-adopt the mutated model so the UI
+    /// and the document agree on a single source of truth.
+    fn perform(&mut self, doc: &mut AutoCommit, action: MapsAction) {
+        MapsDoc::save(doc, &self.model);
+        self.actions.dispatch(doc, MAPS_ACTION_TYPE, &action);
+        if let Some(model) = MapsDoc::load(doc) {
+            self.model = model;
+        }
+        self.dirty = false;
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -1287,16 +1315,18 @@ impl MapsApp {
         }
     }
 
-    fn toggle_save_selected(&mut self) {
+    fn toggle_save_selected(&mut self, doc: &mut AutoCommit) {
         if let Some(id) = self.model.selected.clone() {
-            self.model.toggle_saved(&id);
-            self.mark_dirty();
+            // Resolve the target state here (authoring time) so the action carries
+            // an explicit `saved`, never a read-and-toggle that could diverge on
+            // replay.
+            let now_saved = self.model.place(&id).map(|p| p.saved).unwrap_or(false);
+            self.perform(doc, MapsAction::SetPlaceSaved { id, saved: !now_saved });
         }
     }
 
-    fn clear_route(&mut self) {
-        self.model.route = None;
-        self.mark_dirty();
+    fn clear_route(&mut self, doc: &mut AutoCommit) {
+        self.perform(doc, MapsAction::ClearRoute);
     }
 
     /// Exchange the route's origin and destination (both the coordinates and
@@ -1750,7 +1780,7 @@ impl MapsApp {
     }
 
     // --- click dispatch ----------------------------------------------------
-    fn dispatch(&mut self, hit: &Hit) {
+    fn dispatch(&mut self, hit: &Hit, doc: &mut AutoCommit) {
         match hit {
             Hit::Consume => {}
             Hit::FocusSearch => self.search_focused = true,
@@ -1809,8 +1839,8 @@ impl MapsApp {
             }
             Hit::Directions => self.enter_directions(),
             Hit::Transit => self.enter_transit(),
-            Hit::ToggleSave => self.toggle_save_selected(),
-            Hit::ClearRoute => self.clear_route(),
+            Hit::ToggleSave => self.toggle_save_selected(doc),
+            Hit::ClearRoute => self.clear_route(doc),
             Hit::SwapEnds => self.swap_ends(),
             Hit::EditOrigin => self.focus_endpoint(EndField::Origin),
             Hit::EditDest => self.focus_endpoint(EndField::Dest),
@@ -1852,16 +1882,19 @@ impl MapsApp {
                 let bounds = self.viewport_bounds();
                 let n = self.tiles.start_download(bounds, base_z, z1);
                 // Record the area as a manageable offline region so it appears
-                // in the list and can be removed again.
-                self.record_region(bounds, base_z, z1, n);
+                // in the list and can be removed again. The tile fetch above is
+                // external; the region row is the collaborative action.
+                self.record_region(doc, bounds, base_z, z1, n);
                 self.model.status = format!("Downloading {n} tiles for offline use…");
                 self.mark_dirty();
             }
-            Hit::OfflineDeleteRegion(id) => self.delete_region(id),
+            Hit::OfflineDeleteRegion(id) => self.delete_region(doc, id),
             Hit::OfflineClearCache => {
                 let freed = self.tiles.clear_cache();
                 self.cache_bytes = 0;
-                self.model.regions.clear();
+                // The on-disk cache clear above is external; dropping every region
+                // row is the collaborative action.
+                self.perform(doc, MapsAction::ClearRegions);
                 self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
                 self.mark_dirty();
             }
@@ -3436,7 +3469,7 @@ impl Widget for MapsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
@@ -3493,7 +3526,7 @@ impl Widget for MapsApp {
                     ) {
                         self.edit_field = None;
                     }
-                    self.dispatch(&hit);
+                    self.dispatch(&hit, state);
                     // A click that focused a text field forwards the press so the
                     // shared TextInput places its caret at the click point (the
                     // preceding CursorMoved already set its hover flag).
@@ -3558,7 +3591,7 @@ impl Widget for MapsApp {
                     if self.route_field_key(event, scale_factor, modifiers) {
                         *handled = true;
                     }
-                } else if self.handle_key(&key_event.logical_key, modifiers) {
+                } else if self.handle_key(&key_event.logical_key, modifiers, state) {
                     *handled = true;
                 }
             }
@@ -3568,6 +3601,22 @@ impl Widget for MapsApp {
 
     fn name(&self) -> &str {
         "MapsApp"
+    }
+
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
+    /// places, the active route, and the offline regions currently in the shared
+    /// document. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3729,7 +3778,7 @@ impl MapsApp {
         drive_text_input(input, event, scale, modifiers);
     }
 
-    fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers) -> bool {
+    fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers, doc: &mut AutoCommit) -> bool {
         // A Directions endpoint field (From / To) has keyboard focus: typed
         // characters geocode that endpoint, mirroring the top search field.
         // Focused text fields (search / endpoints) are handled by
@@ -3764,7 +3813,7 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
-                self.toggle_save_selected();
+                self.toggle_save_selected(doc);
                 true
             }
             Key::Character(s) if s.as_str() == "1" => {
@@ -3828,6 +3877,17 @@ mod tests {
         a
     }
 
+    /// Drive a click `Hit` through the real `dispatch` path with a throwaway
+    /// document, for the tests that assert on the resulting in-memory view state.
+    /// Doc-mutating hits still flow through the action host (`perform` re-seeds the
+    /// throwaway doc from the live model each call, so state carries across taps);
+    /// the collaborative doc + undo + replay guarantees are proven separately in
+    /// [`crate::actions`] and by [`delete_region_affordance_matches_action_spec`].
+    fn tap(a: &mut MapsApp, hit: Hit) {
+        let mut doc = AutoCommit::new();
+        a.dispatch(&hit, &mut doc);
+    }
+
     #[test]
     fn pan_changes_center() {
         let mut a = app_at(1280.0, 800.0);
@@ -3842,12 +3902,12 @@ mod tests {
         // on colours its arterials — the demonstrable overlay.
         let mut a = app_at(1280.0, 800.0);
         assert!(!a.traffic_on && a.traffic.is_empty(), "off + empty at start");
-        a.dispatch(&Hit::ToggleTraffic);
+        tap(&mut a, Hit::ToggleTraffic);
         assert!(a.traffic_on, "the control toggles the overlay on");
         assert!(!a.traffic.is_empty(), "sample cartography yields congestion segments");
         assert_eq!(a.traffic.source.as_deref(), Some("sample data"), "provenance is honest");
         // Toggling again turns it off.
-        a.dispatch(&Hit::ToggleTraffic);
+        tap(&mut a, Hit::ToggleTraffic);
         assert!(!a.traffic_on, "the control toggles the overlay back off");
     }
 
@@ -4195,7 +4255,7 @@ mod tests {
         a.pois = vec![demo_poi("pd", 48.16, 11.60)];
         a.selected_poi = Some("pd".to_string());
         a.model.mode = TravelMode::Car;
-        a.dispatch(&Hit::PoiDirections);
+        tap(&mut a, Hit::PoiDirections);
         assert_eq!(a.model.panel, Panel::Directions);
         assert_eq!(a.model.dest, Some(LatLon::new(48.16, 11.60)), "POI becomes the destination");
         assert_eq!(a.model.dest_name, "POI pd");
@@ -4239,7 +4299,7 @@ mod tests {
 
         // Dispatching the row selects the POI: opens its card AND centres the map
         // on it (the list → map link), without disturbing the place selection.
-        a.dispatch(&Hit::SelectPoi("far".to_string()));
+        tap(&mut a, Hit::SelectPoi("far".to_string()));
         assert_eq!(a.selected_poi.as_deref(), Some("far"), "the row opens the POI card");
         assert_eq!(a.model.center, far, "the map re-centres on the chosen POI");
         assert_eq!(a.model.selected, sel_before, "selecting a POI never disturbs the place selection");
@@ -4455,9 +4515,9 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         assert!(a.overlay_mode());
         assert!(!a.panel_visible(), "drawer starts closed");
-        a.dispatch(&Hit::ToggleNav);
+        tap(&mut a, Hit::ToggleNav);
         assert!(a.panel_visible(), "menu opens the drawer");
-        a.dispatch(&Hit::CloseNav);
+        tap(&mut a, Hit::CloseNav);
         assert!(!a.panel_visible(), "scrim/Esc closes the drawer");
     }
 
@@ -4711,17 +4771,17 @@ mod tests {
     #[test]
     fn transit_time_controls_adjust_the_anchor() {
         let mut a = app_at(1280.0, 800.0);
-        a.dispatch(&Hit::TransitTimeDelta(15));
-        a.dispatch(&Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeDelta(15));
         assert_eq!(a.model.transit_time.offset_min, 30, "two +15 steps advance 30 min");
         // Never steps below now.
         for _ in 0..5 {
-            a.dispatch(&Hit::TransitTimeDelta(-15));
+            tap(&mut a, Hit::TransitTimeDelta(-15));
         }
         assert_eq!(a.model.transit_time.offset_min, 0, "offset floors at now");
-        a.dispatch(&Hit::TransitTimeMode(TransitTimeMode::Arrive));
-        a.dispatch(&Hit::TransitTimeDelta(15));
-        a.dispatch(&Hit::TransitTimeNow);
+        tap(&mut a, Hit::TransitTimeMode(TransitTimeMode::Arrive));
+        tap(&mut a, Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeNow);
         assert!(a.model.transit_time.is_now(), "\"Now\" resets to leave-now");
     }
 
@@ -5266,7 +5326,7 @@ mod tests {
         a.model.query = "café".to_string();
         a.run_search();
         assert!(!a.model.results.is_empty(), "search populated results");
-        a.dispatch(&Hit::ClearSearch);
+        tap(&mut a, Hit::ClearSearch);
         assert!(a.model.query.is_empty(), "clear empties the query");
         assert!(a.model.results.is_empty(), "clear empties the results");
     }
@@ -5278,7 +5338,7 @@ mod tests {
         a.select_place("marienplatz");
         a.enter_directions();
         assert!(a.model.route.is_some());
-        a.dispatch(&Hit::ClearRoute);
+        tap(&mut a, Hit::ClearRoute);
         assert!(a.model.route.is_none(), "clear-route drops the route");
     }
 
@@ -5286,7 +5346,7 @@ mod tests {
     #[test]
     fn recent_dispatch_runs_search() {
         let mut a = app_at(1280.0, 720.0);
-        a.dispatch(&Hit::Recent("Marienplatz".to_string()));
+        tap(&mut a, Hit::Recent("Marienplatz".to_string()));
         assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
         assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
         assert!(!a.model.results.is_empty(), "the recent search actually runs");
@@ -5299,9 +5359,9 @@ mod tests {
     #[test]
     fn offline_open_and_download_dispatch() {
         let mut a = app_at(1280.0, 720.0);
-        a.dispatch(&Hit::OfflineOpen);
+        tap(&mut a, Hit::OfflineOpen);
         assert!(a.offline_open, "OfflineOpen shows the overlay");
-        a.dispatch(&Hit::OfflineDownload);
+        tap(&mut a, Hit::OfflineDownload);
         assert!(
             a.model.status.starts_with("Downloading") && a.model.status.contains("tiles"),
             "download surfaces a tile-count status, got {:?}",
@@ -5316,11 +5376,11 @@ mod tests {
     fn offline_zoom_delta_clamps() {
         let mut a = app_at(1280.0, 720.0);
         for _ in 0..10 {
-            a.dispatch(&Hit::OfflineZoomDelta(1));
+            tap(&mut a, Hit::OfflineZoomDelta(1));
         }
         assert_eq!(a.offline_zoom_extra, 6, "zoom-depth caps at 6");
         for _ in 0..10 {
-            a.dispatch(&Hit::OfflineZoomDelta(-1));
+            tap(&mut a, Hit::OfflineZoomDelta(-1));
         }
         assert_eq!(a.offline_zoom_extra, 0, "zoom-depth floors at 0");
     }
@@ -5341,7 +5401,7 @@ mod tests {
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
         assert!(a.tiles.cache_bytes() > 0, "seeded cache is non-empty");
 
-        a.dispatch(&Hit::OfflineClearCache);
+        tap(&mut a, Hit::OfflineClearCache);
         assert!(!dir.exists(), "clear-cache removes the on-disk tree");
         assert_eq!(a.cache_bytes, 0, "the cache-size readout resets to 0");
         assert!(a.model.status.starts_with("Cleared"), "a status states what was freed");
@@ -5389,9 +5449,9 @@ mod tests {
         let mut a = app_at(1280.0, 720.0);
         a.set_travel_mode(TravelMode::Transit);
         assert!(a.model.transit.len() >= 3, "sample has multiple itineraries");
-        a.dispatch(&Hit::Journey(0));
+        tap(&mut a, Hit::Journey(0));
         let center0 = a.model.center;
-        a.dispatch(&Hit::Journey(2));
+        tap(&mut a, Hit::Journey(2));
         assert_eq!(a.model.transit_choice, 2, "the third journey is selected");
         assert!(
             (a.model.center.lat - center0.lat).abs() > 1e-6
@@ -5420,9 +5480,9 @@ mod tests {
         // real tile cache.
         let dir = region_test_cache("regtest");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
-        a.dispatch(&Hit::OfflineOpen);
+        tap(&mut a, Hit::OfflineOpen);
         let before = a.model.regions.len();
-        a.dispatch(&Hit::OfflineDownload);
+        tap(&mut a, Hit::OfflineDownload);
         assert_eq!(
             a.model.regions.len(),
             before + 1,
@@ -5434,7 +5494,7 @@ mod tests {
         assert!(!region.name.is_empty(), "the region has a human label");
 
         // Deleting via its id removes exactly that record.
-        a.dispatch(&Hit::OfflineDeleteRegion(region.id.clone()));
+        tap(&mut a, Hit::OfflineDeleteRegion(region.id.clone()));
         assert!(
             !a.model.regions.iter().any(|r| r.id == region.id),
             "delete removes the region from the managed list"
@@ -5495,17 +5555,56 @@ mod tests {
 
         // Deleting the nested area removes its record but keeps every tile,
         // since the containing area still needs them.
-        a.dispatch(&Hit::OfflineDeleteRegion("small".to_string()));
+        tap(&mut a, Hit::OfflineDeleteRegion("small".to_string()));
         assert!(!a.model.regions.iter().any(|r| r.id == "small"));
         for id in &big_ids {
             assert!(a.tiles.cache_path(*id).exists(), "a shared tile must be kept: {id:?}");
         }
 
         // Deleting the last owner frees all of its tiles.
-        a.dispatch(&Hit::OfflineDeleteRegion("big".to_string()));
+        tap(&mut a, Hit::OfflineDeleteRegion("big".to_string()));
         for id in &big_ids {
             assert!(!a.tiles.cache_path(*id).exists(), "the last owner's tiles are freed: {id:?}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The on-screen trash affordance dispatches the byte-identical
+    /// [`MapsAction`](crate::actions::MapsAction) the Ctrl+K "Delete region" spec
+    /// does — one source of truth. Drives the real `dispatch` path against a live
+    /// document and reads back the action host's `last_dispatched`, then confirms
+    /// the shared document actually changed.
+    #[test]
+    fn delete_region_affordance_matches_action_spec() {
+        use crate::actions::{encode, MapsAction};
+        let mut a = app_at(1280.0, 800.0);
+        a.model.regions = vec![crate::model::DownloadedRegion {
+            id: "r1".to_string(),
+            name: "Altstadt".to_string(),
+            min: LatLon::new(48.10, 11.55),
+            max: LatLon::new(48.18, 11.62),
+            z0: 14,
+            z1: 15,
+            tiles: 8,
+        }];
+
+        let mut doc = AutoCommit::new();
+        a.dispatch(&Hit::OfflineDeleteRegion("r1".to_string()), &mut doc);
+
+        // The affordance dispatched exactly the DeleteRegion action a palette row
+        // (its `ActionSpec`) would build for the same id.
+        let dispatched = a
+            .actions
+            .last_dispatched()
+            .expect("the trash affordance dispatched an action");
+        let expected = encode(&MapsAction::DeleteRegion { id: "r1".to_string() });
+        assert_eq!(dispatched, &expected, "affordance == ActionSpec encoded action");
+
+        // And it really mutated the shared document + the live model.
+        assert!(!a.model.regions.iter().any(|r| r.id == "r1"), "the region row is gone");
+        assert!(
+            !MapsDoc::load(&doc).unwrap().regions.iter().any(|r| r.id == "r1"),
+            "the document reflects the removal"
+        );
     }
 }
