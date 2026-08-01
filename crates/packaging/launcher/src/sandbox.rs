@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::capabilities::CapabilityPlan;
-use crate::manifest::{MinimalManifest, PortalPolicy, expand_path};
+use crate::manifest::{MinimalManifest, PortalPolicy};
 
 /// In-sandbox mount root for the package payload.
 pub fn payload_mount_for(package_id: &str) -> PathBuf {
@@ -206,10 +206,9 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
     argv.push(workspace_id.to_string());
 }
 
-/// The DRM device directory. An app's GPU grants are expressed against
-/// this directory (`sandbox.fs.write = ["/dev/dri"]`), which on a
+/// The DRM device directory. The system profile binds it, which on a
 /// multi-GPU host exposes *every* GPU — including ones the compositor
-/// is not rendering on.
+/// is not rendering on. [`push_gpu_selection`] narrows it back to one.
 const DRM_DIR: &str = "/dev/dri";
 
 /// Splice the compositor's GPU choice into an argv built by
@@ -266,32 +265,28 @@ pub fn push_gpu_selection(
     }
 }
 
-/// Whether this launch exposes the DRM device directory at all — from
-/// the manifest, from the user's capabilities, or from both.
+/// Whether this launch exposes the DRM device directory at all.
 ///
-/// Both sources have to be consulted, because either one alone can put
-/// a GPU in the namespace: the manifest is the packager's request and
-/// the capability plan is the user's grant, and
-/// [`push_gpu_selection`]'s narrowing has to land on whichever of them
-/// actually mounted something.
+/// The system profile puts `/dev/dri` in every sandbox, so this is
+/// normally `true` — but it still consults both sources rather than
+/// returning a constant, because [`push_gpu_selection`]'s narrowing has
+/// to land on something that was actually mounted, and a future profile
+/// that dropped the device would otherwise leave the narrowing creating
+/// an empty `/dev/dri` nobody asked for.
 ///
 /// A grant *of* `/dev/dri` and a grant of a node *inside* it both
-/// count: an app that names only `/dev/dri/renderD128` still has its
-/// device view narrowed to the compositor's node.
-pub fn grants_drm(manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
-    let from_manifest = manifest
-        .sandbox
-        .fs
-        .read
+/// count: an app whose capability names only `/dev/dri/renderD128`
+/// still has its device view narrowed to the compositor's node.
+pub fn grants_drm(_manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
+    let from_profile = crate::profile::SYSTEM_DEVICE_PATHS
         .iter()
-        .chain(manifest.sandbox.fs.write.iter())
-        .any(|entry| is_drm_path(&expand_path(entry)));
+        .any(|entry| is_drm_path(Path::new(entry)));
     let from_capabilities = capabilities
         .ro_paths
         .iter()
         .chain(capabilities.rw_paths.iter())
         .any(|p| is_drm_path(p));
-    from_manifest || from_capabilities
+    from_profile || from_capabilities
 }
 
 fn is_drm_path(p: &Path) -> bool {
@@ -452,10 +447,9 @@ pub fn build_bwrap_argv_for_entry(
         }
     }
 
-    // Standard "every app needs these" mounts. Come BEFORE the
-    // manifest fs binds so that a device path (e.g. `/dev/dri`) declared
-    // in `sandbox.fs.{read,write}` lands on top of the `--dev` tmpfs
-    // instead of underneath it.
+    // Standard "every app needs these" mounts. Come BEFORE the system
+    // profile so that its device entries (`/dev/dri`, the nvidia nodes)
+    // land on top of the `--dev` tmpfs instead of underneath it.
     argv.push("--tmpfs".to_string());
     argv.push("/tmp".to_string());
     argv.push("--proc".to_string());
@@ -463,43 +457,18 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--dev".to_string());
     argv.push("/dev".to_string());
 
-    // FS read/write rules from the manifest. Both source and dest use
-    // the host-side expanded path — the app sees the same paths it
-    // declared, so e.g. `~/Documents` resolves identically in and out of
-    // the sandbox. Same convention as the per-workspace profile.
-    //
-    // Every one of these is a `-try` bind. A manifest entry is a
-    // *permission*, not an assertion that the path exists: `/dev/snd`
-    // on a machine with no sound card, `/usr/share/nvidia` on an AMD
-    // box, or `~/.cache/mesa_shader_cache_db` before Mesa has ever run
-    // are all normal, and none of them is a reason to refuse the
-    // launch. Plain `--bind`/`--ro-bind` make bwrap abort on a missing
-    // source, which turns an unused grant into a dead app. Write paths
-    // the app genuinely owns are created on the host before this point
-    // (see `run::materialise_write_grants`), so `-try` does not quietly
-    // cost an app its own state directory.
-    for entry in &manifest.sandbox.fs.read {
-        let host = expand_path(entry);
-        let flag = if host.starts_with("/dev") {
-            "--dev-bind-try"
-        } else {
-            "--ro-bind-try"
-        };
-        push_bind(&mut argv, flag, &host, &host);
-    }
-    for entry in &manifest.sandbox.fs.write {
-        let host = expand_path(entry);
-        let flag = if host.starts_with("/dev") {
-            "--dev-bind-try"
-        } else {
-            "--bind-try"
-        };
-        push_bind(&mut argv, flag, &host, &host);
-    }
+    // The system read profile. Fixed, identical for every package, and
+    // fed by no manifest field — see `crate::profile` for what may go in
+    // it and why. This is where the per-manifest `sandbox.fs.read` list
+    // used to be expanded and bound; a package now names nothing.
+    crate::profile::push_system_profile(
+        &mut argv,
+        egress_decision(manifest, capabilities).shares_host_network(),
+    );
 
-    // User-granted capabilities. These come after the manifest's own
-    // binds so a path the user granted read-write wins over the same
-    // path declared read-only by the packager.
+    // User-granted capabilities. These come after the system profile so
+    // a path the user granted read-write wins over the same path the
+    // profile exposes read-only.
     //
     // `-try` variants throughout: a capability outlives the thing it
     // names (a granted directory can be deleted, a webcam unplugged),
@@ -762,10 +731,10 @@ mod tests {
                     mode: net_mode.to_string(),
                     hosts: Vec::new(),
                 },
-                fs: crate::manifest::Fs {
-                    read: vec!["/usr/share/fonts".to_string()],
-                    write: vec!["/var/lib/qos/notes".to_string()],
-                },
+                // A manifest names no path. One that did would be
+                // refused before it reached this builder; see
+                // `manifest::enforce_fs_policy`.
+                fs: crate::manifest::Fs::default(),
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
             },
@@ -844,37 +813,52 @@ mod tests {
         assert_eq!(argv[pos + 1], "/var/qos-apps/com.example.notes");
     }
 
+    /// The reads a launch gets are the system profile's, and a manifest
+    /// that names a path never reaches this builder at all — so the argv
+    /// is the same whatever a package wrote in `[sandbox.fs]`.
     #[test]
-    fn argv_includes_fs_read_and_write_binds() {
+    fn argv_reads_come_from_the_system_profile_not_the_manifest() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
-        // --ro-bind-try /usr/share/fonts /usr/share/fonts
-        //
-        // `-try`, not the plain flag: a declared path that does not
-        // exist on this host must not abort the launch.
-        let ro_pos = argv
-            .windows(3)
-            .position(|w| {
-                w[0] == "--ro-bind-try"
-                    && w[1] == "/usr/share/fonts"
-                    && w[2] == "/usr/share/fonts"
-            })
-            .expect("fs.read ro-bind-try");
-        let _ = ro_pos;
-        let rw_pos = argv
-            .windows(3)
-            .position(|w| {
-                w[0] == "--bind-try"
-                    && w[1] == "/var/lib/qos/notes"
-                    && w[2] == "/var/lib/qos/notes"
-            })
-            .expect("fs.write bind-try");
-        let _ = rw_pos;
+        for entry in crate::profile::SYSTEM_READ_PATHS {
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--ro-bind-try" && w[1] == *entry && w[2] == *entry),
+                "profile entry {entry} missing from argv: {argv:?}"
+            );
+        }
+        // A manifest that still carries `fs` fields changes nothing here:
+        // the builder does not read them. (Reaching this builder with
+        // them set is itself refused upstream — this asserts the builder
+        // has no second path into a bind.)
+        let mut hostile = mk_manifest("off");
+        hostile.sandbox.fs.write.push("/".to_string());
+        hostile.sandbox.fs.read.push("/home/alice/.ssh".to_string());
+        let hostile_argv = build_bwrap_argv(
+            &hostile,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        assert_eq!(
+            argv, hostile_argv,
+            "a manifest naming paths must produce byte-identical argv to one that names none"
+        );
         // The payload mount stays a hard `--ro-bind`: a package whose
         // own payload is missing genuinely cannot run.
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
             "payload bind must stay non-try: {argv:?}"
+        );
+        // Nothing writable comes out of this builder. The app's one
+        // writable directory is spliced by `run`, from the room it was
+        // launched into — not from anything the package said.
+        assert!(
+            !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
+            "the manifest layer must produce no writable bind: {argv:?}"
         );
     }
 
@@ -1221,41 +1205,35 @@ mod tests {
         );
     }
 
-    /// The DRM-grant test reads both sources the same way the bind
-    /// loops do, so an app that declares a single node counts as much
-    /// as one that declares the whole directory — and a device the
-    /// *user* granted counts as much as one the packager asked for.
+    /// The device is in the namespace because the *system* put it there,
+    /// so the narrowing must fire for every app — including one whose
+    /// manifest says nothing, which is now every app. A user-granted
+    /// node counts too; missing that would leave every other GPU visible
+    /// to an app whose GPU access came from the user.
     #[test]
-    fn drm_grant_detection_matches_directory_node_and_capability_grants() {
-        let mut m = mk_manifest("off");
+    fn drm_grant_detection_follows_the_profile_and_capability_grants() {
         let none = CapabilityPlan::empty();
         assert!(
-            !grants_drm(&m, &none),
-            "the baseline fixture declares no GPU"
+            grants_drm(&mk_manifest("off"), &none),
+            "the system profile binds /dev/dri for every app, so every app \
+             must have its device view narrowed"
         );
 
-        m.sandbox.fs.write.push("/dev/dri".to_string());
-        assert!(grants_drm(&m, &none));
-
-        let mut node_only = mk_manifest("off");
-        node_only
-            .sandbox
-            .fs
-            .read
-            .push("/dev/dri/renderD128".to_string());
-        assert!(
-            grants_drm(&node_only, &none),
-            "a single-node grant is still a GPU grant"
-        );
-
-        // A capability the user granted mounts a device just as much as
-        // a manifest entry does. Missing this would leave every other
-        // GPU visible to an app whose GPU access came from the user.
         let mut granted = CapabilityPlan::empty();
-        granted.rw_paths.push(PathBuf::from("/dev/dri"));
+        granted.rw_paths.push(PathBuf::from("/dev/dri/renderD129"));
         assert!(
             grants_drm(&mk_manifest("off"), &granted),
-            "a user-granted device must be narrowed too"
+            "a user-granted node must be narrowed too"
+        );
+
+        // The manifest is not consulted. A package that writes
+        // `/dev/dri` into its (retired) fs block changes nothing.
+        let mut hostile = mk_manifest("off");
+        hostile.sandbox.fs.write.push("/dev/dri".to_string());
+        assert_eq!(
+            grants_drm(&hostile, &none),
+            grants_drm(&mk_manifest("off"), &none),
+            "a manifest entry must not change the GPU decision"
         );
     }
 
@@ -1338,8 +1316,35 @@ mod tests {
         CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
     }
 
+    /// Everything a launch with no grants binds, enumerated. Written as
+    /// an equality rather than a set of `any()` probes so that a new
+    /// mount cannot be added to the default sandbox without this test
+    /// naming it.
+    fn baseline_binds() -> Vec<(String, String, String)> {
+        let mut expected = vec![(
+            "--ro-bind".to_string(),
+            "/host/pkg".to_string(),
+            "/var/qos-apps/com.example.notes".to_string(),
+        )];
+        for p in crate::profile::SYSTEM_READ_PATHS {
+            expected.push((
+                "--ro-bind-try".to_string(),
+                (*p).to_string(),
+                (*p).to_string(),
+            ));
+        }
+        for p in crate::profile::SYSTEM_DEVICE_PATHS {
+            expected.push((
+                "--dev-bind-try".to_string(),
+                (*p).to_string(),
+                (*p).to_string(),
+            ));
+        }
+        expected
+    }
+
     #[test]
-    fn no_capabilities_adds_no_binds_beyond_the_manifest() {
+    fn no_capabilities_adds_no_binds_beyond_the_system_profile() {
         let baseline = argv_with_caps("com.example.notes", &[], 1_000);
         let m = mk_manifest("off");
         let manifest_only =
@@ -1348,30 +1353,11 @@ mod tests {
             baseline, manifest_only,
             "an app granted nothing must get byte-identical argv to a manifest-only launch"
         );
-        // And that argv contains exactly the manifest's own binds: the
-        // payload, plus `fs.read` and `fs.write`. Nothing else.
         assert_eq!(
             bind_triples(&baseline),
-            vec![
-                (
-                    "--ro-bind".to_string(),
-                    "/host/pkg".to_string(),
-                    "/var/qos-apps/com.example.notes".to_string()
-                ),
-                // `-try` on the manifest's own declarations: a declared path
-                // that does not exist on this host must not abort the launch.
-                (
-                    "--ro-bind-try".to_string(),
-                    "/usr/share/fonts".to_string(),
-                    "/usr/share/fonts".to_string()
-                ),
-                (
-                    "--bind-try".to_string(),
-                    "/var/lib/qos/notes".to_string(),
-                    "/var/lib/qos/notes".to_string()
-                ),
-            ],
-            "a capability-less launch binds only what the manifest declares: {baseline:?}"
+            baseline_binds(),
+            "a capability-less launch binds the payload and the system profile, \
+             and nothing else: {baseline:?}"
         );
     }
 
@@ -1492,9 +1478,9 @@ mod tests {
             "a capability that expired at 500 must bind nothing at now=1000: {expired:?}"
         );
         assert_eq!(
-            bind_triples(&expired).len(),
-            3,
-            "only the manifest's own three binds survive an expired grant: {expired:?}"
+            bind_triples(&expired),
+            baseline_binds(),
+            "only the payload and the system profile survive an expired grant: {expired:?}"
         );
         // Same capability before its deadline does bind — so the
         // emptiness above is the expiry, not a broken fixture.

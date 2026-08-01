@@ -45,9 +45,10 @@
 //! ## Portal grants
 //!
 //! This SDK exposes **no** grant API. Access control for a CLI
-//! app is the launcher's declarative sandbox (`sandbox.fs.read` /
-//! `sandbox.fs.write` / `sandbox.net`) plus the capability model
-//! in `collab-types::caps`, both enforced outside the app. A
+//! app is the launcher's sandbox — one writable directory the
+//! launcher picks, a fixed system read profile, and `sandbox.net`
+//! — plus the capability model in `collab-types::caps`, all
+//! enforced outside the app. The app names none of it. A
 //! `request_grant` helper that returned `Ok(())` without asking
 //! anyone used to live here; a permission call that always
 //! succeeds is worse than no permission call, so it is gone. When

@@ -1,10 +1,10 @@
 # Word Processor — qOS application manifest.
 #
-# Documents under `~/Documents`, the user dictionary at
-# `~/.config/qos/userdict.txt`, and crash recovery under the data dir.
-# It also drops a default `~/Untitled.md` straight into `$HOME` — that
-# is recorded here rather than papered over, and wants moving to an
-# OS-owned document location.
+# Documents are the room's; the user dictionary and crash-recovery
+# copies are the app's own state and live in its own directory.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read+write on the directories the user opens documents from.
 #
 # Pack and install:
 #
@@ -49,52 +49,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "~/.config/qos/settings.json",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.word-processor",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "~/Documents",
-    "~/Untitled.md",
-    "~/.config/qos/userdict.txt",
-    "~/.local/share/qos/word-processor",
-    # Crash-recovery copies (`recovery::base_dir`). Previously missing, so
-    # under `landlock = "strict"` every recovery write was denied and the
-    # feature silently did nothing.
-    "~/.local/state/qos/word-processor",
-]
 
 [sandbox.net]
 mode = "off"

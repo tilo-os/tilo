@@ -185,7 +185,7 @@ For non-collaboration-aware Wayland clients (anything bound through the per-work
 
 - **Compositor-side cursors.** The shell draws remote cursors over the foreign-client window — the client itself sees only its single local pointer.
 - **Input multiplexing.** The compositor decides whose input reaches the foreign client; default policy is "host always wins" with a per-peer `read_only` toggle for guests.
-- **Environment emulation.** The bwrap profile presents the workspace's `/work` and `/cache` directories; `/home` is empty tmpfs. The app sees no path outside the sandbox.
+- **Environment emulation.** The launcher gives the app one writable directory at `/run/qos/app` — per room, per package — with `HOME` and the `XDG_*` variables pointed inside it, plus a read-only system profile it did not choose. The app sees no path outside the sandbox, and none of what it does see was named by its manifest.
 
 ## 9. Disconnect / reconnect
 
