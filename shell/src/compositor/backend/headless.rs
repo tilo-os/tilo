@@ -175,9 +175,9 @@ impl Backend for HeadlessBackend {
 #[cfg(test)]
 mod tests {
     //! Unit coverage for the headless backend. Each test acquires its
-    //! own wgpu adapter (via `OffscreenRenderer::new`); on machines
-    //! without llvmpipe these would surface as panics during
-    //! construction, so we run them serially under
+    //! own wgpu adapter (via `OffscreenRenderer::try_new`); on machines
+    //! without llvmpipe these surface as an `Err` from
+    //! `HeadlessBackend::new`, so we run them serially under
     //! `cargo test -- --test-threads 1` (the default for the
     //! quick-desktop lib suite).
     use super::*;
