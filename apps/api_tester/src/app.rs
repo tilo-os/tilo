@@ -62,6 +62,7 @@ use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{Button, Dropdown, SplitLayout, TextInput, ToggleGroup, Widget};
 
+use crate::actions::{self, ApiTesterAction, API_TESTER_ACTION_TYPE};
 use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::model::{
@@ -191,6 +192,13 @@ pub struct ApiTesterApp {
     /// Commands pushed by child callbacks, drained after event routing.
     sink: Sink,
 
+    /// Framework-owned action dispatch: every collaborative doc mutation (create
+    /// / rename / delete a collection or saved request, add / edit / delete an
+    /// environment or variable, select the active environment) is encoded and
+    /// applied through this host, which brackets the undo boundary and remembers
+    /// the last action — the same path a Ctrl+K palette dispatch takes.
+    actions: ui::ActionHost,
+
     // --- Worker plumbing ---
     tx: Sender<SendOutcome>,
     rx: Receiver<SendOutcome>,
@@ -318,6 +326,7 @@ impl ApiTesterApp {
             nav_rows: Vec::new(),
             nav_meta: Vec::new(),
             sink,
+            actions: ui::ActionHost::new(),
             tx,
             rx,
             rail: RailState::default(),
@@ -470,6 +479,35 @@ impl ApiTesterApp {
         }
         self.adopted = true;
         self.dirty = true;
+        self.rebuild_nav();
+    }
+
+    /// Dispatch one collaborative [`ApiTesterAction`] against the shared document.
+    ///
+    /// The API tester holds its workspace as an in-memory model mirrored into
+    /// per-key JSON snapshots, so this first flushes the live model to `doc`
+    /// (usually a no-op — the app already persisted — but it guarantees the
+    /// action mutates current state and that the
+    /// [`ActionHost`](ui::ActionHost) brackets *only* the action). The host
+    /// encodes + applies it via the executor (one undo boundary, byte-identical
+    /// replay on peers); we then re-adopt the mutated snapshots so the UI and the
+    /// document agree on a single source of truth.
+    fn perform(&mut self, state: &mut AutoCommit, path: &ObjId, action: ApiTesterAction) {
+        self.persist(state, path);
+        self.actions.dispatch(state, API_TESTER_ACTION_TYPE, &action);
+        self.adopt_workspace(state, path);
+        self.dirty = true;
+    }
+
+    /// Re-read the collaborative workspace snapshots (collections, environments,
+    /// the selected environment) from the document after an action mutated them.
+    /// Deliberately leaves the active request buffer, its live URL/body `Text`,
+    /// and per-peer view state untouched — those are not what an action changed.
+    fn adopt_workspace(&mut self, state: &AutoCommit, path: &ObjId) {
+        self.collections = ApiDoc::collections(state, path);
+        self.environments = ApiDoc::environments(state, path);
+        self.active_env = ApiDoc::active_env(state, path).and_then(|id| id.parse().ok());
+        self.rebuild_env_dropdown();
         self.rebuild_nav();
     }
 
@@ -1463,7 +1501,14 @@ impl ApiTesterApp {
 
     /// Reconcile the model from the CRDT-bound pickers after they may have
     /// changed the document.
-    fn reconcile_pickers(&mut self) {
+    ///
+    /// The method picker feeds the *active request buffer* (presentation until a
+    /// whole-request save), so it updates the model directly. Selecting the
+    /// active **environment** is collaborative workspace state persisted in the
+    /// shared document, so that change is routed through the action host — the
+    /// same [`SetActiveEnvironment`](ApiTesterAction::SetActiveEnvironment) a
+    /// Ctrl+K palette dispatch would apply.
+    fn reconcile_pickers(&mut self, state: &mut AutoCommit, path: &ObjId) {
         let sel = self.method_dropdown.selected();
         if !sel.is_empty() {
             let m = HttpMethod::from_str(sel);
@@ -1480,8 +1525,7 @@ impl ApiTesterApp {
                 self.environments.iter().find(|e| e.name == esel).map(|e| e.id)
             };
             if new_env != self.active_env {
-                self.active_env = new_env;
-                self.dirty = true;
+                self.perform(state, path, actions::set_active_environment_action(new_env));
             }
         }
     }
@@ -1586,7 +1630,7 @@ impl Widget for ApiTesterApp {
         // Sync + reconcile the CRDT-bound pickers.
         self.method_dropdown.sync(state, path);
         self.env_dropdown.sync(state, path);
-        self.reconcile_pickers();
+        self.reconcile_pickers(state, path);
 
         // Keep the widgets in step with app state the app itself drives.
         self.send_button.set_enabled(!self.sending);
@@ -1712,7 +1756,7 @@ impl Widget for ApiTesterApp {
 
         // Apply any commands the children queued, then reconcile the pickers.
         let did = self.drain_commands(state, path);
-        self.reconcile_pickers();
+        self.reconcile_pickers(state, path);
         if did || *handled {
             self.dirty = true;
         }
@@ -1775,6 +1819,22 @@ impl Widget for ApiTesterApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
+    /// collections, saved requests, environments, and variables currently in the
+    /// shared document. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1913,6 +1973,40 @@ mod tests {
         b.adopt(&doc, &root);
         assert!(!b.collections.is_empty());
         assert_eq!(b.collections.len(), a.collections.len());
+    }
+
+    /// The environment picker is wired through the action host: selecting a new
+    /// environment dispatches exactly the [`SetActiveEnvironment`] the Ctrl+K
+    /// "activate" spec would build (affordance == `ActionSpec`), and the choice
+    /// lands in the shared document. Drives the real reconcile path.
+    #[test]
+    fn selecting_environment_dispatches_the_set_active_action() {
+        let mut a = ApiTesterApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        // First sync seeds the workspace into the doc (active env = Production).
+        a.sync(&mut doc, &root);
+        assert!(a.environments.len() >= 2, "demo seeds several environments");
+        let target = a.environments[1].clone();
+        assert_ne!(a.active_env, Some(target.id), "target isn't already active");
+
+        // Drive the picker the real way: its selection lives in the CRDT string
+        // the Dropdown binds to. Sync the dropdown, then reconcile.
+        ApiDoc::set_text(&mut doc, &root, ENV_PATH, &target.name);
+        a.env_dropdown.sync(&mut doc, &root);
+        a.reconcile_pickers(&mut doc, &root);
+
+        assert_eq!(a.active_env, Some(target.id), "the active environment switched");
+        let dispatched = a.actions.last_dispatched().expect("the picker dispatched an action");
+        let expected =
+            actions::encode(&actions::set_active_environment_action(Some(target.id)));
+        assert_eq!(dispatched.type_id, expected.type_id);
+        assert_eq!(dispatched.payload, expected.payload, "affordance == ActionSpec");
+        assert_eq!(
+            ApiDoc::active_env(&doc, &root),
+            Some(target.id.to_string()),
+            "the selection is recorded in the shared document"
+        );
     }
 
     #[test]
