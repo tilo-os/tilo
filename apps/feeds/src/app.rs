@@ -2562,7 +2562,9 @@ fn draw_list(
         } else {
             format!("{source}  ·  {}", a.summary)
         };
-        let meta_w = (lr.rect.x1 - right_pad - text_x).max(60.0) as f32;
+        // Stop the meta line before the always-present star glyph (bottom-right)
+        // so the truncated source·summary never collides with it.
+        let meta_w = (lr.star_rect.x0 - 8.0 - text_x).max(60.0) as f32;
         let meta_text = elide(tr, &meta, 12.5, meta_w);
         tr.draw_text(
             scene,
