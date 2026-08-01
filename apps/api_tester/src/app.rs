@@ -44,7 +44,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -60,7 +59,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::toggle_group::Segment;
-use ui::widget::{Button, Dropdown, SplitLayout, TextInput, ToggleGroup, Widget};
+use ui::widget::{Button, Dropdown, SidebarDrawer, SplitLayout, TextInput, ToggleGroup, Widget};
 
 use crate::actions::{self, ApiTesterAction, API_TESTER_ACTION_TYPE};
 use crate::doc::ApiDoc;
@@ -71,7 +70,7 @@ use crate::model::{
 };
 use crate::navrow::{NavKind, NavRow, ROW_H};
 use crate::palette::{short_path, status_color, token_color};
-use crate::responsive::{RailState, RAIL_WIDTH};
+use crate::responsive::{RAIL_BREAKPOINT, RAIL_WIDTH};
 use crate::vars;
 
 const SIDEBAR_W: f64 = RAIL_WIDTH;
@@ -203,9 +202,9 @@ pub struct ApiTesterApp {
     tx: Sender<SendOutcome>,
     rx: Receiver<SendOutcome>,
 
-    // --- Adaptive chrome ---
-    rail: RailState,
-    last_tick: Instant,
+    // --- Adaptive chrome: the shared collapsible sidebar/drawer controller
+    // (docked-vs-overlay decision, eased reveal, and dimming scrim). ---
+    rail: SidebarDrawer,
 
     // --- Layout / interaction caches ---
     rect: Rect,
@@ -329,8 +328,11 @@ impl ApiTesterApp {
             actions: ui::ActionHost::new(),
             tx,
             rx,
-            rail: RailState::default(),
-            last_tick: Instant::now(),
+            rail: SidebarDrawer::new()
+                .left()
+                .docked_width(SIDEBAR_W)
+                .overlay_width(SIDEBAR_W)
+                .breakpoint(RAIL_BREAKPOINT),
             rect: Rect::ZERO,
             layout: Layout::default(),
             last_cursor: Point::ZERO,
@@ -719,26 +721,13 @@ impl ApiTesterApp {
     /// `draw`.
     fn compute_layout(&mut self) -> Layout {
         let mut l = Layout::default();
-        let split = self.rail.resolve(self.rect.width());
-        let reveal = self.rail.reveal();
-        let slide = self.rail.slide();
-        let sw = SIDEBAR_W.min(self.rect.width());
-
-        match split {
-            SplitLayout::Docked => {
-                let inset = sw * reveal;
-                l.sidebar = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + inset, self.rect.y1);
-                l.main = Rect::new(l.sidebar.x1, self.rect.y0, self.rect.x1, self.rect.y1);
-            }
-            SplitLayout::Overlay => {
-                l.main = self.rect;
-                if reveal > 0.001 {
-                    l.scrim = self.rect;
-                    let x0 = self.rect.x0 - sw * (1.0 - slide);
-                    l.sidebar = Rect::new(x0, self.rect.y0, x0 + sw, self.rect.y1);
-                }
-            }
-        }
+        // The shared drawer resolves docked-vs-overlay from the rect and hands
+        // back the sidebar / content / scrim rects: a docked column with inset
+        // content when wide, or a slid-in overlay panel over a scrim when narrow.
+        l.main = self.rail.resolve(self.rect);
+        let split = self.rail.layout();
+        l.sidebar = self.rail.sidebar_rect();
+        l.scrim = self.rail.scrim_rect();
 
         // --- URL bar row ---
         let area = l.main;
@@ -780,7 +769,7 @@ impl ApiTesterApp {
         }
 
         // --- Sidebar rows ---
-        if reveal > 0.001 && l.sidebar.width() > 1.0 {
+        if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             let s = l.sidebar;
             let mut y = s.y0 + PAD;
             l.title = Point::new(s.x0 + PAD, y);
@@ -846,27 +835,10 @@ impl ApiTesterApp {
 
         self.draw_main(scene, t, tr, theme, presence, &l);
 
-        let reveal = self.rail.reveal();
-        if self.rail.layout() == SplitLayout::Overlay && reveal > 0.001 {
-            scene.fill(
-                Fill::NonZero,
-                t,
-                Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.5) as f32),
-                None,
-                &l.scrim,
-            );
-        }
-        if reveal > 0.001 && l.sidebar.width() > 1.0 {
-            if self.rail.layout() == SplitLayout::Overlay {
-                let shadow = Rect::new(l.sidebar.x1, l.sidebar.y0, l.sidebar.x1 + 8.0, l.sidebar.y1);
-                scene.fill(
-                    Fill::NonZero,
-                    t,
-                    Color::from_rgba8(0, 0, 0, 255).with_alpha_factor((reveal * 0.18) as f32),
-                    None,
-                    &shadow,
-                );
-            }
+        // The shared drawer paints the (subtle) dimming scrim + soft edge shadow
+        // behind an open overlay flap; it is a no-op when docked or closed.
+        self.rail.draw_scrim(scene, t);
+        if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             self.draw_sidebar(scene, t, tr, theme, presence, &l);
         }
     }
@@ -1696,12 +1668,10 @@ impl Widget for ApiTesterApp {
         presence: &PresenceCtx,
     ) {
         self.poll_worker();
-        // Advance the rail animation with real elapsed time, then recompute
-        // geometry so the controls sit exactly on the chrome this frame.
-        let now = Instant::now();
-        let dt = (now - self.last_tick).as_secs_f64().min(0.1);
-        self.last_tick = now;
-        self.rail.tick(dt);
+        // Advance the drawer's eased reveal (it self-ticks off wall-clock and
+        // honours reduce-motion), then recompute geometry so the controls sit
+        // exactly on the chrome this frame.
+        self.rail.tick(theme.reduce_motion);
         self.layout = self.compute_layout();
         self.position_children();
         self.paint(scene, transform, text_renderer, theme, presence);
