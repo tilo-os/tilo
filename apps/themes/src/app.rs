@@ -19,8 +19,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::{ActionEnvelope, ActionTransport, EncodedAction};
+use automerge::{AutoCommit, ObjId};
+use qos_actions::EncodedAction;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
@@ -42,16 +42,6 @@ use crate::model::{self, default_catalog, demo_catalog, ThemeSpec, TokenId, FONT
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};
-
-/// Standalone Themes has no peer/host wiring: an action's own committed change
-/// is content-addressed identical to a peer's replay and dedupes on ordinary
-/// CRDT sync, so the local affordance path has nothing extra to replicate — this
-/// sink drops the envelope. A collaborative session swaps in a peer-aware
-/// transport at the host's Ctrl+K dispatch.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
@@ -112,14 +102,11 @@ pub struct ThemesApp {
     status: String,
     structure_dirty: bool,
 
-    /// Document heads captured just before an affordance dispatched its Themes
-    /// action, so the host records exactly one undo boundary bracketing it (see
-    /// [`Self::perform_action`] and [`Widget::take_committed_action`]). Rising
-    /// edge: cleared on read.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The last action an affordance dispatched, so an integration test can prove
-    /// a button built the same [`EncodedAction`] its Ctrl+K [`ActionSpec`] does.
-    last_dispatched: Option<EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
+    /// dispatches each Themes action, and remembers the last one so an integration
+    /// test can prove a button built the same [`EncodedAction`] its Ctrl+K
+    /// [`ActionSpec`] does.
+    actions: ui::ActionHost,
 
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
     scroll: f64,
@@ -177,8 +164,7 @@ impl ThemesApp {
             bound_key: None,
             status: String::new(),
             structure_dirty: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
             scroll: 0.0,
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
@@ -326,17 +312,8 @@ impl ThemesApp {
     /// stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::ThemesAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "themes action dispatch failed");
-        }
+        self.actions
+            .dispatch(state, crate::actions::THEMES_ACTION_TYPE, &action);
     }
 
     /// Route one command-bus signal. Presentation-only commands (selection, the
@@ -456,7 +433,7 @@ impl ThemesApp {
     /// [`EncodedAction`] its Ctrl+K [`ActionSpec`] exports. Rising state — it is
     /// the most recent dispatch, not cleared on read.
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
-        self.last_dispatched.as_ref()
+        self.actions.last_dispatched()
     }
 
     /// Apply `id` as the active OS theme: persist the full spec to the shared
@@ -505,7 +482,7 @@ impl Widget for ThemesApp {
     /// its Themes action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
