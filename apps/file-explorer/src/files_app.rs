@@ -615,8 +615,9 @@ impl FileExplorerWidget {
     // --- Command application ------------------------------------------
 
     /// Apply one queued command, returning whether it changed the widget
-    /// tree structure (and thus needs a rebuild).
-    fn apply_command(&mut self, cmd: FileCommand) -> bool {
+    /// tree structure (and thus needs a rebuild). Crate-visible so sibling
+    /// modules' tests can drive the real command-application path.
+    pub(crate) fn apply_command(&mut self, cmd: FileCommand) -> bool {
         match cmd {
             FileCommand::Navigate(p) => {
                 self.navigate(p);
