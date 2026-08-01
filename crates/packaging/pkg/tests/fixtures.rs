@@ -31,10 +31,6 @@ namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp     = "qos-default"
 landlock    = "strict"
 
-[sandbox.fs]
-read  = ["~/.local/share/dev.qos.editor", "/var/workspace/<scope=current>"]
-write = ["~/.local/share/dev.qos.editor"]
-
 [sandbox.net]
 mode = "off"
 
@@ -74,10 +70,6 @@ namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp     = "qos-default"
 landlock    = "strict"
 
-[sandbox.fs]
-read  = []
-write = ["~/.local/share/dev.qos.notes-cli"]
-
 [sandbox.net]
 mode = "off"
 
@@ -105,10 +97,6 @@ signature   = ""
 namespaces  = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp     = "qos-default"
 landlock    = "strict"
-
-[sandbox.fs]
-read  = []
-write = ["~/.local/share/dev.qos.notes"]
 
 [sandbox.net]
 mode = "off"

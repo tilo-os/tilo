@@ -49,22 +49,6 @@ namespaces = [
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read = [
-    "/usr/lib64",
-    "/usr/lib",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.collab-broker",
-    "$XDG_RUNTIME_DIR/qos",
-]
-
 [sandbox.net]
 mode = "off"
 

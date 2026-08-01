@@ -122,7 +122,9 @@ instead of panicking.
 1. **Inside qOS**: `/var/workspace/<rel>` — the FUSE-mounted workspace.
 2. **Standalone**: `~/.local/share/<package-id>/<rel>` — a per-package
    fallback state dir. Uses `dirs::data_dir()` so `$XDG_DATA_HOME` moves
-   it if set.
+   it if set. Under the launcher it is set, to
+   `/run/qos/app/.local/share`, so the fallback lands in the directory
+   the app was given.
 
 The two paths are deliberately unrelated to `runtime::fs` so the CLI keeps
 working when the FUSE is offline. If your app needs the CRDT-backed
@@ -149,10 +151,6 @@ namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read  = []
-write = ["~/.local/share/dev.qos.notes-cli"]
-
 [sandbox.net]
 mode = "off"
 
@@ -164,7 +162,11 @@ type = "cli"
 commands = ["notes"]
 ```
 
-Full install and run, verified end-to-end:
+The manifest declares no filesystem path, and does not need to: the
+launcher creates the app's directory and points `HOME` and the `XDG_*`
+variables at it before the binary runs.
+
+Install and run:
 
 ```
 $ qos-pkg pack \
@@ -190,17 +192,19 @@ $ export PATH="/tmp/qos-install-demo-data/qos-apps/bin:$PATH"
 
 $ notes "hello from the shim"
 qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 3 rw, net_restricted=true)
-wrote note → [file:///tmp/qos-install-demo-data/dev.qos.notes-cli/notes/inbox.md]
+wrote note → [file:///run/qos/app/.local/share/dev.qos.notes-cli/notes/inbox.md]
 ```
 
-Note: the fs.write pattern `~/.local/share/dev.qos.notes-cli` is a Landlock
-target — the launcher expands `~` at load time to the user's home; the
-target directory must exist BEFORE launch, or bwrap fails to bind-mount it.
-Real installs use a first-launch hook (`ensure_dir` in the SDK) to create
-it, but the sandbox binding runs before your code, so the directory has to
-already exist. Ship an `install-hook` in your `[cli]` startup that does
-`mkdir -p ~/.local/share/<pkg-id>` OR ensure your CLI's parent dir is
-created out-of-sandbox in the install script.
+That path is not a coincidence and nothing in the manifest picked it.
+`standalone_state_dir` joins the package id onto `dirs::data_dir()`, which
+reads `XDG_DATA_HOME` — and the launcher set that to
+`/run/qos/app/.local/share`. There is no directory to create before launch
+and no bind to get wrong; the launcher makes the app's directory and then
+starts the binary.
+
+On the host the same file is at
+`<data home>/qos-rooms/<room>/dev.qos.notes-cli/.local/share/dev.qos.notes-cli/notes/inbox.md`.
+A CLI run from a shell has no workspace, so its room is `personal`.
 
 ## Reading arguments
 

@@ -28,6 +28,24 @@ use crate::services::{
 pub enum RunError {
     #[error(transparent)]
     Manifest(#[from] crate::manifest::ManifestError),
+    #[error("refusing to launch: {0}")]
+    FsPolicy(#[from] crate::manifest::FsPolicyViolation),
+    #[error(
+        "refusing to launch `{package}`: could not create its directory at {path} ({source}). \
+         An app with nowhere to write loses the user's work on exit, so this is a refusal \
+         rather than a launch into a read-only sandbox."
+    )]
+    AppDir {
+        package: String,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "refusing to launch `{0}`: neither XDG_DATA_HOME nor HOME is set, so there is no \
+         user data directory to put this app's per-room state in."
+    )]
+    NoDataHome(String),
     #[error(transparent)]
     Service(#[from] ServiceError),
     #[error(transparent)]
@@ -282,74 +300,40 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
-/// Resolve the host path to the user identity JSON.
+/// Resolve, create and migrate into the one directory this launch may
+/// write to.
 ///
-/// Create the write grants an app owns but that don't exist on the host
-/// yet.
+/// This replaces `materialise_write_grants`, which walked
+/// `sandbox.fs.write` and created whatever the package named that fell
+/// under the user's home — so a package asking for `~` got the launcher
+/// to hand it the home directory, and a package asking for another
+/// app's state directory got that. There is no list to walk any more:
+/// there is one directory, the launcher picks it, and the package has
+/// no say in where it is.
 ///
-/// bwrap binds existing inodes; it cannot conjure one. A first launch of
-/// an app whose manifest declares `~/.local/share/qos-chat` would
-/// otherwise get no such directory in its namespace — and, because every
-/// path in the sandbox is an explicit bind, no writable parent to create
-/// it from either. So the app would come up unable to save anything, on
-/// every machine, until something outside the sandbox happened to make
-/// the directory first.
-///
-/// Only paths under the user's own home and runtime dir are created:
-/// those are the ones the app is the owner of. System locations
-/// (`/dev/snd`, `/var/workspace`, `/etc/…`) are the session's or the
-/// distribution's to provide — the launcher binds them if they exist and
-/// silently skips them if they don't, which is what `--bind-try` gives.
-///
-/// A trailing component carrying a file extension (`settings.json`,
-/// `Untitled.md`) is created as an empty file, everything else as a
-/// directory. Failures are logged and ignored: a grant we could not
-/// materialise degrades to "not bound", never to a refused launch.
-fn materialise_write_grants(manifest: &crate::manifest::MinimalManifest) {
-    let owned_roots: Vec<PathBuf> = [
-        std::env::var_os("HOME").map(PathBuf::from),
-        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-
-    for entry in &manifest.sandbox.fs.write {
-        let host = crate::manifest::expand_path(entry);
-        if host.exists() {
-            continue;
-        }
-        if !owned_roots.iter().any(|root| host.starts_with(root)) {
-            continue;
-        }
-        let is_file = host
-            .file_name()
-            .and_then(|n| n.to_str())
-            // `.config` is a dotdir, not an extension — only a dot past
-            // the first character marks a file name.
-            .is_some_and(|n| n.rfind('.').is_some_and(|i| i > 0));
-        let result = if is_file {
-            host.parent()
-                .map(std::fs::create_dir_all)
-                .unwrap_or(Ok(()))
-                .and_then(|()| {
-                    std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&host)
-                        .map(|_| ())
-                })
-        } else {
-            std::fs::create_dir_all(&host)
-        };
-        match result {
-            Ok(()) => tracing::debug!(path = %host.display(), "created declared write grant"),
-            Err(e) => tracing::warn!(
-                path = %host.display(),
-                "could not create declared write grant: {e}"
-            ),
-        }
-    }
+/// The room comes from `opts.workspace_id` — the same value the
+/// collaboration cluster is keyed on — so an app opened into a
+/// workspace gets that workspace's directory and cannot name another's.
+fn resolve_app_dir(
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<PathBuf, RunError> {
+    let data_home = crate::appdir::host_data_home()
+        .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
+    crate::appdir::prepare_host_app_dir(
+        &data_home,
+        opts.workspace_id.as_deref(),
+        &manifest.package_id,
+    )
+    .map_err(|source| RunError::AppDir {
+        package: manifest.package_id.clone(),
+        path: crate::appdir::host_app_dir(
+            &data_home,
+            &crate::appdir::room_slug(opts.workspace_id.as_deref()),
+            &manifest.package_id,
+        ),
+        source,
+    })
 }
 
 /// Priority:
@@ -689,6 +673,19 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    // 0. Policy. A manifest that names a filesystem path is refused
+    // before anything else happens — before a socket is opened, before
+    // a directory is created, before bwrap is spawned. Refused rather
+    // than ignored: an app whose declared paths were silently dropped
+    // comes up broken in a way that looks like a bug in the app.
+    //
+    // This runs at launch as well as at install because a manifest can
+    // reach the launcher without ever passing an installer —
+    // `qos-launcher run --manifest <path>` is the supported way to test
+    // a package, and a package installed before this rule existed still
+    // has its old manifest on disk.
+    crate::manifest::enforce_fs_policy(manifest)?;
+
     // 1. Service sockets.
     let resolved =
         resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
@@ -714,12 +711,10 @@ pub fn run_with(
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
 
-    // Write grants the app owns but that don't exist yet — its state
-    // directory on a first run, a shader cache before the GPU driver
-    // has ever written one. bwrap can only bind what is already there,
-    // so create them here rather than letting a first launch come up
-    // with no place to save.
-    materialise_write_grants(manifest);
+    // The app's one writable directory, for the room it is being opened
+    // into. Created here because bwrap can only bind what already
+    // exists, and a first launch must not come up with no place to save.
+    let app_dir = resolve_app_dir(manifest, opts)?;
 
     // Identity resolution: host location of the user identity JSON.
     // Threaded through both bwrap-argv builders so the child receives
@@ -836,6 +831,17 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // The app's directory: bound read-write at a fixed in-sandbox path,
+    // with HOME and every XDG variable pointed inside it. Spliced here
+    // rather than built into `build_bwrap_argv` because the room is a
+    // property of the *launch*, not of the package — which is the whole
+    // reason the package cannot influence it.
+    {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::appdir::push_app_dir(&mut argv, &app_dir);
+        argv.push(entry);
+    }
+
     // Wayland display. Spliced in front of the entrypoint token (the
     // last argv entry) so bwrap parses it as a flag, exactly like the
     // minimal-libs binds above. A GUI app with no `wayland_socket`
@@ -931,10 +937,14 @@ pub fn run_with(
             argv.push("--ro".to_string());
             argv.push(p.clone());
         }
-        for path in &manifest.sandbox.fs.read {
-            let expanded = crate::manifest::expand_path(path);
+        // The system read profile. Derived from the same list the binds
+        // came from, so the two layers cannot disagree about what is
+        // readable — a bind Landlock does not name is visible and
+        // returns EACCES on every open, which reads from inside the app
+        // as a corrupted system rather than as a policy.
+        for path in crate::profile::landlock_ro_paths(egress.shares_host_network()) {
             argv.push("--ro".to_string());
-            argv.push(expanded.display().to_string());
+            argv.push(path.display().to_string());
         }
         // Capability-granted paths need matching Landlock rules, or the
         // bind would be visible and every open() on it would still
@@ -986,14 +996,24 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(sel.node.display().to_string());
         }
-        for path in &manifest.sandbox.fs.write {
-            let expanded = crate::manifest::expand_path(path);
+        // The app's own directory — the only writable place it has that
+        // survives the process. Named by its *in-sandbox* path: the host
+        // path is not reachable from inside, and a rule on it would
+        // match nothing.
+        argv.push("--rw".to_string());
+        argv.push(crate::appdir::SANDBOX_APP_DIR.to_string());
+        // The GPU device nodes the profile bound. A GPU context is
+        // opened O_RDWR, so a read-only rule surfaces at device open and
+        // looks exactly like "no GPU present".
+        for path in crate::profile::landlock_rw_device_paths() {
             argv.push("--rw".to_string());
-            argv.push(expanded.display().to_string());
+            argv.push(path.display().to_string());
         }
         // Standard tmpfs mounts inside the sandbox — the app expects
         // these to be writable. Marking them --rw grants Landlock's
-        // full FS access set on them.
+        // full FS access set on them. Both are per-sandbox tmpfs mounts
+        // that vanish with the process, so this is scratch space rather
+        // than a second place state can hide.
         for p in ["/tmp", "/dev"] {
             argv.push("--rw".to_string());
             argv.push(p.to_string());
@@ -1060,20 +1080,8 @@ pub fn run_with(
     // bwrap execs as its command; the shim restricts itself and then
     // execs the real entrypoint. That shim is a follow-up.
     let landlock_plan = crate::landlock::plan_from_paths(
-        &manifest
-            .sandbox
-            .fs
-            .read
-            .iter()
-            .map(|s| crate::manifest::expand_path(s))
-            .collect::<Vec<_>>(),
-        &manifest
-            .sandbox
-            .fs
-            .write
-            .iter()
-            .map(|s| crate::manifest::expand_path(s))
-            .collect::<Vec<_>>(),
+        &crate::profile::landlock_ro_paths(egress.shares_host_network()),
+        &[PathBuf::from(crate::appdir::SANDBOX_APP_DIR)],
     );
     let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
     // The shim now IS wired via opts.landlock_enforce (see argv splice
@@ -1139,6 +1147,11 @@ pub fn run_with_captured(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
+    // Same refusal as `run_with`, and for the same reason: this is a
+    // second entry into the sandbox builder, and a policy with one
+    // enforced door is a policy with a door beside it.
+    crate::manifest::enforce_fs_policy(manifest)?;
+
     // Service sockets.
     let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
@@ -1170,13 +1183,41 @@ pub fn run_with_captured(
     // has nothing listening behind it.
     let egress = crate::sandbox::egress_decision(manifest, &capabilities);
     let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
-    let mut argv = build_bwrap_argv(
+    // Entrypoint + trailing arguments, resolved the same way `run_with`
+    // resolves them. This path used to build a GUI argv unconditionally
+    // and drop `opts.mode` and `opts.open_document` on the floor, so a
+    // caller asking for a CLI launch got the GUI binary with no
+    // arguments — a silent disagreement between the two entries into the
+    // same sandbox.
+    let (entry_bin, passthrough): (String, Vec<String>) = match &opts.mode {
+        LaunchMode::Gui => (
+            manifest
+                .entrypoint
+                .gui_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string(),
+            opts.open_document
+                .as_ref()
+                .map(|p| vec![p.display().to_string()])
+                .unwrap_or_default(),
+        ),
+        LaunchMode::Cli { passthrough_argv, .. } => (
+            manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin)
+                .to_string(),
+            passthrough_argv.clone(),
+        ),
+    };
+    let mut argv = crate::sandbox::build_bwrap_argv_for_entry(
         manifest,
         payload_root,
         runtime_arg,
         &binds,
         dbus_plan.as_ref(),
         identity_arg,
+        &entry_bin,
         &capabilities,
     );
     if let Some(bind) = &net_gate {
@@ -1189,9 +1230,18 @@ pub fn run_with_captured(
         crate::sandbox::push_workspace_id(&mut argv, workspace_id);
         argv.push(entry);
     }
+    {
+        let app_dir = resolve_app_dir(manifest, opts)?;
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::appdir::push_app_dir(&mut argv, &app_dir);
+        argv.push(entry);
+    }
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
+    // Everything after the entrypoint token is opaque to bwrap and
+    // becomes the child's argv[1..].
+    argv.extend(passthrough);
 
     let bwrap = opts
         .bwrap_bin
@@ -1537,111 +1587,94 @@ mod identity_resolution_tests {
 // spawn_dbus_proxy live in the crate::dbus_proxy module.
 
 #[cfg(test)]
-mod write_grant_tests {
+mod app_dir_tests {
     use super::*;
 
-    fn manifest_with_writes(writes: &[&str]) -> crate::manifest::MinimalManifest {
-        let list = writes
-            .iter()
-            .map(|w| format!("{w:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let src = format!(
-            r#"
-[package]
-id = "dev.qos.fixture"
-version = "0.1.0"
-
-[entrypoint]
-bin = "bin/fixture"
-
-[sandbox.fs]
-write = [{list}]
-"#
-        );
-        toml::from_str(&src).expect("fixture manifest decodes")
+    fn manifest(id: &str) -> crate::manifest::MinimalManifest {
+        toml::from_str(&format!(
+            "[package]\nid = {id:?}\nversion = \"0.1.0\"\n\n[entrypoint]\nbin = \"bin/x\"\n"
+        ))
+        .expect("fixture manifest decodes")
     }
 
+    fn opts_in(room: Option<&str>) -> RunOptions {
+        RunOptions {
+            workspace_id: room.map(str::to_string),
+            ..RunOptions::default()
+        }
+    }
+
+    /// The launch path resolves the directory rather than the manifest
+    /// naming it, and the room it was launched into is what decides
+    /// which one.
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_first_launch_gets_its_declared_state_directory() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("HOME");
+    fn the_launch_resolves_one_directory_per_room() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let m = manifest_with_writes(&["~/.local/share/qos-fixture"]);
-        let target = home.path().join(".local/share/qos-fixture");
-        assert!(!target.exists(), "precondition: nothing there yet");
-
-        materialise_write_grants(&m);
-
-        assert!(
-            target.is_dir(),
-            "an app's own declared state dir must exist before bwrap tries \
-             to bind it, or the app comes up with nowhere to save"
-        );
+        let m = manifest("dev.qos.fixture");
+        let a = resolve_app_dir(&m, &opts_in(Some("room-a"))).expect("room a");
+        let b = resolve_app_dir(&m, &opts_in(Some("room-b"))).expect("room b");
+        let personal = resolve_app_dir(&m, &opts_in(None)).expect("personal");
 
         // SAFETY: this test is in the `process_env` serial group.
         unsafe {
             match prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
             }
+        }
+
+        assert!(a.is_dir() && b.is_dir() && personal.is_dir());
+        assert_ne!(a, b);
+        assert_ne!(a, personal);
+        assert!(
+            !a.starts_with(&b) && !b.starts_with(&a),
+            "neither room may contain the other: {a:?} {b:?}"
+        );
+        for dir in [&a, &b, &personal] {
+            assert!(
+                dir.starts_with(data.path().join("qos-rooms")),
+                "{dir:?} is outside the rooms tree"
+            );
         }
     }
 
+    /// A package cannot make the launcher create a directory it named:
+    /// the retired `sandbox.fs.write` block is refused, and a manifest
+    /// that carries one never reaches the directory step at all.
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_grant_naming_a_file_is_created_as_a_file_not_a_directory() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("HOME");
+    fn a_declared_write_path_is_never_created() {
+        let data = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("XDG_DATA_HOME");
         // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("HOME", home.path()) };
+        unsafe { std::env::set_var("XDG_DATA_HOME", data.path()) };
 
-        let m = manifest_with_writes(&["~/.config/qos/settings.json"]);
-        materialise_write_grants(&m);
-
-        let target = home.path().join(".config/qos/settings.json");
-        assert!(target.is_file(), "settings.json must be a file: {target:?}");
-        assert!(
-            home.path().join(".config/qos").is_dir(),
-            "the dotdir on the way to it is still a directory"
-        );
+        let mut m = manifest("dev.qos.fixture");
+        let victim = data.path().join("dev.qos.totp");
+        m.sandbox.fs.write.push(victim.display().to_string());
+        let refused = run_with(&m, Path::new("/nonexistent"), &opts_in(None));
 
         // SAFETY: this test is in the `process_env` serial group.
         unsafe {
             match prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
+                Some(v) => std::env::set_var("XDG_DATA_HOME", v),
+                None => std::env::remove_var("XDG_DATA_HOME"),
             }
         }
-    }
 
-    #[test]
-    #[serial_test::serial(process_env)]
-    fn system_paths_are_left_to_the_system() {
-        let home = tempfile::tempdir().expect("tempdir");
-        let prev = std::env::var_os("HOME");
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("HOME", home.path()) };
-
-        // A device node and a mount point the launcher has no business
-        // fabricating — if they are absent the grant is simply unused.
-        let m = manifest_with_writes(&["/dev/snd", "/var/workspace/nope-qos-fixture"]);
-        materialise_write_grants(&m);
-
+        let err = refused.expect_err("a manifest naming a write path must be refused");
         assert!(
-            !Path::new("/var/workspace/nope-qos-fixture").exists(),
-            "the launcher must not create paths outside the user's own dirs"
+            matches!(err, RunError::FsPolicy(_)),
+            "expected a policy refusal, got: {err}"
         );
-
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-        }
+        assert!(
+            !victim.exists(),
+            "the launcher must not create a path a package named"
+        );
     }
 }
