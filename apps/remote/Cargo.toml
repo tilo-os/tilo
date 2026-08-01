@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS ACTION model: the saved-connection store is the app's shared-document
+# state, so add/edit/rename/favorite/delete of a profile are replayable actions
+# the shell's Ctrl+K palette dispatches — the same ones the on-screen affordances do.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
