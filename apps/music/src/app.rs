@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::{ActionEnvelope, ActionTransport};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -215,18 +214,6 @@ enum Drag {
 struct Hit {
     rect: Rect,
     action: Action,
-}
-
-/// Sink for the local half of an [action](crate::actions) dispatch. A local,
-/// on-screen affordance mutates the document through the qOS action executor
-/// (which pins each action's actor so the change is content-addressed identical
-/// to a peer's replay and dedupes on merge); the peer then receives it through
-/// ordinary CRDT sync, so this side has nothing extra to replicate and drops the
-/// envelope. The Ctrl+K palette dispatches through the host's transport, which a
-/// collaborative session swaps for a peer-aware one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
 }
 
 pub struct MusicApp {
@@ -483,18 +470,12 @@ pub struct MusicApp {
     /// churns the CRDT frame-by-frame.
     downloads: HashMap<String, Instant>,
 
-    /// Document heads captured just before the first [`crate::actions`] action of
-    /// the current event was dispatched. The host drains this via
-    /// [`ui::widget::Widget::take_committed_action`] to record exactly one undo
-    /// boundary bracketing the action(s) — the same undo path the Ctrl+K palette
-    /// takes. `None` when no action-dispatching event is in flight.
-    action_commit_before: Option<Vec<ChangeHash>>,
-
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
-    /// byte-identical action — one source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
+    /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
+    /// affordance's [`crate::actions`] action, and remembers the last one so a
+    /// test can prove a button and the Ctrl+K
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical action.
+    actions: ui::ActionHost,
 }
 
 /// How long a simulated offline download takes to complete (seconds). Long
@@ -641,8 +622,7 @@ impl MusicApp {
             search_edit_at: preset_search_at,
             live_query_sent: None,
             downloads: HashMap::new(),
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -881,17 +861,8 @@ impl MusicApp {
     /// `sync` reconciles it again on the next frame (so a palette dispatch shows
     /// up the same way).
     fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::MusicAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "music action dispatch failed");
-        }
+        self.actions
+            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, &action);
     }
 
     /// The context Ctrl+K needs to build Music's resource tree: the user's
@@ -4814,7 +4785,7 @@ mod tests {
         send(&mut app, &press(MouseButton::Left), &mut doc);
 
         assert_eq!(
-            app.last_dispatched.as_ref(),
+            app.actions.last_dispatched(),
             Some(&expected),
             "the like heart and the palette build the identical EncodedAction"
         );
@@ -4826,7 +4797,7 @@ mod tests {
         // The heads captured for the host's undo bracket are armed (the host
         // drains this via `take_committed_action` to record one undo boundary).
         assert!(
-            app.action_commit_before.is_some(),
+            app.actions.take_committed().is_some(),
             "the click armed exactly one undo boundary for the host to record"
         );
     }

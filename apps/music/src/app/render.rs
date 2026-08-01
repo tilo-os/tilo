@@ -261,7 +261,7 @@ impl Widget for MusicApp {
     /// its music action, so it records one undo boundary for it (see
     /// [`MusicApp::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn build_layout(
