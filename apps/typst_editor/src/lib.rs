@@ -8,7 +8,12 @@
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
+//!
+//! The source text is the app's *only* collaborative document state, so there is
+//! nothing structural to migrate onto the resource + action model — see
+//! [`actions`] for the finding and its production-path proof.
 
+pub mod actions;
 pub mod app;
 pub mod compile;
 pub mod diagnostics;
