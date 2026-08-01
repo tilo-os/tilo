@@ -52,7 +52,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.db-client");
-    let app = ui::App::new(state, db_client::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, db_client::app_root()).with_autosave(autosave);
+    // Register the saved-connection action decoder for undo + peer replay.
+    db_client::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

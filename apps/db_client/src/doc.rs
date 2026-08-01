@@ -1,21 +1,36 @@
-//! CRDT document model for the SQL editor.
+//! CRDT document model for the database client.
 //!
-//! The editor buffer lives in the shared Automerge document as a `Text`
-//! object so edits splice in-place, undo/redo snapshots the buffer, and a
-//! second peer editing the same query converges for free:
+//! Two things live in the shared Automerge document, both edited collaboratively:
 //!
 //! ```text
 //! root
-//! └── "editor" (Map)
-//!     └── "sql" (Text)   # the live query buffer
+//! ├── "editor" (Map)
+//! │   └── "sql" (Text)          # the live query buffer (native text path)
+//! └── "connections" (List)      # saved connection profiles (via the action model)
+//!     └── [i] (Map)             # id, name, engine, host, port, database, user, file_path
 //! ```
 //!
-//! "Which result tab is active", "which table is selected", the caret
-//! position — those are per-peer view state and stay in the widget, not the
-//! document.
+//! The SQL buffer is a `Text` so edits splice in-place and a second peer
+//! editing the same query converges for free. The saved-connection list is a
+//! collection of profile maps mutated only through [`crate::actions::DbAction`]
+//! (add / remove / rename), so undo and multi-peer replay come for free too.
+//! Crucially the connection **password is never written here** — it is held in
+//! memory for the session only ([`crate::model::ConnectionProfile::password`]
+//! is `#[serde(skip)]`), so the collaborative document carries the shape of a
+//! team's databases without ever replicating a secret.
+//!
+//! "Which connection is active", "which result tab is showing", "which table
+//! is selected", the caret position — those are per-peer view state and stay
+//! in the widget/session, not the document.
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, ROOT};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+
+use crate::model::{ConnectionProfile, Engine};
+use uuid::Uuid;
+
+/// Key of the saved-connection list under the document root.
+pub const CONNECTIONS_KEY: &str = "connections";
 
 /// Stateless helpers over the shared editor document.
 pub struct EditorDoc;
@@ -88,6 +103,102 @@ impl EditorDoc {
     /// Current buffer length in chars.
     pub fn len(doc: &AutoCommit) -> usize {
         Self::read_sql(doc).chars().count()
+    }
+}
+
+/// Stateless helpers over the saved-connection list at `root["connections"]`.
+///
+/// Reads are shared by [`crate::app`]'s `sync` (which reconciles the live
+/// session from the document each frame) and the honesty tests. Writes happen
+/// only through [`crate::actions::DbAction::apply`] so every mutation is an
+/// undoable, replayable action.
+pub struct ConnectionsDoc;
+
+impl ConnectionsDoc {
+    /// The connection list object, if present as a List.
+    pub fn list(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, CONNECTIONS_KEY) {
+            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Read every saved connection profile. The password is always empty — it
+    /// is never stored in the document — so callers refill it from their
+    /// in-memory secret map before opening a live handle.
+    pub fn read(doc: &AutoCommit) -> Vec<ConnectionProfile> {
+        let Some(list) = Self::list(doc) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i) else {
+                continue;
+            };
+            let id = str_field(doc, &row, "id")
+                .and_then(|s| Uuid::parse_str(&s).ok())
+                .unwrap_or_else(Uuid::new_v4);
+            let engine = Engine::from_key(&str_field(doc, &row, "engine").unwrap_or_default());
+            out.push(ConnectionProfile {
+                id,
+                name: str_field(doc, &row, "name").unwrap_or_default(),
+                engine,
+                host: str_field(doc, &row, "host").unwrap_or_default(),
+                port: int_field(doc, &row, "port").unwrap_or(0) as u16,
+                database: str_field(doc, &row, "database").unwrap_or_default(),
+                user: str_field(doc, &row, "user").unwrap_or_default(),
+                password: String::new(),
+                file_path: str_field(doc, &row, "file_path").unwrap_or_default(),
+                connected: false,
+                is_sample: bool_field(doc, &row, "is_sample").unwrap_or(false),
+            });
+        }
+        out
+    }
+
+    /// The row map + index for a profile id, if present.
+    pub fn find(doc: &AutoCommit, id: Uuid) -> Option<(usize, ObjId)> {
+        let list = Self::list(doc)?;
+        let target = id.to_string();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Object(ObjType::Map), row))) = doc.get(&list, i) {
+                if str_field(doc, &row, "id").as_deref() == Some(target.as_str()) {
+                    return Some((i, row));
+                }
+            }
+        }
+        None
+    }
+}
+
+fn str_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
+    match doc.get(obj, key) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Str(s) => Some(s.to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn int_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<i64> {
+    match doc.get(obj, key) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Int(i) => Some(*i),
+            ScalarValue::Uint(u) => Some(*u as i64),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn bool_field(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<bool> {
+    match doc.get(obj, key) {
+        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+            ScalarValue::Boolean(b) => Some(*b),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
