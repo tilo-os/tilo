@@ -79,23 +79,33 @@ export PKG_CONFIG_RELOCATE_PATHS=1
 # daemon may run outside the build container and not see its /usr/include.
 export CC=gcc CXX=g++
 
-# Assert a just-installed package resolves to include paths that exist. A
-# misresolved .pc otherwise surfaces much later as a confusing compile error
+STEP_LOG=$CACHE/step.log
+
+# Assert a just-installed package's .pc points at things that exist: an
+# include directory, and a library the linker can actually find. Both halves
+# have been wrong here, and each surfaced much later as a confusing error
 # inside whichever package consumed it.
 check_pc() {
-    local dir
-    dir=$(pkg-config --cflags-only-I "$1" | tr ' ' '\n' | grep -m1 '^-I' | cut -c3-) || true
-    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
-        echo "pkg-config $1 resolved to a missing include dir: '${dir:-<none>}'" >&2
+    local inc
+    inc=$(pkg-config --cflags-only-I "$1" | tr ' ' '\n' | grep -m1 '^-I' | cut -c3-) || true
+    if [ -z "$inc" ] || [ ! -d "$inc" ]; then
+        echo "pkg-config $1: include dir '${inc:-<none>}' does not exist" >&2
         exit 1
     fi
-    echo "$1 -> $dir"
+    # Word splitting on the pkg-config output is the point here.
+    # shellcheck disable=SC2046
+    if ! echo 'int main(void){return 0;}' |
+        $CC -x c - -o /dev/null $(pkg-config --cflags --libs "$1") 2>"$STEP_LOG"; then
+        echo "pkg-config $1: nothing links against it —" >&2
+        tail -5 "$STEP_LOG" >&2
+        exit 1
+    fi
+    echo "$1 -> $inc (links)"
 }
 
 # Run a build step, keeping the log short on success and showing enough of it
 # to diagnose on failure. Piping straight to `tail -1` hides the compiler
 # error behind ninja's parting "build stopped: subcommand failed".
-STEP_LOG=$CACHE/step.log
 step() { # step <lines-to-show-when-it-works> <command...>
     local keep=$1
     shift
@@ -112,6 +122,16 @@ cd "$CACHE/${LIBWPE%.tar.xz}"
 step 1 cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64
 step 1 env DESTDIR="$DESTDIR_ROOT" ninja -C build install
+# libwpe's wpe.pc.in hardcodes `libdir=${exec_prefix}/lib` while the library
+# itself installs into CMAKE_INSTALL_LIBDIR — lib64 on Fedora — so as shipped
+# the .pc sends the linker to a directory that contains no libwpe. Nothing
+# notices in an unstaged install, because the linker finds lib64 on its
+# default search path anyway; a staging root has no default path to fall back
+# on, and wpebackend-fdo fails with `cannot find -lwpe-1.0`. Correct the .pc
+# rather than aliasing lib -> lib64 inside the staging root: that symlink gets
+# copied into the image and replaces the real /usr/lib.
+sed -i 's|^libdir=.*|libdir=${exec_prefix}/lib64|' \
+    "$DESTDIR_ROOT$PREFIX/lib64/pkgconfig/wpe-1.0.pc"
 check_pc wpe-1.0
 
 echo "=== wpebackend-fdo ==="
