@@ -80,7 +80,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.git-client");
-    let app = ui::App::new(state, git_client::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, git_client::app_root()).with_autosave(autosave);
+    // Register the client's preference actions so the shell's Ctrl+K palette can
+    // decode + replay the same view-preference actions the on-screen controls
+    // dispatch.
+    git_client::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
