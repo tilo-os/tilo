@@ -146,6 +146,11 @@ impl VideoDoc {
         let _ = doc.delete(&clips, id.to_string().as_str());
     }
 
+    pub fn remove_track(doc: &mut AutoCommit, id: Uuid) {
+        let tracks = Self::map(doc, "tracks");
+        let _ = doc.delete(&tracks, id.to_string().as_str());
+    }
+
     /// Mirror an entire in-memory project into the document. Used to seed
     /// the sample project and to push a freshly-loaded project back so
     /// new clips (e.g. a split) replicate.
