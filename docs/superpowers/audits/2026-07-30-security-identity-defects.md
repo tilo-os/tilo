@@ -217,16 +217,31 @@ Two adjacent holes in the same guarantee were found alongside it:
   `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
-  still open. It was also **broken**, and is now fixed: `build-wpe.sh` exported
-  `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged `${prefix}`, but a sysroot
-  is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it emits, so system libraries in
-  the real `/usr` were relocated too and libwpe's CMake configure died on `Imported target
-  "XkbCommon::libxkbcommon" includes non-existent path "/wpe/usr/include"` (run 742). It now sets
-  `PKG_CONFIG_RELOCATE_PATHS` instead, which derives each `${prefix}` from its own `.pc` file's
-  location and so relocates only what was actually staged, plus a post-install assertion that each
-  staged package resolves to an include directory that exists. Nobody had noticed the breakage,
-  because the base `FROM` above failed first and the layer cache served the stage before that — an
-  unpinned stage is also an unwatched one.
+  still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
+  the strongest sense: nobody noticed, because the base `FROM` above failed first and the layer
+  cache served the stage before that. Once the base pin was fixed and the stage actually ran, it
+  had three independent defects stacked behind one another, each only visible after the previous
+  was fixed:
+
+  1. `build-wpe.sh` exported `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged
+     `${prefix}`. A sysroot is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it
+     emits — so system libraries in the real `/usr` were relocated too and libwpe's CMake configure
+     died on `Imported target "XkbCommon::libxkbcommon" includes non-existent path
+     "/wpe/usr/include"` (run 742). Now `PKG_CONFIG_RELOCATE_PATHS`, which derives each `${prefix}`
+     from its own `.pc` file's location and so relocates only what was actually staged.
+  2. libwpe's `wpe.pc.in` hardcodes `libdir=${exec_prefix}/lib` while the library installs into
+     `CMAKE_INSTALL_LIBDIR` (`lib64`). An unstaged install survives that because the linker
+     searches `/usr/lib64` by default; a staging root does not, and wpebackend-fdo failed to link
+     with `cannot find -lwpe-1.0` (run 754). The installed `.pc` is now corrected.
+  3. The WPE port's `ENABLE_WPE_PLATFORM_DRM` needs libinput and libudev, which the *GTK* port's
+     builddep never pulls, so `find_package(LibInput)` failed (run 755). Added to the explicit
+     package list the stage already keeps for this purpose.
+
+  Each was found only by running the build; none is visible by reading it. Two guards now fail the
+  script at the point of the mistake rather than somewhere downstream: every staged package must
+  resolve to an include directory that exists *and* link a trivial program, and each build step
+  dumps its real output on failure instead of the `tail -1` that had been hiding the compiler
+  error behind ninja's "build stopped".
 
 ---
 
