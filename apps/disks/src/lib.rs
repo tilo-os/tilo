@@ -9,6 +9,7 @@
 //! `app_root()` is the single integration point used by both the live
 //! event loop and the `--shots` offscreen renderer.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
