@@ -135,7 +135,13 @@ fn render_shot_to_png(
     setup: Box<dyn FnOnce(&mut contacts::ContactsApp)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
