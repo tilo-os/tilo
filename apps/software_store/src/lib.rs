@@ -26,6 +26,9 @@
 //!                   thread. Mirrors the maps tile worker.
 //! * [`app`]       — the root widget: five-pass frame, all screens, the
 //!                   async drain/dispatch glue, gated install confirms.
+//! * [`actions`]   — resource + action-model status: the honest finding that
+//!                   the store's CRDT state is a projection of the external
+//!                   package manager, so it exports no actions (proof tests).
 //!
 //! # Registering as the `.flatpakref` handler
 //!
@@ -44,6 +47,7 @@
 //! `%f` passes the opened file path; [`flatpakref::ref_path_from_args`]
 //! picks it out of `argv`, and `app_root()` opens the confirm sheet.
 
+pub mod actions;
 pub mod app;
 pub mod catalog;
 pub mod doc;
