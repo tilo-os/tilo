@@ -1,22 +1,25 @@
-//! Root widget for the Image Writer (imager) app.
+//! Root widget for the Disk Imager (imager) app.
 //!
-//! `ImagerApp` is a single self-drawing "canvas" widget that renders a linear
-//! **wizard** — Source → Drive → Customize → Write — with a persistent step
-//! breadcrumb and a Back / primary-action footer, modelled on media writers
-//! like Fedora Media Writer and balenaEtcher.
+//! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
+//! **wizard** with a six-station step indicator —
+//! Source → Drive → Customize → Confirm → Write → Done — and a Back /
+//! primary-action footer, covering both writing an image to a stick and
+//! installing qOS onto a disk.
 //!
 //! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), or a known qOS release.
-//! * **Drive** — choose a target from the *real* removable block devices
-//!   (`lsblk`); internal disks are hidden behind an explicit opt-in.
-//! * **Customize** (optional) — pre-configure a qOS image (hostname, first
-//!   user, region) so the written media boots ready; plain ISOs are written
-//!   as-is and this step is a no-op.
-//! * **Write** — a typed device-name confirmation gates a real, byte-for-byte
-//!   streaming copy with live progress, then a read-back **verify** pass, then
-//!   a done / failure screen.
+//! * **Drive** — choose the target from the *real* block devices (`lsblk`);
+//!   internal disks are hidden behind an explicit opt-in, and the **system
+//!   disk** cannot be selected without a separate acknowledgement.
+//! * **Customize** (qOS only) — the shared guided-customization step, delegated
+//!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
+//! * **Confirm** — a read-only review of every choice, an erase warning that
+//!   escalates for an internal / system disk, and the typed device-name gate.
+//! * **Write** — a real, byte-for-byte streaming copy with live progress and a
+//!   read-back **verify** pass (captioned "Write" or "Install").
+//! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
-//! Every write is doubly gated: the typed confirmation here, plus the
+//! Every write is doubly gated: the typed confirmation at Confirm, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
 //! (tests, `--shots`, normal dev runs) the exact same progress UI is driven by
 //! a simulated worker that touches no device.
