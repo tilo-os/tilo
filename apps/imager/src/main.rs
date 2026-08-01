@@ -64,7 +64,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.imager");
-    let app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
+    // Register the imager's install-profile actions so the shell's Ctrl+K palette
+    // can decode + replay the same profile-customization actions the on-screen
+    // toggles and fields dispatch.
+    imager::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
