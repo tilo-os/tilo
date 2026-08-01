@@ -54,8 +54,9 @@ use crate::write::{spawn_job, WriteRequest};
 
 // ---- layout constants (logical px) -------------------------------------
 const OUTER: f64 = 28.0;
-const HEADER_H: f64 = 30.0;
-const CRUMB_TOP: f64 = 78.0;
+// The compositor draws the window chrome + app name (OS owns chrome), so the
+// app itself opens straight into the step indicator — no in-app title bar.
+const CRUMB_TOP: f64 = 26.0;
 const CRUMB_H: f64 = 34.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
@@ -81,6 +82,7 @@ enum Hit {
     Recent(usize),
     Target(usize),
     ToggleInternal,
+    ToggleSystemAck,
     Rescan,
     Field(Field),
     ToggleAutologin,
@@ -136,6 +138,11 @@ pub struct ImagerApp {
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
     show_internal: bool,
+    /// The user has explicitly acknowledged that selecting the **system** disk
+    /// (the one the running OS boots from) will destroy it. A system disk can
+    /// never be selected without this — the guard against picking it by
+    /// accident. Reset whenever the drive inventory changes.
+    system_ack: bool,
     export_text: Option<String>,
     focus: Option<Field>,
     // ---- render caches ----
@@ -179,6 +186,7 @@ impl ImagerApp {
             job_rx: None,
             portal_rx: None,
             show_internal: false,
+            system_ack: false,
             export_text: None,
             focus: None,
             seeded: false,
@@ -217,29 +225,59 @@ impl ImagerApp {
         self.targets.iter().filter(|d| d.removable).count()
     }
 
-    /// Can the flow move forward from `from`? (Also gates breadcrumb jumps.)
+    /// Whether the currently-visible drive list contains the system disk — the
+    /// only case where the extra "I understand" acknowledgement is offered.
+    fn has_visible_system_disk(&self) -> bool {
+        self.visible_targets().iter().any(|(_, d)| d.is_system)
+    }
+
+    /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
         match from {
             Step::Source => self.source.is_some(),
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
-            Step::Write => false,
+            // Confirm advances into the (destructive) write only once armed.
+            Step::Confirm => self.confirm_matches() && self.image_fits(),
+            // Write is in-progress and Done is terminal — neither advances.
+            Step::Write | Step::Done => false,
         }
     }
 
-    /// Whether a completed/available breadcrumb step can be jumped to.
+    /// Whether `s` is a completed station (drawn with a green check). A step is
+    /// completed once the flow has moved past it — except a Customize station
+    /// that was *skipped* (a plain ISO carries no profile), which reads as
+    /// not-engaged rather than done.
+    fn step_completed(&self, s: Step) -> bool {
+        s.index() < self.step.index() && !(s == Step::Customize && !self.customizable())
+    }
+
+    /// Whether a step can be jumped to by clicking its indicator station. The
+    /// execution stations (Write, Done) are never jump targets.
     fn crumb_reachable(&self, s: Step) -> bool {
         match s {
             Step::Source => true,
             Step::Drive => self.source.is_some(),
             Step::Customize => self.selected.is_some() && self.customizable(),
-            Step::Write => self.selected.is_some(),
+            Step::Confirm => self.selected.is_some(),
+            Step::Write | Step::Done => false,
         }
     }
 
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
         self.source.as_ref().map(|s| s.installable).unwrap_or(false)
+    }
+
+    /// Writing to a **removable** drive is a plain image write ([`Action::Flash`],
+    /// verb "Write"); a customizable qOS image aimed at a **fixed/internal** disk
+    /// is a full install ([`Action::Install`], verb "Install"). This single
+    /// helper is the source of truth for the write-vs-install naming everywhere.
+    fn intended_action(&self) -> Action {
+        match (self.customizable(), self.target()) {
+            (true, Some(t)) if !t.removable => Action::Install,
+            _ => Action::Flash,
+        }
     }
 
     /// The label for the customization resource Ctrl+K publishes, or `None` when
@@ -274,6 +312,13 @@ impl ImagerApp {
             _ => false,
         }
     }
+}
+
+/// Whether this process should enumerate real block devices. The live binary
+/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
+/// document's seeded/posed state is authoritative and no `lsblk` runs.
+fn live_probe_enabled() -> bool {
+    std::env::var("IMAGER_LIVE").is_ok()
 }
 
 // ---- theme-derived colour helpers --------------------------------------
@@ -415,7 +460,7 @@ impl ImagerApp {
 impl ImagerApp {
     fn content_rect(&self) -> Rect {
         let v = self.rect;
-        let top = CRUMB_TOP + CRUMB_H + 22.0;
+        let top = CRUMB_TOP + CRUMB_H + 30.0;
         let bottom = v.y1 - FOOTER_H - 10.0;
         let avail_w = v.width() - OUTER * 2.0;
         let w = avail_w.min(CONTENT_MAX_W);
@@ -428,10 +473,10 @@ impl ImagerApp {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let content = self.content_rect();
 
-        // ---- Breadcrumb pills ----
+        // ---- Step-indicator pills ----
         let steps = Step::all();
-        let crumb_w = 150.0f64;
-        let gap = 20.0f64;
+        let crumb_w = 132.0f64;
+        let gap = 14.0f64;
         let total = crumb_w * steps.len() as f64 + gap * (steps.len() as f64 - 1.0);
         let mut cx = v.x0 + (v.width() - total) / 2.0;
         let cy = v.y0 + CRUMB_TOP;
@@ -450,47 +495,45 @@ impl ImagerApp {
             Step::Source => self.layout_source(content, &mut hits),
             Step::Drive => self.layout_drive(content, &mut hits),
             Step::Customize => self.layout_customize(content, &mut hits),
-            Step::Write => self.layout_write(content, &mut hits),
+            Step::Confirm => self.layout_confirm(content, &mut hits),
+            // Write (in progress) and Done have no interactive content beyond
+            // the footer.
+            Step::Write | Step::Done => {}
         }
 
         // ---- Footer (Back + primary) ----
         let fy = v.y1 - FOOTER_H;
         let by = fy + (FOOTER_H - 44.0) / 2.0;
         let (mut back, mut primary) = (None, None);
-        let show_back = matches!(self.step, Step::Drive | Step::Customize)
-            || (self.step == Step::Write && self.progress.phase == JobPhase::Idle);
+        let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         if show_back {
             let r = Rect::new(content.x0, by, content.x0 + 120.0, by + 44.0);
             hits.push((r, Hit::Back));
             back = Some(r);
         }
+        // The Write station is a live progress screen with no primary action.
         if let Some(p) = self.primary_button_rect(content, by) {
             let hit = match self.step {
-                Step::Write if self.progress.phase == JobPhase::Idle => Hit::StartWrite,
-                Step::Write if matches!(self.progress.phase, JobPhase::Success | JobPhase::Failed) => {
-                    Hit::WriteAnother
-                }
-                Step::Write => Hit::Next, // active: no-op placeholder, not registered below
+                Step::Confirm => Hit::StartWrite,
+                Step::Done => Hit::WriteAnother,
                 _ => Hit::Next,
             };
-            if !(self.step == Step::Write && self.progress.phase.is_active()) {
-                hits.push((p, hit));
-                primary = Some(p);
-            }
+            hits.push((p, hit));
+            primary = Some(p);
         }
 
         Layout { crumbs, back, primary, hits, content }
     }
 
     /// The primary action button rect, right-aligned in the footer — or `None`
-    /// when the current step has no primary (mid-write).
+    /// on the Write station (a live-progress screen with no primary).
     fn primary_button_rect(&self, content: Rect, by: f64) -> Option<Rect> {
-        if self.step == Step::Write && self.progress.phase.is_active() {
+        if self.step == Step::Write {
             return None;
         }
-        let w = match (self.step, self.progress.phase) {
-            (Step::Write, JobPhase::Idle) => 240.0,
-            (Step::Write, _) => 190.0,
+        let w = match self.step {
+            Step::Confirm => 250.0,
+            Step::Done => 190.0,
             _ => 170.0,
         };
         Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
@@ -551,6 +594,12 @@ impl ImagerApp {
         // "Show internal disks" toggle pinned near the bottom of the content.
         let tr = Rect::new(x0, content.y1 - 44.0, x0 + 320.0, content.y1 - 44.0 + 34.0);
         hits.push((tr, Hit::ToggleInternal));
+        // The system-disk acknowledgement sits beside it, only once a system
+        // disk is actually visible.
+        if self.has_visible_system_disk() {
+            let ack = Rect::new(tr.x1 + 12.0, tr.y0, (tr.x1 + 12.0 + 470.0).min(x1), tr.y1);
+            hits.push((ack, Hit::ToggleSystemAck));
+        }
     }
 
     /// Shared geometry for the Customize step. Uses a deliberate vertical
@@ -617,12 +666,10 @@ impl ImagerApp {
         hits.push((g.export, Hit::ExportConfig));
     }
 
-    fn layout_write(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        if self.progress.phase == JobPhase::Idle {
-            // The typed-confirmation field sits under the review card.
-            let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-            hits.push((field, Hit::Field(Field::Confirm)));
-        }
+    fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
+        // The typed device-name confirmation field sits under the review card.
+        let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
+        hits.push((field, Hit::Field(Field::Confirm)));
     }
 }
 
@@ -633,33 +680,21 @@ impl ImagerApp {
     fn draw_header(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let v = self.rect;
-        // Title + subtitle.
-        self.txt(scene, tr, "Image Writer", 24.0, c.text_primary, v.x0 + OUTER, v.y0 + 18.0, None, TextWeight::Bold);
-        self.txt(
-            scene,
-            tr,
-            "Write a disk image to a USB drive",
-            13.0,
-            c.text_dim,
-            v.x0 + OUTER + 190.0,
-            v.y0 + 26.0,
-            None,
-            TextWeight::Regular,
-        );
-        // A subtle status chip on the right of the header.
+        // No in-app app-name header: the compositor owns the window chrome and
+        // shows the app's name. The app opens straight into the step indicator,
+        // with a slim status line tucked into the top-right margin.
         if !self.status.is_empty() {
             let col = match self.progress.phase {
                 JobPhase::Failed => c.semantic.danger,
                 JobPhase::Success => c.semantic.success,
                 _ => c.text_dim,
             };
-            self.txt_right(scene, tr, &self.status, 12.0, col, v.x1 - OUTER, v.y0 + 24.0, TextWeight::Medium);
+            self.txt_right(scene, tr, &self.status, 11.5, col, v.x1 - OUTER, v.y0 + 8.0, TextWeight::Medium);
         }
-        let _ = HEADER_H;
 
-        // ---- Breadcrumb ----
+        // ---- Step indicator ----
         for (i, (r, s)) in lay.crumbs.iter().enumerate() {
-            let done = s.index() < self.step.index() && self.crumb_reachable(*s);
+            let done = self.step_completed(*s);
             let current = *s == self.step;
             let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
             let bg = if current {
@@ -725,10 +760,10 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.source.is_none() => Some("Choose an image to continue".into()),
             Step::Drive if self.selected.is_none() => Some("Select a drive to continue".into()),
-            Step::Write if self.progress.phase == JobPhase::Idle && !self.confirm_matches() => {
-                self.target().map(|d| format!("Type “{}” to unlock the write", d.name))
+            Step::Confirm if !self.confirm_matches() => {
+                self.target().map(|d| format!("Type “{}” to unlock", d.name))
             }
-            Step::Write if self.progress.phase.is_active() => Some("Do not remove the drive…".into()),
+            Step::Write => Some("Keep the drive connected until this finishes…".into()),
             _ => None,
         }
     }
@@ -740,14 +775,22 @@ impl ImagerApp {
             Step::Source => ("Continue  ›".to_string(), self.can_advance(Step::Source), false),
             Step::Drive => ("Continue  ›".to_string(), self.can_advance(Step::Drive), false),
             Step::Customize => ("Continue  ›".to_string(), true, false),
-            Step::Write => match self.progress.phase {
-                JobPhase::Idle => {
-                    let dev = self.target().map(|d| d.dev_path()).unwrap_or_default();
-                    (format!("Erase & write  {dev}"), self.confirm_matches() && self.image_fits(), true)
-                }
-                JobPhase::Success => ("Write another".to_string(), true, false),
+            Step::Confirm => {
+                let dev = self.target().map(|d| d.dev_path()).unwrap_or_default();
+                // "Erase & write /dev/sdb" for a stick; "Erase & install
+                // /dev/nvme0n1" for a disk install — the verb reads plainly.
+                (
+                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase()),
+                    self.can_advance(Step::Confirm),
+                    true,
+                )
+            }
+            // The Write station has no primary (returned None above); Done
+            // offers a fresh start.
+            Step::Write => ("Writing…".to_string(), false, false),
+            Step::Done => match self.progress.phase {
                 JobPhase::Failed => ("Try again".to_string(), true, false),
-                _ => ("Writing…".to_string(), false, false),
+                _ => ("Start over".to_string(), true, false),
             },
         };
         let bg = if !enabled {
@@ -778,7 +821,7 @@ impl ImagerApp {
     fn draw_source_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Choose an image", "Pick a local .iso or .img file, or a qOS release below.");
+        self.draw_step_title(scene, tr, theme, content, "Choose the source image", "The image to write. Pick a local .iso or .img file, or a qOS release below.");
         let mut y = content.y0 + 44.0;
 
         // Browse drop-zone.
@@ -870,7 +913,7 @@ impl ImagerApp {
     fn draw_drive_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Select a drive", "Everything on the chosen drive will be erased.");
+        self.draw_step_title(scene, tr, theme, content, "Select the target drive", "The drive to write to — everything on it will be erased.");
         // Detected count (to the left of the Rescan button).
         let detected = if self.show_internal {
             format!("{} drive(s)", self.targets.len())
@@ -902,15 +945,58 @@ impl ImagerApp {
 
         // Show-internal toggle.
         let tr_rect = Rect::new(content.x0, content.y1 - 44.0, content.x0 + 340.0, content.y1 - 44.0 + 34.0);
-        let hov = tr_rect.contains(self.last_mouse);
-        Self::fill_rr(scene, t, tr_rect, 10.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, tr_rect, 10.0, if self.show_internal { with_alpha(c.semantic.danger, 150) } else { c.border_standard }, 1.0);
-        let box_r = Rect::new(tr_rect.x0 + 12.0, tr_rect.y0 + 9.0, tr_rect.x0 + 12.0 + 16.0, tr_rect.y0 + 9.0 + 16.0);
-        Self::fill_rr(scene, t, box_r, 4.0, if self.show_internal { c.semantic.danger } else { c.neutral[4] });
-        if self.show_internal {
-            Self::check_disc(scene, t, Point::new((box_r.x0 + box_r.x1) / 2.0, (box_r.y0 + box_r.y1) / 2.0), 8.0, c.semantic.danger, Color::WHITE);
+        self.draw_check_row(
+            scene,
+            tr,
+            theme,
+            t,
+            tr_rect,
+            self.show_internal,
+            c.semantic.danger,
+            "Show internal disks",
+        );
+        // System-disk acknowledgement, shown only when the system disk is
+        // actually in the list. It is the explicit gate that lets the system
+        // disk be selected at all (see `select_target`).
+        if self.has_visible_system_disk() {
+            let ack = Rect::new(tr_rect.x1 + 12.0, tr_rect.y0, (tr_rect.x1 + 12.0 + 470.0).min(content.x1), tr_rect.y1);
+            self.draw_check_row(
+                scene,
+                tr,
+                theme,
+                t,
+                ack,
+                self.system_ack,
+                c.semantic.danger,
+                "I understand — erasing my system disk destroys the running OS",
+            );
         }
-        self.txt(scene, tr, "Show internal disks (dangerous)", 12.5, c.text_primary, box_r.x1 + 10.0, tr_rect.y0 + 9.0, None, TextWeight::Medium);
+    }
+
+    /// A labelled checkbox row (box + tick + caption) used by the Drive step's
+    /// reveal + acknowledgement gates. `accent` tints the checked box.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_check_row(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        row: Rect,
+        checked: bool,
+        accent: Color,
+        label: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let hov = row.contains(self.last_mouse);
+        Self::fill_rr(scene, t, row, 10.0, if hov { c.neutral[3] } else { c.neutral[2] });
+        Self::stroke_rr(scene, t, row, 10.0, if checked { with_alpha(accent, 170) } else { c.border_standard }, 1.0);
+        let box_r = Rect::new(row.x0 + 12.0, row.y0 + 9.0, row.x0 + 12.0 + 16.0, row.y0 + 9.0 + 16.0);
+        Self::fill_rr(scene, t, box_r, 4.0, if checked { accent } else { c.neutral[4] });
+        if checked {
+            Self::check_disc(scene, t, Point::new((box_r.x0 + box_r.x1) / 2.0, (box_r.y0 + box_r.y1) / 2.0), 8.0, accent, Color::WHITE);
+        }
+        self.txt(scene, tr, label, 12.5, c.text_primary, box_r.x1 + 10.0, row.y0 + 9.0, Some((row.width() - 40.0) as f32), TextWeight::Medium);
     }
 
     fn draw_drive_empty(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, content: Rect) {
@@ -925,9 +1011,14 @@ impl ImagerApp {
         Self::fill_rr(scene, t, body, 6.0, c.neutral[4]);
         let cap = Rect::new(cx - 10.0, gy - 16.0, cx + 10.0, gy);
         Self::fill_rr(scene, t, cap, 3.0, c.neutral[5]);
-        self.txt_center(scene, tr, "Insert a USB drive", 17.0, c.text_primary, cx, card.y0 + 140.0, TextWeight::Semibold);
+        self.txt_center(scene, tr, "Insert a drive", 17.0, c.text_primary, cx, card.y0 + 140.0, TextWeight::Semibold);
         self.txt_center(scene, tr, "Plug in a USB stick or SD card, then press Rescan.", 13.0, c.text_dim, cx, card.y0 + 168.0, TextWeight::Regular);
-        self.txt_center(scene, tr, "No removable drives detected.", 12.0, c.neutral[6], cx, card.y0 + 196.0, TextWeight::Regular);
+        let hint = if self.show_internal {
+            "No drives detected."
+        } else {
+            "No removable drives detected — enable “Show internal disks” to target a fixed disk."
+        };
+        self.txt_center(scene, tr, hint, 12.0, c.neutral[6], cx, card.y0 + 196.0, TextWeight::Regular);
     }
 
     fn draw_drive_card(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, idx: usize, drive: &TargetDrive) {
@@ -957,8 +1048,14 @@ impl ImagerApp {
         Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
         self.txt_center(scene, tr, drive.kind.tag(), 12.0, Color::WHITE, (badge.x0 + badge.x1) / 2.0, badge.y0 + 5.0, TextWeight::Bold);
 
-        // Removable / fixed chip on the right.
-        let (chip_label, chip_c) = if drive.removable { ("REMOVABLE", c.semantic.success) } else { ("INTERNAL DISK", c.semantic.danger) };
+        // Removable / fixed / system chip on the right.
+        let (chip_label, chip_c) = if drive.is_system {
+            ("SYSTEM DISK", c.semantic.danger)
+        } else if drive.removable {
+            ("REMOVABLE", c.semantic.success)
+        } else {
+            ("INTERNAL DISK", c.semantic.warning)
+        };
         let (cw, _) = tr.measure_weighted(chip_label, 10.5, None, TextWeight::Bold);
         let chip = Rect::new(r.x1 - 16.0 - cw as f64 - 18.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 18.0 + 24.0);
         Self::fill_rr(scene, t, chip, 6.0, with_alpha(chip_c, 40));
@@ -968,8 +1065,14 @@ impl ImagerApp {
         self.txt(scene, tr, &drive.model, 16.0, c.text_primary, left, r.y0 + 50.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Semibold);
         self.txt(scene, tr, &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)), 12.5, c.text_dim, left, r.y0 + 72.0, None, TextWeight::Regular);
 
-        // Destructive line.
-        self.txt(scene, tr, &format!("⚠ Erases {}", drive.contents_summary()), 11.5, c.semantic.danger, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
+        // Destructive line — or, for a not-yet-acknowledged system disk, a
+        // clear "locked" note pointing at the acknowledgement gate.
+        let (line, col) = if drive.is_system && !self.system_ack {
+            ("🔒 Locked — this is your system disk. Acknowledge below to select it.".to_string(), c.text_dim)
+        } else {
+            (format!("⚠ Erases {}", drive.contents_summary()), c.semantic.danger)
+        };
+        self.txt(scene, tr, &line, 11.5, col, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
     }
 
     fn draw_customize_step(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, presence: &PresenceCtx) {
@@ -1054,19 +1157,20 @@ impl ImagerApp {
         Rect::new(r.x0 + 12.0, r.y0, r.x1 - 12.0, r.y1)
     }
 
-    fn draw_write_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
-        match self.progress.phase {
-            JobPhase::Idle => self.draw_write_review(scene, tr, theme, t, lay),
-            JobPhase::Writing | JobPhase::Verifying => self.draw_write_progress(scene, tr, theme, t, lay),
-            JobPhase::Success => self.draw_write_done(scene, tr, theme, t, lay, true),
-            JobPhase::Failed => self.draw_write_done(scene, tr, theme, t, lay, false),
-        }
-    }
-
-    fn draw_write_review(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+    fn draw_confirm_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Review & write", "Confirm the target, then type its name to unlock the write.");
+        let (title, sub) = match self.action {
+            Action::Install => (
+                "Confirm & install",
+                "Review the install, then type the drive's name to unlock it.",
+            ),
+            Action::Flash => (
+                "Confirm & write",
+                "Review the write, then type the drive's name to unlock it.",
+            ),
+        };
+        self.draw_step_title(scene, tr, theme, content, title, sub);
 
         // Review card: Image → Drive.
         let card = Rect::new(content.x0, content.y0 + 46.0, content.x1, content.y0 + 46.0 + 150.0);
@@ -1084,7 +1188,7 @@ impl ImagerApp {
         // Fit line + mode.
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let fit = if tgt.fits(src.size) {
-                (format!("fits — {} free after write", fmt_size(tgt.size.saturating_sub(src.size))), c.semantic.success)
+                (format!("fits — {} free afterwards", fmt_size(tgt.size.saturating_sub(src.size))), c.semantic.success)
             } else {
                 ("image is larger than the drive".into(), c.semantic.danger)
             };
@@ -1092,19 +1196,34 @@ impl ImagerApp {
             self.txt(scene, tr, &fit.0, 13.0, fit.1, card.x0 + 96.0, card.y0 + 91.0, None, TextWeight::Medium);
         }
         // Action summary.
-        let act = if self.customizable() && self.action == Action::Install {
-            format!("Write qOS + pre-config ({}, user {})", self.profile.hostname, self.profile.user.username)
-        } else {
-            "Raw image write, then read-back verify".to_string()
+        let act = match self.action {
+            Action::Install => format!(
+                "Install qOS with your settings (host {}, user {})",
+                self.profile.hostname, self.profile.user.username
+            ),
+            Action::Flash if self.customizable() => format!(
+                "Write qOS, pre-configured (host {}, user {})",
+                self.profile.hostname, self.profile.user.username
+            ),
+            Action::Flash => "Write the image, then read-back verify".to_string(),
         };
         self.txt(scene, tr, "Action", 12.0, c.text_dim, card.x0 + 20.0, card.y0 + 122.0, None, TextWeight::Semibold);
         self.txt(scene, tr, &act, 13.0, c.text_primary, card.x0 + 96.0, card.y0 + 121.0, Some((card.width() - 116.0) as f32), TextWeight::Medium);
 
-        // Danger banner.
+        // Danger banner — louder for a fixed/internal (install) target.
+        let internal = self.target().map(|d| !d.removable).unwrap_or(false);
+        let system = self.target().map(|d| d.is_system).unwrap_or(false);
         let banner = Rect::new(content.x0, card.y1 + 16.0, content.x1, card.y1 + 16.0 + 44.0);
-        Self::fill_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, 28));
-        Self::stroke_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, 130), 1.0);
-        self.txt(scene, tr, "⚠  This permanently erases the drive. This cannot be undone.", 13.0, c.semantic.danger, banner.x0 + 16.0, banner.y0 + 14.0, None, TextWeight::Semibold);
+        Self::fill_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 40 } else { 28 }));
+        Self::stroke_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 170 } else { 130 }), if internal { 1.4 } else { 1.0 });
+        let warn = if system {
+            "⚠  This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
+        } else if internal {
+            "⚠  This erases the entire internal disk. This cannot be undone."
+        } else {
+            "⚠  This permanently erases the drive. This cannot be undone."
+        };
+        self.txt(scene, tr, warn, 13.0, c.semantic.danger, banner.x0 + 16.0, banner.y0 + 14.0, Some((banner.width() - 32.0) as f32), TextWeight::Semibold);
 
         // Typed confirmation field.
         let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
@@ -1137,8 +1256,12 @@ impl ImagerApp {
         let content = lay.content;
         let p = &self.progress;
         let writing = p.phase == JobPhase::Writing;
-        let title = if writing { "Writing…" } else { "Verifying…" };
-        self.draw_step_title(scene, tr, theme, content, title, "");
+        let verb_ing = match self.action {
+            Action::Install => "Installing",
+            Action::Flash => "Writing",
+        };
+        let title = if writing { format!("{verb_ing}…") } else { "Verifying…".to_string() };
+        self.draw_step_title(scene, tr, theme, content, &title, "");
 
         // Big overall ring.
         let cxp = (content.x0 + content.x1) / 2.0;
@@ -1160,7 +1283,8 @@ impl ImagerApp {
             scene.stroke(&Stroke::new(12.0), t, ring_c, None, &arc);
         }
         self.txt_center(scene, tr, &format!("{:.0}%", overall * 100.0), 30.0, c.text_primary, cxp, cyp - 22.0, TextWeight::Bold);
-        self.txt_center(scene, tr, if writing { "writing" } else { "verifying" }, 12.0, c.text_dim, cxp, cyp + 14.0, TextWeight::Medium);
+        let caption = if writing { verb_ing.to_ascii_lowercase() } else { "verifying".to_string() };
+        self.txt_center(scene, tr, &caption, 12.0, c.text_dim, cxp, cyp + 14.0, TextWeight::Medium);
 
         // Rate + ETA line.
         let mut meta = String::new();
@@ -1204,16 +1328,23 @@ impl ImagerApp {
         let content = lay.content;
         let cxp = (content.x0 + content.x1) / 2.0;
         let cyp = content.y0 + 120.0;
+        let install = self.action == Action::Install;
         if ok {
             Self::check_disc(scene, t, Point::new(cxp, cyp), 46.0, c.semantic.success, Color::WHITE);
-            self.txt_center(scene, tr, "Done", 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "The image was written and verified.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
+            let (headline, sub): (&str, &str) = if install {
+                ("qOS is installed", "The disk was written and verified — remove the media and reboot.")
+            } else {
+                ("Drive is ready", "The image was written and verified — you can safely remove the drive.")
+            };
+            self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
+            self.txt_center(scene, tr, sub, 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
         } else {
             // Danger disc with an "!".
             scene.fill(Fill::NonZero, t, c.semantic.danger, None, &Circle::new(Point::new(cxp, cyp), 46.0));
             self.txt_center(scene, tr, "!", 44.0, Color::WHITE, cxp, cyp - 34.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "Write failed", 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "The drive was not written. See the message below.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
+            let headline = if install { "Install failed" } else { "Write failed" };
+            self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
+            self.txt_center(scene, tr, "The drive was not changed. See the message below.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
         }
         // Summary card.
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
@@ -1295,13 +1426,23 @@ impl ImagerApp {
     }
 
     fn select_target(&mut self, state: &mut AutoCommit, idx: usize) {
-        if idx < self.targets.len() {
-            self.selected = Some(idx);
-            ImagerDoc::set_selected(state, Some(idx));
-            self.confirm.clear();
-            ImagerDoc::set_confirm(state, "");
+        let Some(drive) = self.targets.get(idx) else { return };
+        // Hard guard: the system disk (the one the running OS boots from) can
+        // never be selected by a stray click. It only becomes selectable after
+        // the user ticks the explicit acknowledgement below the list.
+        if drive.is_system && !self.system_ack {
+            self.set_status(
+                state,
+                "That is your system disk — tick “I understand” below to select it.",
+            );
             self.dirty = true;
+            return;
         }
+        self.selected = Some(idx);
+        ImagerDoc::set_selected(state, Some(idx));
+        self.confirm.clear();
+        ImagerDoc::set_confirm(state, "");
+        self.dirty = true;
     }
 
     fn set_status(&mut self, state: &mut AutoCommit, s: &str) {
@@ -1320,27 +1461,34 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
-                // A qOS image goes through Customize; a plain ISO skips it.
+                // Record whether this is a write or an install (drives the
+                // naming), then route: a qOS image goes through Customize; a
+                // plain ISO skips straight to the Confirm review.
+                let act = self.intended_action();
+                self.action = act;
+                ImagerDoc::set_action(state, act);
                 if self.customizable() {
-                    self.action = Action::Install;
-                    ImagerDoc::set_action(state, Action::Install);
                     self.goto(state, Step::Customize);
                 } else {
-                    self.goto(state, Step::Write);
+                    self.goto(state, Step::Confirm);
                 }
             }
-            Step::Customize => self.goto(state, Step::Write),
+            Step::Customize => self.goto(state, Step::Confirm),
+            // Confirm advances into the write only when the typed-name gate is
+            // armed; that same gesture kicks off the (external) job.
+            Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(state),
             _ => {}
         }
     }
 
     fn back(&mut self, state: &mut AutoCommit) {
         match self.step {
-            Step::Write if self.customizable() => self.goto(state, Step::Customize),
-            Step::Write => self.goto(state, Step::Drive),
+            Step::Confirm if self.customizable() => self.goto(state, Step::Customize),
+            Step::Confirm => self.goto(state, Step::Drive),
             Step::Customize => self.goto(state, Step::Drive),
             Step::Drive => self.goto(state, Step::Source),
-            Step::Source => {}
+            // No going back from the source, an in-flight write, or the outcome.
+            Step::Source | Step::Write | Step::Done => {}
         }
     }
 
@@ -1364,6 +1512,8 @@ impl ImagerApp {
                 ImagerDoc::set_progress(state, &self.progress);
                 let mode = if crate::write::allow_write() { "writing" } else { "simulated write" };
                 self.set_status(state, &format!("{} → {} ({mode})", self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default(), tgt.dev_path()));
+                // The write has begun: move onto the live-progress station.
+                self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => self.set_status(state, "Confirmation does not match — write refused."),
             crate::write::JobStart::TooSmall => self.set_status(state, "Image is larger than the drive — write refused."),
@@ -1387,6 +1537,7 @@ impl ImagerApp {
                         self.progress.phase = JobPhase::Failed;
                         ImagerDoc::set_progress(state, &self.progress);
                         self.set_status(state, "Write ended unexpectedly.");
+                        self.goto(state, Step::Done);
                     }
                     self.job_rx = None;
                     self.dirty = true;
@@ -1400,12 +1551,15 @@ impl ImagerApp {
             self.dirty = true;
             if matches!(p.phase, JobPhase::Success | JobPhase::Failed) {
                 self.job_rx = None;
+                let name = self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default();
                 let msg = if p.phase == JobPhase::Success {
-                    format!("Done — {} written and verified", self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default())
+                    format!("Done — {name} {} and verified", self.action.past())
                 } else {
-                    "Write failed.".to_string()
+                    format!("{} failed.", self.action.title())
                 };
                 self.set_status(state, &msg);
+                // Terminal phase → show the outcome station.
+                self.goto(state, Step::Done);
             }
         }
     }
@@ -1471,17 +1625,35 @@ impl ImagerApp {
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
-        if std::env::var("IMAGER_LIVE").is_ok() {
+        if live_probe_enabled() {
+            // Re-read the live block-device inventory. `probe()` returns `None`
+            // only when `lsblk` is unavailable — a transient failure — so in
+            // that case we keep the last-known list rather than blanking it.
+            // A real (possibly empty) result is authoritative and replaces it,
+            // so unplugging the selected drive genuinely drops it from the list.
+            let remembered = self.target().map(|d| d.name.clone());
             if let Some(t) = crate::probe::probe() {
                 self.targets = t.clone();
                 ImagerDoc::write_targets(state, &t);
+                // Keep the same physical drive selected across a rescan by name,
+                // not by index (indices shift as drives come and go).
+                self.selected = remembered.and_then(|name| {
+                    self.targets.iter().position(|d| d.name == name)
+                });
             }
-            self.set_status(state, &format!("Rescanned — {} drive(s)", self.targets.len()));
+            let n = self.targets.len();
+            let removable = self.removable_count();
+            self.set_status(
+                state,
+                &format!("Rescanned — {removable} removable, {n} total"),
+            );
         } else {
             self.set_status(state, "Rescanned drives");
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         ImagerDoc::set_selected(state, self.selected);
+        // A vanished/changed inventory invalidates any system-disk acknowledgement.
+        self.system_ack = false;
         self.dirty = true;
     }
 
@@ -1501,6 +1673,22 @@ impl ImagerApp {
             Hit::Target(i) => self.select_target(state, i),
             Hit::ToggleInternal => {
                 self.show_internal = !self.show_internal;
+                // Hiding internal disks again also withdraws the system-disk
+                // acknowledgement, so re-revealing them re-arms the guard.
+                if !self.show_internal {
+                    self.system_ack = false;
+                }
+                self.dirty = true;
+            }
+            Hit::ToggleSystemAck => {
+                self.system_ack = !self.system_ack;
+                if !self.system_ack {
+                    // Withdrawing consent deselects the system disk if it was chosen.
+                    if self.target().map(|d| d.is_system).unwrap_or(false) {
+                        self.selected = None;
+                        ImagerDoc::set_selected(state, None);
+                    }
+                }
                 self.dirty = true;
             }
             Hit::Rescan => self.do_rescan(state),
@@ -1560,10 +1748,16 @@ impl Widget for ImagerApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
-                let targets = if std::env::var("IMAGER_LIVE").is_ok() {
-                    crate::probe::probe().unwrap_or_else(crate::model::sample_targets)
+                // Start genuinely blank. In the live app a real `lsblk` probe
+                // fills the drive list; if it finds nothing (or is unavailable)
+                // the list stays empty and the Drive step shows its honest
+                // "insert a drive" state — the imager never invents drives.
+                // Sample content is opt-in (`--demo` / `--shots`), which seeds
+                // the document *before* the first sync so this branch is skipped.
+                let targets = if live_probe_enabled() {
+                    crate::probe::probe().unwrap_or_default()
                 } else {
-                    crate::model::sample_targets()
+                    Vec::new()
                 };
                 ImagerDoc::seed(state, &targets);
             }
@@ -1635,7 +1829,9 @@ impl Widget for ImagerApp {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
             Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay, presence),
-            Step::Write => self.draw_write_step(scene, tr, theme, transform, &lay),
+            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
+            Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
+            Step::Done => self.draw_write_done(scene, tr, theme, transform, &lay, self.progress.phase == JobPhase::Success),
         }
         self.draw_footer(scene, tr, theme, transform, &lay);
 
@@ -1766,7 +1962,7 @@ impl Widget for ImagerApp {
                             *handled = true;
                         }
                         Key::Named(NamedKey::Enter) => {
-                            if f == Field::Confirm && self.step == Step::Write {
+                            if f == Field::Confirm && self.step == Step::Confirm && self.can_advance(Step::Confirm) {
                                 self.start_write(state);
                             }
                             self.focus = None;
@@ -1900,15 +2096,18 @@ mod tests {
     use super::*;
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
+        // Tests drive the wizard against the demo document (sample drives + a
+        // qOS image + recent history) — the same content `--shots`/`--demo` use.
         let mut app = ImagerApp::new();
         let mut doc = AutoCommit::new();
+        ImagerDoc::seed_demo(&mut doc);
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
     }
 
     #[test]
-    fn sync_seeds_sample_state_at_source_step() {
+    fn sync_reads_demo_state_at_source_step() {
         let (app, _doc) = seeded_app();
         assert_eq!(app.targets.len(), 2);
         assert!(app.source.is_some());
@@ -1917,11 +2116,24 @@ mod tests {
     }
 
     #[test]
-    fn layout_has_four_breadcrumb_steps() {
+    fn live_app_starts_blank_with_no_fabricated_content() {
+        // The live path (no demo seed) starts genuinely empty: no drives are
+        // invented and no image is pre-selected.
+        let mut app = ImagerApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.targets.is_empty(), "no fabricated drives");
+        assert!(app.source.is_none(), "no fabricated image");
+        assert!(app.recent.is_empty(), "no fabricated recent history");
+        assert_eq!(app.step, Step::Source);
+    }
+
+    #[test]
+    fn layout_has_six_step_stations() {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
-        assert_eq!(lay.crumbs.len(), 4);
+        assert_eq!(lay.crumbs.len(), 6);
     }
 
     #[test]
@@ -1938,7 +2150,7 @@ mod tests {
         // Seeded source is an installable qOS image → goes through Customize.
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
-        assert_eq!(app.step, Step::Write);
+        assert_eq!(app.step, Step::Confirm);
     }
 
     #[test]
@@ -1948,8 +2160,8 @@ mod tests {
         app.select_source(&mut doc, iso);
         app.advance(&mut doc); // → Drive
         app.select_target(&mut doc, 0);
-        app.advance(&mut doc); // installable == false → straight to Write
-        assert_eq!(app.step, Step::Write);
+        app.advance(&mut doc); // installable == false → straight to Confirm
+        assert_eq!(app.step, Step::Confirm);
         assert!(!app.customizable());
     }
 
@@ -1957,27 +2169,29 @@ mod tests {
     fn write_refused_without_matching_confirmation() {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
-        app.goto(&mut doc, Step::Write);
+        app.goto(&mut doc, Step::Confirm);
         app.confirm = "wrong".into();
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
         assert!(app.job_rx.is_none());
+        assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
         assert!(ImagerDoc::status(&doc).to_lowercase().contains("confirm"));
     }
 
     #[test]
-    fn write_starts_with_matching_confirmation() {
+    fn write_starts_with_matching_confirmation_and_advances_to_write_station() {
         // A matching typed confirmation starts a job: the phase advances to
-        // Writing and a progress channel is installed. Whether the backend is
-        // simulated or real is decided by the allow-gate in write.rs (tested
-        // there); either way these UI invariants hold and the assertions below
-        // never depend on the process environment.
+        // Writing, the flow moves onto the Write station, and a progress channel
+        // is installed. Whether the backend is simulated or real is decided by
+        // the allow-gate in write.rs (tested there); either way these UI
+        // invariants hold and never depend on the process environment.
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
-        app.goto(&mut doc, Step::Write);
+        app.goto(&mut doc, Step::Confirm);
         app.confirm = "sdb".into();
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Writing);
+        assert_eq!(app.step, Step::Write, "the write station is now showing");
         assert!(app.job_rx.is_some());
         assert!(app.needs_animation_frame());
     }
@@ -2003,6 +2217,37 @@ mod tests {
         assert_eq!(app.removable_count(), 1);
         app.show_internal = true;
         assert_eq!(app.visible_targets().len(), 2);
+    }
+
+    /// The system disk can never be selected by a stray click; it takes an
+    /// explicit acknowledgement, and withdrawing that consent deselects it.
+    #[test]
+    fn system_disk_needs_acknowledgement_before_selection() {
+        let mut app = ImagerApp::new();
+        let mut doc = AutoCommit::new();
+        let mut targets = crate::model::sample_targets();
+        targets[1].is_system = true; // the internal NVMe is the system disk
+        ImagerDoc::seed(&mut doc, &targets);
+        ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+        app.sync(&mut doc, &automerge::ROOT);
+        app.show_internal = true; // reveal internal disks
+        assert!(app.has_visible_system_disk());
+
+        // A stray click on the system disk is refused with a clear reason.
+        app.dispatch_hit(&mut doc, Hit::Target(1));
+        assert_eq!(app.selected, None, "the system disk is not selectable by accident");
+        assert!(ImagerDoc::status(&doc).to_lowercase().contains("system disk"));
+
+        // The explicit acknowledgement unlocks it.
+        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
+        assert!(app.system_ack);
+        app.dispatch_hit(&mut doc, Hit::Target(1));
+        assert_eq!(app.selected, Some(1), "acknowledged → the system disk can be selected");
+
+        // Withdrawing the acknowledgement drops the selection again.
+        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
+        assert!(!app.system_ack);
+        assert_eq!(app.selected, None, "withdrawing consent deselects the system disk");
     }
 
     /// The password field is now a shared secret `TextInput`: typing through
