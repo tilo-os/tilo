@@ -84,14 +84,11 @@ pub struct DiffMergeApp {
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
     structure_dirty: bool,
-    /// Doc heads captured just before an on-panel affordance dispatched its
-    /// [`DiffmergeAction`], handed to the host so it brackets **one** undo
-    /// boundary around the action ([`Widget::take_committed_action`]). Rising-
-    /// edge: cleared on read.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The last action encoded by [`Self::perform_action`], kept so a test can
-    /// prove the affordance dispatched the expected envelope.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch: every on-panel affordance routes its
+    /// [`DiffmergeAction`] through here so it brackets **one** undo boundary,
+    /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl DiffMergeApp {
@@ -149,8 +146,7 @@ impl DiffMergeApp {
             load_error: None,
             dirty: true,
             structure_dirty: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -228,17 +224,14 @@ impl DiffMergeApp {
     /// updated by the chip handler for immediate feedback and is reconciled from
     /// the document on the next `sync`.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "diffmerge action dispatch failed");
-        }
+        self.actions.dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// The presentation context Ctrl+K needs to build the merge resource tree.
@@ -696,7 +689,7 @@ impl Widget for DiffMergeApp {
     /// resolution action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn get_rect(&self) -> Rect {
@@ -742,17 +735,6 @@ impl Widget for DiffMergeApp {
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
-}
-
-/// The action transport Diff installs for its own on-panel chips. Peers receive
-/// the merge changes through ordinary CRDT sync (the executor pins each action's
-/// actor so the change is content-addressed identical to a peer's replay and
-/// dedupes on merge), so the local chip path has nothing extra to replicate —
-/// this sink drops the envelope. The Ctrl+K palette dispatches through the
-/// host's transport, which a collaborative session swaps for a peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 #[cfg(test)]
@@ -883,7 +865,7 @@ mod tests {
             .expect("a chip click queues a resolution");
         app.perform_action(&mut state.doc, action);
 
-        assert!(app.last_dispatched.is_some(), "the affordance dispatched an envelope");
+        assert!(app.last_dispatched().is_some(), "the affordance dispatched an envelope");
         let after_merged = crate::doc::MergeDoc::merged_text(&state.doc);
         assert_ne!(before_merged, after_merged, "the action mutated the merged output");
         assert_eq!(
