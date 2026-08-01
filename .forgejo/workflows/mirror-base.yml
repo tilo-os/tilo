@@ -56,10 +56,16 @@ jobs:
         run: |
           set -euo pipefail
           # --all copies the whole manifest list rather than just this runner's
-          # architecture, and byte-for-byte — so the mirrored index digest is
-          # the digest Fedora published, and an arm64 build still has a base.
+          # architecture, so an arm64 build still has a base to build on.
+          # --preserve-digests refuses to re-compress anything, so the mirrored
+          # index is byte-identical to what Fedora published and its digest is
+          # the digest Fedora published — the mirror adds durability, not a new
+          # artifact to trust. --retry-times rides out the transient DNS/TLS
+          # blips a ~1 GB four-architecture push hits on the runner; a
+          # half-copied image would otherwise leave a tag that resolves but is
+          # missing blobs.
           dst="code.sandbox.example/qos/fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)"
-          skopeo copy --all \
+          skopeo copy --all --preserve-digests --retry-times 5 \
             --dest-authfile /tmp/mirror-auth.json \
             "docker://$BASE_SOURCE" "docker://$dst"
           echo "MIRROR_TAG=$dst" >> "$GITHUB_ENV"
