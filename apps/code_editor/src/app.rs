@@ -52,6 +52,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::Key;
 
+use crate::actions;
 use crate::bottom_panel::{BottomPanel, PanelTab};
 use crate::command_palette::{Command, CommandPalette, Entry, PaletteKind};
 use crate::doc::EditorDoc;
@@ -100,6 +101,13 @@ pub struct CodeApp {
     status: StatusBar,
     panel: BottomPanel,
     palette: CommandPalette,
+
+    /// Framework-owned action dispatch (the qOS resource + action model). The
+    /// only doc-mutating operation Code exports beyond raw text is materialising
+    /// a buffer (New file); it is dispatched through this host so it brackets one
+    /// undo boundary and replays byte-identically on peers, the same path a
+    /// Ctrl+K palette dispatch takes. See [`crate::actions`].
+    actions: ui::ActionHost,
 
     /// Adaptive open/closed state of the file-tree sidebar (the shared flap
     /// kernel). Docked-open when wide, overlay-closed when narrow.
@@ -189,6 +197,7 @@ impl CodeApp {
             status: StatusBar::new(),
             panel: BottomPanel::new(),
             palette: CommandPalette::new(),
+            actions: ui::ActionHost::new(),
             flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
@@ -345,6 +354,19 @@ impl CodeApp {
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
     /// editor to the active buffer's Text object.
     fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
+        // The document is the source of truth for which buffers exist. Any buffer
+        // it holds that the in-memory session does not track — created by a Ctrl+K
+        // "New file" action or by a peer — is surfaced as an untitled file so it
+        // appears in the tree. The buffer's text stays in the CRDT; this only
+        // materialises the in-memory shell the tree and tabs read from.
+        for node in EditorDoc::buffer_keys(doc) {
+            if self.session.project.get(node).is_none() {
+                let name = format!("untitled-{node}.txt");
+                self.session.project.adopt_file(node, &name);
+                self.sidebar.set_project(&self.session.project);
+            }
+        }
+
         // Seed the active buffer (and any already-open) so their text exists in
         // the doc. We seed lazily per open buffer.
         for buf in &self.session.open {
@@ -472,6 +494,26 @@ impl CodeApp {
         self.palette.set_entries(entries);
     }
 
+    /// The presentation context the Ctrl+K resource tree is built from: the
+    /// project name, the id the next created buffer will take, and the open
+    /// buffers. Everything here mirrors state the app already holds.
+    pub(crate) fn code_resource_ctx(&self) -> actions::CodeEditorResourceCtx {
+        let open_files = self
+            .session
+            .open
+            .iter()
+            .map(|b| actions::OpenFileRef {
+                node: b.node as u64,
+                name: b.name.clone(),
+            })
+            .collect();
+        actions::CodeEditorResourceCtx {
+            project_name: self.session.project.name.clone(),
+            next_id: self.session.project.peek_next_id() as u64,
+            open_files,
+        }
+    }
+
     /// Open a file node into a tab and bind the editor.
     fn open_node(&mut self, node: TreeId) {
         self.session.open_file(node);
@@ -518,16 +560,30 @@ impl CodeApp {
         self.refresh_tabs();
     }
 
-    /// Dispatch a palette command.
-    fn apply_command(&mut self, cmd: Command) {
+    /// Dispatch a palette command. `doc` is threaded in because the one
+    /// doc-mutating command (New file) dispatches a [`CodeEditorAction`] through
+    /// the action host; the rest are pure presentation.
+    ///
+    /// [`CodeEditorAction`]: crate::actions::CodeEditorAction
+    fn apply_command(&mut self, cmd: Command, doc: &mut AutoCommit) {
         match cmd {
             Command::NewFile => {
-                // Create an untitled scratch file in the project root.
+                // Create an untitled scratch file in the project root. The name
+                // and tree position are in-memory; the collaborative, replayable
+                // half — materialising the buffer in the shared document — is the
+                // one action Code exports, dispatched here through the host so it
+                // brackets one undo boundary and replays on peers. The Ctrl+K
+                // "New file" spec builds the byte-identical action.
                 let root = self.session.project.root;
                 let name = format!("untitled-{}.txt", self.session.project.nodes.len());
                 let id = self.session.project.add_file(root, &name, "");
                 self.sidebar.set_project(&self.session.project);
                 self.open_node(id);
+                self.actions.dispatch(
+                    doc,
+                    actions::CODE_EDITOR_ACTION_TYPE,
+                    &actions::create_buffer_action(id as u64, ""),
+                );
             }
             Command::CloseTab => {
                 if let Some(i) = self.session.active {
@@ -556,8 +612,10 @@ impl CodeApp {
         }
     }
 
-    /// Drain everything the child widgets emitted this frame.
-    fn drain_child_events(&mut self) {
+    /// Drain everything the child widgets emitted this frame. `doc` is threaded
+    /// through so a chosen palette command that mutates the document (New file)
+    /// can dispatch its action.
+    fn drain_child_events(&mut self, doc: &mut AutoCommit) {
         let tree_events = self.sidebar.take_events();
         for ev in tree_events {
             self.apply_tree_event(ev);
@@ -569,7 +627,7 @@ impl CodeApp {
         if let Some(kind) = self.palette.take_chosen() {
             match kind {
                 PaletteKind::File(id) => self.open_node(id),
-                PaletteKind::Command(cmd) => self.apply_command(cmd),
+                PaletteKind::Command(cmd) => self.apply_command(cmd, doc),
             }
         }
     }
@@ -1257,7 +1315,7 @@ impl Widget for CodeApp {
             if let WindowEvent::KeyboardInput { .. } = event {
                 if self.palette.handle_key(event) {
                     *handled = true;
-                    self.drain_child_events();
+                    self.drain_child_events(state);
                     return;
                 }
             }
@@ -1458,7 +1516,7 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events();
+        self.drain_child_events(state);
         self.refresh_diagnostics(state);
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
@@ -1467,6 +1525,21 @@ impl Widget for CodeApp {
 
     fn name(&self) -> &str {
         "CodeApp"
+    }
+
+    /// Publish the open project + its buffers so the shell's one Ctrl+K palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// [`Self::apply_command`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn get_rect(&self) -> Rect {
@@ -1611,11 +1684,70 @@ mod tests {
     fn toggle_sidebar_command_hides_it() {
         // Default width hint is wide → docked-open; the command flips it shut.
         let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
         assert!(app.sidebar_open());
-        app.apply_command(Command::ToggleSidebar);
+        app.apply_command(Command::ToggleSidebar, &mut doc);
         assert!(!app.sidebar_open());
-        app.apply_command(Command::ToggleSidebar);
+        app.apply_command(Command::ToggleSidebar, &mut doc);
         assert!(app.sidebar_open());
+    }
+
+    #[test]
+    fn new_file_command_dispatches_the_create_buffer_action() {
+        // The on-screen "New file" command and the Ctrl+K "New file" spec must
+        // build the byte-identical action — one source of truth. Both target the
+        // node id the project will allocate next.
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc); // seed the sample project's open buffers
+
+        let ctx = app.code_resource_ctx();
+        let expected_node = ctx.next_id;
+        let resources = crate::actions::provide_resources(&ctx, &doc);
+        let spec = resources[0]
+            .actions
+            .iter()
+            .find(|a| a.id == "new-file")
+            .unwrap();
+        let from_spec = match &spec.input {
+            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("new-file is an immediate action"),
+        };
+
+        app.apply_command(Command::NewFile, &mut doc);
+
+        let dispatched = app
+            .actions
+            .last_dispatched()
+            .expect("New File dispatched an action");
+        assert_eq!(
+            dispatched, &from_spec,
+            "the command and the Ctrl+K spec build the identical action"
+        );
+        // The action actually materialised the buffer in the document.
+        assert!(EditorDoc::read_buffer(&doc, expected_node as usize).is_some());
+    }
+
+    #[test]
+    fn a_document_buffer_is_adopted_as_a_tracked_file() {
+        // A buffer created directly in the document (a Ctrl+K "New file" or a
+        // peer) is surfaced by the next sync as an untitled file in the tree,
+        // without inventing a persisted file model.
+        let mut app = CodeApp::new();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        let before = app.session.project.nodes.len();
+
+        let orphan = 9999;
+        EditorDoc::ensure_buffer(&mut doc, orphan, "// created out of band\n");
+        assert!(app.session.project.get(orphan).is_none());
+
+        app.ensure_buffers(&mut doc);
+        assert!(
+            app.session.project.get(orphan).is_some(),
+            "the document buffer was adopted as a file"
+        );
+        assert_eq!(app.session.project.nodes.len(), before + 1);
     }
 
     #[test]
