@@ -4772,6 +4772,7 @@ dependencies = [
  "automerge",
  "chrono",
  "git2",
+ "qos-actions",
  "serde",
  "serde_json",
  "taffy",
