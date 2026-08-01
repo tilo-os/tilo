@@ -716,7 +716,9 @@ bin = "bin/notes"
             "$XDG_DATA_HOME/dev.qos.totp",
         ] {
             let m = manifest_with(&format!("[sandbox.fs]\nwrite = [{entry:?}]\n"));
-            let err = enforce_fs_policy(&m).expect_err("{entry} must be refused");
+            let Err(err) = enforce_fs_policy(&m) else {
+                panic!("write = [{entry:?}] must be refused");
+            };
             let text = err.to_string();
             assert!(
                 text.contains("com.example.hostile") && text.contains(entry),
@@ -733,7 +735,9 @@ bin = "bin/notes"
     fn a_declared_read_is_refused_whether_or_not_the_profile_covers_it() {
         for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
             let m = manifest_with(&format!("[sandbox.fs]\nread = [{entry:?}]\n"));
-            let err = enforce_fs_policy(&m).expect_err("{entry} must be refused");
+            let Err(err) = enforce_fs_policy(&m) else {
+                panic!("read = [{entry:?}] must be refused");
+            };
             assert!(
                 err.to_string().contains(entry),
                 "the refusal must name the entry: {err}"
