@@ -13,6 +13,7 @@
 
 use ui::widget::Widget;
 
+pub mod actions;
 mod app;
 mod doc;
 mod http;
