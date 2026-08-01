@@ -647,6 +647,7 @@ mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};
 mod number_input; pub use number_input::NumberInput;
 pub mod marks; pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
+pub mod rich_text_editor; pub use rich_text_editor::{RichTextEditor, RichBlockStyle};
 pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};
 pub mod slash_menu;     pub use slash_menu::SlashMenu;
 pub mod link_popover;   pub use link_popover::{LinkPopover, PageEntry};
