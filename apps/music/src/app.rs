@@ -3834,6 +3834,51 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates() {
+        // The end-to-end seam the global Ctrl+K uses: the host collects the
+        // app's `Widget::search_providers()`, registers them into the shared
+        // `ui::search::SearchRegistry`, and on a chosen row calls
+        // `Widget::activate_search_result` — the exact flow in
+        // `ui::App::open_action_palette` / `action_palette_handle_key`.
+        use crate::search_type::SearchHit;
+        use ui::search::SearchRegistry;
+        let (mut app, mut doc) = app_with_doc();
+
+        let mut registry = SearchRegistry::new();
+        for p in Widget::search_providers(&app) {
+            registry.register(p);
+        }
+        assert_eq!(registry.provider_count(), 1, "music contributes its library provider");
+
+        // A real song row activated through the Widget method plays the track.
+        let track = app.lib.tracks.values().next().unwrap().clone();
+        let song = registry
+            .query(&track.title)
+            .into_iter()
+            .find(|r| r.action_id == SearchHit::track_link(&track.id))
+            .expect("the song is findable via the registered provider");
+        assert_eq!(song.kind, "Songs");
+        Widget::activate_search_result(&mut app, &song.action_id, &mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.pb.current.as_deref(),
+            Some(track.id.as_str()),
+            "activating the song row plays the real track through the play path"
+        );
+        assert!(app.pb.queue.contains(&track.id));
+
+        // An artist row activated through the same method opens the artist page.
+        let artist = app.lib.artists.values().next().unwrap().clone();
+        let arow = registry
+            .query(&artist.name)
+            .into_iter()
+            .find(|r| r.action_id == SearchHit::artist_link(&artist.id))
+            .expect("the artist is findable via the registered provider");
+        assert_eq!(arow.kind, "Artists");
+        Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
+        assert_eq!(app.view, View::Artist(artist.id.clone()), "activation opens the artist page");
+    }
+
+    #[test]
     fn add_remove_reorder_playlist_tracks() {
         let (mut app, mut doc) = app_with_doc();
         // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
