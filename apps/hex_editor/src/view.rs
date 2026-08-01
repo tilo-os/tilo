@@ -23,7 +23,7 @@ use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
-use qos_actions::{ActionTransport, EncodedAction};
+use qos_actions::EncodedAction;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -99,16 +99,12 @@ pub struct HexView {
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
     open_button: Rect,
 
-    /// The document heads captured just before the first buffer-edit action of
-    /// the current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the edit — the same undo path a Ctrl+K palette dispatch takes.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The last [`EncodedAction`] a keystroke dispatched through
-    /// [`Self::perform_action`]. Lets a test prove a keystroke and the Ctrl+K
-    /// [`qos_actions::ActionSpec`] build the byte-identical action — one source
-    /// of truth, not two code paths.
-    last_dispatched: Option<EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
+    /// path a Ctrl+K palette dispatch takes), encodes and dispatches each
+    /// buffer-edit action, and remembers the last one so a test can prove a
+    /// keystroke and the Ctrl+K [`qos_actions::ActionSpec`] build the
+    /// byte-identical action.
+    actions: ui::ActionHost,
 }
 
 impl HexView {
@@ -133,8 +129,7 @@ impl HexView {
             save_rx: None,
             flash: None,
             open_button: Rect::ZERO,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -171,7 +166,7 @@ impl HexView {
     /// Not `#[cfg(test)]` so the integration test crate (`tests/open_save.rs`),
     /// which compiles against the public API only, can read it too.
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
-        self.last_dispatched.as_ref()
+        self.actions.last_dispatched()
     }
 
     /// The presentation context Ctrl+K needs to target its byte-edit actions at
@@ -251,17 +246,8 @@ impl HexView {
     /// on peers). The heads captured just before the first action of the event
     /// are stashed so the host records **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::HexEditorAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending write, so the bracket covers only
-            // this event's changes.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "hex_editor action dispatch failed");
-        }
+        self.actions
+            .dispatch(doc, crate::actions::HEX_EDITOR_ACTION_TYPE, &action);
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -1327,15 +1313,6 @@ fn ui_accent_idx() -> usize {
     5
 }
 
-/// The transport a dispatched action is handed after local execution. The
-/// editor commits the action's change to the shared document; the host's normal
-/// CRDT sync ships it to peers, so a local-only transport suffices here (a
-/// collaborative session swaps in a peer-aware one).
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 impl Widget for HexView {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         // Drain any completed file open/save picks first, so a freshly opened
@@ -1667,7 +1644,7 @@ impl Widget for HexView {
     /// buffer-edit action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {
