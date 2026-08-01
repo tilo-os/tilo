@@ -203,9 +203,18 @@ our registry collects nothing. Copy with the multi-arch index intact. Fixed on t
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
 as a `--build-arg`.
 
-Adjacent and still open: `os/containers/qos-relay/Containerfile:74` builds its runtime stage
-`FROM quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently
-changes, so the relay image is not reproducible across time.
+Two adjacent holes in the same guarantee are still open:
+
+- `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
+  quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
+  so the relay image is not reproducible across time.
+- `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
+  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. It is
+  currently broken — `build-wpe.sh:67` exports `PKG_CONFIG_SYSROOT_DIR=/wpe`, so every system
+  `-I/usr/include` becomes `-I/wpe/usr/include` and libwpe's CMake configure fails on
+  `Imported target "XkbCommon::libxkbcommon" includes non-existent path` — and nobody noticed,
+  because the base `FROM` above failed first and the layer cache served the stage before that.
+  An unpinned stage is also an unwatched one.
 
 ---
 
