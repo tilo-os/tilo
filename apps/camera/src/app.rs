@@ -29,7 +29,7 @@ use vello::peniko::Color;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Image, ImageFit, Widget};
+use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
 use winit::event::WindowEvent;
 
 use crate::doc;
@@ -1085,12 +1085,11 @@ impl CameraApp {
     }
 
     fn toggle_switch(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, on: bool, action: Action) {
-        let c = &theme.tokens.colors;
-        let track = if on { theme.accent_primary } else { p::alpha(c.neutral[6], 0.9) };
-        p::fill_round(scene, t, rect, rect.height() / 2.0, track);
-        let r = rect.height() / 2.0 - 3.0;
-        let kx = if on { rect.x1 - r - 3.0 } else { rect.x0 + r + 3.0 };
-        p::circle(scene, t, kx, rect.center().y, r, white());
+        // Shared switch face on the settings sheet (solid chrome, not over-media):
+        // themed track/knob/focus plus hover feedback, replacing the hand-painted
+        // pill. The existing region hit-test still fires the toggle action.
+        let hovered = rect.contains(self.last_mouse);
+        Toggle::paint(scene, t, theme, &ToggleFace::new(rect, on).hovered(hovered));
         self.push_region(rect, action);
     }
 
