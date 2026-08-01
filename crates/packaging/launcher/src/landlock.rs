@@ -78,9 +78,12 @@ pub(crate) fn outcome_from_status(status: RulesetStatus) -> LandlockOutcome {
     }
 }
 
-/// Produce the FS access plan for a manifest's read/write lists. The
-/// caller is expected to have already expanded `~/` and
-/// `<scope=current>` placeholders.
+/// Produce the FS access plan for a read list and a write list.
+///
+/// The lists come from the launcher, not from a manifest: the system
+/// read profile ([`crate::profile`]) and the app's own directory
+/// ([`crate::appdir`]). Paths are absolute and literal — there is no
+/// placeholder expansion left in the launcher to have run first.
 pub fn plan_from_paths(ro: &[PathBuf], rw: &[PathBuf]) -> Vec<FsRule> {
     let abi = TARGET_ABI;
     let read = AccessFs::from_read(abi);
