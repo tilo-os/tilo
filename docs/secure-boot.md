@@ -106,27 +106,94 @@ With Secure Boot off, that binding records "Secure Boot is off" — which is a
 consistent measurement but not a meaningful one, since the state it attests to is
 the state in which the boot chain is unverified.
 
-### The Unified Kernel Image gap
+### The Unified Kernel Image gap, and what it costs
 
 The design calls for kernel, initramfs and command line sealed into one signed
-binary, so the command line cannot be edited to disable a protection. qOS does
-not have that yet, and the reason is worth writing down rather than filing.
+binary. qOS does not have that, and the consequences are larger than "a nice
+property we lack", so they are worth setting out rather than filing.
 
-`bootc install` on the ostree backend deploys the kernel and initramfs as
-separate files under `/boot/ostree/<stateroot>-<csum>/` with the command line in
-a Boot Loader Specification entry beside them. Signing the kernel gets the
-firmware to verify the kernel; it does nothing about the BLS entry, which stays
-an editable text file. A UKI cannot simply be dropped into `EFI/Linux/` either,
-because its embedded command line has to name the ostree deployment, and that
-name changes with every update — a static UKI stops matching after the first one.
+#### What signing actually covers on the ostree backend
 
-`bootc` 1.15.2 does carry the pieces (`--composefs-backend`, `--uki-addon`) for
-the composefs backend, where the root is content-addressed and the UKI is the
-deployed artefact. That is the path, and it also delivers the sealed root
-filesystem the design asks for. It is experimental, it changes the root
-filesystem model rather than adding to it, and enabling it demands its own
-verified-boot campaign. Until then, the command line is protected by nothing
-stronger than the fact that `/boot` is only writable by root.
+The firmware verifies what it `LoadImage()`s. On this backend that is
+systemd-boot, and then the kernel — both PE binaries, both signable, both signed
+by `qos-secureboot sign`. What it does **not** cover:
+
+- **The initramfs.** ostree deploys it as a plain cpio blob beside the kernel and
+  the loader hands it to the kernel after the verification step, so it is not
+  part of any signature check. That matters more here than it would elsewhere,
+  because the initramfs is exactly where the disk gets unlocked: it runs
+  `systemd-cryptsetup`, it holds the TPM unseal, it sees the passphrase. Someone
+  who can write `/boot` can replace it and get code execution before the root is
+  open, with Secure Boot on and every signature valid. I have not tested whether
+  the kernel applies any check of its own to an initrd received this way; the
+  firmware certainly does not.
+- **The command line.** It lives in a Boot Loader Specification entry, an
+  editable text file next to the kernel. Every hardening karg
+  (`lockdown=integrity`, `init_on_free=1`, …) can be removed by anything that can
+  write the ESP or `/boot`.
+
+So owner-enrolled Secure Boot here buys a verified *kernel*, and that is worth
+having — it is what makes `lockdown=integrity` engage — but it does not buy a
+verified *boot*. Nobody should read "Secure Boot is on" on this backend as
+meaning the early boot is trustworthy.
+
+#### Which PCR distinguishes one generation from another
+
+Not PCR 11. `systemd-stub` extends PCR 11 with the UKI's sections, and the stub
+only runs when the firmware loads a UKI. Here the firmware loads the kernel
+directly, no stub is involved, and PCR 11 stays at its reset value — so a
+per-generation prediction for PCR 11 would predict a constant that every
+generation satisfies, including the rolled-back one it exists to reject. PCR 12,
+which the stub uses for the command line it was passed, is empty for the same
+reason.
+
+**PCR 4 is the one that does distinguish them.** The firmware measures every
+image it loads into PCR 4, and each generation deploys its own kernel file at its
+own path, so PCR 4 already separates generations without any UKI. That reframes
+the earlier advice in this document: PCR 4 was called unusable because it changes
+on every OS update and would send the user to the recovery key each time — but
+that is only true for a *fixed* policy. A per-generation **signed** PCR policy is
+precisely the mechanism that makes a changing PCR usable, and it is what
+`keys/tpm2-pcr-signing.public.pem` was reserved for. If generation-bound unlock is
+being built, PCR 4 + PCR 7 with signed per-generation predictions is the shape
+that works on the backend we actually have.
+
+One thing it still does not give you: **anti-rollback**. A signed prediction for
+generation N-1 stays valid, so an attacker who puts back the older signed kernel
+gets a PCR 4 value that matches a prediction the TPM will honour. Refusing that
+needs monotonicity the PCRs cannot express — a TPM NV counter that only moves
+forward, with the policy bound to its current value. `systemd-cryptenroll` does
+not expose that today, so anti-rollback is a gap in any PCR-only design, UKI or
+not. Worth knowing before PCR 11 gets treated as the thing standing between the
+system and a rollback attack.
+
+#### Is `bootc --composefs-backend` close enough to depend on?
+
+Evidence from bootc 1.15.2 as shipped, rather than from upstream's roadmap:
+
+- `--composefs-backend` is an ordinary documented flag on `install to-disk` and
+  `install to-filesystem`. It is not hidden, and no `BOOTC_*` environment
+  variable gates it — the only `BOOTC_*` knobs in the binary are for debugging,
+  loopback cleanup and SELinux.
+- The lifecycle verbs exist, not just install: the binary carries
+  `bootc_composefs/{boot,update,switch,status,delete,finalize,export,repo,selinux}.rs`,
+  and there is a top-level `composefs-finalize-staged` subcommand.
+- `--uki-addon` exists alongside it, which is the UKI-shaped half.
+- `bootc upgrade` has no composefs flag, consistent with the backend being
+  recorded at install time and detected afterwards.
+
+So it is a real implementation with a complete-looking lifecycle, not a stub. What
+that evidence cannot tell you is whether upstream considers it stable, and the
+switch is not additive: it replaces the root filesystem model with a
+content-addressed, fs-verity-backed one, so it cannot be trialled on the side of
+an existing install. It also changes what `--allow-missing-verity` has to be set
+to depending on the filesystem underneath.
+
+My view: it is the only path to a signature-covered initramfs and command line on
+this stack, the UKI work should be planned against it rather than against
+anything bolted onto ostree, and it needs its own verified-boot campaign with the
+recovery path proven before anything depends on it. What it should **not** do is
+block generation-bound unlock, because PCR 4 gives that today.
 
 ## Interface for generation-bound unlock
 
