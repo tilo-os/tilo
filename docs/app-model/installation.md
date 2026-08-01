@@ -51,6 +51,11 @@ $XDG_DATA_HOME/                     # default: ~/.local/share
         …
       etc/ld.so.cache
 
+  qos-rooms/                        # written by the launcher, not the installer
+    <room>/                         # workspace id, or `personal` for a launch with no workspace
+      <pkg-id>/                     # the app's one writable directory
+        .local/share/…              # HOME and every XDG_* point in here
+
 $XDG_CONFIG_HOME/                   # default: ~/.config
   qos/
     trusted-attestors.toml
@@ -60,6 +65,11 @@ $XDG_CONFIG_HOME/                   # default: ~/.config
 Override `$XDG_DATA_HOME` per-app for tests, or set `QOS_APPS_DATA_DIR`
 to override just the qos-apps subtree (`qos-launcher::registry` reads
 the same var).
+
+`qos-rooms/` is the app-data side and belongs to the launcher: it creates
+`<room>/<pkg-id>` on first launch and binds it at `/run/qos/app`. Two rooms
+are two directories, and no manifest field selects either. See
+[`sandbox.md`](./sandbox.md).
 
 ### `registry.toml`
 
@@ -167,6 +177,10 @@ removed: dev.qos.hello
 
 Deletes the payload dir, un-writes any registered PATH shims, and drops
 the registry entry.
+
+It does not touch the app's data. `<data home>/qos-rooms/<room>/<pkg-id>`
+survives removal, one directory per room the app was opened in; deleting
+those is a separate, deliberate act.
 
 ## `path`
 

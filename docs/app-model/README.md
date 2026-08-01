@@ -16,8 +16,10 @@ You give qOS a manifest and a payload. In return:
   is checked at install AND at every launch (revocation can arrive between
   the two).
 - Your app runs in a **hard sandbox**: a Linux user-namespace, a seccomp
-  filter, and Landlock all layered on the paths and network egress you
-  declared in the manifest. Nothing you did not ask for is reachable.
+  filter, and Landlock. It names no filesystem path — the launcher gives it
+  one writable directory and a fixed system read profile, and everything
+  beyond that is a capability the user grants at runtime. Network egress is
+  the one thing the manifest still scopes.
 - Your app can run on **stock Linux** too. The `runtime` SDK is graceful-
   degradation-first: every service call returns `Result<T, NotAvailable>`
   and never panics, so the same binary is shippable as a Flatpak.
@@ -68,4 +70,6 @@ You give qOS a manifest and a payload. In return:
 Every code block in every file was executed against tools built from
 `origin/main` at `01033500327a2bb37d36049a8bb54ee7abb95d9b`. See
 [`verified.log`](./verified.log) for the exact command history and tool
-hashes.
+hashes. The manifests have since lost their `[sandbox.fs]` block, so the
+example manifests and the Landlock rule counts have moved on from that
+run; the rest of the command history still holds.
