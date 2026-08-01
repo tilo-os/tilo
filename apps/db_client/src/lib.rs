@@ -8,15 +8,19 @@
 //!
 //! Layers:
 //! - [`model`]        — connection profiles, schema types, query results.
-//! - [`engine`]       — the SQLite driver + the [`engine::LiveEngine`] enum
-//!                      that unifies all three engines behind one handle.
+//! - [`engine`]       — the SQLite driver, the [`engine::LiveEngine`] enum that
+//!                      unifies all three engines, and [`engine::open_engine`].
 //! - [`engine_pg`]    — the PostgreSQL driver: introspection + query execution.
 //! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
+//! - [`worker`]    — the background thread that owns the live engine and runs
+//!                   every blocking connect/introspect/query off the UI thread.
+//! - [`actions`]   — the [`actions::DbAction`] CRUD of the saved-connection list,
+//!                   routed through [`ui::ActionHost`] (collaborative doc state).
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
-//! - [`doc`]       — the CRDT-backed SQL editor buffer.
+//! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
 //! - [`editor`]    — the syntax-highlighting SQL editor widget.
-//! - [`grid`]      — the sortable, paginated results grid.
+//! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
 //! - [`schema_tree`] — the database → schema → table → column browser.
 //! - [`structure`] — the columns/keys/indexes inspector.
 //! - [`connect_modal`] — the new-connection form.
@@ -24,10 +28,6 @@
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
-//!
-//! See [`actions`] for the resource + action-model finding: the client's only
-//! shared-document state is the native SQL text buffer, so it exports no actions
-//! and publishes no Ctrl+K resource tree — proven on the production path.
 
 pub mod actions;
 pub mod app;
@@ -45,6 +45,7 @@ pub mod session;
 pub mod structure;
 pub mod syntax;
 pub mod theme_ext;
+pub mod worker;
 
 pub use app::DbClientApp;
 
