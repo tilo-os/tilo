@@ -959,12 +959,7 @@ fn default_demo_tabs() -> DemoTabs {
 }
 
 fn to_ui_width(w: state::WindowWidth) -> UiWidth {
-    match w {
-        state::WindowWidth::Narrow => UiWidth::Narrow,
-        state::WindowWidth::Normal => UiWidth::Normal,
-        state::WindowWidth::Wide => UiWidth::Wide,
-        state::WindowWidth::Custom(p) => UiWidth::Custom(p),
-    }
+    w.to_ui()
 }
 
 fn to_ui_kind(k: &ShellKind) -> UiKind {
