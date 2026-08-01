@@ -51,6 +51,7 @@ pub mod richtext;
 pub mod chrome;
 pub mod gesture;
 pub mod text_selection;
+pub mod text_edit;
 pub mod theme;
 pub mod caps_lock;
 pub mod i18n;
@@ -121,6 +122,7 @@ pub use widget::{Widget, Element};
 pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{Card, CardGrid, card_column_width, card_columns};
 pub use widget::{EditableLabel, EditOutcome};
+pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{
     ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
@@ -177,6 +179,7 @@ pub use text_selection::{
     next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
     prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
 };
+pub use text_edit::{Edit, EditCore, Motion};
 
 // Shared motion system — one curve set, one wall-clock driver, one
 // interruptible open/close transition, one interactive spring.
