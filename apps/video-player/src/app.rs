@@ -269,7 +269,6 @@ impl PlayerApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let colors = &theme.tokens.colors;
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
         let scrim_h = 44.0;
@@ -281,14 +280,17 @@ impl PlayerApp {
             None,
             &scrim,
         );
-        // Title (left), vertically centred in the scrim.
+        // Title (left), vertically centred in the scrim. The scrim is always
+        // dark (over-media chrome), so the label is a fixed near-white in every
+        // theme — `text_primary` would flip to near-black on light and vanish
+        // against the dark scrim.
         let title_size = 15.0f32;
         let ty = self.rect.y0 + (scrim_h - title_size as f64) * 0.5;
         text_renderer.draw_text(
             scene,
             &self.title,
             title_size,
-            colors.text_primary,
+            vello::peniko::Color::from_rgb8(245, 246, 250),
             transform * Affine::translate((self.rect.x0 + OVERLAY_MARGIN, ty)),
             None,
         );
