@@ -42,13 +42,13 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::Widget;
 
-use crate::actions::{ImagerAction, IMAGER_ACTION_TYPE};
+use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
 use crate::model::{
-    fmt_eta, fmt_rate, fmt_size, Action, InstallMode, InstallProfile, JobPhase, Progress, Source,
-    SourceKind, Step, TargetDrive, TargetKind,
+    fmt_eta, fmt_rate, fmt_size, Action, InstallProfile, JobPhase, Progress, Source, SourceKind,
+    Step, TargetDrive, TargetKind,
 };
 use crate::write::{spawn_job, WriteRequest};
 
@@ -61,20 +61,9 @@ const CRUMB_H: f64 = 34.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
 
-/// Which text field, if any, is currently capturing keystrokes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field {
-    Hostname,
-    Username,
-    FullName,
-    Password,
-    Timezone,
-    Keyboard,
-    Confirm,
-}
-
 /// A clickable hit-target for one frame. Pure function of the viewport +
-/// state, so `draw` and `handle_event` agree without ordering hazards.
+/// state, so `draw` and `handle_event` agree without ordering hazards. The
+/// Customize step's own affordances live inside [`CustomizePanel`], not here.
 #[derive(Clone)]
 enum Hit {
     PickFile,
@@ -84,11 +73,7 @@ enum Hit {
     ToggleInternal,
     ToggleSystemAck,
     Rescan,
-    Field(Field),
-    ToggleAutologin,
-    ToggleEncrypt,
-    TogglePersist,
-    ExportConfig,
+    ConfirmField,
     StepJump(Step),
     Back,
     Next,
@@ -102,24 +87,6 @@ struct Layout {
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
     content: Rect,
-}
-
-/// The exact rects of the Customize step, computed once and shared by
-/// `layout_customize` (hit-testing) and `draw_customize_step` (painting) so the
-/// two can never drift out of alignment.
-struct CustomizeGeom {
-    identity_label_y: f64,
-    hostname: Rect,
-    full_name: Rect,
-    username: Rect,
-    password: Rect,
-    timezone: Rect,
-    region_label_y: f64,
-    keyboard: Rect,
-    autologin: Rect,
-    encrypt: Rect,
-    persist: Rect,
-    export: Rect,
 }
 
 pub struct ImagerApp {
@@ -144,23 +111,25 @@ pub struct ImagerApp {
     /// accident. Reset whenever the drive inventory changes.
     system_ack: bool,
     export_text: Option<String>,
-    focus: Option<Field>,
+    /// Whether the Confirm step's typed device-name field is capturing keys.
+    confirm_focused: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
     hover_target: Option<usize>,
-    /// The password field is a shared secret [`TextInput`] (masked glyphs, real
-    /// value kept out of the a11y tree) rather than a hand-spliced `String`, so
-    /// it gets caret / selection / clipboard for free. Its value mirrors
-    /// `profile.user.password`, which stays the serialized source of truth.
-    password: TextInput,
+    /// The shared guided-customization panel — the one component the write and
+    /// install flows both use to collect the install profile. It owns its own
+    /// fields (real [`ui::widget::TextInput`]s, the password masked + a11y
+    /// protected) and dispatches each edit through [`Self::actions`]. See
+    /// [`crate::customize`].
+    customize: CustomizePanel,
     /// Framework-owned action dispatch (the only action-dispatch state the app
     /// holds). Every guided-customization profile edit dispatches its
-    /// [`ImagerAction`] through this host, which brackets the undo boundary and
-    /// applies it through the executor so it records one Ctrl+Z step and replays
-    /// byte-identically on peers. See [`crate::actions`].
+    /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
+    /// brackets the undo boundary and applies it through the executor so it
+    /// records one Ctrl+Z step and replays byte-identically on peers.
     actions: ui::ActionHost,
 }
 
@@ -188,17 +157,13 @@ impl ImagerApp {
             show_internal: false,
             system_ack: false,
             export_text: None,
-            focus: None,
+            confirm_focused: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
             hover_target: None,
-            password: {
-                let mut p = TextInput::local().with_secret(true);
-                p.set_plain_chrome(true); // the wizard draws the field box itself
-                p
-            },
+            customize: CustomizePanel::new(),
             actions: ui::ActionHost::new(),
         }
     }
@@ -429,26 +394,6 @@ impl ImagerApp {
         scene.stroke(&Stroke::new(rad * 0.24), t, tick, None, &p);
     }
 
-    /// A pill toggle switch with a trailing label. Returns nothing; the caller
-    /// registers the hit-rect.
-    fn draw_toggle(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, label: &str, sub: &str, on: bool) {
-        let c = &theme.tokens.colors;
-        let hov = r.contains(self.last_mouse);
-        Self::fill_rr(scene, t, r, 12.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, r, 12.0, if on { with_alpha(c.semantic.success, 150) } else { c.border_standard }, 1.0);
-        // Switch.
-        let sw = Rect::new(r.x0 + 14.0, r.y0 + (r.height() - 22.0) / 2.0, r.x0 + 14.0 + 40.0, r.y0 + (r.height() - 22.0) / 2.0 + 22.0);
-        Self::fill_rr(scene, t, sw, 11.0, if on { c.semantic.success } else { c.neutral[4] });
-        let knob_x = if on { sw.x1 - 20.0 } else { sw.x0 + 2.0 };
-        let knob = Rect::new(knob_x, sw.y0 + 2.0, knob_x + 18.0, sw.y1 - 2.0);
-        Self::fill_rr(scene, t, knob, 9.0, Color::WHITE);
-        let tx = sw.x1 + 12.0;
-        self.txt(scene, tr, label, 13.5, c.text_primary, tx, r.y0 + 12.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Semibold);
-        if !sub.is_empty() {
-            self.txt(scene, tr, sub, 11.5, c.text_dim, tx, r.y0 + 30.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Regular);
-        }
-    }
-
     fn section_label(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f64, y: f64) {
         self.txt(scene, tr, s, 11.0, theme.tokens.colors.text_dim, x, y, None, TextWeight::Semibold);
     }
@@ -494,7 +439,9 @@ impl ImagerApp {
         match self.step {
             Step::Source => self.layout_source(content, &mut hits),
             Step::Drive => self.layout_drive(content, &mut hits),
-            Step::Customize => self.layout_customize(content, &mut hits),
+            // The Customize step's fields/toggles are owned by `CustomizePanel`,
+            // which hit-tests its own rects in `handle_event` — no app hits here.
+            Step::Customize => {}
             Step::Confirm => self.layout_confirm(content, &mut hits),
             // Write (in progress) and Done have no interactive content beyond
             // the footer.
@@ -602,74 +549,10 @@ impl ImagerApp {
         }
     }
 
-    /// Shared geometry for the Customize step. Uses a deliberate vertical
-    /// rhythm so section labels, field labels and inputs never overlap.
-    fn customize_geom(&self, content: Rect) -> CustomizeGeom {
-        let x0 = content.x0;
-        let x1 = content.x1;
-        let fw = (content.width() - 16.0) / 2.0;
-        let fh = 38.0;
-        let row_pitch = fh + 40.0; // input + label + gap
-        // Identity block: label, then hostname, then two field rows.
-        let identity_label_y = content.y0 + 52.0;
-        let host_y = content.y0 + 92.0;
-        let hostname = Rect::new(x0, host_y, x1, host_y + fh);
-        let r2 = host_y + row_pitch;
-        let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
-        let username = Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh);
-        let r3 = r2 + row_pitch;
-        let password = Rect::new(x0, r3, x0 + fw, r3 + fh);
-        let timezone = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
-        // Region & options block (same label→field rhythm as Identity above).
-        let region_label_y = r3 + fh + 26.0;
-        let kb_y = region_label_y + 40.0;
-        let keyboard = Rect::new(x0, kb_y, x0 + fw, kb_y + fh);
-        let tog_y = kb_y + fh + 22.0;
-        let th = 46.0;
-        let autologin = Rect::new(x0, tog_y, x0 + fw, tog_y + th);
-        let encrypt = Rect::new(x0 + fw + 16.0, tog_y, x1, tog_y + th);
-        let p_y = tog_y + th + 12.0;
-        let persist = Rect::new(x0, p_y, x0 + fw, p_y + th);
-        let export = Rect::new(x1 - 250.0, p_y + 8.0, x1, p_y + 8.0 + 32.0);
-        CustomizeGeom {
-            identity_label_y,
-            hostname,
-            full_name,
-            username,
-            password,
-            timezone,
-            region_label_y,
-            keyboard,
-            autologin,
-            encrypt,
-            persist,
-            export,
-        }
-    }
-
-    fn layout_customize(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        if !self.customizable() {
-            return; // informational only
-        }
-        let g = self.customize_geom(content);
-        hits.push((g.hostname, Hit::Field(Field::Hostname)));
-        hits.push((g.full_name, Hit::Field(Field::FullName)));
-        hits.push((g.username, Hit::Field(Field::Username)));
-        hits.push((g.password, Hit::Field(Field::Password)));
-        hits.push((g.timezone, Hit::Field(Field::Timezone)));
-        hits.push((g.keyboard, Hit::Field(Field::Keyboard)));
-        hits.push((g.autologin, Hit::ToggleAutologin));
-        hits.push((g.encrypt, Hit::ToggleEncrypt));
-        if self.target().map(|d| d.removable).unwrap_or(false) {
-            hits.push((g.persist, Hit::TogglePersist));
-        }
-        hits.push((g.export, Hit::ExportConfig));
-    }
-
     fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         // The typed device-name confirmation field sits under the review card.
         let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-        hits.push((field, Hit::Field(Field::Confirm)));
+        hits.push((field, Hit::ConfirmField));
     }
 }
 
@@ -1088,73 +971,17 @@ impl ImagerApp {
             self.txt_center(scene, tr, "images. Press Continue to write it as-is.", 13.0, c.text_dim, (card.x0 + card.x1) / 2.0, card.y0 + 96.0, TextWeight::Regular);
             return;
         }
-        self.draw_step_title(scene, tr, theme, content, "Customize (optional)", "Pre-configure the written media so it boots ready to use.");
+        let installing = self.action == Action::Install;
+        let sub = if installing {
+            "Set up the machine qOS will install — you can change any of this later."
+        } else {
+            "Pre-configure the written media so it boots ready to use."
+        };
+        self.draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
 
-        let g = self.customize_geom(content);
-        self.section_label(scene, tr, theme, "IDENTITY", content.x0, g.identity_label_y);
-        self.draw_field(scene, tr, theme, t, g.hostname, Field::Hostname, "Hostname", &self.profile.hostname);
-        self.draw_field(scene, tr, theme, t, g.full_name, Field::FullName, "Full name", &self.profile.user.full_name);
-        self.draw_field(scene, tr, theme, t, g.username, Field::Username, "Username", &self.profile.user.username);
-        self.draw_password_field(scene, tr, theme, t, g.password, "Password", presence);
-        self.draw_field(scene, tr, theme, t, g.timezone, Field::Timezone, "Time zone", &self.profile.timezone);
-
-        self.section_label(scene, tr, theme, "REGION & OPTIONS", content.x0, g.region_label_y);
-        self.draw_field(scene, tr, theme, t, g.keyboard, Field::Keyboard, "Keyboard", &self.profile.keyboard);
-        self.draw_toggle(scene, tr, theme, t, g.autologin, "Auto-login", "Sign in without a password prompt", self.profile.user.autologin);
-        self.draw_toggle(scene, tr, theme, t, g.encrypt, "Encrypt storage", "Protect user data with LUKS", self.profile.encrypt);
-        if self.target().map(|d| d.removable).unwrap_or(false) {
-            let persist = self.profile.mode == InstallMode::Persistent;
-            self.draw_toggle(scene, tr, theme, t, g.persist, "Persistent storage", "Keep changes across reboots on the stick", persist);
-        }
-        // Export config (secondary).
-        let hov = g.export.contains(self.last_mouse);
-        Self::fill_rr(scene, t, g.export, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
-        self.txt_center(scene, tr, "⤓ Export unattended config", 12.0, c.accent[7], (g.export.x0 + g.export.x1) / 2.0, g.export.y0 + 8.0, TextWeight::Semibold);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_field(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, f: Field, label: &str, value: &str) {
-        let c = &theme.tokens.colors;
-        self.txt(scene, tr, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
-        let focused = self.focus == Some(f);
-        Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
-        self.txt(scene, tr, value, 13.5, c.text_primary, r.x0 + 12.0, r.y0 + 10.0, Some((r.width() - 24.0) as f32), TextWeight::Regular);
-        if focused {
-            let (tw, _) = tr.measure_weighted(value, 13.5, None, TextWeight::Regular);
-            let cx = r.x0 + 12.0 + tw as f64 + 2.0;
-            scene.stroke(&Stroke::new(1.4), t, c.accent[6], None, &Line::new(Point::new(cx, r.y0 + 8.0), Point::new(cx, r.y1 - 8.0)));
-        }
-    }
-
-    /// The password field: same box + label chrome as [`draw_field`], but the
-    /// masked glyphs + caret + selection are rendered by the shared secret
-    /// `TextInput`, which also keeps the real value out of the a11y tree.
-    fn draw_password_field(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, label: &str, presence: &PresenceCtx) {
-        let c = &theme.tokens.colors;
-        self.txt(scene, tr, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
-        let focused = self.focus == Some(Field::Password);
-        Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
-        // The plain-chrome secret input paints inside the field box.
-        self.password.apply_layout_external(Self::password_inner(r));
-        Widget::draw(&mut self.password, scene, t, tr, theme, presence);
-    }
-
-    /// The rect of a field's box for the current frame, from the computed
-    /// hit-list — the single source of truth `draw` and `handle_event` share.
-    fn field_rect(lay: &Layout, f: Field) -> Option<Rect> {
-        lay.hits.iter().find_map(|(r, h)| match h {
-            Hit::Field(g) if *g == f => Some(*r),
-            _ => None,
-        })
-    }
-
-    /// Inner text rect the password widget draws / hit-tests within its box
-    /// (matches the 12 px gutter the other fields' text uses).
-    fn password_inner(r: Rect) -> Rect {
-        Rect::new(r.x0 + 12.0, r.y0, r.x1 - 12.0, r.y1)
+        // The whole form is the shared guided-customization panel.
+        let removable = self.target().map(|d| d.removable).unwrap_or(false);
+        self.customize.draw(scene, t, tr, theme, presence, content, &self.profile, removable);
     }
 
     fn draw_confirm_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
@@ -1227,7 +1054,7 @@ impl ImagerApp {
 
         // Typed confirmation field.
         let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-        let focused = self.focus == Some(Field::Confirm);
+        let focused = self.confirm_focused;
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
         self.txt(scene, tr, "CONFIRM THE TARGET DEVICE", 11.0, c.text_dim, field.x0 + 2.0, field.y0 - 17.0, None, TextWeight::Semibold);
@@ -1453,7 +1280,8 @@ impl ImagerApp {
     fn goto(&mut self, state: &mut AutoCommit, s: Step) {
         self.step = s;
         ImagerDoc::set_step(state, s);
-        self.focus = None;
+        self.confirm_focused = false;
+        self.customize.clear_focus();
         self.dirty = true;
     }
 
@@ -1578,50 +1406,21 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn type_into_field(&mut self, state: &mut AutoCommit, f: Field, ch: Option<char>, backspace: bool) {
-        let target: &mut String = match f {
-            Field::Hostname => &mut self.profile.hostname,
-            Field::FullName => &mut self.profile.user.full_name,
-            Field::Username => &mut self.profile.user.username,
-            Field::Password => &mut self.profile.user.password,
-            Field::Timezone => &mut self.profile.timezone,
-            Field::Keyboard => &mut self.profile.keyboard,
-            Field::Confirm => &mut self.confirm,
-        };
+    /// Edit the Confirm step's typed device-name field. This is a *transient*
+    /// arming gesture for the (external) write — presentation, not a document
+    /// action — so it writes only the `confirm` scalar. (The profile fields, by
+    /// contrast, are real actions handled by [`CustomizePanel`].)
+    fn type_into_confirm(&mut self, state: &mut AutoCommit, ch: Option<char>, backspace: bool) {
         if backspace {
-            target.pop();
+            self.confirm.pop();
         } else if let Some(c) = ch {
             if !c.is_control() {
-                target.push(c);
+                self.confirm.push(c);
             }
         }
-        if f == Field::Confirm {
-            // The typed device-name confirmation is a transient arming gesture
-            // for the (external) write — presentation, not a document action.
-            let conf = self.confirm.clone();
-            ImagerDoc::set_confirm(state, &conf);
-        } else if let Some(action) = self.profile_field_action(f) {
-            // A guided-customization edit: dispatch the same absolute-set action
-            // the Ctrl+K field spec exports, applied through the executor.
-            self.actions.dispatch(state, IMAGER_ACTION_TYPE, &action);
-        }
+        let conf = self.confirm.clone();
+        ImagerDoc::set_confirm(state, &conf);
         self.dirty = true;
-    }
-
-    /// The absolute-set [`ImagerAction`] for a profile text field, carrying the
-    /// field's freshly-edited value. `None` for [`Field::Confirm`], which is a
-    /// transient wizard input rather than a profile edit. The single source of
-    /// truth shared by the on-screen field and the Ctrl+K field specs.
-    fn profile_field_action(&self, f: Field) -> Option<ImagerAction> {
-        Some(match f {
-            Field::Hostname => ImagerAction::SetHostname { value: self.profile.hostname.clone() },
-            Field::FullName => ImagerAction::SetFullName { value: self.profile.user.full_name.clone() },
-            Field::Username => ImagerAction::SetUsername { value: self.profile.user.username.clone() },
-            Field::Password => ImagerAction::SetPassword { value: self.profile.user.password.clone() },
-            Field::Timezone => ImagerAction::SetTimezone { value: self.profile.timezone.clone() },
-            Field::Keyboard => ImagerAction::SetKeyboard { value: self.profile.keyboard.clone() },
-            Field::Confirm => return None,
-        })
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
@@ -1692,42 +1491,11 @@ impl ImagerApp {
                 self.dirty = true;
             }
             Hit::Rescan => self.do_rescan(state),
-            Hit::Field(f) => {
-                self.focus = Some(f);
+            Hit::ConfirmField => {
+                self.confirm_focused = true;
+                self.customize.clear_focus();
                 self.dirty = true;
             }
-            Hit::ToggleAutologin => {
-                // Update the local snapshot for an immediate redraw, then
-                // dispatch the same action the Ctrl+K "autologin" spec exports —
-                // one source of truth, applied through the executor (undo +
-                // replication for free). The next `sync` re-reads it from the doc.
-                self.profile.user.autologin = !self.profile.user.autologin;
-                self.actions.dispatch(
-                    state,
-                    IMAGER_ACTION_TYPE,
-                    &ImagerAction::SetAutologin { on: self.profile.user.autologin },
-                );
-                self.dirty = true;
-            }
-            Hit::ToggleEncrypt => {
-                self.profile.encrypt = !self.profile.encrypt;
-                self.actions.dispatch(
-                    state,
-                    IMAGER_ACTION_TYPE,
-                    &ImagerAction::SetEncrypt { on: self.profile.encrypt },
-                );
-                self.dirty = true;
-            }
-            Hit::TogglePersist => {
-                self.profile.mode = crate::actions::toggled_install_mode(self.profile.mode);
-                self.actions.dispatch(
-                    state,
-                    IMAGER_ACTION_TYPE,
-                    &ImagerAction::SetInstallMode { mode: self.profile.mode.key().to_string() },
-                );
-                self.dirty = true;
-            }
-            Hit::ExportConfig => self.export_config(state),
             Hit::StepJump(s) => {
                 if self.crumb_reachable(s) {
                     self.goto(state, s);
@@ -1779,15 +1547,10 @@ impl Widget for ImagerApp {
         self.step = ImagerDoc::step(state);
         self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
 
-        // Bind the secret TextInput to the profile: mirror the focus flag, and
-        // while it isn't the active editor pull the stored value in (so a
-        // loaded/seeded password shows). While focused, the widget is the
-        // source of truth and writes back to `profile.user.password` on edit.
-        let pw_focused = self.focus == Some(Field::Password);
-        self.password.set_focus(pw_focused);
-        if !pw_focused {
-            self.password.set_text(&self.profile.user.password);
-        }
+        // Refresh the shared customization panel's fields from the profile
+        // (each unfocused field mirrors the stored value; a focused one stays
+        // the source of truth).
+        self.customize.sync(&self.profile);
         self.dirty = true;
     }
 
@@ -1856,25 +1619,39 @@ impl Widget for ImagerApp {
         use winit::keyboard::{Key, NamedKey};
 
         let lay = self.compute_layout();
+
+        // The Customize step is delegated in full to the shared customization
+        // panel, which owns its fields, toggles and export affordance. Only
+        // events it does not consume (footer clicks, global keys) fall through
+        // to the wizard chrome below.
+        if self.step == Step::Customize && self.customizable() && self.export_text.is_none() {
+            let removable = self.target().map(|d| d.removable).unwrap_or(false);
+            let profile = self.profile.clone();
+            let resp = self.customize.handle_event(
+                event, scale_factor, modifiers, state, path, &mut self.actions, &profile, removable,
+                lay.content, node_id, taffy,
+            );
+            if resp.export_requested {
+                self.export_config(state);
+            }
+            if resp.handled {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
                 // Which drive card (if any) is under the pointer, resolved from
-                // this frame's hit-rects. Computed into a local first so the
-                // `visible_targets()` borrow ends before we write the field.
+                // this frame's hit-rects.
                 let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
                     Hit::Target(i) if r.contains(p) => Some(*i),
                     _ => None,
                 });
                 self.hover_target = hover_now;
-                // Forward to the password input so its hover flag (and any drag
-                // selection) tracks the pointer.
-                if let Some(r) = Self::field_rect(&lay, Field::Password) {
-                    self.password.apply_layout_external(Self::password_inner(r));
-                    let (mut h, mut ft) = (false, None);
-                    self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
-                }
                 // Repaint on move so buttons/cards light up under the pointer.
                 self.dirty = true;
             }
@@ -1888,26 +1665,13 @@ impl Widget for ImagerApp {
                 }
                 let hit = lay.hits.iter().find(|(r, _)| r.contains(p)).map(|(_, h)| h.clone());
                 if let Some(hit) = hit {
-                    // The password field is a real widget: focus it and forward
-                    // the press so it drops its caret at the click point.
-                    if matches!(hit, Hit::Field(Field::Password)) {
-                        self.focus = Some(Field::Password);
-                        self.password.set_focus(true);
-                        if let Some(r) = Self::field_rect(&lay, Field::Password) {
-                            self.password.apply_layout_external(Self::password_inner(r));
-                        }
-                        let (mut h, mut ft) = (false, None);
-                        self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
-                        *handled = true;
-                        self.dirty = true;
-                        return;
-                    }
                     self.dispatch_hit(state, hit);
                     *handled = true;
                     self.dirty = true;
                     return;
                 }
-                self.focus = None;
+                // A click on empty space drops the confirm field's focus.
+                self.confirm_focused = false;
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } => {
                 if self.export_text.is_some() {
@@ -1918,69 +1682,34 @@ impl Widget for ImagerApp {
                     }
                     return;
                 }
-                // Field typing.
-                if let Some(f) = self.focus {
-                    // The password field routes to its secret TextInput, which
-                    // owns caret / selection / clipboard. Enter and Escape still
-                    // release focus like the other fields.
-                    if f == Field::Password {
-                        match logical_key {
-                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
-                                self.focus = None;
-                                self.password.set_focus(false);
-                                *handled = true;
-                                self.dirty = true;
-                            }
-                            _ => {
-                                self.password.set_focus(true);
-                                if let Some(r) = Self::field_rect(&lay, Field::Password) {
-                                    self.password.apply_layout_external(Self::password_inner(r));
-                                }
-                                let (mut h, mut ft) = (false, None);
-                                self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
-                                // Mirror the edited value back into the profile
-                                // (the serialized source of truth) and dispatch
-                                // the SetPassword action so it undoes + replicates
-                                // like every other profile edit.
-                                self.profile.user.password = self.password.value().to_string();
-                                self.actions.dispatch(
-                                    state,
-                                    IMAGER_ACTION_TYPE,
-                                    &ImagerAction::SetPassword {
-                                        value: self.profile.user.password.clone(),
-                                    },
-                                );
-                                *handled = true;
-                                self.dirty = true;
-                            }
-                        }
-                        return;
-                    }
+                // The Confirm step's typed device-name field (a transient arming
+                // gesture, not a profile edit).
+                if self.confirm_focused && self.step == Step::Confirm {
                     match logical_key {
                         Key::Named(NamedKey::Backspace) => {
-                            self.type_into_field(state, f, None, true);
+                            self.type_into_confirm(state, None, true);
                             *handled = true;
                         }
                         Key::Named(NamedKey::Enter) => {
-                            if f == Field::Confirm && self.step == Step::Confirm && self.can_advance(Step::Confirm) {
+                            if self.can_advance(Step::Confirm) {
                                 self.start_write(state);
                             }
-                            self.focus = None;
+                            self.confirm_focused = false;
                             *handled = true;
                             self.dirty = true;
                         }
                         Key::Named(NamedKey::Escape) => {
-                            self.focus = None;
+                            self.confirm_focused = false;
                             *handled = true;
                             self.dirty = true;
                         }
                         Key::Named(NamedKey::Space) => {
-                            self.type_into_field(state, f, Some(' '), false);
+                            self.type_into_confirm(state, Some(' '), false);
                             *handled = true;
                         }
                         Key::Character(s) => {
                             if let Some(ch) = s.chars().next() {
-                                self.type_into_field(state, f, Some(ch), false);
+                                self.type_into_confirm(state, Some(ch), false);
                                 *handled = true;
                             }
                         }
@@ -2104,6 +1833,47 @@ mod tests {
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    // ---- synthetic winit events for driving the real event path -----------
+
+    fn char_ev(s: &str) -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{Key, SmolStr};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(SmolStr::new(s));
+        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+    }
+
+    fn cursor_ev(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn click_ev() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    /// Feed one event through the real `handle_event` path with throwaway
+    /// framework out-params.
+    fn feed(app: &mut ImagerApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+        let m = winit::event::Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let (mut h, mut ft) = (false, None);
+        app.handle_event(ev, 1.0, &m, doc, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
     }
 
     #[test]
@@ -2250,70 +2020,56 @@ mod tests {
         assert_eq!(app.selected, None, "withdrawing consent deselects the system disk");
     }
 
-    /// The password field is now a shared secret `TextInput`: typing through
-    /// the real keyboard path persists to the profile + doc, the widget holds
-    /// the true value, and the a11y node stays protected with no value (the
-    /// plaintext never leaks).
-    #[test]
-    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
-        use winit::event::KeyEvent;
-        use winit::keyboard::{Key, SmolStr};
-
-        fn char_ev(s: &str) -> WindowEvent {
-            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = Key::Character(SmolStr::new(s));
-            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            );
-            ev.location = winit::keyboard::KeyLocation::Standard;
-            ev.state = winit::event::ElementState::Pressed;
-            ev.repeat = false;
-            ev.text = Some(SmolStr::new(s));
-            WindowEvent::KeyboardInput {
-                device_id: unsafe { std::mem::zeroed() },
-                event: ev,
-                is_synthetic: false,
-            }
-        }
-
+    /// Set the Customize step up with one field cleared and focused, ready for
+    /// the shared panel to receive keystrokes through the real event path.
+    fn customize_with_field_focused(field: crate::customize::CzField) -> (ImagerApp, AutoCommit) {
         let (mut app, mut doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        // Start from an empty field so the assertion is exact (the default
-        // profile pre-fills a password).
-        app.profile.user.password.clear();
-        app.password.set_text("");
-        app.focus = Some(Field::Password);
-        app.password.set_focus(true);
+        // Clear the target field so the typed assertion is exact.
+        let mut p = ImagerDoc::profile(&doc);
+        match field {
+            crate::customize::CzField::Password => p.user.password.clear(),
+            crate::customize::CzField::Hostname => p.hostname.clear(),
+            _ => {}
+        }
+        ImagerDoc::set_profile(&mut doc, &p);
+        ImagerDoc::set_step(&mut doc, Step::Customize);
+        app.sync(&mut doc, &automerge::ROOT); // reads the profile + step back
+        assert_eq!(app.step, Step::Customize, "the panel only handles events on this step");
+        assert!(app.customizable(), "the seeded qOS image is customizable");
+        app.customize.focus_for_test(field);
+        (app, doc)
+    }
 
-        let m = winit::event::Modifiers::default();
-        let taffy: TaffyTree<()> = TaffyTree::new();
-        let node = NodeId::new(0);
+    /// The password field is a shared secret `TextInput` inside the customization
+    /// panel: typing through the real keyboard/event path persists to the doc,
+    /// the input holds the true value, and its a11y node stays protected with no
+    /// value (the plaintext never leaks).
+    #[test]
+    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
+        use crate::customize::CzField;
+        let (mut app, mut doc) = customize_with_field_focused(CzField::Password);
         for s in ["h", "u", "n", "t", "2"] {
-            let (mut h, mut ft) = (false, None);
-            app.handle_event(&char_ev(s), 1.0, &m, &mut doc, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
+            feed(&mut app, &mut doc, &char_ev(s));
         }
 
-        assert_eq!(app.profile.user.password, "hunt2", "typed value persisted to the profile");
-        assert_eq!(ImagerDoc::profile(&doc).user.password, "hunt2", "and to the doc");
-        assert_eq!(app.password.value(), "hunt2", "the widget holds the real secret");
+        assert_eq!(ImagerDoc::profile(&doc).user.password, "hunt2", "typed value persisted to the doc");
+        assert_eq!(app.customize.field_value(CzField::Password), "hunt2", "the input holds the real secret");
 
-        let node = Widget::accessibility(&app.password).expect("a11y node");
+        let node = Widget::accessibility(app.customize.password_input()).expect("a11y node");
         assert_eq!(node.value, None, "the secret must not reach the a11y tree");
         assert!(node.state.protected, "password input is marked protected");
     }
 
     #[test]
-    fn typing_into_hostname_persists_to_profile() {
-        let (mut app, mut doc) = seeded_app();
-        app.focus = Some(Field::Hostname);
-        for _ in 0..app.profile.hostname.len() {
-            app.type_into_field(&mut doc, Field::Hostname, None, true);
+    fn typing_into_hostname_persists_to_profile_through_the_panel() {
+        use crate::customize::CzField;
+        let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
+        for s in ["l", "a", "b", "0", "1"] {
+            feed(&mut app, &mut doc, &char_ev(s));
         }
-        for ch in "lab01".chars() {
-            app.type_into_field(&mut doc, Field::Hostname, Some(ch), false);
-        }
-        assert_eq!(app.profile.hostname, "lab01");
-        assert_eq!(ImagerDoc::profile(&doc).hostname, "lab01");
+        assert_eq!(ImagerDoc::profile(&doc).hostname, "lab01", "persisted to the doc");
+        assert_eq!(app.customize.field_value(CzField::Hostname), "lab01", "the input holds it");
     }
 
     #[test]
@@ -2336,17 +2092,20 @@ mod tests {
         assert_eq!(app.progress.phase, JobPhase::Idle);
     }
 
-    /// The affordance == `ActionSpec` covenant on the *real* production path: the
-    /// on-screen Customize encryption toggle applies to the document, records
+    /// The affordance == `ActionSpec` covenant on the *real* production path: a
+    /// click on the on-screen Customize encryption toggle (routed through the
+    /// shared panel's real event handling) applies to the document, records
     /// exactly one undo boundary, and dispatches the byte-identical
     /// `EncodedAction` the Ctrl+K palette would — one source of truth.
     #[test]
     fn encrypt_toggle_dispatches_the_palette_action_and_records_one_undo_boundary() {
         use qos_actions::ActionInput;
         let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.step = Step::Customize;
         // The seeded qOS source is customizable; encryption defaults off.
         assert!(app.customizable());
-        assert!(!app.profile.encrypt);
+        assert!(!ImagerDoc::profile(&doc).encrypt);
 
         // The action Ctrl+K would dispatch right now: enable encryption.
         let label = app.customization_source_label().unwrap();
@@ -2357,8 +2116,11 @@ mod tests {
             _ => panic!("encrypt is an immediate action"),
         };
 
-        // Drive the on-screen toggle through the real hit-dispatch handler.
-        app.dispatch_hit(&mut doc, Hit::ToggleEncrypt);
+        // Click the real on-screen toggle: move the pointer onto it, then press.
+        let rect = CustomizePanel::encrypt_rect(app.content_rect());
+        let (cx, cy) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        feed(&mut app, &mut doc, &cursor_ev(cx, cy));
+        feed(&mut app, &mut doc, &click_ev());
 
         // It applied to the document...
         assert!(ImagerDoc::profile(&doc).encrypt, "the toggle enabled encryption in the doc");
