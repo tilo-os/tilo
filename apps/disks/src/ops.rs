@@ -1,4 +1,13 @@
-//! Real execution of disk operations.
+//! Real execution of disk operations — the app's **external side-effect
+//! boundary**.
+//!
+//! Mount / unmount / format / eject / benchmark are privileged, per-machine
+//! effects against real block devices (via udisks2 / polkit, or the CLI
+//! fallback). They change the running system, never the shared Automerge
+//! document, so by the qOS action-model recipe (`docs/action-model-recipe.md`)
+//! **none of them is an `Action`** — none crosses the CRDT executor. The
+//! resource + action-model finding is recorded in [`crate::actions`], and the
+//! functions here deliberately take no `AutoCommit`: they cannot touch the doc.
 //!
 //! Everything is *planned* as plain data first (a [`UdisksCall`] or an ordered
 //! list of [`CommandSpec`] fallbacks) so the construction is unit-testable
