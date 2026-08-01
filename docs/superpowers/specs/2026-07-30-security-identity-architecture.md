@@ -273,6 +273,30 @@ The measure of success is that the unlock exists and is rarely reached: elevated
 requested at the granularity actually needed, and a first-class environment exists for building,
 installing and experimenting that does not need host privilege at all.
 
+Two mechanisms serve those two needs, and keeping them apart is the whole design:
+
+- **Work layers.** A namespace where you are uid 0, a real package manager works, and every change
+  lands in an overlay that can be inspected, kept, or discarded. No privilege is granted, the host
+  filesystem is never mounted, and a wrecked layer cannot survive a reboot. This is where nearly all
+  tinkering should happen.
+- **Capability leases.** Individual verbs, granted per session with an argument constraint and a
+  duration. The invariant that makes them safe is that **no capability grants code execution as
+  root**: a verb takes a unit name or a signed module name, never a command. This is exactly where
+  the conventional escalation helper fails — one that can run an arbitrary program collapses its own
+  granularity back to full root.
+
+**A writable system directory is not a capability.** It is the one operation that unavoidably grants
+arbitrary root code execution, because a session that can write the system tree can leave a binary
+that the *next* boot executes outside any namespace. Transience is not integrity. So it is not
+leasable at any granularity — it is the unlock described above, with everything that entails: an
+explicit act, recorded where the running system cannot forge it, visible in what the machine attests,
+and reversible by relocking. It must also clone a pristine rollback target first, so the way back is
+guaranteed rather than hoped for.
+
+The distinction to hold onto: *wanting a package manager must never put someone on the path that
+weakens the system.* Conflating those two is the common mistake, and it is why the convenient
+existing answer — unlocking the whole system directory for the rest of the boot — is the wrong one.
+
 ### 4.7 Without a TPM
 
 Signed UKI and sealed root still give full offline integrity. What is lost is measured boot,
