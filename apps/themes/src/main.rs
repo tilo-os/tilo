@@ -94,7 +94,11 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
