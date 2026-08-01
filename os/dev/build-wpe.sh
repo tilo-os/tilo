@@ -29,8 +29,13 @@ if [ "${1:-build}" = deps ]; then
     # wpewebkit builds from the same tree as webkitgtk, so Fedora's
     # webkitgtk6.0 build deps cover almost everything.
     sudo dnf -y builddep webkitgtk6.0 2>&1 | tail -3
+    # What the WPE port needs and the GTK port does not, so builddep misses it:
+    # libinput + libudev (systemd-devel) back ENABLE_WPE_PLATFORM_DRM, and
+    # gbm/wayland/epoxy the rest of WPEPlatform. Keep in sync with the
+    # wpe-builder stage in os/Containerfile.
     sudo dnf -y install meson ninja-build gperf unifdef libgbm-devel \
-        wayland-devel wayland-protocols-devel libepoxy-devel 2>&1 | tail -2
+        wayland-devel wayland-protocols-devel libepoxy-devel \
+        libinput-devel systemd-devel 2>&1 | tail -2
     echo DEPS_OK
     exit 0
 fi
