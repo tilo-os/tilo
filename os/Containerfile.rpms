@@ -6,9 +6,13 @@
 # image. os/Containerfile then installs ONLY from this (pinned by digest), so
 # the OS image is reproducible across time regardless of upstream package
 # movement. Re-dispatch the workflow to re-snapshot when bumping packages/base.
+#
+# BASE_REF is the same mirrored, digest-pinned base every other image builds
+# FROM (os/base-snapshot.env) — the package set has to be resolved against the
+# base it will be installed on.
 # ============================================================================
-ARG BASE
-FROM ${BASE} AS resolve
+ARG BASE_REF
+FROM ${BASE_REF} AS resolve
 
 # The exact package set the OS image installs (passed by the workflow, derived
 # from os/Containerfile's dnf-install blocks — single source of truth).

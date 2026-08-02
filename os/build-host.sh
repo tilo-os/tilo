@@ -14,9 +14,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # os/
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"                       # cargo workspace root
 
-# Pull the digest-pinned frozen RPM repo the Containerfile expects.
+# Pull the digest-pinned base + frozen RPM repo the Containerfile expects.
 # Same source of truth every OS-image build uses (see os/dev/build-image.sh
 # for the desktop-image analogue).
+[ -f "$SCRIPT_DIR/base-snapshot.env" ] && . "$SCRIPT_DIR/base-snapshot.env"
+if [ -z "${BASE_REF:-}" ]; then
+    echo "error: no BASE_REF — re-run the mirror-base workflow first" >&2
+    exit 1
+fi
 [ -f "$SCRIPT_DIR/rpms-snapshot.env" ] && . "$SCRIPT_DIR/rpms-snapshot.env"
 if [ -z "${RPMS_REF:-}" ]; then
     echo "error: no RPMS_REF — re-run the snapshot-rpms workflow (or ./os/dev/snapshot-rpms.sh) first" >&2
@@ -24,10 +29,12 @@ if [ -z "${RPMS_REF:-}" ]; then
 fi
 
 echo "=== Building qOS host-mode image ==="
+echo "    base=$BASE_REF"
 echo "    rpms=$RPMS_REF"
 
 echo "--- Step 1: Container image ---"
 podman build \
+    --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     -f "$SCRIPT_DIR/Containerfile.host" \
     -t localhost/qos-host:latest \
