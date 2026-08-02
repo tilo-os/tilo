@@ -17,10 +17,11 @@
 # Notes / gotchas baked in from bringup:
 #   * First build is a long COLD Rust compile inside the container; the
 #     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
-#   * The browser (Servo) is OMITTED: it is unmaintained and does not build
-#     against GCC 15 / C23 (glsl-optimizer 'once_flag' conflict). To re-enable,
-#     add `-p browser` to the builder cargo invocation and a `COPY` in
-#     os/Containerfile.
+#   * QOS_WITH_BROWSER=0 ./os/dev/build-image.sh omits the browser and the WPE
+#     WebKit engine stage that builds its engine from source — ~45 of the ~60
+#     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
+#     greeter, installer, rollback) is all still there, so this is the image to
+#     build when the question is "does it boot?". Default is the full image.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Fail loudly: a broken container build must NOT silently fall through to imaging
@@ -60,12 +61,16 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
-msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
+# Browser opt-out (see the header). Exported as a build-arg either way so the
+# value is explicit in the build log.
+: "${QOS_WITH_BROWSER:=1}"
+msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER)"
 podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   --build-arg "BASE_REF=$BASE_REF" \
   --build-arg "RPMS_REF=$RPMS_REF" \
   --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
+  --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "$QOS_REPO"
 
