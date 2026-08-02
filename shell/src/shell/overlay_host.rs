@@ -2466,10 +2466,14 @@ impl ShellOverlayHost {
         self.scroll_active_group_into_view();
     }
 
-    /// Test-only mutable access to a strip's live [`GroupRow`] so
-    /// integration tests can read `scroll_x` / handle geometry and drive
-    /// the reorder / resize / scroll gestures through the real widget.
-    #[cfg(any(test, debug_assertions))]
+    /// Mutable access to a strip's live [`GroupRow`], so a harness can read
+    /// `scroll_x` / handle geometry and drive the reorder / resize / scroll
+    /// gestures through the real widget.
+    ///
+    /// Deliberately *not* gated on `debug_assertions`: the `shots` binary
+    /// drives scenarios through this and is built in release for the OS
+    /// image, so gating it breaks the image build while every debug build
+    /// and test still passes.
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
