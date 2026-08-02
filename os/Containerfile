@@ -30,11 +30,18 @@
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
-# Both ARGs are declared here (before the first FROM) so they're in
+# All three ARGs are declared here (before the first FROM) so they're in
 # scope for FROM directives. An `ARG NAME` placed between two FROMs is
 # scoped to the previous stage, not global — buildkit then reports
 # `base name (${…}) should not be blank` when the next FROM tries to
 # use it.
+#
+# BASE_REF (code.podesta.ai/qos/fedora-bootc@sha256:...) is the Fedora bootc
+# base, mirrored into our registry and pinned by digest — see
+# os/base-snapshot.env for why the mirror exists and how to refresh it. Every
+# fedora-bootc stage below uses it, so builder and final share one base and
+# their glibc cannot drift.
+ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 FROM ${RPMS_REF} AS rpms
@@ -64,13 +71,17 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS wpe-builder
+FROM ${BASE_REF} AS wpe-builder
 
+# The explicit list covers what the WPE port needs and the GTK port does not,
+# so `builddep webkitgtk6.0` never pulls it: libinput + libudev (systemd-devel)
+# back ENABLE_WPE_PLATFORM_DRM, and gbm/wayland/epoxy the rest of WPEPlatform.
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
     && dnf install -y \
         meson ninja-build gperf unifdef libgbm-devel curl xz \
         wayland-devel wayland-protocols-devel libepoxy-devel \
+        libinput-devel systemd-devel \
     && dnf clean all
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
@@ -81,11 +92,13 @@ RUN --mount=type=cache,target=/wpe-cache \
 
 
 # ---- Stage 1: builder ------------------------------------------------------
-# Base pinned by digest (security plan §9 — reproducibility + supply chain: a
-# tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-07-30.
-# Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
-# Bump deliberately (re-resolve the tag → update both FROM lines).
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS builder
+# Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
+# a tag can be repointed, a digest can't — but upstream deletes the manifest a
+# digest points at within about a day, so the pin only stays real if we hold a
+# copy. Builder and final share BASE_REF, so their glibc matches by
+# construction. Bump deliberately: re-run `mirror-base`, commit the new
+# BASE_REF, re-run `snapshot-rpms`.
+FROM ${BASE_REF} AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -93,6 +106,21 @@ FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256c
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
+#
+# The last three lines of the list are for the WPE overlay copied in below
+# rather than for any crate of ours, and they serve two different linker needs:
+#
+#   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
+#     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
+#     pkg-config fails the whole lookup when any link in that chain is missing
+#     — which ui/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
+#     found".
+#   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
+#     DT_NEEDED, so linking `browser` against it makes ld open each one to
+#     resolve symbols transitively; absent, ld reports them as `needed by
+#     ... not found` and then buries that in hundreds of undefined references
+#     to gst_*/epoxy_*/manette_*. Runtime packages are enough — no -devel
+#     needed, because nothing here compiles against their headers.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
@@ -104,6 +132,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         ffmpeg-free-devel libva-devel \
         openssl-devel sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
+        glib2-devel libsoup3-devel \
+        atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
+        hyphen libavif libepoxy libmanette libxslt \
         nasm \
     && dnf clean all
 
@@ -175,6 +206,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
+# Read the hardening back off the linked binaries. `.cargo/config.toml` sets
+# the flags; this is what proves they survived to the artifacts this image
+# ships — a dropped linker argument or a target change is otherwise invisible
+# until someone runs readelf on a released image. Fails the build, on purpose.
+RUN /build/os/scripts/verify-elf-hardening.sh /out
+
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
 # /usr/lib/qos-runtime/<RUNTIME_VERSION>/ that the launcher can find
@@ -205,7 +242,7 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06
+FROM ${BASE_REF}
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -354,6 +391,11 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
 # WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
 # the engine links that aren't already in this image. GStreamer base/good are
 # installed above.
+#
+# This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
+# browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
+# are there because the engine is built with accessibility, gamepad and XSLT
+# support; they arrive via no other package in this image.
 COPY --from=wpe-builder /wpe/ /
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     libepoxy \
@@ -369,6 +411,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     libtasn1 \
     libsecret \
     gstreamer1-plugins-bad-free \
+    atk \
+    at-spi2-atk \
+    libmanette \
+    libxslt \
     && dnf clean all \
     && ldconfig
 
@@ -393,6 +439,11 @@ RUN mkdir -p /etc/qos \
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+# The capability list that mount enforces. Shipped read-only under /usr;
+# tmpfiles.d copies it to /var/lib/qos on first boot, where it can be
+# edited and survives image updates. See fs.service for why the subject
+# is a principal rather than a key.
+COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
@@ -446,6 +497,12 @@ COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-pow
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
+
+# The device-trust group, which must exist before tmpfiles-setup runs so
+# the identity directory can be created with it. See the snippet for why
+# the device key is group-owned rather than owned by one component.
+COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 
 # xdg-desktop-portal backend registration (Sandbox Phase 4.3 follow-up).
 # Three files cooperate:
@@ -559,6 +616,22 @@ RUN chmod 0755 /usr/libexec/qos-secureboot \
     && systemctl enable qos-secureboot-sign.service qos-secureboot-sign.path \
                         qos-secureboot-sign-shutdown.service
 
+# Runtime tunables: no cross-process debugging, no kernel pointers or ring
+# buffer for unprivileged readers, no unprivileged BPF, no kexec, no io_uring
+# or userfaultfd, plus the /tmp symlink-race and LAN-spoofing settings. Under
+# /usr/lib because it is part of the image; /etc/sysctl.d/ with a higher number
+# still wins for a machine that needs to differ. The file's header explains why
+# unprivileged user namespaces are NOT disabled — bubblewrap, hence the whole
+# app sandbox, needs them.
+COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardening.conf
+
+# Which sandboxed packages get the expensive protections (hardened allocator +
+# hardware shadow stacks). Read by qos-launcher at launch; scoped rather than
+# image-wide because the allocator costs multiples on allocation-heavy work and
+# most of this system is Rust, which does not produce the bugs it catches. The
+# image owns the list — an app manifest can neither request nor decline it.
+COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
@@ -597,8 +670,9 @@ COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
 COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
 RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
-        /usr/libexec/qos-rollback-harden \
+        /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
  && install -d -m 0755 /usr/share/qos/pcr-predictions
 
 # The signed PCR predictions this image was built with go in
@@ -615,11 +689,24 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
 # would fail the service. (Base daemons use the system allocator — verified no
 # jemalloc — so the preload is safe.)
+#
+# Alongside it, hardware shadow stacks. Every binary in this image is marked
+# shadow-stack compatible at link time, but Fedora's glibc only switches them on
+# when a process also asks through this tunable — which is precisely what makes
+# the protection scopeable instead of global. fs.service earns it because it
+# parses bytes that arrived from a peer. Measured cost on an allocation-heavy
+# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
+# it, glibc leaves shadow stacks off rather than failing, and
+# qos-security-audit reports which processes actually got them.
+#
+# compiler-rt also has to be present for qos-launcher's scoped hardening, which
+# preloads the same library into the packages listed in
+# /usr/lib/qos/untrusted-parsers.conf.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
-    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
+    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 

@@ -2,11 +2,12 @@
 //! database, introspects the schema (tables, columns, keys, indexes) and
 //! runs arbitrary SQL returning a [`QueryResult`].
 //!
-//! Postgres/MySQL connections are described by the model but their live
-//! drivers are gated — see [`Engine`] and the connection manager. Until a
-//! sandbox grant authorises an outbound socket, only the local SQLite path
-//! executes. This keeps the app fully functional offline (the sample DB)
-//! while leaving a clean seam for the network drivers.
+//! The three engines — local SQLite plus the real network PostgreSQL and
+//! MySQL drivers — are unified behind [`LiveEngine`]. All of them block, so
+//! they are owned by the background [`crate::worker`] thread rather than the
+//! UI thread: [`open_engine`] opens whichever engine a profile targets, and a
+//! refused socket or a bad password surfaces as the driver's own error string,
+//! never a fabricated success.
 
 use std::time::Instant;
 
@@ -14,8 +15,8 @@ use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 
 use crate::model::{
-    Cell, ColumnInfo, DatabaseSchema, ForeignKey, IndexInfo, QueryResult, RelationKind,
-    SchemaInfo, TableInfo, TypeClass,
+    Cell, ColumnInfo, ConnectionProfile, DatabaseSchema, Engine, ForeignKey, IndexInfo,
+    QueryResult, RelationKind, SchemaInfo, TableInfo, TypeClass,
 };
 use crate::sample;
 
@@ -268,6 +269,51 @@ impl LiveEngine {
             LiveEngine::Postgres(e) => e.run(sql),
             LiveEngine::MySql(e) => e.run(sql),
         }
+    }
+
+    /// Read one page of a table's rows. The identifier is quoted the way the
+    /// backing engine expects — double quotes for SQLite/PostgreSQL, backticks
+    /// for MySQL — so a table named like a keyword (or a MySQL table at all)
+    /// browses correctly rather than erroring on the wrong quote style.
+    pub fn browse_table(
+        &mut self,
+        table: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<QueryResult, String> {
+        let sql = match self {
+            LiveEngine::MySql(_) => format!(
+                "SELECT * FROM `{}` LIMIT {} OFFSET {}",
+                table.replace('`', "``"),
+                limit,
+                offset
+            ),
+            _ => format!(
+                "SELECT * FROM \"{}\" LIMIT {} OFFSET {}",
+                table.replace('"', "\"\""),
+                limit,
+                offset
+            ),
+        };
+        self.run(&sql)
+    }
+}
+
+/// Open the live engine a profile targets. Every engine connects for real:
+/// the bundled sample or an on-disk file for SQLite, a real TCP socket for
+/// PostgreSQL and MySQL. This is the single seam the [`crate::worker`] thread
+/// calls; it never runs on the UI thread because each variant blocks.
+pub fn open_engine(profile: &ConnectionProfile) -> Result<LiveEngine, String> {
+    if profile.is_sample {
+        return SqliteEngine::open_sample().map(LiveEngine::Sqlite);
+    }
+    match profile.engine {
+        Engine::Sqlite if profile.file_path.is_empty() => {
+            Err("SQLite connection has no file path".to_string())
+        }
+        Engine::Sqlite => SqliteEngine::open_file(&profile.file_path).map(LiveEngine::Sqlite),
+        Engine::Postgres => crate::engine_pg::PostgresEngine::connect(profile).map(LiveEngine::Postgres),
+        Engine::MySql => crate::engine_mysql::MySqlEngine::connect(profile).map(LiveEngine::MySql),
     }
 }
 

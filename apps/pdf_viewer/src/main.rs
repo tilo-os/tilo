@@ -62,9 +62,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to. It costs a few kilobytes and destroys nothing.
     let (room, autosave) = ui::persist::open("dev.qos.pdf-viewer");
     let records = ui::RecordSet::open("dev.qos.pdf-viewer");
-    let app = ui::App::new(ui::State::new(), build_widget(&args))
+    let mut app = ui::App::new(ui::State::new(), build_widget(&args))
         .with_autosave(autosave)
         .with_records(records, room.doc);
+    // Register the reader's actions so the shell's Ctrl+K palette can decode +
+    // replay the same markup actions the on-page affordances dispatch.
+    pdf_viewer::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -148,7 +151,14 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome (and the shared selection HUD) can be proven across
+    // palettes; defaults to dark.
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

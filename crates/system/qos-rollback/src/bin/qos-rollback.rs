@@ -18,7 +18,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use qos_rollback::{
-    Config, certify, confirm, counter, exec, generation, keyslots, lockout, policy,
+    Config, approval, certify, confirm, counter, exec, generation, keyslots, lockout, policy,
     token::RollbackToken,
 };
 use std::io::Read;
@@ -67,6 +67,14 @@ struct Cli {
     /// Directory holding signed PCR predictions.
     #[arg(long, global = true)]
     predictions: Option<PathBuf>,
+
+    /// Public half of the key that authorises floor advances.
+    #[arg(long, global = true)]
+    floor_authority_key: Option<PathBuf>,
+
+    /// Directory holding the signed floor-advance approvals this device holds.
+    #[arg(long, global = true)]
+    approvals: Option<PathBuf>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -181,6 +189,35 @@ enum Cmd {
         #[arg(long)]
         out_dir: PathBuf,
     },
+    /// Emit the request an authority needs in order to issue floor approvals.
+    ///
+    /// Contains nothing secret: the NV index Name, the counter value, and which
+    /// generations have keyslots.
+    FloorRequest {
+        #[arg(long)]
+        device: PathBuf,
+        /// Write here instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Authority side: issue single-use floor-advance approvals for a request.
+    ApproveFloor {
+        #[arg(long)]
+        private_key: PathBuf,
+        /// The request file, or `-` for stdin.
+        #[arg(long)]
+        request: PathBuf,
+        /// Highest floor generation to approve. Defaults to the safe bound the
+        /// request reports: the newest generation that has a sealed keyslot.
+        #[arg(long)]
+        up_to_floor: Option<u64>,
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Issue approvals past the safe bound. This can leave the machine unable
+        /// to unseal any generation and dependent on its recovery key.
+        #[arg(long)]
+        i_accept_stranding_this_machine: bool,
+    },
     /// Build side: sign a PCR prediction for a generation.
     SignPrediction {
         #[arg(long)]
@@ -252,6 +289,15 @@ fn config(cli: &Cli) -> Result<Config> {
     }
     if let Some(p) = &cli.pcr_public_key {
         cfg.pcr_public_key = p.display().to_string();
+        // The floor authority defaults to the prediction key, so an explicit
+        // prediction key moves both unless the floor key is named separately.
+        cfg.floor_authority_key = p.display().to_string();
+    }
+    if let Some(p) = &cli.floor_authority_key {
+        cfg.floor_authority_key = p.display().to_string();
+    }
+    if let Some(p) = &cli.approvals {
+        cfg.approval_dir = p.display().to_string();
     }
     if let Some(spec) = &cli.pcrs {
         let (bank, pcrs) = parse_pcrs(spec)?;
@@ -371,6 +417,30 @@ fn run() -> Result<()> {
         Cmd::Certify { nonce, out_dir } => {
             cmd_certify(&runner, &ws, &cfg, &state_path, scratch.path(), nonce, out_dir)
         }
+        Cmd::FloorRequest { device, out } => cmd_floor_request(
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            scratch.path(),
+            device,
+            out.as_deref(),
+        ),
+        Cmd::ApproveFloor {
+            private_key,
+            request,
+            up_to_floor,
+            out_dir,
+            i_accept_stranding_this_machine,
+        } => cmd_approve_floor(
+            &runner,
+            &ws,
+            private_key,
+            request,
+            *up_to_floor,
+            out_dir,
+            *i_accept_stranding_this_machine,
+        ),
         Cmd::SignPrediction {
             private_key,
             pcr_values,
@@ -551,7 +621,8 @@ fn cmd_enroll(
         predictions.len()
     );
 
-    counter::define(runner, cfg.nv_index)?;
+    let (authority_name, nv_auth_policy) = floor_authority(runner, ws, cfg)?;
+    counter::define(runner, cfg.nv_index, &nv_auth_policy, ws)?;
     let existing = keyslots::list_tokens(runner, device)?;
     let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
     let floor = match base {
@@ -565,7 +636,7 @@ fn cmd_enroll(
             // at this generation: an immediate floor of `gen_num` would mean the very
             // first update had nothing to fall back to.
             let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
-            counter::materialise(runner, cfg.nv_index, scratch, initial)?
+            counter::materialise(runner, ws, cfg.nv_index, scratch, initial, &authority_name)?
         }
     };
     println!(
@@ -655,6 +726,17 @@ fn cmd_enroll(
         );
     }
     println!("recovery key still verified. Enrollment complete.");
+    if approval::load_all(Path::new(&cfg.approval_dir))?.is_empty() {
+        println!();
+        println!(
+            "The rollback floor cannot advance until this device holds signed approvals. Produce a \
+             request with `qos-rollback floor-request --device {}`, have the authority run \
+             `qos-rollback approve-floor`, and put the results in {}. Until then the floor stays \
+             where it is and the disk keeps unlocking normally.",
+            device.display(),
+            cfg.approval_dir
+        );
+    }
     Ok(())
 }
 
@@ -976,5 +1058,121 @@ fn cmd_sign_prediction(
         "signed prediction for generation {gen_num} -> {}",
         path.display()
     );
+    Ok(())
+}
+
+/// Shared setup: the floor authority's key Name and the index's `authPolicy`.
+fn floor_authority(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+) -> Result<(Vec<u8>, qos_rollback::tpm_policy::Digest256)> {
+    let name = policy::key_name(runner, ws, Path::new(&cfg.floor_authority_key))?;
+    let policy_digest = counter::auth_policy(&name);
+    Ok((name, policy_digest))
+}
+
+fn cmd_floor_request(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    scratch: &Path,
+    device: &Path,
+    out: Option<&Path>,
+) -> Result<()> {
+    let tokens = keyslots::list_tokens(runner, device)?;
+    let state = confirm::load_state(state_path)?;
+    let base = confirm::load_base(state.as_ref(), &tokens)?
+        .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
+    let counter_value = counter::read(runner, cfg.nv_index, scratch)?
+        .context("the rollback floor counter has never been incremented")?;
+    let floor = counter::FloorState {
+        counter: counter_value,
+        base,
+    };
+    let nv_name = counter::read_name(runner, cfg.nv_index)?;
+    let generations: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
+    let req = approval::build_request(
+        cfg.nv_index,
+        &nv_name,
+        floor,
+        &generations,
+        cfg.retained_generations,
+    )?;
+    let json = serde_json::to_string_pretty(&req)?;
+    match out {
+        Some(p) => {
+            std::fs::write(p, &json).with_context(|| format!("writing {}", p.display()))?;
+            println!(
+                "floor request for counter {} (floor generation {}) -> {}",
+                req.counter,
+                req.floor_generation,
+                p.display()
+            );
+            println!(
+                "safe to approve up to floor generation {} (newest generation with a keyslot)",
+                req.safe_target_floor
+            );
+        }
+        None => println!("{json}"),
+    }
+    let _ = ws;
+    Ok(())
+}
+
+fn cmd_approve_floor(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    private_key: &Path,
+    request_path: &Path,
+    up_to_floor: Option<u64>,
+    out_dir: &Path,
+    allow_past_safe_bound: bool,
+) -> Result<()> {
+    let text = if request_path == Path::new("-") {
+        use std::io::Read as _;
+        let mut b = String::new();
+        std::io::stdin().read_to_string(&mut b)?;
+        b
+    } else {
+        std::fs::read_to_string(request_path)
+            .with_context(|| format!("reading {}", request_path.display()))?
+    };
+    let req: approval::Request =
+        serde_json::from_str(&text).context("parsing the floor request")?;
+    let up_to = up_to_floor.unwrap_or(req.safe_target_floor);
+    let approvals = approval::issue(
+        runner,
+        ws,
+        &req,
+        private_key,
+        up_to,
+        allow_past_safe_bound,
+    )?;
+    if approvals.is_empty() {
+        println!(
+            "nothing to approve: the floor is already at generation {}",
+            req.floor_generation
+        );
+        return Ok(());
+    }
+    let paths = approval::store(out_dir, &approvals)?;
+    println!(
+        "issued {} single-use approval(s), floor generation {} -> {}",
+        approvals.len(),
+        req.floor_generation,
+        up_to
+    );
+    for p in paths {
+        println!("  {}", p.display());
+    }
+    if allow_past_safe_bound && up_to > req.safe_target_floor {
+        println!(
+            "WARNING: {up_to} is above the safe bound of {} that the request reported. Applying \
+             these can leave the machine unable to unseal any generation.",
+            req.safe_target_floor
+        );
+    }
     Ok(())
 }

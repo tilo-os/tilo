@@ -250,7 +250,11 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// compilation over every pane instead of paying it per process).
 pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scene {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

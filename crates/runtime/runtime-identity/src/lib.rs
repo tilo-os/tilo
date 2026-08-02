@@ -18,9 +18,11 @@
 //! ## Single-device vs. threshold signing
 //!
 //! In 1-of-1 (single-device) mode this crate signs locally via
-//! ed25519-dalek — the on-disk `secret_bytes` is the raw Ed25519
-//! signing scalar and standard verification works against the
-//! recorded `group_public_key`.
+//! ed25519-dalek — the on-disk `secret_bytes` is the 32-byte Ed25519
+//! seed and standard verification works against the recorded
+//! `group_public_key`. The loader proves that pairing before handing
+//! back an identity: a record whose secret does not derive its own
+//! recorded public key is refused, not warned about.
 //!
 //! In threshold mode (`t > 1`) signing requires a multi-device
 //! FROST round-trip that this SDK crate does NOT drive. [`SigningIdentity::sign`]
@@ -92,6 +94,7 @@ enum LoadFailure {
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
     SecretSizeMismatch { got: usize },
+    PublicKeyMismatch { derived: [u8; 32], recorded: [u8; 32] },
 }
 
 impl std::fmt::Display for LoadFailure {
@@ -103,8 +106,22 @@ impl std::fmt::Display for LoadFailure {
             Self::SecretSizeMismatch { got } => {
                 write!(f, "identity secret_bytes must be 32 bytes, got {got}")
             }
+            Self::PublicKeyMismatch { derived, recorded } => write!(
+                f,
+                "identity secret derives Ed25519 pubkey {} but the record claims {}; \
+                 this identity cannot sign for itself",
+                hex4(derived),
+                hex4(recorded),
+            ),
         }
     }
+}
+
+/// First four bytes of a key, hex, for error text. Never the whole
+/// key: an error string can end up in a log a third party reads, and
+/// a prefix is enough to tell two keys apart while debugging.
+fn hex4(key: &[u8; 32]) -> String {
+    key[..4].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl LoadFailure {
@@ -113,7 +130,8 @@ impl LoadFailure {
             LoadFailure::ReadFailed(e) => e.kind(),
             LoadFailure::JsonMalformed(_)
             | LoadFailure::UnknownSchemaVersion(_)
-            | LoadFailure::SecretSizeMismatch { .. } => io::ErrorKind::InvalidData,
+            | LoadFailure::SecretSizeMismatch { .. }
+            | LoadFailure::PublicKeyMismatch { .. } => io::ErrorKind::InvalidData,
         };
         NotAvailable::ConnectionFailed(io::Error::new(kind, self.to_string()))
     }
@@ -268,30 +286,23 @@ pub fn load_from_bytes(bytes: &[u8]) -> Result<SigningIdentity, NotAvailable> {
         None
     };
 
-    // Sanity-check the stored group_public_key against the derived
-    // one in single-device mode. A mismatch here means the file
-    // was written by a placeholder-key encoder (see the note in
-    // ui/src/widget/identity_flow/mod.rs::SerializableIdentity::from_identity
-    // — v1 wrote a SHA-512 digest of the pubkey as the secret to
-    // stub the disk format). We do NOT hard-fail on the mismatch:
-    // the app's `.sign()` calls will succeed but produce sigs that
-    // don't verify against the recorded pubkey. The app is
-    // expected to react to that at the verification layer.
+    // The record's two halves must agree: expanding `secret_bytes`
+    // must derive `group_public_key`. A record that fails this is not
+    // an identity — it signs under a key nobody knows it by, so every
+    // op it authors is rejected by the verifier while the app believes
+    // it is authenticated. Refuse to load it.
+    //
+    // This check is fatal in every build. A check that warns under
+    // `debug_assertions` and passes in release is not a check: the
+    // configuration that ships is the one that skips it.
     if let Some(sk) = &signing_key {
-        let derived_vk = sk.verifying_key();
-        let derived = derived_vk.to_bytes();
+        let derived = sk.verifying_key().to_bytes();
         if derived != ti.group_public_key {
-            // Soft mismatch: we surface it as a Debug-only stderr
-            // note but return the SigningIdentity anyway so the
-            // caller can decide. Hard-fail-here would break the
-            // v1 disk format entirely.
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "qos-runtime-identity: derived Ed25519 pubkey {:x?} does not match recorded {:x?}; \
-                 likely a placeholder identity",
-                &derived[..4],
-                &ti.group_public_key[..4],
-            );
+            return Err(LoadFailure::PublicKeyMismatch {
+                derived,
+                recorded: ti.group_public_key,
+            }
+            .into_not_available());
         }
     }
 
@@ -439,6 +450,77 @@ mod tests {
         let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
         let verifier = VerifyingKey::from_bytes(&vk.to_bytes()).unwrap();
         verifier.verify(msg, &sig).expect("verification should succeed");
+    }
+
+    /// A record whose secret does not derive its recorded public key
+    /// must not load. Historically this mismatch was tolerated with a
+    /// debug-only stderr note, so release builds silently handed apps
+    /// an identity whose every signature was rejected downstream.
+    #[test]
+    fn secret_that_does_not_derive_the_recorded_pubkey_is_refused() {
+        // The exact shape the old identity ceremony wrote: a digest
+        // over the public key standing in for the secret.
+        use sha2::{Digest, Sha512};
+        let real = SigningKey::from_bytes(&[9u8; 32]);
+        let vk = real.verifying_key();
+        let mut hasher = Sha512::new();
+        hasher.update(b"qos-identity-flow-v1-placeholder-key");
+        hasher.update(vk.to_bytes());
+        let bogus_secret = hasher.finalize()[..32].to_vec();
+
+        let record = serde_json::json!({
+            "display_name": "Alice",
+            "avatar_color": [0, 0, 0],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": vk.to_bytes(),
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": bogus_secret,
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+            "schema_version": 1,
+        });
+        let bytes = serde_json::to_vec(&record).unwrap();
+        let err = load_from_bytes(&bytes).expect_err("a self-inconsistent record must not load");
+        match err {
+            NotAvailable::ConnectionFailed(io) => {
+                assert_eq!(io.kind(), io::ErrorKind::InvalidData);
+                assert!(
+                    io.to_string().contains("cannot sign for itself"),
+                    "unexpected error text: {io}"
+                );
+            }
+            other => panic!("expected ConnectionFailed(InvalidData), got {other:?}"),
+        }
+    }
+
+    /// The refusal is a property of the build, not of
+    /// `debug_assertions`. Nothing here may be compiled out.
+    #[test]
+    fn the_pubkey_mismatch_check_is_not_gated_on_debug_assertions() {
+        let real = SigningKey::from_bytes(&[4u8; 32]);
+        let other = SigningKey::from_bytes(&[5u8; 32]);
+        let record = serde_json::json!({
+            "display_name": "",
+            "avatar_color": [0, 0, 0],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": other.verifying_key().to_bytes(),
+                "threshold": 1_u16,
+                "total_shares": 1_u16,
+                "share_index": 1_u16,
+                "secret_bytes": real.to_bytes().to_vec(),
+            },
+            "created_at": "2026-07-30T00:00:00Z",
+            "schema_version": 1,
+        });
+        let bytes = serde_json::to_vec(&record).unwrap();
+        assert!(
+            load_from_bytes(&bytes).is_err(),
+            "mismatched key material must be refused in every build profile"
+        );
     }
 
     #[test]

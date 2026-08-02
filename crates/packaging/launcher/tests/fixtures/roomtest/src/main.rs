@@ -1,0 +1,81 @@
+// Fixture for `tests/room_confinement.rs`.
+//
+// Deliberately does file I/O rather than reporting what it was
+// configured with: the point of the tests that use it is that a bind
+// list is not proof. Every line it prints is the answer a syscall gave.
+//
+//   write <relative path> <contents>   write inside $QOS_APP_DIR
+//   writeabs <path> <contents>         write to an absolute path
+//   read  <path>                       read it, print OK/ERR
+//   readdir <path>                     list it, print OK/ERR
+//   env   <name>                       print the variable's value
+//
+// Exit code is always 0 — the caller reads stdout. A test that asserted
+// on the exit code could not tell "denied" from "the fixture crashed".
+
+use std::io::Write;
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut out = std::io::stdout();
+    match args.first().map(String::as_str) {
+        Some("write") => {
+            let root = std::env::var("QOS_APP_DIR").unwrap_or_else(|_| "/nowhere".into());
+            let path = std::path::Path::new(&root).join(&args[1]);
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&path, args[2].as_bytes()) {
+                Ok(()) => writeln!(out, "WROTE {}", path.display()).unwrap(),
+                Err(e) => writeln!(out, "ERR {} {}", path.display(), e.kind_str()).unwrap(),
+            }
+        }
+        Some("writeabs") => {
+            let path = std::path::Path::new(&args[1]);
+            match std::fs::write(path, args[2].as_bytes()) {
+                Ok(()) => writeln!(out, "WROTE {}", path.display()).unwrap(),
+                Err(e) => writeln!(out, "ERR {} {}", path.display(), e.kind_str()).unwrap(),
+            }
+        }
+        Some("read") => match std::fs::read_to_string(&args[1]) {
+            Ok(s) => writeln!(out, "OK {} {}", &args[1], s.trim()).unwrap(),
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
+        Some("readdir") => match std::fs::read_dir(&args[1]) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                writeln!(out, "OK {} {}", &args[1], names.join(",")).unwrap()
+            }
+            Err(e) => writeln!(out, "ERR {} {}", &args[1], e.kind_str()).unwrap(),
+        },
+        Some("env") => {
+            let v = std::env::var(&args[1]).unwrap_or_else(|_| "<unset>".into());
+            writeln!(out, "ENV {}={}", &args[1], v).unwrap()
+        }
+        other => writeln!(out, "ERR unknown-command {other:?}").unwrap(),
+    }
+}
+
+/// `io::ErrorKind` has no stable string form worth matching on, and the
+/// raw OS message is localised. The tests want to distinguish "the path
+/// is not in my namespace" from "it is there and I may not touch it",
+/// so map to the errno name.
+trait KindStr {
+    fn kind_str(&self) -> String;
+}
+
+impl KindStr for std::io::Error {
+    fn kind_str(&self) -> String {
+        match self.raw_os_error() {
+            Some(libc_enoent) if libc_enoent == 2 => "ENOENT".into(),
+            Some(13) => "EACCES".into(),
+            Some(30) => "EROFS".into(),
+            Some(other) => format!("errno{other}"),
+            None => format!("{:?}", self.kind()),
+        }
+    }
+}

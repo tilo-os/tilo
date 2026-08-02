@@ -46,55 +46,14 @@ namespaces = [
     "mount",
     "net",
 ]
-seccomp    = "qos-default"
+# The one package in the tree that has to be allowed to write instructions and
+# then run them: JavaScriptCore compiles page script to machine code at run
+# time. `qos-jit` is the baseline deny-list with the write-xor-execute rule
+# lifted and nothing else changed — ptrace, mount, namespace manipulation, raw
+# sockets, bpf and keyctl are still refused. Every other package stays on
+# `qos-default`, where a writable-and-executable mapping is an EPERM.
+seccomp    = "qos-jit"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "/usr/lib64/gstreamer-1.0",
-    "/usr/share/gstreamer-1.0",
-    "/etc/resolv.conf",
-    "/etc/hosts",
-    "/etc/pki",
-    "/etc/ssl",
-    "/etc/crypto-policies",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.browser",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "~/.config/qos-browser",
-    "~/.local/share/qos-browser",
-    "~/.cache/qos-browser",
-]
 
 [sandbox.net]
 mode = "host"

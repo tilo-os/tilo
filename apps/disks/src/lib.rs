@@ -13,6 +13,7 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod ops;
 pub mod probe;
 
 pub use app::DisksApp;

@@ -56,6 +56,17 @@ struct CapFixture {
 }
 
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
+    cap_fixture_with(
+        identity,
+        fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
+    )
+    .await
+}
+
+/// [`cap_fixture`] over an ACL handle someone else owns — a
+/// [`fs::CapabilityFile`], for the tests that swap the policy while the
+/// same `QuickFS` stays live.
+async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
     let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
@@ -83,7 +94,6 @@ async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>)
 
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
-    let acl = WorkspaceAcl::from_capabilities(identity, caps, &[], now);
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
 
     CapFixture {
@@ -106,7 +116,8 @@ fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
 }
 
 // A capability names a subtree. Everything outside that subtree is
-// denied — a grant is not a foot in the door.
+// denied — a grant is not a foot in the door. And the denial is an
+// absence: `ENOENT`, the same answer a name that was never there gets.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_capability_on_one_subtree_denies_a_sibling_subtree() {
     let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
@@ -118,12 +129,12 @@ async fn a_capability_on_one_subtree_denies_a_sibling_subtree() {
     );
     assert_eq!(
         f.fs.check_access(f.other_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "a capability on /w/docs must NOT reach /w/other/private.md"
     );
     assert_eq!(
         f.fs.check_access(f.other_child, Access::Write),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "nor may it write there"
     );
 }
@@ -142,7 +153,7 @@ async fn a_capability_stops_at_the_path_component_boundary() {
     );
     assert_eq!(
         f.fs.check_access(f.look_alike_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "/w/docs must NOT cover /w/docsSECRET/leak.md — component boundary"
     );
 }
@@ -160,8 +171,8 @@ async fn a_read_capability_is_denied_a_write() {
     );
     assert_eq!(
         f.fs.check_access(f.docs_child, Access::Write),
-        Err(libc::EACCES),
-        "a read-only capability must be denied a write"
+        Err(libc::EROFS),
+        "a read-only capability sees a read-only filesystem, not a refusal"
     );
 }
 
@@ -183,12 +194,12 @@ async fn an_expired_capability_authorises_nothing() {
     let lapsed = cap_fixture(ALICE, &[expired], Some(1_001)).await;
     assert_eq!(
         lapsed.fs.check_access(lapsed.docs_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "a capability whose AtUnix deadline has passed must be denied"
     );
     assert_eq!(
         lapsed.fs.check_access(lapsed.docs, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "including on the granted directory itself"
     );
 }
@@ -206,19 +217,32 @@ async fn an_identity_with_no_capability_is_denied_everything() {
         (f.docs_child, "/w/docs/report.md"),
         (f.other_child, "/w/other/private.md"),
         (f.look_alike_child, "/w/docsSECRET/leak.md"),
-        (ROOT_INO, "/"),
     ] {
         assert_eq!(
             f.fs.check_access(ino, Access::Read),
-            Err(libc::EACCES),
-            "an identity with no capability must be denied read on {what}"
+            Err(libc::ENOENT),
+            "an identity with no capability must not see {what} at all"
         );
         assert_eq!(
             f.fs.check_access(ino, Access::Write),
-            Err(libc::EACCES),
-            "an identity with no capability must be denied write on {what}"
+            Err(libc::ENOENT),
+            "nor may it write to {what}"
         );
     }
+    // The mount root is the one exception, and deliberately so: it must
+    // exist or the mount itself looks broken. What Bob gets is an
+    // ordinary empty read-only directory — no content, and no error that
+    // would tell him there is content he is missing.
+    assert_eq!(
+        f.fs.check_access(ROOT_INO, Access::Read),
+        Err(libc::ENOENT),
+        "the root holds nothing readable for an identity with no capability"
+    );
+    assert_eq!(
+        f.fs.check_access(ROOT_INO, Access::Write),
+        Err(libc::EROFS),
+        "and it is read-only rather than forbidden"
+    );
 }
 
 // A role is not a key to the filesystem. `role_base_applies` is false
@@ -237,7 +261,7 @@ async fn a_role_wide_grant_does_not_authorise_a_path() {
 
     assert_eq!(
         f.fs.check_access(f.docs_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "an Owner-role grant must not authorise a path for a mount that holds no role"
     );
 }
@@ -302,19 +326,19 @@ async fn identity_acl_gates_the_real_fs_access_path() {
     );
     assert_eq!(
         alice_fs.check_access(secret_dir_ino, Access::Read),
-        Err(libc::EACCES),
-        "Alice has NO read cap on /secret → denied"
+        Err(libc::ENOENT),
+        "Alice has NO read cap on /secret → it is not in her view at all"
     );
     assert_eq!(
         alice_fs.check_access(secret_child_ino, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "Alice denied read on /secret/leak.txt too"
     );
     // Alice cannot write the file she may only read.
     assert_eq!(
         alice_fs.check_access(shared_ino, Access::Write),
-        Err(libc::EACCES),
-        "Alice's grant is read-only"
+        Err(libc::EROFS),
+        "Alice's grant is read-only, so the file is on a read-only mount"
     );
 
     // Mount view B — same namespace + ACL, bound to Bob's identity.
@@ -331,8 +355,8 @@ async fn identity_acl_gates_the_real_fs_access_path() {
     );
     assert_eq!(
         bob_fs.check_access(shared_ino, Access::Read),
-        Err(libc::EACCES),
-        "Bob has NO cap on /shared.txt → denied"
+        Err(libc::ENOENT),
+        "Bob has NO cap on /shared.txt → absent from his view"
     );
 
     // A mount with NO ACL attached keeps the compatibility veneer: every
@@ -383,8 +407,17 @@ async fn fuse_mount_enforces_identity_acl_end_to_end() {
 
         let alice_read = std::fs::read(alice_dir.path().join("secret.txt"));
         assert!(
-            matches!(&alice_read, Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
-            "Alice (no cap) must be denied EACCES through the kernel, got {alice_read:?}"
+            matches!(&alice_read, Err(e) if e.kind() == std::io::ErrorKind::NotFound),
+            "Alice (no cap) must see no such file through the kernel, got {alice_read:?}"
+        );
+        // …and it is absent from her listing, not present-and-refused.
+        let alice_entries: Vec<String> = std::fs::read_dir(alice_dir.path())
+            .expect("Alice can list her (empty) view")
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert!(
+            alice_entries.is_empty(),
+            "Alice's view of the workspace must be an empty directory, got {alice_entries:?}"
         );
 
         // Bob's mount: read must succeed and return the real bytes.
@@ -690,4 +723,662 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         assert!(!path.join("dir").exists(), "empty dir removed");
     })
     .await;
+}
+
+// ---------------------------------------------------------------------
+// A grant made after the mount is up
+//
+// The capability list was read once, at mount time, and copied into the
+// filesystem by value. `/var/workspace` is mounted at boot and stays up
+// for the whole session, so "a later grant needs a remount" meant the
+// compositor could show a capability the filesystem was not honouring —
+// in either direction. These drive `QuickFS::check_access`, the exact
+// function `open`, `read` and `write` route every access through, on one
+// `QuickFS` that is never rebuilt.
+//
+// A denied path answers `ENOENT`, not `EACCES`: an ungranted path is
+// indistinguishable from an absent one (see "Denial is an absence"
+// below). What these tests turn on is that the answer *changes* when the
+// list is re-read — the code it changes between is that policy's, not
+// theirs.
+// ---------------------------------------------------------------------
+
+/// Write `caps` to `path` as the JSON array the mount reads.
+fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
+    std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
+    // Make the ordering of two writes unambiguous regardless of the
+    // filesystem's mtime resolution.
+    std::thread::sleep(Duration::from_millis(10));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grant_made_after_the_mount_reaches_the_live_access_check() {
+    use fs::CapabilityFile;
+
+    let dir = tempdir().unwrap();
+    let caps_path = dir.path().join("caps.json");
+    put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
+
+    let file = CapabilityFile::load(&caps_path, ALICE, Vec::new()).expect("loads");
+    let f = cap_fixture_with(ALICE, file.handle()).await;
+
+    // Reproduces the bug's precondition: the sibling subtree is denied.
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::ENOENT),
+        "the sibling subtree must be denied before it is granted, or the reload proves nothing"
+    );
+    assert_eq!(f.fs.check_access(f.docs_child, Access::Read), Ok(()));
+
+    // The user grants it, an hour into the session. No remount.
+    put_caps(
+        &caps_path,
+        &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
+    );
+    assert_eq!(file.refresh(), fs::Refresh::Reloaded(2));
+
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Ok(()),
+        "a capability granted after the mount came up must be honoured by the same live mount"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revocation_after_the_mount_reaches_the_live_access_check() {
+    use fs::CapabilityFile;
+
+    let dir = tempdir().unwrap();
+    let caps_path = dir.path().join("caps.json");
+    put_caps(
+        &caps_path,
+        &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
+    );
+
+    let file = CapabilityFile::load(&caps_path, ALICE, Vec::new()).expect("loads");
+    let f = cap_fixture_with(ALICE, file.handle()).await;
+    assert_eq!(f.fs.check_access(f.other_child, Access::Read), Ok(()));
+
+    // The user revokes it. This is the direction that matters most: a
+    // revocation the filesystem ignores is a permission the user
+    // believes they took away.
+    put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
+    assert_eq!(file.refresh(), fs::Refresh::Reloaded(1));
+
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::ENOENT),
+        "a revoked capability must stop working on the live mount, not at the next remount"
+    );
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Read),
+        Ok(()),
+        "revoking one capability must not disturb the others"
+    );
+}
+
+// =====================================================================
+// Denial is an absence
+//
+// The property under test is not "the read fails" — the tests above
+// already prove that. It is that a sandboxed app **cannot tell the
+// difference** between a path it was not granted and a path that does not
+// exist. Everything below drives a real FUSE mount through the kernel, so
+// what is asserted is what an ordinary program (`ls`, `open`, `stat`)
+// actually observes.
+// =====================================================================
+
+/// A mounted, ACL-filtered workspace.
+///
+/// The tree is deliberately lopsided: one granted subtree, two hidden
+/// top-level directories, and a hidden sibling that shares a string prefix
+/// with the granted one.
+///
+/// ```text
+/// /w/docs/report.md        granted (read)
+/// /w/docs/sub/deep.md      granted (read)
+/// /w/other/private.md      never granted
+/// /w/docsSECRET/leak.md    never granted, string-prefix look-alike
+/// /vault/keys.txt          never granted
+/// /archive/old.txt         never granted
+/// ```
+struct ViewFixture {
+    _session: fuser::BackgroundSession,
+    dir: tempfile::TempDir,
+    namespace: Arc<Mutex<Namespace>>,
+}
+
+impl ViewFixture {
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
+
+    /// The CRDT heads of the shared namespace — a fingerprint of the whole
+    /// document. Equal heads before and after an operation prove the
+    /// operation changed nothing at all, not merely that it reported an
+    /// error.
+    fn heads(&self) -> Vec<automerge::ChangeHash> {
+        self.namespace.lock().unwrap().heads()
+    }
+}
+
+/// Populate the tree above and mount it as `identity` under `acl`.
+/// `acl: None` mounts unfiltered, for the side-by-side comparisons.
+async fn view_fixture(acl: Option<(WorkspaceAcl, [u8; 32])>, name: &str) -> ViewFixture {
+    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let body = b"contents";
+    let hash = store.write_content(body).await.unwrap().unwrap();
+    let namespace = Arc::new(Mutex::new(Namespace::new("view-peer")));
+    {
+        let mut ns = namespace.lock().unwrap();
+        let w = ns.create_dir(ROOT_INO, "w", 1).unwrap();
+        let docs = ns.create_dir(w, "docs", 1).unwrap();
+        ns.create_file(docs, "report.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let sub = ns.create_dir(docs, "sub", 1).unwrap();
+        ns.create_file(sub, "deep.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let other = ns.create_dir(w, "other", 1).unwrap();
+        ns.create_file(other, "private.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let look_alike = ns.create_dir(w, "docsSECRET", 1).unwrap();
+        ns.create_file(look_alike, "leak.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let vault = ns.create_dir(ROOT_INO, "vault", 1).unwrap();
+        ns.create_file(vault, "keys.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let archive = ns.create_dir(ROOT_INO, "archive", 1).unwrap();
+        ns.create_file(archive, "old.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+    }
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+    let fs = match acl {
+        Some((a, id)) => fs.with_acl(a, id),
+        None => fs,
+    };
+    let dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName(name.to_string())];
+    let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    ViewFixture {
+        _session: session,
+        dir,
+        namespace,
+    }
+}
+
+/// An ACL granting `ALICE` read on `/w/docs` and nothing else.
+fn docs_read_only() -> (WorkspaceAcl, [u8; 32]) {
+    (
+        WorkspaceAcl::from_capabilities(ALICE, &[read_cap(ALICE, "/w/docs")], &[], None),
+        ALICE,
+    )
+}
+
+/// Sorted names in a directory, or the errno if it could not be listed.
+fn list(dir: &std::path::Path) -> Result<Vec<String>, i32> {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => {
+            let mut names: Vec<String> = rd
+                .map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            Ok(names)
+        }
+        Err(e) => Err(e.raw_os_error().unwrap_or(0)),
+    }
+}
+
+/// The raw errno of a `stat`, or `None` if it succeeded.
+fn stat_errno(path: &std::path::Path) -> Option<i32> {
+    std::fs::symlink_metadata(path)
+        .err()
+        .map(|e| e.raw_os_error().unwrap_or(0))
+}
+
+// A path the identity was not granted does not appear in the listing. Not
+// as an entry that errors on access — it is not in the directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_denied_subtree_is_absent_from_the_listing() {
+    require_fuse!();
+    let f = view_fixture(Some(docs_read_only()), "quickfs_view_listing").await;
+    let p = f.path();
+
+    assert_eq!(
+        list(p),
+        Ok(vec!["w".to_string()]),
+        "the root shows only the directory that leads to the grant"
+    );
+    assert_eq!(
+        list(&p.join("w")),
+        Ok(vec!["docs".to_string()]),
+        "/w shows only the granted subtree — no `other`, no `docsSECRET`"
+    );
+    assert_eq!(
+        list(&p.join("w/docs")),
+        Ok(vec!["report.md".to_string(), "sub".to_string()]),
+        "the granted subtree is listed in full"
+    );
+    assert_eq!(
+        list(&p.join("w/docs/sub")),
+        Ok(vec!["deep.md".to_string()]),
+        "and so is everything beneath it"
+    );
+
+    // The same tree, unfiltered, does contain all of it — so the omissions
+    // above are the filter and not an empty fixture.
+    let open = view_fixture(None, "quickfs_view_listing_open").await;
+    assert_eq!(
+        list(open.path()),
+        Ok(vec![
+            "archive".to_string(),
+            "vault".to_string(),
+            "w".to_string()
+        ])
+    );
+    assert_eq!(
+        list(&open.path().join("w")),
+        Ok(vec![
+            "docs".to_string(),
+            "docsSECRET".to_string(),
+            "other".to_string()
+        ])
+    );
+}
+
+// The headline property. A hidden path and a path that was never created
+// must produce the *same* errno from every operation an app can reach
+// them with. If they differ anywhere, the filesystem is an oracle for
+// what the user is hiding.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hidden_path_answers_exactly_as_an_absent_one() {
+    require_fuse!();
+    let f = view_fixture(Some(docs_read_only()), "quickfs_view_oracle").await;
+    let p = f.path();
+
+    // Left column: exists in the tree, outside the view. Right column:
+    // never existed. Same parent directory in each pair, so the only
+    // difference is whether the thing is really there.
+    let pairs = [
+        ("w/other", "w/never-existed"),
+        ("w/other/private.md", "w/never-existed/nope.md"),
+        ("w/docsSECRET", "w/docsPUBLIC"),
+        ("w/docsSECRET/leak.md", "w/docsPUBLIC/leak.md"),
+        ("vault", "cellar"),
+        ("vault/keys.txt", "cellar/keys.txt"),
+        ("archive/old.txt", "cellar/old.txt"),
+    ];
+
+    for (hidden, absent) in pairs {
+        let h = p.join(hidden);
+        let a = p.join(absent);
+
+        assert_eq!(
+            stat_errno(&h),
+            Some(libc::ENOENT),
+            "stat of the hidden {hidden} must be ENOENT"
+        );
+        assert_eq!(
+            stat_errno(&h),
+            stat_errno(&a),
+            "stat distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            std::fs::read(&h).err().map(|e| e.raw_os_error()),
+            std::fs::read(&a).err().map(|e| e.raw_os_error()),
+            "read distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            list(&h),
+            list(&a),
+            "readdir distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            std::fs::write(&h, b"x").err().map(|e| e.raw_os_error()),
+            std::fs::write(&a, b"x").err().map(|e| e.raw_os_error()),
+            "write distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            std::fs::remove_file(&h).err().map(|e| e.raw_os_error()),
+            std::fs::remove_file(&a).err().map(|e| e.raw_os_error()),
+            "unlink distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            std::fs::create_dir(&h).err().map(|e| e.raw_os_error()),
+            std::fs::create_dir(&a).err().map(|e| e.raw_os_error()),
+            "mkdir distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            std::fs::rename(&h, p.join("w/docs/stolen")).err().map(|e| e.raw_os_error()),
+            std::fs::rename(&a, p.join("w/docs/stolen")).err().map(|e| e.raw_os_error()),
+            "rename distinguishes hidden {hidden} from absent {absent}"
+        );
+        assert_eq!(
+            read_sync_xattr(&h),
+            read_sync_xattr(&a),
+            "the sync xattr distinguishes hidden {hidden} from absent {absent}"
+        );
+    }
+
+    // None of that probing may have touched the namespace.
+    let before = f.heads();
+    let _ = std::fs::write(p.join("vault/keys.txt"), b"x");
+    let _ = std::fs::remove_file(p.join("vault/keys.txt"));
+    assert_eq!(
+        f.heads(),
+        before,
+        "probing for hidden paths must not modify the document"
+    );
+}
+
+// A directory's link count is part of its identity: `2 + subdirectories`.
+// Taken from the real tree it would announce how many subdirectories the
+// listing is hiding, so it is taken from the filtered listing instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_link_counts_match_the_filtered_listing() {
+    require_fuse!();
+    use std::os::unix::fs::MetadataExt;
+
+    let f = view_fixture(Some(docs_read_only()), "quickfs_view_nlink").await;
+    let open = view_fixture(None, "quickfs_view_nlink_open").await;
+
+    // Filtered: the root has one visible subdirectory (`w`); `w` has one
+    // (`docs`); `docs` has one (`sub`).
+    for (rel, expect) in [("", 3u64), ("w", 3), ("w/docs", 3), ("w/docs/sub", 2)] {
+        let md = std::fs::metadata(f.path().join(rel)).expect("stat in the filtered view");
+        assert_eq!(
+            md.nlink(),
+            expect,
+            "nlink of /{rel} must count only the subdirectories the listing shows"
+        );
+        assert_eq!(md.len(), 0, "a directory's size never encodes its contents");
+    }
+
+    // Unfiltered, the same directories report more, which is what makes
+    // the numbers above meaningful rather than a constant.
+    let root = std::fs::metadata(open.path()).expect("stat unfiltered root");
+    assert_eq!(
+        root.nlink(),
+        5,
+        "unfiltered, the root has three subdirectories"
+    );
+    let w = std::fs::metadata(open.path().join("w")).expect("stat unfiltered /w");
+    assert_eq!(w.nlink(), 5, "unfiltered, /w has three subdirectories");
+}
+
+// A read grant is a read-only mount, not a mount that refuses. Every
+// mutation answers EROFS — the state an editor already handles by staying
+// read-only — and the document is byte-for-byte unchanged afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_grant_presents_a_read_only_filesystem() {
+    require_fuse!();
+    let f = view_fixture(Some(docs_read_only()), "quickfs_view_rofs").await;
+    let p = f.path();
+    let before = f.heads();
+
+    let attempts: Vec<(&str, std::io::Result<()>)> = vec![
+        (
+            "overwrite a granted file",
+            std::fs::write(p.join("w/docs/report.md"), b"tampered"),
+        ),
+        (
+            "create a new file in a granted directory",
+            std::fs::write(p.join("w/docs/new.md"), b"new"),
+        ),
+        (
+            "mkdir in a granted directory",
+            std::fs::create_dir(p.join("w/docs/newdir")),
+        ),
+        (
+            "unlink a granted file",
+            std::fs::remove_file(p.join("w/docs/report.md")),
+        ),
+        (
+            "rmdir a granted directory",
+            std::fs::remove_dir(p.join("w/docs/sub")),
+        ),
+        (
+            "rename within a granted directory",
+            std::fs::rename(p.join("w/docs/report.md"), p.join("w/docs/moved.md")),
+        ),
+        (
+            "truncate a granted file",
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(p.join("w/docs/report.md"))
+                .map(|_| ()),
+        ),
+    ];
+    for (what, outcome) in attempts {
+        assert_eq!(
+            outcome.err().map(|e| e.raw_os_error().unwrap_or(0)),
+            Some(libc::EROFS),
+            "{what}: a read grant must present a read-only filesystem"
+        );
+    }
+
+    assert_eq!(
+        std::fs::read(p.join("w/docs/report.md")).unwrap(),
+        b"contents",
+        "the file the writes were aimed at is untouched"
+    );
+    assert_eq!(
+        f.heads(),
+        before,
+        "no refused write may reach the CRDT — not even as an empty change"
+    );
+    assert_eq!(
+        list(&p.join("w/docs")),
+        Ok(vec!["report.md".to_string(), "sub".to_string()]),
+        "and the directory is exactly as it was"
+    );
+}
+
+// The one residual: an entry that is writable but not readable. The
+// capability model cannot express it (every verb implies Read, so a
+// restriction narrows writing without hiding anything), so this is
+// reachable only through a direct ACL entry. The behaviour is pinned
+// here so that if it ever becomes reachable, it is a deliberate change:
+// the name is refused, never created over, and never confirmed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_without_read_entry_refuses_rather_than_clobbering() {
+    require_fuse!();
+    let mut acl = WorkspaceAcl::new();
+    // Write on /w, but read only on /w/docs: /w/other and /w/docsSECRET
+    // are writable and invisible at once, which no capability can produce.
+    acl.grant(ALICE, "/w", false, true);
+    acl.grant_read(ALICE, "/w/docs");
+    let f = view_fixture(Some((acl, ALICE)), "quickfs_view_residual").await;
+    let p = f.path();
+    let before = f.heads();
+
+    assert_eq!(
+        list(&p.join("w")),
+        Ok(vec!["docs".to_string()]),
+        "the writable-but-unreadable siblings are still absent from the listing"
+    );
+    // Creating over the hidden name is refused — the hidden entry survives.
+    assert_eq!(
+        std::fs::create_dir(p.join("w/other"))
+            .err()
+            .map(|e| e.raw_os_error().unwrap_or(0)),
+        Some(libc::EROFS),
+        "a name taken by something outside the view must not be created over"
+    );
+    assert_eq!(
+        f.heads(),
+        before,
+        "and nothing about the hidden entry may change"
+    );
+}
+
+// =====================================================================
+// Read participation without authorship
+//
+// A shared document is a CRDT, and a change to it is a change *authored*
+// by somebody. Read participation means the app sees the document and
+// cannot originate a change to it — not "its changes are rejected", which
+// still requires something downstream to do the rejecting.
+//
+// In the filesystem that is structural rather than enforced: the only
+// route from an app's bytes into the CRDT is a write buffer, a write
+// buffer is only ever created by `write`, `create` or a truncating
+// `setattr`, and all three are refused for a path the identity may not
+// write. So there is no descriptor, and no sequence of syscalls, through
+// which an authored change can be built.
+// =====================================================================
+
+/// A mounted workspace holding one CRDT-backed document under a granted
+/// subtree, plus the ACL the mount enforces.
+async fn document_fixture(
+    acl: Option<(WorkspaceAcl, [u8; 32])>,
+    name: &str,
+) -> (fuser::BackgroundSession, tempfile::TempDir, Arc<Mutex<Namespace>>) {
+    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer")));
+    {
+        let mut ns = namespace.lock().unwrap();
+        let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+        let ino = ns.create_document(shared, "notes.md", "md", 1).unwrap();
+        let block = ns
+            .document_insert_block(ino, None, "paragraph")
+            .expect("insert a block");
+        assert!(ns.document_splice(ino, &block, 0, 0, "Shared paragraph"));
+    }
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+    let fs = match acl {
+        Some((a, id)) => fs.with_acl(a, id),
+        None => fs,
+    };
+    let dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName(name.to_string())];
+    let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    (session, dir, namespace)
+}
+
+// A read participant reads the shared document and cannot author it. The
+// CRDT is byte-identical afterwards — not "the change was rejected", but
+// "no change was ever made".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
+    require_fuse!();
+    let acl = WorkspaceAcl::from_capabilities(
+        ALICE,
+        &[read_cap(ALICE, "/shared")],
+        &[],
+        None,
+    );
+    let (_session, dir, namespace) = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
+    let doc = dir.path().join("shared/notes.md");
+
+    // Participation: the document is there and it reads.
+    let before = std::fs::read(&doc).expect("a read participant reads the shared document");
+    assert!(
+        String::from_utf8_lossy(&before).contains("Shared paragraph"),
+        "the read must return the real document, not an empty stand-in: {:?}",
+        String::from_utf8_lossy(&before)
+    );
+    let heads_before = namespace.lock().unwrap().heads();
+    let nodes_before = namespace.lock().unwrap().live_node_ids();
+
+    // Authorship: every route by which bytes could become a change.
+    for (what, outcome) in [
+        (
+            "rewrite the document",
+            std::fs::write(&doc, b"# Tampered\n\nMine now\n"),
+        ),
+        (
+            "open it for writing",
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "append to it",
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "truncate it",
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "replace it with a new document of the same name",
+            std::fs::write(dir.path().join("shared/notes.md"), b"x"),
+        ),
+        (
+            "add a second document beside it",
+            std::fs::write(dir.path().join("shared/mine.md"), b"# Mine\n"),
+        ),
+        ("delete it", std::fs::remove_file(&doc)),
+        (
+            "rename it out of the way",
+            std::fs::rename(&doc, dir.path().join("shared/moved.md")),
+        ),
+    ] {
+        assert_eq!(
+            outcome.err().map(|e| e.raw_os_error().unwrap_or(0)),
+            Some(libc::EROFS),
+            "{what}: a read participant must not be able to originate a change"
+        );
+    }
+
+    // Nothing was authored. Not "the change was refused" — the change
+    // graph did not move, so no change was ever made.
+    assert_eq!(
+        namespace.lock().unwrap().heads(),
+        heads_before,
+        "the CRDT change graph must not have advanced"
+    );
+    assert_eq!(
+        namespace.lock().unwrap().live_node_ids(),
+        nodes_before,
+        "and no node was added or removed"
+    );
+    assert_eq!(
+        std::fs::read(&doc).expect("still readable"),
+        before,
+        "the document reads exactly as it did before"
+    );
+
+    // The negative case is not vacuous: the same document, the same
+    // writes, with a write grant instead of a read grant.
+    let rw = WorkspaceAcl::from_capabilities(
+        BOB,
+        &[CapOverride::new(
+            Subject::User(Ed25519PublicKey(BOB)),
+            Scope::FsPath("/shared".into()),
+            Effect::Grant,
+            Verb::Write,
+        )],
+        &[],
+        None,
+    );
+    let (_s2, dir2, ns2) = document_fixture(Some((rw, BOB)), "quickfs_doc_rw").await;
+    let heads2 = ns2.lock().unwrap().heads();
+    std::fs::write(dir2.path().join("shared/notes.md"), b"# Authored\n\nBy Bob\n")
+        .expect("an authoring participant may write the shared document");
+    assert_ne!(
+        ns2.lock().unwrap().heads(),
+        heads2,
+        "an authored write must move the change graph — otherwise the assertions above prove \
+         nothing about authorship"
+    );
 }

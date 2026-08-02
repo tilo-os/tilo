@@ -292,7 +292,16 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
+    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), which is
+    // process-wide state: run in parallel, one clears the override the other
+    // just installed, or inherits the empty `PATH` the other left behind —
+    // which showed up as unrelated tests failing to find `rm` in a shell
+    // fixture. They take the same `process_env` lock as the rest of the
+    // crate's env-reading tests, so the exclusion covers those too, not just
+    // these two against each other.
+
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_proxy_binary_honours_env_override() {
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
@@ -305,20 +314,29 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
+        let saved_path = std::env::var_os("PATH");
         unsafe {
             std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
             // Nuke PATH so the fallback can't find a real binary.
             std::env::set_var("PATH", "");
         }
         let found = find_proxy_binary();
+        unsafe {
+            std::env::remove_var(PROXY_BIN_ENV);
+            // Put `PATH` back before asserting: leaving it empty breaks every
+            // later binary lookup in this process, not only this test, and a
+            // failed assertion must not strand the rest of the suite.
+            match &saved_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
         assert!(
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
         );
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-        }
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket

@@ -275,6 +275,8 @@ enum Error {
     RequireAttestorWithoutAttestation { required: String },
     #[error("qpkg parse: {0}")]
     Parse(String),
+    #[error("refusing to install: {0}")]
+    Policy(String),
     #[error("package {0} already installed (use --force to overwrite)")]
     AlreadyInstalled(String),
     #[error("no such package installed: {0}")]
@@ -473,6 +475,14 @@ fn install(qpkg: &Path, pinned: bool, force: bool, trust: TrustFlags) -> Result<
 
     // 2. Verify + apply trust policy.
     let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, &trust)?;
+
+    // 2b. Schema + sandbox policy. A signature says who wrote the
+    // manifest; it does not say that what the manifest asks for is
+    // reasonable. A package that names its own filesystem paths is
+    // refused here, signed or not — otherwise the only thing standing
+    // between "a valid signature" and "read-write on the user's home"
+    // is that nobody in the fleet had tried it.
+    pkg::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
     // 3. Registry check.
     let id_field = manifest.package.id.clone();

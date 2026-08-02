@@ -31,6 +31,64 @@ for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsysca
 done
 case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
 
+# The kargs above are what we ASKED for. This is what the kernel actually did:
+# it reports the resolved zero-on-alloc / zero-on-free state once at boot, and
+# that line is the only place the live setting is observable — there is no
+# sysfs knob for either. A karg that was ignored (typo, unsupported build)
+# shows up here and nowhere else.
+meminit="$(dmesg 2>/dev/null | grep -m1 'mem auto-init:' || true)"
+case "$meminit" in
+  *'alloc:on'*'free:on'*) ok "${meminit#*mem auto-init: }(live, from the kernel's own report)" ;;
+  '')                     note "mem auto-init: kernel report not in the ring buffer (rotated out?)" ;;
+  *)                      warn "mem auto-init NOT fully on: ${meminit#*mem auto-init: }" ;;
+esac
+
+# Enforced module signatures. sig_enforce is the live value of
+# CONFIG_MODULE_SIG_FORCE; with it set, no unsigned module enters the kernel
+# even from root, with or without Secure Boot behind it.
+sigenf="$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null || echo '?')"
+case "$sigenf" in
+  Y) ok "module signatures enforced (sig_enforce=Y)" ;;
+  N) warn "module signatures NOT enforced (sig_enforce=N; CONFIG_MODULE_SIG_FORCE lost?)" ;;
+  *) warn "module signature enforcement unknown (no sig_enforce parameter)" ;;
+esac
+
+# Runtime tunables from /usr/lib/sysctl.d/60-qos-hardening.conf. Reads the
+# effective value, so an unapplied drop-in or an /etc override that relaxed
+# something is visible rather than assumed.
+check_sysctl() {
+  key="$1"; want="$2"
+  have="$(sysctl -n "$key" 2>/dev/null || echo '?')"
+  if [ "$have" = "$want" ]; then ok "$key = $have"
+  else warn "$key = $have (expected $want)"; fi
+}
+check_sysctl kernel.yama.ptrace_scope 3
+check_sysctl kernel.kptr_restrict 2
+check_sysctl kernel.dmesg_restrict 1
+check_sysctl kernel.unprivileged_bpf_disabled 1
+check_sysctl kernel.kexec_load_disabled 1
+check_sysctl kernel.perf_event_paranoid 3
+check_sysctl kernel.io_uring_disabled 2
+check_sysctl vm.unprivileged_userfaultfd 0
+check_sysctl fs.protected_symlinks 1
+check_sysctl fs.protected_hardlinks 1
+
+# Hardware shadow stacks. Every qOS binary is marked compatible at link time,
+# but glibc only switches them on for a process that also asks via
+# GLIBC_TUNABLES, which is how they stay scoped to the processes proven to run
+# under them. Report the CPU/kernel capability and who is actually using it.
+if grep -qw user_shstk /proc/cpuinfo 2>/dev/null; then
+  shstk_procs=""
+  for st in /proc/[0-9]*/status; do
+    grep -q '^x86_Thread_features:.*shstk' "$st" 2>/dev/null || continue
+    p="${st%/status}"
+    shstk_procs="$shstk_procs $(cat "$p/comm" 2>/dev/null)"
+  done
+  if [ -n "$shstk_procs" ]; then ok "shadow stacks active in:$shstk_procs"
+  else note "CPU supports shadow stacks; no process has enabled them yet (they are opt-in per process)"; fi
+else
+  note "CPU/kernel report no user shadow-stack support (pre-Tiger Lake / pre-Zen 5); the ELF marking is inert here"
+fi
 # Secure Boot. Read the EFI variable when mokutil is absent — mokutil arrives
 # with the shim stack this image removes, so the tool it reports through must not
 # be the thing that decides whether the check happens.
@@ -119,9 +177,17 @@ fi
 # Display server is Wayland (no X11 keylogging surface)
 note "display server: Wayland (compositor: shell --backend drm)"
 
-# Unprivileged userns is intentionally ALLOWED (bubblewrap needs it); report it.
+# Unprivileged userns is intentionally ALLOWED — bubblewrap creates one before
+# it can drop anything, so switching them off would delete the app sandbox
+# rather than harden it. See the header of
+# /usr/lib/sysctl.d/60-qos-hardening.conf. Checked, not just noted: a zero here
+# means the sandbox cannot start.
 maxns="$(sysctl -n user.max_user_namespaces 2>/dev/null || echo '?')"
-note "unprivileged user namespaces enabled (bwrap requires them); max=$maxns"
+if [ "$maxns" = "0" ]; then
+  warn "user.max_user_namespaces=0 — the app sandbox CANNOT start; something 'hardened' this"
+else
+  ok "unprivileged user namespaces available (bwrap requires them); max=$maxns"
+fi
 
 echo "=== end qOS security audit ==="
 exit 0

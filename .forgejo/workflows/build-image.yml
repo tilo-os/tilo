@@ -45,6 +45,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Pin the base image the build starts FROM. It is a mirror in our own
+      # registry rather than quay.io because upstream deletes the manifest a
+      # digest points at within about a day — see os/base-snapshot.env.
+      - name: Load BASE_REF (mirrored Fedora bootc base)
+        run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+
       # Pin the frozen RPM repo the build installs from (cross-time reproducible).
       # Only the RPMS_REF= line — $GITHUB_ENV has no comment syntax, so the file's
       # leading `#` lines would corrupt the env (RPMS_REF ended up empty).
@@ -102,6 +108,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for

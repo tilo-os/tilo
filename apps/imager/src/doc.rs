@@ -3,7 +3,7 @@
 //! All UI + job state lives in the CRDT so the selected source/target, the
 //! install options, pending confirmations and live progress are undoable
 //! and replicate to collaborators for free. Machine-derived blobs (the
-//! probed target list, recent sources, saved profiles, the active install
+//! probed target list, recent sources, the active install
 //! profile) are serialised as JSON string scalars — they are not edited
 //! character-by-character, so a plain scalar is the right granularity.
 //!
@@ -13,7 +13,6 @@
 //! ├── "source"       (Str)   # serde_json of Option<Source>
 //! ├── "recent"       (Str)   # serde_json of Vec<Source>
 //! ├── "profile"      (Str)   # serde_json of InstallProfile (the live edits)
-//! ├── "profiles"     (Str)   # serde_json of Vec<(String, InstallProfile)>
 //! ├── "progress"     (Str)   # serde_json of Progress
 //! ├── "selected"     (Int)   # index into targets (or -1)
 //! ├── "action"       (Str)   # flash | install
@@ -25,8 +24,8 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 
 use crate::model::{
-    sample_profiles, sample_recent_sources, sample_source, sample_targets, Action, InstallProfile,
-    Progress, Source, Step, TargetDrive,
+    sample_recent_sources, sample_source, sample_targets, Action, InstallProfile, Progress, Source,
+    Step, TargetDrive,
 };
 
 pub struct ImagerDoc;
@@ -37,30 +36,30 @@ impl ImagerDoc {
         !matches!(doc.get(&ROOT, "targets"), Ok(Some((Value::Scalar(_), _))))
     }
 
-    /// Seed the document with the sample data + default UI state.
+    /// Seed the document with **empty** collections + default UI state — no
+    /// fabricated image, no fake recent history, no invented drives. The live
+    /// app starts genuinely blank and fills `targets` from a real `lsblk`
+    /// probe; sample/demo content is opt-in via [`Self::seed_demo`].
     /// Idempotent: only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit, targets: &[TargetDrive]) {
         if Self::get_str(doc, "targets").is_none() {
             Self::write_targets(doc, targets);
         }
         if Self::get_str(doc, "source").is_none() {
-            Self::set_source(doc, Some(&sample_source()));
+            Self::set_source(doc, None);
         }
         if Self::get_str(doc, "recent").is_none() {
-            Self::write_json(doc, "recent", &sample_recent_sources());
+            Self::write_json(doc, "recent", &Vec::<Source>::new());
         }
         if Self::get_str(doc, "profile").is_none() {
             Self::write_json(doc, "profile", &InstallProfile::default());
-        }
-        if Self::get_str(doc, "profiles").is_none() {
-            Self::write_json(doc, "profiles", &sample_profiles());
         }
         if Self::get_str(doc, "progress").is_none() {
             Self::write_json(doc, "progress", &Progress::default());
         }
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
             // Start with NO drive selected: the wizard's Drive step must gate
-            // on a deliberate user choice before it will advance to Customize.
+            // on a deliberate user choice before it will advance.
             let _ = doc.put(&ROOT, "selected", -1i64);
         }
         if Self::get_str(doc, "action").is_none() {
@@ -75,6 +74,17 @@ impl ImagerDoc {
         if Self::get_str(doc, "status").is_none() {
             let _ = doc.put(&ROOT, "status", "");
         }
+    }
+
+    /// Seed a fully-populated **demo** document: the sample drives, a
+    /// pre-selected qOS image, and a short recent-sources history. This is the
+    /// single home of the imager's sample content — used only by `--shots`,
+    /// the `--demo` flag, and tests, never by the live app (which stays blank
+    /// per [`Self::seed`]).
+    pub fn seed_demo(doc: &mut AutoCommit) {
+        Self::seed(doc, &sample_targets());
+        Self::set_source(doc, Some(&sample_source()));
+        Self::write_json(doc, "recent", &sample_recent_sources());
     }
 
     // ---- targets ----------------------------------------------------------
@@ -108,14 +118,6 @@ impl ImagerDoc {
     }
     pub fn set_profile(doc: &mut AutoCommit, profile: &InstallProfile) {
         Self::write_json(doc, "profile", profile);
-    }
-
-    // ---- saved profiles ---------------------------------------------------
-    pub fn profiles(doc: &AutoCommit) -> Vec<(String, InstallProfile)> {
-        Self::read_json(doc, "profiles").unwrap_or_else(sample_profiles)
-    }
-    pub fn set_profiles(doc: &mut AutoCommit, profiles: &[(String, InstallProfile)]) {
-        Self::write_json(doc, "profiles", &profiles.to_vec());
     }
 
     // ---- progress ---------------------------------------------------------
@@ -173,6 +175,19 @@ impl ImagerDoc {
         let _ = doc.put(&ROOT, "status", s);
     }
 
+    /// Whether internal/fixed disks are revealed on the Drive step. Presentation
+    /// state (like `selected`/`step`), persisted for instant-on. Defaults off so
+    /// a fresh document only ever shows removable drives.
+    pub fn show_internal(doc: &AutoCommit) -> bool {
+        match doc.get(&ROOT, "show_internal") {
+            Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
+            _ => false,
+        }
+    }
+    pub fn set_show_internal(doc: &mut AutoCommit, on: bool) {
+        let _ = doc.put(&ROOT, "show_internal", on);
+    }
+
     // ---- helpers ----------------------------------------------------------
     fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, val: &T) {
         let json = serde_json::to_string(val).unwrap_or_else(|_| "null".into());
@@ -206,13 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn seed_populates_all_panels() {
+    fn seed_starts_blank_no_fake_content() {
+        // The default seed is EMPTY: real drives fill in from a live probe, and
+        // there is no fabricated image or recent history.
         let doc = seeded();
         assert!(!ImagerDoc::is_empty(&doc));
-        assert_eq!(ImagerDoc::targets(&doc).len(), 2);
-        assert!(ImagerDoc::source(&doc).is_some());
-        assert_eq!(ImagerDoc::recent(&doc).len(), 3);
-        assert_eq!(ImagerDoc::profiles(&doc).len(), 2);
+        assert_eq!(ImagerDoc::targets(&doc).len(), 2, "the caller's drives, verbatim");
+        assert!(ImagerDoc::source(&doc).is_none(), "no fabricated image");
+        assert!(ImagerDoc::recent(&doc).is_empty(), "no fabricated recent history");
         assert_eq!(ImagerDoc::action(&doc), Action::Flash);
         // A fresh document starts with no drive chosen — the Drive step gates on
         // a deliberate selection.
@@ -220,8 +236,21 @@ mod tests {
     }
 
     #[test]
+    fn seed_demo_populates_sample_content() {
+        // The opt-in demo seed is the only place sample content comes from.
+        let mut doc = AutoCommit::new();
+        ImagerDoc::seed_demo(&mut doc);
+        assert_eq!(ImagerDoc::targets(&doc).len(), 2);
+        assert!(ImagerDoc::source(&doc).is_some());
+        assert!(!ImagerDoc::recent(&doc).is_empty());
+    }
+
+    #[test]
     fn source_round_trips() {
         let mut doc = seeded();
+        assert!(ImagerDoc::source(&doc).is_none());
+        let sample = sample_source();
+        ImagerDoc::set_source(&mut doc, Some(&sample));
         let src = ImagerDoc::source(&doc).unwrap();
         assert_eq!(src.kind, SourceKind::QosImage);
         ImagerDoc::set_source(&mut doc, None);

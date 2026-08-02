@@ -1,9 +1,11 @@
 //! The collapsible bottom panel: a tabbed dock for Problems and Terminal.
 //! Problems lists diagnostics (a lightweight, real linter over the active
-//! buffer — see `app.rs`); Terminal shows a read-only sample build log.
+//! buffer — see `app.rs`); Terminal hosts a live embedded shell, spawned on
+//! first open, and shows an honest empty-state note until then (never a
+//! fabricated build log).
 //!
-//! Real LSP diagnostics and an interactive PTY are deferred — see the TODOs in
-//! `app.rs`. The panel renders the data the app feeds it.
+//! Real LSP diagnostics are deferred — see the TODOs in `app.rs`. The panel
+//! renders the data the app feeds it.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -51,7 +53,6 @@ pub struct BottomPanel {
     rect: Rect,
     tab: PanelTab,
     problems: Vec<Diagnostic>,
-    terminal: Vec<String>,
     tab_rects: Vec<(f64, f64, PanelTab)>,
     last_cursor: Point,
     /// Set true when the user clicks a tab — read+cleared by the app.
@@ -60,8 +61,8 @@ pub struct BottomPanel {
     /// `TerminalWidget` the app draws over this panel's content rect, so the
     /// panel leaves that region blank instead of rendering the static fallback.
     has_live_terminal: bool,
-    /// Optional note shown in the Terminal body when no live terminal is
-    /// present (e.g. "shell unavailable"). Falls back to the static log.
+    /// Note shown in the Terminal body when no live terminal is present (the
+    /// pre-spawn invitation, or "shell unavailable" on a spawn failure).
     terminal_note: Option<String>,
     dirty: bool,
 }
@@ -72,7 +73,6 @@ impl BottomPanel {
             rect: Rect::ZERO,
             tab: PanelTab::Problems,
             problems: Vec::new(),
-            terminal: Vec::new(),
             tab_rects: Vec::new(),
             last_cursor: Point::ZERO,
             tab_changed: false,
@@ -87,11 +87,6 @@ impl BottomPanel {
             self.problems = problems;
             self.dirty = true;
         }
-    }
-
-    pub fn set_terminal(&mut self, lines: Vec<String>) {
-        self.terminal = lines;
-        self.dirty = true;
     }
 
     /// Mark whether a live embedded terminal owns the Terminal tab body.
@@ -298,25 +293,6 @@ impl Widget for BottomPanel {
                         transform * Affine::translate((self.rect.x0 + 14.0, content_y0)),
                         Some((self.rect.width() - 28.0) as f32),
                     );
-                } else {
-                    let mut y = content_y0;
-                    for line in &self.terminal {
-                        if y > self.rect.y1 - ROW_H {
-                            break;
-                        }
-                        text_renderer.draw_text_styled(
-                            scene,
-                            line,
-                            12.5,
-                            c.neutral[8],
-                            transform * Affine::translate((self.rect.x0 + 14.0, y)),
-                            None,
-                            TextWeight::Regular,
-                            false,
-                            true,
-                        );
-                        y += ROW_H;
-                    }
                 }
             }
         }

@@ -38,10 +38,12 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
+use crate::collab::colorimetry::Colorimetry;
 use crate::diagnostics::PeerSurfaceMetrics;
 use crate::network::decoder::{DecodedFrame, DecodedPixels, VideoDecoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use crate::network::streaming::InputEvent;
+use crate::shell::color_pipeline::{OutputColorState, SurfaceColorOp, plan_surface_op};
 use crate::shell::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 
 /// Ceiling on the receive-side decode queue depth. `push_encoded_with_latency`
@@ -198,19 +200,35 @@ impl PeerView {
             );
             VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
         });
-        // HDR tone-map only applies when the stream is HEVC-Main10
-        // AND the display can't do PQ passthrough. `HdrTonemapConfig`
-        // captures the decision + the mastering luminance to size
-        // compression against.
-        let hdr_tonemap = if matches!(decoder, VideoDecoder::H264(_)) {
-            None
-        } else if display_caps.supports_pq_output {
-            // Passthrough path — no tone-map required. The Wayland
-            // color-management wiring hands the PQ metadata to the
-            // compositor; the widget's blit stays a straight upload.
-            None
+        // Route the SDR/HDR composition decision through the canonical
+        // output colour pipeline so the receive path uses the same logic
+        // as local composition. The stream's colorimetry follows the
+        // codec: HEVC Main10 carries HDR (PQ / BT.2020); H.264 is SDR
+        // BT.709. The tone-mapper only runs on an HDR stream bound for a
+        // non-HDR output; every other quadrant (SDR passthrough, the
+        // SDR→HDR encode, and HLG↔PQ transcode) leaves the CPU tone-map
+        // disabled.
+        let stream_colorimetry = if matches!(decoder, VideoDecoder::H264(_)) {
+            Colorimetry::sdr_bt709()
         } else {
-            Some(HdrTonemapConfig::from_metadata(hdr_static_metadata))
+            Colorimetry::hdr10()
+        };
+        let output_state = OutputColorState::from_display(display_caps);
+        // The stream's mastering peak, when signalled — same derivation as
+        // `HdrTonemapConfig::from_metadata`, but fed to the pipeline so it
+        // sizes tone-map compression against the real source peak.
+        let source_peak = hdr_static_metadata
+            .map(|m| m.mastering.max_display_mastering_luminance as f32 / 10_000.0)
+            .filter(|nits| nits.is_finite() && *nits > 0.0);
+        let hdr_tonemap = match plan_surface_op(stream_colorimetry, &output_state, source_peak) {
+            SurfaceColorOp::TonemapHdrToSdr { config } => Some(config),
+            // Passthrough (SDR→SDR, or HDR→HDR on a PQ-capable display),
+            // MapSdrToHdr (an SDR surface lifted into the HDR container on
+            // a PQ output — the `hdr_output_encode.wgsl` path), and the
+            // HLG↔PQ transcode all upload without a HDR→SDR CPU tone-map.
+            SurfaceColorOp::Passthrough
+            | SurfaceColorOp::MapSdrToHdr
+            | SurfaceColorOp::TranscodeHdrTransfer => None,
         };
         Self {
             title: format!("Peer surface #{surface_id}"),

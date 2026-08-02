@@ -84,9 +84,15 @@ rollback_system_is_healthy() {
   return 0
 }
 
+# Parse the generation number out of a command line string.
+#
+# Split from the file read so it can be tested (os/tests/rollback-wrappers.sh)
+# rather than only exercised on a booted machine.
+rollback_generation_from() {
+  printf '%s' "$1" | tr ' \t' '\n\n' | sed -n 's/^qos\.generation=\([0-9][0-9]*\)$/\1/p' | head -1
+}
+
 # The generation number of the running system, from the sealed command line.
 rollback_running_generation() {
-  local g
-  g="$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^qos\.generation=//p' | head -1)"
-  printf '%s\n' "$g"
+  rollback_generation_from "$(cat /proc/cmdline 2>/dev/null || true)"
 }

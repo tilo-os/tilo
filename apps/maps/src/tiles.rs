@@ -68,9 +68,16 @@ struct FailedFetch {
     delay: Duration,
 }
 
-/// Public OSM raster endpoint. The standard tile server; we send a descriptive
-/// User-Agent per the OSM tile usage policy.
-const TILE_URL: &str = "https://tile.openstreetmap.org";
+/// Base raster-tile endpoint: CARTO's **label-free** light basemap
+/// (`light_nolabels`). It is deliberately a *no-labels* style — the app draws
+/// its own themed, clickable POI/place markers over the imagery, so the base
+/// tiles must NOT bake in place names of their own. The standard OSM raster
+/// (`tile.openstreetmap.org`) has labels baked in, which double up with the
+/// marker layer; a `nolabels` style leaves labelling entirely to the app. The
+/// *light* palette is chosen to match the app's light UI — a dark basemap would
+/// clash with it. Data is still OpenStreetMap; CARTO serves the raster, and
+/// both credits are carried in the on-map attribution.
+const TILE_URL: &str = "https://basemaps.cartocdn.com/light_nolabels";
 
 const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
 
@@ -510,6 +517,26 @@ impl TileLayer {
         freed
     }
 
+    /// Delete specific tiles from RAM and the on-disk cache — used to remove a
+    /// downloaded offline region. Returns the number of bytes freed on disk.
+    /// The caller is responsible for excluding any tile still covered by a
+    /// region it means to keep, so shared imagery isn't dropped.
+    pub fn delete_tiles(&mut self, ids: &[TileId]) -> u64 {
+        let mut freed = 0u64;
+        for id in ids {
+            self.mem.remove(id);
+            if let Some(pos) = self.lru.iter().position(|t| t == id) {
+                self.lru.remove(pos);
+            }
+            let path = self.cache_dir.join(id.cache_rel());
+            if let Ok(meta) = std::fs::metadata(&path) {
+                freed += meta.len();
+            }
+            let _ = std::fs::remove_file(&path);
+        }
+        freed
+    }
+
     /// Total bytes the on-disk cache currently occupies.
     pub fn cache_bytes(&self) -> u64 {
         dir_size(&self.cache_dir)
@@ -545,6 +572,14 @@ impl TileLayer {
     #[cfg(test)]
     fn with_cache_dir_url(cache_dir: PathBuf, base_url: String) -> Self {
         Self::with_cache_dir_and_base(cache_dir, base_url)
+    }
+
+    /// The on-disk path a tile would occupy under this layer's cache root.
+    /// Crate-visible so an app-level test can seed/inspect cached tiles by id
+    /// (the `z/x/y.png` layout is otherwise private).
+    #[cfg(test)]
+    pub(crate) fn cache_path(&self, id: TileId) -> PathBuf {
+        self.cache_dir.join(id.cache_rel())
     }
 
     /// Seed a solid 256×256 decoded tile straight into the resident set, for
@@ -1277,9 +1312,10 @@ mod tests {
     }
 
     /// Real-network smoke test of the *production* tile path: install the
-    /// crypto provider, build the exact worker client, and fetch a real OSM
-    /// tile — the thing the unit tests (local mock) and `--shots` (sample data)
-    /// never exercised, which is why the silent-TLS-failure shipped.
+    /// crypto provider, build the exact worker client, and fetch a real basemap
+    /// tile from the label-free style — the thing the unit tests (local mock)
+    /// and `--shots` (sample data) never exercised, which is why the
+    /// silent-TLS-failure shipped.
     ///
     /// Ignored by default so hermetic CI stays offline; run it explicitly with:
     ///   cargo test -p maps --lib -- --ignored live_tile_fetch_real_network
@@ -1310,7 +1346,7 @@ mod tests {
         );
         let bytes = resp.bytes().expect("read tile body");
         let (rgba, w, h) = decode_png(&bytes).expect("tile decodes as PNG");
-        assert_eq!((w, h), (256, 256), "OSM tiles are 256×256");
+        assert_eq!((w, h), (256, 256), "basemap tiles are 256×256");
         assert_eq!(rgba.len(), 256 * 256 * 4, "RGBA8 buffer size");
 
         // Now the full production helper: it must return pixels AND persist the
@@ -1336,5 +1372,155 @@ mod tests {
             layer.note_failure(id);
         }
         assert_eq!(layer.failed_delay(id), Some(FAIL_BACKOFF_MAX));
+    }
+
+    // --- Label-free base style + offline region download -------------------
+
+    /// The base raster style the worker fetches must be **label-free**, so the
+    /// app's own themed marker layer is the *only* source of POI/place labels
+    /// (no duplicate, mismatched names baked into the tiles). This asserts on
+    /// the exact constant the live worker uses, not a copy.
+    #[test]
+    fn base_tile_url_is_label_free() {
+        assert!(
+            TILE_URL.contains("nolabels"),
+            "base tiles must be a label-free style so only the app draws POIs: {TILE_URL}"
+        );
+        assert!(
+            !TILE_URL.contains("tile.openstreetmap.org"),
+            "the standard OSM raster bakes labels into the tiles: {TILE_URL}"
+        );
+        // A well-formed z/x/y URL is produced for a sample tile.
+        let id = TileId::new(14, 8800, 5680);
+        assert!(id.url(TILE_URL).ends_with("/14/8800/5680.png"), "{}", id.url(TILE_URL));
+    }
+
+    /// A one-shot local HTTP/1.1 server that answers every request with the
+    /// same PNG bytes, so the *real* fetch→decode→persist path can be exercised
+    /// hermetically (no external server). Returns the base URL.
+    fn serve_png(png: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                // Read (and discard) the request head — one read covers a GET.
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    png.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&png);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The decisive offline-download real-path test: `start_download` must
+    /// actually **fetch tiles over HTTP and persist the PNGs to the on-disk
+    /// cache** (not just count). Runs the full production path —
+    /// start_download → worker → HTTP GET → decode → write_cache → drain — and
+    /// then asserts the exact `z/x/y.png` files exist on disk.
+    #[test]
+    fn download_fetches_and_persists_tiles_to_disk() {
+        let cache = temp_cache();
+        let base = serve_png(solid_png(256, 256, [30, 60, 90, 255]));
+        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), base);
+
+        // A small area across two zooms → a handful of real tiles.
+        let bounds = GeoBounds::new(LatLon::new(48.13, 11.55), LatLon::new(48.16, 11.58));
+        let (z0, z1) = (13u8, 14u8);
+        let ids = bounds.tiles_in_range(z0, z1);
+        assert!(ids.len() >= 3, "expected several tiles, got {}", ids.len());
+        // None are on disk yet.
+        for id in &ids {
+            assert!(!cache.join(id.cache_rel()).exists());
+        }
+
+        let queued = layer.start_download(bounds, z0, z1);
+        assert_eq!(queued, ids.len() as u32);
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            layer.drain();
+            if !layer.progress().is_active() && layer.progress().done >= queued {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(layer.progress().done, queued, "download did not complete");
+        assert_eq!(layer.progress().failed, 0, "the mock server serves every tile");
+
+        // Every queued tile is now a real PNG on disk — that is what makes the
+        // region available offline.
+        for id in &ids {
+            let path = cache.join(id.cache_rel());
+            assert!(path.exists(), "tile {id:?} was not persisted to {path:?}");
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(decode_png(&bytes).is_ok(), "persisted tile is a valid PNG");
+        }
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// A downloaded region must **render offline**: with the tiles already on
+    /// disk and the network unreachable (a refused local port), a live layer
+    /// still serves the tile from the cache — `load_tile` reads disk *before*
+    /// the network, and a disk hit records no failure. This is the guarantee
+    /// that a pre-downloaded area works with no connection.
+    #[test]
+    fn cached_region_renders_offline_without_network() {
+        let cache = temp_cache();
+        let id = TileId::new(16, 35210, 22696);
+        // Persist the tile as if a prior download had written it.
+        let path = cache.join(id.cache_rel());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, solid_png(256, 256, [12, 34, 56, 255])).unwrap();
+
+        // Network is definitively down (closed port), i.e. offline.
+        let mut layer = TileLayer::with_cache_dir_url(cache.clone(), closed_local_base());
+        layer.request(id);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline && layer.get(id).is_none() {
+            layer.drain();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            layer.get(id).is_some(),
+            "a cached tile must load offline (disk-first), with no network"
+        );
+        assert!(
+            !layer.has_failures(),
+            "a disk cache hit must not be recorded as a fetch failure"
+        );
+
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// Removing a downloaded region deletes exactly its tiles from disk and
+    /// reports the bytes freed, without touching tiles it wasn't asked to drop.
+    #[test]
+    fn delete_tiles_removes_from_disk_and_reports_freed() {
+        let cache = temp_cache();
+        let doomed = TileId::new(15, 17600, 11360);
+        let kept = TileId::new(15, 17601, 11360);
+        for id in [doomed, kept] {
+            let p = cache.join(id.cache_rel());
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, solid_png(64, 64, [7, 7, 7, 255])).unwrap();
+        }
+        let mut layer = TileLayer::offline_with_cache_dir(cache.clone());
+
+        let freed = layer.delete_tiles(&[doomed]);
+        assert!(freed > 0, "deleting a real tile frees its bytes");
+        assert!(!cache.join(doomed.cache_rel()).exists(), "the tile is gone from disk");
+        assert!(cache.join(kept.cache_rel()).exists(), "an untouched tile is kept");
+
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }

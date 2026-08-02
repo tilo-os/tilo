@@ -24,7 +24,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{SidebarDrawer, SplitLayout, TextInput, Widget};
+use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, SplitLayout, TextInput, Widget};
+use std::cell::Cell;
+use std::rc::Rc;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use ui::ImageStore;
 
 use crate::art;
@@ -378,10 +382,14 @@ pub struct MusicApp {
     /// queue view (so "Remove from queue" can target it).
     ctx_queue_index: Option<usize>,
 
-    /// An inline name-input overlay (create / rename playlist). When `Some`,
-    /// keystrokes edit `name_input`; Enter commits the captured intent.
+    /// A name-input overlay (create / rename playlist). When `Some`, a shared
+    /// [`ModalDialog`] hosting a real [`TextInput`] is up; `name_input` carries
+    /// the committed value into the `CreatePlaylist` / `CommitRename` handlers.
     name_prompt: Option<NamePrompt>,
     name_input: String,
+    /// The live name-prompt dialog, built lazily from `name_prompt` +
+    /// `name_input` and torn down when it resolves.
+    name_dialog: Option<NameDlg>,
 
     /// Cached lyrics for the current track + the id they were fetched for, so
     /// the lyrics view doesn't re-resolve every frame.
@@ -461,6 +469,13 @@ pub struct MusicApp {
     /// stores just the *terminal* cache states, so an advancing download never
     /// churns the CRDT frame-by-frame.
     downloads: HashMap<String, Instant>,
+
+    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
+    /// path the Ctrl+K palette takes), encodes and dispatches each on-screen
+    /// affordance's [`crate::actions`] action, and remembers the last one so a
+    /// test can prove a button and the Ctrl+K
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the byte-identical action.
+    actions: ui::ActionHost,
 }
 
 /// How long a simulated offline download takes to complete (seconds). Long
@@ -488,6 +503,15 @@ enum NamePrompt {
     NewPlaylist,
     /// Renaming an existing playlist (by id).
     Rename(String),
+}
+
+/// The live name-prompt dialog: the shared [`ModalDialog`] hosting a real
+/// [`PromptBody`]/[`TextInput`] plus the submit / cancel cells its footer
+/// buttons flip (drained each event by the host).
+struct NameDlg {
+    dialog: ModalDialog<PromptBody>,
+    submit: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
 }
 
 impl MusicApp {
@@ -571,6 +595,7 @@ impl MusicApp {
             ctx_queue_index: None,
             name_prompt: None,
             name_input: String::new(),
+            name_dialog: None,
             lyrics: Vec::new(),
             lyrics_for: None,
             lyrics_synced: false,
@@ -597,6 +622,7 @@ impl MusicApp {
             search_edit_at: preset_search_at,
             live_query_sent: None,
             downloads: HashMap::new(),
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -822,6 +848,64 @@ impl MusicApp {
         self.bound_track = self.pb.current.clone();
     }
 
+    // ---- action dispatch --------------------------------------------------
+
+    /// Dispatch one [`MusicAction`](crate::actions::MusicAction) — the single
+    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// document heads captured just before the first action of the event are
+    /// stashed so the host records **one** undo boundary bracketing it
+    /// ([`ui::widget::Widget::take_committed_action`]). Callers reload the
+    /// in-memory library from the document afterward for immediate UI feedback;
+    /// `sync` reconciles it again on the next frame (so a palette dispatch shows
+    /// up the same way).
+    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::MusicAction) {
+        self.actions
+            .dispatch(state, crate::actions::MUSIC_ACTION_TYPE, &action);
+    }
+
+    /// The context Ctrl+K needs to build Music's resource tree: the user's
+    /// playlists and their tracks, read from the in-memory library cache (itself
+    /// re-projected from the document each `sync`). The virtual "Liked Songs"
+    /// playlist is a projection of the like set, not a stored playlist, so it is
+    /// not surfaced here — only real, mutable playlists are.
+    pub(crate) fn music_resource_ctx(&self) -> crate::actions::MusicResourceCtx {
+        let playlists = self
+            .lib
+            .playlists
+            .iter()
+            .map(|p| crate::actions::PlaylistResource {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                tracks: p
+                    .track_ids
+                    .iter()
+                    .map(|tid| crate::actions::TrackRef {
+                        id: tid.clone(),
+                        label: self.track_label(tid),
+                    })
+                    .collect(),
+            })
+            .collect();
+        crate::actions::MusicResourceCtx { playlists }
+    }
+
+    /// A one-line "Title — Artist" label for a track id, for the palette.
+    fn track_label(&self, track_id: &str) -> String {
+        match self.lib.track(track_id) {
+            Some(t) => {
+                let artist = self.lib.artist_name(&t.artist_id);
+                if artist.is_empty() {
+                    t.title.clone()
+                } else {
+                    format!("{} — {artist}", t.title)
+                }
+            }
+            None => track_id.to_string(),
+        }
+    }
+
     fn current_duration_ms(&self) -> u64 {
         self.pb
             .current
@@ -986,7 +1070,10 @@ impl MusicApp {
                 // Store as a `file://` URL so the image cache (shared with http
                 // covers) can fetch it off disk.
                 let url = format!("file://{}", path.display());
-                doc::set_playlist_cover(state, &playlist_id, &url);
+                // The pick (the file portal) is app-side, non-deterministic work;
+                // the resulting write of the chosen URL is a replayable action so
+                // the cover replicates to peers like any other playlist edit.
+                self.perform_action(state, crate::actions::set_cover_action(&playlist_id, &url));
                 self.reload_library(state);
                 // Overwrite (not `or_insert`) so re-picking a cover replaces the
                 // old one in the image cache.
@@ -1279,6 +1366,134 @@ impl MusicApp {
         }
     }
 
+    // --- name-prompt dialog (shared ModalDialog + real TextInput) --------
+
+    /// Build the name-prompt dialog from `name_prompt` + the staged
+    /// `name_input` (which seeds the field for a rename or a `--shots` frame).
+    fn ensure_name_dialog(&mut self) {
+        if self.name_dialog.is_some() {
+            return;
+        }
+        let Some(kind) = self.name_prompt.clone() else { return };
+        let (title, primary) = match kind {
+            NamePrompt::NewPlaylist => ("New playlist", "Create"),
+            NamePrompt::Rename(_) => ("Rename playlist", "Save"),
+        };
+        let body = PromptBody::new("", "Playlist name").with_initial(&self.name_input);
+        let submit = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, body)
+            .open(true)
+            .with_max_size(420.0, 190.0)
+            .primary_action(primary, {
+                let s = submit.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        self.name_dialog = Some(NameDlg { dialog, submit, cancel });
+    }
+
+    /// Lay the name-prompt dialog out against the app rect so its box + footer
+    /// buttons resolve for hit-testing and paint.
+    fn layout_name_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        let Some(nd) = self.name_dialog.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = nd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(rect.width() as f32),
+                        height: Dimension::length(rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(rect.height() as f32),
+            },
+        );
+        nd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+    }
+
+    /// Route an event into the open name-prompt dialog, then apply the flags its
+    /// callbacks set (Enter is a submit convenience).
+    fn route_name_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let enter = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if ke.state == ElementState::Pressed
+                    && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+        );
+        if enter {
+            self.submit_name_prompt(state);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.ensure_name_dialog();
+        self.layout_name_dialog();
+        let (submit, cancel) = {
+            let Some(nd) = self.name_dialog.as_mut() else { return };
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut ft = None;
+            nd.dialog.handle_event(
+                event, scale_factor, modifiers, state, &automerge::ROOT, handled, &mut ft, node,
+                &taffy,
+            );
+            (nd.submit.replace(false), nd.cancel.replace(false))
+        };
+        if submit {
+            self.submit_name_prompt(state);
+        } else if cancel {
+            self.dispatch(Action::CloseNamePrompt, state);
+        }
+        *handled = true;
+        self.dirty = true;
+    }
+
+    /// Copy the field value into `name_input` and dispatch the commit action.
+    fn submit_name_prompt(&mut self, state: &mut AutoCommit) {
+        let value = self
+            .name_dialog
+            .as_ref()
+            .map(|nd| nd.dialog.content().value().to_string())
+            .unwrap_or_default();
+        self.name_input = value;
+        let commit = match self.name_prompt.clone() {
+            Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
+            Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
+            None => Action::None,
+        };
+        self.dispatch(commit, state);
+    }
+
     fn dispatch(&mut self, action: Action, state: &mut AutoCommit) {
         self.dirty = true;
         match action {
@@ -1491,8 +1706,9 @@ impl MusicApp {
                 self.persist_playback(state);
             }
             Action::ToggleLike(id) => {
-                let now = doc::toggle_liked(state, &id);
+                self.perform_action(state, crate::actions::toggle_liked_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_liked(&id);
                 let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
                 self.toast = Some((
                     if now {
@@ -1504,8 +1720,9 @@ impl MusicApp {
                 ));
             }
             Action::ToggleSaveAlbum(id) => {
-                let now = doc::toggle_saved_album(state, &id);
+                self.perform_action(state, crate::actions::toggle_saved_album_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_album_saved(&id);
                 let label = self.lib.album_title(&id).to_string();
                 self.toast = Some((
                     if now {
@@ -1517,8 +1734,9 @@ impl MusicApp {
                 ));
             }
             Action::ToggleFollow(id) => {
-                let now = doc::toggle_followed_artist(state, &id);
+                self.perform_action(state, crate::actions::toggle_followed_artist_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_artist_followed(&id);
                 // Prefer a live artist-page name; fall back to the library.
                 let label = self
                     .artist_pages
@@ -1543,28 +1761,30 @@ impl MusicApp {
                 self.request_search_more(tab);
             }
             Action::AddToPlaylist { playlist, track } => {
-                doc::add_track_to_playlist(state, &playlist, &track);
+                self.perform_action(state, crate::actions::add_track_action(&playlist, &track));
                 self.reload_library(state);
                 let pl = self.lib.playlist(&playlist).map(|p| p.name.clone()).unwrap_or_default();
                 self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
             }
             Action::RemoveFromPlaylist { playlist, track } => {
-                doc::remove_track_from_playlist(state, &playlist, &track);
+                self.perform_action(state, crate::actions::remove_track_action(&playlist, &track));
                 self.reload_library(state);
             }
             Action::MovePlaylistItem { playlist, from, to } => {
-                doc::move_track_in_playlist(state, &playlist, from, to);
+                self.perform_action(state, crate::actions::move_track_action(&playlist, from, to));
                 self.reload_library(state);
             }
             Action::BeginNewPlaylist => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
+                self.name_dialog = None;
                 self.new_playlist_track = None;
                 self.search_input.set_focus(false);
             }
             Action::BeginNewPlaylistFor(track) => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
+                self.name_dialog = None;
                 self.new_playlist_track = Some(track);
                 self.search_input.set_focus(false);
             }
@@ -1574,16 +1794,21 @@ impl MusicApp {
                 } else {
                     self.name_input.trim().to_string()
                 };
-                let id = doc::create_playlist(state, &name);
+                // Mint the id at authoring time and carry it in the action, so
+                // the create replays deterministically (see `crate::actions`).
+                let id = crate::actions::new_playlist_id();
+                self.perform_action(state, crate::actions::create_playlist_action(&id, &name));
                 // If this create came from "Add to playlist… → New playlist…",
-                // drop the target track into the freshly-created playlist.
+                // drop the target track into the freshly-created playlist — a
+                // second action bracketed into the same undo boundary.
                 let added_track = self.new_playlist_track.take();
                 if let Some(track) = &added_track {
-                    doc::add_track_to_playlist(state, &id, track);
+                    self.perform_action(state, crate::actions::add_track_action(&id, track));
                 }
                 self.reload_library(state);
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
                 self.nav_back.push(self.view.clone());
                 self.view = View::Playlist(id);
                 self.scroll = 0.0;
@@ -1600,19 +1825,21 @@ impl MusicApp {
                 self.name_input =
                     self.lib.playlist(&id).map(|p| p.name.clone()).unwrap_or_default();
                 self.name_prompt = Some(NamePrompt::Rename(id));
+                self.name_dialog = None;
                 self.search_input.set_focus(false);
             }
             Action::CommitRename(id) => {
                 let name = self.name_input.trim().to_string();
                 if !name.is_empty() {
-                    doc::rename_playlist(state, &id, &name);
+                    self.perform_action(state, crate::actions::rename_playlist_action(&id, &name));
                     self.reload_library(state);
                 }
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
             }
             Action::DeletePlaylist(id) => {
-                doc::delete_playlist(state, &id);
+                self.perform_action(state, crate::actions::delete_playlist_action(&id));
                 self.reload_library(state);
                 // Leave the now-deleted detail page.
                 if self.view == View::Playlist(id.clone()) {
@@ -1666,6 +1893,7 @@ impl MusicApp {
             Action::CloseNamePrompt => {
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
                 self.new_playlist_track = None;
             }
             Action::None => {}
@@ -2235,6 +2463,13 @@ impl MusicApp {
         self.view = View::Songs;
     }
 
+    /// Stage the Queue view with a real "Next up" list: a bundled track plays
+    /// (so the transport bar is live) and the full sample queue trails it.
+    pub fn snap_queue(&mut self) {
+        self.shot_stage = Some(ShotStage::NowPlaying);
+        self.view = View::Queue;
+    }
+
     /// Stage the synced-lyrics view with a highlighted current line.
     pub fn snap_lyrics(&mut self) {
         self.shot_stage = Some(ShotStage::Lyrics);
@@ -2395,6 +2630,7 @@ impl MusicApp {
             ShotStage::NewPlaylistPrompt => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = "Late Night Coding".to_string();
+                self.name_dialog = None;
             }
             ShotStage::Skeleton => {
                 // Force the loading state offline so the shimmer skeleton renders
@@ -3605,6 +3841,51 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_k_search_provider_is_registered_and_activation_plays_and_navigates() {
+        // The end-to-end seam the global Ctrl+K uses: the host collects the
+        // app's `Widget::search_providers()`, registers them into the shared
+        // `ui::search::SearchRegistry`, and on a chosen row calls
+        // `Widget::activate_search_result` — the exact flow in
+        // `ui::App::open_action_palette` / `action_palette_handle_key`.
+        use crate::search_type::SearchHit;
+        use ui::search::SearchRegistry;
+        let (mut app, mut doc) = app_with_doc();
+
+        let mut registry = SearchRegistry::new();
+        for p in Widget::search_providers(&app) {
+            registry.register(p);
+        }
+        assert_eq!(registry.provider_count(), 1, "music contributes its library provider");
+
+        // A real song row activated through the Widget method plays the track.
+        let track = app.lib.tracks.values().next().unwrap().clone();
+        let song = registry
+            .query(&track.title)
+            .into_iter()
+            .find(|r| r.action_id == SearchHit::track_link(&track.id))
+            .expect("the song is findable via the registered provider");
+        assert_eq!(song.kind, "Songs");
+        Widget::activate_search_result(&mut app, &song.action_id, &mut doc, &automerge::ROOT);
+        assert_eq!(
+            app.pb.current.as_deref(),
+            Some(track.id.as_str()),
+            "activating the song row plays the real track through the play path"
+        );
+        assert!(app.pb.queue.contains(&track.id));
+
+        // An artist row activated through the same method opens the artist page.
+        let artist = app.lib.artists.values().next().unwrap().clone();
+        let arow = registry
+            .query(&artist.name)
+            .into_iter()
+            .find(|r| r.action_id == SearchHit::artist_link(&artist.id))
+            .expect("the artist is findable via the registered provider");
+        assert_eq!(arow.kind, "Artists");
+        Widget::activate_search_result(&mut app, &arow.action_id, &mut doc, &automerge::ROOT);
+        assert_eq!(app.view, View::Artist(artist.id.clone()), "activation opens the artist page");
+    }
+
+    #[test]
     fn add_remove_reorder_playlist_tracks() {
         let (mut app, mut doc) = app_with_doc();
         // pl_morning seeds [tk_p1, tk_r1, tk_g2, tk_r3].
@@ -4340,14 +4621,23 @@ mod tests {
     #[test]
     fn name_prompt_typing_and_enter_creates_playlist() {
         let (mut app, mut doc) = app_with_doc();
+        // A real rect so the shared dialog lays out and its embedded field can
+        // take keystrokes (keyboard is forwarded only after `place_content`).
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.dispatch(Action::BeginNewPlaylist, &mut doc);
         assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)));
+        // Typing routes through the shared ModalDialog into the real TextInput.
         for ch in ["J", "a", "z", "z"] {
             send(&mut app, &char_key(ch), &mut doc);
         }
-        assert_eq!(app.name_input, "Jazz");
+        assert_eq!(
+            app.name_dialog.as_ref().unwrap().dialog.content().value(),
+            "Jazz",
+            "keystrokes land in the dialog's embedded TextInput",
+        );
         send(&mut app, &named_key(NamedKey::Enter), &mut doc);
         assert!(app.name_prompt.is_none(), "Enter commits and closes the prompt");
+        assert!(app.name_dialog.is_none(), "the dialog is torn down after commit");
         let pl = app
             .lib
             .playlists
@@ -4516,6 +4806,51 @@ mod tests {
         assert!(
             doc::load_library(&peer).is_liked("tk_g2"),
             "the favourite syncs to another device via the CRDT"
+        );
+    }
+
+    /// Single source of truth on the real click path: clicking a song row's like
+    /// heart dispatches the byte-identical `EncodedAction` the Ctrl+K "Toggle
+    /// like" spec builds for that track — the on-screen affordance and the
+    /// palette are one action, not two code paths. Proven end-to-end through the
+    /// production `handle_event` path.
+    #[test]
+    fn like_heart_click_dispatches_the_action_the_palette_builds() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Songs;
+        draw_once(&mut app, &mut doc);
+        // Find a real like-heart hit the draw pass registered.
+        let (id, center) = app
+            .hits
+            .iter()
+            .find_map(|h| match &h.action {
+                Action::ToggleLike(id) => Some((id.clone(), h.rect.center())),
+                _ => None,
+            })
+            .expect("a song row registers a like-heart hit");
+        let expected = crate::actions::encode(&crate::actions::toggle_liked_action(&id));
+        // The sample library seeds some tracks as already-liked, so assert the
+        // membership *flips* rather than assuming a fixed direction.
+        let before = doc::load_library(&doc).is_liked(&id);
+
+        send(&mut app, &cursor_at(center), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+
+        assert_eq!(
+            app.actions.last_dispatched(),
+            Some(&expected),
+            "the like heart and the palette build the identical EncodedAction"
+        );
+        assert_eq!(
+            doc::load_library(&doc).is_liked(&id),
+            !before,
+            "and it actually toggled the track's liked state in the doc"
+        );
+        // The heads captured for the host's undo bracket are armed (the host
+        // drains this via `take_committed_action` to record one undo boundary).
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the click armed exactly one undo boundary for the host to record"
         );
     }
 

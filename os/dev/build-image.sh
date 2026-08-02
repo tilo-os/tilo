@@ -43,6 +43,12 @@ done
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
 export SOURCE_DATE_EPOCH
+# The digest-pinned base the build starts FROM — our own mirror of the Fedora
+# bootc image, because upstream deletes the manifest a digest points at within
+# about a day (see os/base-snapshot.env). Written by the mirror-base CI job.
+# shellcheck disable=SC1091
+[ -f "$QOS_OS_DIR/base-snapshot.env" ] && . "$QOS_OS_DIR/base-snapshot.env"
+[ -n "${BASE_REF:-}" ] || die "no BASE_REF — run the mirror-base CI job first"
 # The digest-pinned frozen RPM repo the build installs from (written by
 # os/dev/snapshot-rpms.sh / the snapshot-rpms CI job). Cross-time reproducible.
 # shellcheck disable=SC1091
@@ -54,9 +60,10 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
-msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
+msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF)"
 podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+  --build-arg "BASE_REF=$BASE_REF" \
   --build-arg "RPMS_REF=$RPMS_REF" \
   --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \

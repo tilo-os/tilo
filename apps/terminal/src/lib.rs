@@ -1,6 +1,13 @@
 //! Library target for `quick-terminal`. The binary in `main.rs` delegates
 //! widget construction to this module so the nirios shell can embed a
 //! `TerminalWidget` as an `AppWidget` inside a tile.
+//!
+//! See [`actions`] for the resource + action-model finding: the terminal's only
+//! shared-document state is the emulator's live-screen projection of an external
+//! process, so it exports no actions and publishes no Ctrl+K resource tree —
+//! proven on the production path.
+
+pub mod actions;
 
 pub use crate::inner::{Attr, CellColor, GridPos, Selection, TermModes, TerminalBackend, TerminalPerformer, TerminalWidget};
 

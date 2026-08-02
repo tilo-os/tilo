@@ -141,7 +141,7 @@ fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::err
     use browser::address_overlay::AddressSuggestions;
     use browser::history::HistoryEntry;
     let (w, h) = (900u32, 360u32);
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let presence = PresenceCtx::empty();
     let mut text_renderer = TextRenderer::new();
 
@@ -170,6 +170,16 @@ fn render_suggestions_shot(out: &std::path::Path) -> Result<(), Box<dyn std::err
 /// in `args`, otherwise `None`.
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     parse_arg_value(args, "--shots").map(std::path::PathBuf::from)
+}
+
+/// `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+/// theme-driven chrome can be proven across palettes; defaults to dark.
+fn shot_theme() -> Theme {
+    match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    }
 }
 
 /// Returns the value of `<flag> <value>` or `<flag>=<value>` in `args`.
@@ -321,7 +331,7 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = shot_theme();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

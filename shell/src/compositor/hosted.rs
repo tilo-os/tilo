@@ -101,22 +101,27 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // tests + restart cases keep producing the familiar `0x0001,
     // 0x0002, …` id sequence. The salt-0 default is the explicit
     // back-compat contract.
-    if enable_peer_sync {
-        match load_or_create_keypair(&peer_key_path()) {
+    // Refused rather than downgraded when the device key will not load:
+    // the salt comes from that key, and syncing an unsalted id space
+    // lets two peers mint colliding ids, which CRDT sync then folds into
+    // one row.
+    let enable_peer_sync = enable_peer_sync
+        && match load_or_create_keypair(&peer_key_path()) {
             Ok(kp) => {
                 let salt = peer_salt_from_keypair(&kp);
                 tree.set_peer_salt(salt);
                 tree.seed_next_id_from_self();
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+                true
             }
             Err(e) => {
-                tracing::warn!(
-                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
-                     (cross-peer collisions possible)"
+                tracing::error!(
+                    "peer-sync: device key load failed ({e}); peer sync stays off \
+                     rather than syncing an unsalted id space"
                 );
+                false
             }
-        }
-    }
+        };
 
     // Permissions must outlive the process. Recording where to write
     // the tree is what turns an `Always` grant into a durable one:
@@ -201,8 +206,19 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
-    let (host, _chrome) =
-        build_nirios_overlay_host_with_handle(tree_handle.clone(), enable_peer_sync);
+    // The session keeps each open tab's document on disk — one record per
+    // tab — so a note typed into one is still there next boot.
+    let (host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(
+        tree_handle.clone(),
+        enable_peer_sync,
+        crate::shell::session_record_store(),
+    );
+    // Which records each room holds outlives the session too, and the
+    // records apps have written are found by looking. Both are switched
+    // on here, beside the rest of the session's durable state, so
+    // building a compositor for a test or a screenshot reads and writes
+    // nobody's.
+    host.room_records().borrow_mut().attach_store();
     // Give the palette's `/invite` and `/connect` rows something that
     // actually performs them. Without this the host records an intent
     // and drops it, which is what both commands did before: reachable
@@ -237,7 +253,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // collab chrome in `EditorApp::draw` is visible in single-process
     // development. Network traffic replaces this with real peer state
     // when it arrives.
-    seed_demo_editor_presence(app.presence_ctx_mut());
+    seed_demo_editor_presence(&tree_snapshot, app.presence_ctx_mut());
     // Declare the pointer-presence scope so local cursor moves broadcast
     // to every connected peer under the active workspace id. Remote
     // peers receive `CollabEvent::RemotePresenceUpdate` on the same
