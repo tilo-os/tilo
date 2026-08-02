@@ -292,10 +292,12 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
-    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), and
-    // env vars are process-global: run in parallel, the second clears
-    // the override the first just set and the first fails. Pre-existing
-    // flake, unrelated to what either test is about.
+    // Both of these mutate `PROXY_BIN_ENV` (and one nukes `PATH`), and env
+    // vars are process-global — so they take the same `process_env` lock the
+    // rest of the crate's env-reading tests use. Without it the second one's
+    // empty `PATH` is visible to whatever else is running, which showed up as
+    // unrelated tests failing to find `rm` in a shell fixture.
+
     #[test]
     #[serial_test::serial(process_env)]
     fn find_proxy_binary_honours_env_override() {
@@ -312,19 +314,26 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
+        let saved_path = std::env::var_os("PATH");
         unsafe {
             std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
             // Nuke PATH so the fallback can't find a real binary.
             std::env::set_var("PATH", "");
         }
         let found = find_proxy_binary();
+        unsafe {
+            std::env::remove_var(PROXY_BIN_ENV);
+            // Put PATH back before asserting: a failed assertion must not
+            // leave the rest of the suite running without a PATH.
+            match &saved_path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
         assert!(
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
         );
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-        }
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket
