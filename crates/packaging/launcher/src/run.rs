@@ -691,8 +691,19 @@ pub fn run_with(
         resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // 2. Seccomp baseline → tmpfile → fd.
-    let seccomp_blob = compile_baseline()?;
+    // 2. Seccomp baseline → tmpfile → fd. The manifest names the profile;
+    // an unrecognised name resolves to the strict one, so log what was asked
+    // for alongside what was applied when the two differ.
+    let profile = manifest.sandbox.seccomp_profile();
+    if profile.as_str() != manifest.sandbox.seccomp {
+        eprintln!(
+            "qos-launcher: manifest asked for seccomp profile {:?}, which is not one we know; \
+             applying {} (write-xor-execute enforced)",
+            manifest.sandbox.seccomp,
+            profile.as_str()
+        );
+    }
+    let seccomp_blob = compile_baseline(profile)?;
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
@@ -1156,8 +1167,8 @@ pub fn run_with_captured(
     let resolved = resolve_service_binds(&manifest.sandbox.services, opts.no_services)?;
     let binds = to_service_binds(&resolved);
 
-    // Seccomp baseline.
-    let seccomp_blob = compile_baseline()?;
+    // Seccomp baseline, same manifest-named profile as `run_with`.
+    let seccomp_blob = compile_baseline(manifest.sandbox.seccomp_profile())?;
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
