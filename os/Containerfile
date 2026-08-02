@@ -73,11 +73,15 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # follow-up.
 FROM ${BASE_REF} AS wpe-builder
 
+# The explicit list covers what the WPE port needs and the GTK port does not,
+# so `builddep webkitgtk6.0` never pulls it: libinput + libudev (systemd-devel)
+# back ENABLE_WPE_PLATFORM_DRM, and gbm/wayland/epoxy the rest of WPEPlatform.
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
     && dnf install -y \
         meson ninja-build gperf unifdef libgbm-devel curl xz \
         wayland-devel wayland-protocols-devel libepoxy-devel \
+        libinput-devel systemd-devel \
     && dnf clean all
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
@@ -102,6 +106,21 @@ FROM ${BASE_REF} AS builder
 # vendored crates (aws-lc-sys, the freetype/harfbuzz/fontconfig font stack,
 # jemalloc, sqlite) need to build. `sccache` honours the project's
 # .cargo/config.toml `rustc-wrapper`. Throwaway stage — nothing here ships.
+#
+# The last three lines of the list are for the WPE overlay copied in below
+# rather than for any crate of ours, and they serve two different linker needs:
+#
+#   * glib2-devel + libsoup3-devel supply .pc files. `wpe-webkit-2.0.pc`
+#     declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`, and
+#     pkg-config fails the whole lookup when any link in that chain is missing
+#     — which ui/build.rs reports as the unhelpful "wpe-webkit-2.0 was not
+#     found".
+#   * The rest supply plain shared objects. libWPEWebKit-2.0.so records them in
+#     DT_NEEDED, so linking `browser` against it makes ld open each one to
+#     resolve symbols transitively; absent, ld reports them as `needed by
+#     ... not found` and then buries that in hundreds of undefined references
+#     to gst_*/epoxy_*/manette_*. Runtime packages are enough — no -devel
+#     needed, because nothing here compiles against their headers.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
@@ -113,6 +132,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         ffmpeg-free-devel libva-devel \
         openssl-devel sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
+        glib2-devel libsoup3-devel \
+        atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
+        hyphen libavif libepoxy libmanette libxslt \
         nasm \
     && dnf clean all
 
@@ -369,6 +391,11 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
 # WPENetworkProcess) from the wpe-builder stage, plus the runtime libraries
 # the engine links that aren't already in this image. GStreamer base/good are
 # installed above.
+#
+# This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
+# browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
+# are there because the engine is built with accessibility, gamepad and XSLT
+# support; they arrive via no other package in this image.
 COPY --from=wpe-builder /wpe/ /
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     libepoxy \
@@ -384,6 +411,10 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     libtasn1 \
     libsecret \
     gstreamer1-plugins-bad-free \
+    atk \
+    at-spi2-atk \
+    libmanette \
+    libxslt \
     && dnf clean all \
     && ldconfig
 
