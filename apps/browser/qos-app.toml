@@ -46,7 +46,13 @@ namespaces = [
     "mount",
     "net",
 ]
-seccomp    = "qos-default"
+# The one package in the tree that has to be allowed to write instructions and
+# then run them: JavaScriptCore compiles page script to machine code at run
+# time. `qos-jit` is the baseline deny-list with the write-xor-execute rule
+# lifted and nothing else changed — ptrace, mount, namespace manipulation, raw
+# sockets, bpf and keyctl are still refused. Every other package stays on
+# `qos-default`, where a writable-and-executable mapping is an EPERM.
+seccomp    = "qos-jit"
 landlock   = "strict"
 
 [sandbox.net]
