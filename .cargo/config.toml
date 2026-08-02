@@ -58,6 +58,13 @@ rustflags = [
     "-C", "relro-level=full",
     "-C", "link-arg=-Wl,-z,noexecstack",
     "-C", "link-arg=-Wl,-z,shstk",
+    # Reproducible paths for the in-image build, which compiles under /build.
+    # This lives here rather than in a RUSTFLAGS environment variable because
+    # that variable REPLACES this list rather than adding to it — setting it in
+    # the Containerfile silently dropped every hardening flag above, and the
+    # binaries shipped without shadow-stack marking. On a host build no path
+    # starts with /build, so it does nothing.
+    "--remap-path-prefix=/build=.",
 ]
 
 # Hardening for every C/C++ file compiled through a `build.rs` (the `cc` crate).
