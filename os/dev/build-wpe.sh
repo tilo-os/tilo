@@ -156,6 +156,22 @@ step 8 cmake -B build -GNinja -Wno-dev -DPORT=WPE \
     -DENABLE_DOCUMENTATION=OFF -DENABLE_INTROSPECTION=OFF \
     -DENABLE_MINIBROWSER=ON -DENABLE_WPE_PLATFORM=ON \
     -DUSE_LIBBACKTRACE=OFF
-step 5 ninja -C build -j"$JOBS"
+# Not `step`, which buffers: this compile runs the better part of an hour, and
+# a step emitting nothing for that long is indistinguishable from a hung one —
+# to whoever is reading CI, and to any inactivity watchdog between here and the
+# runner. Stream a line periodically while still keeping the full log for the
+# failure path.
+set +e
+ninja -C build -j"$JOBS" 2>&1 | tee "$STEP_LOG" |
+    awk 'NR % 500 == 0 { print "  ninja: " $0; fflush() }'
+ninja_rc=${PIPESTATUS[0]}
+set -e
+if [ "$ninja_rc" -ne 0 ]; then
+    echo "FAILED: wpewebkit compile — last 80 lines:" >&2
+    tail -80 "$STEP_LOG" >&2
+    exit 1
+fi
+tail -1 "$STEP_LOG"
+
 step 1 env DESTDIR="$DESTDIR_ROOT" ninja -C build install
 echo WPE_BUILD_OK
