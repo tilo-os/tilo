@@ -135,12 +135,14 @@ impl CountdownRing {
             .with_caps(Cap::Round)
             .with_join(Join::Round);
 
-        // Faint full-circle track.
+        // Faint full-circle track. Use the standard border token rather than a
+        // white overlay so the track stays visible on light surfaces (a white
+        // 10% overlay vanishes against a light background, orphaning the arc).
         let track = Circle::new(self.center, self.radius);
         scene.stroke(
             &Stroke::new(self.thickness),
             transform,
-            theme.tokens.colors.surface_white_10,
+            theme.tokens.colors.border_standard,
             None,
             &track,
         );

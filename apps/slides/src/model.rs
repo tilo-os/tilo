@@ -475,7 +475,11 @@ impl Palette {
             accent_deep: mix(accent, c.surfaces.base, 0.62),
             surface: c.surfaces.raised,
             surface_dim: mix(c.surfaces.raised, c.surfaces.base, 0.5),
-            deep: c.neutral[1],
+            // A "Deep" slide is an authored dark treatment whose ink is fixed
+            // white (`on_bg`), so it must stay dark in every OS theme — a
+            // theme-tracking neutral flips near-white in the light palette and
+            // washes the white text out. A fixed deep tone keeps it dramatic.
+            deep: Color::from_rgb8(15, 23, 42),
             text: c.text_primary,
             text_dim: c.text_dim,
             on_accent: Color::WHITE,
