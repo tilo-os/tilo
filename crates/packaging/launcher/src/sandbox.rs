@@ -533,12 +533,30 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(format!("unix:path={}", bind.sandbox_path.display()));
     }
 
+    // Participation: tell the app which shape it is in, so chrome can
+    // present a viewer rather than an editor whose saves vanish. This is
+    // information, not enforcement — the enforcement is the identity that
+    // is about to not be bound.
+    if let Some(mode) = capabilities.participation.env_value() {
+        argv.push("--setenv".to_string());
+        argv.push("QOS_PARTICIPATION".to_string());
+        argv.push(mode.to_string());
+    }
+
     // User identity: ro-bind the caller-supplied host path into the
     // sandbox and set QOS_USER_IDENTITY. The host path is a specific
     // file — we deliberately do NOT bind `~/.config/qos/` wholesale
     // so identities the user has for other purposes (secondary
     // devices, staged records) stay off the app's view.
-    if let Some(host_path) = identity_host_path {
+    //
+    // A **read-only participant gets no identity at all.** That is what
+    // makes "may not author" structural: without a signing key the app
+    // cannot produce an authored change for anything downstream to
+    // reject, and "there is no identity here" is a state
+    // `runtime-identity` already handles. See
+    // [`crate::capabilities::Participation`].
+    if let Some(host_path) = identity_host_path.filter(|_| capabilities.participation.carries_identity())
+    {
         argv.push("--ro-bind".to_string());
         argv.push(host_path.display().to_string());
         argv.push(SANDBOX_IDENTITY_PATH.to_string());
@@ -1219,6 +1237,83 @@ mod tests {
                 && w[1] == "QOS_USER_IDENTITY"
                 && w[2] == SANDBOX_IDENTITY_PATH),
             "identity setenv missing: {argv:?}"
+        );
+    }
+
+    // A read-only participant is handed no identity, so it holds no
+    // signing key and cannot originate an authored change — the absence
+    // *is* the mechanism. The same call with an authoring plan does bind
+    // it, so the absence below is participation and not a missing path.
+    #[test]
+    fn a_read_only_participant_is_given_no_identity() {
+        use crate::capabilities::Participation;
+
+        let m = mk_manifest("off");
+        let host = Path::new("/home/alice/.config/qos/identity/primary.json");
+        let read_only = CapabilityPlan {
+            participation: Participation::ReadOnly,
+            ..CapabilityPlan::empty()
+        };
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, Some(host), &read_only);
+        assert!(
+            !argv.iter().any(|a| a == "QOS_USER_IDENTITY"),
+            "a read-only participant must not be told where an identity is: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == SANDBOX_IDENTITY_PATH),
+            "nor may the identity be bound into its namespace at all: {argv:?}"
+        );
+        // …and it is told which shape it is in, so chrome can present a
+        // viewer rather than an editor whose saves vanish.
+        assert!(
+            argv.windows(3).any(
+                |w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "read-only"
+            ),
+            "the app must be able to see that it is a viewer: {argv:?}"
+        );
+
+        let authoring = CapabilityPlan {
+            participation: Participation::Author,
+            ..CapabilityPlan::empty()
+        };
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, Some(host), &authoring);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind"
+                && w[1] == host.to_str().unwrap()
+                && w[2] == SANDBOX_IDENTITY_PATH),
+            "an authoring participant keeps its identity: {argv:?}"
+        );
+        assert!(
+            argv.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "QOS_PARTICIPATION" && w[2] == "author"),
+            "and is told so: {argv:?}"
+        );
+    }
+
+    // An app no workspace capability names keeps the launch it always had:
+    // identity bound, and no participation claim made on its behalf.
+    #[test]
+    fn an_unscoped_launch_is_unchanged() {
+        let m = mk_manifest("off");
+        let host = Path::new("/home/alice/.config/qos/identity/primary.json");
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            Some(host),
+            &CapabilityPlan::empty(),
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "QOS_USER_IDENTITY"
+                && w[2] == SANDBOX_IDENTITY_PATH),
+            "an unscoped launch keeps its identity: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "QOS_PARTICIPATION"),
+            "and no participation is claimed on its behalf: {argv:?}"
         );
     }
 
