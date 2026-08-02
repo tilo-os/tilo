@@ -1,0 +1,548 @@
+//! Building and satisfying the unseal policy.
+//!
+//! The policy is a three-part `AND`, applied to a policy session in this order —
+//! the order is not cosmetic, because a policy digest is a running hash and
+//! `TPM2_PolicyAuthorize` *resets* it:
+//!
+//! 1. `TPM2_PolicyPCR` over the signed prediction's PCR set. In a policy session
+//!    this reads the *live* PCRs, so it only produces the expected digest when
+//!    the machine really is in the predicted state.
+//! 2. `TPM2_PolicyAuthorize` with the prediction authority's public key and
+//!    `policyRef = generation`. This checks step 1 produced exactly the digest
+//!    the authority signed, then replaces the session digest with a value
+//!    derived only from the key name and the policy reference. That replacement
+//!    is what lets a firmware update ship a new signature instead of forcing a
+//!    re-seal — and it is also why the generation has to be in `policyRef`, see
+//!    the crate-level notes.
+//! 3. `TPM2_PolicyNV`, asserting `counter <= base + generation`, i.e. the
+//!    rollback floor is at or below this generation.
+//! 4. `TPM2_PolicyAuthValue` when a PIN is in use, so the PIN is checked by the
+//!    TPM as the sealed object's authorisation value and is therefore covered by
+//!    the dictionary-attack lockout (the sealed object must *not* carry the
+//!    `noda` attribute — see [`seal`]).
+//!
+//! # Signing side
+//!
+//! The authority signs `SHA256(approvedPolicy || policyRef)` with the PCR
+//! prediction key. `approvedPolicy` is the digest a trial session reaches after
+//! `TPM2_PolicyPCR` over the *predicted* values, which is why prediction and
+//! signature can both be produced offline, on a build machine with no TPM
+//! involvement beyond a trial session.
+//!
+//! A token may carry several predictions ([`Prediction`] list). Unlock tries
+//! each in turn, so one token can cover "before the firmware update" and "after
+//! the firmware update" simultaneously, which removes the window where an update
+//! has been applied but not yet rebooted into.
+
+use crate::argv;
+use crate::exec::{Runner, require, trace_failure};
+use crate::generation;
+use anyhow::{Context, Result, bail};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+/// One signed statement of "these are the measurements to expect".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prediction {
+    /// Policy digest a trial `TPM2_PolicyPCR` reaches over the predicted values.
+    pub approved_policy: Vec<u8>,
+    /// `SHA256(approved_policy || policy_ref)` signed by the prediction key.
+    pub signature: Vec<u8>,
+    /// Free-text note (`"as built"`, `"post-fwupd"`) for diagnostics only.
+    pub label: String,
+}
+
+/// Wrap a raw PKCS#1 v1.5 signature in the `TPMT_SIGNATURE` structure the TPM
+/// expects.
+///
+/// `TPM2_VerifySignature` is what mints the ticket `TPM2_PolicyAuthorize` needs,
+/// and it only runs if the signature is handed over as a TPM structure. Give
+/// `tpm2_verifysignature` the bare OpenSSL output with `--format=rsassa` instead
+/// and it verifies in software, succeeds, and writes no ticket — which then
+/// surfaces one step later as a missing file rather than as "the TPM was never
+/// asked".
+///
+/// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256`
+/// (0x000B), then a `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
+pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
+    let len = u16::try_from(signature.len())
+        .with_context(|| format!("a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA", signature.len()))?;
+    let mut out = Vec::with_capacity(signature.len() + 6);
+    out.extend_from_slice(&0x0014u16.to_be_bytes()); // TPM_ALG_RSASSA
+    out.extend_from_slice(&0x000Bu16.to_be_bytes()); // TPM_ALG_SHA256
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(signature);
+    Ok(out)
+}
+
+/// PCR selection in the form tpm2-tools wants: `sha256:7,11`.
+pub fn pcr_selection(bank: &str, pcrs: &[u32]) -> String {
+    let list = pcrs
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{bank}:{list}")
+}
+
+/// Where the image ships the signed predictions it was built with.
+pub const DEFAULT_PREDICTION_DIR: &str = "/usr/share/qos/pcr-predictions";
+
+/// Read the signed predictions for one generation out of a directory.
+///
+/// A device cannot produce these itself: signing needs the private prediction
+/// key, which is deliberately not on the device. A machine that could sign its
+/// own predictions could authorise any measurement state it liked, which is the
+/// whole property `PolicyAuthorize` is there to provide.
+pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Prediction>> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading the prediction directory {}", dir.display()))?;
+    let mut names: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    names.sort();
+    let mut out = Vec::new();
+    for p in names {
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
+        if v["generation"].as_u64() != Some(generation) {
+            continue;
+        }
+        out.push(Prediction {
+            approved_policy: b64
+                .decode(v["approved_policy"].as_str().context("approved_policy")?)
+                .with_context(|| format!("{}: approved_policy is not base64", p.display()))?,
+            signature: b64
+                .decode(v["signature"].as_str().context("signature")?)
+                .with_context(|| format!("{}: signature is not base64", p.display()))?,
+            label: v["label"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Write a signed prediction where [`load_signed_predictions`] will find it.
+pub fn write_signed_prediction(
+    dir: &Path,
+    generation: u64,
+    bank: &str,
+    pcrs: &[u32],
+    prediction: &Prediction,
+) -> Result<PathBuf> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let doc = serde_json::json!({
+        "generation": generation,
+        "pcr_bank": bank,
+        "pcrs": pcrs,
+        "approved_policy": b64.encode(&prediction.approved_policy),
+        "signature": b64.encode(&prediction.signature),
+        "label": prediction.label,
+    });
+    let name = if prediction.label.is_empty() {
+        format!("generation-{generation}.json")
+    } else {
+        format!(
+            "generation-{generation}-{}.json",
+            prediction.label.replace(['/', ' ', '\\'], "-")
+        )
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Scratch directory plus the handful of files the tpm2 tools pass by path.
+pub struct Workspace {
+    pub dir: PathBuf,
+}
+
+impl Workspace {
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        Self { dir: dir.into() }
+    }
+    pub fn path(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
+    /// Write bytes to a scratch file and return the path.
+    pub fn put(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let p = self.path(name);
+        std::fs::write(&p, bytes).with_context(|| format!("writing {}", p.display()))?;
+        Ok(p)
+    }
+}
+
+/// Flush every transient object, loaded session and saved session.
+///
+/// A bare `swtpm` socket has no resource manager, so it runs out of object slots
+/// after three loads; `/dev/tpmrm0` on real hardware does not. Flushing between
+/// steps costs nothing and makes the code behave the same either way. Failures
+/// are ignored on purpose — there is frequently nothing to flush.
+pub fn flush(runner: &dyn Runner) {
+    for flag in ["-t", "-l", "-s"] {
+        let _ = runner.run("tpm2_flushcontext", &argv![flag], None);
+    }
+}
+
+/// Load the prediction authority's public key and return its TPM Name.
+///
+/// The Name is what `TPM2_PolicyAuthorize` commits to, so it — not the PEM — is
+/// what a sealed token is bound to.
+pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> Result<Vec<u8>> {
+    flush(runner);
+    let ctx = ws.path("signkey.ctx");
+    require(
+        runner,
+        "tpm2_loadexternal",
+        &argv![
+            "-C", "o",
+            "-G", "rsa",
+            "-u", public_key_pem.as_os_str(),
+            "-c", ctx.as_os_str(),
+        ],
+        "loading the PCR prediction public key",
+    )?;
+    let name = ws.path("signkey.name");
+    require(
+        runner,
+        "tpm2_readpublic",
+        &argv!["-c", ctx.as_os_str(), "-n", name.as_os_str()],
+        "reading the PCR prediction key name",
+    )?;
+    let bytes = std::fs::read(&name).with_context(|| format!("reading {}", name.display()))?;
+    flush(runner);
+    Ok(bytes)
+}
+
+/// Compute the digest a `TPM2_PolicyPCR` over `pcr_values` reaches.
+///
+/// `pcr_values` is a `tpm2_pcrread -o` blob: the predicted measurements. Pass
+/// `None` to use the machine's live PCRs, which is what enrollment does when it
+/// is generating its own first prediction on the machine itself.
+pub fn approved_policy(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    selection: &str,
+    pcr_values: Option<&Path>,
+) -> Result<Vec<u8>> {
+    flush(runner);
+    let sess = ws.path("trial_pcr.ctx");
+    require(
+        runner,
+        "tpm2_startauthsession",
+        &argv!["-S", sess.as_os_str()],
+        "starting a trial policy session",
+    )?;
+    let mut args = argv!["-S", sess.as_os_str(), "-l", selection];
+    if let Some(p) = pcr_values {
+        args.push(OsStr::new("-f"));
+        args.push(p.as_os_str());
+    }
+    let r = require(runner, "tpm2_policypcr", &args, "computing the PCR policy digest");
+    let out = ws.path("approved.bin");
+    let digest = match r {
+        Ok(_) => {
+            require(
+                runner,
+                "tpm2_getpolicydigest",
+                &argv!["-S", sess.as_os_str(), "-o", out.as_os_str()],
+                "reading the trial session's policy digest",
+            )?;
+            std::fs::read(&out).with_context(|| format!("reading {}", out.display()))
+        }
+        Err(e) => Err(e),
+    };
+    let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+    digest
+}
+
+/// The full seal policy digest for one generation.
+pub fn seal_policy(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    key_name: &[u8],
+    gen_num: u64,
+    nv_index: u32,
+    nv_operand: u64,
+    with_pin: bool,
+) -> Result<Vec<u8>> {
+    flush(runner);
+    let name_file = ws.put("signkey.name", key_name)?;
+    let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
+    let operand_file = ws.put("operand.bin", &nv_operand.to_be_bytes())?;
+    let idx = format!("0x{nv_index:08X}");
+    let sess = ws.path("trial_seal.ctx");
+
+    require(
+        runner,
+        "tpm2_startauthsession",
+        &argv!["-S", sess.as_os_str()],
+        "starting a trial policy session",
+    )?;
+    let build = || -> Result<Vec<u8>> {
+        // PolicyAuthorize replaces whatever digest precedes it, so in a trial
+        // session there is nothing to build up first: the resulting digest
+        // depends only on the key name and the policy reference. That is exactly
+        // the property that makes the prediction replaceable without re-sealing.
+        require(
+            runner,
+            "tpm2_policyauthorize",
+            &argv![
+                "-S", sess.as_os_str(),
+                "-n", name_file.as_os_str(),
+                "-q", ref_file.as_os_str(),
+            ],
+            "computing the PolicyAuthorize digest",
+        )?;
+        require(
+            runner,
+            "tpm2_policynv",
+            &argv![
+                "-S", sess.as_os_str(),
+                "-i", operand_file.as_os_str(),
+                &idx, "ule",
+                "-C", &idx,
+            ],
+            "computing the rollback-floor PolicyNV digest",
+        )?;
+        if with_pin {
+            require(
+                runner,
+                "tpm2_policyauthvalue",
+                &argv!["-S", sess.as_os_str()],
+                "computing the PIN PolicyAuthValue digest",
+            )?;
+        }
+        let out = ws.path("sealpolicy.bin");
+        require(
+            runner,
+            "tpm2_getpolicydigest",
+            &argv!["-S", sess.as_os_str(), "-o", out.as_os_str()],
+            "reading the seal policy digest",
+        )?;
+        std::fs::read(&out).with_context(|| format!("reading {}", out.display()))
+    };
+    let result = build();
+    let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+    result
+}
+
+/// Sign a prediction. Needs the *private* key, so this runs on the build or
+/// update authority, never on the device.
+pub fn sign_prediction(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    private_key_pem: &Path,
+    approved_policy: &[u8],
+    gen_num: u64,
+) -> Result<Vec<u8>> {
+    let mut message = approved_policy.to_vec();
+    message.extend_from_slice(&generation::policy_ref(gen_num));
+    let msg = ws.put("tosign.bin", &message)?;
+    let sig = ws.path("prediction.sig");
+    require(
+        runner,
+        "openssl",
+        &argv![
+            "dgst", "-sha256",
+            "-sign", private_key_pem.as_os_str(),
+            "-out", sig.as_os_str(),
+            msg.as_os_str(),
+        ],
+        "signing the PCR prediction",
+    )?;
+    std::fs::read(&sig).with_context(|| format!("reading {}", sig.display()))
+}
+
+/// A policy session that has been driven to the seal policy, ready to authorise
+/// an unseal.
+pub struct SatisfiedSession {
+    pub context: PathBuf,
+}
+
+/// Drive a real policy session through the whole chain.
+///
+/// Returns `Ok(None)` when the *prediction* did not apply — the machine is not
+/// in the predicted state, or the signature is not from the authority, or the
+/// policy reference does not match this generation. That is an expected outcome
+/// when trying several predictions, so it is not an error. `Err` is reserved for
+/// "the mechanism itself is broken".
+///
+/// A failure at the `PolicyNV` step *is* returned as an error, because it means
+/// something quite different: the machine is below the rollback floor.
+#[allow(clippy::too_many_arguments)]
+pub fn satisfy(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    public_key_pem: &Path,
+    key_name: &[u8],
+    prediction: &Prediction,
+    gen_num: u64,
+    selection: &str,
+    nv_index: u32,
+    nv_operand: u64,
+    with_pin: bool,
+) -> Result<Option<SatisfiedSession>> {
+    // Stage 1: mint the verification ticket with only the external key loaded.
+    // Keeping the sealed object out of the TPM until the ticket exists is what
+    // lets this run on a TPM with three transient object slots.
+    flush(runner);
+    let sk = ws.path("verifykey.ctx");
+    // `-C o` is load-bearing: `tpm2_loadexternal` defaults to the NULL hierarchy,
+    // and the TPM does not issue a validation ticket for a NULL-hierarchy key.
+    // Without it `tpm2_verifysignature` succeeds, silently writes no ticket, and
+    // the failure appears one step later as `TPM2_PolicyAuthorize` complaining
+    // about a missing file. The key's Name — which is what the policy is bound
+    // to — does not depend on the hierarchy, so this changes nothing about what
+    // a sealed token accepts.
+    require(
+        runner,
+        "tpm2_loadexternal",
+        &argv![
+            "-C", "o",
+            "-G", "rsa",
+            "-u", public_key_pem.as_os_str(),
+            "-c", sk.as_os_str(),
+        ],
+        "loading the PCR prediction public key",
+    )?;
+    let approved = ws.put("approved.bin", &prediction.approved_policy)?;
+    let mut message = prediction.approved_policy.to_vec();
+    message.extend_from_slice(&generation::policy_ref(gen_num));
+    let msg = ws.put("verify_msg.bin", &message)?;
+    let sig = ws.put("prediction.sig", &marshal_rsassa_sha256(&prediction.signature)?)?;
+    let ticket = ws.path("ticket.bin");
+    let verify_args = argv![
+        "-c", sk.as_os_str(),
+        "-g", "sha256",
+        "-m", msg.as_os_str(),
+        "-s", sig.as_os_str(),
+        "-t", ticket.as_os_str(),
+    ];
+    let vs = runner.run("tpm2_verifysignature", &verify_args, None)?;
+    let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
+    if !vs.ok() {
+        // Not signed by this key, or not over this generation's policy ref.
+        trace_failure("tpm2_verifysignature", &verify_args, &vs);
+        return Ok(None);
+    }
+
+    // Stage 2: the real policy session.
+    let sess = ws.path("policy.ctx");
+    require(
+        runner,
+        "tpm2_startauthsession",
+        &argv!["--policy-session", "-S", sess.as_os_str()],
+        "starting the unseal policy session",
+    )?;
+    let name_file = ws.put("signkey.name", key_name)?;
+    let ref_file = ws.put("policyref.bin", &generation::policy_ref(gen_num))?;
+    let operand_file = ws.put("operand.bin", &nv_operand.to_be_bytes())?;
+    let idx = format!("0x{nv_index:08X}");
+
+    let drive = || -> Result<Option<()>> {
+        // Live PCRs.
+        let pcr = runner.run(
+            "tpm2_policypcr",
+            &argv!["-S", sess.as_os_str(), "-l", selection],
+            None,
+        )?;
+        if !pcr.ok() {
+            bail!("reading live PCRs for the policy session failed: {}", pcr.last_error_line());
+        }
+        // Does the live state match what was signed?
+        let auth_args = argv![
+            "-S", sess.as_os_str(),
+            "-i", approved.as_os_str(),
+            "-n", name_file.as_os_str(),
+            "-q", ref_file.as_os_str(),
+            "-t", ticket.as_os_str(),
+        ];
+        let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
+        if !auth.ok() {
+            trace_failure("tpm2_policyauthorize", &auth_args, &auth);
+            return Ok(None); // wrong prediction for the current state
+        }
+        // Rollback floor.
+        let nv = runner.run(
+            "tpm2_policynv",
+            &argv![
+                "-S", sess.as_os_str(),
+                "-i", operand_file.as_os_str(),
+                &idx, "ule",
+                "-C", &idx,
+            ],
+            None,
+        )?;
+        if !nv.ok() {
+            bail!(
+                "the rollback floor refuses generation {gen_num}: this image is older than the oldest \
+                 generation this machine still permits ({})",
+                nv.last_error_line()
+            );
+        }
+        if with_pin {
+            require(
+                runner,
+                "tpm2_policyauthvalue",
+                &argv!["-S", sess.as_os_str()],
+                "adding the PIN authorisation to the policy session",
+            )?;
+        }
+        Ok(Some(()))
+    };
+
+    match drive() {
+        Ok(Some(())) => Ok(Some(SatisfiedSession { context: sess })),
+        Ok(None) => {
+            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            Ok(None)
+        }
+        Err(e) => {
+            let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pcr_selection_matches_the_tools_syntax() {
+        assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
+        assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
+    }
+
+    #[test]
+    fn rsassa_marshalling_has_the_tpm_structure_layout() {
+        let sig = vec![0xABu8; 256];
+        let m = marshal_rsassa_sha256(&sig).unwrap();
+        assert_eq!(m.len(), 256 + 6);
+        assert_eq!(&m[0..2], &[0x00, 0x14], "sigAlg must be TPM_ALG_RSASSA");
+        assert_eq!(&m[2..4], &[0x00, 0x0B], "hash must be TPM_ALG_SHA256");
+        assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
+        assert_eq!(&m[6..], &sig[..]);
+    }
+
+    #[test]
+    fn an_oversized_signature_is_refused_rather_than_truncated() {
+        assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
+    }
+
+    #[test]
+    fn workspace_writes_scratch_files() {
+        let d = tempfile::tempdir().unwrap();
+        let ws = Workspace::new(d.path());
+        let p = ws.put("x.bin", b"abc").unwrap();
+        assert_eq!(std::fs::read(p).unwrap(), b"abc");
+    }
+}

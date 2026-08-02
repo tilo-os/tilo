@@ -11169,6 +11169,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-rollback"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "clap",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "qos-startup-metrics"
 version = "0.1.0"
 dependencies = [
