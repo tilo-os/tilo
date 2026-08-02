@@ -4334,6 +4334,7 @@ dependencies = [
  "moka",
  "postcard",
  "qdoc",
+ "qos-user-identity",
  "serde",
  "serde_json",
  "tempfile",
@@ -12192,6 +12193,7 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
 ]

@@ -458,6 +458,12 @@ COPY os/usr/lib/systemd/system/qos-power.service /usr/lib/systemd/system/qos-pow
 # this is the only sanctioned way to materialise persistent dirs.
 COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 
+# The device-trust group, which must exist before tmpfiles-setup runs so
+# the identity directory can be created with it. See the snippet for why
+# the device key is group-owned rather than owned by one component.
+COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
+
 # xdg-desktop-portal backend registration (Sandbox Phase 4.3 follow-up).
 # Three files cooperate:
 #   1. qos.portal — tells xdg-desktop-portal which interfaces we
