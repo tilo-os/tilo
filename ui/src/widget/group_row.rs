@@ -587,7 +587,8 @@ impl GroupRow {
     /// The freeze also holds the slide against the per-layout retirement,
     /// so the harness can walk the whole curve however long each render
     /// takes.
-    #[cfg(any(test, debug_assertions))]
+    // NOT cfg-gated despite reading as test-only: the shots harness calls it,
+    // and shots ships in the image and is built in release.
     pub fn hold_shift_at(&mut self, elapsed: Duration) -> bool {
         if self.shift_anim.is_none() {
             return false;
