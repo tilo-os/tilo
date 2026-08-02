@@ -44,6 +44,17 @@
 ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
+
+# QOS_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
+# stage, no `browser` binary. Default 1 — a normal build is unchanged.
+#
+# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source and
+# takes ~45 of the ~60 minutes a cold build costs. Nothing about the boot chain
+# (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
+# it, so an engine failure should not be able to block boot verification. Opting
+# out is how you get an image to boot-test in minutes while the browser's own
+# build is being repaired.
+ARG QOS_WITH_BROWSER=1
 FROM ${RPMS_REF} AS rpms
 
 # ---- Custom kernel repo ----------------------------------------------------
@@ -71,7 +82,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM ${BASE_REF} AS wpe-builder
+FROM ${BASE_REF} AS wpe-builder-1
 
 # The explicit list covers what the WPE port needs and the GTK port does not,
 # so `builddep webkitgtk6.0` never pulls it: libinput + libudev (systemd-devel)
@@ -89,6 +100,21 @@ RUN --mount=type=cache,target=/wpe-cache \
     QOS_WPE_CACHE=/wpe-cache QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+
+# ---- Stage 1a-off: the same stage with no engine in it ----------------------
+# Selected when QOS_WITH_BROWSER=0. It only has to satisfy the two
+# `COPY --from=wpe-builder /wpe/ /` instructions below — copying the contents of
+# an empty directory is a no-op, so both overlays vanish without either COPY
+# needing to be conditional (a Containerfile has no conditional COPY).
+FROM ${BASE_REF} AS wpe-builder-0
+RUN mkdir -p /wpe
+
+# Whichever of the two above QOS_WITH_BROWSER names becomes `wpe-builder`. The
+# other is never built: an unreferenced stage is pruned from the build graph by
+# both buildkit and buildah, so QOS_WITH_BROWSER=0 skips the engine compile
+# rather than building and discarding it.
+FROM wpe-builder-${QOS_WITH_BROWSER} AS wpe-builder
 
 
 # ---- Stage 1: builder ------------------------------------------------------
@@ -182,20 +208,29 @@ COPY --from=wpe-builder /wpe/ /
 #  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
 #    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
+#
+# The browser is the one optional binary (QOS_WITH_BROWSER, top of file). It is
+# staged into /out/optional/ rather than /out/ so the final image can copy the
+# directory's contents unconditionally: empty means no browser, and no COPY
+# needs a condition it cannot express.
+ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    cargo build --release \
+    if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
+    else BROWSER_PKG="-p browser --features browser/wpe"; fi \
+    && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback \
-        -p browser --features browser/wpe \
-    && mkdir -p /out \
+        ${BROWSER_PKG} \
+    && mkdir -p /out /out/optional \
+    && { [ "${QOS_WITH_BROWSER}" = "0" ] \
+         || cp target/release/browser /out/optional/browser; } \
     && cp target/release/shell \
           target/release/fs \
           target/release/terminal \
           target/release/file-explorer \
-          target/release/browser \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -354,8 +389,10 @@ COPY --from=builder /out/terminal /usr/bin/terminal
 COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
-# into this rootfs below).
-COPY --from=builder /out/browser /usr/bin/browser
+# into this rootfs below). Copied as the contents of /out/optional/ because the
+# browser is omitted under QOS_WITH_BROWSER=0, and that leaves the directory
+# empty rather than leaving this COPY pointing at a path that does not exist.
+COPY --from=builder /out/optional/ /usr/bin/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
@@ -376,9 +413,10 @@ COPY --from=builder /out/qos-power /usr/bin/qos-power
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
 COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/browser /usr/bin/qos-greeter \
+              /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
-              /usr/bin/qos-power /usr/libexec/qos-unlock-helper
+              /usr/bin/qos-power /usr/libexec/qos-unlock-helper \
+    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -390,6 +428,11 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
 # browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
 # are there because the engine is built with accessibility, gamepad and XSLT
 # support; they arrive via no other package in this image.
+#
+# Copies nothing under QOS_WITH_BROWSER=0 (the stage is an empty /wpe then). The
+# dnf list below still runs: those are ordinary frozen-repo packages that cost
+# seconds, and installing them either way keeps the two images' package sets —
+# and this layer's cache entry — identical.
 COPY --from=wpe-builder /wpe/ /
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     libepoxy \

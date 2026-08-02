@@ -27,10 +27,18 @@ echo "--- Step 1: Building container image (in-image cargo compile) ---"
 : "${BASE_REF:?no BASE_REF — run the mirror-base workflow first}"
 : "${RPMS_REF:?no RPMS_REF — run the snapshot-rpms workflow first}"
 : "${KERNEL_RPMS_REF:?no KERNEL_RPMS_REF — run the build-kernel workflow first}"
+# QOS_WITH_BROWSER=0 drops the browser and the WPE WebKit engine stage, which is
+# ~45 of the ~60 minutes this takes cold. Use it when what you need to verify is
+# the boot chain, not the browser. Default 1 = the full image.
+: "${QOS_WITH_BROWSER:=1}"
+if [ "$QOS_WITH_BROWSER" = 0 ]; then
+    echo "NOTE: building WITHOUT the browser (QOS_WITH_BROWSER=0)"
+fi
 podman build -f "$SCRIPT_DIR/Containerfile" -t localhost/qos:latest \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
+    --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
     "$PROJECT_DIR"
 echo "Container image built: localhost/qos:latest"
 
