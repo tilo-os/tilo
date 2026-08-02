@@ -63,6 +63,10 @@ fn manifest() -> MinimalManifest {
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
+            // Inherit the shipped syscall-filter default rather than
+            // naming one here: a confinement fixture that pins its own
+            // profile stops tracking what an installed app actually gets.
+            ..Sandbox::default()
         },
         cli_commands: Vec::new(),
         opens_ext: Vec::new(),

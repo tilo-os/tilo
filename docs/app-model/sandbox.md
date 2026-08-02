@@ -187,8 +187,9 @@ inside the app as a corrupted system rather than as a policy:
 - `/run/qos/app` → RW access rights.
 - Each granted capability → RO or RW per the grant's verb.
 - `[sandbox.net] mode = "off"` → all outbound connections denied.
-- `[sandbox.net] mode = "allowlist"` → allowlist of TCP-connect ports (host
-  filtering is not enforced by Landlock; see the note below).
+- `[sandbox.net] mode = "allowlist"` → the app is pinned to the egress
+  gate's loopback port. Landlock has no address vocabulary at all, so host
+  filtering happens at the gate; see the note below.
 - `landlock = "strict"` — abort on Landlock unavailable / partially-
   enforced. `landlock = "lax"` — warn but continue. `landlock = "off"` —
   skip the shim.
@@ -222,15 +223,67 @@ kernel with Landlock v3+ the enforcement is total.
 
 ### Hostname allowlist
 
-`[sandbox.net] mode = "allowlist"` with `hosts = ["api.example.com"]` is
-enforced at the DNS resolution layer today (the launcher's DNS proxy
-intercepts A/AAAA queries and rejects non-allowlist names). Kernel-level
-per-connection host filtering is not a Landlock feature; the current
-allowlist is a defence-in-depth layer on top of DNS.
+`[sandbox.net] mode = "allowlist"` with `hosts = ["api.example.com"]` leaves
+the network namespace **empty** and gives the app one way out: a Unix socket
+the launcher holds, speaking SOCKS5 and HTTP `CONNECT`. The allowlist is
+matched against the **name** the app asks for, before that name is resolved,
+and resolution then happens on the launcher's side per connection. See
+`crates/packaging/launcher/src/netgate.rs` for the design.
 
-If your app connects to an IP address directly (skipping DNS), the
-allowlist does NOT block it — but Landlock's port-level restriction still
-applies. Rule of thumb: bake hostnames, not IPs.
+Three consequences worth knowing before you write networking code:
+
+- **Your app has no resolver.** The namespace is empty, so a client that
+  resolves a name itself fails at resolution. Use the proxy environment the
+  launcher sets (`HTTPS_PROXY`, `ALL_PROXY`) — `socks5h`, not `socks5`, is
+  what sends the hostname rather than an address.
+- **An address literal never satisfies a hostname grant.** Asking for
+  `93.184.216.34` when you were granted `example.com` is refused, even when
+  that is the address the name resolves to. "This address is currently that
+  name" is not something the gate can verify, and accepting it would make
+  every name-scoped grant bypassable by resolving first. Bake hostnames,
+  not IPs.
+- **Device-local counts as network.** A granted name that resolves to this
+  machine — loopback, link-local, or the machine's own LAN address — is
+  dropped unless the grant names that host exactly. An app denied the
+  network reaches no local service at all, because the namespace is empty
+  and the sandbox's `127.0.0.1` is its own.
+
+A refused destination answers SOCKS5 `HOST_UNREACHABLE` / HTTP `502`, the
+same as a host that is genuinely unreachable. That is deliberate: handle it
+as "offline", not as "ask the user to grant something".
+
+### Denial is an absence, not a refusal
+
+Where a denial can be expressed as a state your app already handles, it is:
+
+| you tried | you get |
+|---|---|
+| a workspace path you were not granted | `ENOENT`, and it is not in the directory listing |
+| writing a path you may only read | `EROFS` |
+| connecting to a host you were not granted | unreachable |
+| a device you were not granted | the device node is not in your namespace |
+
+So `/var/workspace` is a **filtered view**: an app that enumerates it sees
+exactly what it was granted, as an ordinary directory. There is no entry
+that appears and then fails, and no errno that distinguishes "hidden" from
+"not there" — `fs/tests/integration_test.rs` compares the two for every
+operation. Nothing here is a reason to prompt the user; if a path is not
+there, treat it as not there.
+
+### Read-only participation
+
+An app can be granted read participation in a space: it sees shared
+documents and cannot originate a change to one. If that is your launch:
+
+- `QOS_PARTICIPATION=read-only` is set. Render a viewer.
+- **No identity is bound**, so `QOS_USER_IDENTITY` is unset and
+  `runtime-identity::load()` finds nothing. You hold no signing key, so
+  there is no authored change for anything to reject.
+- The workspace is bound read-only and served read-only, and the document
+  control socket refuses edits with the read-only-filesystem message.
+
+An app that no workspace-scoped capability names gets neither variable and
+launches as it always did.
 
 ## What gets into your process
 
@@ -245,6 +298,12 @@ After all three layers, your `main()` sees:
 - `QOS_PACKAGE_ID=<your reverse-DNS id>`.
 - `QOS_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
 - `DBUS_SESSION_BUS_ADDRESS` (only if a portal is `via-host`).
+- `QOS_USER_IDENTITY` — path to the user identity, unless you are a
+  read-only participant, in which case there is no identity to point at.
+- `QOS_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
+  capability names you. Absent otherwise.
+- `HTTPS_PROXY` / `ALL_PROXY` / `QOS_NET_GATE` — only when your egress is
+  filtered to a host allowlist.
 - `QOS_WORKSPACE_ID` — the workspace the compositor opened you into, as a
   UUID. Two things read it: `runtime::is_qos_native()` only asks whether it
   is set, and the UI toolkit uses the value as the collaboration cluster id.
