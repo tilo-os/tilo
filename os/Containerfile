@@ -182,7 +182,6 @@ ARG SOURCE_DATE_EPOCH=0
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
     CARGO_INCREMENTAL=0 \
-    RUSTFLAGS=--remap-path-prefix=/build=. \
     SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C.UTF-8 \
     TZ=UTC
