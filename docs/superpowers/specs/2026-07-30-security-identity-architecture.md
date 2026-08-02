@@ -209,6 +209,28 @@ protection, because the command line is inside the signature.
 
 The initramfs is required, not optional: unlocking an encrypted root needs early userspace.
 
+**Not yet reachable, and it is load-bearing.** This is the single dependency the rest of the boot
+chain rests on, and the deployment backend the system ships on today cannot produce it: a static
+unified image embeds a command line that must name the deployment it boots, and that name changes
+on every update. Getting there needs the content-addressed deployment backend described in §4.3,
+which upstream still marks experimental.
+
+Until it lands, two things in this document are aspirations rather than descriptions: a command line
+that cannot be edited, and a single measurement that transitively attests the root filesystem
+(§4.3). Generation-bound unlock is **not** on that list — see §4.4; it works today by a different
+route.
+
+**What the current backend actually signs, and why that is less than it sounds.** Signature
+verification covers the kernel and the boot loader. It does not cover the initramfs, which is a
+plain archive the loader hands to the kernel *after* verification — and the initramfs is where the
+encrypted root gets unlocked. Anyone who can write the boot partition therefore runs code before
+the root is open, with secure boot enabled and every signature valid. The kernel command line sits
+beside it as an editable text file, so every hardening option can be stripped the same way.
+
+Stated plainly: on this backend, secure boot buys a **verified kernel, not a verified boot**. That
+is the strongest reason to reach a unified image, and it is a larger gap than the rollback question
+that first drew attention here.
+
 ### 4.3 Sealed root filesystem
 
 The root filesystem is content-addressed with a single digest authenticating file contents *and*
@@ -230,6 +252,26 @@ demands the recovery key, not a running vulnerable system.
 This is weaker than Android Verified Boot, where the rollback index lives in tamper-evident storage
 consulted by the bootloader *before* execution. Our check happens after the bootloader has already
 run. We accept this and state it; we do not claim parity.
+
+**Generation binding does not need the unified image.** An earlier reading of this design assumed
+it did — that the only register able to distinguish generations was the one a boot stub extends,
+and that without a unified image every generation would look alike. That was wrong, and the
+correction matters because it moves this mechanism from blocked to available.
+
+The firmware measures every image it loads, and each generation deploys its own kernel. So the
+register covering loaded images already differs per generation, on the backend that ships today.
+The objection to using it — that it changes on every update — is only an objection to a *fixed*
+policy. A signed per-generation prediction is exactly the mechanism for a register that moves.
+
+**What no register gives you is the anti-rollback itself.** An old signed prediction stays valid
+forever, so an attacker who restores an older signed kernel produces a measurement the TPM will
+honour. Refusing that needs monotonic state the attacker cannot wind back — the NV counter in this
+section — and standard enrollment tooling does not expose it. This is worth stating because
+measured boot is widely assumed to prevent downgrade on its own. It does not. It proves *what* ran,
+not that what ran is *current*.
+
+So: the mechanism is built and tested against an emulated TPM, and the measurement it needs is
+available now. What remains is wiring, not a blocked dependency.
 
 ### 4.5 Security policy as a signed object
 
@@ -272,6 +314,30 @@ package or read a log, then the granular capability system has failed and everyo
 The measure of success is that the unlock exists and is rarely reached: elevated operations are
 requested at the granularity actually needed, and a first-class environment exists for building,
 installing and experimenting that does not need host privilege at all.
+
+Two mechanisms serve those two needs, and keeping them apart is the whole design:
+
+- **Work layers.** A namespace where you are uid 0, a real package manager works, and every change
+  lands in an overlay that can be inspected, kept, or discarded. No privilege is granted, the host
+  filesystem is never mounted, and a wrecked layer cannot survive a reboot. This is where nearly all
+  tinkering should happen.
+- **Capability leases.** Individual verbs, granted per session with an argument constraint and a
+  duration. The invariant that makes them safe is that **no capability grants code execution as
+  root**: a verb takes a unit name or a signed module name, never a command. This is exactly where
+  the conventional escalation helper fails — one that can run an arbitrary program collapses its own
+  granularity back to full root.
+
+**A writable system directory is not a capability.** It is the one operation that unavoidably grants
+arbitrary root code execution, because a session that can write the system tree can leave a binary
+that the *next* boot executes outside any namespace. Transience is not integrity. So it is not
+leasable at any granularity — it is the unlock described above, with everything that entails: an
+explicit act, recorded where the running system cannot forge it, visible in what the machine attests,
+and reversible by relocking. It must also clone a pristine rollback target first, so the way back is
+guaranteed rather than hoped for.
+
+The distinction to hold onto: *wanting a package manager must never put someone on the path that
+weakens the system.* Conflating those two is the common mistake, and it is why the convenient
+existing answer — unlocking the whole system directory for the rest of the boot — is the wrong one.
 
 ### 4.7 Without a TPM
 
@@ -513,3 +579,28 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
   those are different things (§4.8).
 - That an unlocked machine is as trustworthy as a locked one. It is as *usable*, and it says which
   it is (§4.6).
+- That the boot chain in §4.2–4.3 is in force. Without a unified kernel image the command line is
+  editable and the initramfs is unsigned, so secure boot delivers a verified kernel rather than a
+  verified boot (§4.2).
+- That measured boot prevents downgrade. It proves what ran, not that what ran is current; refusing
+  an old-but-validly-signed image needs monotonic state, which is a separate mechanism (§4.4).
+
+### What is verified, and what is only built
+
+Distinguishing these is the point of the section above, so the split is recorded plainly rather
+than left for a reader to infer.
+
+**Verified by execution:** the identity spine, with a ceremony-minted key proven to sign for its own
+recorded public key; the runtime hardening set, each mechanism checked in the binary or the running
+kernel rather than assumed from a build flag; permission denial being indistinguishable from
+absence, including an adversarial errno-comparison test that caught a real leak; the rollback
+mechanism against an emulated TPM, including a header-restore attack performed rather than argued;
+and startup resilience, proven by reproducing the abort against the previous code.
+
+**Built but never booted:** the entire boot chain. Encrypted install, the passphrase path for
+machines without a TPM, and owner-enrolled secure boot have not run on a machine, real or virtual.
+The tooling refuses to act when its preconditions are absent, which is the right failure mode, but
+a refusal that has never been exercised end to end is a claim like any other.
+
+The asymmetry is worth stating because it is the opposite of the usual one: the parts furthest from
+the hardware are the parts we have actually proven.
