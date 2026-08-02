@@ -147,7 +147,38 @@ RUN set -eux; \
     make olddefconfig; \
     diff -u /work/fedora.config .config | head -200 > /work/config.diff || true; \
     echo "----- effective config diff (top 200 lines) -----"; \
-    cat /work/config.diff
+    cat /work/config.diff; \
+    # `merge_config.sh -m` warns about a symbol it could not place and carries
+    # on, and `olddefconfig` will silently drop one whose dependencies are not
+    # met.  Both are exactly how a security option goes missing without anyone
+    # noticing until the running kernel is asked about it.  Assert the ones
+    # that must be in the resolved .config, and fail the build if they aren't.
+    echo "----- required security options -----"; \
+    missing=""; \
+    for opt in \
+        CONFIG_MODULE_SIG=y \
+        CONFIG_MODULE_SIG_ALL=y \
+        CONFIG_MODULE_SIG_FORCE=y \
+        CONFIG_USER_NS=y \
+        CONFIG_SECCOMP_FILTER=y \
+        CONFIG_SECURITY_LANDLOCK=y \
+        CONFIG_SECURITY_YAMA=y \
+        CONFIG_SECURITY_LOCKDOWN_LSM=y \
+        CONFIG_X86_USER_SHADOW_STACK=y \
+        CONFIG_STRICT_KERNEL_RWX=y \
+        CONFIG_STACKPROTECTOR_STRONG=y \
+        CONFIG_FORTIFY_SOURCE=y \
+        CONFIG_HARDENED_USERCOPY=y \
+        CONFIG_VMAP_STACK=y \
+        CONFIG_SLAB_FREELIST_HARDENED=y \
+        CONFIG_RANDOMIZE_KSTACK_OFFSET=y \
+        CONFIG_LIST_HARDENED=y \
+        CONFIG_X86_KERNEL_IBT=y \
+    ; do \
+        if grep -qx "$opt" .config; then echo "  ok      $opt"; \
+        else echo "  MISSING $opt (resolved to: $(grep -E "^(# )?${opt%%=*}[ =]" .config || echo 'absent'))"; missing="$missing $opt"; fi; \
+    done; \
+    if [ -n "$missing" ]; then echo "kernel config lost required security options:$missing"; exit 1; fi
 
 # ---- Rebuild as qos-kernel-* -----------------------------------------------
 # `make binrpm-pkg` uses scripts/package/kernel.spec (upstream template) to
@@ -190,7 +221,28 @@ RUN set -eux; \
     cp arch/x86/boot/bzImage "$STAGE/lib/modules/$KVER/vmlinuz"; \
     cp System.map            "$STAGE/lib/modules/$KVER/System.map"; \
     cp .config               "$STAGE/lib/modules/$KVER/config"; \
+    # CONFIG_MODULE_SIG_ALL signs during this step. modules_install strips
+    # first and signs last, so INSTALL_MOD_STRIP does not invalidate the
+    # signature it just wrote.
     make INSTALL_MOD_PATH="$STAGE" INSTALL_MOD_STRIP=1 modules_install; \
+    # Prove the modules really are signed rather than trusting the config —
+    # with MODULE_SIG_FORCE a silently unsigned module tree is a kernel that
+    # boots without its drivers.  `modinfo -F sig_id` reads the signature out
+    # of the installed file and understands the compressed .ko.xz / .ko.zst
+    # shapes, which a raw tail-for-the-marker check would not.
+    total=$(find "$STAGE/lib/modules/$KVER" -name '*.ko*' -type f | wc -l); \
+    unsigned=$(find "$STAGE/lib/modules/$KVER" -name '*.ko*' -type f \
+        -exec sh -c 'modinfo -F sig_id "$1" 2>/dev/null | grep -q . || echo "$1"' _ {} \;); \
+    echo "modules: $total installed, $(printf '%s' "$unsigned" | grep -c . || true) unsigned"; \
+    test "$total" -gt 0; \
+    if [ -n "$unsigned" ]; then \
+        echo "unsigned modules under MODULE_SIG_FORCE:"; printf '%s\n' "$unsigned" | head -20; exit 1; \
+    fi; \
+    # The signing key existed for this build and no longer exists after it.
+    # Nothing needs to sign as this identity again: the certificate that
+    # verifies it is already compiled into the vmlinuz above, and an
+    # image-based OS loads no out-of-tree modules.
+    rm -f certs/signing_key.pem certs/signing_key.x509 certs/x509.genkey; \
     # `depmod` builds modules.dep + friends inside the staging tree so
     # `dnf install` doesn't have to run scriptlets on the live system.
     /sbin/depmod -a -b "$STAGE" "$KVER"; \
