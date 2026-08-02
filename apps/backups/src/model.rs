@@ -167,6 +167,60 @@ pub struct Source {
     pub health: Health,
 }
 
+/// One entry in a snapshot's file index, as shown in the restore browser.
+/// `depth` is the indent level; a directory carries no size label.
+#[derive(Clone, Debug)]
+pub struct SnapFile {
+    pub depth: usize,
+    pub name: String,
+    pub size: String,
+    pub is_dir: bool,
+}
+
+/// A representative sample listing for a source, used only by the demo
+/// catalog so restore-browser screenshots have content. The live catalog
+/// leaves `Snapshot::files` empty.
+fn sample_files(source_id: &str) -> Vec<SnapFile> {
+    let rows: &[(usize, &str, &str, bool)] = match source_id {
+        "workspace" => &[
+            (0, "workspace/", "", true),
+            (1, "shared/", "6.4 GB", true),
+            (2, "design.excalidraw", "8.1 MB", false),
+            (1, "qos/", "3.2 GB", true),
+            (2, "src/", "1.9 GB", true),
+            (1, "notes/", "180 MB", true),
+            (2, "meeting-2026-07.qdoc", "2.4 MB", false),
+        ],
+        "etc" => &[
+            (0, "etc/", "", true),
+            (1, "ssh/", "48 KB", true),
+            (2, "sshd_config", "6.1 KB", false),
+            (1, "NetworkManager/", "112 KB", true),
+            (1, "fstab", "1.3 KB", false),
+            (1, "hostname", "24 B", false),
+        ],
+        // Home and any unknown source fall back to a home-shaped tree.
+        _ => &[
+            (0, "home/", "", true),
+            (1, "Documents/", "2.1 GB", true),
+            (2, "report-q2.qdoc", "4.2 MB", false),
+            (1, "Pictures/", "18.4 GB", true),
+            (2, "2026-trip/", "3.1 GB", true),
+            (1, "Projects/", "9.8 GB", true),
+            (2, "quickdesktop/", "1.2 GB", true),
+            (1, ".config/", "240 MB", false),
+        ],
+    };
+    rows.iter()
+        .map(|(depth, name, size, is_dir)| SnapFile {
+            depth: *depth,
+            name: (*name).into(),
+            size: (*size).into(),
+            is_dir: *is_dir,
+        })
+        .collect()
+}
+
 #[derive(Clone, Debug)]
 pub struct Snapshot {
     pub id: String,
@@ -184,6 +238,11 @@ pub struct Snapshot {
     pub delta_bytes: u64,
     pub files_changed: u32,
     pub status: SnapStatus,
+    /// The snapshot's indexed contents, shown in the restore browser. Empty
+    /// until a real backend indexes the snapshot — the live app has no
+    /// indexer yet, so real snapshots present an "index unavailable" state
+    /// rather than fabricated files. The sample catalog fills this in.
+    pub files: Vec<SnapFile>,
 }
 
 #[derive(Clone, Debug)]
@@ -329,6 +388,7 @@ impl Catalog {
                 delta_bytes: delta,
                 files_changed: files,
                 status,
+                files: Vec::new(),
             });
         };
 
@@ -366,6 +426,12 @@ impl Catalog {
         // --- 6 days ago ---
         push("h-6-0300", "home", "usb", 6, "03:00", Auto, Monthly, 43 * GB + 600 * MB, 450 * MB, 610, Complete);
         push("e-6-0400", "etc", "b2", 6, "04:00", Auto, Monthly, 210 * MB, 9 * MB, 33, Complete);
+
+        // Attach a representative indexed listing per source, so the restore
+        // browser has real (sample) contents to show in screenshots.
+        for s in &mut snaps {
+            s.files = sample_files(&s.source_id);
+        }
 
         Self { sources, snapshots: snaps, destinations }
     }

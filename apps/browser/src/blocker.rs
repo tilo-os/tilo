@@ -70,6 +70,14 @@ const LISTS: &[(&str, &str)] = &[
         "ublock-resource-abuse.txt",
         "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt",
     ),
+    (
+        "ublock-quick-fixes.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt",
+    ),
+    (
+        "adguard-base.txt",
+        "https://filters.adtidy.org/extension/ublock/filters/2.txt",
+    ),
 ];
 
 /// Re-download a cached list after this age.

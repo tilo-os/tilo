@@ -1456,9 +1456,19 @@ impl SoftwareStore {
                 let fill_w = (rect.width() * p).max(rect.height());
                 let fill = Rect::new(rect.x0, rect.y0, rect.x0 + fill_w, rect.y1);
                 draw::fill_round(scene, t, fill, radius, c.accent[5]);
-                let label = format!("Installing… {:.0}%", p * 100.0);
                 let size = theme.tokens.typography.scale.xs;
-                let (lw, lh) = draw::measure(tr, &label, size);
+                // Prefer the descriptive label, but fall back to a compact
+                // percentage when the control is too narrow (grid cards use a
+                // ~96px pill) so it never overflows into the card body.
+                let full = format!("Installing… {:.0}%", p * 100.0);
+                let (full_w, lh) = draw::measure(tr, &full, size);
+                let (label, lw) = if full_w <= rect.width() - 12.0 {
+                    (full, full_w)
+                } else {
+                    let short = format!("{:.0}%", p * 100.0);
+                    let (sw, _) = draw::measure(tr, &short, size);
+                    (short, sw)
+                };
                 draw::text_w(scene, tr, t, &label, size, TextWeight::Semibold, Color::WHITE, rect.center().x - lw / 2.0, rect.center().y - lh / 2.0, None);
                 // Cancel target spans the whole control.
                 targets.push(HitTarget { rect, action: Action::Cancel(app.id.clone()) });
