@@ -929,4 +929,133 @@ mod tests {
             "chip and palette are one source of truth"
         );
     }
+
+    /// Run the real five-pass frame so the merge panel lays out and draws,
+    /// which is what populates the resolution-chip hit rects.
+    fn draw_merge_frame(app: &mut DiffMergeApp, viewport: (f32, f32)) {
+        use std::collections::HashMap;
+        let (w, h) = viewport;
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w),
+                        height: AvailableSpace::Definite(h),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Clicking a resolution chip at its drawn pixel position resolves *that*
+    /// hunk — proving the pointer → hit-rect → hunk mapping and the app's
+    /// pending-action drain, not just `resolve` in isolation.
+    #[test]
+    fn clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, Modifiers};
+
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (1200.0, 760.0));
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("the demo merge has a conflict");
+        // The take-theirs chip drawn for that hunk, by its real pixel rect.
+        let (rect, _, _) = app
+            .merge
+            .chip_hits()
+            .into_iter()
+            .find(|(_, h, ch)| *h == hunk && *ch == crate::actions::HunkChoice::Theirs)
+            .expect("a take-theirs chip is drawn for the conflict hunk");
+        let center = rect.center();
+
+        let before = crate::doc::MergeDoc::merged_text(&state.doc);
+
+        let m = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(center.x, center.y),
+            },
+            1.0,
+            &m,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        app.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &m,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert!(handled, "the chip click was consumed");
+        assert_eq!(
+            app.merge.model().hunks[hunk].resolution,
+            crate::model::Resolution::TookTheirs,
+            "clicking the take-theirs chip resolved that hunk to theirs"
+        );
+        assert_ne!(
+            before,
+            crate::doc::MergeDoc::merged_text(&state.doc),
+            "the click dispatched through perform_action and mutated the merged output"
+        );
+        assert_eq!(
+            crate::doc::MergeDoc::resolutions(&state.doc),
+            vec![(hunk, "theirs".to_string())],
+            "the pointer-driven resolution was recorded in the CRDT"
+        );
+    }
 }
