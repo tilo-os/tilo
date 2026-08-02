@@ -223,18 +223,61 @@ our registry collects nothing. Copy with the multi-arch index intact. Fixed on t
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
 as a `--build-arg`.
 
-Two adjacent holes in the same guarantee are still open:
+Two adjacent holes in the same guarantee were found alongside it:
 
 - `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
   quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
-  so the relay image is not reproducible across time.
+  so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
+  `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
+  whole point is to be small is not the fix. A digest against quay.io expires the same way the
+  bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
+  written (it hardcodes the `qos/fedora-bootc` destination and asserts an `ostree.linux` label
+  fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
+  fedora-minimal, and add a second ref to `os/base-snapshot.env` that
+  `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
-  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. It is
-  currently broken — `build-wpe.sh:67` exports `PKG_CONFIG_SYSROOT_DIR=/wpe`, so every system
-  `-I/usr/include` becomes `-I/wpe/usr/include` and libwpe's CMake configure fails on
-  `Imported target "XkbCommon::libxkbcommon" includes non-existent path` — and nobody noticed,
-  because the base `FROM` above failed first and the layer cache served the stage before that.
-  An unpinned stage is also an unwatched one.
+  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
+  still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
+  the strongest sense: nobody noticed, because the base `FROM` above failed first and the layer
+  cache served the stage before that. Once the base pin was fixed and the stage actually ran, it
+  had five independent defects stacked behind one another, each only visible after the previous
+  was fixed. The image now builds end to end — run 811, signed and pushed.
+
+  1. `build-wpe.sh` exported `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged
+     `${prefix}`. A sysroot is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it
+     emits — so system libraries in the real `/usr` were relocated too and libwpe's CMake configure
+     died on `Imported target "XkbCommon::libxkbcommon" includes non-existent path
+     "/wpe/usr/include"` (run 742). Now `PKG_CONFIG_RELOCATE_PATHS`, which derives each `${prefix}`
+     from its own `.pc` file's location and so relocates only what was actually staged.
+  2. libwpe's `wpe.pc.in` hardcodes `libdir=${exec_prefix}/lib` while the library installs into
+     `CMAKE_INSTALL_LIBDIR` (`lib64`). An unstaged install survives that because the linker
+     searches `/usr/lib64` by default; a staging root does not, and wpebackend-fdo failed to link
+     with `cannot find -lwpe-1.0` (run 754). The installed `.pc` is now corrected.
+  3. The WPE port's `ENABLE_WPE_PLATFORM_DRM` needs libinput and libudev, which the *GTK* port's
+     builddep never pulls, so `find_package(LibInput)` failed (run 755). Added to the explicit
+     package list the stage already keeps for this purpose.
+  4. With the engine finally built, the Rust builder could not find `wpe-webkit-2.0` (run 758).
+     The `.pc` was present; it declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`,
+     and pkg-config fails the whole lookup when one link in that chain has no `.pc` — reported by
+     the pkg-config crate as the requested module being missing. The image ships `libsoup3` for
+     the browser at runtime but the builder never installed `libsoup3-devel`.
+  5. Linking `browser` then failed on hundreds of undefined `gst_*`/`epoxy_*`/`manette_*` symbols
+     (run 773). The engine is *not* under-linked — ld says so first: `libgstreamer-1.0.so.0,
+     needed by /usr/lib64/libWPEWebKit-2.0.so, not found`. 17 sonames, nine packages, absent from
+     the builder.
+
+  Each was found only by running the build; none is visible by reading it. Defect 5 also exposed a
+  latent runtime bug that no build would ever have caught: four of those libraries — `atk`,
+  `at-spi2-atk`, `libmanette`, `libxslt` — were missing from the *final image* too, so the browser
+  would have failed to exec on a booted system.
+
+  Guards now fail at the point of the mistake rather than somewhere downstream: every staged
+  package must resolve to an include directory that exists *and* link a trivial program; each
+  build step dumps its real output on failure instead of the `tail -1` that had been hiding the
+  compiler error behind ninja's "build stopped"; and the hour-long engine compile streams progress
+  rather than going silent, which had made three runner-level deaths (a Docker daemon that went
+  away mid-build) indistinguishable from a hang.
+
 ## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
 
 `ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
