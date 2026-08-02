@@ -690,31 +690,34 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 
 /// Re-paint the current scene into a fresh `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
-/// every failure path logs to stderr and returns, so an executor
-/// invocation never panics or unwinds back into the calloop pump.
+/// a bad viewport, a missing GPU adapter, and every I/O and encoder
+/// failure log to stderr and return, so an executor invocation does not
+/// take the calloop pump down with it.
 ///
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
 /// through `PlannedAction` dispatch.
 fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     use std::io::Write;
-    // The renderer panics if no wgpu adapter is available (e.g. CI
-    // without llvmpipe); catch_unwind keeps the compositor alive in
-    // that environment too.
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
+    if w == 0 || h == 0 {
+        eprintln!(
+            "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
+        );
+        return;
+    }
     let scene = fb.paint();
-    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
-        renderer.render_rgba(&scene)
-    }));
-    let rgba = match render_result {
-        Ok(rgba) => rgba,
-        Err(_) => {
-            eprintln!(
-                "nirios compositor: test_control snapshot: \
-                 OffscreenRenderer panicked (no wgpu adapter?)"
-            );
+    // `try_new` rather than `new` inside a `catch_unwind`: the shipping
+    // release profile sets `panic = "abort"`, so a caught panic is not
+    // a thing that happens — the compositor would die at the panic site
+    // instead of logging and carrying on. Asking the renderer for a
+    // `Result` is what actually keeps it alive on a machine with no
+    // wgpu adapter (e.g. CI without llvmpipe).
+    let rgba = match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+        Ok(mut renderer) => renderer.render_rgba(&scene),
+        Err(e) => {
+            eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
             return;
         }
     };
@@ -2444,11 +2447,10 @@ mod tests {
     /// "wrote only a header" failure mode.
     ///
     /// Skipped on environments without a wgpu adapter (CI without
-    /// llvmpipe) because `OffscreenRenderer::new` panics; the executor
-    /// itself catches that panic so the assertion would silently pass
-    /// without producing a file — we explicitly check for the file's
-    /// existence and skip the rest gracefully if the renderer was
-    /// unavailable.
+    /// llvmpipe): the executor logs and returns rather than writing a
+    /// file, so the pixel assertions would have nothing to run against.
+    /// We check for the file's existence and skip the rest gracefully
+    /// if the renderer was unavailable.
     #[test]
     fn execute_snapshot_writes_a_png_at_path() {
         let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");

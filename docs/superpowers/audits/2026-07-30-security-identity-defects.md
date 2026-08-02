@@ -215,6 +215,45 @@ Two adjacent holes in the same guarantee are still open:
   `Imported target "XkbCommon::libxkbcommon" includes non-existent path` — and nobody noticed,
   because the base `FROM` above failed first and the layer cache served the stage before that.
   An unpinned stage is also an unwatched one.
+## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
+
+`ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
+`shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
+
+Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
+degrade gracefully when wgpu finds no adapter. `[profile.release]` sets `panic = "abort"`
+(`Cargo.toml:447`) — deliberately, and correctly, since a compositor cannot meaningfully recover
+from a panic — under which the panic runtime aborts at the panic site and no unwinding, hence no
+catching, ever begins. All three guards were inert in exactly the configuration that ships, and
+`OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
+
+The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
+(`shell/src/main.rs:129`) from a `qos-startup-warmup` thread. Its comment claimed *"A missing
+adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
+later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
+adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
+report the problem. The dev build degrades; the shipped build does not. The other two are the
+test-control snapshot writer and the headless backend's renderer init, both documented as
+never-panicking and neither of which was.
+
+Found by verifying a claim, not by reading one: the resilience comment was checked against the
+panic strategy the release profile actually sets.
+
+**Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
+panicking; `new` is retained for its many test/example callers and panics through it. All three
+sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`ui/tests/warmup_no_adapter.rs`), which
+re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
+ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
+dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
+vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
+
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`ui/src/offscreen.rs`, the
+`render_to_texture` and buffer-map paths). Those were nominally inside the same dead
+`catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
+build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked
+and is *not* the same defect: it absorbs an openmls `debug_assert!(false, …)` that only fires in
+debug builds, which is where `catch_unwind` works.
 
 ---
 
