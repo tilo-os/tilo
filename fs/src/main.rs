@@ -5,7 +5,7 @@ use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
 use fs::{
     AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
-    Refresh, Ticket, Workspace,
+    Refresh, Ticket, Workspace, identity_paths, load_mount_identity,
 };
 use fuser::*;
 use std::path::{Path, PathBuf};
@@ -154,7 +154,11 @@ fn parse_principal(spec: &str) -> Result<Principal> {
 /// enforcement point exists to prevent. Omitting `--acl` entirely is the
 /// documented opt-out and keeps the pre-existing behaviour, so
 /// single-user mounts are unaffected.
-fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
+///
+/// `device_key` is the default subject: this machine's device public
+/// key, which is stable across reboots. A grant written against it
+/// keeps meaning the same thing after a restart.
+fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
             bail!("--identity/--principal require --acl; without a capability list they enforce nothing");
@@ -164,7 +168,7 @@ fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<Arc<Capab
 
     let identity = match &args.identity {
         Some(hex_str) => parse_identity(hex_str)?,
-        None => node_key,
+        None => device_key,
     };
     let principals = args
         .principals
@@ -256,9 +260,10 @@ async fn serve(
     acl_args: AclArgs,
 ) -> Result<()> {
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    // This node's own key is the mount's identity unless one is named.
-    let caps = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    // This device's own key is the mount's identity unless one is named.
+    let caps = resolve_acl(&acl_args, device.public)?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let store = Arc::new(open_store(cache_dir).await?);
@@ -323,8 +328,9 @@ async fn mount(
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    let caps = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    let caps = resolve_acl(&acl_args, device.public)?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let store = Arc::new(open_store(cache_dir).await?);
@@ -618,7 +624,7 @@ mod tests {
             acl.principals,
             vec!["person:local".to_string()],
             "the shipped list is written against a principal, because the mount's own identity \
-             is a per-start iroh key no file could name in advance"
+             is the device key minted on first boot, which no shipped file could name in advance"
         );
     }
 
