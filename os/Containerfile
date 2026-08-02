@@ -30,11 +30,18 @@
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
-# Both ARGs are declared here (before the first FROM) so they're in
+# All three ARGs are declared here (before the first FROM) so they're in
 # scope for FROM directives. An `ARG NAME` placed between two FROMs is
 # scoped to the previous stage, not global — buildkit then reports
 # `base name (${…}) should not be blank` when the next FROM tries to
 # use it.
+#
+# BASE_REF (code.podesta.ai/qos/fedora-bootc@sha256:...) is the Fedora bootc
+# base, mirrored into our registry and pinned by digest — see
+# os/base-snapshot.env for why the mirror exists and how to refresh it. Every
+# fedora-bootc stage below uses it, so builder and final share one base and
+# their glibc cannot drift.
+ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 FROM ${RPMS_REF} AS rpms
@@ -64,7 +71,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53 AS wpe-builder
+FROM ${BASE_REF} AS wpe-builder
 
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
@@ -81,11 +88,13 @@ RUN --mount=type=cache,target=/wpe-cache \
 
 
 # ---- Stage 1: builder ------------------------------------------------------
-# Base pinned by digest (security plan §9 — reproducibility + supply chain: a
-# tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
-# Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
-# Bump deliberately (re-resolve the tag → update both FROM lines).
-FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53 AS builder
+# Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
+# a tag can be repointed, a digest can't — but upstream deletes the manifest a
+# digest points at within about a day, so the pin only stays real if we hold a
+# copy. Builder and final share BASE_REF, so their glibc matches by
+# construction. Bump deliberately: re-run `mirror-base`, commit the new
+# BASE_REF, re-run `snapshot-rpms`.
+FROM ${BASE_REF} AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -157,6 +166,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
+        -p qos-rollback \
         -p browser --features browser/wpe \
     && mkdir -p /out \
     && cp target/release/shell \
@@ -170,6 +180,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-launcher \
           target/release/qos-power \
           target/release/qos-unlock-helper \
+          target/release/qos-rollback \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -203,7 +214,7 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:a0fc5a3b2d81932eccd0f3ae4290727914c530c800fe468423344ce57248ae53
+FROM ${BASE_REF}
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -525,6 +536,51 @@ COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/syste
 COPY os/usr/lib/systemd/system/qos-hidepid.service /usr/lib/systemd/system/qos-hidepid.service
 RUN chmod 0755 /usr/libexec/qos-security-audit
 
+# ---------------------------------------------------------------------------
+# Bounded rollback protection
+# ---------------------------------------------------------------------------
+# The last few OS generations may unseal the disk; older ones may not. A TPM2 NV
+# monotonic counter holds the OLDEST permitted generation, and each generation's
+# LUKS2 keyslot is sealed to a policy requiring the floor to be at or below it.
+#
+# The generation number this image carries. It MUST be a dense monotonic integer
+# (+1 per published image), because the retention window is arithmetic on it —
+# "the last three generations" is meaningless if the numbering is a timestamp. It
+# MUST also match the `qos.generation=` value on the sealed UKI command line: that
+# is the copy an attacker cannot forge, and the copy every unseal is bound to.
+# The file below exists only so that a *staged* deployment's generation can be
+# read before it has ever booted, which is when its keyslot has to be sealed.
+ARG QOS_GENERATION=0
+RUN install -d -m 0755 /usr/lib/qos \
+ && printf '%s\n' "${QOS_GENERATION}" > /usr/lib/qos/generation
+
+# tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
+# through it. Also reachable from recovery mode, which is where someone will need
+# it when automatic unlock has failed.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        tpm2-tools \
+    && dnf clean all && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+
+COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
+COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
+COPY os/usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
+COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
+COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
+COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
+COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
+        /usr/libexec/qos-rollback-harden \
+ && install -d -m 0755 /usr/share/qos/pcr-predictions
+
+# The signed PCR predictions this image was built with go in
+# /usr/share/qos/pcr-predictions/generation-<N>*.json, produced by
+# `qos-rollback sign-prediction` on the build host — the private half of
+# keys/tpm2-pcr-signing.pem is deliberately not in the image, so a device cannot
+# sign its own expected measurements. Until the UKI is built and measured there is
+# nothing meaningful to predict, so the directory ships empty and the enrollment
+# path refuses to seal a keyslot without a prediction rather than sealing one that
+# can never open.
+
 # Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
 # trusted-base daemon fs.service. Resolve the lib path at build time and bake a
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
@@ -578,7 +634,9 @@ RUN systemctl enable chronyd.service && \
 
 # §11 hardening services: hidepid remount + the boot security self-check.
 RUN systemctl enable qos-hidepid.service && \
-    systemctl enable qos-security-audit.service
+    systemctl enable qos-security-audit.service && \
+    systemctl enable qos-rollback-harden.service && \
+    systemctl enable qos-rollback-confirm.timer
 
 # A3: automatic bootc updates. The timer pulls + applies the image at
 # QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by

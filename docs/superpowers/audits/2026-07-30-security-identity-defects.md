@@ -169,6 +169,55 @@ caller in any app.
 
 ---
 
+## P1-7 — The base-image digest pin expires in about a day, so cross-time reproducibility is half true
+
+As found: `os/Containerfile:67,88,208`, `os/Containerfile.host:25,61`, `os/kernel/Containerfile:41`
+— all pinned `FROM quay.io/fedora/fedora-bootc@sha256:…`. Digest pinning is the right instinct, but
+Fedora rebuilds the `fedora-bootc:44` tag daily and garbage-collects the manifest it replaces
+almost immediately, so the pin resolves for roughly one day.
+
+Observed twice:
+
+- A digest pinned on 2026-06-30 was gone by 2026-07-30 (`manifest unknown`), breaking every image
+  build at its first `FROM` — including `snapshot-rpms`, which resolves the frozen package set
+  against that same base. The failure is self-blocking: the package set could not be refreshed
+  either.
+- Repinned 2026-07-30 to `sha256:c466de53…`; `snapshot-rpms` succeeded with it (run 662). By
+  2026-08-01 that one-day-old digest was also gone (run 726), confirmed independently with
+  `skopeo inspect`.
+- Meanwhile `main` carried a third digest, `sha256:a0fc5a3b…`, and every `build-image` run against
+  it on 2026-08-01 failed the same way (runs 722, 724, 727, 730, 733, 736, 738). The OS image had
+  not been buildable from `main` all morning, and nothing about it was specific to any of those
+  commits.
+
+`docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
+`os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
+evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
+integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
+"just point it at whatever resolves today" away from becoming an unpinned build under deadline
+pressure, and the frozen RPM set would then be resolved against an unrecorded base.
+
+**Fix direction:** mirror the base into `code.podesta.ai/qos/fedora-bootc` and pin against the
+mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
+our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
+`mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
+as a `--build-arg`.
+
+Two adjacent holes in the same guarantee are still open:
+
+- `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
+  quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
+  so the relay image is not reproducible across time.
+- `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
+  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. It is
+  currently broken — `build-wpe.sh:67` exports `PKG_CONFIG_SYSROOT_DIR=/wpe`, so every system
+  `-I/usr/include` becomes `-I/wpe/usr/include` and libwpe's CMake configure fails on
+  `Imported target "XkbCommon::libxkbcommon" includes non-existent path` — and nobody noticed,
+  because the base `FROM` above failed first and the layer cache served the stage before that.
+  An unpinned stage is also an unwatched one.
+
+---
+
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
 `shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
