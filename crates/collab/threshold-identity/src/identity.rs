@@ -13,10 +13,20 @@
 //! requires `min_signers ≥ 2`. The spec's *first-device* bootstrap
 //! is genuinely 1-of-1 — there is only one share-holder. We
 //! represent that as a [`InnerKey::SingleDevice`] variant carrying
-//! a plain `frost_ed25519::SigningKey`. Signing in this mode
-//! produces a regular Ed25519 signature via
-//! `SigningKey::sign(rng, message)` — byte-compatible with the
+//! an `ed25519_dalek::SigningKey`. Signing in this mode produces a
+//! regular RFC-8032 Ed25519 signature — byte-compatible with the
 //! threshold output by design.
+//!
+//! The single-device key is a **dalek key, not a frost key**, and
+//! that choice is load-bearing. A frost `SigningKey` stores the
+//! signing *scalar*; dalek's `SigningKey::from_bytes` takes a
+//! 32-byte *seed* which it expands through SHA-512 to reach the
+//! scalar. The on-disk identity record persists 32 bytes that every
+//! reader loads via `SigningKey::from_bytes`, so a frost scalar
+//! round-tripped through that record derives a different key and its
+//! signatures stop verifying against the recorded public key. Holding
+//! the seed here means [`ThresholdIdentity::single_device_seed`] can
+//! hand out exactly the bytes the record needs.
 //!
 //! [`InnerKey::Threshold`] takes over once the first DKG runs.
 //! From that point any signing operation requires `threshold`
@@ -98,10 +108,12 @@ pub struct ThresholdIdentity {
 // reads to be pointer-chase free. Inline both.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum InnerKey {
-    /// 1-of-1 bootstrap: a plain Ed25519 signing key. Signing
-    /// goes through `SigningKey::sign`, which produces a
-    /// regular RFC-8032 Ed25519 signature.
-    SingleDevice(frost_ed25519::SigningKey),
+    /// 1-of-1 bootstrap: a plain Ed25519 signing key, held in its
+    /// dalek (seed-shaped) form so the 32 bytes this device
+    /// persists are the 32 bytes a reader expands back into the
+    /// same key. Signing produces a regular RFC-8032 Ed25519
+    /// signature.
+    SingleDevice(ed25519_dalek::SigningKey),
     /// `t`-of-`n` mode (t ≥ 2). Owns the device's secret share
     /// plus the public-key package needed by aggregate.
     Threshold {
@@ -151,27 +163,17 @@ impl ThresholdIdentity {
         matches!(self.inner, InnerKey::SingleDevice(_))
     }
 
-    /// First-device bootstrap: 1-of-1 mode, dalek-seed variant.
+    /// First-device bootstrap returning the raw key material.
     ///
     /// Returns a fresh Ed25519 keypair as `(seed_bytes,
     /// group_public_key)` — where `seed_bytes` is the 32-byte
     /// input to `ed25519_dalek::SigningKey::from_bytes` and
     /// `group_public_key` is the derived verifying key.
     ///
-    /// This is the code path the on-disk identity record used by
-    /// `runtime-identity` requires. The frost variant of
-    /// `bootstrap_single_device` stores a signing SCALAR — but the
-    /// on-disk JSON schema's `secret_bytes` field is loaded via
-    /// `ed25519_dalek::SigningKey::from_bytes`, which expands its
-    /// input as a SEED via SHA-512 to reach the scalar. Round-
-    /// tripping the frost scalar through that path derives a
-    /// different key and produced signatures stop verifying — see
-    /// the "soft mismatch" note in `runtime-identity`.
-    ///
-    /// Callers persisting a single-device identity to disk (the
-    /// compositor's first-boot hook) should use this helper; the
-    /// frost variant remains the right choice for in-process
-    /// signing without a disk round-trip.
+    /// Equivalent to [`Self::bootstrap_single_device`] followed by
+    /// [`Self::single_device_seed`]; kept as a standalone helper for
+    /// callers (the compositor's first-boot hook) that only want the
+    /// bytes to write and never hold a live identity.
     pub fn bootstrap_single_device_seed<R: CryptoRng + RngCore>(
         rng: &mut R,
     ) -> ([u8; 32], Ed25519PublicKey) {
@@ -183,25 +185,56 @@ impl ThresholdIdentity {
 
     /// First-device bootstrap: 1-of-1 mode.
     ///
-    /// Generates a fresh Ed25519 keypair, stores the secret as a
-    /// `SigningKey`. The first DKG run rotates the group public
+    /// Generates a fresh Ed25519 keypair and stores the secret in
+    /// seed form, so [`Self::single_device_seed`] can hand it back
+    /// for persistence. The first DKG run rotates the group public
     /// key per the module docs.
     pub fn bootstrap_single_device<R: CryptoRng + RngCore>(rng: &mut R) -> Result<Self, ThresholdError> {
-        let signing_key = frost_ed25519::SigningKey::new(rng);
-        let verifying_key = frost_ed25519::VerifyingKey::from(&signing_key);
-        let vk_bytes_vec = verifying_key.serialize()?;
-        let vk_bytes: [u8; 32] = vk_bytes_vec.as_slice().try_into().map_err(|_| {
-            ThresholdError::FrostInternal(
-                "verifying key serialise produced non-32-byte output".to_string(),
-            )
-        })?;
-        Ok(Self {
-            group_public_key: Ed25519PublicKey::from_bytes(vk_bytes),
+        let signing_key = ed25519_dalek::SigningKey::generate(rng);
+        Ok(Self::from_single_device_key(signing_key))
+    }
+
+    /// Rebuild a 1-of-1 identity from the 32-byte seed a previous
+    /// [`Self::single_device_seed`] produced.
+    ///
+    /// This is the load half of the persistence round-trip: the
+    /// identity that comes back signs with the same key, and its
+    /// `group_public_key` is re-derived from the seed rather than
+    /// read from the record — so a record whose stored public key
+    /// disagrees with its secret cannot be resurrected as a
+    /// self-inconsistent identity.
+    pub fn from_single_device_seed(seed: &[u8; 32]) -> Self {
+        Self::from_single_device_key(ed25519_dalek::SigningKey::from_bytes(seed))
+    }
+
+    fn from_single_device_key(signing_key: ed25519_dalek::SigningKey) -> Self {
+        let pk = signing_key.verifying_key().to_bytes();
+        Self {
+            group_public_key: Ed25519PublicKey::from_bytes(pk),
             threshold: 1,
             total_shares: 1,
             this_share_index: 1,
             inner: InnerKey::SingleDevice(signing_key),
-        })
+        }
+    }
+
+    /// Export this device's 1-of-1 secret as the 32-byte seed the
+    /// on-disk identity record stores.
+    ///
+    /// `None` in threshold mode — there is no single secret to
+    /// export there, and a caller that needs one is asking the
+    /// wrong question (the whole point of threshold mode is that no
+    /// device holds the key whole). Callers persisting an identity
+    /// must treat `None` as "this identity is not persistable in the
+    /// single-device record format", never as "write a placeholder".
+    ///
+    /// **Secret material.** The returned array must be zeroized or
+    /// handed straight to a `0600` write; never log it.
+    pub fn single_device_seed(&self) -> Option<[u8; 32]> {
+        match &self.inner {
+            InnerKey::SingleDevice(sk) => Some(*sk.as_bytes()),
+            InnerKey::Threshold { .. } => None,
+        }
     }
 
     /// Sign a serializable value end-to-end. Routes to the
@@ -231,16 +264,11 @@ impl ThresholdIdentity {
         bytes: &[u8],
         rng: &mut R,
     ) -> Result<Signature, ThresholdError> {
+        let _ = rng; // single-device signing is deterministic (RFC 8032)
         match &self.inner {
             InnerKey::SingleDevice(sk) => {
-                let sig = sk.sign(rng, bytes);
-                let bytes_vec = sig.serialize()?;
-                let out: [u8; 64] = bytes_vec.as_slice().try_into().map_err(|_| {
-                    ThresholdError::FrostInternal(
-                        "single-device signature serialise produced non-64-byte output".to_string(),
-                    )
-                })?;
-                Ok(Signature::from_bytes(out))
+                use ed25519_dalek::Signer;
+                Ok(Signature::from_bytes(sk.sign(bytes).to_bytes()))
             }
             InnerKey::Threshold { .. } => Err(ThresholdError::DkgStateMisuse(
                 "single-device sign called on threshold identity; use sign_round1/round2",

@@ -15,7 +15,6 @@ use crate::network::protocol::NeighbourMsg;
 use libp2p::futures::StreamExt;
 use libp2p::{Multiaddr, Swarm, gossipsub, mdns, swarm::SwarmEvent};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -89,17 +88,7 @@ fn ws_topic(ws: WorkspaceId) -> gossipsub::IdentTopic {
     gossipsub::IdentTopic::new(format!("nirios/ws/{ws}"))
 }
 
-/// Hash a libp2p `PeerId` to a `u64` for embedding in protocol messages.
-///
-/// Uses [`std::collections::hash_map::DefaultHasher`] over the peer id's
-/// raw protobuf bytes; collisions are not security-critical because the
-/// authenticated `PeerId` is already carried by gossipsub itself — the
-/// `Heartbeat::peer` field is only an opaque liveness identifier.
-fn peer_id_to_u64(peer_id: &libp2p::PeerId) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    peer_id.to_bytes().hash(&mut hasher);
-    hasher.finish()
-}
+
 
 /// Returns peers in `peers` whose last-seen timestamp is older than
 /// `now - threshold`. Pure function so the eviction policy is unit-
@@ -190,7 +179,7 @@ impl Actor {
     /// gossipsub topic. Failures (no peers, oversized payload, etc.) are
     /// silently dropped — heartbeat loss is itself the signal to evict.
     fn publish_heartbeat(&mut self) {
-        let peer = peer_id_to_u64(self.swarm.local_peer_id());
+        let peer = crate::network::behaviour::peer_liveness_handle(self.swarm.local_peer_id());
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
