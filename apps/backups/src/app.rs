@@ -1322,19 +1322,25 @@ impl BackupsApp {
         paint::card(scene, t, tree, 12.0, c.neutral[0].with_alpha_factor(0.5), c.border_white_10);
         paint::text(scene, tr, t, "Snapshot contents", 11.0, c.text_dim, tree.x0 + 14.0, tree.y0 + 10.0);
 
-        let files: [(usize, &str, &str, bool); 8] = [
-            (0, "home/", "", true),
-            (1, "Documents/", "2.1 GB", true),
-            (2, "report-q2.qdoc", "4.2 MB", false),
-            (1, "Pictures/", "18.4 GB", true),
-            (2, "2026-trip/", "3.1 GB", true),
-            (1, "Projects/", "9.8 GB", true),
-            (2, "quickdesktop/", "1.2 GB", true),
-            (1, ".config/", "240 MB", false),
-        ];
+        let files = &snap.files;
         let row_h = 30.0;
         let ty0 = tree.y0 + 30.0;
-        for (i, (depth, name, size, is_dir)) in files.iter().enumerate() {
+        // No indexer yet on the live app: a real snapshot without an indexed
+        // listing shows an honest empty state rather than fabricated files.
+        if files.is_empty() {
+            paint::text_vc(
+                scene,
+                tr,
+                t,
+                "File index not available for this snapshot yet.",
+                12.5,
+                c.text_dim,
+                tree.x0 + 14.0,
+                ty0,
+                row_h,
+            );
+        }
+        for (i, f) in files.iter().enumerate() {
             let ry = ty0 + i as f64 * row_h;
             // Don't spill rows past the (possibly shortened) tree card.
             if ry + row_h > tree.y1 - 4.0 {
@@ -1347,9 +1353,9 @@ impl BackupsApp {
             } else if self.hover == Some(Hit::FileRow(i)) {
                 paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
             }
-            let ix = row.x0 + 10.0 + *depth as f64 * 18.0;
-            let icol = if *is_dir { theme.accent_primary } else { c.text_dim };
-            if *is_dir {
+            let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
+            let icol = if f.is_dir { theme.accent_primary } else { c.text_dim };
+            if f.is_dir {
                 // folder glyph
                 let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
                 paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
@@ -1357,9 +1363,9 @@ impl BackupsApp {
                 let fr = Rect::new(ix + 1.0, row.center().y - 6.0, ix + 11.0, row.center().y + 6.0);
                 paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
             }
-            paint::text_vc(scene, tr, t, name, 12.5, c.text_primary, ix + 20.0, row.y0, row_h - 2.0);
-            if !size.is_empty() {
-                paint::text_right(scene, tr, t, size, 11.0, c.text_dim, row.x1 - 10.0, row.center().y - 6.0);
+            paint::text_vc(scene, tr, t, &f.name, 12.5, c.text_primary, ix + 20.0, row.y0, row_h - 2.0);
+            if !f.size.is_empty() {
+                paint::text_right(scene, tr, t, &f.size, 11.0, c.text_dim, row.x1 - 10.0, row.center().y - 6.0);
             }
             self.hits.push((row, Hit::FileRow(i)));
         }
@@ -1581,6 +1587,9 @@ impl BackupsApp {
                 delta_bytes: 128 * 1024 * 1024,
                 files_changed: 64,
                 status: SnapStatus::Complete,
+                // A freshly-captured snapshot has no browsable index yet — the
+                // restore sheet shows its empty state rather than fake files.
+                files: Vec::new(),
             },
         );
         self.toast_now("Snapshot complete");
@@ -1894,5 +1903,189 @@ mod tests {
         assert!(!app.catalog.sources.is_empty(), "demo has sources");
         assert!(!app.catalog.snapshots.is_empty(), "demo has snapshots");
         assert!(!app.catalog.destinations.is_empty(), "demo has destinations");
+    }
+
+    /// A headless harness that drives the **production** widget path: it draws a
+    /// real frame (populating the hit map exactly as the live app does), then
+    /// synthesises the pointer events a real click produces and feeds them
+    /// through `handle_event`. Assertions read back the CRDT via `BackupsDoc`.
+    struct Frame {
+        app: BackupsApp,
+        state: ui::State,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        theme: Theme,
+        tr: TextRenderer,
+    }
+
+    impl Frame {
+        fn demo() -> Self {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut app = BackupsApp::new_demo();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let mut f = Self {
+                app,
+                state: ui::State::new(),
+                taffy,
+                node,
+                theme: Theme::dark(),
+                tr: TextRenderer::new(),
+            };
+            f.draw();
+            f
+        }
+
+        /// Re-run the live frame cycle: sync from the CRDT, then draw (which
+        /// repopulates `hits` from the current state).
+        fn draw(&mut self) {
+            self.app.sync(&mut self.state.doc, &self.state.root);
+            let mut scene = Scene::new();
+            self.app
+                .render(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme);
+        }
+
+        /// The rect of the top-most drawn hit matching `pred` (matching the
+        /// production `hit_at`, which scans back-to-front).
+        fn rect_of(&self, pred: impl Fn(&Hit) -> bool) -> Rect {
+            self.app
+                .hits
+                .iter()
+                .rev()
+                .find(|(_, h)| pred(h))
+                .map(|(r, _)| *r)
+                .expect("expected hit is present in the drawn frame")
+        }
+
+        fn has_hit(&self, pred: impl Fn(&Hit) -> bool) -> bool {
+            self.app.hits.iter().any(|(_, h)| pred(h))
+        }
+
+        /// Move the pointer to `p` and press the left button through the real
+        /// event path, then redraw.
+        fn click(&mut self, p: Point) {
+            use winit::dpi::PhysicalPosition;
+            use winit::event::{DeviceId, Modifiers};
+            let m = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(p.x, p.y),
+                },
+                1.0,
+                &m,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            self.app.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+                &m,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            self.draw();
+        }
+
+        fn click_hit(&mut self, pred: impl Fn(&Hit) -> bool) {
+            let c = self.rect_of(pred).center();
+            self.click(c);
+        }
+
+        fn view(&self) -> View {
+            BackupsDoc::view(&self.state.doc, &self.state.root)
+        }
+    }
+
+    #[test]
+    fn clicking_a_view_tab_switches_the_dashboard_view() {
+        let mut f = Frame::demo();
+        assert_eq!(f.view(), View::Timeline, "demo opens on the timeline");
+        // Click the real "Destinations" tab pill.
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Destinations)));
+        assert_eq!(
+            f.view(),
+            View::Destinations,
+            "clicking the tab wrote the view through the production path"
+        );
+        // And a second tab confirms it is not a one-shot.
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
+        assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn clicking_back_up_now_starts_a_job() {
+        let mut f = Frame::demo();
+        assert!(f.app.job.is_none(), "no job before the click");
+        f.click_hit(|h| matches!(h, Hit::BackupNow));
+        assert!(
+            f.app.job.is_some(),
+            "clicking Back up now started a snapshot job"
+        );
+    }
+
+    #[test]
+    fn opening_restore_shows_the_indexed_snapshot_contents() {
+        let mut f = Frame::demo();
+        // sync auto-selects the newest snapshot, so the detail actions render.
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        assert!(
+            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "clicking Restore opened the restore sheet"
+        );
+        // The demo snapshot carries a real (sample) file index, so the browser
+        // shows selectable file rows rather than fabricating them inline.
+        assert!(
+            f.has_hit(|h| matches!(h, Hit::FileRow(_))),
+            "the restore browser lists the snapshot's indexed files"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_without_an_index_shows_no_fabricated_files() {
+        let mut f = Frame::demo();
+        // Simulate a real (un-indexed) snapshot: strip the sample listings.
+        for s in &mut f.app.catalog.snapshots {
+            s.files.clear();
+        }
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        assert!(
+            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "the restore sheet is open"
+        );
+        // Nothing is fabricated: with no index there are zero file rows, and the
+        // sheet falls back to its honest empty state.
+        assert!(
+            !f.has_hit(|h| matches!(h, Hit::FileRow(_))),
+            "an un-indexed snapshot lists no files instead of a fake tree"
+        );
+    }
+
+    #[test]
+    fn the_sample_catalog_indexes_every_snapshot() {
+        // Demo/shots data is populated; the live catalog stays empty.
+        let demo = Catalog::sample();
+        assert!(
+            demo.snapshots.iter().all(|s| !s.files.is_empty()),
+            "every sample snapshot carries an indexed listing"
+        );
+        assert!(
+            Catalog::empty().snapshots.is_empty(),
+            "the live catalog has no snapshots to fabricate files for"
+        );
     }
 }

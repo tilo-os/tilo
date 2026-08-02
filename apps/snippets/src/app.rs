@@ -1729,8 +1729,12 @@ fn lang_tint(theme: &Theme, lang: Language) -> vello::peniko::Color {
         Language::Git => c.semantic.danger,
         Language::Python => c.semantic.success,
         Language::JavaScript => c.accent[6],
-        Language::Markdown | Language::Html | Language::Css => c.neutral[5],
-        Language::PlainText => c.neutral[4],
+        // Strong neutral slots: the pill ink is `neutral[0]` (the background
+        // tone), so the fill must sit deep in the ramp to carry it in *both*
+        // themes. A mid slot (neutral[4]/[5]) reads white-on-light-grey in the
+        // light theme and fails contrast.
+        Language::Markdown | Language::Html | Language::Css => c.neutral[7],
+        Language::PlainText => c.neutral[6],
     }
 }
 
