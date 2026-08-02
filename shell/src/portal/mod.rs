@@ -294,7 +294,7 @@ impl GrantStoreHandle {
     /// Back-compat alias for [`Self::tree_handle`]. A handful of older
     /// tests/portals still reference `.tree()`; both now return the
     /// shared `WorkspaceTreeHandle`.
-    #[cfg(any(test, debug_assertions))]
+    // NOT cfg-gated: reachable from the shots harness, which is a release build.
     pub fn tree(&self) -> WorkspaceTreeHandle {
         self.tree.clone()
     }
