@@ -1,5 +1,56 @@
+//! The FUSE operations — and the filtered view they serve.
+//!
+//! # A denial is presented as an absence
+//!
+//! The access decision lives in [`crate::acl`]; this module decides how a
+//! denial *looks*. It looks like nothing:
+//!
+//! | situation | what the app sees |
+//! |---|---|
+//! | path outside the view | `ENOENT`, and no entry in `readdir` |
+//! | path in the view, not writable | `EROFS` |
+//! | path in the view, readable | the real thing |
+//!
+//! `EACCES` is never returned for a policy decision. It is the errno most
+//! software handles by aborting or by asking the user to fix something
+//! they cannot fix; "the directory contains these two files", "no such
+//! file" and "read-only file system" are all states programs handle
+//! correctly today, because they occur naturally.
+//!
+//! Consequences that are deliberate rather than incidental:
+//!
+//! - `readdir` omits entries outside the view. It does not list them and
+//!   fail on access — they are not there.
+//! - `lookup` answers `ENOENT` for a name outside the view, and does the
+//!   *same work* either way: the namespace is consulted and the view is
+//!   evaluated on every call, in the same order, whether or not the entry
+//!   exists. There is no fast path whose absence is a signal.
+//! - A directory's link count is computed from the filtered listing, so
+//!   `nlink` matches what the app can see. A count taken from the real
+//!   tree would report subdirectories the listing denies.
+//! - Every inode number an app can name it learned from `lookup` or
+//!   `readdir`, so it can only address what is already in its view.
+//!
+//! ## Where the illusion has an edge, and why it is not reachable
+//!
+//! Creating a name that already exists but is outside the view answers
+//! `EROFS` rather than creating it, because the alternative is writing
+//! over state the app is not allowed to see. In principle that is one bit
+//! per guessed name: "this name is taken by something I cannot see".
+//!
+//! The capability model cannot produce that situation. A `Restrict` is
+//! phrased as a ceiling and every verb implies `Read`, so no capability
+//! can take reading away from a subtree it left writable — inside a
+//! writable directory, nothing is hidden. `acl::tests::
+//! a_restriction_narrows_writing_without_hiding_anything` pins that.
+//! Reaching the edge needs a direct [`crate::acl::AclEntry`] with
+//! `write` but not `read`, which no production caller writes.
+//!
+//! The same reasoning covers `rmdir` on a directory whose only remaining
+//! children are outside the view: it answers `EROFS`, not `ENOTEMPTY`, so
+//! it does not announce that something is in there.
 use fuser::*;
-use libc::{EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY};
+use libc::{EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY, EROFS};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
@@ -213,25 +264,174 @@ impl QuickFS {
     ///
     /// Returns `Ok(())` when the mount has no ACL attached (the Unix
     /// veneer alone governs) or when the bound identity holds `access`
-    /// on the inode's path. Returns `Err(EACCES)` when the ACL denies,
-    /// and `Err(ENOENT)` when the inode has no resolvable path. This is
-    /// the single production decision point — `open`/`read`/`write` all
-    /// call it, so a test that drives it exercises the real access path.
+    /// on the inode's path.
+    ///
+    /// A denial is **never** `EACCES`:
+    ///
+    /// - a path outside the identity's view is `ENOENT`, the same answer
+    ///   the app would get for a name that was never there;
+    /// - a path inside the view that the identity may not write is
+    ///   `EROFS`, which says nothing about the path and everything about
+    ///   the mount — and is the failure every program already handles by
+    ///   staying read-only instead of by prompting.
+    ///
+    /// This is the single production decision point — `open`, `read`,
+    /// `write`, `setattr` and the directory mutations all reach it, so a
+    /// test that drives it exercises the real access path.
     pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
+        if self.enforcement.is_none() {
+            return Ok(());
+        }
+        let path = self.namespace.lock().unwrap().path_for(ino).ok_or(ENOENT)?;
+        self.check_path(&path, access)
+    }
+
+    /// [`Self::check_access`] against a path rather than an inode, for the
+    /// operations whose subject is a name that may not exist yet.
+    fn check_path(&self, path: &str, access: Access) -> Result<(), i32> {
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
-        let path = self
+        if acl.permits(identity, path, access) {
+            return Ok(());
+        }
+        if acl.visible(identity, path) && access == Access::Write {
+            // In the view, and the view is read-only here.
+            return Err(EROFS);
+        }
+        // Outside the view, or in it but not readable (an ancestor
+        // directory the app may walk but not read as content). Either way
+        // the honest answer is that there is nothing here.
+        Err(ENOENT)
+    }
+
+    /// Is `path` part of the view this mount serves?
+    ///
+    /// `true` for every path on a mount with no ACL attached — the
+    /// filtered view is the ACL's, so without one there is nothing to
+    /// filter.
+    fn in_view(&self, path: &str) -> bool {
+        match &self.enforcement {
+            Some((acl, identity)) => acl.visible(identity, path),
+            None => true,
+        }
+    }
+
+    /// Is `ino` part of the view? An inode with no resolvable path
+    /// (trashed, cyclic) is not.
+    fn ino_in_view(&self, ino: u64) -> bool {
+        if self.enforcement.is_none() {
+            return true;
+        }
+        match self.namespace.lock().unwrap().path_for(ino) {
+            Some(path) => self.in_view(&path),
+            None => false,
+        }
+    }
+
+    /// The entries of `ino` that belong in the view, as `readdir` would
+    /// report them. `None` when `ino` is not a directory in the view.
+    ///
+    /// `.` and `..` always survive: they are the directory itself and its
+    /// parent, both of which the app reached this directory through.
+    fn visible_entries(&self, ino: u64) -> Option<Vec<(u64, FileType, String)>> {
+        let (entries, dir_path) = {
+            let mut ns = self.namespace.lock().unwrap();
+            (ns.readdir(ino), ns.path_for(ino))
+        };
+        let entries = entries?;
+        let Some((acl, identity)) = &self.enforcement else {
+            return Some(entries);
+        };
+        let dir_path = dir_path?;
+        if !acl.visible(identity, &dir_path) {
+            return None;
+        }
+        Some(
+            entries
+                .into_iter()
+                .filter(|(_, _, name)| {
+                    name == "." || name == ".." || acl.visible(identity, &child_path(&dir_path, name))
+                })
+                .collect(),
+        )
+    }
+
+    /// The link count to report for a directory: `2` (itself and `..`)
+    /// plus one per subdirectory **in the view**.
+    ///
+    /// Taken from the filtered listing rather than from the namespace so
+    /// that `nlink` and `readdir` cannot disagree. A count taken from the
+    /// real tree would announce the number of subdirectories the listing
+    /// hides, which is the whole property this module exists to keep.
+    fn visible_dir_nlink(&self, ino: u64) -> u32 {
+        let subdirs = self
+            .visible_entries(ino)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(_, kind, name)| {
+                        *kind == FileType::Directory && name != "." && name != ".."
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        2u32.saturating_add(subdirs as u32)
+    }
+
+    /// The check every "make a new name in this directory" operation
+    /// runs: `create`, `mkdir`, and the destination half of `rename`.
+    ///
+    /// A parent outside the view is `ENOENT`. Otherwise the new path must
+    /// be writable, and **that question is asked before the name is
+    /// looked up**: a name the app may not create there gets the same
+    /// answer whether or not something is already sitting on it. Asking
+    /// the other way round turned `create` into an existence oracle —
+    /// `EROFS` for a taken name against `ENOENT` for a free one.
+    ///
+    /// Only once the app *may* create the name does a collision with
+    /// something outside the view matter, and then it is refused with
+    /// `EROFS` rather than written over. Reaching that needs a grant that
+    /// is writable but not readable, which no capability can express.
+    fn check_new_name(&self, parent: u64, name: &str) -> Result<(), i32> {
+        let Some((acl, identity)) = &self.enforcement else {
+            return Ok(());
+        };
+        let parent_path = self
             .namespace
             .lock()
             .unwrap()
-            .path_for(ino)
+            .path_for(parent)
             .ok_or(ENOENT)?;
-        if acl.permits(identity, &path, access) {
-            Ok(())
-        } else {
-            Err(EACCES)
+        if !acl.visible(identity, &parent_path) {
+            return Err(ENOENT);
         }
+        let child = child_path(&parent_path, name);
+        self.check_path(&child, Access::Write)?;
+        let taken = self.namespace.lock().unwrap().lookup(parent, name).is_some();
+        if taken && !acl.visible(identity, &child) {
+            return Err(EROFS);
+        }
+        Ok(())
+    }
+
+    /// The check for removing or renaming an existing name in `parent`:
+    /// the entry must be in the view (else it is not there) and writable
+    /// (else the view is read-only).
+    fn check_existing_name(&self, parent: u64, name: &str) -> Result<(), i32> {
+        if self.enforcement.is_none() {
+            return Ok(());
+        }
+        let parent_path = self
+            .namespace
+            .lock()
+            .unwrap()
+            .path_for(parent)
+            .ok_or(ENOENT)?;
+        if !self.in_view(&parent_path) {
+            return Err(ENOENT);
+        }
+        self.check_path(&child_path(&parent_path, name), Access::Write)
     }
 
     fn publish(&self, delta: Vec<u8>) {
@@ -297,6 +497,10 @@ impl QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         };
+        if let Err(e) = self.check_existing_name(parent.0, name) {
+            reply.error(to_errno(e));
+            return;
+        }
         let delta = {
             let mut ns = self.namespace.lock().unwrap();
             let Some(attr) = ns.lookup(parent.0, name) else {
@@ -316,7 +520,19 @@ impl QuickFS {
                 // A directory must be empty to rmdir (entries beyond "." "..").
                 if let Some(entries) = ns.readdir(attr.ino.0) {
                     if entries.len() > 2 {
-                        reply.error(to_errno(ENOTEMPTY));
+                        // Emptiness is judged on the real tree, because
+                        // removing the directory would take its hidden
+                        // children with it. When the app's own listing
+                        // says empty, saying `ENOTEMPTY` would announce
+                        // that something it cannot see is in there — so
+                        // the answer is the same `EROFS` every other
+                        // refusal to write over unseen state gives.
+                        drop(ns);
+                        let visible = self
+                            .visible_entries(attr.ino.0)
+                            .map(|e| e.len())
+                            .unwrap_or(0);
+                        reply.error(to_errno(if visible > 2 { ENOTEMPTY } else { EROFS }));
                         return;
                     }
                 }
@@ -334,6 +550,16 @@ impl QuickFS {
 
 fn to_errno(e: i32) -> Errno {
     io::Error::from_raw_os_error(e).into()
+}
+
+/// `dir` + `name`, as the ACL spells paths: absolute, no trailing slash,
+/// `"/name"` directly beneath the root.
+fn child_path(dir: &str, name: &str) -> String {
+    if dir == "/" {
+        format!("/{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
 }
 
 fn now_ms() -> u64 {
@@ -365,18 +591,41 @@ impl Filesystem for QuickFS {
         Ok(())
     }
 
+    /// Resolve one name in a directory.
+    ///
+    /// Both halves — the namespace lookup and the view evaluation — run on
+    /// every call, in the same order, and the answer is only assembled
+    /// afterwards. A name that does not exist and a name that exists
+    /// outside the view therefore cost the same two operations and return
+    /// the same `ENOENT`; neither the errno nor the shape of the work
+    /// distinguishes them.
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         let Some(name) = name.to_str() else {
             reply.error(to_errno(EINVAL));
             return;
         };
-        let mut ns = self.namespace.lock().unwrap();
-        match ns.lookup(parent.0, name) {
-            Some(attr) => {
-                let is_doc = ns.document_codec(attr.ino.0).is_some();
+        let (found, child) = {
+            let mut ns = self.namespace.lock().unwrap();
+            let found = ns.lookup(parent.0, name);
+            let child = ns.path_for(parent.0).map(|p| child_path(&p, name));
+            (found, child)
+        };
+        let in_view = child.is_some_and(|c| self.in_view(&c));
+        match found {
+            Some(attr) if in_view => {
+                let is_doc = self
+                    .namespace
+                    .lock()
+                    .unwrap()
+                    .document_codec(attr.ino.0)
+                    .is_some();
+                let mut attr = attr;
+                if attr.kind == FileType::Directory {
+                    attr.nlink = self.visible_dir_nlink(attr.ino.0);
+                }
                 reply.entry(&self.ttl_for(is_doc), &attr, Generation(0));
             }
-            None => reply.error(to_errno(ENOENT)),
+            _ => reply.error(to_errno(ENOENT)),
         }
     }
 
@@ -396,12 +645,24 @@ impl Filesystem for QuickFS {
         } else {
             None
         };
-        let ns = self.namespace.lock().unwrap();
-        match ns.getattr(ino.0) {
+        // Outside the view there is nothing to describe.
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len.or(doc_len) {
                     attr.size = len;
                     attr.blocks = len.div_ceil(512);
+                }
+                if attr.kind == FileType::Directory {
+                    // Matches the filtered listing, including at the mount
+                    // root: an identity granted nothing sees `nlink == 2`
+                    // and `size == 0` — an ordinary empty directory. Only
+                    // directories pay for it.
+                    attr.nlink = self.visible_dir_nlink(ino.0);
                 }
                 reply.attr(&self.ttl_for(is_doc), &attr);
             }
@@ -417,11 +678,15 @@ impl Filesystem for QuickFS {
         offset: u64,
         mut reply: ReplyDirectory,
     ) {
-        let entries = {
-            let mut ns = self.namespace.lock().unwrap();
-            ns.readdir(ino.0)
-        };
-        let Some(entries) = entries else {
+        // The filtered listing. Entries outside the view are not reported
+        // as entries that error — they are simply not in the directory,
+        // and the offsets below are indices into what the app can see, so
+        // a paged listing never has a gap where something was removed.
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        let Some(entries) = self.visible_entries(ino.0) else {
             reply.error(to_errno(ENOTDIR));
             return;
         };
@@ -445,7 +710,10 @@ impl Filesystem for QuickFS {
         }
         // Per-identity ACL: an open requires the identity to hold the
         // access implied by the open mode (read for O_RDONLY, write for
-        // O_WRONLY, both for O_RDWR). Denied ⇒ EACCES.
+        // O_WRONLY, both for O_RDWR). Outside the view ⇒ `ENOENT`; in the
+        // view but not writable ⇒ `EROFS`, so an app that opens for
+        // writing falls back to read-only the way it would on any
+        // read-only mount.
         for access in required_accesses(flags.acc_mode()) {
             if let Err(e) = self.check_access(ino.0, *access) {
                 reply.error(to_errno(e));
@@ -531,6 +799,10 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         };
+        if let Err(e) = self.check_new_name(parent.0, name) {
+            reply.error(to_errno(e));
+            return;
+        }
         let codec = self.document_codec_for(name);
         let (attr, delta) = {
             let mut ns = self.namespace.lock().unwrap();
@@ -673,6 +945,19 @@ impl Filesystem for QuickFS {
         _flags: Option<BsdFileFlags>,
         reply: ReplyAttr,
     ) {
+        // Truncation is a write. Everything else here (perm/owner/time) is
+        // ignored anyway, but a `setattr` on something outside the view
+        // must not describe it, so the visibility check runs regardless.
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        if size.is_some() {
+            if let Err(e) = self.check_access(ino.0, Access::Write) {
+                reply.error(to_errno(e));
+                return;
+            }
+        }
         // Handle truncation/extension; ignore perm/owner/time changes.
         if let Some(new_size) = size {
             let is_doc = self.is_document(ino.0);
@@ -701,11 +986,15 @@ impl Filesystem for QuickFS {
             .unwrap()
             .get(&ino.0)
             .map(|b| b.len() as u64);
-        match self.namespace.lock().unwrap().getattr(ino.0) {
+        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len {
                     attr.size = len;
                     attr.blocks = len.div_ceil(512);
+                }
+                if attr.kind == FileType::Directory {
+                    attr.nlink = self.visible_dir_nlink(ino.0);
                 }
                 reply.attr(&TTL, &attr);
             }
@@ -726,6 +1015,10 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         };
+        if let Err(e) = self.check_new_name(parent.0, name) {
+            reply.error(to_errno(e));
+            return;
+        }
         let (attr, delta) = {
             let mut ns = self.namespace.lock().unwrap();
             let Some(ino) = ns.create_dir(parent.0, name, now_ms()) else {
@@ -765,6 +1058,15 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(EINVAL));
             return;
         };
+        // Both ends: the source must be a writable name in the view, the
+        // destination a writable new name in a directory in the view.
+        if let Err(e) = self
+            .check_existing_name(parent.0, name)
+            .and_then(|()| self.check_new_name(newparent.0, newname))
+        {
+            reply.error(to_errno(e));
+            return;
+        }
         let delta = {
             let mut ns = self.namespace.lock().unwrap();
             if !ns.rename(parent.0, name, newparent.0, newname, now_ms()) {
@@ -788,6 +1090,13 @@ impl Filesystem for QuickFS {
         size: u32,
         reply: ReplyXattr,
     ) {
+        // Outside the view the inode does not exist, and that answer comes
+        // before the attribute name is considered — otherwise the sync
+        // state would report on a file the app cannot see.
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
         if name.to_str() != Some(crate::syncstate::SYNC_XATTR) {
             reply.error(to_errno(libc::ENODATA));
             return;
@@ -811,6 +1120,10 @@ impl Filesystem for QuickFS {
     /// List the extended attributes on `ino`: just `user.qos.sync` (NUL
     /// terminated), so `getfattr`/`listxattr` discover the sync attribute.
     fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: ReplyXattr) {
+        if !self.ino_in_view(ino.0) {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
         if self.namespace.lock().unwrap().getattr(ino.0).is_none() {
             reply.error(to_errno(ENOENT));
             return;

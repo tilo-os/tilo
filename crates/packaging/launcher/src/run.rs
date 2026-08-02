@@ -982,7 +982,9 @@ pub fn run_with(
         // Landlock grant on the sandbox-side path, the app's
         // `runtime-identity::load()` open() surfaces EACCES and the
         // whole feature quietly no-ops.
-        if identity_arg.is_some() {
+        // Same condition as the bind itself: a read-only participant has
+        // no identity bound, so there is nothing to grant read on.
+        if identity_arg.is_some() && capabilities.participation.carries_identity() {
             argv.push("--ro".to_string());
             argv.push(crate::sandbox::SANDBOX_IDENTITY_PATH.to_string());
         }
