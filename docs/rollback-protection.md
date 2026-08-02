@@ -33,6 +33,72 @@ Never at install time. An update that boots and then fails never reaches its own
 confirmation, so the previous generation keeps working — which is the only reason
 an automatic rollback is survivable.
 
+## Advancing the floor needs a signed, single-use approval
+
+The counter is defined with `policywrite` and no `authwrite`, so nothing can
+increment it on authority of an empty password. Its `authPolicy` is
+
+```
+PolicyOR(
+    PolicyAuthorize(floor authority key, policyRef = "qos-rollback-floor"),
+    PolicyNvWritten(clear) -> PolicyCommandCode(TPM2_NV_Increment),
+)
+```
+
+The second branch materialises the counter on a device that holds no signing key.
+It works exactly once: the write it performs sets `TPMA_NV_WRITTEN`, after which
+`PolicyNvWritten(clear)` can never be satisfied again.
+
+Every later increment needs an approval, which is a signature over
+`PolicyCommandCode(TPM2_NV_Increment) -> PolicyNV(counter == target - 1)`. The TPM
+enforces all three properties:
+
+- **single-use** — after the increment the counter is `target`, so the same
+  approval no longer applies. Not "we delete the file"; the TPM refuses it.
+- **bound to one target** — an approval for `N` cannot reach `N + 5`.
+- **bound to one command** — it authorises `TPM2_NV_Increment` and nothing else.
+
+### Issuing approvals
+
+Approvals are per-device, because the operand is that device's absolute counter
+value. So it is a request/response exchange, and it works offline over a file:
+
+```bash
+# On the device.
+qos-rollback floor-request --device /dev/vda3 --out req.json
+
+# On the authority, which holds the private key.
+qos-rollback approve-floor --private-key keys/tpm2-pcr-signing.private.pem     --request req.json --out-dir approvals/
+
+# Back on the device.
+cp approvals/*.json /var/lib/qos/rollback/approvals/
+```
+
+`approve-floor` refuses to issue past the newest generation that has a sealed
+keyslot. That bound is what keeps a stash of approvals from becoming a denial of
+service: approvals are signatures rather than secrets, so a device holding them can
+spend them, and burning the whole batch then lands the floor exactly where a
+legitimate confirmation would have put it — with the newest enrolled generation
+still able to unseal. Going past it needs
+`--i-accept-stranding-this-machine`.
+
+The bound is computed from the device's own request, so a device that lies about
+its state can be issued approvals that strand it. A device that lies is already
+compromised; the bound exists so that a *later* compromise cannot turn a stash of
+approvals into a bricked machine.
+
+### If the authority is unavailable
+
+**The floor stops advancing. The disk keeps unlocking.** Unsealing only reads the
+counter, and `TPM2_PolicyNV` needs no approval. Confirmation still prunes the
+keyslot window, reports the steps it could not take, and leaves the counter alone;
+the protection degrades to the keyslot-retention half rather than failing closed.
+
+Losing the authority key permanently freezes the floor where it is. Recovering
+means re-enrolling against a new authority key, which defines a fresh index and
+re-seals the tokens, with the recovery key as the unlock path throughout. Nothing
+is bricked.
+
 ## Operator commands
 
 ```bash
@@ -59,6 +125,11 @@ qos-rollback certify --nonce "$(openssl rand -hex 16)" --out-dir /tmp/att
 `--retain N` sets the window (default 3: the current generation plus the two
 before it). `--floor-at-least N` on `confirm` jumps the floor past a
 known-vulnerable generation instead of leaving it inside the window.
+
+`--floor-authority-key` selects the key that authorises floor advances; it defaults
+to the PCR-prediction key because both are the same trust domain. Production
+custody should separate them — a prediction signature says "these are the expected
+measurements", while a floor approval permanently narrows what a machine will boot.
 
 `QOS_ROLLBACK_DEBUG=1` prints the failing TPM tool's own diagnostics, which is
 what you want when a boot could not unseal. It never prints a secret — the PIN and
@@ -112,6 +183,29 @@ firmware update from turning into a recovery-key prompt.
 4. **PCR 7 and 11 measured as usual**, and a prediction for them signed per
    generation.
 
+## Testing it
+
+```bash
+# Mechanism, against an emulated TPM and a real LUKS2 header. No root, no VM.
+cargo test -p qos-rollback
+
+# The shell helpers the systemd units use.
+./os/tests/rollback-wrappers.sh
+
+# Boot-side, inside a booted guest — the only place the rest can be established.
+./os/dev/vm.sh boot --tpm
+#   ... then in the guest:
+sudo /usr/libexec/qos-rollback-boot-check
+```
+
+The boot-side check is the one that establishes what the host cannot: that the
+generation number arrived on the sealed command line, that PCR 7 and 11 hold
+meaningful measurements, that early userspace produced the key file before
+`systemd-cryptsetup` wanted it, and that the units fired. It needs the UKI to carry
+`qos.generation=` and an initramfs hook that calls `qos-rollback unlock`; until
+both exist it reports those as failures, which is the correct answer rather than a
+skip.
+
 ## Recovery
 
 The recovery key is an independent path and nothing here ever touches its keyslot.
@@ -121,7 +215,11 @@ It is what unlocks the disk when:
   floor),
 - the firmware changed and no signed prediction covers the new state,
 - the TPM was cleared or replaced,
-- the PIN was forgotten and the lockout is exhausted.
+- the PIN was forgotten and the lockout is exhausted,
+- the NV index was destroyed, or recreated with a different floor authority key
+  (its TPM Name changes, and every token is sealed against the old Name —
+  `qos-rollback enroll` reports this by name rather than letting it surface as an
+  unexplained failure to unseal).
 
 That last one is worth stating plainly, because it is circular by construction:
 the dictionary-attack reset authorisation lives on the encrypted root, so a
