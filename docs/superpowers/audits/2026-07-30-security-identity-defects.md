@@ -220,8 +220,8 @@ Two adjacent holes in the same guarantee were found alongside it:
   still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
   the strongest sense: nobody noticed, because the base `FROM` above failed first and the layer
   cache served the stage before that. Once the base pin was fixed and the stage actually ran, it
-  had three independent defects stacked behind one another, each only visible after the previous
-  was fixed:
+  had five independent defects stacked behind one another, each only visible after the previous
+  was fixed. The image now builds end to end — run 811, signed and pushed.
 
   1. `build-wpe.sh` exported `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged
      `${prefix}`. A sysroot is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it
@@ -236,12 +236,27 @@ Two adjacent holes in the same guarantee were found alongside it:
   3. The WPE port's `ENABLE_WPE_PLATFORM_DRM` needs libinput and libudev, which the *GTK* port's
      builddep never pulls, so `find_package(LibInput)` failed (run 755). Added to the explicit
      package list the stage already keeps for this purpose.
+  4. With the engine finally built, the Rust builder could not find `wpe-webkit-2.0` (run 758).
+     The `.pc` was present; it declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`,
+     and pkg-config fails the whole lookup when one link in that chain has no `.pc` — reported by
+     the pkg-config crate as the requested module being missing. The image ships `libsoup3` for
+     the browser at runtime but the builder never installed `libsoup3-devel`.
+  5. Linking `browser` then failed on hundreds of undefined `gst_*`/`epoxy_*`/`manette_*` symbols
+     (run 773). The engine is *not* under-linked — ld says so first: `libgstreamer-1.0.so.0,
+     needed by /usr/lib64/libWPEWebKit-2.0.so, not found`. 17 sonames, nine packages, absent from
+     the builder.
 
-  Each was found only by running the build; none is visible by reading it. Two guards now fail the
-  script at the point of the mistake rather than somewhere downstream: every staged package must
-  resolve to an include directory that exists *and* link a trivial program, and each build step
-  dumps its real output on failure instead of the `tail -1` that had been hiding the compiler
-  error behind ninja's "build stopped".
+  Each was found only by running the build; none is visible by reading it. Defect 5 also exposed a
+  latent runtime bug that no build would ever have caught: four of those libraries — `atk`,
+  `at-spi2-atk`, `libmanette`, `libxslt` — were missing from the *final image* too, so the browser
+  would have failed to exec on a booted system.
+
+  Guards now fail at the point of the mistake rather than somewhere downstream: every staged
+  package must resolve to an include directory that exists *and* link a trivial program; each
+  build step dumps its real output on failure instead of the `tail -1` that had been hiding the
+  compiler error behind ninja's "build stopped"; and the hour-long engine compile streams progress
+  rather than going silent, which had made three runner-level deaths (a Docker daemon that went
+  away mid-build) indistinguishable from a hang.
 
 ---
 
