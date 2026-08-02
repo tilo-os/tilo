@@ -109,6 +109,17 @@ impl MergeView {
         &self.model
     }
 
+    /// The resolution-chip hit rects captured by the last `draw`, each with the
+    /// hunk and choice it dispatches. Lets a headless test click a chip through
+    /// the real pointer path instead of calling `resolve` directly.
+    #[cfg(test)]
+    pub(crate) fn chip_hits(&self) -> Vec<(Rect, usize, HunkChoice)> {
+        self.action_hits
+            .iter()
+            .map(|a| (a.rect, a.hunk, a.choice))
+            .collect()
+    }
+
     /// Presentation context for the Ctrl+K resource tree: the merge title plus a
     /// snapshot of the model the per-hunk specs compose from. `None` when there
     /// is nothing to resolve.

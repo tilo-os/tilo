@@ -312,7 +312,13 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let mut presence = PresenceCtx::empty();
     // Shots-only: seed a remote collaborator's cursor at `x,y` so the headless
     // frame shows a peer caret mapped into the active math field's 2D layout.
