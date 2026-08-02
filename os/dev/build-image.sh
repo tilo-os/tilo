@@ -65,7 +65,13 @@ export SOURCE_DATE_EPOCH
 # value is explicit in the build log.
 : "${QOS_WITH_BROWSER:=1}"
 msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER)"
+# Extra podman-build flags, for the times the layer cache is the problem rather
+# than the source. A disk that fills mid-build can leave a cached layer holding a
+# corrupt RPM database, which then surfaces as dnf insisting that packages the
+# base image plainly has are missing — QOS_BUILD_ARGS=--no-cache is the way out.
+read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
 podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
+  "${_qos_build_args[@]}" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   --build-arg "BASE_REF=$BASE_REF" \
   --build-arg "RPMS_REF=$RPMS_REF" \
