@@ -258,8 +258,17 @@ impl Entrypoint {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Sandbox {
+    /// `[sandbox] seccomp = "…"` — the named syscall profile the package
+    /// declares. `qos-default` is the baseline and enforces write-xor-execute;
+    /// `qos-jit` is the same policy without that rule, for a program that
+    /// genuinely compiles code at run time. Resolved through
+    /// [`Sandbox::seccomp_profile`], which treats every unrecognised name as
+    /// the strict one — a manifest typo must not be a route to a weaker
+    /// sandbox.
+    #[serde(default = "default_seccomp_profile")]
+    pub seccomp: String,
     #[serde(default)]
     pub net: Net,
     #[serde(default)]
@@ -276,6 +285,34 @@ pub struct Sandbox {
     /// exposed (so apps that didn't declare a portal can't reach it).
     #[serde(default)]
     pub portals: BTreeMap<String, PortalPolicy>,
+}
+
+fn default_seccomp_profile() -> String {
+    crate::seccomp::SeccompProfile::QosDefault
+        .as_str()
+        .to_string()
+}
+
+/// Hand-written rather than derived so the default profile is the named strict
+/// one and not an empty string — a `Sandbox` built in code confines the same
+/// way as one decoded from a manifest that omitted the key.
+impl Default for Sandbox {
+    fn default() -> Self {
+        Self {
+            seccomp: default_seccomp_profile(),
+            net: Net::default(),
+            fs: Fs::default(),
+            services: BTreeMap::new(),
+            portals: BTreeMap::new(),
+        }
+    }
+}
+
+impl Sandbox {
+    /// The syscall profile this manifest asked for, resolved fail-closed.
+    pub fn seccomp_profile(&self) -> crate::seccomp::SeccompProfile {
+        crate::seccomp::SeccompProfile::parse(&self.seccomp)
+    }
 }
 
 /// How the launcher should route a portal request. Kebab-case wire

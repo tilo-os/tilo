@@ -184,6 +184,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
+# Read the hardening back off the linked binaries. `.cargo/config.toml` sets
+# the flags; this is what proves they survived to the artifacts this image
+# ships — a dropped linker argument or a target change is otherwise invisible
+# until someone runs readelf on a released image. Fails the build, on purpose.
+RUN /build/os/scripts/verify-elf-hardening.sh /out
+
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
 # /usr/lib/qos-runtime/<RUNTIME_VERSION>/ that the launcher can find
@@ -536,6 +542,22 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # install/upgrade.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
 
+# Runtime tunables: no cross-process debugging, no kernel pointers or ring
+# buffer for unprivileged readers, no unprivileged BPF, no kexec, no io_uring
+# or userfaultfd, plus the /tmp symlink-race and LAN-spoofing settings. Under
+# /usr/lib because it is part of the image; /etc/sysctl.d/ with a higher number
+# still wins for a machine that needs to differ. The file's header explains why
+# unprivileged user namespaces are NOT disabled — bubblewrap, hence the whole
+# app sandbox, needs them.
+COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardening.conf
+
+# Which sandboxed packages get the expensive protections (hardened allocator +
+# hardware shadow stacks). Read by qos-launcher at launch; scoped rather than
+# image-wide because the allocator costs multiples on allocation-heavy work and
+# most of this system is Rust, which does not produce the bugs it catches. The
+# image owns the list — an app manifest can neither request nor decline it.
+COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
@@ -593,11 +615,24 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
 # would fail the service. (Base daemons use the system allocator — verified no
 # jemalloc — so the preload is safe.)
+#
+# Alongside it, hardware shadow stacks. Every binary in this image is marked
+# shadow-stack compatible at link time, but Fedora's glibc only switches them on
+# when a process also asks through this tunable — which is precisely what makes
+# the protection scopeable instead of global. fs.service earns it because it
+# parses bytes that arrived from a peer. Measured cost on an allocation-heavy
+# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
+# it, glibc leaves shadow stacks off rather than failing, and
+# qos-security-audit reports which processes actually got them.
+#
+# compiler-rt also has to be present for qos-launcher's scoped hardening, which
+# preloads the same library into the packages listed in
+# /usr/lib/qos/untrusted-parsers.conf.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
-    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
+    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 
