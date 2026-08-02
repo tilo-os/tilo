@@ -610,9 +610,21 @@ COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 # /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
+    && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
+    && dnf clean all
+
+# The signing tools, in their own transaction and allowed to be absent.
+#
+# They are named here so the snapshot job keeps resolving them into the frozen
+# package set, but a snapshot that predates them must not fail the whole image
+# build: nothing on the boot path needs them, and the one thing that does —
+# /usr/libexec/qos-secureboot — already refuses every command with the exact
+# remedy when they are missing. The safety property lives in the tool failing
+# closed, not in the build failing open. systemd-boot-unsigned above stays in a
+# strict transaction, because an image with no bootloader IS a broken image.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-unavailable --setopt=reposdir=/repo \
         sbsigntools \
         efitools \
-    && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && dnf clean all
 
 # The install-config drop-in that flips bootc's bootloader choice to
