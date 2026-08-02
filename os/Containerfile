@@ -568,8 +568,9 @@ COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
 COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
 COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+COPY os/tests/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
 RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
-        /usr/libexec/qos-rollback-harden \
+        /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
  && install -d -m 0755 /usr/share/qos/pcr-predictions
 
 # The signed PCR predictions this image was built with go in
