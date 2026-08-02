@@ -10,6 +10,7 @@
 //! user's real, persisted tunnels); `app_root_demo()` is the sample-seeded
 //! build used by the `--shots` renderer so the screenshot is populated.
 
+pub mod actions;
 pub mod app;
 pub mod config;
 pub mod doc;
@@ -36,4 +37,12 @@ pub fn app_root() -> Box<dyn Widget> {
 /// is the ONLY entry point that fabricates tunnels.
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(VpnApp::new_demo())
+}
+
+/// Sample-seeded app with the action confirm dialog open, for a deterministic
+/// `--shots` frame.
+pub fn app_root_demo_confirm() -> Box<dyn Widget> {
+    let mut app = VpnApp::new_demo();
+    app.seed_shot_confirm();
+    Box::new(app)
 }

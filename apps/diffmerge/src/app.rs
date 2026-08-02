@@ -15,10 +15,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -26,9 +26,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
 
 use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
@@ -84,6 +84,11 @@ pub struct DiffMergeApp {
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
     structure_dirty: bool,
+    /// Framework-owned action dispatch: every on-panel affordance routes its
+    /// [`DiffmergeAction`] through here so it brackets **one** undo boundary,
+    /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl DiffMergeApp {
@@ -141,6 +146,7 @@ impl DiffMergeApp {
             load_error: None,
             dirty: true,
             structure_dirty: false,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -206,6 +212,36 @@ impl DiffMergeApp {
                 self.dirty = true;
             }
         }
+    }
+
+    /// Dispatch one [`DiffmergeAction`](crate::actions::DiffmergeAction) — the
+    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The document heads captured just before the first action of the
+    /// event are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory merge model was already
+    /// updated by the chip handler for immediate feedback and is reconciled from
+    /// the document on the next `sync`.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
+        self.actions.dispatch(doc, crate::actions::DIFFMERGE_ACTION_TYPE, &action);
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// The presentation context Ctrl+K needs to build the merge resource tree.
+    /// `None` unless a three-way merge with at least one change hunk is the
+    /// active mode — the diff mode is read-only and mutates nothing.
+    pub(crate) fn merge_resource_ctx(&self) -> Option<crate::actions::MergeResourceCtx> {
+        if self.mode != Mode::Merge {
+            return None;
+        }
+        self.merge.resource_ctx()
     }
 
     /// Ask the host desktop's file chooser to open a file to compare. Per HIG
@@ -314,30 +350,32 @@ impl DiffMergeApp {
             None,
         );
 
-        // Mode segmented control.
-        let mut x = r.x0 + 70.0;
+        // Mode segmented control (shared pill-style segmented control).
         let seg_y = r.y0 + 10.0;
         let seg_h = 28.0;
-        for (label, action, selected) in [
-            ("Diff", Action::ModeDiff, self.mode == Mode::Diff),
-            ("3-way merge", Action::ModeMerge, self.mode == Mode::Merge),
-        ] {
+        let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
+        let mode_actions = [Action::ModeDiff, Action::ModeMerge];
+        let selected = if self.mode == Mode::Merge { 1 } else { 0 };
+        let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
+        let mut x = r.x0 + 70.0;
+        for label in mode_labels {
             let w = label.len() as f64 * 7.4 + 22.0;
-            let seg = Rect::new(x, seg_y, x + w, seg_y + seg_h);
-            let bg = if selected { c.accent[5] } else { with_alpha(c.neutral[3], 120) };
-            let rr = RoundedRect::from_rect(seg, 6.0);
-            scene.fill(Fill::NonZero, transform, bg, None, &rr);
-            let tcol = if selected { Color::WHITE } else { c.text_dim };
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                tcol,
-                transform * Affine::translate((x + 11.0, seg_y + 6.0)),
-                None,
-            );
-            self.tool_hits.push(ToolHit { rect: seg, action });
+            mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
             x += w + 6.0;
+        }
+        let hovered = mode_rects.iter().position(|rr| rr.contains(self.cursor));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &SegmentedFace::new(&mode_rects, &mode_labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(6.0),
+        );
+        for (rect, action) in mode_rects.iter().zip(mode_actions) {
+            self.tool_hits.push(ToolHit { rect: *rect, action });
         }
 
         // Right-aligned action buttons.
@@ -350,16 +388,16 @@ impl DiffMergeApp {
         ] {
             let w = label.len() as f64 * 7.2 + 20.0;
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
-            let rr = RoundedRect::from_rect(btn, 6.0);
-            scene.fill(Fill::NonZero, transform, with_alpha(c.neutral[3], 150), None, &rr);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &rr);
-            tr.draw_text(
+            Button::paint(
                 scene,
-                label,
-                12.5,
-                c.text_primary,
-                transform * Affine::translate((rx - w + 10.0, seg_y + 6.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(btn, label)
+                    .radius(6.0)
+                    .text_size(12.5)
+                    .weight(TextWeight::Regular)
+                    .hovered(btn.contains(self.cursor)),
             );
             self.tool_hits.push(ToolHit { rect: btn, action });
             rx -= w + 8.0;
@@ -624,12 +662,34 @@ impl Widget for DiffMergeApp {
                 if let Some(n) = self.merge_node {
                     self.merge.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
                 }
+                // A chip click on the merge panel queues its resolution; dispatch
+                // it through the shared action path so the chip and Ctrl+K produce
+                // the same replayable action under one undo boundary.
+                if let Some(action) = self.merge.take_pending_action() {
+                    self.perform_action(state, action);
+                    *handled = true;
+                }
             }
         }
     }
 
     fn name(&self) -> &str {
         "DiffMergeApp"
+    }
+
+    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-panel chip dispatched its
+    /// resolution action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn get_rect(&self) -> Rect {
@@ -772,5 +832,230 @@ mod tests {
         assert!(app.portal_rx.is_none());
         let err = app.load_error.as_deref().expect("a failure is recorded");
         assert!(err.contains("no portal"), "the reason is surfaced: {err}");
+    }
+
+    /// The full covenant on one on-panel affordance: driving the chip handler
+    /// exactly as a click does queues a resolution; dispatching it through the
+    /// app's shared action path mutates the merged buffer, records **one** undo
+    /// boundary bracketed at the pre-action heads, and Ctrl+Z reverts precisely
+    /// that action.
+    #[test]
+    fn chip_dispatch_records_one_undo_boundary_and_reverts() {
+        let mut app = DiffMergeApp::new_demo(); // Merge mode with a real conflict
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root); // seeds merged + clears resolutions
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("the demo merge has a conflict");
+
+        let before_merged = crate::doc::MergeDoc::merged_text(&state.doc);
+        let before_heads = state.doc.get_heads();
+
+        // Drive the chip handler exactly as a click does, then dispatch through
+        // the shared path (as `handle_event`'s drain does).
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let action = app
+            .merge
+            .take_pending_action()
+            .expect("a chip click queues a resolution");
+        app.perform_action(&mut state.doc, action);
+
+        assert!(app.last_dispatched().is_some(), "the affordance dispatched an envelope");
+        let after_merged = crate::doc::MergeDoc::merged_text(&state.doc);
+        assert_ne!(before_merged, after_merged, "the action mutated the merged output");
+        assert_eq!(
+            crate::doc::MergeDoc::resolutions(&state.doc),
+            vec![(hunk, "theirs".to_string())],
+            "the take-a-side choice is recorded in the CRDT"
+        );
+
+        // Exactly one undo boundary, bracketed by the host at the pre-action heads.
+        let stashed = Widget::take_committed_action(&mut app).expect("heads stashed for the host");
+        assert_eq!(stashed, before_heads, "bracket starts at the pre-action heads");
+        state.record_committed_action(stashed, None, None);
+        assert!(state.peek_last_undo().is_some(), "one undo boundary recorded");
+
+        // Ctrl+Z reverts exactly this action.
+        state.undo(None, None).expect("an undo entry to pop");
+        assert_eq!(
+            crate::doc::MergeDoc::merged_text(&state.doc),
+            before_merged,
+            "undo reverted the resolution and nothing else"
+        );
+    }
+
+    /// Single source of truth: the take-theirs chip on the merge panel builds the
+    /// byte-identical [`EncodedAction`] the palette's take-theirs `ActionSpec`
+    /// does — one action, two entry points.
+    #[test]
+    fn chip_and_palette_encode_identically() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
+
+        // Palette path: the take-theirs immediate spec on the conflict resource.
+        let resources = Widget::resources(&app, &state.doc);
+        let conflict = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == format!("diffmerge.conflict:{hunk}"))
+            .expect("the conflict resource");
+        let spec = conflict.actions.iter().find(|a| a.id == "take-theirs").unwrap();
+        let from_spec = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("take-theirs is immediate"),
+        };
+
+        // Chip path: `resolve` queues the action a click builds.
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let from_chip = crate::actions::encode(&app.merge.take_pending_action().unwrap());
+
+        assert_eq!(from_spec.type_id, from_chip.type_id);
+        assert_eq!(
+            from_spec.payload, from_chip.payload,
+            "chip and palette are one source of truth"
+        );
+    }
+
+    /// Run the real five-pass frame so the merge panel lays out and draws,
+    /// which is what populates the resolution-chip hit rects.
+    fn draw_merge_frame(app: &mut DiffMergeApp, viewport: (f32, f32)) {
+        use std::collections::HashMap;
+        let (w, h) = viewport;
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let measure_map = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w),
+                        height: AvailableSpace::Definite(h),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Clicking a resolution chip at its drawn pixel position resolves *that*
+    /// hunk — proving the pointer → hit-rect → hunk mapping and the app's
+    /// pending-action drain, not just `resolve` in isolation.
+    #[test]
+    fn clicking_a_resolution_chip_resolves_that_hunk_through_the_pointer_path() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{DeviceId, Modifiers};
+
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        draw_merge_frame(&mut app, (1200.0, 760.0));
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("the demo merge has a conflict");
+        // The take-theirs chip drawn for that hunk, by its real pixel rect.
+        let (rect, _, _) = app
+            .merge
+            .chip_hits()
+            .into_iter()
+            .find(|(_, h, ch)| *h == hunk && *ch == crate::actions::HunkChoice::Theirs)
+            .expect("a take-theirs chip is drawn for the conflict hunk");
+        let center = rect.center();
+
+        let before = crate::doc::MergeDoc::merged_text(&state.doc);
+
+        let m = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: DeviceId::dummy(),
+                position: PhysicalPosition::new(center.x, center.y),
+            },
+            1.0,
+            &m,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        app.handle_event(
+            &WindowEvent::MouseInput {
+                device_id: DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            1.0,
+            &m,
+            &mut state.doc,
+            &state.root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert!(handled, "the chip click was consumed");
+        assert_eq!(
+            app.merge.model().hunks[hunk].resolution,
+            crate::model::Resolution::TookTheirs,
+            "clicking the take-theirs chip resolved that hunk to theirs"
+        );
+        assert_ne!(
+            before,
+            crate::doc::MergeDoc::merged_text(&state.doc),
+            "the click dispatched through perform_action and mutated the merged output"
+        );
+        assert_eq!(
+            crate::doc::MergeDoc::resolutions(&state.doc),
+            vec![(hunk, "theirs".to_string())],
+            "the pointer-driven resolution was recorded in the CRDT"
+        );
     }
 }

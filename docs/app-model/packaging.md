@@ -26,10 +26,6 @@ namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read  = []
-write = []
-
 [sandbox.net]
 mode = "off"
 
@@ -82,20 +78,19 @@ at install and run time. See [`trust.md`](./trust.md).
 | `seccomp`    | yes      | Named seccomp profile. `qos-default` is the shipped baseline.                             |
 | `landlock`   | yes      | `strict` — enforce Landlock v3+; `lax` — best-effort; `off` — disable.                    |
 
-##### `[sandbox.fs]`
+##### Filesystem — no block
 
-```toml
-[sandbox.fs]
-read  = ["~/Documents", "/usr/share/fonts"]
-write = ["~/.local/share/dev.qos.notes-cli"]
-```
+A manifest names no filesystem path. `[sandbox.fs]`, with its `read` and
+`write` lists, is retired: a manifest that still carries an entry is
+refused at install and at launch, with a message naming the package and
+the offending entry.
 
-Both fields are lists of path patterns. Patterns are expanded at load time
-by the launcher — `~` becomes the sandbox user's `$HOME`. Every path pattern
-is added to the Landlock ruleset with the corresponding access rights.
-
-If either list is empty the app has no filesystem access outside the payload
-it was launched from.
+The launcher gives every app one writable directory, bound at
+`/run/qos/app`, with `HOME` and the `XDG_*` variables pointed inside it.
+Reads come from a fixed system profile — loader and C library, fonts, GPU
+loader manifests, `/sys`, CA bundle, timezone data — identical for every
+package. Anything else is a capability the user grants at runtime. See
+[`sandbox.md`](./sandbox.md).
 
 ##### `[sandbox.net]`
 
@@ -192,6 +187,10 @@ ext  = ["md", "markdown"]
 `qos-pkg pack` calls
 `validate_manifest_with_payload` before writing anything, which enforces:
 
+- `sandbox.fs.read` and `sandbox.fs.write` are empty. Checked first, so a
+  package that still declares paths reads that error rather than a semver
+  nit four lines down. `qos-install install` runs the same check, and the
+  launcher refuses again at launch.
 - `package.version` is semver.
 - `package.runtime` is `<name>/<version>` with a semver or calver version, and
   is absent for `kind = "runtime"`.

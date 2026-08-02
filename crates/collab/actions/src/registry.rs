@@ -1,0 +1,69 @@
+//! The [`ActionRegistry`]: `type_id` → decoder, so a replaying peer can turn an
+//! [`EncodedAction`] back into a live `Box<dyn Action>` without knowing the
+//! concrete type at the call site.
+//!
+//! An app registers each of its action types once (typically in `main`, or in a
+//! `register(&mut ActionRegistry)` helper the app exposes). The registry is the
+//! same seam the OS-wide / FS global-search backend plugs into to enumerate the
+//! action *types* available across every app.
+
+use std::collections::HashMap;
+
+use serde::de::DeserializeOwned;
+
+use crate::action::{Action, ActionError, EncodedAction};
+
+type Decoder = Box<dyn Fn(&[u8]) -> Result<Box<dyn Action>, ActionError> + Send + Sync>;
+
+/// Maps a stable `type_id` to the decoder that reconstructs its action from a
+/// payload. Cheap to clone-free share behind an `Arc`/`&` at dispatch time.
+#[derive(Default)]
+pub struct ActionRegistry {
+    decoders: HashMap<String, Decoder>,
+}
+
+impl ActionRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register `A` under `type_id`. A later [`decode`](Self::decode) of an
+    /// [`EncodedAction`] carrying this `type_id` deserializes the payload into
+    /// an `A` and boxes it as a `dyn Action`.
+    pub fn register<A>(&mut self, type_id: impl Into<String>)
+    where
+        A: Action + DeserializeOwned + 'static,
+    {
+        let type_id = type_id.into();
+        let tid = type_id.clone();
+        self.decoders.insert(
+            type_id,
+            Box::new(move |bytes: &[u8]| {
+                let action: A = serde_json::from_slice(bytes).map_err(|e| ActionError::Decode {
+                    type_id: tid.clone(),
+                    source: e,
+                })?;
+                Ok(Box::new(action) as Box<dyn Action>)
+            }),
+        );
+    }
+
+    /// Reconstruct a live action from its encoded form.
+    pub fn decode(&self, encoded: &EncodedAction) -> Result<Box<dyn Action>, ActionError> {
+        let decoder = self
+            .decoders
+            .get(&encoded.type_id)
+            .ok_or_else(|| ActionError::UnknownType(encoded.type_id.clone()))?;
+        decoder(&encoded.payload)
+    }
+
+    /// Whether a decoder is registered for `type_id`.
+    pub fn contains(&self, type_id: &str) -> bool {
+        self.decoders.contains_key(type_id)
+    }
+
+    /// Every registered action type id (the general-scope enumeration seam).
+    pub fn type_ids(&self) -> Vec<&str> {
+        self.decoders.keys().map(String::as_str).collect()
+    }
+}

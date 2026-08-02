@@ -33,7 +33,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         // Default `--shots` renders the live/empty state; the sample fleet is
         // only used when the gallery explicitly asks for it.
-        let root = if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
+        let root = if parse_value_arg(&args, "--scenario").as_deref() == Some("confirm") {
+            vpn::app_root_demo_confirm()
+        } else if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
             vpn::app_root_demo()
         } else {
             vpn::app_root()
@@ -50,7 +52,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.vpn");
-    let app = ui::App::new(state, vpn::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, vpn::app_root()).with_autosave(autosave);
+    // Register the VPN's actions so the shell's Ctrl+K palette can decode +
+    // replay the same connection/Tor actions the on-screen affordances dispatch.
+    vpn::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -97,7 +102,11 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

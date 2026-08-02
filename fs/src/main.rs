@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
-use collab_types::{CapOverride, Principal};
+use collab_types::Principal;
 use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
 use fs::{
-    ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS, Ticket, Workspace,
-    WorkspaceAcl,
+    AclHandle, CapabilityFile, ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS,
+    Refresh, Ticket, Workspace, identity_paths, load_mount_identity,
 };
 use fuser::*;
 use std::path::{Path, PathBuf};
@@ -43,6 +43,17 @@ struct AclArgs {
     /// `person:<id>`. Repeatable.
     #[arg(long = "principal", value_name = "KIND:ID")]
     principals: Vec<String>,
+    /// How often to re-read `--acl`, in seconds. `0` reads it once at
+    /// mount and never again.
+    ///
+    /// `/var/workspace` is mounted at boot and stays up for the session,
+    /// so a list read only at mount time cannot express a grant made an
+    /// hour later — the compositor would show a capability the
+    /// filesystem is not honouring. The default is a second: an
+    /// unchanged file costs one `stat`, and a permission change should
+    /// not be something the user waits on.
+    #[arg(long, value_name = "SECONDS", default_value_t = 1)]
+    acl_reload_secs: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -143,7 +154,11 @@ fn parse_principal(spec: &str) -> Result<Principal> {
 /// enforcement point exists to prevent. Omitting `--acl` entirely is the
 /// documented opt-out and keeps the pre-existing behaviour, so
 /// single-user mounts are unaffected.
-fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(WorkspaceAcl, IdentityKey)>> {
+///
+/// `device_key` is the default subject: this machine's device public
+/// key, which is stable across reboots. A grant written against it
+/// keeps meaning the same thing after a restart.
+fn resolve_acl(args: &AclArgs, device_key: IdentityKey) -> Result<Option<Arc<CapabilityFile>>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
             bail!("--identity/--principal require --acl; without a capability list they enforce nothing");
@@ -153,7 +168,7 @@ fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(Workspac
 
     let identity = match &args.identity {
         Some(hex_str) => parse_identity(hex_str)?,
-        None => node_key,
+        None => device_key,
     };
     let principals = args
         .principals
@@ -161,27 +176,63 @@ fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(Workspac
         .map(|s| parse_principal(s))
         .collect::<Result<Vec<_>>>()?;
 
-    let raw = std::fs::read(path)
-        .with_context(|| format!("capability list {path:?} could not be read"))?;
-    let caps: Vec<CapOverride> = serde_json::from_slice(&raw)
-        .with_context(|| format!("capability list {path:?} is not a JSON array of capabilities"))?;
-
-    // `now: None` ⇒ evaluate expiry against the live clock on every
-    // check, so a time-limited capability really does lapse mid-mount.
-    let acl = WorkspaceAcl::from_capabilities(identity, &caps, &principals, None);
+    let file = CapabilityFile::load(path, identity, principals)
+        .with_context(|| format!("binding the capability list {path:?}"))?;
     println!(
         "Enforcing {} capabilities from {path:?} as identity {}",
-        caps.len(),
+        file.count(),
         hex::encode(identity)
     );
-    Ok(Some((acl, identity)))
+    Ok(Some(Arc::new(file)))
+}
+
+/// Re-read the capability list every `every` seconds, swapping the
+/// result into the live mount.
+///
+/// The reload is the whole point of the handle: without it a grant made
+/// after boot never reaches `/var/workspace`. `0` disables it, for a
+/// caller that wants the mount pinned to the list it started with.
+fn spawn_acl_reload(file: Arc<CapabilityFile>, every: u64) -> Option<tokio::task::JoinHandle<()>> {
+    if every == 0 {
+        println!(
+            "Capability list {:?} will NOT be re-read; a later grant needs a remount",
+            file.path()
+        );
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(every));
+        loop {
+            tick.tick().await;
+            match file.refresh() {
+                Refresh::Unchanged => {}
+                Refresh::Reloaded(n) => {
+                    println!("Capability list {:?} reloaded: {n} in force", file.path())
+                }
+                Refresh::Revoked => eprintln!(
+                    "Capability list {:?} is gone; denying every access until it returns",
+                    file.path()
+                ),
+                Refresh::Failed(e) => eprintln!(
+                    "Capability list {:?} could not be re-read ({e}); the previously loaded list \
+                     stays in force",
+                    file.path()
+                ),
+            }
+        }
+    }))
 }
 
 /// Bind and serve the document control socket (best-effort).
+///
+/// `enforcement` is the same ACL and identity the mount is bound to. The
+/// socket reaches the same documents by a shorter route, so it has to reach
+/// them under the same policy — see [`fs::control`].
 fn spawn_control(
     sock: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
     sync: Arc<SyncHandle>,
+    enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
     let _ = std::fs::remove_file(&sock); // clear a stale socket
     match tokio::net::UnixListener::bind(&sock) {
@@ -190,7 +241,7 @@ fn spawn_control(
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {sock:?}");
-            tokio::spawn(fs::control::serve(listener, namespace, Some(sync)))
+            tokio::spawn(fs::control::serve(listener, namespace, Some(sync), enforcement))
         }
         Err(e) => {
             eprintln!("could not bind control socket {sock:?}: {e}");
@@ -214,9 +265,12 @@ async fn serve(
     acl_args: AclArgs,
 ) -> Result<()> {
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    // This node's own key is the mount's identity unless one is named.
-    let acl = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    // This device's own key is the mount's identity unless one is named.
+    let caps = resolve_acl(&acl_args, device.public)?;
+    let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
+    let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let store = Arc::new(open_store(cache_dir).await?);
     let author = endpoint.id().to_string();
 
@@ -250,7 +304,7 @@ async fn serve(
     println!("Hosting workspace — share this ticket to invite peers:\n{}", ticket.encode());
 
     let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -279,8 +333,11 @@ async fn mount(
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    let acl = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    let caps = resolve_acl(&acl_args, device.public)?;
+    let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
+    let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
     let store = Arc::new(open_store(cache_dir).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let author = endpoint.id().to_string();
@@ -302,7 +359,7 @@ async fn mount(
     println!("Joined workspace.");
 
     let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -385,7 +442,7 @@ async fn run_mount(
     namespace: Arc<Mutex<Namespace>>,
     hydrator: Arc<Hydrator>,
     sync: Arc<SyncHandle>,
-    acl: Option<(WorkspaceAcl, IdentityKey)>,
+    acl: Option<(AclHandle, IdentityKey)>,
 ) -> Result<()> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
@@ -487,19 +544,47 @@ async fn seed_from_dir(
 mod tests {
     use super::*;
 
+    /// Files that ship in the OS image, addressed from this crate.
+    fn os_file(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(rel)
+    }
+
+    /// The `ExecStart=` argv from the shipped unit, line continuations
+    /// folded, ready for clap.
+    ///
+    /// Read from the unit itself rather than retyped here: a copy in a
+    /// test asserts that a string parses, not that the shipped image
+    /// runs it.
+    fn service_exec_start() -> Vec<String> {
+        let unit = std::fs::read_to_string(os_file("os/usr/lib/systemd/system/fs.service"))
+            .expect("the shipped fs.service must exist");
+        let mut argv: Vec<String> = Vec::new();
+        let mut lines = unit.lines();
+        while let Some(line) = lines.next() {
+            let Some(rest) = line.strip_prefix("ExecStart=") else {
+                continue;
+            };
+            let mut chunk = rest.to_string();
+            // systemd folds a trailing backslash onto the next line.
+            while let Some(head) = chunk.strip_suffix('\\') {
+                let next = lines.next().expect("continuation line");
+                chunk = format!("{head} {}", next.trim());
+            }
+            argv = chunk.split_whitespace().map(str::to_string).collect();
+            break;
+        }
+        assert!(!argv.is_empty(), "fs.service has no ExecStart=");
+        argv
+    }
+
     #[test]
     fn service_command_line_parses() {
         // The exact line fs.service runs. This used to crash-loop on boot
         // because `--cache-dir` was not a recognized argument (clap exit 2).
-        let cli = Cli::try_parse_from([
-            "fs",
-            "serve",
-            "--mount-point",
-            "/var/workspace",
-            "--cache-dir",
-            "/var/cache/quick-fs",
-        ])
-        .expect("fs.service command line must parse");
+        let argv = service_exec_start();
+        assert_eq!(argv[0], "/usr/bin/fs", "unexpected ExecStart binary: {argv:?}");
+        let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+            .expect("fs.service command line must parse");
         match cli.command {
             Command::Serve {
                 mount_point,
@@ -513,6 +598,111 @@ mod tests {
             }
             other => panic!("expected serve subcommand, got {other:?}"),
         }
+    }
+
+    // The shipped image mounted /var/workspace with no capability list,
+    // so `check_access` short-circuited to "allowed" for every open,
+    // read and write on the machine — the compositor could show a
+    // capability as revoked while the file stayed readable through the
+    // mount. An enforcement point that ships switched off is not an
+    // enforcement point, so the unit is asserted on directly.
+    #[test]
+    fn the_shipped_service_enforces_a_capability_list() {
+        let argv = service_exec_start();
+        let cli = Cli::try_parse_from(std::iter::once("fs".to_string()).chain(argv[1..].to_vec()))
+            .expect("fs.service command line must parse");
+        let acl = match cli.command {
+            Command::Serve { acl, .. } => acl,
+            other => panic!("expected serve, got {other:?}"),
+        };
+        assert_eq!(
+            acl.acl.as_deref(),
+            Some(Path::new("/var/lib/qos/fs-capabilities.json")),
+            "fs.service must pass --acl or the shipped mount enforces nothing"
+        );
+        assert!(
+            acl.acl_reload_secs > 0,
+            "the shipped mount must re-read its capability list; /var/workspace is mounted once \
+             at boot, so a list read only at mount time can never carry a later grant"
+        );
+        assert_eq!(
+            acl.principals,
+            vec!["person:local".to_string()],
+            "the shipped list is written against a principal, because the mount's own identity \
+             is the device key minted on first boot, which no shipped file could name in advance"
+        );
+    }
+
+    // The unit names a file. tmpfiles.d has to put one there, or the
+    // mount is refused on a fresh boot and the desktop never comes up —
+    // fail-closed is right, but shipping a configuration that always
+    // fails closed is just a broken image.
+    #[test]
+    fn tmpfiles_seeds_the_capability_list_the_service_names() {
+        let conf = std::fs::read_to_string(os_file("os/usr/lib/tmpfiles.d/qos.conf"))
+            .expect("the shipped tmpfiles snippet must exist");
+        let seeding = conf
+            .lines()
+            .find(|l| l.starts_with("C ") && l.contains("/var/lib/qos/fs-capabilities.json"))
+            .unwrap_or_else(|| {
+                panic!("no tmpfiles line creates /var/lib/qos/fs-capabilities.json:\n{conf}")
+            });
+        assert!(
+            seeding.contains("/usr/share/qos/fs-capabilities.json"),
+            "the seed must come from the shipped default: {seeding}"
+        );
+
+        // …and the image has to actually contain the file tmpfiles
+        // copies from. If it does not, the seed silently does nothing,
+        // `--acl` names a file that never appears, and the mount is
+        // refused on every boot — fail-closed, but an unbootable image.
+        let containerfile = std::fs::read_to_string(os_file("os/Containerfile"))
+            .expect("the production Containerfile must exist");
+        assert!(
+            containerfile
+                .lines()
+                .any(|l| l.starts_with("COPY ")
+                    && l.contains("/usr/share/qos/fs-capabilities.json")),
+            "os/Containerfile must ship the default capability list that tmpfiles.d seeds from"
+        );
+    }
+
+    // …and the default it seeds from must be a capability list this
+    // binary can actually parse and act on. A malformed default would
+    // refuse the mount on every first boot.
+    #[test]
+    fn the_shipped_default_list_grants_the_local_session_its_workspace() {
+        use fs::Access;
+
+        let path = os_file("os/usr/share/qos/fs-capabilities.json");
+        let identity: IdentityKey = [0x5A; 32]; // stands in for the per-start node key
+        let file = CapabilityFile::load(
+            &path,
+            identity,
+            vec![parse_principal("person:local").unwrap()],
+        )
+        .expect("the shipped default capability list must load");
+
+        let handle = file.handle();
+        assert!(
+            handle.permits(&identity, "/", Access::Read),
+            "the shipped default must let the local session read its own workspace"
+        );
+        assert!(
+            handle.permits(&identity, "/notes/today.md", Access::Write),
+            "the shipped default must let the local session write its own workspace"
+        );
+
+        // And the grant is the principal's, not the mount's: a mount
+        // that does not present `person:local` gets nothing from this
+        // list. That is what makes a peer-joined mount narrowable.
+        let outsider = CapabilityFile::load(&path, identity, Vec::new())
+            .expect("loads")
+            .handle();
+        assert!(
+            !outsider.permits(&identity, "/notes/today.md", Access::Read),
+            "the shipped list must grant its named principal, not whoever mounts"
+        );
     }
 
     #[test]
@@ -591,9 +781,10 @@ mod tests {
         let path = dir.path().join("caps.json");
         std::fs::write(&path, b"[]").unwrap();
         let args = acl_args_from(&["--acl", path.to_str().unwrap()]);
-        let (acl, identity) = resolve_acl(&args, NODE_KEY)
+        let caps = resolve_acl(&args, NODE_KEY)
             .expect("an empty list is valid")
             .expect("--acl was given, so an ACL must be bound");
+        let (acl, identity) = (caps.handle(), caps.identity());
         assert_eq!(identity, NODE_KEY, "identity defaults to this node's key");
         assert!(!acl.permits(&identity, "/", Access::Read));
         assert!(!acl.permits(&identity, "/anything", Access::Write));
@@ -621,7 +812,8 @@ mod tests {
             "--identity",
             &hex::encode(who),
         ]);
-        let (acl, identity) = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
+        let caps = resolve_acl(&args, NODE_KEY).unwrap().unwrap();
+        let (acl, identity) = (caps.handle(), caps.identity());
         assert_eq!(identity, who, "--identity overrides the node key");
         assert!(acl.permits(&who, "/w/docs/a.md", Access::Read));
         assert!(!acl.permits(&who, "/w/docs/a.md", Access::Write));

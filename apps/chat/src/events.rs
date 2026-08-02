@@ -4,18 +4,34 @@
 //! the CRDT (so a draft is collaborative state, and undo/redo come for
 //! free from the toolkit's snapshotting).
 
-use automerge::transaction::Transactable;
 use automerge::AutoCommit;
+use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Vec2};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::widget::TextInput;
+use ui::Widget;
+
+use crate::actions;
 use crate::app::{
     ChatApp, ContextMenu, Focus, Hit, MenuAction, MenuTarget, RowSwipe, SWIPE_COMMIT_DX,
 };
 use crate::call::{CallAction, OverlayDrag};
-use crate::doc::{ChatDoc, NewMessage, NOW};
+use crate::doc::{ChatDoc, NOW};
 use crate::model::{ChannelKind, Id};
+
+/// Mint a fresh, collision-resistant message id at authoring time. Carried in
+/// the [`ChatAction::SendMessage`](crate::actions::ChatAction) payload so the
+/// insert replays byte-identically on every peer.
+fn new_message_id() -> String {
+    format!("m_{}", uuid::Uuid::new_v4().simple())
+}
+
+/// Mint a fresh channel id at authoring time (carried in the create action).
+fn new_channel_id() -> String {
+    format!("c_{}", uuid::Uuid::new_v4().simple())
+}
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
@@ -27,6 +43,27 @@ fn now_secs() -> i64 {
 /// Byte offset of character index `ci` in `s` (clamped to the end).
 fn char_byte(s: &str, ci: usize) -> usize {
     s.char_indices().nth(ci).map(|(b, _)| b).unwrap_or(s.len())
+}
+
+/// Feed one raw winit event into an embedded [`TextInput`]. The composers live
+/// outside the taffy tree (the app lays them out by hand), so a throwaway leaf
+/// node satisfies the `Widget::handle_event` signature; the input only uses it
+/// to report a focus target, which the composer host ignores.
+fn drive_text_input(
+    ti: &mut TextInput,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: &Modifiers,
+    doc: &mut AutoCommit,
+) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let node = taffy.new_leaf(Style::default()).unwrap();
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    ti.handle_event(
+        event, scale, modifiers, doc, &automerge::ROOT, &mut handled, &mut focus_target, node,
+        &taffy,
+    );
 }
 
 impl ChatApp {
@@ -53,6 +90,9 @@ impl ChatApp {
                     sw.current = self.last_mouse;
                     *handled = true;
                 }
+                // Keep both composers' hover state current so a click lands a
+                // caret at the click point and a press-drag extends a selection.
+                self.forward_move_to_composers(event, scale, modifiers, doc);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -86,7 +126,14 @@ impl ChatApp {
                         *handled = true;
                     }
                     Some(hit) => {
+                        let composer_hit = matches!(hit, Hit::FocusMain | Hit::FocusThread);
                         self.on_hit(hit, doc);
+                        // A click in a composer focuses it (via `on_hit`) and
+                        // then places the caret at the click point — forward the
+                        // real press so the widget resolves the position.
+                        if composer_hit {
+                            self.forward_press_to_focused_composer(event, scale, modifiers, doc);
+                        }
                         *handled = true;
                     }
                     None => {}
@@ -94,6 +141,8 @@ impl ChatApp {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 self.overlay_drag = None;
+                // End any composer drag-selection in progress.
+                self.forward_release_to_composers(event, scale, modifiers, doc);
                 if let Some(sw) = self.swipe.take() {
                     let channel = self
                         .ws_channels()
@@ -122,12 +171,99 @@ impl ChatApp {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } => {
-                if self.on_key(logical_key, modifiers, doc) {
+                // The composer owns the keystroke unless an inline editor /
+                // rename / popover is open, or it's Escape (which unwinds the
+                // top-most layer). Those cases route through `on_key`; the
+                // composer itself is the shared `TextInput`.
+                let composer_owns = self.editing.is_none()
+                    && self.rename.is_none()
+                    && self.menu.is_none()
+                    && !self.emoji_open
+                    && self.history_open.is_none()
+                    && !self.attach_open
+                    && !matches!(logical_key, Key::Named(NamedKey::Escape));
+                if composer_owns {
+                    self.route_composer_key(event, scale, modifiers, doc);
+                    *handled = true;
+                } else if self.on_key(logical_key, modifiers, doc) {
                     *handled = true;
                 }
             }
             _ => {}
         }
+    }
+
+    /// Route a keystroke into the focused composer `TextInput`. Enter submits
+    /// (Shift+Enter inserts a newline — the composer is multiline with
+    /// enter-submits); any text edit is written back into the per-channel /
+    /// thread draft `Text` in the CRDT (diff-spliced) so a draft stays
+    /// collaborative + persistent. On an empty composer, ArrowUp loads your
+    /// last message into the inline editor (Slack/Discord convention).
+    fn route_composer_key(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        if let WindowEvent::KeyboardInput {
+            event: KeyEvent { logical_key: Key::Named(NamedKey::ArrowUp), .. },
+            ..
+        } = event
+        {
+            if !modifiers.state().shift_key() && self.focused_composer().value().is_empty() {
+                if let Some(id) = self.last_own_message_id() {
+                    self.begin_edit(id);
+                    self.reload(doc);
+                }
+                return;
+            }
+        }
+        let key = self.draft_key();
+        drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
+        if self.focused_composer_mut().take_submit() {
+            self.send_focused(doc);
+        } else if let Some(text) = self.focused_composer_mut().take_dirty() {
+            ChatDoc::set_draft(doc, &key, &text);
+            self.reload(doc);
+        }
+    }
+
+    /// Forward a `CursorMoved` to both composers so their hover / drag-select
+    /// state stays current regardless of which surface is focused.
+    fn forward_move_to_composers(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
+        drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+    }
+
+    /// Forward a mouse release to both composers so a drag-selection ends.
+    fn forward_release_to_composers(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(&mut self.composer_main, event, scale, modifiers, doc);
+        drive_text_input(&mut self.composer_thread, event, scale, modifiers, doc);
+    }
+
+    /// Forward a press to the focused composer so it places the caret at the
+    /// click point (the preceding `CursorMoved` already set its hover flag).
+    fn forward_press_to_focused_composer(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+    ) {
+        drive_text_input(self.focused_composer_mut(), event, scale, modifiers, doc);
     }
 
     /// Right-click opens a context menu for the channel/category/workspace
@@ -220,7 +356,11 @@ impl ChatApp {
                 self.apply_menu_action(target, action, doc);
             }
             Hit::AddChannel { workspace, category } => {
-                let id = ChatDoc::create_channel(doc, &workspace, &category, "new-channel", ChannelKind::Text);
+                let id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&workspace, &category, &id, "new-channel", ChannelKind::Text),
+                );
                 self.begin_rename(MenuTarget::Channel(id));
             }
             Hit::AddCategory(ws) => {
@@ -242,7 +382,9 @@ impl ChatApp {
             Hit::RenameConfirm => self.commit_rename(doc),
             Hit::Reaction { msg, emoji } => {
                 if self.can_participate() {
-                    ChatDoc::toggle_reaction(doc, &self.active_channel, &msg, &emoji, &self.me.id);
+                    let action = self.reaction_toggle_action(&msg, &emoji);
+                    self.perform_action(doc, action);
+                    self.reload(doc);
                 }
             }
             Hit::AddReaction { msg, anchor } => {
@@ -268,7 +410,9 @@ impl ChatApp {
             Hit::EmojiChoice(e) => {
                 if let Some(target) = self.emoji_target.take() {
                     if self.can_participate() {
-                        ChatDoc::toggle_reaction(doc, &self.active_channel, &target, &e, &self.me.id);
+                        let action = self.reaction_toggle_action(&target, &e);
+                        self.perform_action(doc, action);
+                        self.reload(doc);
                     }
                 } else {
                     self.insert_text(doc, &e);
@@ -277,11 +421,11 @@ impl ChatApp {
             }
             Hit::FocusMain => {
                 self.focus = Focus::Main;
-                self.caret = self.draft_main.chars().count();
+                self.set_composer_focus();
             }
             Hit::FocusThread => {
                 self.focus = Focus::Thread;
-                self.caret = self.draft_thread.chars().count();
+                self.set_composer_focus();
             }
             Hit::Send => self.send_focused(doc),
             Hit::ComposerEmoji(anchor) => {
@@ -499,11 +643,19 @@ impl ChatApp {
         match target {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
             MenuTarget::Category(id) => self.apply_category_action(&id, action, doc),
-            MenuTarget::Message(id) => {
-                if action == MenuAction::EditMessage {
-                    self.begin_edit(id);
+            MenuTarget::Message(id) => match action {
+                MenuAction::EditMessage => self.begin_edit(id),
+                MenuAction::PinMessage => {
+                    let channel = self.active_channel.clone();
+                    let pinned = self.message(&id).map(|m| m.pinned).unwrap_or(false);
+                    self.perform_action(doc, actions::pin_message_action(&channel, &id, !pinned));
                 }
-            }
+                MenuAction::DeleteMessage => {
+                    let channel = self.active_channel.clone();
+                    self.perform_action(doc, actions::delete_message_action(&channel, &id));
+                }
+                _ => {}
+            },
             MenuTarget::Workspace(ws) => {
                 if action == MenuAction::NewCategory {
                     let id = ChatDoc::create_category(doc, &ws, "New Category");
@@ -518,11 +670,20 @@ impl ChatApp {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
-                ChatDoc::delete_channel(doc, id);
+                self.perform_action(doc, actions::delete_channel_action(id));
                 if self.active_channel == id {
                     self.active_channel.clear(); // reload picks a new one
                 }
             }
+            MenuAction::Archive => {
+                let archived = self.channel(id).map(|c| c.archived).unwrap_or(false);
+                self.perform_action(doc, actions::archive_channel_action(id, !archived));
+                if !archived && self.active_channel == id {
+                    self.active_channel.clear(); // an archived channel leaves the view
+                }
+            }
+            // Reordering is a sibling `order` swap — structural view ordering,
+            // left as a direct write (not part of the exported action set).
             MenuAction::MoveUp => ChatDoc::reorder_channel(doc, id, true),
             MenuAction::MoveDown => ChatDoc::reorder_channel(doc, id, false),
             _ => {}
@@ -537,11 +698,19 @@ impl ChatApp {
             MenuAction::Delete => ChatDoc::delete_category(doc, id),
             MenuAction::ToggleCollapse => ChatDoc::toggle_category_collapsed(doc, id),
             MenuAction::NewChannelHere => {
-                let new_id = ChatDoc::create_channel(doc, &ws, id, "new-channel", ChannelKind::Text);
+                let new_id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&ws, id, &new_id, "new-channel", ChannelKind::Text),
+                );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             MenuAction::NewVoiceChannelHere => {
-                let new_id = ChatDoc::create_channel(doc, &ws, id, "New Voice", ChannelKind::Voice);
+                let new_id = new_channel_id();
+                self.perform_action(
+                    doc,
+                    actions::create_channel_action(&ws, id, &new_id, "New Voice", ChannelKind::Voice),
+                );
                 self.begin_rename(MenuTarget::Channel(new_id));
             }
             _ => {}
@@ -568,7 +737,11 @@ impl ChatApp {
             let text = text.trim();
             if !text.is_empty() {
                 match target {
-                    MenuTarget::Channel(id) => ChatDoc::rename_channel(doc, &id, text),
+                    MenuTarget::Channel(id) => {
+                        self.perform_action(doc, actions::rename_channel_action(&id, text))
+                    }
+                    // Categories are structural view grouping (not part of the
+                    // exported channel/message action set) — a direct write.
                     MenuTarget::Category(id) => ChatDoc::rename_category(doc, &id, text),
                     MenuTarget::Message(_) | MenuTarget::Workspace(_) => {}
                 }
@@ -655,14 +828,10 @@ impl ChatApp {
                 true
             }
             Key::Named(NamedKey::ArrowUp) => {
-                // From an empty composer, ArrowUp loads your last message into
-                // the inline editor (Slack/Discord convention). Ignored once an
-                // edit is already in progress or a draft is being composed.
-                if self.editing.is_none() && self.focused_draft().is_empty() {
-                    if let Some(id) = self.last_own_message_id() {
-                        self.begin_edit(id);
-                    }
-                }
+                // Swallowed here (this path only runs for the inline message
+                // editor / popovers). The composer's own ArrowUp — including
+                // the empty-composer "edit my last message" shortcut — is
+                // handled in `route_composer_key`.
                 true
             }
             Key::Named(NamedKey::Home) => {
@@ -731,9 +900,12 @@ impl ChatApp {
         }
     }
 
+    /// Insert `s` at the caret. Routes to the inline message editor when one is
+    /// open (kept in memory until saved), otherwise into the focused composer
+    /// `TextInput` — used by the emoji picker, which splices a picked glyph as
+    /// if typed. Composer keystrokes themselves go straight to the widget via
+    /// [`route_composer_key`].
     fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
-        // The inline message editor keeps its working text in memory (like the
-        // rename editor) so an in-progress edit isn't published until saved.
         if let Some((_, text)) = &mut self.editing {
             let at = char_byte(text, self.caret);
             text.insert_str(at, s);
@@ -741,13 +913,17 @@ impl ChatApp {
             return;
         }
         let key = self.draft_key();
-        let obj = ChatDoc::draft_obj(doc, &key);
-        let _ = doc.splice_text(&obj, self.caret, 0, s);
-        self.caret += s.chars().count();
+        self.focused_composer_mut().insert_at_cursor(s);
+        if let Some(text) = self.focused_composer_mut().take_dirty() {
+            ChatDoc::set_draft(doc, &key, &text);
+        }
         self.reload(doc);
     }
 
-    fn backspace(&mut self, doc: &mut AutoCommit) {
+    /// Backspace one character in the inline message editor. The composer's own
+    /// backspace is handled by its `TextInput`; this only serves the in-memory
+    /// message-edit working text.
+    fn backspace(&mut self, _doc: &mut AutoCommit) {
         if self.caret == 0 {
             return;
         }
@@ -756,21 +932,15 @@ impl ChatApp {
             let start = char_byte(text, self.caret - 1);
             text.replace_range(start..end, "");
             self.caret -= 1;
-            return;
         }
-        let key = self.draft_key();
-        let obj = ChatDoc::draft_obj(doc, &key);
-        let _ = doc.splice_text(&obj, self.caret - 1, 1, "");
-        self.caret -= 1;
-        self.reload(doc);
     }
 
-    /// Character count of whatever text the caret currently indexes: the
-    /// inline message editor when one is open, otherwise the focused draft.
+    /// Character count of the inline message editor's working text (the caret
+    /// indexes into it). The composer's length lives in its `TextInput`.
     fn editable_char_len(&self) -> usize {
         match &self.editing {
             Some((_, text)) => text.chars().count(),
-            None => self.focused_draft().chars().count(),
+            None => 0,
         }
     }
 
@@ -819,7 +989,8 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        ChatDoc::edit_message(doc, &self.active_channel, &id, &text, now_secs());
+        let channel = self.active_channel.clone();
+        self.perform_action(doc, actions::edit_message_action(&channel, &id, &text, now_secs()));
         self.reload(doc);
     }
 
@@ -845,10 +1016,16 @@ impl ChatApp {
         if text.trim().is_empty() {
             return;
         }
-        ChatDoc::push_message(
+        // The message ROW insert is the action: id + timestamp minted here at
+        // authoring time and carried in the payload, dispatched through the same
+        // executor path Ctrl+K uses (undo boundary + byte-identical replay). The
+        // draft clear is presentation (ephemeral per-channel composer state) and
+        // stays a direct write inside the same event.
+        let channel = self.active_channel.clone();
+        let author = self.me.id.clone();
+        self.perform_action(
             doc,
-            &self.active_channel,
-            NewMessage { author: self.me.id.clone(), ts: now_secs(), text, parent, ..Default::default() },
+            actions::send_message_action(&channel, &new_message_id(), &author, now_secs(), &text, parent, None),
         );
         ChatDoc::clear_draft(doc, &key);
         self.caret = 0;
@@ -899,16 +1076,22 @@ impl ChatApp {
         } else {
             return false;
         };
-        ChatDoc::push_message(
+        // Sharing a file is the message ROW insert (the action) carrying the
+        // attachment by reference; the file's bytes + transport are external and
+        // hydrate on demand. Same authored-id + executor path as a text send.
+        let channel = self.active_channel.clone();
+        let author = self.me.id.clone();
+        self.perform_action(
             doc,
-            &self.active_channel,
-            NewMessage {
-                author: self.me.id.clone(),
-                ts: now_secs(),
-                text: String::new(),
-                attachment: Some(attachment),
-                ..Default::default()
-            },
+            actions::send_message_action(
+                &channel,
+                &new_message_id(),
+                &author,
+                now_secs(),
+                "",
+                None,
+                Some(attachment),
+            ),
         );
         self.scroll = 0.0;
         self.reload(doc);
@@ -919,7 +1102,7 @@ impl ChatApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::ChatDoc;
+    use crate::doc::{ChatDoc, NewMessage};
     use crate::model;
 
     fn app_with_doc() -> (ChatApp, AutoCommit) {
@@ -928,6 +1111,73 @@ mod tests {
         let mut app = ChatApp::new_ephemeral();
         app.reload(&doc);
         (app, doc)
+    }
+
+    /// Covenant — one source of truth: the on-screen "Delete channel" context-menu
+    /// affordance builds the **byte-identical** [`EncodedAction`] the Ctrl+K
+    /// palette's delete spec exports for the same channel. Drives the real menu →
+    /// `apply_channel_action` path and reads the framework host's `last_dispatched`.
+    #[test]
+    fn delete_channel_affordance_matches_palette_spec() {
+        let (mut app, mut doc) = app_with_doc();
+
+        // The palette's delete spec for c_crit (built before the mutation).
+        let resources = crate::actions::provide_resources(&app.chat_resource_ctx(), &doc);
+        let ws = &resources[0];
+        let crit = ws
+            .children
+            .iter()
+            .find(|c| c.id.as_str() == "chat.channel:c_crit")
+            .expect("c_crit is a channel resource");
+        let spec = crit.actions.iter().find(|a| a.id == "delete").unwrap();
+        let from_spec = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("delete is an immediate action"),
+        };
+
+        // Drive the real on-screen affordance (right-click menu → Delete).
+        app.on_hit(
+            Hit::MenuAction {
+                target: MenuTarget::Channel("c_crit".into()),
+                action: MenuAction::Delete,
+            },
+            &mut doc,
+        );
+        let dispatched = app.last_dispatched().expect("the affordance dispatched an action");
+
+        assert_eq!(dispatched.type_id, from_spec.type_id);
+        assert_eq!(
+            dispatched.payload, from_spec.payload,
+            "the delete-channel affordance and its Ctrl+K spec build the identical action"
+        );
+        // And it really deleted the channel (the affordance is on the real path).
+        assert!(ChatDoc::list_channels(&doc).into_iter().all(|c| c.id != "c_crit"));
+    }
+
+    /// The send affordance dispatches a `SendMessage` action carrying the typed
+    /// text — the row insert crosses the executor, not a raw `push_message`.
+    #[test]
+    fn send_affordance_dispatches_a_send_message_action() {
+        let (mut app, mut doc) = app_with_doc();
+        app.active_channel = "c_general".into();
+        app.focus = Focus::Main;
+        app.thread_open = None;
+        let me = app.me.id.clone();
+        ChatDoc::set_draft(&mut doc, "c_general", "hi from the composer");
+        app.reload(&doc);
+        app.on_hit(Hit::Send, &mut doc);
+        let dispatched = app.last_dispatched().expect("send dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::CHAT_ACTION_TYPE);
+        let action: crate::actions::ChatAction =
+            serde_json::from_slice(&dispatched.payload).expect("payload decodes to ChatAction");
+        match action {
+            crate::actions::ChatAction::SendMessage { channel, text, author, .. } => {
+                assert_eq!(channel, "c_general");
+                assert_eq!(text, "hi from the composer");
+                assert_eq!(author, me);
+            }
+            other => panic!("expected SendMessage, got {other:?}"),
+        }
     }
 
     #[test]
@@ -989,12 +1239,17 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let before = ChatDoc::list_messages(&doc, "c_crit").len();
         app.focus = Focus::Main;
-        app.insert_text(&mut doc, "hello team");
-        assert_eq!(app.draft_main, "hello team");
-        app.send_focused(&mut doc);
+        app.set_composer_focus();
+        // Type through the real composer TextInput, then Enter to send
+        // (multiline + enter-submits: plain Enter sends).
+        type_str(&mut app, &mut doc, "hello team");
+        assert_eq!(app.composer_main.value(), "hello team", "composer holds the typed text");
+        assert_eq!(app.draft_main, "hello team", "the draft is mirrored into the CRDT");
+        feed(&mut app, &mut doc, key_named(NamedKey::Enter));
         let after = ChatDoc::list_messages(&doc, "c_crit");
         assert_eq!(after.len(), before + 1);
         assert_eq!(after.last().unwrap().text, "hello team");
+        assert_eq!(app.composer_main.value(), "", "composer cleared after send");
         assert_eq!(app.draft_main, "", "draft cleared after send");
     }
 
@@ -1175,10 +1430,12 @@ mod tests {
     fn backspace_edits_the_draft() {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
-        app.insert_text(&mut doc, "abc");
-        app.backspace(&mut doc);
-        assert_eq!(app.draft_main, "ab");
-        assert_eq!(app.caret, 2);
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "abc");
+        feed(&mut app, &mut doc, key_named(NamedKey::Backspace));
+        assert_eq!(app.composer_main.value(), "ab", "backspace removed the last char");
+        assert_eq!(app.composer_main.cursor_pos(), 2, "caret follows the deletion");
+        assert_eq!(app.draft_main, "ab", "the draft mirrors the edit");
     }
 
     fn write_real_png(path: &std::path::Path, w: u32, h: u32) {
@@ -1304,8 +1561,9 @@ mod tests {
     fn arrow_up_in_empty_composer_edits_last_own_message() {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
-        assert!(app.draft_main.is_empty(), "composer starts empty");
-        app.on_key(&Key::Named(NamedKey::ArrowUp), &Modifiers::default(), &mut doc);
+        app.set_composer_focus();
+        assert!(app.composer_main.value().is_empty(), "composer starts empty");
+        feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
         let (id, text) = app.editing.clone().expect("ArrowUp opened the editor");
         assert_eq!(id, "m_me2", "loaded the last own top-level message");
         assert_eq!(text, app.message("m_me2").unwrap().text, "seeded with its current body");
@@ -1317,8 +1575,9 @@ mod tests {
     fn arrow_up_with_a_draft_does_not_start_editing() {
         let (mut app, mut doc) = app_with_doc();
         app.focus = Focus::Main;
-        app.insert_text(&mut doc, "half a thought");
-        app.on_key(&Key::Named(NamedKey::ArrowUp), &Modifiers::default(), &mut doc);
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "half a thought");
+        feed(&mut app, &mut doc, key_named(NamedKey::ArrowUp));
         assert!(app.editing.is_none(), "a non-empty composer suppresses ArrowUp-to-edit");
     }
 
@@ -1404,6 +1663,123 @@ mod tests {
         let mods = Modifiers::default();
         let mut handled = false;
         app.dispatch_event(&ev, 1.0, &mods, doc, &mut handled);
+    }
+
+    /// A `KeyboardInput` press for a named key (Enter, Backspace, ArrowUp …).
+    fn key_named(k: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// A `KeyboardInput` press for a printable character.
+    fn key_char(s: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(winit::keyboard::SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// Type each character of `s` into the app through the real keyboard path
+    /// (space via the named key, like winit reports it).
+    fn type_str(app: &mut ChatApp, doc: &mut AutoCommit, s: &str) {
+        for ch in s.chars() {
+            let ev = if ch == ' ' {
+                key_named(NamedKey::Space)
+            } else {
+                key_char(&ch.to_string())
+            };
+            feed(app, doc, ev);
+        }
+    }
+
+    fn mods(ctrl: bool, shift: bool) -> Modifiers {
+        use winit::keyboard::ModifiersState;
+        let mut s = ModifiersState::empty();
+        if ctrl {
+            s |= ModifiersState::CONTROL;
+        }
+        if shift {
+            s |= ModifiersState::SHIFT;
+        }
+        Modifiers::from(s)
+    }
+
+    fn feed_mods(app: &mut ChatApp, doc: &mut AutoCommit, ev: WindowEvent, m: Modifiers) {
+        let mut handled = false;
+        app.dispatch_event(&ev, 1.0, &m, doc, &mut handled);
+    }
+
+    /// Ctrl+V pastes the system clipboard into the focused composer, proving the
+    /// full shared-`TextInput` clipboard path (the hand-rolled composer had no
+    /// clipboard at all). Primes the real clipboard, checks it round-trips
+    /// (headless environments still have a backend here), then drives Ctrl+V
+    /// through the real event path and asserts the text landed.
+    #[test]
+    fn ctrl_v_pastes_clipboard_into_the_composer() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+
+        let sentinel = "pasted from the clipboard";
+        ui::clipboard_copy(sentinel);
+        assert_eq!(
+            ui::clipboard_paste().as_deref(),
+            Some(sentinel),
+            "clipboard round-trips here (precondition for the paste path)"
+        );
+
+        feed_mods(&mut app, &mut doc, key_char("v"), mods(true, false));
+
+        assert_eq!(
+            app.composer_main.value(),
+            sentinel,
+            "Ctrl+V landed the clipboard text in the composer"
+        );
+        assert_eq!(app.draft_main, sentinel, "the pasted draft is mirrored into the CRDT");
+    }
+
+    /// A drag across the composer selects a range, and Ctrl+C copies exactly
+    /// that selection to the clipboard — the selection + copy affordances the
+    /// hand-rolled composer lacked, now inherited from the shared widget.
+    #[test]
+    fn drag_select_then_ctrl_c_copies_the_selection() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = Focus::Main;
+        app.set_composer_focus();
+        type_str(&mut app, &mut doc, "copy me please");
+        // A frame lays the composer out + populates its glyph metrics so a
+        // pointer hit-test resolves a caret position.
+        render_frame(&mut app, 1280.0, 720.0);
+
+        // Select the whole value (Ctrl+A) then copy it (Ctrl+C).
+        feed_mods(&mut app, &mut doc, key_char("a"), mods(true, false));
+        ui::clipboard_copy("stale"); // ensure the copy overwrites something
+        feed_mods(&mut app, &mut doc, key_char("c"), mods(true, false));
+        assert_eq!(
+            ui::clipboard_paste().as_deref(),
+            Some("copy me please"),
+            "Ctrl+C copied the selected composer text to the clipboard"
+        );
     }
 
     // --- add-workspace "+" (was a dead button) --------------------------

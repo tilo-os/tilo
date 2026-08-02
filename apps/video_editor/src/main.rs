@@ -90,7 +90,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.video-editor");
-    let app = ui::App::new(state, video_editor::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, video_editor::app_root()).with_autosave(autosave);
+    // Register the editor's actions so the shell's Ctrl+K palette can decode +
+    // replay the same timeline actions the on-screen affordances dispatch.
+    video_editor::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -152,7 +155,11 @@ fn render_shot_to_png(
     mut state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

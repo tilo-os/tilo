@@ -1,19 +1,25 @@
-//! Image Writer — qOS native app for writing a disk image to a USB drive
-//! (CRDT-native, built on the `ui` toolkit).
+//! Disk Imager — qOS native app for writing an OS image to a drive, and for
+//! installing qOS (CRDT-native, built on the `ui` toolkit).
 //!
-//! A linear **wizard**, modelled on Fedora Media Writer / balenaEtcher:
+//! A single guided **wizard** with a six-station step indicator, covering both
+//! "write this image to a USB stick" and "install qOS onto a disk":
 //!
 //!   1. **Source** — pick a local `.iso` / `.img` via the host XDG portal
 //!      file picker (never a bespoke dialog), or a known qOS release.
-//!   2. **Drive** — choose a target from the *real* removable block devices
-//!      (`lsblk`); internal disks are hidden behind an explicit opt-in, and
-//!      an honest empty state asks the user to insert a drive.
-//!   3. **Customize** (optional) — pre-configure a qOS image (hostname, first
-//!      user, region). Plain ISOs are written as-is and this step is a no-op.
-//!      The options double as a HEADLESS / unattended install config.
-//!   4. **Write** — a typed device-name confirmation unlocks a real,
-//!      byte-for-byte streaming copy with live progress, then a read-back
-//!      **verify** pass, then a done / failure screen.
+//!   2. **Drive** — choose the target from the *real* block devices (`lsblk`);
+//!      internal disks are hidden behind an explicit opt-in, the **system disk**
+//!      needs a second acknowledgement before it can even be selected, and an
+//!      honest empty state asks the user to insert a drive.
+//!   3. **Customize** (qOS only) — the guided-customization step (hostname,
+//!      first user, region, encryption, autologin), shared by the write and
+//!      install flows. Plain ISOs skip it. The options double as a headless /
+//!      unattended install config.
+//!   4. **Confirm** — a read-only review of every choice, an erase warning that
+//!      escalates for an internal / system disk, and the typed device-name gate.
+//!   5. **Write / Install** — a real, byte-for-byte streaming copy with live
+//!      progress, then a read-back **verify** pass. (The caption reads "Write"
+//!      for a removable drive, "Install" for a disk install.)
+//!   6. **Done** — the verified / failed outcome, with a fresh-start affordance.
 //!
 //! Writing is doubly gated: the typed confirmation, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`write`]. With the gate off the
@@ -21,17 +27,20 @@
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer. The live binary sets
-//! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe;
-//! `--shots` leaves it unset and seeds a scenario so the screenshot is
-//! deterministic offline.
+//! `IMAGER_LIVE=1` so the drive list comes from a real `lsblk` probe and the
+//! app starts genuinely blank; `--shots` / `--demo` seed sample content so the
+//! screenshot is deterministic offline.
 
+pub mod actions;
 pub mod app;
+pub mod customize;
 pub mod doc;
 pub mod model;
 pub mod probe;
 pub mod write;
 
 pub use app::ImagerApp;
+pub use customize::CustomizePanel;
 pub use model::{
     Action, DiskLayout, InstallMode, InstallProfile, Source, SourceKind, Step, TargetDrive,
     TargetKind,
@@ -44,26 +53,27 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImagerApp::new())
 }
 
-/// The ordered `--shots` scenarios: one per meaningful wizard state, named so
+/// The ordered `--shots` scenarios: one per meaningful wizard station, named so
 /// the offscreen renderer can walk them and the gallery reads top-to-bottom.
 pub const SHOT_SCENARIOS: &[&str] = &[
     "source",
     "drive",
     "drive-empty",
+    "drive-internal",
     "customize",
-    "write-confirm",
+    "confirm",
     "progress",
-    "verify-done",
+    "done",
+    "done-failed",
 ];
 
-/// Pose the document for one named `--shots` scenario. Has no effect on the
-/// live app (the live binary never calls it), so a screenshot is the only
-/// place this state is set. Unknown names fall back to the source step.
+/// Pose the document for one named `--shots` scenario. Sample content is seeded
+/// here via [`ImagerDoc::seed_demo`] — never by the live app — so a screenshot
+/// is the only place this state is set. Unknown names fall back to the source
+/// step.
 pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
     use crate::doc::ImagerDoc;
-    use crate::model::{
-        sample_source, sample_targets, Action, JobPhase, Progress, Source, SourceKind, Step,
-    };
+    use crate::model::{Action, JobPhase, Progress, Source, SourceKind, Step};
 
     let iso_source = || Source {
         kind: SourceKind::IsoFile,
@@ -74,42 +84,71 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
         installable: false,
     };
 
+    // The empty-drive scenario is the one case with no sample inventory: seed an
+    // empty document so the honest "insert a drive" state renders.
+    if scenario == "drive-empty" {
+        ImagerDoc::seed(doc, &[]);
+        ImagerDoc::set_source(doc, Some(&iso_source()));
+        ImagerDoc::set_selected(doc, None);
+        ImagerDoc::set_step(doc, Step::Drive);
+        ImagerDoc::set_status(doc, "No removable drives detected");
+        return;
+    }
+
+    // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
+    // the guard active (the system disk locked, both acknowledgements visible).
+    if scenario == "drive-internal" {
+        use crate::model::{sample_source, TargetDrive, TargetKind, TargetPartition};
+        let targets = vec![
+            crate::model::sample_targets().remove(0), // the USB stick
+            TargetDrive {
+                name: "nvme0n1".into(),
+                model: "Samsung SSD 990 PRO 1TB".into(),
+                size: 1_000_204_886_016,
+                kind: TargetKind::Nvme,
+                tran: Some("nvme".into()),
+                removable: false,
+                is_system: true, // the running OS boots from this disk
+                partitions: vec![
+                    TargetPartition { name: "nvme0n1p1".into(), size: 536_870_912, fstype: Some("vfat".into()), label: Some("EFI".into()) },
+                    TargetPartition { name: "nvme0n1p2".into(), size: 999_650_000_000, fstype: Some("btrfs".into()), label: Some("qos-root".into()) },
+                ],
+            },
+        ];
+        ImagerDoc::seed(doc, &targets);
+        ImagerDoc::set_source(doc, Some(&sample_source()));
+        ImagerDoc::set_selected(doc, None);
+        ImagerDoc::set_show_internal(doc, true);
+        ImagerDoc::set_step(doc, Step::Drive);
+        ImagerDoc::set_status(doc, "1 removable, 2 total");
+        return;
+    }
+
+    // Every other scenario builds on the demo document (sample drives + a qOS
+    // image + recent history), then poses the wizard station on top.
+    ImagerDoc::seed_demo(doc);
+
     match scenario {
-        "drive-empty" => {
-            // No removable drives present → the honest empty state.
-            ImagerDoc::seed(doc, &[]);
-            ImagerDoc::set_source(doc, Some(&iso_source()));
-            ImagerDoc::set_selected(doc, None);
-            ImagerDoc::set_step(doc, Step::Drive);
-            ImagerDoc::set_status(doc, "No removable drives detected");
-        }
         "drive" => {
-            ImagerDoc::seed(doc, &sample_targets());
             ImagerDoc::set_source(doc, Some(&iso_source()));
             ImagerDoc::set_selected(doc, Some(0)); // the USB stick
             ImagerDoc::set_step(doc, Step::Drive);
-            ImagerDoc::set_status(doc, "1 removable drive detected");
+            ImagerDoc::set_status(doc, "1 removable, 2 total");
         }
         "customize" => {
-            ImagerDoc::seed(doc, &sample_targets());
-            ImagerDoc::set_source(doc, Some(&sample_source())); // installable qOS
             ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_action(doc, Action::Install);
+            ImagerDoc::set_action(doc, Action::Flash);
             ImagerDoc::set_step(doc, Step::Customize);
             ImagerDoc::set_status(doc, "Pre-configuring qOS 1.0");
         }
-        "write-confirm" => {
-            ImagerDoc::seed(doc, &sample_targets());
-            ImagerDoc::set_source(doc, Some(&sample_source()));
+        "confirm" => {
             ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_action(doc, Action::Install);
-            ImagerDoc::set_step(doc, Step::Write);
+            ImagerDoc::set_action(doc, Action::Flash);
+            ImagerDoc::set_step(doc, Step::Confirm);
             ImagerDoc::set_confirm(doc, "sdb"); // armed
             ImagerDoc::set_status(doc, "Ready to write qOS 1.0 → /dev/sdb");
         }
         "progress" => {
-            ImagerDoc::seed(doc, &sample_targets());
-            ImagerDoc::set_source(doc, Some(&sample_source()));
             ImagerDoc::set_selected(doc, Some(0));
             ImagerDoc::set_step(doc, Step::Write);
             ImagerDoc::set_progress(
@@ -118,21 +157,26 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
             );
             ImagerDoc::set_status(doc, "Writing qOS 1.0 → /dev/sdb");
         }
-        "verify-done" => {
-            ImagerDoc::seed(doc, &sample_targets());
-            ImagerDoc::set_source(doc, Some(&sample_source()));
+        "done" => {
             ImagerDoc::set_selected(doc, Some(0));
-            ImagerDoc::set_step(doc, Step::Write);
+            ImagerDoc::set_step(doc, Step::Done);
             ImagerDoc::set_progress(
                 doc,
                 &Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 },
             );
             ImagerDoc::set_status(doc, "Done — qOS 1.0 written and verified");
         }
+        "done-failed" => {
+            ImagerDoc::set_selected(doc, Some(0));
+            ImagerDoc::set_step(doc, Step::Done);
+            ImagerDoc::set_progress(
+                doc,
+                &Progress { phase: JobPhase::Failed, write_frac: 0.4, verify_frac: 0.0, rate_bps: 0 },
+            );
+            ImagerDoc::set_status(doc, "Write failed — device disappeared mid-write");
+        }
         // "source" and any unknown name.
         _ => {
-            ImagerDoc::seed(doc, &sample_targets());
-            ImagerDoc::set_source(doc, Some(&sample_source()));
             ImagerDoc::set_selected(doc, None);
             ImagerDoc::set_step(doc, Step::Source);
             ImagerDoc::set_status(doc, "");

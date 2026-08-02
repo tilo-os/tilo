@@ -18,10 +18,6 @@ namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read  = []
-write = ["~/.local/share/dev.qos.notes-cli"]
-
 [sandbox.net]
 mode = "off"
 

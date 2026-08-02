@@ -1,0 +1,249 @@
+//! Which processes get the expensive runtime protections.
+//!
+//! Most of qOS is Rust, which does not produce the bug classes a hardening
+//! allocator catches, so paying for one everywhere would be a tax on
+//! already-memory-safe code. Measured on this machine, an allocation-heavy loop
+//! runs about 3.4x slower under scudo than under glibc's allocator (32 ms vs
+//! 110 ms for three million short-lived allocations). That number is the reason
+//! this file exists: full strength where the bugs live, nothing where they
+//! don't.
+//!
+//! "Where the bugs live" means a process that parses bytes it did not produce,
+//! in C or C++: a web engine, a media decoder, an image codec, a font shaper.
+//! The list is **owned by the image, not by the package**. An app cannot ask to
+//! be exempted, because the decision is about how much the system trusts the
+//! app's inputs — and an app that could opt out is an app whose author gets to
+//! decide that. It can be extended at image build time via
+//! [`POLICY_PATH`]; the compiled-in list is the fallback so a missing file
+//! degrades to the known-risky set rather than to nothing.
+//!
+//! Two protections are attached:
+//!
+//! - **Hardened allocator** (scudo, from compiler-rt): out-of-line metadata,
+//!   guard slabs, header checksums, delayed reuse. Turns a heap overflow or a
+//!   double free from an exploitable primitive into a controlled abort.
+//! - **Hardware shadow stacks**: `GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK`.
+//!   Every qOS binary is already marked compatible at link time (see
+//!   `.cargo/config.toml`), but Fedora's glibc will not switch shadow stacks on
+//!   unless a process also asks through this tunable — verified by reading
+//!   `x86_Thread_features` out of `/proc/self/status`. That opt-in is what lets
+//!   the protection be scoped instead of global, and it is inert on a CPU
+//!   without shadow-stack support rather than an error.
+
+use std::path::{Path, PathBuf};
+
+/// Image-owned list of package ids whose processes parse untrusted bytes.
+///
+/// One entry per line. `#` starts a comment. A trailing `*` makes the entry a
+/// prefix match, so `dev.qos.*` covers a family.
+pub const POLICY_PATH: &str = "/usr/lib/qos/untrusted-parsers.conf";
+
+/// Fallback when [`POLICY_PATH`] is absent — the packages in this tree that
+/// decode attacker-supplied data through a C or C++ library.
+///
+/// browser: a whole web engine, and the only package allowed to generate code.
+/// tube / music: container demux and audio/video decode, i.e. ffmpeg and
+/// friends operating on bytes from the network.
+pub const BUILTIN_HIGH_RISK: &[&str] = &["dev.qos.browser", "dev.qos.tube", "dev.qos.music"];
+
+/// Environment variable that overrides [`POLICY_PATH`]. Exists so a test can
+/// point at a fixture; production reads the image's file.
+pub const POLICY_PATH_ENV: &str = "QOS_UNTRUSTED_PARSERS_FILE";
+
+/// The extra runtime protections to apply to one launch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeHardening {
+    /// Absolute host path of the hardened allocator to `LD_PRELOAD`, when one
+    /// is both wanted and present on this system. `None` means "use the system
+    /// allocator" — either because this package is not on the list, or because
+    /// the image was built without compiler-rt, which must not be fatal.
+    pub allocator: Option<PathBuf>,
+    /// Ask glibc to enable hardware shadow stacks for this process.
+    pub shadow_stack: bool,
+}
+
+impl RuntimeHardening {
+    /// Nothing beyond the baseline sandbox.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// True when this launch carries any of the extra protections.
+    pub fn is_active(&self) -> bool {
+        self.allocator.is_some() || self.shadow_stack
+    }
+}
+
+/// Does `package_id` match one entry of a policy list?
+///
+/// Split out from the file reading so the matching rules are testable without
+/// a filesystem: comments and blank lines are ignored, a bare id is an exact
+/// match, and a trailing `*` is a prefix match.
+pub fn policy_matches(list: &str, package_id: &str) -> bool {
+    list.lines().any(|line| {
+        let entry = line.split('#').next().unwrap_or("").trim();
+        if entry.is_empty() {
+            return false;
+        }
+        match entry.strip_suffix('*') {
+            Some(prefix) => package_id.starts_with(prefix),
+            None => entry == package_id,
+        }
+    })
+}
+
+/// Where the scudo standalone allocator lives, if it is installed.
+///
+/// The path carries clang's major version (`/usr/lib/clang/21/lib/…`), so it
+/// moves with every compiler-rt update and cannot be hard-coded. Searched
+/// rather than assumed, and absence is reported as `None` rather than as an
+/// error: an image built without compiler-rt should still launch apps, just
+/// with the system allocator.
+pub fn find_hardened_allocator() -> Option<PathBuf> {
+    const NAME: &str = "libclang_rt.scudo_standalone.so";
+    // Flat library dirs first — a distribution that ships the library
+    // unversioned puts it here.
+    for root in ["/usr/lib64", "/usr/lib"] {
+        let direct = Path::new(root).join(NAME);
+        if direct.is_file() {
+            return Some(direct);
+        }
+    }
+    // Fedora's layout is /usr/lib/clang/<major>/lib/<triple>/<name>. Searching
+    // only under the clang trees, not the whole of /usr/lib, keeps this a
+    // handful of readdir calls: this runs on the launch path for every
+    // high-risk package, and walking a distribution's library directory would
+    // be a visible cost every time an app starts.
+    for root in ["/usr/lib64/clang", "/usr/lib/clang"] {
+        if let Some(found) = search_for(Path::new(root), NAME, 3) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Bounded-depth search, so a deep or symlink-looped tree cannot turn a launch
+/// into a filesystem walk.
+fn search_for(dir: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+    let direct = dir.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && !p.is_symlink())
+        .collect();
+    // Deterministic order so two machines with the same layout resolve to the
+    // same library rather than to whatever readdir happened to return first,
+    // and so a newer clang wins over an older one left behind.
+    subdirs.sort();
+    subdirs.reverse();
+    subdirs
+        .into_iter()
+        .find_map(|sub| search_for(&sub, name, depth - 1))
+}
+
+/// Decide the hardening for a package, reading the image's policy list.
+pub fn for_package(package_id: &str) -> RuntimeHardening {
+    let policy_path = std::env::var_os(POLICY_PATH_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(POLICY_PATH));
+    let high_risk = match std::fs::read_to_string(&policy_path) {
+        Ok(list) => policy_matches(&list, package_id),
+        // No policy file: fall back to the compiled-in set rather than to
+        // "harden nothing".
+        Err(_) => BUILTIN_HIGH_RISK.contains(&package_id),
+    };
+    if !high_risk {
+        return RuntimeHardening::none();
+    }
+    RuntimeHardening {
+        allocator: find_hardened_allocator(),
+        shadow_stack: true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_exact_id_matches_only_itself() {
+        let list = "dev.qos.browser\n";
+        assert!(policy_matches(list, "dev.qos.browser"));
+        assert!(!policy_matches(list, "dev.qos.browserish"));
+        assert!(!policy_matches(list, "dev.qos.calculator"));
+    }
+
+    #[test]
+    fn comments_and_blank_lines_are_not_entries() {
+        let list = "\n# dev.qos.calculator\n   \ndev.qos.tube  # decodes video\n";
+        assert!(policy_matches(list, "dev.qos.tube"));
+        assert!(
+            !policy_matches(list, "dev.qos.calculator"),
+            "a commented-out id must not match"
+        );
+    }
+
+    #[test]
+    fn a_trailing_star_matches_a_family() {
+        let list = "dev.qos.media.*\n";
+        assert!(policy_matches(list, "dev.qos.media.player"));
+        assert!(!policy_matches(list, "dev.qos.notes"));
+    }
+
+    #[test]
+    fn an_empty_policy_hardens_nothing() {
+        assert!(!policy_matches("", "dev.qos.browser"));
+        assert!(!policy_matches("# everything commented\n", "dev.qos.browser"));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_policy_file_replaces_the_builtin_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("untrusted-parsers.conf");
+        std::fs::write(&file, "dev.qos.notes\n").unwrap();
+        // SAFETY: single-threaded test body; the var is removed before return.
+        unsafe { std::env::set_var(POLICY_PATH_ENV, &file) };
+
+        let notes = for_package("dev.qos.notes");
+        let browser = for_package("dev.qos.browser");
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+
+        assert!(
+            notes.shadow_stack,
+            "the package named by the policy file must be hardened"
+        );
+        assert!(
+            !browser.is_active(),
+            "a package the policy file omits must not be hardened just because \
+             it is in the compiled-in fallback"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn with_no_policy_file_the_builtin_set_still_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist.conf");
+        // SAFETY: single-threaded test body; the var is removed before return.
+        unsafe { std::env::set_var(POLICY_PATH_ENV, &missing) };
+
+        let browser = for_package("dev.qos.browser");
+        let calculator = for_package("dev.qos.calculator");
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(POLICY_PATH_ENV) };
+
+        assert!(browser.shadow_stack, "fallback list lost the browser");
+        assert!(!calculator.is_active(), "a plain app must stay unhardened");
+    }
+}

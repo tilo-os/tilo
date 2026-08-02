@@ -1,0 +1,304 @@
+//! Resource + action-model status for the file explorer.
+//!
+//! The qOS action-model recipe (`docs/action-model-recipe.md`) splits every
+//! interaction into exactly one of two buckets: a *document-mutating* operation
+//! becomes an [`Action`](qos_actions::Action) — a serializable value that
+//! deterministically changes the shared Automerge document, so undo and
+//! multi-peer replay come for free — while presentation / view state (and
+//! anything external) stays plain app code. Applying that split to the file
+//! explorer leaves **nothing** on the action side, and this module records that
+//! finding rather than fabricate a bookmarks/tags model to have actions.
+//!
+//! ## What the file explorer actually is
+//!
+//! The file explorer is a view onto a host resource — the filesystem (the qOS
+//! FUSE mount at `/var/workspace` and the user's home). Its list of entries,
+//! their sizes, modified times, MIME types and per-file sync state are transient
+//! filesystem data read into memory ([`crate::model::Entry`] via
+//! [`read_dir_sync`](crate::model::read_dir_sync)); they are **not** collaborative
+//! and never touch the document.
+//!
+//! Everything that changes the world — **new folder, rename, delete-to-trash,
+//! copy, move (paste), new-from-template** — is an **external** filesystem
+//! operation (see [`crate::fileops`]: `std::fs` calls and the `trash` crate,
+//! which the qOS FUSE driver projects to peers). It mutates the filesystem, not a
+//! shared CRDT, so by the recipe's rule it is *not* an action and stays as-is.
+//! The collaborative story for a shared folder is the FUSE driver replicating the
+//! bytes, not the file manager encoding an edit — the recipe's "external,
+//! non-deterministic work stays out of `apply`".
+//!
+//! ## The state that *is* persisted — and why none of it is an action
+//!
+//! Two kinds of state outlive a single frame, and neither is a document mutation:
+//!
+//! - **Favourites / pinned places and the icon zoom level are per-user local
+//!   config, not CRDT state.** They are written to plain files under
+//!   `~/.config/qos-files/` (`favorites`, one path per line, and `zoom`) by
+//!   [`crate::favorites::save`] / [`crate::config::save_zoom`] — never to the
+//!   shared Automerge document. A pinned place is a private, machine-local
+//!   shortcut, not a record two peers co-author, so it is deliberately kept off
+//!   the collaborative document. There is no favourites/bookmarks/tags collection
+//!   *in* the CRDT to hang add / remove / reorder actions off of, and this module
+//!   does not fabricate one.
+//!
+//! - **The search box and the inline-rename field are native collaborative
+//!   `Text`.** They are the *only* two things the app writes to its Automerge
+//!   document: [`SEARCH_QUERY_PATH`](crate::files_app) (`files.search_query`) and
+//!   [`RENAME_QUERY_PATH`](crate::files_app) (`files.rename_query`), each an
+//!   Automerge `Text` object the toolkit's `TextInput` splices into on the
+//!   CRDT-native text path — the same path the recipe says a flowing text body
+//!   must take *instead of* the action executor. Both are transient presentation
+//!   input: the search query filters the displayed list (which is view state, per
+//!   the recipe's "the search box … the current selection … presentation that
+//!   must never be an action"), and the rename field's committed value is handed
+//!   straight to the external `fileops::rename`, then discarded. Re-encoding a
+//!   keystroke into either as an action would only duplicate what the `Text`
+//!   object already replicates and undoes.
+//!
+//! The rest of the explorer's world — the current directory, the multi-selection,
+//! the sort key/order, the view mode, the navigation history, the cut/copy
+//! clipboard, the show-hidden toggle — is in-memory presentation state, persisted
+//! nowhere and replicated to no one.
+//!
+//! ## Consequence
+//!
+//! The file explorer exports **no** actions and publishes **no** Ctrl+K resource
+//! tree: [`Widget::resources`](ui::widget::Widget::resources) stays empty and
+//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
+//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
+//! nothing for it to dispatch). The tests below prove each half of this split on
+//! the real production path: the document holds only the two native-`Text` input
+//! fields (no structural record), the search field replicates byte-identically
+//! for free, file operations mutate the filesystem while leaving the document's
+//! structure untouched, and favourites + zoom persist to per-user config files
+//! rather than the CRDT.
+
+#[cfg(test)]
+mod tests {
+    use automerge::transaction::Transactable;
+    use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+
+    use ui::widget::Widget;
+
+    use crate::FileExplorerWidget;
+    use crate::command::FileCommand;
+    use crate::favorites::UserDirs;
+
+    /// The two CRDT map keys the app seeds (kept in sync with `files_app.rs`).
+    const SEARCH_QUERY_PATH: &str = "files.search_query";
+    const RENAME_QUERY_PATH: &str = "files.rename_query";
+
+    /// Resolve the `Text` object at `key` on the document root, asserting it is a
+    /// native Automerge `Text` (the collaborative text path), not a scalar.
+    fn text_obj(doc: &AutoCommit, key: &str) -> ObjId {
+        match doc.get(&ROOT, key).unwrap() {
+            Some((Value::Object(ObjType::Text), id)) => id,
+            other => panic!("root[\"{key}\"] must be an Automerge Text, got {other:?}"),
+        }
+    }
+
+    /// The document holds exactly two things, and both are native-`Text` input
+    /// fields: the search query and the inline-rename buffer. Driving the real
+    /// production `sync` seeds them, and the document carries no structural,
+    /// user-authored record collection — no favourites, bookmarks, tags, pins,
+    /// saved searches or groupings — for an action to mutate.
+    #[test]
+    fn document_holds_only_ephemeral_input_text() {
+        let mut w = FileExplorerWidget::new();
+        let mut doc = AutoCommit::new();
+
+        // The real first-frame path: `sync` seeds the two backing Text objects
+        // (the toolkit's TextInput binds to an existing Text but never creates
+        // one, so the app must seed them here).
+        w.sync(&mut doc, &ROOT);
+
+        // Exactly the two input fields, nothing structural.
+        let mut keys: Vec<String> = doc.keys(&ROOT).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![RENAME_QUERY_PATH.to_string(), SEARCH_QUERY_PATH.to_string()],
+            "the document holds only the search + rename input fields: {keys:?}",
+        );
+
+        // Both are native Text objects (the CRDT-native collaborative text path).
+        let _ = text_obj(&doc, SEARCH_QUERY_PATH);
+        let _ = text_obj(&doc, RENAME_QUERY_PATH);
+
+        // No user-authored record collection exists to hang an action off — the
+        // favourites/tags/pins model lives in per-user config files, not here.
+        for forbidden in [
+            "favorites",
+            "favourites",
+            "bookmarks",
+            "pins",
+            "places",
+            "tags",
+            "labels",
+            "saved_searches",
+            "groups",
+        ] {
+            assert!(
+                doc.get(&ROOT, forbidden).unwrap().is_none(),
+                "document must not carry a `{forbidden}` record collection",
+            );
+        }
+    }
+
+    /// The search field is native collaborative `Text`, so it already carries the
+    /// guarantee an action would otherwise provide: a splice into the shared
+    /// object (exactly what the `TextInput` does) replicates to an independent
+    /// replica byte-identically — same head hashes, not merely the same text — and
+    /// the production `sync` reads the query back to filter the list. Nothing to
+    /// encode as an action.
+    #[test]
+    fn search_query_is_native_text_and_replicates_byte_identically() {
+        let mut w = FileExplorerWidget::new();
+        let mut doc = AutoCommit::new();
+
+        // Seed via the real `sync`, then snapshot a shared base state.
+        w.sync(&mut doc, &ROOT);
+        let search = text_obj(&doc, SEARCH_QUERY_PATH);
+        doc.commit();
+        let base = doc.save();
+        let mut peer = AutoCommit::load(&base).unwrap();
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "precondition: replicas share a base state",
+        );
+
+        // Type into the search box the way the input does: splice into the shared
+        // Text object on the native collaborative text path.
+        doc.splice_text(&search, 0, 0, "argo").unwrap();
+        doc.commit();
+
+        // The production `sync` read-back path picks the query back up.
+        w.sync(&mut doc, &ROOT);
+        assert_eq!(w.search_query(), "argo", "sync reads the query back from the Text object");
+
+        // The collaboration guarantee, for free: the peer converges byte-identically.
+        peer.merge(&mut doc).unwrap();
+        assert_eq!(
+            doc.get_heads(),
+            peer.get_heads(),
+            "byte-identical convergence after merge — the native text path already replicates",
+        );
+        assert_eq!(peer.text(&search).unwrap(), "argo", "the peer sees the same search text");
+    }
+
+    /// A file operation is external: renaming through the real command path
+    /// renames the file on disk and leaves the document's structure untouched —
+    /// still only the two native-`Text` input fields, with no fabricated
+    /// "renames"/"history" record. Proof that the mutation crosses the filesystem
+    /// (the FUSE driver replicates it), not the action executor.
+    #[test]
+    fn file_operations_mutate_the_filesystem_not_the_document() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(dir.path().to_path_buf());
+        let mut doc = AutoCommit::new();
+        w.sync(&mut doc, &ROOT);
+        let keys_before: Vec<String> = {
+            let mut k: Vec<String> = doc.keys(&ROOT).collect();
+            k.sort();
+            k
+        };
+
+        // Rename via the real command path (the command bus the UI pushes into).
+        let idx = w
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "old.txt")
+            .unwrap();
+        w.select(Some(idx));
+        assert!(w.apply_command(FileCommand::Rename));
+        w.sync(&mut doc, &ROOT); // seeds the rename Text field with the current name
+        w.set_rename_buffer("new.txt".into());
+        assert!(w.apply_command(FileCommand::RenameCommit));
+
+        // The world changed on disk (external / FUSE), …
+        assert!(dir.path().join("new.txt").exists(), "the file was renamed on disk");
+        assert!(!dir.path().join("old.txt").exists());
+
+        // … and the document's structure did not: no record was written for it.
+        w.sync(&mut doc, &ROOT);
+        let keys_after: Vec<String> = {
+            let mut k: Vec<String> = doc.keys(&ROOT).collect();
+            k.sort();
+            k
+        };
+        assert_eq!(
+            keys_after, keys_before,
+            "a filesystem operation must not add structural keys to the CRDT: {keys_after:?}",
+        );
+    }
+
+    /// Favourites (pinned places) and the icon zoom level are per-user local
+    /// config, not CRDT state: the real command path writes them to plain files
+    /// under the config directory and adds nothing structural to the shared
+    /// document. Proof there is no in-document favourites/pins collection to hang
+    /// add / remove / reorder actions off of.
+    #[test]
+    fn favourites_and_zoom_persist_to_disk_not_the_document() {
+        let cfg = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let mut w = FileExplorerWidget::with_persistence_dirs(
+            Some(cfg.path().to_path_buf()),
+            Some(home.path().to_path_buf()),
+            UserDirs::default(),
+        );
+
+        // Seed the document via the real sync, then snapshot its structure.
+        let mut doc = AutoCommit::new();
+        w.sync(&mut doc, &ROOT);
+        let keys_before: Vec<String> = {
+            let mut k: Vec<String> = doc.keys(&ROOT).collect();
+            k.sort();
+            k
+        };
+
+        // Pin a place and zoom in through the real command path.
+        let fav = home.path().join("Projects");
+        assert!(w.apply_command(FileCommand::AddFavorite(fav.clone())));
+        assert!(w.apply_command(FileCommand::ZoomIn));
+
+        // Both persisted to per-user config *files*, not the CRDT.
+        assert!(cfg.path().join("favorites").exists(), "favourites persisted to a config file");
+        assert!(cfg.path().join("zoom").exists(), "zoom level persisted to a config file");
+
+        // And the shared document gained no structural record for either.
+        w.sync(&mut doc, &ROOT);
+        let keys_after: Vec<String> = {
+            let mut k: Vec<String> = doc.keys(&ROOT).collect();
+            k.sort();
+            k
+        };
+        assert_eq!(
+            keys_after, keys_before,
+            "pinning a place / zooming must not add keys to the CRDT: {keys_after:?}",
+        );
+    }
+
+    /// The honest steady state: the file explorer's production `Widget` impl
+    /// fabricates no action or resource surface. `Widget::resources` is empty
+    /// (nothing to publish to Ctrl+K) and no action host records an undo
+    /// boundary, because no action is ever dispatched.
+    #[test]
+    fn exports_no_actions_and_no_resource_tree() {
+        let mut w = FileExplorerWidget::new();
+        let mut doc = AutoCommit::new();
+        w.sync(&mut doc, &ROOT);
+
+        assert!(
+            Widget::resources(&w, &doc).is_empty(),
+            "the file explorer publishes no Ctrl+K resource tree — its only shared state is native text",
+        );
+        assert!(
+            w.take_committed_action().is_none(),
+            "no action is dispatched, so no action-host undo boundary is recorded",
+        );
+    }
+}

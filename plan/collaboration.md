@@ -17,7 +17,7 @@ The shell runs a single `Swarm<NiriosBehaviour>` per process (`shell/src/network
 - **noise** — transport encryption. **tcp + yamux** for the transport.
 - **kad** is feature-gated for future relay/NAT-traversal work; off by default.
 
-Identity is an ed25519 keypair stored at `/var/lib/qos-fs/peer-key`, auto-created if missing. The libp2p `PeerId` is the multihash of the protobuf-encoded public key.
+Identity is the machine's one ed25519 device key at `/var/lib/qos/device/keypair.bin`, auto-created if missing and shared with the filesystem so both name the same device. The libp2p `PeerId` is the multihash of the protobuf-encoded public key.
 
 The network actor (`shell/src/network/actor.rs`) owns the swarm on a dedicated tokio task. It exchanges `NetCmd` (commands in) and `NetEvent` (events out) with the shell over `mpsc` channels.
 
@@ -185,7 +185,7 @@ For non-collaboration-aware Wayland clients (anything bound through the per-work
 
 - **Compositor-side cursors.** The shell draws remote cursors over the foreign-client window — the client itself sees only its single local pointer.
 - **Input multiplexing.** The compositor decides whose input reaches the foreign client; default policy is "host always wins" with a per-peer `read_only` toggle for guests.
-- **Environment emulation.** The bwrap profile presents the workspace's `/work` and `/cache` directories; `/home` is empty tmpfs. The app sees no path outside the sandbox.
+- **Environment emulation.** The launcher gives the app one writable directory at `/run/qos/app` — per room, per package — with `HOME` and the `XDG_*` variables pointed inside it, plus a read-only system profile it did not choose. The app sees no path outside the sandbox, and none of what it does see was named by its manifest.
 
 ## 9. Disconnect / reconnect
 

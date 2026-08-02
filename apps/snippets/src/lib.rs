@@ -10,6 +10,7 @@
 //! The single integration point is [`app_root`], used by both the live
 //! event loop and the `--shots` offscreen renderer in `main.rs`.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod draw;

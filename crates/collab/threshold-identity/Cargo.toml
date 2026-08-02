@@ -63,15 +63,15 @@ hex.workspace = true
 # transitive dep via frost-ed25519).
 sha2.workspace = true
 
-# `ed25519-dalek` is used for the on-disk-format single-device
-# bootstrap helper (`bootstrap_single_device_seed`). The frost
-# single-device SigningKey stores a scalar, not the seed
-# `ed25519-dalek` expands via SHA-512 to reach the same scalar —
-# so if you round-trip through the on-disk JSON schema that
-# `runtime-identity` (which is dalek-based) reads, the two derive
-# different signing scalars and produced sigs stop verifying. The
-# helper below generates a real dalek seed + derives the matching
-# verifying key so the JSON record round-trips cleanly.
+# `ed25519-dalek` holds the single-device (1-of-1) key. A frost
+# `SigningKey` stores a signing scalar, not the seed `ed25519-dalek`
+# expands via SHA-512 to reach that scalar — and every reader of the
+# on-disk identity record loads its 32 secret bytes through
+# `SigningKey::from_bytes`, i.e. as a seed. Storing the dalek key means
+# the bytes this crate exports for persistence are the bytes that
+# reconstruct the same key, so a persisted identity can sign for its
+# own recorded public key. Threshold mode (t ≥ 2) stays entirely
+# inside frost.
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 
 [dev-dependencies]

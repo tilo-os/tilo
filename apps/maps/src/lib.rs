@@ -12,6 +12,7 @@
 //! bundled sample city, route and transit options so the screenshot is fully
 //! populated offline.
 
+pub mod actions;
 pub mod app;
 pub mod canvas;
 pub mod doc;

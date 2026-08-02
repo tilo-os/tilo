@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
+use qos_actions::{ActionInput, FlatAction};
 
 /// Scope chip in the GlobalSearch filter strip — concept renders these
 /// as pill toggles immediately under the prompt row
@@ -281,6 +282,33 @@ impl CommandEntry {
         self
     }
 
+    /// Build a palette row for one resource-scoped action exported by an app
+    /// (see [`qos_actions`]). The row `id` is the flattened composite key so the
+    /// host resolves the selection back to a replayable `qos_actions::Action`;
+    /// the label reads `"<resource> — <action>"`. A [`ActionInput::Prompted`]
+    /// action becomes an argument-collecting row via [`with_argument`].
+    ///
+    /// This is the seam that scopes Ctrl+K to the focused app instance's open
+    /// resources — `ui::action_palette` builds the parallel id→action index.
+    ///
+    /// [`with_argument`]: CommandEntry::with_argument
+    pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
+        let mut entry = CommandEntry::new(
+            fa.key.clone(),
+            format!("{} — {}", fa.resource_label, fa.action.label),
+        );
+        if let Some(desc) = &fa.action.description {
+            entry = entry.description(desc.clone());
+        }
+        if let ActionInput::Prompted {
+            prompt, placeholder, ..
+        } = &fa.action.input
+        {
+            entry = entry.with_argument(prompt.clone(), placeholder.clone());
+        }
+        entry
+    }
+
     /// Does the entry match `query` as a case-insensitive subsequence over its
     /// label *or* description? Empty query always matches.
     fn matches(&self, query: &str) -> bool {
@@ -418,6 +446,15 @@ pub struct CommandPalette {
     /// two surfaces had to be stitched together with a third unified
     /// background rect.
     host_filter_strip: bool,
+    /// How many chip rows the host's band is reserving.
+    ///
+    /// The host knows how many controls it has and how wide they measure;
+    /// the palette knows how tall the card is. A band that always
+    /// reserved one row made "does not fit" the host's problem to solve
+    /// silently — and the way it solved it was to stop painting, which
+    /// is how a filter chip became a control with no rect and therefore
+    /// no way to click it.
+    host_filter_strip_rows: usize,
     /// Visual row plan (headers + entries) rebuilt whenever the entry
     /// set, query or filter changes. Every geometry accessor reads this
     /// so hit-testing, scrolling and painting cannot disagree.
@@ -458,6 +495,7 @@ impl CommandPalette {
             bypass_fuzzy: false,
             hide_filter_strip: false,
             host_filter_strip: false,
+            host_filter_strip_rows: 1,
             rows: Vec::new(),
         }
     }
@@ -623,7 +661,7 @@ impl CommandPalette {
         // whole point of reserving it here rather than letting the host
         // invent its own rect outside the card.
         if self.host_filter_strip {
-            return FILTER_STRIP_HEIGHT + PADDING;
+            return self.filter_strip_height() + PADDING;
         }
         match self.mode {
             PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
@@ -914,6 +952,23 @@ impl CommandPalette {
         }
     }
 
+    /// Reserve `rows` rows of filter band for the host's own controls.
+    ///
+    /// The card grows by exactly the extra rows, and the result list
+    /// starts below them — which is the point. A host with more controls
+    /// than fit across one row otherwise has only bad options: paint them
+    /// over the results, or stop painting and leave a control the user
+    /// cannot click.
+    ///
+    /// Returns whether the reservation changed, so a caller can flag its
+    /// layout dirty only when it has to.
+    pub fn set_host_filter_strip_rows(&mut self, rows: usize) -> bool {
+        let rows = rows.max(1);
+        let changed = self.host_filter_strip_rows != rows;
+        self.host_filter_strip_rows = rows;
+        changed
+    }
+
     /// Left/right inset every band of the card shares — input field,
     /// filter strip, rows and footer all start here. Hosts painting
     /// into [`Self::filter_strip_rect`] read this instead of inventing
@@ -1141,14 +1196,36 @@ impl CommandPalette {
         )
     }
 
-    /// 40 px filter strip painted directly under the prompt row. Holds
-    /// scope chips on the left, filetype chips in the middle, and a
-    /// full-text toggle on the right (concept
-    /// `GlobalSearch.tsx:184-244`).
+    /// Filter band painted directly under the prompt row. Holds scope
+    /// chips on the left, filetype chips in the middle, and a full-text
+    /// toggle on the right (concept `GlobalSearch.tsx:184-244`).
+    ///
+    /// One [`FILTER_STRIP_HEIGHT`] row tall, unless a host painting its
+    /// own controls asked for more ([`Self::set_host_filter_strip_rows`]).
     pub fn filter_strip_rect(&self) -> Rect {
         let row = self.input_row_rect();
         let y0 = row.y1 + PADDING;
-        Rect::new(row.x0, y0, row.x1, y0 + FILTER_STRIP_HEIGHT)
+        Rect::new(row.x0, y0, row.x1, y0 + self.filter_strip_height())
+    }
+
+    /// Height of one row of the filter band. A host laying controls out
+    /// across several rows reads this rather than re-deriving it, so the
+    /// rows it paints line up with the band the card reserved.
+    pub fn filter_strip_row_height(&self) -> f64 {
+        FILTER_STRIP_HEIGHT
+    }
+
+    /// Rows the band is currently reserving.
+    pub fn host_filter_strip_rows(&self) -> usize {
+        if self.host_filter_strip {
+            self.host_filter_strip_rows.max(1)
+        } else {
+            1
+        }
+    }
+
+    fn filter_strip_height(&self) -> f64 {
+        FILTER_STRIP_HEIGHT * self.host_filter_strip_rows() as f64
     }
 
     /// Footer band painted at the bottom of the palette card with
@@ -2223,6 +2300,40 @@ impl Widget for CommandPalette {
     }
 }
 
+impl CommandPalette {
+    /// Drive the palette from a keyboard event without a taffy node, for hosts
+    /// that render it as a free-floating overlay (the `ui::App` Ctrl+K action
+    /// palette). Returns whether the event was consumed. The palette's
+    /// [`Widget::handle_event`] ignores the taffy tree + node id, so a throwaway
+    /// single-leaf tree drives the exact same keyboard logic — one code path,
+    /// no duplication.
+    pub fn handle_overlay_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).expect("leaf never fails");
+        <Self as Widget>::handle_event(
+            self,
+            event,
+            1.0,
+            modifiers,
+            state,
+            path,
+            &mut handled,
+            &mut focus_target,
+            node,
+            &taffy,
+        );
+        handled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2983,6 +3094,54 @@ mod tests {
         assert!(
             p.list_top_y() >= band.y1,
             "rows start below the band, not behind it"
+        );
+    }
+
+    /// A host with more controls than fit on one row asks for more band,
+    /// and gets it: the card grows by exactly those rows and the results
+    /// still start below them.
+    #[test]
+    fn a_host_can_reserve_more_than_one_row_of_filter_band() {
+        let mut one = CommandPalette::new();
+        one.set_host_filter_strip(true);
+        one.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+        let (_, one_high) = one.desired_size();
+        let one_band = one.filter_strip_rect();
+
+        let mut two = CommandPalette::new();
+        two.set_host_filter_strip(true);
+        assert!(
+            two.set_host_filter_strip_rows(2),
+            "asking for a different row count is a change"
+        );
+        assert!(
+            !two.set_host_filter_strip_rows(2),
+            "asking for the same row count again is not"
+        );
+        two.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+        let (_, two_high) = two.desired_size();
+        let band = two.filter_strip_rect();
+
+        assert_eq!(two.host_filter_strip_rows(), 2);
+        assert_eq!(
+            band.height(),
+            one_band.height() + two.filter_strip_row_height(),
+            "the band grows by exactly one row"
+        );
+        assert_eq!(
+            two_high - one_high,
+            two.filter_strip_row_height(),
+            "and so does the card, so nothing else moves"
+        );
+        assert!(
+            two.list_top_y() >= band.y1,
+            "rows still start below the band: {} vs {}",
+            two.list_top_y(),
+            band.y1
+        );
+        assert_eq!(
+            band.y0, one_band.y0,
+            "the band still starts under the field — it grows downward"
         );
     }
 

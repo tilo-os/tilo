@@ -290,13 +290,31 @@ fn clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
         .as_ref()
 }
 
-/// Push `text` onto the system clipboard. Silent no-op if arboard
-/// couldn't open (headless test env, locked-down session, ...).
+/// In-process clipboard fallback used only when the system clipboard is
+/// unavailable (a headless test env, a locked-down session, or a Wayland
+/// compositor without a clipboard). It keeps copy → paste round-tripping
+/// **within the process** so the shared caret/clipboard core (and every
+/// widget that uses it) stays testable headlessly — the exact case a
+/// `--headless-drive` scenario or a unit test exercises. When a real system
+/// clipboard IS available this buffer is never touched, so live behaviour is
+/// unchanged.
+fn clipboard_fallback() -> &'static Mutex<Option<String>> {
+    static FB: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    FB.get_or_init(|| Mutex::new(None))
+}
+
+/// Push `text` onto the system clipboard. Falls back to an in-process buffer
+/// when arboard couldn't open (headless test env, locked-down session, ...) so
+/// a subsequent [`clipboard_paste`] in the same process still returns it.
 pub fn clipboard_copy(text: &str) {
     if let Some(cb) = clipboard() {
         if let Ok(mut handle) = cb.lock() {
             let _ = handle.set_text(text.to_string());
+            return;
         }
+    }
+    if let Ok(mut fb) = clipboard_fallback().lock() {
+        *fb = Some(text.to_string());
     }
 }
 
@@ -322,9 +340,13 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {
-    let cb = clipboard()?;
-    let mut handle = cb.lock().ok()?;
-    handle.get_text().ok()
+    if let Some(cb) = clipboard() {
+        if let Ok(mut handle) = cb.lock() {
+            return handle.get_text().ok();
+        }
+    }
+    // No system clipboard: return whatever the in-process fallback holds.
+    clipboard_fallback().lock().ok().and_then(|fb| fb.clone())
 }
 
 /// Push `text` onto the X11/Wayland **primary selection** — the mouse-driven
@@ -371,6 +393,22 @@ pub fn clipboard_paste_primary() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Copy → paste must round-trip within the process even with no system
+    /// clipboard (the headless test env). Without the in-process fallback this
+    /// silently returned `None`, so the shared Ctrl+C/Ctrl+V core couldn't be
+    /// proven headlessly. When a real clipboard IS present this still holds
+    /// (copy then paste from the same clipboard).
+    #[test]
+    fn clipboard_round_trips_in_process() {
+        let payload = "https://example.com/feed.xml";
+        clipboard_copy(payload);
+        assert_eq!(
+            clipboard_paste().as_deref(),
+            Some(payload),
+            "copy then paste must return the copied text (system clipboard or in-process fallback)",
+        );
+    }
 
     #[test]
     fn selection_helpers_min_max_range_collapsed() {

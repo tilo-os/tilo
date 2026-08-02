@@ -26,6 +26,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::actions::{MapsAction, MAPS_ACTION_TYPE};
 use crate::canvas::{self, MapPalette};
 use crate::doc::MapsDoc;
 use crate::draw;
@@ -36,8 +37,30 @@ use crate::model::{
 };
 use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
-use crate::tiles::{GeoBounds, TileLayer};
+use crate::tiles::{GeoBounds, TileId, TileLayer};
 use crate::traffic::{Congestion, TrafficData};
+use ui::widget::TextInput;
+
+/// Feed one raw winit event into an embedded [`TextInput`]. The search /
+/// endpoint fields live outside the taffy tree (the app lays them out by hand),
+/// so a throwaway leaf node + doc satisfy `Widget::handle_event`; the fields are
+/// local-mode, so the doc is never touched.
+fn drive_text_input(
+    ti: &mut TextInput,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: &winit::event::Modifiers,
+) {
+    let mut doc = AutoCommit::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let node = taffy.new_leaf(Style::default()).unwrap();
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    ti.handle_event(
+        event, scale, modifiers, &mut doc, &automerge::ROOT, &mut handled, &mut focus_target,
+        node, &taffy,
+    );
+}
 
 /// Which Directions endpoint field (From / To) currently has keyboard focus for
 /// typed geocoding. `None` when neither is being edited.
@@ -138,6 +161,8 @@ enum Hit {
     OfflineZoomDelta(i8),
     /// Begin downloading the current viewport region for offline use.
     OfflineDownload,
+    /// Remove one saved offline region (by id) — deletes its tiles from disk.
+    OfflineDeleteRegion(String),
     /// Delete the on-disk tile cache.
     OfflineClearCache,
 }
@@ -148,9 +173,24 @@ pub struct MapsApp {
     rect: Rect,
     node: Option<NodeId>,
 
+    /// Framework-owned action dispatch: every collaborative doc mutation (save a
+    /// place, clear the route, add/remove an offline region) goes through this so
+    /// it brackets one undo boundary and replays byte-identically on peers — the
+    /// same path a Ctrl+K palette dispatch takes.
+    actions: ui::ActionHost,
+
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
     search_focused: bool,
+    /// The top search field — a shared single-line [`TextInput`] (Enter runs
+    /// the search) so it gets real caret, selection, clipboard, focus ring,
+    /// a11y, and theming. Its value mirrors `model.query`.
+    search_input: TextInput,
+    /// The Directions From / To endpoint fields, likewise shared `TextInput`s
+    /// (Enter geocodes that endpoint). While editing, each mirrors its
+    /// `model.*_query`; otherwise it shows the resolved endpoint name.
+    origin_input: TextInput,
+    dest_input: TextInput,
     /// Which Directions endpoint field is being typed into, if any.
     edit_field: Option<EndField>,
     /// Geocoded dropdown results for the "From" field (render cache).
@@ -181,7 +221,6 @@ pub struct MapsApp {
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
-    start: Instant,
 
     // CRDT bridge
     loaded: bool,
@@ -275,8 +314,27 @@ impl MapsApp {
             basemap,
             rect: Rect::ZERO,
             node: None,
+            actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
             search_focused: false,
+            search_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(15.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Search places, addresses…");
+                t
+            },
+            origin_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(13.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Choose starting point");
+                t
+            },
+            dest_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(13.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Choose destination");
+                t
+            },
             edit_field: None,
             origin_results: Vec::new(),
             dest_results: Vec::new(),
@@ -293,7 +351,6 @@ impl MapsApp {
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
-            start: Instant::now(),
             loaded: false,
             dirty: true,
             net_tx,
@@ -360,6 +417,20 @@ impl MapsApp {
         self.model.results.clear();
         self.model.query.clear();
         self.model.panel = Panel::Explore;
+    }
+
+    /// Screenshot-only hook: open the offline-maps overlay with a couple of
+    /// already-saved regions and a plausible on-disk size, so the download UI
+    /// AND the managed-region list render headlessly. No network, no disk I/O —
+    /// the regions are bundled sample metadata, not real cache entries.
+    pub fn set_demo_offline(&mut self) {
+        self.model.panel = Panel::Explore;
+        self.model.selected = None;
+        self.model.route = None;
+        self.offline_open = true;
+        self.offline_zoom_extra = 2;
+        self.model.regions = sample::regions();
+        self.cache_bytes = 47_542_000;
     }
 
     /// Screenshot-only hook: open the floating search-results overlay populated
@@ -568,9 +639,103 @@ impl MapsApp {
         GeoBounds::new(nw, se)
     }
 
+    // --- offline regions ---------------------------------------------------
+
+    /// The tile ids a saved region covers — used for delete/keep set arithmetic
+    /// so removing one area doesn't drop imagery another still needs.
+    fn region_tile_ids(region: &crate::model::DownloadedRegion) -> Vec<TileId> {
+        GeoBounds::new(region.min, region.max).tiles_in_range(region.z0, region.z1)
+    }
+
+    /// A human label for a downloaded area: a known place inside it when there
+    /// is one (reads nicely, e.g. "Marienplatz"), else its centre coordinate.
+    fn region_name(&self, bounds: GeoBounds) -> String {
+        if let Some(p) = self
+            .model
+            .places
+            .iter()
+            .find(|p| bounds_contains(bounds, GeoBounds::new(p.pos, p.pos)))
+        {
+            return p.name.clone();
+        }
+        let lat = (bounds.min.lat + bounds.max.lat) / 2.0;
+        let lon = (bounds.min.lon + bounds.max.lon) / 2.0;
+        format!("{lat:.3}, {lon:.3}")
+    }
+
+    /// Save (or refresh) the just-requested download as a manageable region.
+    /// The region **row** is a collaborative doc mutation dispatched through the
+    /// action host (its dedupe of the same footprint lives in the action's
+    /// `apply`); the tiles themselves were fetched externally by the caller.
+    fn record_region(&mut self, doc: &mut AutoCommit, bounds: GeoBounds, z0: u8, z1: u8, tiles: u32) {
+        // Id + name + tile count are resolved here, at authoring time, and carried
+        // in the action so `apply` stays free of the RNG / wall-clock.
+        let name = self.region_name(bounds);
+        let id = format!(
+            "region-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+                .unwrap_or(0)
+        );
+        let region = crate::model::DownloadedRegion {
+            id,
+            name,
+            min: bounds.min,
+            max: bounds.max,
+            z0,
+            z1,
+            tiles,
+        };
+        self.perform(doc, MapsAction::AddRegion(region));
+    }
+
+    /// Remove a saved region: dispatch the row removal as an action, and delete
+    /// the tiles no *other* saved region still needs as an external side effect.
+    /// Shared imagery is kept — the tile arithmetic reads the live region set
+    /// before the row is dropped.
+    fn delete_region(&mut self, doc: &mut AutoCommit, id: &str) {
+        let Some(region) = self.model.regions.iter().find(|r| r.id == id).cloned() else {
+            return;
+        };
+        // Tiles any *other* saved region still needs must survive.
+        let mut keep: std::collections::HashSet<TileId> = std::collections::HashSet::new();
+        for r in self.model.regions.iter().filter(|r| r.id != id) {
+            keep.extend(Self::region_tile_ids(r));
+        }
+        let doomed: Vec<TileId> = Self::region_tile_ids(&region)
+            .into_iter()
+            .filter(|t| !keep.contains(t))
+            .collect();
+        let freed = self.tiles.delete_tiles(&doomed);
+        self.cache_bytes = self.tiles.cache_bytes();
+        // The metadata row is the action; the tile deletion above is external.
+        self.perform(doc, MapsAction::DeleteRegion { id: id.to_string() });
+        self.model.status = format!("Removed “{}” · {} freed", region.name, fmt_bytes(freed));
+        self.mark_dirty();
+    }
+
     // --- actions -----------------------------------------------------------
     fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Dispatch one collaborative [`MapsAction`] against the shared document.
+    ///
+    /// Maps holds its state as an in-memory [`MapModel`] mirrored into a single
+    /// CRDT blob, so this first flushes the live model to `doc` (usually a no-op —
+    /// `sync` already did — but it guarantees the action mutates current state and
+    /// that the [`ActionHost`](ui::ActionHost) brackets *only* the action). The
+    /// host encodes + applies it via the executor (one undo boundary, byte-
+    /// identical replay on peers); we then re-adopt the mutated model so the UI
+    /// and the document agree on a single source of truth.
+    fn perform(&mut self, doc: &mut AutoCommit, action: MapsAction) {
+        MapsDoc::save(doc, &self.model);
+        self.actions.dispatch(doc, MAPS_ACTION_TYPE, &action);
+        if let Some(model) = MapsDoc::load(doc) {
+            self.model = model;
+        }
+        self.dirty = false;
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -1150,16 +1315,18 @@ impl MapsApp {
         }
     }
 
-    fn toggle_save_selected(&mut self) {
+    fn toggle_save_selected(&mut self, doc: &mut AutoCommit) {
         if let Some(id) = self.model.selected.clone() {
-            self.model.toggle_saved(&id);
-            self.mark_dirty();
+            // Resolve the target state here (authoring time) so the action carries
+            // an explicit `saved`, never a read-and-toggle that could diverge on
+            // replay.
+            let now_saved = self.model.place(&id).map(|p| p.saved).unwrap_or(false);
+            self.perform(doc, MapsAction::SetPlaceSaved { id, saved: !now_saved });
         }
     }
 
-    fn clear_route(&mut self) {
-        self.model.route = None;
-        self.mark_dirty();
+    fn clear_route(&mut self, doc: &mut AutoCommit) {
+        self.perform(doc, MapsAction::ClearRoute);
     }
 
     /// Exchange the route's origin and destination (both the coordinates and
@@ -1613,7 +1780,7 @@ impl MapsApp {
     }
 
     // --- click dispatch ----------------------------------------------------
-    fn dispatch(&mut self, hit: &Hit) {
+    fn dispatch(&mut self, hit: &Hit, doc: &mut AutoCommit) {
         match hit {
             Hit::Consume => {}
             Hit::FocusSearch => self.search_focused = true,
@@ -1672,8 +1839,8 @@ impl MapsApp {
             }
             Hit::Directions => self.enter_directions(),
             Hit::Transit => self.enter_transit(),
-            Hit::ToggleSave => self.toggle_save_selected(),
-            Hit::ClearRoute => self.clear_route(),
+            Hit::ToggleSave => self.toggle_save_selected(doc),
+            Hit::ClearRoute => self.clear_route(doc),
             Hit::SwapEnds => self.swap_ends(),
             Hit::EditOrigin => self.focus_endpoint(EndField::Origin),
             Hit::EditDest => self.focus_endpoint(EndField::Dest),
@@ -1714,15 +1881,31 @@ impl MapsApp {
                 let z1 = (base_z + self.offline_zoom_extra).min(19);
                 let bounds = self.viewport_bounds();
                 let n = self.tiles.start_download(bounds, base_z, z1);
+                // Record the area as a manageable offline region so it appears
+                // in the list and can be removed again. The tile fetch above is
+                // external; the region row is the collaborative action.
+                self.record_region(doc, bounds, base_z, z1, n);
                 self.model.status = format!("Downloading {n} tiles for offline use…");
+                self.mark_dirty();
             }
+            Hit::OfflineDeleteRegion(id) => self.delete_region(doc, id),
             Hit::OfflineClearCache => {
                 let freed = self.tiles.clear_cache();
                 self.cache_bytes = 0;
+                // The on-disk cache clear above is external; dropping every region
+                // row is the collaborative action.
+                self.perform(doc, MapsAction::ClearRegions);
                 self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
+                self.mark_dirty();
             }
         }
     }
+}
+
+/// Whether two coordinates are equal to within a sub-tile epsilon (used to
+/// dedupe re-downloads of the same offline region footprint).
+fn same_coord(a: LatLon, b: LatLon) -> bool {
+    (a.lat - b.lat).abs() < 1e-6 && (a.lon - b.lon).abs() < 1e-6
 }
 
 /// Whether `outer` fully contains `inner` (both lat/lon extents).
@@ -1936,27 +2119,17 @@ impl MapsApp {
             theme.text_dim,
         );
 
+        // The shared TextInput owns the text, caret, selection, and placeholder
+        // inside the field. Its value mirrors `model.query`; a `/`-focus or click
+        // sets `search_focused`, which drives the widget's focus (caret) here.
         let text_x = r.x0 + 40.0;
-        let avail = r.x1 - text_x - 34.0;
-        let size = 15.0_f32;
-        let ty = vmid(r.y0, r.height(), size);
-        if self.model.query.is_empty() {
-            draw::text(scene, tr, t, "Search places, addresses…", text_x, ty, size, theme.text_dim);
-        } else {
-            draw::text_clip(scene, tr, t, &self.model.query, text_x, ty, size, theme.text_primary, avail);
-            // Caret when focused.
-            if self.search_focused && self.caret_on() {
-                let w = draw::measure_w(tr, &self.model.query, size).min(avail);
-                draw::line(
-                    scene,
-                    t,
-                    Point::new(text_x + w + 2.0, r.y0 + 12.0),
-                    Point::new(text_x + w + 2.0, r.y1 - 12.0),
-                    1.5,
-                    theme.accent_primary,
-                );
-            }
-            // Clear (×) button.
+        let text_rect = Rect::new(text_x - 4.0, r.y0, r.x1 - 34.0, r.y1);
+        self.search_input.set_text(&self.model.query);
+        self.search_input.set_focus(self.search_focused);
+        self.search_input.apply_layout_external(text_rect);
+        self.search_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        // Clear (×) button, shown whenever there is text to clear.
+        if !self.model.query.is_empty() {
             let cb = Rect::new(r.x1 - 32.0, r.y0 + 10.0, r.x1 - 10.0, r.y1 - 10.0);
             draw::fill_circle(scene, t, cb.center(), 10.0, c.surfaces.base);
             let cc = cb.center();
@@ -1964,10 +2137,6 @@ impl MapsApp {
             draw::line(scene, t, Point::new(cc.x + 4.0, cc.y - 4.0), Point::new(cc.x - 4.0, cc.y + 4.0), 1.8, theme.text_dim);
             self.click_targets.push((cb, Hit::ClearSearch));
         }
-    }
-
-    fn caret_on(&self) -> bool {
-        (self.start.elapsed().as_secs_f64() * 1.6) as u64 % 2 == 0
     }
 
     /// Whether the floating search-results overlay is currently on screen.
@@ -2304,17 +2473,34 @@ impl MapsApp {
         }
     }
 
-    /// The offline-download + manage-cache overlay: a centred card with a
-    /// zoom-depth stepper, an estimated-tile/progress readout, and
-    /// download / clear-cache / close actions.
+    /// The offline-download + manage-areas overlay: a centred card with a
+    /// zoom-depth stepper, an estimated-tile/progress readout, a list of the
+    /// areas already saved for offline use (each removable), and
+    /// download / clear-all / close actions.
     fn draw_offline_overlay(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         // Scrim — also swallows background clicks.
         draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
         self.click_targets.push((self.rect, Hit::OfflineClose));
 
-        let w = 420.0_f64.min(self.rect.width() - 40.0);
-        let h = 318.0_f64;
+        // The card grows to fit the saved-areas list (capped so it stays a card,
+        // not a full-height sheet).
+        const MAX_ROWS: usize = 4;
+        let region_row_h = 42.0;
+        let regions = self.model.regions.clone();
+        let n_regions = regions.len();
+        let shown = n_regions.min(MAX_ROWS);
+        let overflow = n_regions > shown;
+        let list_body_h = if n_regions == 0 {
+            22.0
+        } else {
+            shown as f64 * region_row_h + if overflow { 18.0 } else { 0.0 }
+        };
+        // 282 = fixed top section (title → cache line) + list header + gap +
+        // action buttons + bottom padding; the list body is what varies.
+        let content_h = 282.0 + list_body_h;
+        let h = content_h.min(self.rect.height() - 24.0);
+        let w = 440.0_f64.min(self.rect.width() - 40.0);
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
@@ -2380,7 +2566,44 @@ impl MapsApp {
         draw::text(scene, tr, t, &format!("Cached on disk: {}", fmt_bytes(self.cache_bytes)), x, y, 12.0, theme.text_primary);
         y += 30.0;
 
-        // Action buttons: Download (primary) + Clear cache.
+        // Saved-areas list — each row is one downloaded region, removable via
+        // its trash button. This is the "see/manage downloaded regions" surface.
+        draw::text_w(scene, tr, t, "Downloaded areas", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
+        y += 24.0;
+        if regions.is_empty() {
+            draw::text(scene, tr, t, "No saved areas yet — download the current view to use it offline.", x, y, 11.5, theme.text_dim);
+            y += 22.0;
+        } else {
+            for region in regions.iter().take(shown) {
+                let row = Rect::new(x, y, right, y + region_row_h - 8.0);
+                draw::fill_rrect(scene, t, row, 8.0, c.surfaces.base);
+                // Trash button on the trailing edge.
+                let trash = Rect::new(row.x1 - 34.0, row.center().y - 13.0, row.x1 - 8.0, row.center().y + 13.0);
+                let text_w = (trash.x0 - (row.x0 + 12.0) - 8.0).max(40.0);
+                draw::text_clip(scene, tr, t, &region.name, row.x0 + 12.0, row.y0 + 5.0, 13.0, theme.text_primary, text_w);
+                let meta = format!("z{}–z{} · {} tiles", region.z0, region.z1, region.tiles);
+                draw::text_clip(scene, tr, t, &meta, row.x0 + 12.0, row.y0 + 20.0, 11.0, theme.text_dim, text_w);
+                // Trash icon: a small can (lid + tapered body).
+                draw::fill_rrect(scene, t, trash, 7.0, c.surfaces.raised);
+                draw::stroke_rrect(scene, t, trash, 7.0, 1.0, c.border_standard);
+                let tc = trash.center();
+                let danger = c.semantic.danger;
+                draw::line(scene, t, Point::new(tc.x - 5.0, tc.y - 4.0), Point::new(tc.x + 5.0, tc.y - 4.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 2.0, tc.y - 6.5), Point::new(tc.x + 2.0, tc.y - 6.5), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 3.6, tc.y - 3.0), Point::new(tc.x - 2.8, tc.y + 5.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x + 3.6, tc.y - 3.0), Point::new(tc.x + 2.8, tc.y + 5.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 2.8, tc.y + 5.0), Point::new(tc.x + 2.8, tc.y + 5.0), 1.6, danger);
+                self.click_targets.push((trash, Hit::OfflineDeleteRegion(region.id.clone())));
+                y += region_row_h;
+            }
+            if overflow {
+                draw::text(scene, tr, t, &format!("+{} more", n_regions - shown), x, y, 11.0, theme.text_dim);
+                y += 18.0;
+            }
+        }
+        y += 12.0;
+
+        // Action buttons: Download (primary) + Clear all.
         let bh = 38.0;
         let gap = 10.0;
         let bw = (right - x - gap) / 2.0;
@@ -2391,7 +2614,7 @@ impl MapsApp {
         self.click_targets.push((dl, Hit::OfflineDownload));
         draw::fill_rrect(scene, t, clr, 9.0, c.surfaces.base);
         draw::stroke_rrect(scene, t, clr, 9.0, 1.0, c.border_standard);
-        draw::text_center(scene, tr, t, "Clear cache", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
+        draw::text_center(scene, tr, t, "Clear all", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
         self.click_targets.push((clr, Hit::OfflineClearCache));
     }
 
@@ -2717,8 +2940,9 @@ impl MapsApp {
         y + ROW_H
     }
 
-    /// One typeable endpoint field (a rounded input with a leading dot, the
-    /// current text or a placeholder, and a blinking caret while focused).
+    /// One typeable endpoint field: draw the rounded box + leading dot, record
+    /// the click target, and return the inner rect the caller lays the endpoint
+    /// [`TextInput`] into (the widget owns the text, caret, and placeholder).
     #[allow(clippy::too_many_arguments)]
     fn draw_endpoint_field(
         &mut self,
@@ -2728,37 +2952,18 @@ impl MapsApp {
         theme: &Theme,
         r: Rect,
         dot: Color,
-        text: &str,
         editing: bool,
-        placeholder: &str,
         hit: Hit,
-    ) {
+    ) -> Rect {
+        let _ = tr;
         let c = &theme.tokens.colors;
         let border = if editing { theme.border_focus } else { c.border_standard };
         draw::fill_rrect(scene, t, r, 9.0, c.surfaces.base);
         draw::stroke_rrect(scene, t, r, 9.0, 1.0, border);
         draw::fill_circle(scene, t, Point::new(r.x0 + 16.0, r.center().y), 4.0, dot);
-        let tx = r.x0 + 30.0;
-        let size = 13.0_f32;
-        let ty = vmid(r.y0, r.height(), size);
-        let avail = r.x1 - tx - 12.0;
-        if text.is_empty() {
-            draw::text(scene, tr, t, placeholder, tx, ty, size, theme.text_dim);
-        } else {
-            draw::text_clip(scene, tr, t, text, tx, ty, size, theme.text_primary, avail);
-        }
-        if editing && self.caret_on() {
-            let w = draw::measure_w(tr, text, size).min(avail);
-            draw::line(
-                scene,
-                t,
-                Point::new(tx + w + 2.0, r.y0 + 10.0),
-                Point::new(tx + w + 2.0, r.y1 - 10.0),
-                1.5,
-                theme.accent_primary,
-            );
-        }
         self.click_targets.push((r, hit));
+        let tx = r.x0 + 30.0;
+        Rect::new(tx - 4.0, r.y0, r.x1 - 12.0, r.y1)
     }
 
     fn draw_directions(
@@ -2789,10 +2994,13 @@ impl MapsApp {
         };
         let from_r = Rect::new(x, y, fields_right, y + field_h);
         self.origin_field_rect = Some(from_r);
-        self.draw_endpoint_field(
-            scene, t, tr, theme, from_r, theme.accent_primary, &from_text, from_editing,
-            "Choose starting point", Hit::EditOrigin,
+        let from_inner = self.draw_endpoint_field(
+            scene, t, tr, theme, from_r, theme.accent_primary, from_editing, Hit::EditOrigin,
         );
+        self.origin_input.set_text(&from_text);
+        self.origin_input.set_focus(from_editing);
+        self.origin_input.apply_layout_external(from_inner);
+        self.origin_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
 
         let to_y = y + field_h + 8.0;
         let to_r = Rect::new(x, to_y, fields_right, to_y + field_h);
@@ -2805,10 +3013,13 @@ impl MapsApp {
         } else {
             self.model.selected_place().map(|p| p.name.clone()).unwrap_or_default()
         };
-        self.draw_endpoint_field(
-            scene, t, tr, theme, to_r, c.semantic.danger, &to_text, to_editing,
-            "Choose destination", Hit::EditDest,
+        let to_inner = self.draw_endpoint_field(
+            scene, t, tr, theme, to_r, c.semantic.danger, to_editing, Hit::EditDest,
         );
+        self.dest_input.set_text(&to_text);
+        self.dest_input.set_focus(to_editing);
+        self.dest_input.apply_layout_external(to_inner);
+        self.dest_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
 
         // Swap button spanning both fields on the trailing edge.
         let swap = Rect::new(right - swap_w, y + field_h / 2.0, right, to_r.y1 - field_h / 2.0);
@@ -3258,7 +3469,7 @@ impl Widget for MapsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
@@ -3269,6 +3480,9 @@ impl Widget for MapsApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+                // Keep the field inputs' hover state current so a click lands a
+                // caret and a press-drag extends a selection.
+                self.forward_move_to_field_inputs(event, scale_factor, modifiers);
                 if self.dragging && self.left_down {
                     let dx = p.x - self.drag_last.x;
                     let dy = p.y - self.drag_last.y;
@@ -3312,7 +3526,13 @@ impl Widget for MapsApp {
                     ) {
                         self.edit_field = None;
                     }
-                    self.dispatch(&hit);
+                    self.dispatch(&hit, state);
+                    // A click that focused a text field forwards the press so the
+                    // shared TextInput places its caret at the click point (the
+                    // preceding CursorMoved already set its hover flag).
+                    if matches!(hit, Hit::FocusSearch | Hit::EditOrigin | Hit::EditDest) {
+                        self.forward_press_to_field(hit, event, scale_factor, modifiers);
+                    }
                     consumed = true;
                     *handled = true;
                 }
@@ -3363,7 +3583,15 @@ impl Widget for MapsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                if self.handle_key(&key_event.logical_key, modifiers) {
+                // A focused text field (search or an endpoint) owns the
+                // keystroke via the shared TextInput; otherwise the map-level
+                // shortcuts apply.
+                let field_focused = self.edit_field.is_some() || self.search_focused;
+                if field_focused {
+                    if self.route_field_key(event, scale_factor, modifiers) {
+                        *handled = true;
+                    }
+                } else if self.handle_key(&key_event.logical_key, modifiers, state) {
                     *handled = true;
                 }
             }
@@ -3373,6 +3601,22 @@ impl Widget for MapsApp {
 
     fn name(&self) -> &str {
         "MapsApp"
+    }
+
+    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
+    /// places, the active route, and the offline regions currently in the shared
+    /// document. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Drain the undo boundary the [`ActionHost`](ui::ActionHost) bracketed for
+    /// this event so the shell records exactly one undo point per dispatched
+    /// action — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -3433,147 +3677,190 @@ impl Widget for MapsApp {
 }
 
 impl MapsApp {
-    fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers) -> bool {
-        // A Directions endpoint field (From / To) has keyboard focus: typed
-        // characters geocode that endpoint, mirroring the top search field.
+    fn endpoint_input_mut(&mut self, origin: bool) -> &mut TextInput {
+        if origin { &mut self.origin_input } else { &mut self.dest_input }
+    }
+
+    /// Route a keystroke into the focused text field (search or an endpoint).
+    /// Enter runs the corresponding search; any text edit is mirrored into the
+    /// model (`query` / `*_query`) so the existing geocode / dropdown logic runs
+    /// unchanged. Returns whether the key was consumed.
+    fn route_field_key(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        let is_escape = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    ..
+                },
+                ..
+            }
+        );
         if let Some(field) = self.edit_field {
             let origin = field == EndField::Origin;
-            return match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.edit_field = None;
-                    self.mark_dirty();
-                    true
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.run_endpoint_search(origin);
-                    true
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.endpoint_query_mut(origin).pop();
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.endpoint_query_mut(origin).push(' ');
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                Key::Character(s) => {
-                    self.endpoint_query_mut(origin).push_str(s);
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                _ => false,
+            if is_escape {
+                self.edit_field = None;
+                self.mark_dirty();
+                return true;
+            }
+            let (submitted, dirty) = {
+                let input = self.endpoint_input_mut(origin);
+                // The widget only acts on keys while focused; the app's
+                // `edit_field` is the source of truth, so assert focus here (a
+                // draw may not have run since the field was focused).
+                input.set_focus(true);
+                drive_text_input(input, event, scale, modifiers);
+                let submitted = input.take_submit();
+                (submitted, if submitted { None } else { input.take_dirty() })
             };
+            if submitted {
+                self.run_endpoint_search(origin);
+            } else if let Some(text) = dirty {
+                *self.endpoint_query_mut(origin) = text;
+                self.on_endpoint_input(origin);
+            }
+            return true;
         }
-        // Search field has keyboard focus.
         if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.search_focused = false;
-                    true
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.search_focused = false;
-                    self.run_search();
-                    true
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.model.query.pop();
-                    self.on_search_input();
-                    true
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.model.query.push(' ');
-                    self.on_search_input();
-                    true
-                }
-                Key::Character(s) => {
-                    self.model.query.push_str(s);
-                    self.on_search_input();
-                    true
-                }
-                _ => false,
+            if is_escape {
+                self.search_focused = false;
+                self.mark_dirty();
+                return true;
             }
-        } else {
-            let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-            match key {
-                Key::Character(s) if s.as_str() == "/" => {
-                    self.search_focused = true;
-                    true
-                }
-                Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
-                    self.zoom_by(1.0, self.view_center());
-                    true
-                }
-                Key::Character(s) if s.as_str() == "-" || s.as_str() == "_" => {
-                    self.zoom_by(-1.0, self.view_center());
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("d") => {
-                    self.enter_directions();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                    self.enter_transit();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("f") => {
-                    // Fit whatever is shown: a road route, or — in Transit mode
-                    // — the selected itinerary's geometry, or the endpoints.
-                    self.fit_current();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
-                    self.toggle_save_selected();
-                    true
-                }
-                Key::Character(s) if s.as_str() == "1" => {
-                    self.set_panel(Panel::Explore);
-                    true
-                }
-                Key::Character(s) if s.as_str() == "2" => {
-                    self.set_panel(Panel::Directions);
-                    true
-                }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    self.pan_by(-80.0, 0.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.pan_by(80.0, 0.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    self.pan_by(0.0, -80.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowDown) => {
-                    self.pan_by(0.0, 80.0);
-                    true
-                }
-                Key::Named(NamedKey::Escape) => {
-                    if self.offline_open {
-                        self.offline_open = false;
-                    } else if self.selected_poi.is_some() {
-                        self.selected_poi = None;
-                    } else if self.overlay_mode() && self.nav_open {
-                        self.nav_open = false;
-                    } else {
-                        self.model.selected = None;
-                    }
-                    self.mark_dirty();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("m") => {
-                    self.offline_open = !self.offline_open;
-                    if self.offline_open {
-                        self.cache_bytes = self.tiles.cache_bytes();
-                    }
-                    true
-                }
-                _ => false,
+            self.search_input.set_focus(true);
+            drive_text_input(&mut self.search_input, event, scale, modifiers);
+            if self.search_input.take_submit() {
+                self.search_focused = false;
+                self.run_search();
+            } else if let Some(text) = self.search_input.take_dirty() {
+                self.model.query = text;
+                self.on_search_input();
             }
+            return true;
+        }
+        false
+    }
+
+    /// Forward a `CursorMoved` to all field inputs so their hover state tracks
+    /// (a click then lands a caret; a press-drag extends a selection).
+    fn forward_move_to_field_inputs(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) {
+        drive_text_input(&mut self.search_input, event, scale, modifiers);
+        drive_text_input(&mut self.origin_input, event, scale, modifiers);
+        drive_text_input(&mut self.dest_input, event, scale, modifiers);
+    }
+
+    /// Forward a press to the field input `origin`/dest/search just focused so
+    /// it places its caret at the click point.
+    fn forward_press_to_field(
+        &mut self,
+        which: Hit,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) {
+        let input = match which {
+            Hit::FocusSearch => &mut self.search_input,
+            Hit::EditOrigin => &mut self.origin_input,
+            Hit::EditDest => &mut self.dest_input,
+            _ => return,
+        };
+        input.set_focus(true);
+        drive_text_input(input, event, scale, modifiers);
+    }
+
+    fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers, doc: &mut AutoCommit) -> bool {
+        // A Directions endpoint field (From / To) has keyboard focus: typed
+        // characters geocode that endpoint, mirroring the top search field.
+        // Focused text fields (search / endpoints) are handled by
+        // `route_field_key`; `handle_key` runs only when no field has keyboard
+        // focus, so it dispatches the map-level shortcuts.
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        match key {
+            Key::Character(s) if s.as_str() == "/" => {
+                self.search_focused = true;
+                true
+            }
+            Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
+                self.zoom_by(1.0, self.view_center());
+                true
+            }
+            Key::Character(s) if s.as_str() == "-" || s.as_str() == "_" => {
+                self.zoom_by(-1.0, self.view_center());
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("d") => {
+                self.enter_directions();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("t") => {
+                self.enter_transit();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("f") => {
+                // Fit whatever is shown: a road route, or — in Transit mode
+                // — the selected itinerary's geometry, or the endpoints.
+                self.fit_current();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
+                self.toggle_save_selected(doc);
+                true
+            }
+            Key::Character(s) if s.as_str() == "1" => {
+                self.set_panel(Panel::Explore);
+                true
+            }
+            Key::Character(s) if s.as_str() == "2" => {
+                self.set_panel(Panel::Directions);
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.pan_by(-80.0, 0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.pan_by(80.0, 0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.pan_by(0.0, -80.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.pan_by(0.0, 80.0);
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                if self.offline_open {
+                    self.offline_open = false;
+                } else if self.selected_poi.is_some() {
+                    self.selected_poi = None;
+                } else if self.overlay_mode() && self.nav_open {
+                    self.nav_open = false;
+                } else {
+                    self.model.selected = None;
+                }
+                self.mark_dirty();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("m") => {
+                self.offline_open = !self.offline_open;
+                if self.offline_open {
+                    self.cache_bytes = self.tiles.cache_bytes();
+                }
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -3590,6 +3877,17 @@ mod tests {
         a
     }
 
+    /// Drive a click `Hit` through the real `dispatch` path with a throwaway
+    /// document, for the tests that assert on the resulting in-memory view state.
+    /// Doc-mutating hits still flow through the action host (`perform` re-seeds the
+    /// throwaway doc from the live model each call, so state carries across taps);
+    /// the collaborative doc + undo + replay guarantees are proven separately in
+    /// [`crate::actions`] and by [`delete_region_affordance_matches_action_spec`].
+    fn tap(a: &mut MapsApp, hit: Hit) {
+        let mut doc = AutoCommit::new();
+        a.dispatch(&hit, &mut doc);
+    }
+
     #[test]
     fn pan_changes_center() {
         let mut a = app_at(1280.0, 800.0);
@@ -3604,12 +3902,12 @@ mod tests {
         // on colours its arterials — the demonstrable overlay.
         let mut a = app_at(1280.0, 800.0);
         assert!(!a.traffic_on && a.traffic.is_empty(), "off + empty at start");
-        a.dispatch(&Hit::ToggleTraffic);
+        tap(&mut a, Hit::ToggleTraffic);
         assert!(a.traffic_on, "the control toggles the overlay on");
         assert!(!a.traffic.is_empty(), "sample cartography yields congestion segments");
         assert_eq!(a.traffic.source.as_deref(), Some("sample data"), "provenance is honest");
         // Toggling again turns it off.
-        a.dispatch(&Hit::ToggleTraffic);
+        tap(&mut a, Hit::ToggleTraffic);
         assert!(!a.traffic_on, "the control toggles the overlay back off");
     }
 
@@ -3957,7 +4255,7 @@ mod tests {
         a.pois = vec![demo_poi("pd", 48.16, 11.60)];
         a.selected_poi = Some("pd".to_string());
         a.model.mode = TravelMode::Car;
-        a.dispatch(&Hit::PoiDirections);
+        tap(&mut a, Hit::PoiDirections);
         assert_eq!(a.model.panel, Panel::Directions);
         assert_eq!(a.model.dest, Some(LatLon::new(48.16, 11.60)), "POI becomes the destination");
         assert_eq!(a.model.dest_name, "POI pd");
@@ -4001,7 +4299,7 @@ mod tests {
 
         // Dispatching the row selects the POI: opens its card AND centres the map
         // on it (the list → map link), without disturbing the place selection.
-        a.dispatch(&Hit::SelectPoi("far".to_string()));
+        tap(&mut a, Hit::SelectPoi("far".to_string()));
         assert_eq!(a.selected_poi.as_deref(), Some("far"), "the row opens the POI card");
         assert_eq!(a.model.center, far, "the map re-centres on the chosen POI");
         assert_eq!(a.model.selected, sel_before, "selecting a POI never disturbs the place selection");
@@ -4217,9 +4515,9 @@ mod tests {
         a.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         assert!(a.overlay_mode());
         assert!(!a.panel_visible(), "drawer starts closed");
-        a.dispatch(&Hit::ToggleNav);
+        tap(&mut a, Hit::ToggleNav);
         assert!(a.panel_visible(), "menu opens the drawer");
-        a.dispatch(&Hit::CloseNav);
+        tap(&mut a, Hit::CloseNav);
         assert!(!a.panel_visible(), "scrim/Esc closes the drawer");
     }
 
@@ -4473,17 +4771,17 @@ mod tests {
     #[test]
     fn transit_time_controls_adjust_the_anchor() {
         let mut a = app_at(1280.0, 800.0);
-        a.dispatch(&Hit::TransitTimeDelta(15));
-        a.dispatch(&Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeDelta(15));
         assert_eq!(a.model.transit_time.offset_min, 30, "two +15 steps advance 30 min");
         // Never steps below now.
         for _ in 0..5 {
-            a.dispatch(&Hit::TransitTimeDelta(-15));
+            tap(&mut a, Hit::TransitTimeDelta(-15));
         }
         assert_eq!(a.model.transit_time.offset_min, 0, "offset floors at now");
-        a.dispatch(&Hit::TransitTimeMode(TransitTimeMode::Arrive));
-        a.dispatch(&Hit::TransitTimeDelta(15));
-        a.dispatch(&Hit::TransitTimeNow);
+        tap(&mut a, Hit::TransitTimeMode(TransitTimeMode::Arrive));
+        tap(&mut a, Hit::TransitTimeDelta(15));
+        tap(&mut a, Hit::TransitTimeNow);
         assert!(a.model.transit_time.is_now(), "\"Now\" resets to leave-now");
     }
 
@@ -4836,13 +5134,21 @@ mod tests {
 
     fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
         use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        // Real winit reports the committed text alongside the logical key for a
+        // printable character; the shared TextInput inserts from that `text`
+        // field, so mirror it here (named keys carry no text).
+        let text = match &logical {
+            Key::Character(s) => Some(s.clone()),
+            Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
+            _ => None,
+        };
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
         ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = None;
+        ev.text = text;
         feed(
             a,
             WindowEvent::KeyboardInput {
@@ -4859,6 +5165,65 @@ mod tests {
 
     fn key_named(a: &mut MapsApp, named: NamedKey) -> bool {
         feed_key(a, Key::Named(named))
+    }
+
+    /// Ctrl+V pastes the system clipboard into the focused search field via the
+    /// shared TextInput — the hand-rolled field had no clipboard at all. Primes
+    /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
+    /// real event path and asserts the pasted text reached `model.query`.
+    #[test]
+    fn ctrl_v_pastes_into_the_search_field() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query.clear();
+        a.search_focused = false;
+        key_char(&mut a, "/"); // focus the search field
+        assert!(a.search_focused);
+
+        let sentinel = "Alexanderplatz";
+        ui::clipboard_copy(sentinel);
+        assert_eq!(
+            ui::clipboard_paste().as_deref(),
+            Some(sentinel),
+            "clipboard round-trips here (precondition for the paste path)"
+        );
+
+        // Ctrl+V through the real KeyboardInput path.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new("v"));
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None; // Ctrl+V carries no committed text
+        let ctrl = {
+            use winit::keyboard::ModifiersState;
+            winit::event::Modifiers::from(ModifiersState::CONTROL)
+        };
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        a.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: dummy_device_id(),
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0,
+            &ctrl,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert_eq!(a.model.query, sentinel, "Ctrl+V pasted the clipboard into the search query");
     }
 
     /// `/` focuses the search field, characters then type into it, Backspace
@@ -4961,7 +5326,7 @@ mod tests {
         a.model.query = "café".to_string();
         a.run_search();
         assert!(!a.model.results.is_empty(), "search populated results");
-        a.dispatch(&Hit::ClearSearch);
+        tap(&mut a, Hit::ClearSearch);
         assert!(a.model.query.is_empty(), "clear empties the query");
         assert!(a.model.results.is_empty(), "clear empties the results");
     }
@@ -4973,7 +5338,7 @@ mod tests {
         a.select_place("marienplatz");
         a.enter_directions();
         assert!(a.model.route.is_some());
-        a.dispatch(&Hit::ClearRoute);
+        tap(&mut a, Hit::ClearRoute);
         assert!(a.model.route.is_none(), "clear-route drops the route");
     }
 
@@ -4981,7 +5346,7 @@ mod tests {
     #[test]
     fn recent_dispatch_runs_search() {
         let mut a = app_at(1280.0, 720.0);
-        a.dispatch(&Hit::Recent("Marienplatz".to_string()));
+        tap(&mut a, Hit::Recent("Marienplatz".to_string()));
         assert_eq!(a.model.query, "Marienplatz", "recent sets the query");
         assert_eq!(a.model.panel, Panel::Explore, "a search lands in Explore");
         assert!(!a.model.results.is_empty(), "the recent search actually runs");
@@ -4994,9 +5359,9 @@ mod tests {
     #[test]
     fn offline_open_and_download_dispatch() {
         let mut a = app_at(1280.0, 720.0);
-        a.dispatch(&Hit::OfflineOpen);
+        tap(&mut a, Hit::OfflineOpen);
         assert!(a.offline_open, "OfflineOpen shows the overlay");
-        a.dispatch(&Hit::OfflineDownload);
+        tap(&mut a, Hit::OfflineDownload);
         assert!(
             a.model.status.starts_with("Downloading") && a.model.status.contains("tiles"),
             "download surfaces a tile-count status, got {:?}",
@@ -5011,11 +5376,11 @@ mod tests {
     fn offline_zoom_delta_clamps() {
         let mut a = app_at(1280.0, 720.0);
         for _ in 0..10 {
-            a.dispatch(&Hit::OfflineZoomDelta(1));
+            tap(&mut a, Hit::OfflineZoomDelta(1));
         }
         assert_eq!(a.offline_zoom_extra, 6, "zoom-depth caps at 6");
         for _ in 0..10 {
-            a.dispatch(&Hit::OfflineZoomDelta(-1));
+            tap(&mut a, Hit::OfflineZoomDelta(-1));
         }
         assert_eq!(a.offline_zoom_extra, 0, "zoom-depth floors at 0");
     }
@@ -5025,14 +5390,18 @@ mod tests {
     #[test]
     fn offline_clear_cache_dispatch_removes_dir() {
         let mut a = app_at(1280.0, 720.0);
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir()
-            .join(format!("qos-maps-cctest-{}-{}", std::process::id(), a.start.elapsed().as_nanos()));
+            .join(format!("qos-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("seed.png"), b"not-a-real-tile").unwrap();
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
         assert!(a.tiles.cache_bytes() > 0, "seeded cache is non-empty");
 
-        a.dispatch(&Hit::OfflineClearCache);
+        tap(&mut a, Hit::OfflineClearCache);
         assert!(!dir.exists(), "clear-cache removes the on-disk tree");
         assert_eq!(a.cache_bytes, 0, "the cache-size readout resets to 0");
         assert!(a.model.status.starts_with("Cleared"), "a status states what was freed");
@@ -5080,14 +5449,162 @@ mod tests {
         let mut a = app_at(1280.0, 720.0);
         a.set_travel_mode(TravelMode::Transit);
         assert!(a.model.transit.len() >= 3, "sample has multiple itineraries");
-        a.dispatch(&Hit::Journey(0));
+        tap(&mut a, Hit::Journey(0));
         let center0 = a.model.center;
-        a.dispatch(&Hit::Journey(2));
+        tap(&mut a, Hit::Journey(2));
         assert_eq!(a.model.transit_choice, 2, "the third journey is selected");
         assert!(
             (a.model.center.lat - center0.lat).abs() > 1e-6
                 || (a.model.center.lon - center0.lon).abs() > 1e-6,
             "a different itinerary reframes the map"
+        );
+    }
+
+    /// A fresh, isolated on-disk cache dir so a delete step never touches the
+    /// user's real tile cache.
+    fn region_test_cache(tag: &str) -> std::path::PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("qos-maps-{tag}-{}-{}", std::process::id(), n))
+    }
+
+    /// Starting a download records the chosen viewport as a **manageable
+    /// region** (so it shows in the saved-areas list), and deleting it by id
+    /// removes the record. This is the see/manage-downloaded-regions flow.
+    #[test]
+    fn offline_download_records_and_delete_removes_region() {
+        let mut a = app_at(1280.0, 800.0);
+        // Isolate the on-disk cache so the delete step never touches the user's
+        // real tile cache.
+        let dir = region_test_cache("regtest");
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        tap(&mut a, Hit::OfflineOpen);
+        let before = a.model.regions.len();
+        tap(&mut a, Hit::OfflineDownload);
+        assert_eq!(
+            a.model.regions.len(),
+            before + 1,
+            "a downloaded area is recorded as a saved region"
+        );
+        let region = a.model.regions.last().unwrap().clone();
+        assert!(region.tiles > 0, "the region covers real tiles");
+        assert!(region.z1 >= region.z0, "the saved zoom range is well-formed");
+        assert!(!region.name.is_empty(), "the region has a human label");
+
+        // Deleting via its id removes exactly that record.
+        tap(&mut a, Hit::OfflineDeleteRegion(region.id.clone()));
+        assert!(
+            !a.model.regions.iter().any(|r| r.id == region.id),
+            "delete removes the region from the managed list"
+        );
+        assert_eq!(a.model.regions.len(), before, "back to the starting region count");
+        assert!(a.model.status.contains("Removed"), "a status confirms the removal");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Removing one saved area must NOT delete tiles another saved area still
+    /// covers. A nested area's tiles are a subset of the containing area's, so
+    /// deleting the nested one frees nothing; deleting the last owner frees all.
+    #[test]
+    fn delete_region_keeps_tiles_shared_with_another_area() {
+        use crate::model::DownloadedRegion;
+        let dir = region_test_cache("region");
+        let mut a = MapsApp::offline();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+
+        let big = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+        let small = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.14, 11.58));
+        let (z0, z1) = (14u8, 15u8);
+        let big_ids = big.tiles_in_range(z0, z1);
+        let small_ids = small.tiles_in_range(z0, z1);
+        assert!(!small_ids.is_empty());
+        assert!(
+            small_ids.iter().all(|t| big_ids.contains(t)),
+            "the nested area's tiles are a subset of the containing area's"
+        );
+
+        // Seed the on-disk cache with the containing area's tiles.
+        for id in &big_ids {
+            let p = a.tiles.cache_path(*id);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"seed").unwrap();
+        }
+        a.model.regions = vec![
+            DownloadedRegion {
+                id: "big".to_string(),
+                name: "Big".to_string(),
+                min: big.min,
+                max: big.max,
+                z0,
+                z1,
+                tiles: big_ids.len() as u32,
+            },
+            DownloadedRegion {
+                id: "small".to_string(),
+                name: "Small".to_string(),
+                min: small.min,
+                max: small.max,
+                z0,
+                z1,
+                tiles: small_ids.len() as u32,
+            },
+        ];
+
+        // Deleting the nested area removes its record but keeps every tile,
+        // since the containing area still needs them.
+        tap(&mut a, Hit::OfflineDeleteRegion("small".to_string()));
+        assert!(!a.model.regions.iter().any(|r| r.id == "small"));
+        for id in &big_ids {
+            assert!(a.tiles.cache_path(*id).exists(), "a shared tile must be kept: {id:?}");
+        }
+
+        // Deleting the last owner frees all of its tiles.
+        tap(&mut a, Hit::OfflineDeleteRegion("big".to_string()));
+        for id in &big_ids {
+            assert!(!a.tiles.cache_path(*id).exists(), "the last owner's tiles are freed: {id:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The on-screen trash affordance dispatches the byte-identical
+    /// [`MapsAction`](crate::actions::MapsAction) the Ctrl+K "Delete region" spec
+    /// does — one source of truth. Drives the real `dispatch` path against a live
+    /// document and reads back the action host's `last_dispatched`, then confirms
+    /// the shared document actually changed.
+    #[test]
+    fn delete_region_affordance_matches_action_spec() {
+        use crate::actions::{encode, MapsAction};
+        let mut a = app_at(1280.0, 800.0);
+        a.model.regions = vec![crate::model::DownloadedRegion {
+            id: "r1".to_string(),
+            name: "Altstadt".to_string(),
+            min: LatLon::new(48.10, 11.55),
+            max: LatLon::new(48.18, 11.62),
+            z0: 14,
+            z1: 15,
+            tiles: 8,
+        }];
+
+        let mut doc = AutoCommit::new();
+        a.dispatch(&Hit::OfflineDeleteRegion("r1".to_string()), &mut doc);
+
+        // The affordance dispatched exactly the DeleteRegion action a palette row
+        // (its `ActionSpec`) would build for the same id.
+        let dispatched = a
+            .actions
+            .last_dispatched()
+            .expect("the trash affordance dispatched an action");
+        let expected = encode(&MapsAction::DeleteRegion { id: "r1".to_string() });
+        assert_eq!(dispatched, &expected, "affordance == ActionSpec encoded action");
+
+        // And it really mutated the shared document + the live model.
+        assert!(!a.model.regions.iter().any(|r| r.id == "r1"), "the region row is gone");
+        assert!(
+            !MapsDoc::load(&doc).unwrap().regions.iter().any(|r| r.id == "r1"),
+            "the document reflects the removal"
         );
     }
 }

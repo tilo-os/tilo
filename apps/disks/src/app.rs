@@ -25,9 +25,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
 
-use crate::actions::{self, Op};
+use crate::ops::{self, Op};
 use crate::doc::DisksDoc;
 use crate::model::{
     fmt_hours, fmt_size, AttrSeverity, Drive, DriveKind, PartRole, Partition, SmartStatus,
@@ -874,18 +874,24 @@ impl DisksApp {
 
     // ---- tab bar -------------------------------------------------------
     fn draw_tabs(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
-        let c = &theme.tokens.colors;
-        for (r, tab) in &lay.tabs {
-            let active = *tab == self.tab;
-            let hover = self.hover_tab == Some(*tab);
-            if active {
-                Self::fill_rr(scene, t, *r, 9.0, c.accent[5]);
-            } else if hover {
-                Self::fill_rr(scene, t, *r, 9.0, c.neutral[3]);
-            }
-            let fg = if active { Color::WHITE } else { c.text_dim };
-            self.txt_center(scene, tr, tab.title(), 13.0, fg, (r.x0 + r.x1) / 2.0, r.y0 + 11.0, if active { TextWeight::Semibold } else { TextWeight::Medium });
-        }
+        // Shared segmented control (pill/tab-strip style): selected pill in the
+        // accent, hovered pill on the shared hover surface, others transparent.
+        let rects: Vec<Rect> = lay.tabs.iter().map(|(r, _)| *r).collect();
+        let labels: Vec<&str> = lay.tabs.iter().map(|(_, tab)| tab.title()).collect();
+        let selected = lay.tabs.iter().position(|(_, tab)| *tab == self.tab).unwrap_or(0);
+        let hovered = self
+            .hover_tab
+            .and_then(|h| lay.tabs.iter().position(|(_, tab)| *tab == h));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(9.0),
+        );
     }
 
     // ---- content: overview --------------------------------------------
@@ -1456,7 +1462,7 @@ impl DisksApp {
             let refresh = action.changes_topology();
             let done_label = action.label().trim_end_matches('…').to_string();
             thread::spawn(move || {
-                let res = actions::run(op, &leaf, fstype.as_deref());
+                let res = ops::run(op, &leaf, fstype.as_deref());
                 let text = match res {
                     Ok(msg) => msg,
                     Err(e) => format!("{done_label} failed — {e}"),

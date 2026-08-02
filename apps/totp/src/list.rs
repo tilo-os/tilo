@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Fill};
 use vello::Scene;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
@@ -27,7 +27,7 @@ use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Avatar, Widget};
 
 use crate::model::{account_color, Account, AccountId};
 use crate::ring::CountdownRing;
@@ -227,26 +227,17 @@ impl AccountList {
         center: Point,
         account: &Account,
     ) {
+        // The account's colour is user-assignable, so it's kept; the disc +
+        // centred monogram are painted by the shared toolkit avatar so the
+        // shape/placement match every other app's roster.
         let color = account_color(theme, account.color);
-        let circle = Circle::new(center, AVATAR_R);
-        scene.fill(Fill::NonZero, transform, color, None, &circle);
-        let initials = account.initials();
-        if initials.is_empty() {
-            return;
-        }
-        let size = (AVATAR_R * 0.85) as f32;
-        let (w, h) = text_renderer.measure_weighted(&initials, size, None, TextWeight::Bold);
-        let tx = center.x - w as f64 / 2.0;
-        let ty = center.y - h as f64 / 2.0;
-        text_renderer.draw_text_weighted(
-            scene,
-            &initials,
-            size,
-            Color::WHITE,
-            transform * Affine::translate((tx, ty)),
-            None,
-            TextWeight::Bold,
+        let rect = Rect::new(
+            center.x - AVATAR_R,
+            center.y - AVATAR_R,
+            center.x + AVATAR_R,
+            center.y + AVATAR_R,
         );
+        Avatar::draw_at(scene, transform, rect, &account.initials(), color, theme, text_renderer);
     }
 
     fn draw_action_icons(

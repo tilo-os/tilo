@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{
@@ -24,7 +25,7 @@ use crate::shell::notification::{
 };
 use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{
-    AppId, Capability, GroupId, StripId, WorkspaceTree, WorkspaceTreeHandle,
+    AppId, Capability, GroupId, StripId, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
@@ -343,10 +344,27 @@ pub struct ChromeState {
     /// palette should offer the invite / connect commands at all.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
+    /// The documents the open tabs are showing, one record each.
+    ///
+    /// Held here because the chrome is what everything outside the widget
+    /// tree already reaches through: in-app search reads a tab's body from
+    /// the tab's own document, and it has the chrome, not the tile. Starts
+    /// in-memory so a `ChromeState` built by a test or a headless probe
+    /// writes nothing to disk; the session installs the persistent one.
+    records: RecordStore,
     /// Peer-sync commands the user has picked and the shell has not yet
     /// carried out. Written by the palette's action rows, drained once
     /// per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    /// Where the active strip's window groups sit, and which part of
+    /// that the displays are showing, as of the last layout pass.
+    ///
+    /// Published by `ShellOverlayHost::apply_layout` so a launch can ask
+    /// "which border between windows can the user actually see" — see
+    /// [`crate::shell::placement`] — without reaching into the widget
+    /// tree. `None` before the first layout, or when the active
+    /// workspace has no strip.
+    strip_viewport: Option<crate::shell::placement::StripViewport>,
 }
 
 impl ChromeState {
@@ -390,7 +408,23 @@ impl ChromeState {
             peer_sync_status: None,
             peer_sync_enabled: false,
             peer_sync_requests: Vec::new(),
+            strip_viewport: None,
+            records: RecordStore::in_memory(),
         }))
+    }
+
+    /// Publish the active strip's layout so the placement rule can read
+    /// it. Called once per layout pass by the overlay host.
+    pub fn set_strip_viewport(
+        &mut self,
+        viewport: Option<crate::shell::placement::StripViewport>,
+    ) {
+        self.strip_viewport = viewport;
+    }
+
+    /// The active strip's layout as of the last pass, if one has run.
+    pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
+        self.strip_viewport.as_ref()
     }
 
     /// Queue a peer-sync command for the shell to carry out.
@@ -459,6 +493,19 @@ impl ChromeState {
         self.tree_handle.read()
     }
 
+    /// The store holding each open tab's document.
+    pub fn records(&self) -> &RecordStore {
+        &self.records
+    }
+
+    /// Install the session's record store — the persistent one, built once
+    /// as the shell starts. Anything that had already bound a tile to the
+    /// previous (in-memory) store keeps that store, so this is called
+    /// before the window tree is built.
+    pub fn set_records(&mut self, records: RecordStore) {
+        self.records = records;
+    }
+
     /// Write-guard accessor for the shared workspace tree. Used by
     /// mutating helpers (`append_empty_workspace`, `set_active`, etc.)
     /// — the guard is dropped at the end of the borrow scope, so
@@ -495,6 +542,40 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Put `tab` in front of the user: switch to its workspace, its strip
+    /// and its group, and make it the active tab inside that group.
+    ///
+    /// The one way anything in the shell focuses a tab it located by
+    /// walking the tree — a search hit on a note, a document that turns
+    /// out to be open already. Focus is four coordinates, not one, and a
+    /// caller that sets a subset leaves the user looking at a different
+    /// workspace than the tab they asked for; having it in one place is
+    /// what stops each caller getting that wrong differently.
+    pub fn focus_tab(
+        &mut self,
+        workspace: WorkspaceId,
+        strip: StripId,
+        group: GroupId,
+        tab: u64,
+    ) {
+        {
+            let mut tree = self.tree_mut();
+            tree.active = workspace;
+            tree.active_strip.insert(workspace, strip);
+            tree.set_active_group(strip, group);
+            if let Some(g) = tree
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == workspace)
+                .and_then(|w| w.strips.iter_mut().find(|s| s.id == strip))
+                .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
+            {
+                g.active_tab = tab;
+            }
+        }
+        self.bump();
+    }
+
     /// Route a winit `WindowEvent::DroppedFile` payload into the active
     /// workspace's first strip's first window group via
     /// [`super::workspace_drop::apply_workspace_drop_from_path`]. Bumps
@@ -523,6 +604,12 @@ impl ChromeState {
     /// path has no filename — the caller treats `None` as a defined
     /// no-op (an empty-area drop opens nothing rather than dumping the
     /// file into an arbitrary window). No grant is recorded on `None`.
+    ///
+    /// A file whose type an installed app declares does not reach here at
+    /// all: the drop router opens it *in that app* first (see
+    /// [`crate::shell::doc_open`]). What is left for this path is the
+    /// cases there is no owning app for — folders, and types nothing
+    /// installed claims.
     pub fn handle_file_drop_at(
         &mut self,
         path: &std::path::Path,

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::text_selection::line_boundaries;
@@ -123,13 +123,6 @@ impl EditorApp {
         line_boundaries(&self.body.text, pos).1
     }
 
-    /// Presence key for the editor body. Widget-level path so `text_input`-
-    /// style helpers (peer caret / selection) pick it up.
-    pub(crate) fn body_presence_key() -> PresenceKey {
-        PresenceKey::Widget {
-            path: vec![PathSegment::Field(BODY_KEY.into())],
-        }
-    }
 }
 
 impl Default for EditorApp {
@@ -505,7 +498,7 @@ impl Widget for EditorApp {
         // on top of the locally-rendered text. Char-index is mapped to
         // byte index via `char_indices` so a peer whose caret walks past
         // the text boundary simply lands at end-of-buffer.
-        let key = Self::body_presence_key();
+        let key = self.body.presence_key();
         if let Some(carets) = presence.carets.get(&key) {
             for (user, caret_char) in carets.iter() {
                 let byte_idx = self.body.char_index_to_byte(*caret_char);
@@ -722,6 +715,17 @@ impl Widget for EditorApp {
         "EditorApp"
     }
 
+    /// The record this tab's document is. Folded into the body's presence
+    /// key so a peer's caret arriving for one tab is not drawn in another
+    /// tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -834,20 +838,41 @@ mod tests {
     }
 
     #[test]
-    fn body_presence_key_is_widget_with_editor_body_field() {
+    fn body_presence_key_names_the_record_and_the_body_field() {
+        use ui::presence::{PathSegment, PresenceKey};
         // Stable contract: the shell seeds presence state under this
         // exact key, so a peer's caret/selection for the editor body
-        // must materialise as `Widget { [Field("editor_body")] }`.
-        let key = EditorApp::body_presence_key();
+        // materialises where `draw` looks for it.
+        //
+        // Unhosted — no record named yet — it is the bare field.
+        let mut app = EditorApp::new();
+        let key = app
+            .presence_key()
+            .expect("the editor body publishes presence");
         match key {
             PresenceKey::Widget { path } => {
-                assert_eq!(path.len(), 1);
-                match &path[0] {
-                    PathSegment::Field(f) => assert_eq!(f, BODY_KEY),
-                    _ => panic!("expected Field segment"),
-                }
+                assert_eq!(path, vec![PathSegment::Field(BODY_KEY.into())]);
             }
-            _ => panic!("expected PresenceKey::Widget"),
+            other => panic!("expected PresenceKey::Widget, got {other:?}"),
+        }
+
+        // Hosted in a tab, the record comes first. Two Editor tabs are two
+        // documents with an `editor_body` each, so a key that only named
+        // the field would address both at once and a peer's caret would be
+        // drawn in whichever tab painted last.
+        let record = ui::record::RecordId::for_tab(0x2b);
+        app.set_record_scope(&record);
+        match app.presence_key().expect("still publishes") {
+            PresenceKey::Widget { path } => {
+                assert_eq!(
+                    path,
+                    vec![
+                        PathSegment::Field(record.as_str().into()),
+                        PathSegment::Field(BODY_KEY.into()),
+                    ],
+                );
+            }
+            other => panic!("expected PresenceKey::Widget, got {other:?}"),
         }
     }
 
