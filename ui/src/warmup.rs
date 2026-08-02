@@ -183,29 +183,35 @@ pub fn spawn_warmup(no_vello: bool) -> Option<thread::JoinHandle<()>> {
             // that point the ~30 pipelines are already resident on the
             // device — the second `Renderer::new` returns much sooner.
             //
-            // Wrapped in `catch_unwind` because OffscreenRenderer::new
-            // panics when no wgpu adapter is available (headless CI
-            // with no llvmpipe). A missing adapter isn't fatal to the
-            // shell — the compositor's real backend surfaces its own
-            // adapter error later — so we swallow it here.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                qos_startup_metrics::span("warmup-vello", || {
-                    use vello::Scene;
-                    use vello::kurbo::{Affine, Rect};
-                    use vello::peniko::{Color, Fill};
+            // Built through `try_new`, not `new`. A missing adapter
+            // isn't fatal to the shell — the compositor's real backend
+            // surfaces its own adapter error later — so the warmup
+            // drops it silently and the thread exits.
+            //
+            // This used to be `new` inside a `catch_unwind`, which is a
+            // guarantee that only holds in dev builds: the release
+            // profile is `panic = "abort"`, so the panic would have
+            // taken the whole compositor down at startup on any machine
+            // where adapter enumeration fails. Asking for a `Result`
+            // makes the soft-fail real under both panic strategies.
+            qos_startup_metrics::span("warmup-vello", || {
+                use vello::Scene;
+                use vello::kurbo::{Affine, Rect};
+                use vello::peniko::{Color, Fill};
 
-                    let mut renderer = crate::offscreen::OffscreenRenderer::new(4, 4);
-                    let mut scene = Scene::new();
-                    scene.fill(
-                        Fill::NonZero,
-                        Affine::IDENTITY,
-                        Color::from_rgb8(0x33, 0x33, 0x33),
-                        None,
-                        &Rect::new(0.0, 0.0, 4.0, 4.0),
-                    );
-                    let _ = renderer.render(&scene, Color::TRANSPARENT);
-                });
-            }));
+                let Ok(mut renderer) = crate::offscreen::OffscreenRenderer::try_new(4, 4) else {
+                    return;
+                };
+                let mut scene = Scene::new();
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    Color::from_rgb8(0x33, 0x33, 0x33),
+                    None,
+                    &Rect::new(0.0, 0.0, 4.0, 4.0),
+                );
+                let _ = renderer.render(&scene, Color::TRANSPARENT);
+            });
         })
         .ok()?;
     Some(handle)
