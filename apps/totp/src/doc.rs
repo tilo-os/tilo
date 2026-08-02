@@ -72,6 +72,48 @@ impl AuthDoc {
         let _ = doc.delete(&accounts, id.to_string().as_str());
     }
 
+    /// The per-account Map for `id` **only if it already exists** — never
+    /// created. A field set on a missing (e.g. concurrently deleted) account is
+    /// then a clean no-op rather than resurrecting a half-formed record.
+    fn existing_account(doc: &AutoCommit, id: AccountId) -> Option<ObjId> {
+        let accounts = match doc.get(&ROOT, "accounts") {
+            Ok(Some((Value::Object(ObjType::Map), aid))) => aid,
+            _ => return None,
+        };
+        match doc.get(&accounts, id.to_string().as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), obj))) => Some(obj),
+            _ => None,
+        }
+    }
+
+    /// Rewrite one account's issuer (its display title). No-op if absent.
+    pub fn set_issuer(doc: &mut AutoCommit, id: AccountId, issuer: &str) {
+        if let Some(obj) = Self::existing_account(doc, id) {
+            let _ = doc.put(&obj, "issuer", issuer.to_string());
+        }
+    }
+
+    /// Rewrite one account's label. No-op if absent.
+    pub fn set_label(doc: &mut AutoCommit, id: AccountId, label: &str) {
+        if let Some(obj) = Self::existing_account(doc, id) {
+            let _ = doc.put(&obj, "label", label.to_string());
+        }
+    }
+
+    /// Rewrite one account's palette colour index. No-op if absent.
+    pub fn set_color(doc: &mut AutoCommit, id: AccountId, color: u8) {
+        if let Some(obj) = Self::existing_account(doc, id) {
+            let _ = doc.put(&obj, "color", i64::from(color));
+        }
+    }
+
+    /// Rewrite one account's list position. No-op if absent.
+    pub fn set_order(doc: &mut AutoCommit, id: AccountId, order: u32) {
+        if let Some(obj) = Self::existing_account(doc, id) {
+            let _ = doc.put(&obj, "order", i64::from(order));
+        }
+    }
+
     /// Read every account out of the document, sorted by `order`.
     /// Records with an unparseable id key are skipped.
     pub fn list_accounts(doc: &AutoCommit) -> Vec<Account> {

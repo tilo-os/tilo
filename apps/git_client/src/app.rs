@@ -100,6 +100,14 @@ pub struct GitClientApp {
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
+    /// Framework-owned action dispatch (the only action-dispatch state the app
+    /// holds). Every durable view-preference toggle dispatches its
+    /// [`GitClientAction`](crate::actions::GitClientAction) through this: the
+    /// host brackets the undo boundary, encodes and applies through the executor
+    /// (so it replays byte-identically on peers), and remembers the last action
+    /// for the affordance == `ActionSpec` covenant test.
+    actions: ui::ActionHost,
+
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
     /// data. Cleared once a repo is opened (via the path field or at startup).
@@ -128,8 +136,11 @@ pub struct GitClientApp {
     settings: Settings,
     /// Set once after the first sync seeds the settings into the doc.
     settings_seeded: bool,
-    /// Raised when a local setting toggle must be flushed back to the doc.
-    settings_dirty: bool,
+    /// An initial preference was forced at construction (the `GIT_CLIENT_SPLIT`
+    /// screenshot path), so the first sync keeps it rather than adopting the
+    /// document's persisted value. Interactive toggles never set this — they go
+    /// through the action executor, which writes the document directly.
+    settings_forced: bool,
     /// Cached hit rects for the app-bar settings controls, set during draw.
     settings_seg: Rect,
     settings_syn: Rect,
@@ -280,6 +291,7 @@ impl GitClientApp {
             .with_font_size(14.0)
             .with_mono();
         Self {
+            actions: ui::ActionHost::new(),
             flap,
             last_flap_tick: Instant::now(),
             hamburger_rect: Rect::ZERO,
@@ -297,7 +309,7 @@ impl GitClientApp {
             last_error: None,
             settings,
             settings_seeded: false,
-            settings_dirty: split_forced,
+            settings_forced: split_forced,
             settings_seg: Rect::ZERO,
             settings_syn: Rect::ZERO,
             screen,
@@ -741,6 +753,58 @@ impl GitClientApp {
         self.commit_input.set_focus(field == Some(Field::Commit));
         self.branch_input.set_focus(field == Some(Field::Branch));
         self.open_input.set_focus(field == Some(Field::Open));
+    }
+
+    // --- Durable view-preference actions -------------------------------
+    // The diff-view preferences are the app's only shared-document state.
+    // Each toggle updates the local snapshot for an immediate redraw AND
+    // dispatches its `GitClientAction` through the framework `ActionHost`,
+    // which brackets the undo boundary and applies it through the executor
+    // (so it records one Ctrl+Z step and replays byte-identically on peers).
+    // The next `sync` re-reads the same value straight back out of the doc.
+    // These are the exact actions the Ctrl+K resource tree exports — one
+    // source of truth (see `crate::actions`).
+
+    /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
+    /// app-bar segmented control and the `d` shortcut.
+    fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
+        self.settings.toggle_layout();
+        self.diff_scroll = 0.0;
+        self.actions.dispatch(
+            doc,
+            crate::actions::GIT_CLIENT_ACTION_TYPE,
+            &crate::actions::set_diff_layout_action(self.settings.diff_layout),
+        );
+    }
+
+    /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
+    fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
+        self.settings.syntax_highlight = !self.settings.syntax_highlight;
+        self.actions.dispatch(
+            doc,
+            crate::actions::GIT_CLIENT_ACTION_TYPE,
+            &crate::actions::GitClientAction::SetSyntaxHighlight {
+                on: self.settings.syntax_highlight,
+            },
+        );
+    }
+
+    /// The label for the open-repository resource Ctrl+K publishes, or `None`
+    /// when no repository is open (the empty state) so the palette shows
+    /// nothing to act on.
+    pub(crate) fn resource_repo_label(&self) -> Option<String> {
+        if self.awaiting_repo {
+            return None;
+        }
+        Some(self.model.name.clone())
+    }
+
+    /// The last preference [`EncodedAction`](qos_actions::EncodedAction) an
+    /// on-screen control dispatched, for the affordance == `ActionSpec`
+    /// covenant test.
+    #[doc(hidden)]
+    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     // --- Drawing -------------------------------------------------------
@@ -1231,7 +1295,7 @@ impl GitClientApp {
         self.flap.reconcile(self.layout_mode());
     }
 
-    fn handle_click(&mut self, pos: Point) {
+    fn handle_click(&mut self, pos: Point, doc: &mut AutoCommit) {
         // Hamburger toggle (overlay mode only) summons / dismisses the flap.
         if self.hamburger_rect.width() > 0.0 && self.hamburger_rect.contains(pos) {
             self.flap.toggle(self.layout_mode());
@@ -1258,16 +1322,14 @@ impl GitClientApp {
                 return;
             }
         }
-        // Settings segmented control + syntax toggle.
+        // Settings segmented control + syntax toggle — durable preferences,
+        // dispatched as actions so they undo and replicate.
         if self.settings_seg.contains(pos) {
-            self.settings.toggle_layout();
-            self.diff_scroll = 0.0;
-            self.settings_dirty = true;
+            self.toggle_diff_layout(doc);
             return;
         }
         if self.settings_syn.contains(pos) {
-            self.settings.syntax_highlight = !self.settings.syntax_highlight;
-            self.settings_dirty = true;
+            self.toggle_syntax_highlight(doc);
             return;
         }
 
@@ -1498,21 +1560,19 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 impl Widget for GitClientApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.settings_seeded {
-            // First sync: adopt any persisted settings, then write ours
-            // back so the doc is the source of truth henceforth. If a
-            // local toggle was already pending (e.g. forced at startup),
-            // our value wins over an empty doc.
-            if !self.settings_dirty {
+            // First sync: adopt any persisted preferences, then seed the doc so
+            // it is the source of truth and collaborators see the same
+            // preferences. An initial override forced at construction (the
+            // GIT_CLIENT_SPLIT screenshot path) wins over the persisted value.
+            if !self.settings_forced {
                 self.settings = Settings::read(state);
             }
             self.settings.write(state);
             self.settings_seeded = true;
-            self.settings_dirty = false;
-        } else if self.settings_dirty {
-            self.settings.write(state);
-            self.settings_dirty = false;
         } else {
-            // Pick up remote changes to settings (collaboration).
+            // Adopt document changes: remote collaborators, and this app's own
+            // preference actions, which the framework `ActionHost` applies
+            // straight to the document through the executor.
             self.settings = Settings::read(state);
         }
     }
@@ -1644,6 +1704,20 @@ impl Widget for GitClientApp {
         self.rect
     }
 
+    /// Publish the open repository and its view-preference actions to the
+    /// shell's Ctrl+K palette (delegates to the [`ResourceProvider`] impl in
+    /// [`crate::actions`]). Empty when no repository is open.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the document heads captured before an on-screen preference
+    /// control dispatched, so it records exactly one undo boundary bracketing
+    /// it — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // Redraw while the flap animates, and while any embedded text field is
         // focused so its caret keeps blinking.
@@ -1743,7 +1817,7 @@ impl GitClientApp {
         }
         // Anywhere else: blur the fields and run the normal click router.
         self.set_focus(None);
-        self.handle_click(pos);
+        self.handle_click(pos, state);
     }
 
     /// Submit the focused field's action (Enter).
@@ -1820,8 +1894,7 @@ impl GitClientApp {
                 "2" => { self.switch_screen(Screen::History); *handled = true; }
                 "3" => { self.switch_screen(Screen::Panels); *handled = true; }
                 "d" => {
-                    self.settings.toggle_layout();
-                    self.settings_dirty = true;
+                    self.toggle_diff_layout(state);
                     *handled = true;
                 }
                 _ => {}
@@ -1938,9 +2011,9 @@ mod tests {
         assert!(!app.flap_open());
         // Simulate the hamburger being drawn this frame, then click it.
         app.hamburger_rect = Rect::new(12.0, 12.0, 44.0, 44.0);
-        app.handle_click(Point::new(28.0, 28.0));
+        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
         assert!(app.flap_open(), "hamburger summons the overlay flap");
-        app.handle_click(Point::new(28.0, 28.0));
+        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
         assert!(!app.flap_open(), "hamburger dismisses it again");
     }
 
@@ -1950,7 +2023,7 @@ mod tests {
         app.flap.snap(true); // open overlay flap
         assert!(app.flap_open());
         // Click far to the right of the list column (over the dimmed detail).
-        app.handle_click(Point::new(600.0, 400.0));
+        app.handle_click(Point::new(600.0, 400.0), &mut AutoCommit::new());
         assert!(!app.flap_open(), "clicking the scrim closes the flap");
     }
 
@@ -1959,7 +2032,7 @@ mod tests {
         let mut app = app_at(680.0, Screen::Changes);
         app.flap.snap(true);
         // A click within the list column must not be treated as a scrim tap.
-        app.handle_click(Point::new(40.0, 400.0));
+        app.handle_click(Point::new(40.0, 400.0), &mut AutoCommit::new());
         assert!(app.flap_open(), "clicks on the list column keep the flap open");
     }
 
@@ -1977,5 +2050,49 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.flap.reconcile(app.layout_mode());
         assert!(app.flap_open(), "docked default restores the open column");
+    }
+
+    /// The affordance == `ActionSpec` covenant on the *real* production path:
+    /// the app-bar diff-layout control mutates the shared document, records one
+    /// undo boundary, and dispatches the byte-identical `EncodedAction` the
+    /// Ctrl+K palette would — one source of truth, not two code paths.
+    #[test]
+    fn appbar_diff_layout_toggle_matches_the_palette_action() {
+        let (model, diffs) = crate::sample::model();
+        let mut app = GitClientApp::from_model(model, diffs);
+        let mut doc = AutoCommit::new();
+        // First sync seeds the default (unified) preferences into the document.
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
+
+        // The action Ctrl+K would dispatch right now: flip unified → split.
+        let resources = Widget::resources(&app, &doc);
+        let spec = resources[0].actions.iter().find(|a| a.id == "diff-layout").unwrap();
+        let palette_action = match &spec.input {
+            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("diff-layout is an immediate action"),
+        };
+
+        // Drive the real app-bar segmented control.
+        app.toggle_diff_layout(&mut doc);
+
+        // It mutated the shared document...
+        assert_eq!(
+            Settings::read_only(&doc).diff_layout,
+            DiffLayout::SideBySide,
+            "the control switched the persisted layout"
+        );
+        // ...recorded exactly one undo boundary bracketing the toggle...
+        assert!(
+            app.take_committed_action().is_some(),
+            "one undo boundary recorded for the control's action"
+        );
+        // ...and dispatched the byte-identical action Ctrl+K would.
+        let dispatched = app.last_dispatched().expect("the control dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::GIT_CLIENT_ACTION_TYPE);
+        assert_eq!(
+            dispatched, &palette_action,
+            "the app-bar control and the Ctrl+K entry build one and the same action"
+        );
     }
 }

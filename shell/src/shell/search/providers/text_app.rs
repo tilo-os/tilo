@@ -14,7 +14,7 @@
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::crdt_text::read_body;
+use crate::shell::tab_documents::tab_body;
 use crate::shell::search::{ResourceKind, SearchContext, SearchResult};
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
 
@@ -54,8 +54,11 @@ pub fn owns_tab_of(chrome: &ChromeState, tab_id: u64, app: &str) -> bool {
 ///
 /// `body_key` must be the same Automerge key the app's
 /// [`CrdtTextBody`](crate::shell::crdt_text::CrdtTextBody) writes under,
-/// and it is read from `ctx.doc_root` — the root the shell hands its
-/// hosted apps — because that is where the app actually puts it.
+/// and it is read **per tab**, out of that tab's own document, because
+/// that is where the app actually puts it: a tab is an open thing and the
+/// document behind it is its own (see
+/// [`crate::shell::tab_documents`]). Reading one body and scoring every
+/// tab against it is what made two Notes tabs show each other's snippet.
 pub fn query_text_app(
     ctx: &SearchContext<'_>,
     app: &str,
@@ -67,8 +70,6 @@ pub fn query_text_app(
         return Vec::new();
     }
     let needle_lower = ctx.needle.to_lowercase();
-    let body = read_body(ctx.doc, ctx.doc_root, body_key).unwrap_or_default();
-    let body_lower = body.to_lowercase();
     let mut out = Vec::new();
     let tree = ctx.chrome.tree();
     for w in &tree.workspaces {
@@ -79,6 +80,9 @@ pub fn query_text_app(
                         continue;
                     }
                     let title_lower = t.title.to_lowercase();
+                    let body = tab_body(ctx.chrome.records(), t.id, body_key)
+                        .unwrap_or_default();
+                    let body_lower = body.to_lowercase();
                     let Some((score, snippet)) =
                         match_score(&needle_lower, &title_lower, &body_lower, &body)
                     else {
@@ -170,21 +174,10 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 }
 
 /// Enter on a result: switch workspace, strip and group, and make the
-/// tab the active one.
+/// tab the active one. Shared with every other surface that focuses a
+/// tab it found by walking the tree — see [`ChromeState::focus_tab`].
 fn focus_tab(chrome: &Chrome, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: TabId) {
-    let mut st = chrome.borrow_mut();
-    {
-        let mut tree = st.tree_mut();
-        tree.active = workspace;
-        tree.active_strip.insert(workspace, strip);
-        tree.active_group.insert(strip, group);
-        if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == workspace) {
-            if let Some(s) = w.strips.iter_mut().find(|s| s.id == strip) {
-                if let Some(g) = s.window_groups.iter_mut().find(|g| g.id == group) {
-                    g.active_tab = tab;
-                }
-            }
-        }
-    }
-    st.bump();
+    chrome
+        .borrow_mut()
+        .focus_tab(workspace, strip, group, tab);
 }

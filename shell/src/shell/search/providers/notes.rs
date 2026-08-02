@@ -108,12 +108,18 @@ mod tests {
     }
 
     /// Seed the body the way the *app* does: construct the real
-    /// [`NotesApp`] and let its `sync` write into the doc, at the root the
-    /// shell hands its hosted apps. A hand-rolled seed is what let the
-    /// provider read from a path nothing ever wrote to.
-    fn seed_note_body(doc: &mut AutoCommit, body: &str) {
-        let mut app = NotesApp::with_seed(body);
-        app.sync(doc, &automerge::ROOT);
+    /// [`NotesApp`] and let its `sync` write into the document the tab
+    /// holds — its own record, which is where a hosted Notes tab's body
+    /// lives. A hand-rolled seed, or one written to some other document,
+    /// is what let the provider read from a path nothing ever wrote to.
+    fn seed_note_body(chrome: &ChromeState, tab_id: u64, body: &str) {
+        let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
+        let store = chrome.records();
+        store.open_record(&record);
+        store.with(&record.id, |doc| {
+            let mut app = NotesApp::with_seed(body);
+            app.sync(doc, &automerge::ROOT);
+        });
     }
 
     #[test]
@@ -121,8 +127,8 @@ mod tests {
         let handle = tree_with_note_tab(1, "Grocery list");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, "reminder: nothing about grocery in body");
+        let doc = AutoCommit::new();
+        seed_note_body(&chrome_st, 1, "reminder: nothing about grocery in body");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "grocery",
@@ -142,8 +148,8 @@ mod tests {
         let handle = tree_with_note_tab(1, "Untitled");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, "The quick brown fox jumps.");
+        let doc = AutoCommit::new();
+        seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "quick brown",
@@ -172,9 +178,10 @@ mod tests {
         let handle = tree_with_note_tab(7, "Notes");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         seed_note_body(
-            &mut doc,
+            &chrome_st,
+            7,
             "Welcome to nirios.\n\nThese notes sync live with anyone \
              invited to this workspace.",
         );
@@ -212,8 +219,8 @@ mod tests {
         let handle = tree_with_note_tab(1, "Untitled");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, "The quick brown fox jumps.");
+        let doc = AutoCommit::new();
+        seed_note_body(&chrome_st, 1, "The quick brown fox jumps.");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "xylophone",

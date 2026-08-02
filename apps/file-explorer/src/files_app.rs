@@ -615,8 +615,9 @@ impl FileExplorerWidget {
     // --- Command application ------------------------------------------
 
     /// Apply one queued command, returning whether it changed the widget
-    /// tree structure (and thus needs a rebuild).
-    fn apply_command(&mut self, cmd: FileCommand) -> bool {
+    /// tree structure (and thus needs a rebuild). Crate-visible so sibling
+    /// modules' tests can drive the real command-application path.
+    pub(crate) fn apply_command(&mut self, cmd: FileCommand) -> bool {
         match cmd {
             FileCommand::Navigate(p) => {
                 self.navigate(p);
@@ -981,10 +982,22 @@ impl FileExplorerWidget {
         let _ = self.open_target(path, &mut runner);
     }
 
-    /// Open `path` with `runner`: navigate into directories, launch the
-    /// registered app for document types, and hand everything else to the
-    /// desktop default handler (`open::that`, via `CommandRunner::open_default`).
-    /// Returns whether a launch happened (`false` when it navigated a dir).
+    /// Open `path`: navigate into directories, and hand a file to the
+    /// desktop to open in whichever app owns it.
+    ///
+    /// The explorer picks no app of its own. It asks the host
+    /// ([`set_document_opener`]), which resolves the owner, grants the
+    /// read, focuses the document if it is already open, and launches —
+    /// all in one place, shared with every other surface that can open a
+    /// file. Only when no host installed a route (a standalone run, off a
+    /// qOS session) does this fall back to the desktop default handler
+    /// (`open::that`, via `CommandRunner::open_default`).
+    ///
+    /// A refusal from the host is shown in the status bar naming the
+    /// file; activation never silently does nothing.
+    ///
+    /// Returns whether the path was handed off (`false` when it navigated
+    /// a dir).
     fn open_target<R: CommandRunner>(
         &mut self,
         path: PathBuf,
@@ -994,20 +1007,23 @@ impl FileExplorerWidget {
             self.navigate(path);
             return Ok(false);
         }
-        let cwd = path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.current_path.clone());
-        match app_for_path(&path) {
-            Some(app) => runner.spawn_arg(app, &path, &cwd)?,
-            // No registered qOS app for this type — open with the desktop
-            // default (images, PDFs, video, audio, plain text, code, …).
+        match ask_host_to_open(&path) {
+            Some(Ok(())) => {}
+            Some(Err(reason)) => self.status = Some(reason),
             None => runner.open_default(&path)?,
         }
         Ok(true)
     }
 
     // --- inline rename -------------------------------------------------
+
+    /// The transient status line shown in the footer — an operation
+    /// result, or the reason an open was refused. Readable so a host (or
+    /// a test standing in for one) can confirm the explorer told the user
+    /// something rather than swallowing it.
+    pub fn status_line(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
 
     /// Whether an inline rename is currently in progress.
     pub fn is_renaming(&self) -> bool {
@@ -1174,11 +1190,66 @@ impl CommandRunner for SystemRunner {
     }
 }
 
-/// The app that opens `path`, by extension. Document formats — per qdoc's
-/// codec registry — open in the word processor.
-pub fn app_for_path(path: &std::path::Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?;
-    qdoc::is_supported_ext(ext).then_some("word-processor")
+/// Whether `path` is an editable document, per qdoc's codec registry.
+///
+/// A presentation fact only — it drives the document glyph in the icon
+/// column. It deliberately says nothing about *which* app opens the file:
+/// that is the desktop's answer, from the manifests of what is installed,
+/// and the explorer asks for it rather than deciding it (see
+/// [`set_document_opener`]).
+pub fn is_document(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(qdoc::is_supported_ext)
+}
+
+/// How the explorer hands a document to the application that owns it.
+///
+/// `Ok(())` means the host took it. `Err(reason)` is a failure the user
+/// must be told about, in words naming the file — the explorer shows it
+/// in its status bar.
+pub type DocumentOpener = Box<dyn FnMut(&std::path::Path) -> Result<(), String>>;
+
+thread_local! {
+    static DOCUMENT_OPENER: std::cell::RefCell<Option<DocumentOpener>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install the route by which this explorer opens documents.
+///
+/// The explorer does not decide which app opens a `.odt`, and does not
+/// launch one. That decision belongs to the desktop — which app declares
+/// the type, which sandbox it runs in, which read capability it needs,
+/// and whether the document is already open somewhere — and it lives in
+/// one place, the compositor's `shell::shell::doc_open`. An explorer
+/// hosted by the compositor is wired straight to it here; nothing about
+/// opening a document is reimplemented on this side.
+///
+/// Thread-local rather than a global because what it points at is the
+/// compositor's chrome, which is thread-affine, and because it then
+/// reaches *every* explorer instance the host creates without threading a
+/// parameter through each widget constructor.
+///
+/// With nothing installed — the explorer run standalone, with no
+/// compositor to ask — activation falls back to the desktop's own
+/// handler. That is the honest answer off a qOS session, not a second
+/// implementation of the decision.
+pub fn set_document_opener<F>(opener: F)
+where
+    F: FnMut(&std::path::Path) -> Result<(), String> + 'static,
+{
+    DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = Some(Box::new(opener)));
+}
+
+/// Remove the installed route, restoring the standalone fallback. Used by
+/// tests, which share the thread-local with each other.
+pub fn clear_document_opener() {
+    DOCUMENT_OPENER.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// Ask the host to open `path`. `None` when no host installed a route.
+fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
+    DOCUMENT_OPENER.with(|slot| slot.borrow_mut().as_mut().map(|open| open(path)))
 }
 
 impl FileExplorerWidget {
@@ -1973,40 +2044,88 @@ mod open_with_tests {
     }
 
     #[test]
-    fn document_extensions_map_to_word_processor() {
+    fn document_extensions_are_recognised_as_documents() {
         for f in ["report.odt", "memo.docx", "notes.md", "readme.markdown"] {
-            assert_eq!(app_for_path(Path::new(f)), Some("word-processor"), "{f}");
+            assert!(is_document(Path::new(f)), "{f}");
         }
-        assert_eq!(app_for_path(Path::new("photo.png")), None);
-        assert_eq!(app_for_path(Path::new("main.rs")), None);
+        assert!(!is_document(Path::new("photo.png")));
+        assert!(!is_document(Path::new("main.rs")));
     }
 
+    /// Every activated file goes to the host, whatever its type. The
+    /// explorer must not sort files into "documents" and "everything
+    /// else" — which app owns a `.pdf` or a `.png` is the desktop's
+    /// answer, from what is installed, and a table here would be wrong
+    /// the moment anybody installs anything.
     #[test]
-    fn open_entry_launches_word_processor_with_the_file() {
+    fn activating_a_file_hands_the_path_to_the_host() {
+        let asked: std::rc::Rc<std::cell::RefCell<Vec<PathBuf>>> = Default::default();
+        let sink = asked.clone();
+        set_document_opener(move |p| {
+            sink.borrow_mut().push(p.to_path_buf());
+            Ok(())
+        });
+
         let mut w = FileExplorerWidget::new();
-        w.entries = vec![file_entry("report.odt"), file_entry("photo.png")];
-
+        w.entries = ["report.odt", "photo.png", "slides.pdf", "main.rs"]
+            .iter()
+            .map(|f| file_entry(f))
+            .collect();
         let mut runner = RecRunner::default();
-        assert!(w.open_entry(0, &mut runner).unwrap(), "document spawns an app");
-        assert_eq!(runner.calls, vec![("word-processor".to_string(), Some(PathBuf::from("/docs/report.odt")))]);
+        for i in 0..4 {
+            assert!(w.open_entry(i, &mut runner).unwrap(), "entry {i} opens");
+        }
 
-        // A non-document (image) opens via the system default handler — it
-        // must NOT silently do nothing (the previous behaviour, and the bug).
-        assert!(w.open_entry(1, &mut runner).unwrap(), "non-document opens via default handler");
-        assert_eq!(runner.calls.len(), 1, "no qOS app spawn for a plain image");
-        assert_eq!(runner.opened, vec![PathBuf::from("/docs/photo.png")]);
+        assert_eq!(
+            *asked.borrow(),
+            vec![
+                PathBuf::from("/docs/report.odt"),
+                PathBuf::from("/docs/photo.png"),
+                PathBuf::from("/docs/slides.pdf"),
+                PathBuf::from("/docs/main.rs"),
+            ],
+            "the host is asked for every file, with its own path"
+        );
+        assert!(
+            runner.calls.is_empty(),
+            "the explorer launches nothing itself: {:?}",
+            runner.calls
+        );
+        assert!(
+            runner.opened.is_empty(),
+            "and does not go behind the host's back to xdg-open"
+        );
+        assert_eq!(w.status, None, "a successful open reports nothing");
+        clear_document_opener();
     }
 
+    /// A host that cannot open the file says why, and the explorer shows
+    /// it. Activation is never silent.
     #[test]
-    fn open_entry_uses_default_handler_for_every_nondocument_type() {
-        // Images, PDFs, video, audio, code — none have a qOS app, so every one
-        // must route to the desktop default handler rather than no-op.
-        for f in ["pic.jpg", "movie.mp4", "song.flac", "doc.pdf", "main.rs"] {
+    fn a_refused_open_is_shown_to_the_user() {
+        set_document_opener(|_| Err("no installed app opens .zzz files (thing.zzz)".into()));
+        let mut w = FileExplorerWidget::new();
+        w.entries = vec![file_entry("thing.zzz")];
+        let mut runner = RecRunner::default();
+        assert!(w.open_entry(0, &mut runner).unwrap());
+        let status = w.status.clone().expect("the refusal reaches the status bar");
+        assert!(status.contains("thing.zzz"), "must name the file: {status}");
+        assert!(runner.opened.is_empty(), "a refusal is not a fallback");
+        clear_document_opener();
+    }
+
+    /// With no host installed — the explorer run outside a qOS session —
+    /// activation still opens the file, via the desktop's own handler,
+    /// rather than doing nothing.
+    #[test]
+    fn without_a_host_every_type_falls_back_to_the_desktop_handler() {
+        clear_document_opener();
+        for f in ["pic.jpg", "movie.mp4", "song.flac", "doc.pdf", "main.rs", "report.odt"] {
             let mut w = FileExplorerWidget::new();
             w.entries = vec![file_entry(f)];
             let mut runner = RecRunner::default();
             assert!(w.open_entry(0, &mut runner).unwrap(), "{f} should open");
-            assert!(runner.calls.is_empty(), "{f} must not spawn a qOS app");
+            assert!(runner.calls.is_empty(), "{f} must not spawn a bare binary");
             assert_eq!(runner.opened, vec![PathBuf::from("/docs").join(f)], "{f}");
         }
     }

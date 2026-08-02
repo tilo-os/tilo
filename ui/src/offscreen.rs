@@ -4,7 +4,9 @@
 //!
 //! Same pipeline the e2e snapshot tests use. Public so callers outside
 //! the test target (binaries, examples, downstream crates) can take
-//! deterministic screenshots at any resolution.
+//! screenshots at any resolution, off any scene, with no display
+//! attached. What is drawn is a pure function of the scene; the last bit
+//! of the rasterisation is not — see the last section.
 //!
 //! # Why wgpu row-pitch alignment matters
 //! `copy_texture_to_buffer` requires the buffer's row pitch to be a
@@ -12,6 +14,35 @@
 //! Metal / D3D12 backend shipped today). For a non-aligned width we
 //! allocate the aligned size and strip padding while reading back so
 //! callers see a tight `width * 4` bytes-per-row buffer.
+//!
+//! # Two rasterisations of one scene are not guaranteed bit-identical
+//! Rendering the *same* [`Scene`] twice can return buffers that differ
+//! by one 8-bit step on a handful of antialiased edge pixels. This is a
+//! property of vello's GPU pipeline, not of this harness:
+//!
+//! * `path_count` assigns each path segment its slot inside a tile's
+//!   segment slice with an `atomicAdd`, so the order segments land in
+//!   for a given tile follows GPU workgroup scheduling;
+//! * `fine`'s analytic area antialiasing then accumulates
+//!   `area += a * dy` over that slice, and float addition is not
+//!   associative — a different order can move the coverage by one ulp;
+//! * a pixel whose coverage sits on a quantisation boundary lands one
+//!   step either side of it.
+//!
+//! Measured on this stack: identical `Scene`, ≤4 pixels out of 57 600
+//! affected, always ±1 in a single channel, and the count of pixels
+//! carrying ink never changes. It shows up when several threads in one
+//! process drive the shared device (a fully serial process rendered the
+//! same scene 600 times with no drift; three *separate* processes
+//! rendering concurrently likewise had none), which is why the
+//! screenshot suites mostly do not see it and the parallel test
+//! binaries do.
+//!
+//! Consequences: byte-comparing two renders is not a sound equality
+//! test. Compare with [`OffscreenRenderer::pixels_differing_beyond_aa`],
+//! or compare the `Scene` the draw pass produced, which *is* exact. A
+//! single frame is unaffected — the wobble is invisible (1/255 on an
+//! edge pixel) and never changes what is drawn.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -43,6 +74,46 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
         .clone()
 }
 
+/// Why an [`OffscreenRenderer`] could not be built.
+///
+/// Every variant is an *environment* failure: the machine has no usable
+/// GPU adapter, or the driver rejected vello's pipelines. Bad arguments
+/// (a zero width or height) stay an `assert!` in the constructors —
+/// that is a caller bug, not something the environment can hand you.
+#[derive(Debug)]
+pub enum OffscreenError {
+    /// wgpu enumerated no adapter this process can use. On a headless
+    /// machine that usually means no software rasteriser is installed
+    /// (llvmpipe / lavapipe).
+    NoAdapter,
+    /// The adapter exists but vello could not build its compute
+    /// pipelines against the resulting device.
+    Renderer(vello::Error),
+    /// A thread panicked while holding the process-wide
+    /// `RenderContext`. Only reachable under `panic = "unwind"`; the
+    /// shipping release profile aborts instead of poisoning.
+    ContextPoisoned,
+}
+
+impl std::fmt::Display for OffscreenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoAdapter => f.write_str("no wgpu adapter available — is llvmpipe installed?"),
+            Self::Renderer(e) => write!(f, "vello could not build a renderer: {e}"),
+            Self::ContextPoisoned => f.write_str("the shared wgpu RenderContext is poisoned"),
+        }
+    }
+}
+
+impl std::error::Error for OffscreenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Renderer(e) => Some(e),
+            Self::NoAdapter | Self::ContextPoisoned => None,
+        }
+    }
+}
+
 /// An offscreen wgpu + vello pipeline sized at `width × height`. Reuse
 /// a single instance for multiple renders to amortise adapter / device
 /// creation (which is the expensive part).
@@ -64,17 +135,46 @@ impl OffscreenRenderer {
     /// Spin up a new headless renderer at the given dimensions.
     ///
     /// Panics if no suitable adapter exists (e.g. llvmpipe isn't
-    /// installed in the test container). Callers that want a soft-fail
-    /// path should wrap this in `std::panic::catch_unwind`.
+    /// installed in the test container). **Do not try to soften that
+    /// with `std::panic::catch_unwind`** — the shipping release profile
+    /// sets `panic = "abort"` (workspace `Cargo.toml`), under which a
+    /// panic kills the process at the panic site and `catch_unwind`
+    /// never sees it. Callers that need a soft-fail path must use
+    /// [`try_new`](Self::try_new), which returns the failure instead of
+    /// panicking on it.
+    ///
+    /// `new` stays panicking because most callers are tests and example
+    /// binaries for which "no GPU, no test" is the right outcome.
     pub fn new(width: u32, height: u32) -> Self {
+        match Self::try_new(width, height) {
+            Ok(renderer) => renderer,
+            Err(e) => panic!("OffscreenRenderer::new: {e}"),
+        }
+    }
+
+    /// Fallible [`new`](Self::new): returns [`OffscreenError`] rather
+    /// than panicking when the machine has no usable wgpu adapter or
+    /// the driver rejects vello's pipelines.
+    ///
+    /// This is the constructor for any code path that has to survive a
+    /// GPU-less machine — the compositor's startup warmup, the headless
+    /// backend, the test-control snapshot writer. Those cannot rely on
+    /// `catch_unwind`: release builds are `panic = "abort"`.
+    ///
+    /// Still asserts on a zero width or height. A 0×0 render target is
+    /// a caller bug, and turning programmer errors into `Result`s only
+    /// moves them somewhere quieter.
+    pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
         let context = shared_render_context();
-        let mut ctx = context.lock().expect("shared RenderContext poisoned");
+        let mut ctx = context
+            .lock()
+            .map_err(|_| OffscreenError::ContextPoisoned)?;
         let dev_id = ctx
             .device(None)
             .block_on()
-            .expect("couldn't request a wgpu adapter — is llvmpipe installed?");
+            .ok_or(OffscreenError::NoAdapter)?;
         let device = &ctx.devices[dev_id].device;
 
         let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -117,13 +217,13 @@ impl OffscreenRenderer {
                 pipeline_cache: None,
             },
         )
-        .expect("vello Renderer::new");
+        .map_err(OffscreenError::Renderer)?;
 
         // Drop the lock before returning so subsequent OffscreenRenderer
         // constructions don't have to wait on it.
         drop(ctx);
 
-        Self {
+        Ok(Self {
             width,
             height,
             context,
@@ -133,7 +233,7 @@ impl OffscreenRenderer {
             readback_buf,
             padded_bytes_per_row,
             renderer,
-        }
+        })
     }
 
     /// Render `scene` with the given background colour and return the
@@ -252,5 +352,71 @@ impl OffscreenRenderer {
     pub fn sample(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let idx = ((y * width + x) * 4) as usize;
         (rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3])
+    }
+
+    /// Count the pixels where `a` and `b` differ by more than the
+    /// antialiasing wobble the GPU rasteriser is allowed (see the module
+    /// docs: `atomicAdd`-ordered coverage accumulation can move an edge
+    /// pixel one 8-bit step). Zero means the two buffers are the same
+    /// image; anything above zero is a real difference in what was
+    /// drawn, because a genuine visual change moves pixels by far more
+    /// than one step.
+    ///
+    /// Buffers of different lengths count as differing everywhere they
+    /// do not overlap, so a size mismatch can never read as a match.
+    pub fn pixels_differing_beyond_aa(a: &[u8], b: &[u8]) -> usize {
+        let overlapping = a
+            .chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
+            .count();
+        let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
+        overlapping + unmatched
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OffscreenRenderer;
+
+    /// The frame comparison tolerates exactly the one-step antialiasing
+    /// wobble the rasteriser is allowed and nothing wider. Without this
+    /// guard the tolerance could be widened later — turning "these are
+    /// the same frame" into an assertion that passes on frames that are
+    /// visibly different — with no test noticing.
+    #[test]
+    fn frame_comparison_tolerates_one_step_and_no_more() {
+        let base = [10u8, 20, 30, 255, 40, 50, 60, 255];
+
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &base),
+            0,
+            "identical buffers must not report a difference"
+        );
+
+        // Every channel off by one, in both directions: still one frame.
+        let wobbled = [11u8, 19, 31, 254, 39, 51, 59, 255];
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &wobbled),
+            0,
+            "a one-step antialiasing wobble must read as the same frame"
+        );
+
+        // Two steps on a single channel of a single pixel is a real
+        // difference.
+        let two_steps = [12u8, 20, 30, 255, 40, 50, 60, 255];
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &two_steps),
+            1,
+            "a two-step difference must be reported"
+        );
+
+        // A truncated buffer is never a match, however similar its
+        // overlapping prefix is.
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &base[..4]),
+            1,
+            "a size mismatch must count the pixels that have no counterpart"
+        );
     }
 }

@@ -46,9 +46,28 @@ impl HexDoc {
         }
     }
 
-    /// Write the whole model (bytes + view state) into the document.
+    /// Write the whole model (bytes + view state) into the document. Used to
+    /// seed / replace the shared buffer wholesale (open a file, adopt a peer),
+    /// not for incremental edits — those go through the action model, which
+    /// writes only the [`write_bytes`](Self::write_bytes) blob.
     pub fn write_model(doc: &mut AutoCommit, model: &HexModel) {
-        let _ = doc.put(&ROOT, "bytes", ScalarValue::Bytes(model.bytes().to_vec()));
+        Self::write_bytes(doc, model.bytes());
+        Self::write_meta(doc, model);
+    }
+
+    /// Write only the editable byte buffer. This is the sole mutation the
+    /// [`crate::actions`] byte-edit actions perform, so an insert / delete /
+    /// overwrite replays byte-identically and never disturbs the presentation
+    /// meta (cursor, mode, endianness).
+    pub fn write_bytes(doc: &mut AutoCommit, bytes: &[u8]) {
+        let _ = doc.put(&ROOT, "bytes", ScalarValue::Bytes(bytes.to_vec()));
+    }
+
+    /// Write only the presentation meta (cursor, width, edit mode, endianness).
+    /// This is view state, not a collaborative edit, so it never crosses the
+    /// action model — it is a plain register write that round-trips a reopened
+    /// document to where the user was.
+    pub fn write_meta(doc: &mut AutoCommit, model: &HexModel) {
         let meta = Self::meta_map(doc);
         let _ = doc.put(&meta, "cursor", model.cursor() as i64);
         let _ = doc.put(&meta, "bytes_per_row", model.bytes_per_row() as i64);

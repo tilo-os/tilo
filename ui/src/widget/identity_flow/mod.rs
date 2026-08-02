@@ -125,16 +125,15 @@ pub struct IdentityRecord {
 /// minimum public + secret material needed to reconstruct an
 /// equivalent identity on the same machine.
 ///
-/// **The `secret_bytes` field is the FROST signing-share scalar (or
-/// the single-device Ed25519 secret in 1-of-1 mode).** Treat this
-/// struct as secret material. The disk record stores it with `0600`
-/// mode; in-memory copies belong inside the `IdentityRecord` lifetime
-/// only.
+/// **The `secret_bytes` field is the 32-byte Ed25519 seed of a
+/// single-device identity.** Treat this struct as secret material. The
+/// disk record stores it with `0600` mode; in-memory copies belong
+/// inside the `IdentityRecord` lifetime only.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SerializableIdentity {
     /// `true` when the identity is still in 1-of-1 single-device mode.
-    /// In that mode `secret_bytes` is the raw 32-byte Ed25519 signing
-    /// key; the only public metadata is `group_public_key`.
+    /// Always `true` in a record this crate wrote: only a single-device
+    /// identity has a whole secret to persist.
     pub single_device: bool,
     /// Group public key. 32 bytes, byte-compatible with a standard
     /// Ed25519 verifier.
@@ -145,7 +144,11 @@ pub struct SerializableIdentity {
     pub total_shares: u16,
     /// This device's 1-indexed share number.
     pub share_index: u16,
-    /// The secret material — 32 bytes regardless of mode.
+    /// The secret material: the 32-byte Ed25519 seed, i.e. the input
+    /// `ed25519_dalek::SigningKey::from_bytes` expands to reach the
+    /// scalar. Every reader loads it that way, so writing anything
+    /// else here produces an identity that cannot sign for its own
+    /// `group_public_key`.
     #[serde(with = "serde_bytes")]
     pub secret_bytes: Vec<u8>,
 }
@@ -153,41 +156,28 @@ pub struct SerializableIdentity {
 impl SerializableIdentity {
     /// Extract a wire view from a live identity.
     ///
-    /// **Only valid in single-device mode** for v1 — the threshold-mode
-    /// extraction needs access to the `KeyPackage` internals which
-    /// `threshold-identity` deliberately keeps private. Once a
-    /// future revision of the crate exposes a `to_serializable_share`
-    /// helper, this method can lift the single-device restriction.
+    /// **Only valid in single-device mode** — a threshold identity's
+    /// secret share is not a signing key, so there is nothing to write
+    /// into `secret_bytes` that a reader could sign with. Those return
+    /// [`IdentityFlowError::ThresholdSerialiseUnimplemented`]; the
+    /// caller's job is to keep the identity live in-process and drive
+    /// the multi-device ceremony, not to persist half a key.
+    ///
+    /// `secret_bytes` is the identity's real Ed25519 seed, so the
+    /// record's two halves agree: expanding the secret derives the
+    /// recorded public key. [`IdentityRecord::into_threshold_identity`]
+    /// checks exactly that on the way back in.
     pub fn from_identity(id: &ThresholdIdentity) -> Result<Self, IdentityFlowError> {
-        if !id.is_single_device() {
-            return Err(IdentityFlowError::ThresholdSerialiseUnimplemented);
-        }
-        // The single-device variant holds a frost_ed25519::SigningKey,
-        // but we can't reach into it without a public accessor. Best
-        // we can do in v1 is round-trip via signing-bytes + a sentinel
-        // that says "this was the bootstrap key" — recovery from disk
-        // re-generates a fresh key only when the user explicitly opts
-        // in.
-        //
-        // For the test surface (and the working ceremony) we DO have a
-        // path: tests construct identities via `OsRng` and immediately
-        // serialise from the live process state. The serialised secret
-        // here is the SHA-512 of a deterministic transcript over the
-        // public key — clearly NOT useful for signing, but the wire
-        // format round-trips so the disk write + read cycle exercises
-        // the encoder. Phase 8.5 wires the real key-extraction
-        // helper.
-        let mut hasher = Sha512::new();
-        hasher.update(b"qos-identity-flow-v1-placeholder-key");
-        hasher.update(id.group_public_key().as_bytes());
-        let digest = hasher.finalize();
+        let seed = id
+            .single_device_seed()
+            .ok_or(IdentityFlowError::ThresholdSerialiseUnimplemented)?;
         Ok(Self {
             single_device: true,
             group_public_key: *id.group_public_key().as_bytes(),
             threshold: id.threshold,
             total_shares: id.total_shares,
             share_index: id.this_share_index,
-            secret_bytes: digest[..32].to_vec(),
+            secret_bytes: seed.to_vec(),
         })
     }
 }
@@ -231,6 +221,36 @@ impl IdentityRecord {
     /// Return just the public key — what other peers see.
     pub fn public_key(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.threshold_identity.group_public_key)
+    }
+
+    /// Rebuild a live [`ThresholdIdentity`] from a persisted record.
+    ///
+    /// The inverse of [`Self::from_threshold_identity`]. The returned
+    /// identity derives its public key from the stored secret, and the
+    /// record's own `group_public_key` is checked against it: a record
+    /// whose two halves disagree is refused as
+    /// [`IdentityFlowError::PublicKeyMismatch`] rather than loaded as
+    /// an identity that signs under a key nobody knows it by.
+    ///
+    /// Threshold-mode records cannot be revived here — a single share
+    /// is not a signing key. Those surface as
+    /// [`IdentityFlowError::ThresholdSerialiseUnimplemented`].
+    pub fn into_threshold_identity(self) -> Result<ThresholdIdentity, IdentityFlowError> {
+        let ti = self.threshold_identity;
+        if !ti.single_device {
+            return Err(IdentityFlowError::ThresholdSerialiseUnimplemented);
+        }
+        let seed: [u8; 32] = ti.secret_bytes.as_slice().try_into().map_err(|_| {
+            IdentityFlowError::DecodeFailed(format!(
+                "identity secret must be 32 bytes, got {}",
+                ti.secret_bytes.len()
+            ))
+        })?;
+        let identity = ThresholdIdentity::from_single_device_seed(&seed);
+        if identity.group_public_key().as_bytes() != &ti.group_public_key {
+            return Err(IdentityFlowError::PublicKeyMismatch);
+        }
+        Ok(identity)
     }
 }
 
@@ -1213,6 +1233,8 @@ pub enum IdentityFlowError {
     UnknownSchemaVersion(u32),
     #[error("threshold-mode serialisation not implemented in v1 (see SerializableIdentity)")]
     ThresholdSerialiseUnimplemented,
+    #[error("identity record's secret does not derive its recorded public key")]
+    PublicKeyMismatch,
     #[error("signing failed: {0}")]
     SigningFailed(String),
     #[error("signature verification failed: {0}")]
@@ -1773,6 +1795,74 @@ mod tests {
         assert_eq!(back.display_name, "alice");
         assert_eq!(back.avatar_color, [248, 113, 113]);
         assert_eq!(back.public_key().as_bytes(), id.group_public_key().as_bytes());
+    }
+
+    /// The property that makes a minted identity an identity: the
+    /// secret the ceremony wrote to disk must sign for the public key
+    /// the ceremony wrote next to it.
+    ///
+    /// Loading is done the way every consumer does it — expand the
+    /// stored 32 bytes with `ed25519_dalek::SigningKey::from_bytes` —
+    /// so this asserts on the real on-disk contract rather than on an
+    /// in-process handle the reader never sees.
+    #[test]
+    fn ceremony_minted_record_signs_for_its_own_recorded_public_key() {
+        use ed25519_dalek::{Signer, Verifier, VerifyingKey};
+
+        let mut rng = OsRng;
+        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let rec = IdentityRecord::from_threshold_identity(
+            &id,
+            "alice",
+            [248, 113, 113],
+            SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+        )
+        .unwrap();
+        let on_disk = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+
+        let seed: [u8; 32] = on_disk
+            .threshold_identity
+            .secret_bytes
+            .as_slice()
+            .try_into()
+            .expect("secret_bytes must be exactly 32 bytes");
+        let sk = DalekSigningKey::from_bytes(&seed);
+
+        assert_eq!(
+            sk.verifying_key().to_bytes(),
+            on_disk.threshold_identity.group_public_key,
+            "the recorded secret must derive the recorded public key"
+        );
+
+        let msg = b"an op minted by a ceremony identity";
+        let sig = sk.sign(msg);
+        let vk = VerifyingKey::from_bytes(&on_disk.threshold_identity.group_public_key).unwrap();
+        vk.verify(msg, &sig)
+            .expect("a ceremony identity must be able to sign for itself");
+    }
+
+    /// A record read back from disk rebuilds a working identity, and
+    /// that identity signs under the same public key.
+    #[test]
+    fn identity_record_round_trips_back_into_a_signing_identity() {
+        use collab_types::verify_event;
+
+        let mut rng = OsRng;
+        let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+        let rec =
+            IdentityRecord::from_threshold_identity(&id, "bob", [1, 2, 3], SystemTime::now())
+                .unwrap();
+        let back = IdentityRecord::from_json_bytes(&rec.to_json_bytes().unwrap()).unwrap();
+
+        let revived = back.into_threshold_identity().unwrap();
+        assert_eq!(
+            revived.group_public_key().as_bytes(),
+            id.group_public_key().as_bytes()
+        );
+
+        let payload: Vec<u8> = b"signed after a disk round-trip".to_vec();
+        let sig = revived.sign(&payload, &mut rng).unwrap();
+        verify_event(&payload, &sig, id.group_public_key()).expect("revived identity must sign");
     }
 
     #[test]

@@ -1416,7 +1416,9 @@ impl Grid {
         // Selection ranges (translucent accent fill) under the cells. Every
         // discontiguous range paints; overlaps just deepen slightly. Iterate
         // without allocating a ranges vector on the per-frame draw path.
-        let fill = Color::from_rgba8(99, 102, 241, 38);
+        // Read the accent from the theme so the selection wash tracks the OS
+        // palette / high-contrast, matching the name-box + tab accents nearby.
+        let fill = colors.accent[5].with_alpha_factor(0.15);
         for range in self
             .extra_ranges
             .iter()

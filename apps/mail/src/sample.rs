@@ -54,6 +54,7 @@ fn message(
         read,
         starred,
         folder,
+        labels: Vec::new(),
     }
 }
 

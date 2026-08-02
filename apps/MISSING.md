@@ -322,9 +322,16 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       `percent()` deprecation warnings (rust #154024) in the lib — swept when the
       toolkit's taffy usage is normalised across apps.
 
-## contacts
+## contacts — CLEAR (verified live: driven add persists to the real CRDT)
 - [x] Toasts auto-dismiss → fixed.
 - [x] Detail-pane name no longer truncates at 800px → fixed.
+- [x] Live-verified end-to-end: driving the real widget (open + New, type a
+      first/last name, Save) writes a real contact into the CRDT with the full
+      schema (first/last/org/title/phones+labels/emails+labels/address/birthday/
+      website/notes/favorite), and it survives a restart (second process reloads
+      `dev.qos.contacts/state.automerge` and still shows it). List/detail render
+      real state; empty state is honest ("No contacts yet"); narrow width uses
+      the §1b push flow (full-screen list → detail slides in with a Back button).
 
 ## osk (on-screen keyboard) — verified real; §7 tofu fix
 - [x] Real key output: taps/swipes emit `KeyAction`s that a real
@@ -464,7 +471,15 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] §7 visual pass on the editor, filmstrip and present surfaces (spacing,
       typographic hierarchy, visible selection/active state, honest empty state).
 
-## camera
+## camera — CLEAR (live-verified: honest gating, real library + QR decode, live controls)
+- [x] Live-verified end-to-end: with no capture device the viewfinder shows an
+      honest "No camera connected" card and the shutter is visibly disabled — no
+      fabricated frames. The disk-backed library is honestly empty ("No photos
+      yet"); the sample grid + metadata detail render only under `--shots`. The
+      scanner really decodes a QR (the sample Wi-Fi poster parses into a
+      "qOS Lounge / WPA2" credential card with Connect/Copy/Save). Driving the
+      bottom mode switcher flips the real CRDT `screen` field
+      (camera → scanner), so the immersive controls are live, not decorative.
 - [x] Killed the left desktop nav rail (Camera/Scan/Gallery/Settings + app
       aperture logo). The camera is now an immersive, full-bleed app: the
       viewfinder fills the window edge-to-edge and every control floats over it —
@@ -726,6 +741,16 @@ tested) was real, but it could not import real media, never showed real video,
 and could not export. Those three seams are now real; each headless-gated part
 is honestly gated and proven.
 
+- [x] Live-verified (CLEAR): importing a real 900×640 PNG through the real
+      probe path lands a real `MediaItem` in the bin with real metadata (shows
+      "640p") and places it as a clip on V1, read straight back out of the CRDT
+      doc; the split scenario shows a real cut (one clip → two with correct
+      source in/out) and the grade scenario reflects opacity/saturation/fade in
+      both the inspector and the preview tint. Empty state is honest ("No media
+      yet" / "No clip at playhead" / "No clip selected"). 76 tests pass, none
+      `#[ignore]`; real decode/export stay honestly gated behind
+      `--features decode`/`gst`.
+
 - [x] Real media import — added an "Import…" action (topbar + empty-bin button
       + Ctrl+O) that opens the XDG FileChooser portal (`ashpd`, `portal`
       feature) and brings picked video/audio/image files into the bin as real
@@ -766,6 +791,27 @@ is honestly gated and proven.
       `-plugins-base-devel` + `-plugins-good` + `-plugin-openh264` +
       `-plugin-libav` (dev headers + codec/mux plugins) — installed in
       `my-distrobox`; the default build needs none of it.
+
+## terminal — CLEAR (real PTY + real shell; bulk-output O(n²) freeze fixed)
+- [x] Live-verified end-to-end: the `shell` shot drives a real login-shell PTY
+      (real prompt, `$0` → `/bin/bash`, printed output, real SGR-green "done"),
+      proving a real shell runs through the reader → `sync` → vte → CRDT path.
+      Full VT fidelity confirmed on shots: 16/256/truecolor SGR + style bits,
+      the alternate screen (a vim-like redraw), scrollback with a live scrollbar,
+      and an honest first-run empty state ("qOS Terminal").
+- [x] Fixed a real defect: the VT print path wrote **every printed cell** to the
+      CRDT on its own — a `splice_text` for the glyph plus a full-`attrs`-blob
+      `put` for the line — and both are O(document) per call in Automerge, so a
+      screenful of output was O(n²). It froze a debug build outright (a coloured
+      80-line burst was ~45 min; the `scrollback` shot could not even render) and
+      was the per-keystroke document rewrite HIG §6 forbids. `print` now batches a
+      run of cells landing on one line into one in-memory buffer and commits it
+      once (a diffed text splice + a single `attrs` put) when the line changes,
+      any other emulator action runs, or the feed ends; every non-print callback
+      flushes first so it never sees stale grid state. Regression test
+      `bulk_styled_output_stays_linear_and_correct` feeds 80 styled lines through
+      the real `feed` path and asserts correct content within a bound the
+      quadratic path could never meet. All 52 terminal tests pass.
 
 ## vpn — real WireGuard/OpenVPN transport (connect, status, throughput)
 

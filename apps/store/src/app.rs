@@ -241,12 +241,12 @@ impl StoreApp {
 
     /// Compose the whole tree. Called from `build_layout`; also used
     /// by tests to inspect the composition graph directly.
-    fn compose(&self) -> Box<dyn Widget> {
+    fn compose(&self, theme: &Theme) -> Box<dyn Widget> {
         let header = self.build_header();
         let filter_row = self.build_filter_row();
         let category_row = self.build_category_row();
-        let list = self.build_list();
-        let status = self.build_status_bar();
+        let list = self.build_list(theme);
+        let status = self.build_status_bar(theme);
         let column = Column::new()
             .with_intrinsic_height()
             .push(header)
@@ -329,7 +329,7 @@ impl StoreApp {
         )
     }
 
-    fn build_list(&self) -> Box<dyn Widget> {
+    fn build_list(&self, theme: &Theme) -> Box<dyn Widget> {
         let visible = self.visible_items();
         if visible.is_empty() {
             let text = if self.items.is_empty() {
@@ -343,7 +343,7 @@ impl StoreApp {
                     .with_child(Box::new(
                         Text::new(text)
                             .with_size(13.0)
-                            .with_color(Theme::dark().text_dim),
+                            .with_color(theme.text_dim),
                     )),
             );
         }
@@ -368,6 +368,7 @@ impl StoreApp {
                 &click_key,
                 &pin_key,
                 &remove_key,
+                theme,
             ));
         }
         Box::new(
@@ -377,7 +378,7 @@ impl StoreApp {
         )
     }
 
-    fn build_status_bar(&self) -> Box<dyn Widget> {
+    fn build_status_bar(&self, theme: &Theme) -> Box<dyn Widget> {
         let line = if self.status_line.is_empty() {
             format!(
                 "{} apps · {} shown",
@@ -393,7 +394,7 @@ impl StoreApp {
                 .with_child(Box::new(
                     Text::new(&line)
                         .with_size(11.0)
-                        .with_color(Theme::dark().text_dim),
+                        .with_color(theme.text_dim),
                 )),
         )
     }
@@ -541,7 +542,7 @@ impl Widget for StoreApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.structure_dirty = false;
-        let mut root = self.compose();
+        let mut root = self.compose(theme);
         let child = root.build_layout(taffy, theme, node_map);
         self.root = Some(root);
         let node = taffy

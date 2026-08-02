@@ -29,9 +29,12 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{SidebarDrawer, Widget};
+use ui::widget::{
+    SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 use ui::{card_column_width, card_columns};
 
+use crate::actions::{self, BACKUPS_ACTION_TYPE};
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::{
     Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapStatus, SnapType,
@@ -133,6 +136,10 @@ pub struct BackupsApp {
     /// `--shots` hook: force the overlay rail open so its narrow state can be
     /// captured headlessly (`QOS_BACKUPS_RAIL_OPEN=1`).
     force_rail_open: bool,
+    /// Framework-owned action dispatch: every retention-policy edit goes through
+    /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl Default for BackupsApp {
@@ -178,7 +185,32 @@ impl BackupsApp {
                 .overlay_width(RAIL_W.max(288.0))
                 .breakpoint(RAIL_BREAKPOINT),
             force_rail_open: std::env::var("QOS_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
+            actions: ui::ActionHost::new(),
         }
+    }
+
+    /// Adjust one retention field by `delta`, clamped to `[0, 999]`, through the
+    /// action host. This is the single production funnel both the on-screen +/-
+    /// buttons and the keyboard arrow / `+` / `-` handlers call, and it dispatches
+    /// the byte-identical [`BackupsAction`](crate::actions::BackupsAction) the
+    /// Ctrl+K increment/decrement spec exports.
+    pub(crate) fn bump_retention(
+        &mut self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        field: PolicyField,
+        delta: i64,
+    ) {
+        let cur = BackupsDoc::retention(doc, root, field);
+        self.actions
+            .dispatch(doc, BACKUPS_ACTION_TYPE, &actions::bump_retention_action(field, cur, delta));
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     fn load_cache(&mut self, doc: &AutoCommit, root: &ObjId) {
@@ -394,6 +426,15 @@ impl BackupsApp {
         let seg = Rect::new(seg_x0, cy - TAB_H / 2.0, seg_x0 + seg_total, cy + TAB_H / 2.0);
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
         paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
+        // The active tab floats as an inset pill inside the raised track; the
+        // whole strip is one shared segmented control. Abbreviate the labels
+        // once the tabs get too tight so "Destinations"/"Schedules" don't
+        // collide with their neighbours — the abbreviation is content the app
+        // owns; the pill fill + selection palette come from the shared control.
+        let narrow_tabs = tab_w < 96.0;
+        let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
+        let mut pill_rects: Vec<Rect> = Vec::with_capacity(View::ALL.len());
+        let mut labels: Vec<&str> = Vec::with_capacity(View::ALL.len());
         for (i, v) in View::ALL.iter().enumerate() {
             let tab = Rect::new(
                 seg.x0 + i as f64 * tab_w,
@@ -401,32 +442,32 @@ impl BackupsApp {
                 seg.x0 + (i as f64 + 1.0) * tab_w,
                 seg.y1,
             );
-            let active = self.ui.view == *v;
-            let hovered = self.hover == Some(Hit::Tab(*v));
-            if active {
-                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, theme.accent_primary);
-            } else if hovered {
-                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, c.surface_white_5);
-            }
-            let fg = if active { c.text_primary } else { c.text_dim };
-            // Abbreviate the labels once the tabs get too tight for full words,
-            // so "Destinations"/"Schedules" never collide with their neighbours.
-            let (label, fs) = if tab_w < 96.0 {
-                let short = match v {
+            pill_rects.push(Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0));
+            labels.push(if narrow_tabs {
+                match v {
                     View::Timeline => "Timeline",
                     View::Sources => "Sources",
                     View::Destinations => "Dests",
                     View::Schedules => "Policy",
-                };
-                (short, 12.0)
+                }
             } else {
-                (v.title(), 13.5)
-            };
-            paint::text_center(scene, tr, t, label, fs, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - fs as f64) / 2.0);
+                v.title()
+            });
             self.hits.push((tab, Hit::Tab(*v)));
         }
+        let selected = View::ALL.iter().position(|v| self.ui.view == *v).unwrap_or(0);
+        let hovered = View::ALL.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&pill_rects, &labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(7.0)
+                .text_size(fs),
+        );
     }
 
     fn draw_status_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -864,13 +905,11 @@ impl BackupsApp {
             paint::dot(scene, t, Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0), 3.5, Self::health_color(theme, src.health));
             paint::text(scene, tr, t, &format!("Next run {}", src.next_run), 11.5, c.text_dim, card.x0 + 28.0, card.y0 + card_h - 24.0);
 
-            // Toggle pill (enabled).
+            // Enable switch (shared Toggle look).
             let tw = 52.0;
             let tog = Rect::new(card.x1 - 22.0 - tw, card.y0 + card_h - 30.0, card.x1 - 22.0, card.y0 + card_h - 30.0 + 22.0);
             let on = src.enabled;
-            paint::fill_rrect(scene, t, tog, 11.0, if on { theme.accent_primary } else { c.neutral[3] });
-            let kx = if on { tog.x1 - 11.0 } else { tog.x0 + 11.0 };
-            paint::dot(scene, t, Point::new(kx, tog.center().y), 8.0, c.text_primary);
+            Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
             paint::text_right(scene, tr, t, if on { "Enabled" } else { "Paused" }, 10.5, c.text_dim, tog.x0 - 8.0, tog.center().y - 5.0);
 
             self.hits.push((card, Hit::Source(Some(src.id.clone()))));
@@ -1283,19 +1322,25 @@ impl BackupsApp {
         paint::card(scene, t, tree, 12.0, c.neutral[0].with_alpha_factor(0.5), c.border_white_10);
         paint::text(scene, tr, t, "Snapshot contents", 11.0, c.text_dim, tree.x0 + 14.0, tree.y0 + 10.0);
 
-        let files: [(usize, &str, &str, bool); 8] = [
-            (0, "home/", "", true),
-            (1, "Documents/", "2.1 GB", true),
-            (2, "report-q2.qdoc", "4.2 MB", false),
-            (1, "Pictures/", "18.4 GB", true),
-            (2, "2026-trip/", "3.1 GB", true),
-            (1, "Projects/", "9.8 GB", true),
-            (2, "quickdesktop/", "1.2 GB", true),
-            (1, ".config/", "240 MB", false),
-        ];
+        let files = &snap.files;
         let row_h = 30.0;
         let ty0 = tree.y0 + 30.0;
-        for (i, (depth, name, size, is_dir)) in files.iter().enumerate() {
+        // No indexer yet on the live app: a real snapshot without an indexed
+        // listing shows an honest empty state rather than fabricated files.
+        if files.is_empty() {
+            paint::text_vc(
+                scene,
+                tr,
+                t,
+                "File index not available for this snapshot yet.",
+                12.5,
+                c.text_dim,
+                tree.x0 + 14.0,
+                ty0,
+                row_h,
+            );
+        }
+        for (i, f) in files.iter().enumerate() {
             let ry = ty0 + i as f64 * row_h;
             // Don't spill rows past the (possibly shortened) tree card.
             if ry + row_h > tree.y1 - 4.0 {
@@ -1308,9 +1353,9 @@ impl BackupsApp {
             } else if self.hover == Some(Hit::FileRow(i)) {
                 paint::fill_rrect(scene, t, row, 7.0, c.surface_white_5);
             }
-            let ix = row.x0 + 10.0 + *depth as f64 * 18.0;
-            let icol = if *is_dir { theme.accent_primary } else { c.text_dim };
-            if *is_dir {
+            let ix = row.x0 + 10.0 + f.depth as f64 * 18.0;
+            let icol = if f.is_dir { theme.accent_primary } else { c.text_dim };
+            if f.is_dir {
                 // folder glyph
                 let fr = Rect::new(ix, row.center().y - 5.0, ix + 13.0, row.center().y + 5.0);
                 paint::fill_rrect(scene, t, fr, 2.0, icol.with_alpha_factor(0.8));
@@ -1318,9 +1363,9 @@ impl BackupsApp {
                 let fr = Rect::new(ix + 1.0, row.center().y - 6.0, ix + 11.0, row.center().y + 6.0);
                 paint::stroke_rrect(scene, t, fr, 2.0, icol, 1.3);
             }
-            paint::text_vc(scene, tr, t, name, 12.5, c.text_primary, ix + 20.0, row.y0, row_h - 2.0);
-            if !size.is_empty() {
-                paint::text_right(scene, tr, t, size, 11.0, c.text_dim, row.x1 - 10.0, row.center().y - 6.0);
+            paint::text_vc(scene, tr, t, &f.name, 12.5, c.text_primary, ix + 20.0, row.y0, row_h - 2.0);
+            if !f.size.is_empty() {
+                paint::text_right(scene, tr, t, &f.size, 11.0, c.text_dim, row.x1 - 10.0, row.center().y - 6.0);
             }
             self.hits.push((row, Hit::FileRow(i)));
         }
@@ -1501,7 +1546,7 @@ impl BackupsApp {
                 }
             }
             Hit::Policy(field, delta) => {
-                BackupsDoc::bump_policy(doc, root, field, delta);
+                self.bump_retention(doc, root, field, delta);
                 self.policy_focus = PolicyField::ALL.iter().position(|f| *f == field).unwrap_or(0);
             }
             Hit::FileRow(i) => self.file_sel = i,
@@ -1542,6 +1587,9 @@ impl BackupsApp {
                 delta_bytes: 128 * 1024 * 1024,
                 files_changed: 64,
                 status: SnapStatus::Complete,
+                // A freshly-captured snapshot has no browsable index yet — the
+                // restore sheet shows its empty state rather than fake files.
+                files: Vec::new(),
             },
         );
         self.toast_now("Snapshot complete");
@@ -1724,6 +1772,19 @@ impl Widget for BackupsApp {
         Some("backups_app")
     }
 
+    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
+    /// (see [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing it — the
+    /// same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -1768,7 +1829,7 @@ impl BackupsApp {
             Key::Named(NamedKey::ArrowLeft) => {
                 if self.ui.view == View::Schedules {
                     let f = PolicyField::ALL[self.policy_focus];
-                    BackupsDoc::bump_policy(doc, root, f, -1);
+                    self.bump_retention(doc, root, f, -1);
                     self.load_cache(doc, root);
                 } else {
                     self.cycle_view(-1, doc, root);
@@ -1778,7 +1839,7 @@ impl BackupsApp {
             Key::Named(NamedKey::ArrowRight) => {
                 if self.ui.view == View::Schedules {
                     let f = PolicyField::ALL[self.policy_focus];
-                    BackupsDoc::bump_policy(doc, root, f, 1);
+                    self.bump_retention(doc, root, f, 1);
                     self.load_cache(doc, root);
                 } else {
                     self.cycle_view(1, doc, root);
@@ -1802,14 +1863,14 @@ impl BackupsApp {
                     "n" | "N" => { self.start_job(); *handled = true; }
                     "+" | "=" => {
                         if self.ui.view == View::Schedules {
-                            BackupsDoc::bump_policy(doc, root, PolicyField::ALL[self.policy_focus], 1);
+                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], 1);
                             self.load_cache(doc, root);
                             *handled = true;
                         }
                     }
                     "-" | "_" => {
                         if self.ui.view == View::Schedules {
-                            BackupsDoc::bump_policy(doc, root, PolicyField::ALL[self.policy_focus], -1);
+                            self.bump_retention(doc, root, PolicyField::ALL[self.policy_focus], -1);
                             self.load_cache(doc, root);
                             *handled = true;
                         }
@@ -1842,5 +1903,189 @@ mod tests {
         assert!(!app.catalog.sources.is_empty(), "demo has sources");
         assert!(!app.catalog.snapshots.is_empty(), "demo has snapshots");
         assert!(!app.catalog.destinations.is_empty(), "demo has destinations");
+    }
+
+    /// A headless harness that drives the **production** widget path: it draws a
+    /// real frame (populating the hit map exactly as the live app does), then
+    /// synthesises the pointer events a real click produces and feeds them
+    /// through `handle_event`. Assertions read back the CRDT via `BackupsDoc`.
+    struct Frame {
+        app: BackupsApp,
+        state: ui::State,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        theme: Theme,
+        tr: TextRenderer,
+    }
+
+    impl Frame {
+        fn demo() -> Self {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut app = BackupsApp::new_demo();
+            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let mut f = Self {
+                app,
+                state: ui::State::new(),
+                taffy,
+                node,
+                theme: Theme::dark(),
+                tr: TextRenderer::new(),
+            };
+            f.draw();
+            f
+        }
+
+        /// Re-run the live frame cycle: sync from the CRDT, then draw (which
+        /// repopulates `hits` from the current state).
+        fn draw(&mut self) {
+            self.app.sync(&mut self.state.doc, &self.state.root);
+            let mut scene = Scene::new();
+            self.app
+                .render(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme);
+        }
+
+        /// The rect of the top-most drawn hit matching `pred` (matching the
+        /// production `hit_at`, which scans back-to-front).
+        fn rect_of(&self, pred: impl Fn(&Hit) -> bool) -> Rect {
+            self.app
+                .hits
+                .iter()
+                .rev()
+                .find(|(_, h)| pred(h))
+                .map(|(r, _)| *r)
+                .expect("expected hit is present in the drawn frame")
+        }
+
+        fn has_hit(&self, pred: impl Fn(&Hit) -> bool) -> bool {
+            self.app.hits.iter().any(|(_, h)| pred(h))
+        }
+
+        /// Move the pointer to `p` and press the left button through the real
+        /// event path, then redraw.
+        fn click(&mut self, p: Point) {
+            use winit::dpi::PhysicalPosition;
+            use winit::event::{DeviceId, Modifiers};
+            let m = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            self.app.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: DeviceId::dummy(),
+                    position: PhysicalPosition::new(p.x, p.y),
+                },
+                1.0,
+                &m,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            self.app.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: DeviceId::dummy(),
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+                &m,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+            self.draw();
+        }
+
+        fn click_hit(&mut self, pred: impl Fn(&Hit) -> bool) {
+            let c = self.rect_of(pred).center();
+            self.click(c);
+        }
+
+        fn view(&self) -> View {
+            BackupsDoc::view(&self.state.doc, &self.state.root)
+        }
+    }
+
+    #[test]
+    fn clicking_a_view_tab_switches_the_dashboard_view() {
+        let mut f = Frame::demo();
+        assert_eq!(f.view(), View::Timeline, "demo opens on the timeline");
+        // Click the real "Destinations" tab pill.
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Destinations)));
+        assert_eq!(
+            f.view(),
+            View::Destinations,
+            "clicking the tab wrote the view through the production path"
+        );
+        // And a second tab confirms it is not a one-shot.
+        f.click_hit(|h| matches!(h, Hit::Tab(View::Schedules)));
+        assert_eq!(f.view(), View::Schedules);
+    }
+
+    #[test]
+    fn clicking_back_up_now_starts_a_job() {
+        let mut f = Frame::demo();
+        assert!(f.app.job.is_none(), "no job before the click");
+        f.click_hit(|h| matches!(h, Hit::BackupNow));
+        assert!(
+            f.app.job.is_some(),
+            "clicking Back up now started a snapshot job"
+        );
+    }
+
+    #[test]
+    fn opening_restore_shows_the_indexed_snapshot_contents() {
+        let mut f = Frame::demo();
+        // sync auto-selects the newest snapshot, so the detail actions render.
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        assert!(
+            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "clicking Restore opened the restore sheet"
+        );
+        // The demo snapshot carries a real (sample) file index, so the browser
+        // shows selectable file rows rather than fabricating them inline.
+        assert!(
+            f.has_hit(|h| matches!(h, Hit::FileRow(_))),
+            "the restore browser lists the snapshot's indexed files"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_without_an_index_shows_no_fabricated_files() {
+        let mut f = Frame::demo();
+        // Simulate a real (un-indexed) snapshot: strip the sample listings.
+        for s in &mut f.app.catalog.snapshots {
+            s.files.clear();
+        }
+        f.click_hit(|h| matches!(h, Hit::Restore));
+        assert!(
+            BackupsDoc::restore_open(&f.state.doc, &f.state.root),
+            "the restore sheet is open"
+        );
+        // Nothing is fabricated: with no index there are zero file rows, and the
+        // sheet falls back to its honest empty state.
+        assert!(
+            !f.has_hit(|h| matches!(h, Hit::FileRow(_))),
+            "an un-indexed snapshot lists no files instead of a fake tree"
+        );
+    }
+
+    #[test]
+    fn the_sample_catalog_indexes_every_snapshot() {
+        // Demo/shots data is populated; the live catalog stays empty.
+        let demo = Catalog::sample();
+        assert!(
+            demo.snapshots.iter().all(|s| !s.files.is_empty()),
+            "every sample snapshot carries an indexed listing"
+        );
+        assert!(
+            Catalog::empty().snapshots.is_empty(),
+            "the live catalog has no snapshots to fabricate files for"
+        );
     }
 }

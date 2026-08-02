@@ -20,6 +20,10 @@ ui = { path = "../../ui" }
 # pulled in by Tube's own `media` feature below.
 media = { path = "../../crates/media" }
 automerge.workspace = true
+# The qOS ACTION model: Tube's `actions` module exports its collaborative
+# operations (likes, queue, comment replies) as replayable actions the host's
+# Ctrl+K palette dispatches.
+qos-actions = { path = "../../crates/collab/actions" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

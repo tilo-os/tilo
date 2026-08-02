@@ -1,7 +1,8 @@
 # Themes — qOS application manifest.
 #
-# Writes exactly one file — the shared `~/.config/qos/settings.json`
-# the whole fleet reads its palette from. No account data, no vault.
+# Writes the palette the fleet renders with. The theme itself is
+# OS-owned and reaches apps through the compositor, not through a file
+# an app reads out of another app's directory.
 #
 # Pack and install:
 #
@@ -46,45 +47,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.themes",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "~/.config/qos/settings.json",
-    "~/.local/share/qos/themes",
-]
 
 [sandbox.net]
 mode = "off"

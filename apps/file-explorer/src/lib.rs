@@ -1,6 +1,7 @@
 //! Library root for the nirios-shell file explorer.
 //! Hosts the `FileExplorerWidget` (built over Tasks 8–13) and helper modules.
 
+pub mod actions;
 pub mod command;
 pub mod config;
 pub mod favorites;

@@ -1,7 +1,9 @@
 # Hex Editor — qOS application manifest.
 #
-# Opens exactly one file, named on argv, and has no save path at all —
-# so it gets read on the document roots and no write grant whatsoever.
+# Opens exactly one file, named on argv, and has no save path at all.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the file it was asked to open.
 #
 # Pack and install:
 #
@@ -46,46 +48,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "~/Documents",
-    "~/Downloads",
-    "/var/workspace",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.hex-editor",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-]
 
 [sandbox.net]
 mode = "off"

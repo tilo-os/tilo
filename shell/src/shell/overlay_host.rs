@@ -121,6 +121,16 @@ pub struct ShellOverlayHost {
     /// Cached from the draw pass so the click hit-test uses exactly the
     /// geometry that was painted.
     search_all_chip_rect: Rect,
+    /// Chip rows the filter band is currently reserving. Recomputed
+    /// during draw from the labels' measured widths; when it changes the
+    /// palette is told, so the card grows and the rows below the band
+    /// move down rather than being painted over. See
+    /// [`Self::draw_search_banner`].
+    search_chip_rows: usize,
+    /// Which records each room holds — shared with the records search
+    /// provider, which is what writes into it. Held here as well so the
+    /// host can seed it (`--shots`) and flush it on teardown.
+    room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set to `true` whenever [`Self::refresh_search_results`] rewrites
     /// the palette's entry list. The next `take_structure_dirty` folds
     /// it in so the taffy layout pass rebuilds the palette node with
@@ -415,6 +425,10 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
         K::Note => Icon::FileText,
+        // A record is one document several rooms can reach — the stacked
+        // plates say "this is the same thing in more than one place",
+        // which is exactly what a reference is.
+        K::Record => Icon::Layers,
         K::File => Icon::File,
         K::Folder => Icon::Folder,
         K::Creator => Icon::Star,
@@ -465,6 +479,174 @@ fn wrap_monospace_ish(
         out.push(chunk.iter().collect::<String>());
     }
     out
+}
+
+/// Gap between two chips in the filter band.
+const CHIP_GAP_PX: f64 = 6.0;
+/// Horizontal padding inside a chip — both sides together.
+const CHIP_PAD_PX: f64 = 18.0;
+/// Narrowest a chip is ever squeezed to. Below this a pill stops reading
+/// as a control at all; a chip this narrow is a chip whose label is an
+/// ellipsis, and the band is expected to have grown a row by the next
+/// frame anyway.
+const CHIP_MIN_W_PX: f64 = 34.0;
+
+/// Where each chip of the filter strip goes.
+#[derive(Debug, Clone, PartialEq)]
+struct ChipStrip {
+    /// One rect per chip, in the order handed in. **Every chip gets one**
+    /// — see [`lay_out_chip_strip`].
+    rects: Vec<Rect>,
+    /// Rows the chips want at their natural width. The host reserves this
+    /// many from the palette; until it does, the strip is laid out inside
+    /// however many it currently has.
+    rows_needed: usize,
+}
+
+/// Lay the filter chips out across a band that may be too narrow.
+///
+/// **The invariant is that every chip gets a rect.** The strip used to
+/// stop painting at the first chip that did not fit, and an unpainted
+/// chip has no rect, so it could not be clicked either: a filter that
+/// exists, is listed by the registry, and cannot be reached. At 1600 px
+/// the five kinds of the day exactly filled the row, so the sixth was
+/// invisible — which reads as a missing feature rather than a layout bug.
+///
+/// Three behaviours, in order of preference:
+///
+/// - Chips take their natural width while they fit.
+/// - They **wrap** to the next row when they do not, and the band is told
+///   how many rows that needs. Wrapping is chosen over eliding because a
+///   filter strip is a set of names: `Applications` squeezed to `Ap…` is
+///   reachable but no longer says what it filters.
+/// - Only when the rows on offer run out do the leftovers **share** the
+///   last one, narrowing (and, at paint time, eliding) so that all of
+///   them still land. That is the transient case — the band grows on the
+///   next layout — and it is what keeps the invariant unconditional
+///   rather than dependent on when a relayout happens to run.
+///
+/// `first_row_x1` is where the first row must stop, because the scope
+/// switch is anchored to the right of it; later rows have the whole band.
+fn lay_out_chip_strip(
+    natural: &[f64],
+    band: Rect,
+    first_row_x1: f64,
+    rows_available: usize,
+    row_h: f64,
+    control_h: f64,
+) -> ChipStrip {
+    if natural.is_empty() || band.width() <= 0.0 {
+        return ChipStrip {
+            rects: Vec::new(),
+            rows_needed: 1,
+        };
+    }
+    let rows_available = rows_available.max(1);
+    let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
+
+    // Greedy wrap at natural width — what the strip wants. `per_row`
+    // additionally caps how many chips a row may take, which is what the
+    // balancing pass below uses.
+    let wrap = |per_row: usize| -> Vec<Vec<usize>> {
+        let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut x = band.x0;
+        for (i, w) in natural.iter().enumerate() {
+            let w = w.max(CHIP_MIN_W_PX);
+            let row = plan.len() - 1;
+            if !plan[row].is_empty() && (x + w > row_x1(row) || plan[row].len() >= per_row) {
+                plan.push(Vec::new());
+                x = band.x0;
+            }
+            let row = plan.len() - 1;
+            plan[row].push(i);
+            x += w + CHIP_GAP_PX;
+        }
+        plan
+    };
+    let plan = wrap(usize::MAX);
+    let rows_needed = plan.len();
+
+    // Spread the chips evenly over the rows that will be used. Filling
+    // each row to the brim leaves the last one with whatever is left —
+    // six chips and then a lone `Folders` underneath, which reads as
+    // something having gone wrong rather than as a two-row strip. The
+    // balanced plan is only adopted if it still fits in the same number
+    // of rows, so evenness never costs anyone a chip.
+    let plan = if rows_needed > 1 {
+        let per_row = natural.len().div_ceil(rows_needed);
+        let balanced = wrap(per_row);
+        if balanced.len() == rows_needed {
+            balanced
+        } else {
+            plan
+        }
+    } else {
+        plan
+    };
+
+    let mut rects = vec![Rect::ZERO; natural.len()];
+    let mut place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
+        let cy = band.y0 + row as f64 * row_h + row_h / 2.0;
+        let mut x = band.x0;
+        for (slot, &id) in ids.iter().enumerate() {
+            let w = widths[slot];
+            rects[id] = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+            x += w + CHIP_GAP_PX;
+        }
+    };
+
+    let kept_rows = rows_needed.min(rows_available);
+    for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
+        let widths: Vec<f64> = ids.iter().map(|&i| natural[i].max(CHIP_MIN_W_PX)).collect();
+        place(row, ids, &widths, &mut rects);
+    }
+    // The last row this layout may use holds everything left over.
+    let last = kept_rows - 1;
+    let leftover: Vec<usize> = plan[last..].iter().flatten().copied().collect();
+    let widths = share_row(
+        &leftover.iter().map(|&i| natural[i]).collect::<Vec<_>>(),
+        row_x1(last) - band.x0,
+    );
+    place(last, &leftover, &widths, &mut rects);
+
+    ChipStrip { rects, rows_needed }
+}
+
+/// Widths for one row of chips that must all fit inside `available`.
+///
+/// Chips narrower than an equal share keep their natural width and hand
+/// what they do not need to the ones that are over — so squeezing costs
+/// the long labels and leaves the short ones alone, rather than shaving
+/// every chip by the same amount and making `Files` look deliberate at
+/// half its natural size.
+fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
+    if natural.is_empty() {
+        return Vec::new();
+    }
+    let n = natural.len() as f64;
+    let gaps = CHIP_GAP_PX * (n - 1.0);
+    let total: f64 = natural.iter().sum();
+    if total + gaps <= available {
+        return natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
+    }
+    let base = ((available - gaps) / n).max(CHIP_MIN_W_PX);
+    let spare: f64 = natural.iter().filter(|w| **w < base).map(|w| base - w).sum();
+    let over = natural.iter().filter(|w| **w >= base).count();
+    let share_over = if over > 0 {
+        base + spare / over as f64
+    } else {
+        base
+    };
+    natural
+        .iter()
+        .map(|w| {
+            if *w < base {
+                w.max(CHIP_MIN_W_PX)
+            } else {
+                share_over.min(*w).max(CHIP_MIN_W_PX)
+            }
+        })
+        .collect()
 }
 
 /// One pill in the search card's filter band. Shared by the kind chips
@@ -645,6 +827,8 @@ impl ShellOverlayHost {
         // rows), `applications` (installed packages — picking a row
         // launches one), `notes` and `editor` (each text app's own
         // Automerge body, which is also what `Ctrl+K` narrows to),
+        // `records` (every record any app wrote, each row saying which
+        // room it lives in — activating one brings it into this room),
         // `files` (walkdir + tantivy content index). New providers slot
         // in via `SearchRegistry::register`; the palette picks up their
         // resource-kind chips automatically.
@@ -666,6 +850,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::EditorProvider::new(),
         ));
+        let records = crate::shell::search::providers::RecordsProvider::new();
+        let room_records = records.index();
+        search_registry.register(std::rc::Rc::new(records));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
         ));
@@ -682,6 +869,8 @@ impl ShellOverlayHost {
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
+            search_chip_rows: 1,
+            room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
             content_node: None,
@@ -1165,6 +1354,17 @@ impl ShellOverlayHost {
     /// the window as the single display — the right answer in that mode.
     fn strip_output_spans(&self) -> Vec<OutputSpan> {
         let outputs: Vec<OutputGeometry> = if self.outputs.is_empty() {
+            // No backend has told us about its displays yet. `self.rect` is
+            // only set in `apply_layout`, and this runs during
+            // `build_layout`, so on a first frame it is still zero — a
+            // synthesised span would hand every strip a 1 px basis and
+            // nothing would paint. Returning no spans instead lets
+            // `GroupRow::basis_for` use its own chain (its laid-out width,
+            // then a default), which is the answer for any host that does
+            // not publish output geometry at all.
+            if self.rect.width() <= 1.0 {
+                return Vec::new();
+            }
             vec![OutputGeometry {
                 x: 0.0,
                 width: self.rect.width(),
@@ -1282,6 +1482,7 @@ impl ShellOverlayHost {
         }
         let mut any_change = false;
         let st = chrome.borrow();
+        let records = st.records().clone();
         let tree = st.tree();
         if let Some(ws) = tree.active_workspace() {
             for strip in &ws.strips {
@@ -1303,7 +1504,16 @@ impl ShellOverlayHost {
                 // vector and losing it).
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        row.insert_group(crate::shell::to_ui_window_group(g), idx);
+                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
+                        // A window arriving is worth seeing arrive. The
+                        // row's own splice paths (a tab dragged out into
+                        // its own group) already run this fade; a window
+                        // that appeared because the user opened it
+                        // deserves the same, and it is what reads
+                        // together with the neighbours sliding over to
+                        // make room for it.
+                        fresh.start_spawn_animation();
+                        row.insert_group(fresh, idx);
                         any_change = true;
                     }
                 }
@@ -1335,11 +1545,17 @@ impl ShellOverlayHost {
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
                         };
-                        live.insert_detached_tab(
-                            idx.min(live.tab_count()),
-                            desc,
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile)),
+                        // A tab spliced into a live group gets its own
+                        // document too — an adopted toplevel or a
+                        // freshly-opened app is as much an open thing as
+                        // one that was there at boot.
+                        let mut host =
+                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
+                        host.bind_record(
+                            records.clone(),
+                            crate::shell::tab_documents::scratch_tab_record(tab.id),
                         );
+                        live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
                         any_change = true;
                     }
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
@@ -1843,6 +2059,49 @@ impl ShellOverlayHost {
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
         }
+    }
+
+    /// Publish the active strip's laid-out geometry on the chrome, so an
+    /// "open this" path can consult it — see [`crate::shell::placement`].
+    ///
+    /// Runs at the end of every layout pass. Deliberately does **not**
+    /// bump the chrome revision: this is a report of what the layout just
+    /// produced, not a mutation anyone needs to re-sync against, and
+    /// bumping every frame would make the strip resync run forever.
+    fn publish_strip_viewport(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // The active strip is the one a new window would land in — the
+        // same resolution the placement rule performs.
+        let strip_id = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.active_workspace().and_then(|ws| {
+                tree.active_strip
+                    .get(&ws.id)
+                    .copied()
+                    .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+                    .or_else(|| ws.strips.first().map(|s| s.id))
+            })
+        };
+        let viewport = strip_id.and_then(|sid| {
+            let &ptr = self.group_row_ptrs.get(&sid)?;
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            let (visible_x0, visible_x1) = row.visible_canvas_span();
+            Some(crate::shell::placement::StripViewport {
+                strip: sid,
+                groups: row
+                    .group_canvas_spans()
+                    .into_iter()
+                    .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
+                    .collect(),
+                visible_x0,
+                visible_x1,
+            })
+        });
+        chrome.borrow_mut().set_strip_viewport(viewport);
     }
 
     /// Per-tick wire-up for cross-strip tab drag-drop (#151).
@@ -2712,6 +2971,19 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Whether the last draw discovered that the layout it was handed is
+    /// not the one it needs — the palette's filter band growing a row
+    /// when the kind chips wrap, which only a paint can measure.
+    ///
+    /// A peek, not a take: `take_structure_dirty` is the layout pass's
+    /// own call and consumes the flag. This exists so a caller that
+    /// paints exactly once (a screenshot) can notice it has to lay out
+    /// and paint again, rather than capturing a frame the user never
+    /// sees.
+    pub fn structure_dirty(&self) -> bool {
+        self.palette_layout_dirty
+    }
+
     /// What the palette currently is: its query, the id Enter would
     /// activate, and the rows on offer.
     ///
@@ -2747,6 +3019,16 @@ impl ShellOverlayHost {
     /// staging a synthetic Ctrl+K key event through `handle_event`.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
+    }
+
+    /// The room record index the records provider reads and writes.
+    ///
+    /// Shared, not copied: a caller that references a record in here is
+    /// changing what the next keystroke finds.
+    pub fn room_records(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>> {
+        std::rc::Rc::clone(&self.room_records)
     }
 
     /// Run the search fan-out directly. `bin/shots` calls this after
@@ -3311,7 +3593,11 @@ impl ShellOverlayHost {
         let w = (Self::SCOPE_SEGMENT_WIDTH_PX * count as f64 + 2.0 * SEGMENT_INSET_PX)
             .min(b.width() * 0.55);
         let h = Self::FILTER_CONTROL_HEIGHT_PX;
-        let cy = (b.y0 + b.y1) / 2.0;
+        // Anchored to the *first* row of the band, not to the middle of
+        // it: when the kind chips wrap to a second row the switch must
+        // stay where it was, beside the row it shares, rather than
+        // drifting down into the gap between the two rows of chips.
+        let cy = b.y0 + self.palette.filter_strip_row_height() / 2.0;
         Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
     }
 
@@ -3589,6 +3875,15 @@ impl Widget for ShellOverlayHost {
         // splice the dragged tab into whichever strip's row contains the
         // release point (or back into source if no strip matched).
         self.dispatch_cross_strip_detaches();
+        // Offer every open tab's document to its own writer. Debounced and
+        // off-thread, so a frame on which nothing was typed costs a head
+        // comparison per open record — but a frame on which something was
+        // is what puts it on disk. Without this the store holds each tab's
+        // document in memory and the session ends having written nothing.
+        if let Some(chrome) = self.chrome.as_ref() {
+            let records = chrome.borrow().records().clone();
+            records.tick();
+        }
         // Sandbox Phase 4 Task 4.2: drive the permission-prompt pump.
         // Latches a fresh widget for the front of `chrome.pending_grants`,
         // and drains entries when the user clicks an action button.
@@ -3842,6 +4137,7 @@ impl Widget for ShellOverlayHost {
                 Point::new(self.rect.x0 - active_scroll_x, self.rect.y0),
             );
         }
+        self.publish_strip_viewport();
     }
 
     fn draw(
@@ -4587,9 +4883,32 @@ impl Widget for ShellOverlayHost {
                         // into it, so the target group id is resolvable in
                         // the persisted tree.
                         self.harvest_widget_only_groups_into_tree();
-                        chrome
-                            .borrow_mut()
-                            .handle_file_drop_at(path, strip_id, group_id);
+                        // A file an installed app declares is *opened in
+                        // that app*, in the group the user aimed at —
+                        // through the one open path, so it arrives with
+                        // its read grant and with the file loaded. A
+                        // folder, or a type nothing claims, keeps the
+                        // placeholder-tab drop below.
+                        let owned = matches!(
+                            crate::shell::doc_open::resolve(path),
+                            crate::shell::doc_open::DocumentTarget::App { .. }
+                        );
+                        if owned {
+                            if let Err(e) =
+                                crate::shell::doc_open::open_in_group(path, &chrome, group_id)
+                            {
+                                crate::shell::doc_open::report_open_failure(
+                                    &chrome,
+                                    path,
+                                    &e.user_message(),
+                                    None,
+                                );
+                            }
+                        } else {
+                            chrome
+                                .borrow_mut()
+                                .handle_file_drop_at(path, strip_id, group_id);
+                        }
                     }
                 }
             }
@@ -6060,6 +6379,40 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
+/// The faces a workspace card shows: the people who actually hold a
+/// capability in that workspace.
+///
+/// Drawing `ws.collaborators` instead put faces on a card for people
+/// with no access, and falling back to the tree-wide list put those same
+/// faces on *every* card. A permissions surface showing someone states
+/// that they can reach the workspace, so the list has to come from the
+/// capability model — the same `roster()` the Members badge counts.
+///
+/// The collaborator record supplies only display name and colour, and
+/// only when there is one; a member with no record still gets a face.
+///
+/// Split out of the draw pass so it can be asserted directly. Counting
+/// avatar-coloured fills in the rendered scene used to stand in for this,
+/// and stopped meaning anything once avatars moved to the shared
+/// `ui::Avatar` widget with a per-identity fill — the product was right
+/// and the proxy was stale.
+pub fn overview_card_faces<'a>(
+    ws: &'a crate::shell::state::Workspace,
+    tree: &'a crate::shell::state::WorkspaceTree,
+) -> Vec<(String, Option<&'a crate::shell::state::Collaborator>)> {
+    ws.roster()
+        .into_iter()
+        .map(|(user, _role)| {
+            let known = ws
+                .collaborators
+                .iter()
+                .chain(tree.collaborators.iter())
+                .find(|c| c.id == user);
+            (user, known)
+        })
+        .collect()
+}
+
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     draw_scrim_at(scene, transform, rect, 1.0, theme);
 }
@@ -6755,26 +7108,7 @@ impl ShellOverlayHost {
                 card_xform * Affine::translate((sidebar_x0, collab_y0)),
                 None,
             );
-            // The people who actually hold a capability here — the same
-            // list the Members badge counts. Drawing `ws.collaborators`
-            // instead put faces on a card for people with no access, and
-            // falling back to the tree-wide list put them on *every*
-            // card; a permissions surface showing someone implies they
-            // can reach the workspace, so it has to come from the
-            // capability model. Display name and colour still come from
-            // the collaborator record when there is one.
-            let peers: Vec<(String, Option<&crate::shell::state::Collaborator>)> = ws
-                .roster()
-                .into_iter()
-                .map(|(user, _role)| {
-                    let known = ws
-                        .collaborators
-                        .iter()
-                        .chain(tree.collaborators.iter())
-                        .find(|c| c.id == user);
-                    (user, known)
-                })
-                .collect();
+            let peers = overview_card_faces(ws, &tree);
             let avatar_r = 12.0_f64;
             let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
             let avatar_y = collab_y0 + 20.0;
@@ -6782,20 +7116,8 @@ impl ShellOverlayHost {
             for (idx, (user, known)) in peers.iter().take(max_shown).enumerate() {
                 let cx = sidebar_x0 + avatar_r + idx as f64 * avatar_step;
                 let cy = avatar_y + avatar_r;
-                scene.fill(
-                    Fill::NonZero,
-                    card_xform,
-                    colors.neutral[1], // ring bg = slate-900
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r + 2.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    card_xform,
-                    colors.accent[5],
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r),
-                );
+                let avatar_rect =
+                    Rect::new(cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r);
                 let initial = known
                     .map(|c| c.name.as_str())
                     .unwrap_or(user.as_str())
@@ -6804,14 +7126,25 @@ impl ShellOverlayHost {
                     .unwrap_or('?')
                     .to_ascii_uppercase()
                     .to_string();
-                let (iw, ih) = text_renderer.measure(&initial, tokens.typography.scale.sm, None);
-                text_renderer.draw_text(
+                // Per-identity fill (peer's own cursor colour, else the
+                // palette-pinned `user_color`) so the overview avatar matches
+                // the peer's cursor and the top-bar stack — not a single flat
+                // accent for everyone. Painted through the shared `ui::Avatar`
+                // with a slate ring, exactly like the top-bar cluster.
+                let (r, g, b) = known
+                    .and_then(|c| c.cursor_color.as_deref())
+                    .and_then(ui::presence::parse_hex_color)
+                    .unwrap_or_else(|| ui::presence::user_color(user));
+                ui::widget::Avatar::draw_ringed_at(
                     scene,
+                    card_xform,
+                    avatar_rect,
                     &initial,
-                    tokens.typography.scale.sm,
-                    colors.text_primary,
-                    card_xform * Affine::translate((cx - iw as f64 / 2.0, cy - ih as f64 / 2.0)),
-                    None,
+                    Color::from_rgb8(r, g, b),
+                    colors.neutral[1], // ring bg = slate-900
+                    2.0,
+                    theme,
+                    text_renderer,
                 );
             }
             // Plus button at the tail of the avatar stack — concept uses
@@ -7859,7 +8192,6 @@ impl ShellOverlayHost {
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
         let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
-        let cy = (band.y0 + band.y1) / 2.0;
 
         // --- Scope switch (right-anchored) -----------------------------
         let active = self
@@ -7920,53 +8252,67 @@ impl ShellOverlayHost {
         // a new provider gets a chip for free. Empty selection means
         // "everything shows", which the leading "All" chip states rather
         // than leaving the strip looking like nothing is on.
+        //
+        // Every chip is painted, whatever the width — the strip wraps,
+        // and the band grows to hold the rows. See [`lay_out_chip_strip`]
+        // for why not painting one was the bug.
         let kinds = self.search_registry.registered_kinds();
-        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
-        let budget_x1 = track.x0 - 10.0;
-        let mut x = band.x0;
-
-        let all_active = self.active_kind_filter.is_empty();
-        let (aw, _) = text_renderer.measure("All", chip_text_size, None);
-        let all_rect = Rect::new(x, cy - control_h / 2.0, x + aw as f64 + 18.0, cy + control_h / 2.0);
-        draw_filter_chip(
-            scene,
-            transform,
-            text_renderer,
-            all_rect,
-            "All",
-            chip_text_size,
-            if all_active { active_fill } else { idle_fill },
-            if all_active { active_text } else { idle_text },
+        let labels: Vec<&str> = std::iter::once("All")
+            .chain(kinds.iter().map(|k| k.label()))
+            .collect();
+        let natural: Vec<f64> = labels
+            .iter()
+            .map(|l| text_renderer.measure(l, chip_text_size, None).0 as f64 + CHIP_PAD_PX)
+            .collect();
+        let strip = lay_out_chip_strip(
+            &natural,
+            band,
+            track.x0 - 10.0,
+            self.palette.host_filter_strip_rows(),
+            self.palette.filter_strip_row_height(),
+            control_h,
         );
-        self.search_all_chip_rect = all_rect;
-        x = all_rect.x1 + 6.0;
 
-        for kind in &kinds {
-            let label = kind.label();
-            let (lw, _) = text_renderer.measure(label, chip_text_size, None);
-            let chip_w = lw as f64 + 18.0;
-            if x + chip_w > budget_x1 {
-                // Stop rather than paint a chip under the scope switch.
-                // An unpainted chip is not in `search_chip_rects`, so it
-                // cannot be clicked either.
-                break;
-            }
-            let rect = Rect::new(x, cy - control_h / 2.0, x + chip_w, cy + control_h / 2.0);
-            let is_active = self.active_kind_filter.contains(kind);
+        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
+        for (i, label) in labels.iter().enumerate() {
+            let rect = strip.rects[i];
+            let is_active = match i {
+                0 => self.active_kind_filter.is_empty(),
+                _ => self.active_kind_filter.contains(&kinds[i - 1]),
+            };
+            // Only a chip that had to be squeezed loses any of its label.
+            let label = text_renderer.elide_to_width(
+                label,
+                chip_text_size,
+                (rect.width() - CHIP_PAD_PX / 2.0).max(1.0) as f32,
+            );
             draw_filter_chip(
                 scene,
                 transform,
                 text_renderer,
                 rect,
-                label,
+                &label,
                 chip_text_size,
                 if is_active { active_fill } else { idle_fill },
                 if is_active { active_text } else { idle_text },
             );
-            chip_rects.push(rect);
-            x += chip_w + 6.0;
+            match i {
+                0 => self.search_all_chip_rect = rect,
+                _ => chip_rects.push(rect),
+            }
         }
         self.search_chip_rects = chip_rects;
+
+        // Ask the card for the rows the strip actually needs. The next
+        // layout grows the band and moves the result rows down; until it
+        // runs, the chips above are squeezed into the band there is —
+        // which is why they are all still clickable in the meantime.
+        if strip.rows_needed != self.search_chip_rows {
+            self.search_chip_rows = strip.rows_needed;
+            if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
+                self.palette_layout_dirty = true;
+            }
+        }
     }
 
     fn draw_quick_settings(
@@ -8643,7 +8989,7 @@ impl ShellOverlayHost {
             None,
         );
 
-        let peers: Vec<(String, char)> = self
+        let peers: Vec<(String, char, Color)> = self
             .chrome
             .as_ref()
             .map(|c| {
@@ -8658,9 +9004,17 @@ impl ShellOverlayHost {
                             .next()
                             .map(|c| c.to_ascii_uppercase())
                             .unwrap_or('•');
-                        (p.name.clone(), initial)
+                        // Per-identity avatar colour (cursor colour, else the
+                        // palette-pinned `user_color`) so a peer's row avatar
+                        // matches their cursor and top-bar chip.
+                        let (r, g, b) = p
+                            .cursor_color
+                            .as_deref()
+                            .and_then(ui::presence::parse_hex_color)
+                            .unwrap_or_else(|| ui::presence::user_color(&p.id));
+                        (p.name.clone(), initial, Color::from_rgb8(r, g, b))
                     })
-                    .collect::<Vec<(String, char)>>()
+                    .collect::<Vec<(String, char, Color)>>()
             })
             .unwrap_or_default();
 
@@ -8677,26 +9031,21 @@ impl ShellOverlayHost {
             return;
         }
 
-        for (i, (name, initial)) in peers.iter().enumerate() {
+        for (i, (name, initial, color)) in peers.iter().enumerate() {
             let row_y = rect.y0 + 48.0 + i as f64 * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5],
-                None,
-                &vello::kurbo::Circle::new(center, 11.0),
-            );
-            let initial_str = initial.to_string();
-            let (iw, ih) = text_renderer.measure(&initial_str, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            // Row avatar = shared `ui::Avatar` chip (r = 11) in the peer's own
+            // colour, matching the top-bar stack and the overview.
+            let avatar_rect =
+                Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
+            ui::widget::Avatar::draw_at(
                 scene,
-                &initial_str,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform
-                    * Affine::translate((center.x - iw as f64 / 2.0, center.y - ih as f64 / 2.0)),
-                None,
+                transform,
+                avatar_rect,
+                &initial.to_string(),
+                *color,
+                theme,
+                text_renderer,
             );
             text_renderer.draw_text(
                 scene,
@@ -9582,12 +9931,15 @@ mod overlay_event_absorb_tests {
     }
 
     fn build_harness() -> AbsorbHarness {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
-        let log = Rc::new(RefCell::new(Vec::<String>::new()));
-        let content = Box::new(RecordingContent::new(log.clone()));
-        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        build_harness_sized(1600.0, 900.0)
+    }
 
+    /// One full layout pass over the host at `vw` × `vh`, exactly as the
+    /// compositor's frame does it. Separate from the harness constructor
+    /// so a test can lay out *again* after a paint — which is what the
+    /// shell itself does when a draw discovers the palette needs more
+    /// room than the last layout gave it.
+    fn lay_out_host(host: &mut ShellOverlayHost, vw: f64, vh: f64) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
@@ -9596,8 +9948,8 @@ mod overlay_event_absorb_tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
+                        width: Dimension::length(vw as f32),
+                        height: Dimension::length(vh as f32),
                     },
                     ..Default::default()
                 },
@@ -9610,8 +9962,8 @@ mod overlay_event_absorb_tests {
             .compute_layout_with_measure(
                 viewport,
                 Size {
-                    width: AvailableSpace::Definite(1600.0),
-                    height: AvailableSpace::Definite(900.0),
+                    width: AvailableSpace::Definite(vw as f32),
+                    height: AvailableSpace::Definite(vh as f32),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -9623,6 +9975,20 @@ mod overlay_event_absorb_tests {
             )
             .expect("compute_layout");
         host.apply_layout(&taffy, child, Point::ORIGIN);
+        (taffy, child)
+    }
+
+    /// The harness at an explicit viewport, for the geometry that only
+    /// goes wrong at one end of the range — the palette card is a
+    /// fraction of the viewport, so its filter band is only as tight as
+    /// the screen is narrow.
+    fn build_harness_sized(vw: f64, vh: f64) -> AbsorbHarness {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let log = Rc::new(RefCell::new(Vec::<String>::new()));
+        let content = Box::new(RecordingContent::new(log.clone()));
+        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let (taffy, child) = lay_out_host(&mut host, vw, vh);
 
         AbsorbHarness {
             host,
@@ -9676,18 +10042,35 @@ mod overlay_event_absorb_tests {
         }
     }
 
-    /// Paint once so the chip / scope rects the click router reads are
-    /// the ones that were actually drawn, then click a point.
-    fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
+    /// One production paint, so the chip / scope rects a click router
+    /// (or an assertion) reads are the ones that were actually drawn.
+    fn paint(h: &mut AbsorbHarness) {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = vello::Scene::new();
         let presence = ui::presence::PresenceCtx::default();
         h.host
             .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Paint once so the chip / scope rects the click router reads are
+    /// the ones that were actually drawn, then click a point.
+    fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
+        paint(h);
         let p = point_of(&h.host);
         pump(h, &cursor_moved_at(p));
         pump(h, &left_button_pressed());
+    }
+
+    /// Paint, re-lay-out, paint again — the two-frame settle the shell
+    /// itself performs when a draw discovers the filter band needs more
+    /// rows than the last layout reserved.
+    fn settle(h: &mut AbsorbHarness, vw: f64, vh: f64) {
+        paint(h);
+        let (taffy, child) = lay_out_host(&mut h.host, vw, vh);
+        h.taffy = taffy;
+        h.root_node = child;
+        paint(h);
     }
 
     /// The kind chips and the scope switch moved inside the palette
@@ -9696,6 +10079,196 @@ mod overlay_event_absorb_tests {
     ///
     /// Drives the production `handle_event` router against the rects the
     /// production `draw` just cached, so the two cannot drift apart.
+    #[test]
+    /// **Every filter has to be reachable at every width.**
+    ///
+    /// The strip used to stop painting at the first chip that did not
+    /// fit, and a chip that is not painted has no rect — so the filter it
+    /// stands for could be listed by the registry and still be
+    /// unclickable. At 1600 px the five kinds of the day exactly filled
+    /// the row, so a sixth was invisible; under the test harness's own
+    /// metrics even `Folders` was dropped.
+    ///
+    /// Asserts on the rects the production `draw` cached, because that is
+    /// the thing a click is hit-tested against.
+    #[test]
+    fn every_kind_is_reachable_at_every_width() {
+        // 800 is the narrowest viewport `shots --sweep` renders, and the
+        // one where the palette card hits its 560 px floor: the filter
+        // band is at its tightest and the strip has the least room.
+        for (vw, vh) in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            h.host.set_palette_visible(true);
+            h.host.force_palette_settled();
+            settle(&mut h, vw, vh);
+
+            let kinds = h.host.search_registry.registered_kinds();
+            let rects = h.host.search_chip_rects.clone();
+            assert_eq!(
+                rects.len(),
+                kinds.len(),
+                "at {vw}x{vh} the strip painted {} of {} kinds — an \
+                 unpainted chip has no rect, so the filter it stands for \
+                 cannot be clicked at all: {:?}",
+                rects.len(),
+                kinds.len(),
+                kinds.iter().map(|k| k.label()).collect::<Vec<_>>()
+            );
+
+            let band = h.host.search_banner_rect();
+            let all = h.host.search_all_chip_rect;
+            let track = h.host.search_scope_track_rect();
+            let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
+            painted.extend(
+                kinds
+                    .iter()
+                    .map(|k| k.label().to_string())
+                    .zip(rects.iter().copied()),
+            );
+            for (label, r) in &painted {
+                assert!(
+                    r.area() > 0.0,
+                    "at {vw}x{vh} the {label} chip has no area: {r:?}"
+                );
+                assert!(
+                    r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} is outside the \
+                     band {band:?} — it would paint over the results"
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.5 && r.x1 <= band.x1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} runs past the \
+                     band's edges {band:?}"
+                );
+            }
+            // Nothing overlaps anything: two chips sharing pixels means
+            // one of them eats the other's clicks.
+            for i in 0..painted.len() {
+                for j in (i + 1)..painted.len() {
+                    let (a, b) = (painted[i].1, painted[j].1);
+                    assert!(
+                        a.intersect(b).area() <= 0.0,
+                        "at {vw}x{vh} the {} and {} chips overlap: {a:?} / {b:?}",
+                        painted[i].0,
+                        painted[j].0
+                    );
+                }
+                assert!(
+                    painted[i].1.intersect(track).area() <= 0.0,
+                    "at {vw}x{vh} the {} chip sits under the scope switch: \
+                     {:?} / {track:?}",
+                    painted[i].0,
+                    painted[i].1
+                );
+            }
+        }
+    }
+
+    /// The reachability claim, driven the way a user makes it: click the
+    /// **last** chip — the one that used to fall off the end of the row —
+    /// at the narrowest viewport, and the filter it stands for applies.
+    ///
+    /// Clicks the rect the production `draw` cached, through the
+    /// production `handle_event` router, so a chip that is painted but
+    /// mis-placed fails here too.
+    #[test]
+    fn the_last_chip_can_be_clicked_at_the_narrowest_width() {
+        let (vw, vh) = (800.0, 600.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        settle(&mut h, vw, vh);
+
+        let last_kind = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .last()
+            .cloned()
+            .expect("the registry has kinds");
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "the palette starts unfiltered"
+        );
+        let target = *h
+            .host
+            .search_chip_rects
+            .last()
+            .expect("the last kind must have been painted");
+        pump(&mut h, &cursor_moved_at(target.center()));
+        pump(&mut h, &left_button_pressed());
+
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![last_kind.clone()],
+            "clicking the last chip at {vw}x{vh} must filter to {:?}; the \
+             palette instead holds {:?}",
+            last_kind.label(),
+            h.host
+                .active_kind_filter
+                .iter()
+                .map(|k| k.label())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            h.host.palette_visible(),
+            "and the click must not be taken for a dismissal"
+        );
+    }
+
+    /// The layout rule itself, at widths no card would ever have, so the
+    /// invariant is pinned rather than inferred from one viewport: every
+    /// chip gets a positive, non-overlapping rect inside the band, even
+    /// when the rows on offer cannot hold them at natural width.
+    #[test]
+    fn the_chip_strip_places_every_chip_however_narrow_the_band() {
+        let band = Rect::new(0.0, 0.0, 240.0, 36.0);
+        let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
+        for rows_available in [1usize, 2, 3] {
+            let strip = lay_out_chip_strip(&natural, band, band.x1 - 100.0, rows_available, 36.0, 24.0);
+            assert_eq!(
+                strip.rects.len(),
+                natural.len(),
+                "every chip gets a rect at {rows_available} row(s)"
+            );
+            assert!(
+                strip.rows_needed >= 1,
+                "the strip always needs at least one row"
+            );
+            for (i, r) in strip.rects.iter().enumerate() {
+                assert!(
+                    r.width() > 0.0 && r.height() > 0.0,
+                    "chip {i} of {} is not clickable at {rows_available} \
+                     row(s): {r:?}",
+                    natural.len()
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.001,
+                    "chip {i} starts left of the band: {r:?}"
+                );
+            }
+            for i in 0..strip.rects.len() {
+                for j in (i + 1)..strip.rects.len() {
+                    assert!(
+                        strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
+                        "chips {i} and {j} overlap at {rows_available} \
+                         row(s): {:?} / {:?}",
+                        strip.rects[i],
+                        strip.rects[j]
+                    );
+                }
+            }
+        }
+        // And when there is room, nothing is squeezed: the chips keep
+        // their natural widths.
+        let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
+        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0);
+        assert_eq!(strip.rows_needed, 1);
+        for (i, r) in strip.rects.iter().enumerate() {
+            assert_eq!(r.width(), natural[i], "chip {i} was squeezed with room to spare");
+        }
+    }
+
     #[test]
     fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
         let mut h = build_harness();
@@ -10451,22 +11024,29 @@ mod tests {
     /// `NotesProvider` → palette rows. `nir` appears nowhere but the
     /// note's body, and the palette answered it with nothing, because the
     /// provider looked for the body under a per-tab map keyed by the tab
-    /// id — a shape the tile wiring never creates, since every hosted app
-    /// syncs against the same document root.
+    /// id — a shape the tile wiring never creates.
     #[test]
     fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::notes_app::NotesApp;
 
         let mut h = build_harness();
-        // The document as the app leaves it: `pump_apps` calls exactly
+        let doc = AutoCommit::new();
+        // The document as the app leaves it, in the document the app is
+        // handed: the tab's own record. `TileHost::sync` calls exactly
         // this on every frame of the live compositor.
-        let mut doc = AutoCommit::new();
-        let mut notes = NotesApp::with_seed(
-            "Welcome to nirios.\n\nThese notes sync live with anyone \
-             invited to this workspace.",
-        );
-        notes.sync(&mut doc, &automerge::ROOT);
+        let notes_tab = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].tabs[0]
+            .id;
+        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
+        let store = h.chrome.borrow().records().clone();
+        store.open_record(&record);
+        store.with(&record.id, |d| {
+            let mut notes = NotesApp::with_seed(
+                "Welcome to nirios.\n\nThese notes sync live with anyone \
+                 invited to this workspace.",
+            );
+            notes.sync(d, &automerge::ROOT);
+        });
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), &ctrl));
@@ -10516,6 +11096,129 @@ mod tests {
                 .iter()
                 .map(|e| (&e.label, &e.description))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// **The gesture a room starting empty depends on.**
+    ///
+    /// A room begins with nothing in it, which is only workable if moving
+    /// one of your own records into it costs one step. That step is this:
+    /// Super+K, type the name, and a record living in *another* room is
+    /// among the answers — labelled with where it lives — and Enter
+    /// brings it here.
+    ///
+    /// Drives the whole production chain rather than the provider alone:
+    /// `handle_event` → `open_palette_with_scope` →
+    /// `refresh_search_results` → `SearchRegistry::query_grouped` →
+    /// `RecordsProvider` → palette rows → `activate_selected_result` →
+    /// the row's own `on_open`.
+    #[test]
+    fn super_k_finds_a_record_from_another_room_and_enter_brings_it_here() {
+        use crate::shell::chrome_state::SearchScope;
+        use ui::record::{RecordId, RecordKind};
+
+        let mut h = build_harness();
+        // Two rooms from the fixture tree: the one in front of the user
+        // and one they are not in.
+        let (here, there, there_name) = {
+            let st = h.chrome.borrow();
+            let tree = st.tree();
+            let here = tree.active_workspace().expect("an active room").room;
+            let other = tree
+                .workspaces
+                .iter()
+                .find(|w| w.room != here)
+                .expect("the fixture has more than one room");
+            (here, other.room, other.name.clone())
+        };
+
+        // A record that lives over there and nowhere else.
+        let book = RecordId::minted();
+        let kind = RecordKind::new("field-guide");
+        h.host
+            .room_records()
+            .borrow_mut()
+            .reference(there, &book, &kind);
+        assert!(
+            !h.host.room_records().borrow().holds(here, &book),
+            "precondition: this room starts without it"
+        );
+
+        let mut doc = AutoCommit::new();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &sup));
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
+        h.host.palette.set_query("field-guide");
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let listing = || {
+            h.host
+                .search_results
+                .iter()
+                .map(|r| (r.provider_id.clone(), r.title.clone(), r.subtitle.clone()))
+                .collect::<Vec<_>>()
+        };
+        let idx = h
+            .host
+            .search_results
+            .iter()
+            .position(|r| r.provider_id == "records")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a record living in another room must be findable from \
+                     this one; got {:?}",
+                    listing()
+                )
+            });
+        assert_eq!(
+            h.host.search_results[idx].subtitle.as_deref(),
+            Some(format!("In {there_name} · field-guide").as_str()),
+            "the row has to say where the record lives — without it, two \
+             rooms' records are indistinguishable rows"
+        );
+        // The row the palette paints, not just the result behind it.
+        let title = h.host.search_results[idx].title.clone();
+        let subtitle = h.host.search_results[idx].subtitle.clone();
+        assert!(
+            h.host
+                .palette
+                .visible_entries()
+                .iter()
+                .any(|e| e.label == title && e.description == subtitle),
+            "the record must reach the palette's own rows: {:?}",
+            h.host
+                .palette
+                .visible_entries()
+                .iter()
+                .map(|e| (&e.label, &e.description))
+                .collect::<Vec<_>>()
+        );
+
+        // Enter on that row.
+        h.host.palette.set_cursor(idx);
+        h.host
+            .activate_selected_result(&mut doc, &automerge::ROOT);
+
+        let records = h.host.room_records();
+        let records = records.borrow();
+        assert!(
+            records.holds(here, &book),
+            "activating the row must bring the record into this room"
+        );
+        assert!(
+            records.holds(there, &book),
+            "and leave it in the room it came from: this is a reference, \
+             not a move"
+        );
+        let ids = |room| -> Vec<RecordId> {
+            records.records_in(room).into_iter().map(|c| c.id).collect()
+        };
+        assert_eq!(
+            ids(here),
+            ids(there),
+            "both rooms must name the same record id — a copy would have \
+             minted a new one, and the two would diverge from the next \
+             edit onward"
         );
     }
 

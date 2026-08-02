@@ -17,14 +17,14 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollaborationManager, CollabRequest};
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{VideoPlayer, Widget};
+use ui::widget::{Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
 use crate::portal::{self, OpenChannel, OpenOutcome};
@@ -269,7 +269,6 @@ impl PlayerApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let colors = &theme.tokens.colors;
         // A soft translucent scrim behind the title so it stays legible over
         // bright frames, without a hard opaque bar.
         let scrim_h = 44.0;
@@ -281,38 +280,34 @@ impl PlayerApp {
             None,
             &scrim,
         );
-        // Title (left), vertically centred in the scrim.
+        // Title (left), vertically centred in the scrim. The scrim is always
+        // dark (over-media chrome), so the label is a fixed near-white in every
+        // theme — `text_primary` would flip to near-black on light and vanish
+        // against the dark scrim.
         let title_size = 15.0f32;
         let ty = self.rect.y0 + (scrim_h - title_size as f64) * 0.5;
         text_renderer.draw_text(
             scene,
             &self.title,
             title_size,
-            colors.text_primary,
+            vello::peniko::Color::from_rgb8(245, 246, 250),
             transform * Affine::translate((self.rect.x0 + OVERLAY_MARGIN, ty)),
             None,
         );
-        // Open pill (right), a floating rounded accent button.
+        // Open pill (right), a floating rounded accent button — the shared
+        // primary Button face, so it gains hover/press feedback over the video.
         if self.open_button_rect.width() > 0.0 {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
-                None,
-                &RoundedRect::from_rect(self.open_button_rect, OPEN_BTN_H / 2.0),
-            );
-            let label = "Open";
-            let lsize = 14.0f32;
-            let (lw, _lh) = text_renderer.measure(label, lsize, None);
-            let lx = self.open_button_rect.center().x - lw as f64 * 0.5;
-            let ly = self.open_button_rect.center().y - lsize as f64 * 0.5;
-            text_renderer.draw_text(
+            Button::paint(
                 scene,
-                label,
-                lsize,
-                colors.text_primary,
-                transform * Affine::translate((lx, ly)),
-                None,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(self.open_button_rect, "Open")
+                    .radius(OPEN_BTN_H / 2.0)
+                    .text_size(14.0)
+                    .weight(TextWeight::Regular)
+                    .primary()
+                    .hovered(self.open_button_rect.contains(self.last_cursor)),
             );
         }
     }

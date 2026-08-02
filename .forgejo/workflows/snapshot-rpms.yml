@@ -17,15 +17,21 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      # Single source of truth: base image + package set both come from
-      # os/Containerfile — for the base — and from the union of every
+      # The base is the mirrored, digest-pinned one every image builds FROM
+      # (os/base-snapshot.env) — the package set has to resolve against the
+      # base it will be installed on. Only the BASE_REF= line: $GITHUB_ENV has
+      # no comment syntax, so the file's leading `#` lines would corrupt the
+      # env.
+      - name: Load BASE_REF (mirrored Fedora bootc base)
+        run: grep '^BASE_REF=' os/base-snapshot.env >> "$GITHUB_ENV"
+
+      # Single source of truth for the package set: the union of every
       # dnf-install line across the OS Containerfiles (main image + host
       # bootc + standalone relay OCI). Keeping the snapshot the same for
       # every image guarantees whatever we FROM-mount the frozen repo at
       # finds every package it wants.
-      - name: Derive base image + package set from Containerfiles
+      - name: Derive the package set from the Containerfiles
         run: |
-          echo "BASE=$(awk '/^FROM .*fedora-bootc.* AS builder/{print $2; exit}' os/Containerfile)" >> "$GITHUB_ENV"
           # Enumerate all Containerfiles we snapshot for.  The qos-kernel
           # build (os/kernel/Containerfile) installs its toolchain from the
           # same frozen repo — including it here means the kernel build
@@ -71,7 +77,7 @@ jobs:
           push: true
           tags: code.podesta.ai/qos/rpms:${{ github.sha }}
           build-args: |
-            BASE=${{ env.BASE }}
+            BASE_REF=${{ env.BASE_REF }}
             PACKAGES=${{ env.PACKAGES }}
           provenance: false
 

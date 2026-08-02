@@ -26,7 +26,10 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
-use ui::widget::{SmallContentAlign, ViewportState};
+use ui::widget::{
+    Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup,
+    ViewportState,
+};
 use ui::Widget;
 
 use crate::doc::PdfDoc;
@@ -276,14 +279,22 @@ enum EditTarget {
     Signer,
 }
 
-/// A live inline text edit. The buffer is local until committed so a burst
-/// of keystrokes is a single undo step rather than one per character.
-#[derive(Clone)]
+/// A live inline text edit (comment body, thread reply, or signer name),
+/// backed by the shared multiline [`TextInput`] so it gets real caret,
+/// selection (shift+arrows / drag), clipboard (Ctrl+C/V/X), focus ring, a11y,
+/// and theming instead of a hand-rolled buffer + caret. The text is local until
+/// committed, so a burst of keystrokes is a single undo step. `Enter` commits
+/// (the input is `with_enter_submits`), `Shift+Enter` inserts a newline.
 struct Editing {
     target: EditTarget,
-    buffer: String,
-    /// Caret position as a byte offset into `buffer`.
-    caret: usize,
+    input: TextInput,
+}
+
+impl Editing {
+    /// The current edited text.
+    fn text(&self) -> &str {
+        self.input.value()
+    }
 }
 
 pub struct PdfApp {
@@ -469,6 +480,12 @@ pub struct PdfApp {
     sel_hud: Option<ui::SelectionHud>,
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
+
+    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
+    /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
+    /// action, and remembers the last one so a test can prove a button dispatches
+    /// the byte-identical action the palette would.
+    actions: ui::ActionHost,
 }
 
 impl PdfApp {
@@ -663,7 +680,49 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
+            actions: ui::ActionHost::new(),
         }
+    }
+
+    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction) —
+    /// the single mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The doc heads captured just before the first action of the event
+    /// are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]).
+    pub(crate) fn perform_action(
+        &mut self,
+        state: &mut AutoCommit,
+        action: crate::actions::PdfViewerAction,
+    ) {
+        self.actions
+            .dispatch(state, crate::actions::PDF_VIEWER_ACTION_TYPE, &action);
+    }
+
+    /// The presentation context Ctrl+K needs to build the document-level action
+    /// (add a note at the current page). `None` when no document is open.
+    pub(crate) fn pdf_resource_ctx(&self) -> Option<crate::actions::PdfResourceCtx> {
+        if !self.has_document {
+            return None;
+        }
+        let doc_id = if self.doc_name.is_empty() {
+            "document".to_string()
+        } else {
+            self.doc_name.clone()
+        };
+        let title = if self.doc.title.is_empty() {
+            doc_id.clone()
+        } else {
+            self.doc.title.clone()
+        };
+        Some(crate::actions::PdfResourceCtx {
+            doc_id,
+            title,
+            page: self.current_page,
+            author: self.author.clone(),
+            created_seed: self.created_counter,
+        })
     }
 
     // ---- seeding + cache refresh ------------------------------------
@@ -1510,10 +1569,9 @@ impl PdfApp {
                         author: self.author.clone(),
                     };
                     last_id = Some(a.id.clone());
-                    PdfDoc::add_annotation(state, &a);
+                    self.perform_action(state, crate::actions::add_annotation_action(&a));
                 }
                 self.selected_anno = last_id;
-                self.commit_pending = true;
             }
             Tool::Ink => {
                 if d.points.len() >= 2 {
@@ -1524,8 +1582,7 @@ impl PdfApp {
                         color: self.swatch,
                         author: self.author.clone(),
                     };
-                    PdfDoc::add_annotation(state, &a);
-                    self.commit_pending = true;
+                    self.perform_action(state, crate::actions::add_annotation_action(&a));
                 }
             }
             _ => {}
@@ -1535,36 +1592,30 @@ impl PdfApp {
     }
 
     fn create_note(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page,
-            kind: AnnoKind::Note { x: pt.0, y: pt.1 },
-            color: self.swatch,
-            author: self.author.clone(),
-        };
-        let anno_id = a.id.clone();
-        PdfDoc::add_annotation(state, &a);
+        let anno_id = Annotation::new_id();
         self.created_counter += 1;
         let comment_id = Comment::new_id();
-        PdfDoc::add_comment(
+        // One action creates the note marker *and* its (empty) comment thread —
+        // one undo boundary, replayed atomically on peers.
+        self.perform_action(
             state,
-            &Comment {
-                id: comment_id.clone(),
-                anno_id: Some(anno_id.clone()),
+            crate::actions::create_note_action(
+                &anno_id,
+                &comment_id,
                 page,
-                author: self.author.clone(),
-                body: String::new(),
-                created: self.created_counter,
-                resolved: false,
-                replies: vec![],
-            },
+                pt.0,
+                pt.1,
+                self.swatch,
+                &self.author.clone(),
+                self.created_counter,
+                "",
+            ),
         );
         self.selected_anno = Some(anno_id);
         self.selected_sig = None;
         // Open the Comments rail, scroll the brand-new thread into view, and
         // drop the caret straight into it so the user just types.
         self.focus_sidebar(SidebarTab::Comments, comment_id.clone());
-        self.commit_pending = true;
         self.reload(state);
         self.begin_edit(EditTarget::CommentBody(comment_id), String::new());
         self.dirty = true;
@@ -1572,12 +1623,24 @@ impl PdfApp {
 
     // ---- inline text editing ----------------------------------------
 
-    /// Start editing `target`, seeding the buffer with its current text and
-    /// dropping the caret at the end. Any in-flight edit is dropped without
-    /// committing — callers that need to preserve it commit first.
+    /// Start editing `target`, seeding a shared [`TextInput`] with its current
+    /// text and dropping the caret at the end. Any in-flight edit is dropped
+    /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: String) {
-        let caret = initial.len();
-        self.editing = Some(Editing { target, buffer: initial, caret });
+        let size = match target {
+            EditTarget::CommentBody(_) => 12.0,
+            EditTarget::Reply(_) => 11.5,
+            EditTarget::Signer => 13.0,
+        };
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_font_size(size);
+        input.set_plain_chrome(true);
+        input.set_text(&initial);
+        input.set_cursor_pos(initial.len());
+        input.set_focus(true);
+        self.editing = Some(Editing { target, input });
         self.dirty = true;
     }
 
@@ -1586,98 +1649,15 @@ impl PdfApp {
         self.editing.as_ref().map(|e| &e.target == target).unwrap_or(false)
     }
 
-    fn edit_insert(&mut self, s: &str) {
-        if let Some(e) = self.editing.as_mut() {
-            let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-            if filtered.is_empty() {
-                return;
-            }
-            e.buffer.insert_str(e.caret, &filtered);
-            e.caret += filtered.len();
-            self.dirty = true;
-        }
-    }
-
-    fn edit_backspace(&mut self) {
-        if let Some(e) = self.editing.as_mut() {
-            if e.caret == 0 {
-                return;
-            }
-            // Remove the char boundary immediately before the caret.
-            let prev = e.buffer[..e.caret]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            e.buffer.replace_range(prev..e.caret, "");
-            e.caret = prev;
-            self.dirty = true;
-        }
-    }
-
-    fn edit_move(&mut self, dir: isize) {
-        if let Some(e) = self.editing.as_mut() {
-            if dir < 0 {
-                e.caret = e.buffer[..e.caret].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
-            } else if e.caret < e.buffer.len() {
-                let next = e.buffer[e.caret..].char_indices().nth(1).map(|(i, _)| e.caret + i).unwrap_or(e.buffer.len());
-                e.caret = next;
-            }
-            self.dirty = true;
-        }
-    }
-
-    fn edit_home_end(&mut self, end: bool) {
-        if let Some(e) = self.editing.as_mut() {
-            e.caret = if end { e.buffer.len() } else { 0 };
-            self.dirty = true;
-        }
-    }
-
-    /// Copy the whole field to the system clipboard. The inline editor has no
-    /// selection model, so the copyable unit is the entire buffer. Backed by
-    /// the shared `ui::clipboard_copy` (a silent no-op when the platform
-    /// clipboard is unavailable, exactly like the toolkit's own text input).
-    fn edit_clipboard_copy(&self) {
-        if let Some(e) = self.editing.as_ref() {
-            if !e.buffer.is_empty() {
-                ui::clipboard_copy(&e.buffer);
-            }
-        }
-    }
-
-    /// Cut: copy the whole field to the clipboard, then clear it.
-    fn edit_clipboard_cut(&mut self) {
-        self.edit_clipboard_copy();
-        if let Some(e) = self.editing.as_mut() {
-            if !e.buffer.is_empty() {
-                e.buffer.clear();
-                e.caret = 0;
-                self.dirty = true;
-            }
-        }
-    }
-
-    /// Paste the clipboard's text at the caret. Reuses [`Self::edit_insert`],
-    /// so control characters (newlines, etc.) are stripped to keep the field
-    /// single-line, matching typed input.
-    fn edit_clipboard_paste(&mut self) {
-        if self.editing.is_none() {
-            return;
-        }
-        if let Some(text) = ui::clipboard_paste() {
-            self.edit_insert(&text);
-        }
-    }
-
-    /// Write the active edit's buffer to its durable home and clear the edit.
+    /// Write the active edit's text to its durable home and clear the edit.
     /// An emptied comment body (with no replies) removes the note entirely so
     /// an abandoned marker never litters the page.
     fn commit_edit(&mut self, state: &mut AutoCommit) {
         let Some(e) = self.editing.take() else { return };
+        let text = e.text().to_string();
         match e.target {
             EditTarget::CommentBody(id) => {
-                let trimmed = e.buffer.trim();
+                let trimmed = text.trim();
                 let has_replies = self
                     .comments
                     .iter()
@@ -1688,24 +1668,19 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                PdfDoc::set_comment_body(state, &id, e.buffer.trim_end());
-                self.commit_pending = true;
+                self.perform_action(state, crate::actions::set_comment_body_action(&id, text.trim_end()));
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
-                let body = e.buffer.trim();
+                let body = text.trim();
                 if !body.is_empty() {
-                    PdfDoc::add_reply(
-                        state,
-                        &id,
-                        &Reply { author: self.author.clone(), body: body.to_string() },
-                    );
-                    self.commit_pending = true;
+                    let action = crate::actions::add_reply_action(&id, &self.author.clone(), body);
+                    self.perform_action(state, action);
                     self.reload(state);
                 }
             }
             EditTarget::Signer => {
-                let name = e.buffer.trim();
+                let name = text.trim();
                 self.signer_name = if name.is_empty() { self.author.clone() } else { name.to_string() };
             }
         }
@@ -1881,11 +1856,10 @@ impl PdfApp {
                 author: self.author.clone(),
             };
             last = Some(a.id.clone());
-            PdfDoc::add_annotation(state, &a);
+            self.perform_action(state, crate::actions::add_annotation_action(&a));
         }
         self.swatch = swatch;
         self.selected_anno = last;
-        self.commit_pending = true;
         self.clear_selection();
         self.reload(state);
         self.dirty = true;
@@ -1959,36 +1933,39 @@ impl PdfApp {
     fn delete_target(&mut self, target: &DeleteTarget, state: &mut AutoCommit) {
         match target {
             DeleteTarget::Annotation(id) => {
-                PdfDoc::delete_annotation(state, id);
+                self.perform_action(state, crate::actions::delete_annotation_action(id));
                 if self.selected_anno.as_deref() == Some(id.as_str()) {
                     self.selected_anno = None;
                 }
             }
             DeleteTarget::Comment(id) => {
-                // Deleting a comment also removes the annotation it pins, so
-                // the orphaned note marker doesn't linger on the page.
+                // Deleting a comment also removes the annotation it pins, so the
+                // orphaned note marker doesn't linger on the page — the
+                // `DeleteComment` action carries that cascade. Clear the local
+                // selection pointing at the pinned note.
                 if let Some(anno) = self
                     .comments
                     .iter()
                     .find(|c| &c.id == id)
                     .and_then(|c| c.anno_id.clone())
                 {
-                    PdfDoc::delete_annotation(state, &anno);
                     if self.selected_anno.as_deref() == Some(anno.as_str()) {
                         self.selected_anno = None;
                     }
                 }
-                PdfDoc::delete_comment(state, id);
+                self.perform_action(state, crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
                 PdfDoc::delete_signature(state, id);
                 if self.selected_sig.as_deref() == Some(id.as_str()) {
                     self.selected_sig = None;
                 }
+                // Signatures are not (yet) on the action model; keep the
+                // snapshot-undo path for them.
+                self.commit_pending = true;
             }
         }
         self.context_menu = None;
-        self.commit_pending = true;
         self.reload(state);
         self.dirty = true;
     }
@@ -2189,6 +2166,21 @@ include!("app_events.rs");
 impl Widget for PdfApp {
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.markup_record.clone()
+    }
+
+    /// Publish the open document + its markup so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-page affordance dispatched
+    /// its markup action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -2785,7 +2777,10 @@ mod tests {
         app.create_note(&mut st.doc, 2, (120.0, 200.0));
         assert_eq!(app.annotations.len(), a0 + 1);
         assert_eq!(app.comments.len(), c0 + 1);
-        assert!(app.commit_pending);
+        assert!(
+            app.take_committed_action().is_some(),
+            "creating a note dispatched an action and stashed one undo boundary"
+        );
         assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
     }
 
@@ -3154,7 +3149,10 @@ mod tests {
             AnnoKind::Ink { points } => assert!(points.len() >= 2, "the polyline retains its points"),
             _ => unreachable!(),
         }
-        assert!(app.commit_pending, "ink is a committed CRDT action");
+        assert!(
+            app.take_committed_action().is_some(),
+            "ink dispatched an action and stashed one undo boundary"
+        );
         assert!(
             PdfDoc::list_annotations(&st.doc).iter().any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
             "and the ink stroke landed in the shared document"
@@ -3182,7 +3180,7 @@ mod tests {
         let (mut app, mut st) = app_with_state();
         // Type a real name into the signer identity field and commit it.
         app.begin_edit(EditTarget::Signer, app.signer_name.clone());
-        app.editing.as_mut().unwrap().buffer = "Grace Hopper".into();
+        app.editing.as_mut().unwrap().input.set_text("Grace Hopper");
         app.commit_edit(&mut st.doc);
         assert!(app.editing.is_none(), "committing closes the editor");
         assert_eq!(app.signer_name, "Grace Hopper", "signer name updates from the editor");
@@ -3191,7 +3189,7 @@ mod tests {
         assert_eq!(app.signatures.iter().find(|s| s.page == 4).unwrap().signer, "Grace Hopper");
         // Committing an empty name falls back to the app author identity.
         app.begin_edit(EditTarget::Signer, "whatever".into());
-        app.editing.as_mut().unwrap().buffer = "   ".into();
+        app.editing.as_mut().unwrap().input.set_text("   ");
         app.commit_edit(&mut st.doc);
         assert_eq!(app.signer_name, app.author, "an empty signer name falls back to the author");
     }
@@ -3593,7 +3591,7 @@ mod tests {
         });
         app.commit_drag(&mut st.doc);
         app.create_note(&mut st.doc, 1, (120.0, 300.0));
-        app.edit_insert("Check this claim");
+        app.editing.as_mut().unwrap().input.insert_at_cursor("Check this claim");
         app.commit_edit(&mut st.doc);
         app.signer_name = "Grace Hopper".into();
         app.place_signature(&mut st.doc, 1, (360.0, 520.0));

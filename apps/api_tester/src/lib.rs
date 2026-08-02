@@ -13,10 +13,13 @@
 
 use ui::widget::Widget;
 
+pub mod actions;
 mod app;
 mod doc;
 mod http;
 mod model;
+mod navrow;
+mod palette;
 mod responsive;
 mod seed;
 mod vars;

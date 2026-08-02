@@ -51,7 +51,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.slides");
-    let app = ui::App::new(state, slides::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, slides::app_root()).with_autosave(autosave);
+    // Register Slides' actions so the shell's Ctrl+K palette can decode + replay
+    // the same deck actions the on-screen affordances dispatch.
+    slides::actions::register(app.action_registry_mut());
     // Present mode requests true OS fullscreen: `SlidesApp` reports
     // `fullscreen_intent() = Some(true)` while presenting (via
     // `Widget::fullscreen_intent`), and `ui::App` polls that each frame and
@@ -98,7 +101,11 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

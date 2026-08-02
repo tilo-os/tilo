@@ -28,10 +28,15 @@ independent enforcement layers. This document maps the manifest's
         │  --file <fd>   /run/qos/services/<name>.sock              │
         │  --seccomp <fd>  (Layer 2 filter installed by bwrap)      │
         │                                                            │
+        │  --ro-bind-try × system read profile (fixed, see below)    │
+        │  --bind <data home>/qos-rooms/<room>/<pkg> → /run/qos/app  │
+        │  --setenv HOME=/run/qos/app  XDG_*=/run/qos/app/…          │
+        │                                                            │
         │       ╭───────── Layer 3: sandbox-exec shim ─────────╮    │
         │       │  install Landlock v3 ruleset:                 │    │
-        │       │   • ro rules for [sandbox.fs.read] entries    │    │
-        │       │   • rw rules for [sandbox.fs.write] entries   │    │
+        │       │   • ro rules for the system read profile      │    │
+        │       │   • rw rules for /run/qos/app                 │    │
+        │       │   • ro/rw rules for granted capabilities      │    │
         │       │   • network egress restriction if net = off   │    │
         │       │   • port allowlist scoped to [sandbox.net]    │    │
         │       │  execvp entrypoint                            │    │
@@ -57,7 +62,19 @@ would leave the network namespace shared.
 
 ### FS bind mounts
 
-The launcher composes these bwrap args from `[sandbox.fs]`:
+**Your manifest names no filesystem path.** There is no `[sandbox.fs]`
+block; a package that ships one is refused, at install and at launch,
+with a message naming the package and the offending entry.
+
+That is not a tightening of an existing list — it is the removal of a
+mechanism. The launcher used to bind whatever the manifest named, source
+and destination, read-write for every `write` entry, after expanding
+`~/`, `$XDG_*` and `<scope=current>` with no `..` handling and no
+allowlist. `write = ["/"]` was a valid manifest. Signing did not help:
+it proves who wrote the manifest, not that what it asks for is
+reasonable.
+
+What the launcher composes instead:
 
 - `payload/` → `/var/qos-apps/<package-id>/` (read-only). Your entrypoint
   is `/var/qos-apps/<package-id>/<entrypoint.bin>`.
@@ -66,11 +83,52 @@ The launcher composes these bwrap args from `[sandbox.fs]`:
   re-binds of the loader at its canonical path
   (`/lib64/ld-linux-x86-64.so.2` etc.) so the kernel's `INTERP` lookup
   works.
-- Every `[sandbox.fs.read]` entry → `--ro-bind <host> <host>` (path is
-  identical inside and outside the sandbox, so `~/Documents` resolves to
-  the same absolute path either way).
-- Every `[sandbox.fs.write]` entry → `--bind <host> <host>` (read-write).
+- **The system read profile** → `--ro-bind-try <path> <path>` for each
+  entry, plus `--dev-bind-try` for the GPU nodes. Fixed, identical for
+  every package, defined in `launcher::profile`: the loader and C
+  library, fonts, the GPU loader manifests, `/sys`, the CA bundle,
+  timezone data, `/etc/machine-id`. Two rules govern what may be added:
+  it carries no user content, and every GUI app needs it. The resolver
+  files (`/etc/resolv.conf`, `/etc/hosts`) are added only for a launch
+  that shares the host network — an app under a host-scoped grant
+  resolves through the egress gate instead.
+- **Your directory** → `--bind <data home>/qos-rooms/<room>/<package>
+  /run/qos/app`, read-write. See below.
 - `--tmpfs /tmp`, `--proc /proc`, `--dev /dev` always.
+- Anything else is a **capability** the user grants at runtime
+  (`collab_types::caps`), bound with `--ro-bind-try` / `--bind-try` when
+  and only when the grant is live.
+
+### Your directory
+
+The launcher gives every app exactly one writable directory. It decides
+the location, creates it, and points the environment inside it:
+
+| Variable          | Value                            |
+|-------------------|----------------------------------|
+| `QOS_APP_DIR`     | `/run/qos/app`                   |
+| `HOME`            | `/run/qos/app`                   |
+| `XDG_DATA_HOME`   | `/run/qos/app/.local/share`      |
+| `XDG_STATE_HOME`  | `/run/qos/app/.local/state`      |
+| `XDG_CONFIG_HOME` | `/run/qos/app/.config`           |
+| `XDG_CACHE_HOME`  | `/run/qos/app/.cache`            |
+
+So `cli::standalone_state_dir`, `dirs::home_dir()` and a hard-coded
+`~/.local/share/<pkg>` all land inside with no change to your app.
+
+On the host it is `<data home>/qos-rooms/<room>/<package>`, where
+`<room>` is the workspace the app was launched into. **Per-room
+partitioning falls out of the location**: two rooms are two directories,
+so an app opened in one room cannot read what it wrote in another, and
+there is no manifest field with which to opt out. A launch with no
+workspace (`qos-launcher run` from a shell, the CLI shim, a test) gets
+the `personal` room, which is a room like any other and not a bypass.
+`plan/rooms.md` — "an app opened in a room starts empty" — is this
+sentence, at the filesystem layer.
+
+`crates/packaging/launcher/tests/room_confinement.rs` proves it by
+reading: an app writes a record in room A and gets `ENOENT` for it in
+room B, under a real `bwrap`.
 
 ### Portals
 
@@ -116,18 +174,22 @@ the child execs.
 
 ## Layer 3: Landlock
 
-Driven by `[sandbox].landlock` and the `[sandbox.fs]` / `[sandbox.net]`
-blocks. The `sandbox-exec` shim (the launcher itself, invoked recursively)
-installs the Landlock ruleset inside the bwrap namespace before
-`execvp`ing the app.
+Driven by `[sandbox].landlock` and `[sandbox.net]`. The `sandbox-exec`
+shim (the launcher itself, invoked recursively) installs the Landlock
+ruleset inside the bwrap namespace before `execvp`ing the app.
 
-Rules derived from the manifest:
+Rules are derived from the *same* lists the binds came from, so the two
+layers cannot disagree about what is reachable — a bind the ruleset does
+not name is visible and returns `EACCES` on every open, which reads from
+inside the app as a corrupted system rather than as a policy:
 
-- Each `[sandbox.fs.read]` entry → RO access rights on that path.
-- Each `[sandbox.fs.write]` entry → RW access rights on that path.
+- Each system-read-profile entry → RO access rights on that path.
+- `/run/qos/app` → RW access rights.
+- Each granted capability → RO or RW per the grant's verb.
 - `[sandbox.net] mode = "off"` → all outbound connections denied.
-- `[sandbox.net] mode = "allowlist"` → allowlist of TCP-connect ports (host
-  filtering is not enforced by Landlock; see the note below).
+- `[sandbox.net] mode = "allowlist"` → the app is pinned to the egress
+  gate's loopback port. Landlock has no address vocabulary at all, so host
+  filtering happens at the gate; see the note below.
 - `landlock = "strict"` — abort on Landlock unavailable / partially-
   enforced. `landlock = "lax"` — warn but continue. `landlock = "off"` —
   skip the shim.
@@ -144,9 +206,9 @@ You can see the landlock enforcement live in `qos-hello`'s probes:
   write(/var/qos-apps/probe): permission denied — blocked (bwrap or Landlock)
 ```
 
-`hello`'s manifest declares no `[sandbox.fs.read]` and no
-`[sandbox.fs.write]` entries; Landlock therefore denies everything outside
-the launcher-provided base (payload, runtime, `/tmp`).
+No manifest declares filesystem paths, so Landlock denies everything
+outside the launcher-provided base: the payload, the runtime, the system
+read profile, `/tmp`, and the app's own `/run/qos/app`.
 
 Note the launcher's log line:
 
@@ -161,15 +223,67 @@ kernel with Landlock v3+ the enforcement is total.
 
 ### Hostname allowlist
 
-`[sandbox.net] mode = "allowlist"` with `hosts = ["api.example.com"]` is
-enforced at the DNS resolution layer today (the launcher's DNS proxy
-intercepts A/AAAA queries and rejects non-allowlist names). Kernel-level
-per-connection host filtering is not a Landlock feature; the current
-allowlist is a defence-in-depth layer on top of DNS.
+`[sandbox.net] mode = "allowlist"` with `hosts = ["api.example.com"]` leaves
+the network namespace **empty** and gives the app one way out: a Unix socket
+the launcher holds, speaking SOCKS5 and HTTP `CONNECT`. The allowlist is
+matched against the **name** the app asks for, before that name is resolved,
+and resolution then happens on the launcher's side per connection. See
+`crates/packaging/launcher/src/netgate.rs` for the design.
 
-If your app connects to an IP address directly (skipping DNS), the
-allowlist does NOT block it — but Landlock's port-level restriction still
-applies. Rule of thumb: bake hostnames, not IPs.
+Three consequences worth knowing before you write networking code:
+
+- **Your app has no resolver.** The namespace is empty, so a client that
+  resolves a name itself fails at resolution. Use the proxy environment the
+  launcher sets (`HTTPS_PROXY`, `ALL_PROXY`) — `socks5h`, not `socks5`, is
+  what sends the hostname rather than an address.
+- **An address literal never satisfies a hostname grant.** Asking for
+  `93.184.216.34` when you were granted `example.com` is refused, even when
+  that is the address the name resolves to. "This address is currently that
+  name" is not something the gate can verify, and accepting it would make
+  every name-scoped grant bypassable by resolving first. Bake hostnames,
+  not IPs.
+- **Device-local counts as network.** A granted name that resolves to this
+  machine — loopback, link-local, or the machine's own LAN address — is
+  dropped unless the grant names that host exactly. An app denied the
+  network reaches no local service at all, because the namespace is empty
+  and the sandbox's `127.0.0.1` is its own.
+
+A refused destination answers SOCKS5 `HOST_UNREACHABLE` / HTTP `502`, the
+same as a host that is genuinely unreachable. That is deliberate: handle it
+as "offline", not as "ask the user to grant something".
+
+### Denial is an absence, not a refusal
+
+Where a denial can be expressed as a state your app already handles, it is:
+
+| you tried | you get |
+|---|---|
+| a workspace path you were not granted | `ENOENT`, and it is not in the directory listing |
+| writing a path you may only read | `EROFS` |
+| connecting to a host you were not granted | unreachable |
+| a device you were not granted | the device node is not in your namespace |
+
+So `/var/workspace` is a **filtered view**: an app that enumerates it sees
+exactly what it was granted, as an ordinary directory. There is no entry
+that appears and then fails, and no errno that distinguishes "hidden" from
+"not there" — `fs/tests/integration_test.rs` compares the two for every
+operation. Nothing here is a reason to prompt the user; if a path is not
+there, treat it as not there.
+
+### Read-only participation
+
+An app can be granted read participation in a space: it sees shared
+documents and cannot originate a change to one. If that is your launch:
+
+- `QOS_PARTICIPATION=read-only` is set. Render a viewer.
+- **No identity is bound**, so `QOS_USER_IDENTITY` is unset and
+  `runtime-identity::load()` finds nothing. You hold no signing key, so
+  there is no authored change for anything to reject.
+- The workspace is bound read-only and served read-only, and the document
+  control socket refuses edits with the read-only-filesystem message.
+
+An app that no workspace-scoped capability names gets neither variable and
+launches as it always did.
 
 ## What gets into your process
 
@@ -177,12 +291,19 @@ After all three layers, your `main()` sees:
 
 - `argv[0]` = `/var/qos-apps/<pkg-id>/<entrypoint.bin>`.
 - CWD = your payload root inside the sandbox.
-- `HOME` inherited from the launcher's env; typically `/home/<user>` if you
-  bind-mounted it, otherwise unset.
+- `HOME=/run/qos/app`, and `XDG_DATA_HOME` / `XDG_STATE_HOME` /
+  `XDG_CONFIG_HOME` / `XDG_CACHE_HOME` inside it. `QOS_APP_DIR` names the
+  same directory explicitly.
 - `LD_LIBRARY_PATH=/usr/lib/qos-runtime/<version>/lib`.
 - `QOS_PACKAGE_ID=<your reverse-DNS id>`.
 - `QOS_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
 - `DBUS_SESSION_BUS_ADDRESS` (only if a portal is `via-host`).
+- `QOS_USER_IDENTITY` — path to the user identity, unless you are a
+  read-only participant, in which case there is no identity to point at.
+- `QOS_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
+  capability names you. Absent otherwise.
+- `HTTPS_PROXY` / `ALL_PROXY` / `QOS_NET_GATE` — only when your egress is
+  filtered to a host allowlist.
 - `QOS_WORKSPACE_ID` — the workspace the compositor opened you into, as a
   UUID. Two things read it: `runtime::is_qos_native()` only asks whether it
   is set, and the UI toolkit uses the value as the collaboration cluster id.
@@ -210,6 +331,7 @@ After all three layers, your `main()` sees:
 - `qos-install run <pkg> --no-landlock` (hidden, debug-only) disables
   Layer 3. Layers 1 and 2 stay enforced.
 - `qos-pkg inspect <pkg>` shows the manifest without launching. Grep for
-  `[sandbox.fs]` and `[sandbox.services]` first.
+  `[sandbox.services]` and `[sandbox.portals]` first — they are the two
+  blocks that decide whether the app can reach anything outside itself.
 
 Next: [`runtime.md`](./runtime.md) — the SDK your entrypoint links against.

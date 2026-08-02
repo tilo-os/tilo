@@ -47,7 +47,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.mail");
-    let app = ui::App::new(state, mail::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, mail::app_root()).with_autosave(autosave);
+    // Register Mail's actions so the shell's Ctrl+K palette can decode + replay
+    // the same flag / move / label / folder / draft actions the on-screen
+    // affordances dispatch.
+    mail::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -86,7 +90,13 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
+    // so the same frame can be graded in both light and dark (default dark).
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

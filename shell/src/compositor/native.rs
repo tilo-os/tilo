@@ -690,31 +690,34 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 
 /// Re-paint the current scene into a fresh `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
-/// every failure path logs to stderr and returns, so an executor
-/// invocation never panics or unwinds back into the calloop pump.
+/// a bad viewport, a missing GPU adapter, and every I/O and encoder
+/// failure log to stderr and return, so an executor invocation does not
+/// take the calloop pump down with it.
 ///
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
 /// through `PlannedAction` dispatch.
 fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     use std::io::Write;
-    // The renderer panics if no wgpu adapter is available (e.g. CI
-    // without llvmpipe); catch_unwind keeps the compositor alive in
-    // that environment too.
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
+    if w == 0 || h == 0 {
+        eprintln!(
+            "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
+        );
+        return;
+    }
     let scene = fb.paint();
-    let render_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
-        renderer.render_rgba(&scene)
-    }));
-    let rgba = match render_result {
-        Ok(rgba) => rgba,
-        Err(_) => {
-            eprintln!(
-                "nirios compositor: test_control snapshot: \
-                 OffscreenRenderer panicked (no wgpu adapter?)"
-            );
+    // `try_new` rather than `new` inside a `catch_unwind`: the shipping
+    // release profile sets `panic = "abort"`, so a caught panic is not
+    // a thing that happens — the compositor would die at the panic site
+    // instead of logging and carrying on. Asking the renderer for a
+    // `Result` is what actually keeps it alive on a machine with no
+    // wgpu adapter (e.g. CI without llvmpipe).
+    let rgba = match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+        Ok(mut renderer) => renderer.render_rgba(&scene),
+        Err(e) => {
+            eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
             return;
         }
     };
@@ -1072,7 +1075,15 @@ const INVITE_EXPIRY_SECONDS: u64 = 3600;
 /// same reasons: an unowned room has no administrators, and a room
 /// whose identity is re-minted each boot is a different room every
 /// morning.
-fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTreeHandle {
+///
+/// Returns the tree alongside whether peer sync may come up. It is
+/// refused when the device key will not load, because the id salt comes
+/// from that key: syncing an unsalted id space lets two peers mint
+/// colliding ids and CRDT sync then folds two distinct workspaces into
+/// one row.
+fn load_session_tree(
+    enable_peer_sync: bool,
+) -> (crate::shell::state::WorkspaceTreeHandle, bool) {
     use crate::shell::persist;
 
     let path = persist::state_json_path();
@@ -1083,6 +1094,7 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
     // row. The salt is derived from the libp2p keypair, so it has to be
     // set before the id counter is seeded off what is already in the
     // tree — hence the re-seed.
+    let mut peer_sync_possible = enable_peer_sync;
     if enable_peer_sync {
         match crate::network::behaviour::load_or_create_keypair(
             &crate::shell::network::peer_key_path(),
@@ -1094,9 +1106,10 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
             }
             Err(e) => {
-                tracing::warn!(
-                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
-                     (cross-peer collisions possible)"
+                peer_sync_possible = false;
+                tracing::error!(
+                    "peer-sync: device key load failed ({e}); peer sync stays off \
+                     rather than syncing an unsalted id space"
                 );
             }
         }
@@ -1120,7 +1133,7 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
             adopted.len()
         );
     }
-    tree.shared()
+    (tree.shared(), peer_sync_possible)
 }
 
 pub fn run() -> ! {
@@ -1217,16 +1230,22 @@ pub fn run() -> ! {
     // entry point had none of it: `FrameBuilder::new` handed the
     // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
-    let tree_handle = load_session_tree(enable_peer_sync);
-    let mut frame_builder = FrameBuilder::with_handle(
+    let (tree_handle, enable_peer_sync) = load_session_tree(enable_peer_sync);
+    let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
         initial_size,
+        crate::shell::session_record_store(),
     );
     // The scene spans every output, but a window's width is a fraction of
     // the monitor it is on — so hand the strips the real per-display
     // geometry rather than letting them size against the bounding box.
     frame_builder.set_output_geometry(output_geometry(backend.outputs()));
+    // Which records each room holds outlives the session, and the records
+    // apps have written are found by looking. Both are switched on here,
+    // beside the rest of the session's durable state, so building a
+    // compositor for a test or a screenshot reads and writes nobody's.
+    frame_builder.host().room_records().borrow_mut().attach_store();
 
     // Peer sync. Constructed here rather than only in the hosted entry
     // point because this is the compositor that boots as the qOS
@@ -2438,11 +2457,10 @@ mod tests {
     /// "wrote only a header" failure mode.
     ///
     /// Skipped on environments without a wgpu adapter (CI without
-    /// llvmpipe) because `OffscreenRenderer::new` panics; the executor
-    /// itself catches that panic so the assertion would silently pass
-    /// without producing a file — we explicitly check for the file's
-    /// existence and skip the rest gracefully if the renderer was
-    /// unavailable.
+    /// llvmpipe): the executor logs and returns rather than writing a
+    /// file, so the pixel assertions would have nothing to run against.
+    /// We check for the file's existence and skip the rest gracefully
+    /// if the renderer was unavailable.
     #[test]
     fn execute_snapshot_writes_a_png_at_path() {
         let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");

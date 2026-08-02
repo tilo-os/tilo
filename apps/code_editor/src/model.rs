@@ -202,6 +202,47 @@ impl Project {
         id
     }
 
+    /// The id [`alloc`](Self::alloc) will hand out next. Captured at authoring
+    /// time so the Ctrl+K "New file" action and the app's own `New File` command
+    /// target the same buffer node id (and therefore build the identical action).
+    pub fn peek_next_id(&self) -> NodeId {
+        self.next_id
+    }
+
+    /// Surface a buffer that already exists in the shared document (created by a
+    /// Ctrl+K "New file" action or by a peer) as a tracked in-memory file under
+    /// the root, using its document-assigned `id` verbatim so the in-memory node
+    /// and the buffer key stay in agreement. Idempotent, and bumps the allocator
+    /// past `id` so a later [`alloc`](Self::alloc) cannot collide with it. The
+    /// buffer's text stays in the CRDT; this only creates the in-memory shell the
+    /// tree and tabs read from — no persisted file model is invented.
+    pub fn adopt_file(&mut self, id: NodeId, name: &str) {
+        if self.nodes.contains_key(&id) {
+            return;
+        }
+        let depth = self.nodes.get(&self.root).map(|n| n.depth + 1).unwrap_or(0);
+        let lang = Language::from_path(name);
+        self.nodes.insert(
+            id,
+            TreeNode {
+                id,
+                name: name.to_string(),
+                parent: Some(self.root),
+                kind: NodeKind::File {
+                    language: lang,
+                    seed: String::new(),
+                },
+                depth,
+                disk_path: None,
+            },
+        );
+        let root = self.root;
+        self.attach(root, id);
+        if id >= self.next_id {
+            self.next_id = id + 1;
+        }
+    }
+
     /// Add an in-memory folder under `parent`, returning its id.
     pub fn add_folder(&mut self, parent: NodeId, name: &str) -> NodeId {
         self.insert_folder(parent, name, None, false)
@@ -607,6 +648,25 @@ mod tests {
         let rows = p.visible_rows();
         // Folder "alpha" comes before file "z.rs".
         assert!(p.get(rows[0]).unwrap().is_folder());
+    }
+
+    #[test]
+    fn adopt_file_tracks_a_document_buffer_and_advances_the_allocator() {
+        let mut p = Project::new("proj");
+        // A buffer id from the document that the in-memory tree does not know.
+        let orphan = 7;
+        assert!(p.get(orphan).is_none());
+        p.adopt_file(orphan, "untitled-7.txt");
+        // It is now a tracked file under the root, visible in the tree.
+        assert!(!p.get(orphan).unwrap().is_folder());
+        assert!(p.visible_rows().contains(&orphan));
+        // The allocator will not reissue the adopted id.
+        assert!(p.peek_next_id() > orphan);
+        let next = p.add_file(p.root, "z.rs", "");
+        assert_ne!(next, orphan);
+        // Adopting the same id twice is a no-op.
+        p.adopt_file(orphan, "different.txt");
+        assert_eq!(p.get(orphan).unwrap().name, "untitled-7.txt");
     }
 
     #[test]

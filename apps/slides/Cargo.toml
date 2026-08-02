@@ -13,6 +13,8 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui", features = ["portal"] }
+# The qOS action model: doc-mutating operations are replayable, undoable actions.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
