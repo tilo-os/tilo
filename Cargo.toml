@@ -20,6 +20,7 @@ default-members = [
     "crates/system/settings-store",
     "crates/system/atomic-file",
     "crates/system/power",
+    "crates/system/qos-rollback",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
     "crates/doc/qdoc-pdf",
@@ -118,6 +119,7 @@ default-members = [
     "crates/session/installer",
 ]
 members = [
+    "crates/system/qos-rollback",
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",
