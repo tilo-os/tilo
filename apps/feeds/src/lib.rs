@@ -13,12 +13,14 @@
 //! used by both the live `ui::App` event loop and the `--shots` offscreen
 //! renderer.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod fetch;
 pub mod gemtext;
 pub mod html;
 pub mod icons;
+pub mod modal;
 pub mod model;
 pub mod opml;
 pub mod portal;
@@ -76,6 +78,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // The subscriptions list after an OPML import folds new folders + feeds
         // into the sidebar.
         "post-import" => app.stage_post_import(),
+        // The Add-subscription dialog open over the reader, with a URL typed
+        // into the real TextInput (shared caret / clipboard core).
+        "add-subscription" => app.stage_add_subscription("https://blog.rust-lang.org/feed.xml"),
         _ => {}
     }
     Box::new(app)

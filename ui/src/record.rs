@@ -74,6 +74,8 @@ const INDEX: &str = "qos:records";
 ///   peer's.
 /// - `uuid:<uuid>` — a minted identity, for a record with no natural name (a
 ///   set of annotations, a playlist, a saved search).
+/// - `tab:<tab id>` — the scratch document a window holds until a file names
+///   it. See [`RecordId::for_tab`].
 ///
 /// The prefix is part of the id, not a tag beside it: the id is what travels
 /// on the wire and what names a file on disk, so it has to be self-describing.
@@ -101,6 +103,20 @@ impl RecordId {
     /// A freshly minted identity, for a record with no natural name.
     pub fn minted() -> Self {
         Self(format!("uuid:{}", uuid::Uuid::new_v4()))
+    }
+
+    /// The record a **tab** is: the scratch document a window holds when
+    /// no file names it.
+    ///
+    /// A tab is an open thing, so two tabs are two things — and the one
+    /// showing a note nobody has saved still needs an identity that
+    /// survives a restart, or its content is orphaned on the way down.
+    /// The tab id already is that identity: allocated once, carrying the
+    /// peer salt that keeps two machines from colliding, and persisted
+    /// with the window tree. Minting a second id beside it and writing
+    /// that down too could only drift from it.
+    pub fn for_tab(tab: u64) -> Self {
+        Self(format!("tab:{tab:016x}"))
     }
 
     /// The identity of the record that plays `role` for another record —
@@ -406,11 +422,23 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 
 /// A room's index of the records it holds.
 ///
-/// The index lives in the app's package-level document — the one
-/// [`crate::persist::open`] hands back — because that document already *is*
-/// per-room state. What changes is what it contains: the records' contents
-/// moved out into their own documents, and what stays behind is the list of
-/// which records this room holds.
+/// These operations are on *an* index document; who owns it is the caller's
+/// business. The compositor keeps one per room (`shell::room_records`), which
+/// is what makes a room's holdings a fact about the room.
+///
+/// An earlier version of this comment said the index lives in the app's
+/// package-level document "because that document already *is* per-room
+/// state". It is not: `crate::cli::standalone_state_dir` takes only a package
+/// id, so `~/.local/share/<package>/` is one directory whichever room the app
+/// was launched into. The sandbox passes `QOS_WORKSPACE_ID` but nothing
+/// partitions app state by it. An app's package document is per *package*.
+///
+/// The consequence, stated plainly because it is a real gap rather than a
+/// detail: an app launched into a room does not yet read that room's index.
+/// What carries a record's room across that gap today is the record's own
+/// `home` stamp, which is why a record is attributed to its home room even
+/// when no index references it. Closing it means partitioning app state per
+/// room, which touches every app.
 ///
 /// **The reference is what grants access.** A member of a room can reach the
 /// records the room references and nothing else. Removing a reference stops
@@ -573,6 +601,14 @@ struct Parked {
     /// set, and for a record whose store could not be opened (which is
     /// reported once, not per frame).
     autosave: Option<crate::persist::Autosave>,
+    /// What can be undone in this record, and what can be redone.
+    ///
+    /// The history belongs here rather than to whatever is showing the
+    /// record, because an [`crate::state::UndoEntry`] is a pair of change
+    /// hashes in *this* document's graph. A stack shared with another
+    /// record names changes that record has never seen; Ctrl+Z then does
+    /// nothing, or reverts against the wrong history.
+    history: crate::state::UndoLog,
 }
 
 /// The records one app process has open, and which of them is live.
@@ -707,12 +743,14 @@ impl RecordSet {
             let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
             state.adopt_doc(adopted);
             let autosave = self.persist_for(&want.id, &mut state.doc);
+            let history = crate::state::UndoLog::new(&mut state.doc);
             self.open.insert(
                 want.id.clone(),
                 Parked {
                     doc: None,
                     kind: want.kind.clone(),
                     autosave,
+                    history,
                 },
             );
             self.finish_checkout(state, room, want);
@@ -735,13 +773,15 @@ impl RecordSet {
         let incoming = match self.open.get_mut(&want.id) {
             Some(slot) => slot.doc.take().unwrap_or_else(AutoCommit::new),
             None => {
-                let (doc, autosave) = self.load(&want.id);
+                let (mut doc, autosave) = self.load(&want.id);
+                let history = crate::state::UndoLog::new(&mut doc);
                 self.open.insert(
                     want.id.clone(),
                     Parked {
                         doc: None,
                         kind: want.kind.clone(),
                         autosave,
+                        history,
                     },
                 );
                 doc
@@ -843,6 +883,92 @@ impl RecordSet {
         Some(autosave)
     }
 
+    // -----------------------------------------------------------------
+    // A host that shows several records at once.
+    // -----------------------------------------------------------------
+    //
+    // [`Self::checkout`] is the single-document case: one record is live,
+    // the rest are parked, and the toolkit hands widgets the live one. A
+    // compositor showing a tab per record is the other case — every open
+    // record is on screen in the same frame, so none of them can be the
+    // one that is "checked out". The methods below reach an open record
+    // where it lies instead, which is the only difference; opening,
+    // persistence, identity and history are the same machinery.
+
+    /// Open `want` if it is not open already, loading its document from
+    /// its own file and bringing it into `room`'s index. Returns whether
+    /// this opened it.
+    pub fn open_record(&mut self, want: &RecordCheckout, room: Option<&mut AutoCommit>) -> bool {
+        let fresh = !self.open.contains_key(&want.id);
+        if fresh {
+            let (mut doc, autosave) = self.load(&want.id);
+            init(&mut doc, &want.id, &want.kind, &self.home);
+            for (target, relation) in &want.references {
+                add_reference(&mut doc, &RecordRef::new(target.id.clone(), relation.clone()));
+            }
+            let history = crate::state::UndoLog::new(&mut doc);
+            self.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: Some(doc),
+                    kind: want.kind.clone(),
+                    autosave,
+                    history,
+                },
+            );
+        }
+        if let Some(room) = room {
+            room::reference(room, &want.id, &want.kind);
+            for (target, _) in &want.references {
+                room::reference(room, &target.id, &target.kind);
+            }
+        }
+        fresh
+    }
+
+    /// An open record's document, for a host showing several at once.
+    ///
+    /// `None` for a record this set does not hold, and for the one that is
+    /// currently *checked out* — that document is the live one the toolkit
+    /// holds, and handing out a second mutable view of it here would be a
+    /// second answer to "what does this record contain".
+    pub fn document_mut(&mut self, id: &RecordId) -> Option<&mut AutoCommit> {
+        self.open.get_mut(id).and_then(|p| p.doc.as_mut())
+    }
+
+    /// An open record's document together with its history, so a caller
+    /// driving undo can do both against the same record.
+    pub fn document_and_history_mut(
+        &mut self,
+        id: &RecordId,
+    ) -> Option<(&mut AutoCommit, &mut crate::state::UndoLog)> {
+        let parked = self.open.get_mut(id)?;
+        let doc = parked.doc.as_mut()?;
+        Some((doc, &mut parked.history))
+    }
+
+    /// Offer every open record's document to its own writer. The
+    /// multi-record twin of [`Self::tick`], for a host with no single live
+    /// document to hand in.
+    pub fn tick_open(&mut self) {
+        for slot in self.open.values_mut() {
+            if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
+                saver.request(doc);
+            }
+        }
+    }
+
+    /// Write out every open record and wait for it to land. The
+    /// multi-record twin of [`Self::flush`].
+    pub fn flush_open(&mut self) {
+        for slot in self.open.values_mut() {
+            if let (Some(doc), Some(saver)) = (slot.doc.as_mut(), slot.autosave.as_mut()) {
+                saver.request(doc);
+                saver.flush();
+            }
+        }
+    }
+
     /// Offer the live document to the active record's writer. Cheap when
     /// nothing changed — a head comparison, no serialisation.
     pub fn tick(&mut self, live: &mut AutoCommit) {
@@ -870,6 +996,93 @@ impl RecordSet {
                 saver.flush();
             }
         }
+    }
+}
+
+/// A [`RecordSet`] several widgets share.
+///
+/// A window tree is not one widget deep: the tiles that hold records are
+/// scattered through it, each reached by a different branch of the same
+/// pass, and every one of them needs its record's document *in that pass*.
+/// A handle is what lets them all reach one set — so two tabs opened on
+/// the same file are one document, which is the property the record model
+/// exists to guarantee and which per-widget ownership would quietly lose.
+///
+/// Single-threaded on purpose: a widget tree is, and a `Mutex` here would
+/// only be a lock nothing contends for.
+#[derive(Clone)]
+pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
+
+impl RecordStore {
+    /// Share an existing set.
+    pub fn new(set: RecordSet) -> Self {
+        Self(std::rc::Rc::new(std::cell::RefCell::new(set)))
+    }
+
+    /// The production store: per-record documents under this package's
+    /// state directory.
+    pub fn open(manifest_id: impl Into<String>) -> Self {
+        Self::new(RecordSet::open(manifest_id))
+    }
+
+    /// A store that never touches the disk. For tests, for `--shots`, and
+    /// for any run that must not leave state behind.
+    pub fn in_memory() -> Self {
+        Self::new(RecordSet::in_memory())
+    }
+
+    /// Open `want` if it is not open already. Returns whether this opened
+    /// it.
+    pub fn open_record(&self, want: &RecordCheckout) -> bool {
+        self.0.borrow_mut().open_record(want, None)
+    }
+
+    /// Do something with a record's document. `None` if the record is not
+    /// open here.
+    pub fn with<R>(&self, id: &RecordId, f: impl FnOnce(&mut AutoCommit) -> R) -> Option<R> {
+        let mut set = self.0.borrow_mut();
+        set.document_mut(id).map(f)
+    }
+
+    /// Read a record's document.
+    pub fn read<R>(&self, id: &RecordId, f: impl FnOnce(&AutoCommit) -> R) -> Option<R> {
+        let mut set = self.0.borrow_mut();
+        set.document_mut(id).map(|d| f(d))
+    }
+
+    /// Do something with a record's document *and* its history — commit an
+    /// action, undo one.
+    pub fn with_history<R>(
+        &self,
+        id: &RecordId,
+        f: impl FnOnce(&mut AutoCommit, &mut crate::state::UndoLog) -> R,
+    ) -> Option<R> {
+        let mut set = self.0.borrow_mut();
+        let (doc, history) = set.document_and_history_mut(id)?;
+        Some(f(doc, history))
+    }
+
+    /// Every record this store holds.
+    pub fn open_records(&self) -> Vec<RecordCheckout> {
+        self.0.borrow().open_records()
+    }
+
+    /// Offer every open record to its writer. Once per idle tick.
+    pub fn tick(&self) {
+        self.0.borrow_mut().tick_open();
+    }
+
+    /// Write out every open record and wait for it to land.
+    pub fn flush(&self) {
+        self.0.borrow_mut().flush_open();
+    }
+}
+
+impl std::fmt::Debug for RecordStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecordStore")
+            .field("open", &self.0.borrow().open.len())
+            .finish()
     }
 }
 

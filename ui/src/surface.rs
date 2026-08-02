@@ -143,8 +143,8 @@ fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
     }
 }
 
-/// Per-tint sprite cache. Keyed by opaque `(r,g,b)`; the alpha is applied
-/// at draw time via a layer, so one pair serves every intensity.
+/// Per-tint sprite cache. Keyed by opaque `(r,g,b)`; the intensity is
+/// applied to the brush at draw time, so one pair serves every intensity.
 fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
     static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -261,19 +261,18 @@ pub fn soft_shadow(
     let n = SHADOW_SPRITE_SIZE as f64;
     let rows = SHADOW_EDGE_ROWS as f64;
 
-    scene.push_layer(
-        Fill::NonZero,
-        vello::peniko::BlendMode::default(),
-        intensity.clamp(0.0, 1.0),
-        transform,
-        &Rect::new(ox0, oy0, ox1, oy1),
-    );
+    // `intensity` rides on the brushes rather than on a group layer.
+    // The eight slices are each clipped to the region they own, so they
+    // never overlap and cannot double-darken — which is the only thing a
+    // group would have bought. A layer per shadow is not free in vello,
+    // and every card, toast and palette in the toolkit casts one.
+    let alpha = intensity.clamp(0.0, 1.0);
 
     // Corners: the sprite covers a 2·spread square centred on the
     // corner, mirrored into each quadrant, and is never stretched by
     // anything but the band — so the corner falloff is a `spread`-radius
     // quarter circle on every aspect ratio.
-    let corner = ImageBrush::new(sprites.corner.clone());
+    let corner = ImageBrush::new(sprites.corner.clone()).with_alpha(alpha);
     for (band, clip, mirror_x, mirror_y) in [
         (
             Rect::new(bx1, by1, ox1, oy1),
@@ -308,7 +307,7 @@ pub fn soft_shadow(
     // only. The centre slice is skipped — the envelope is zero more than
     // one band inside the rect, which is also what keeps a translucent
     // card from darkening itself.
-    let edge = ImageBrush::new(sprites.edge.clone());
+    let edge = ImageBrush::new(sprites.edge.clone()).with_alpha(alpha);
     for (band, clip, mirror_x) in [
         (
             Rect::new(bx1, iy0, ox1, iy1),
@@ -339,8 +338,6 @@ pub fn soft_shadow(
         let local = slice_xform_rot(band, n, rows, mirror_y);
         blit(scene, transform, local, &edge, clip);
     }
-
-    scene.pop_layer();
 }
 
 /// Paint an elevation-token shadow under `rect`. Maps a [`Shadow`] token

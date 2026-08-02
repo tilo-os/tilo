@@ -44,6 +44,7 @@
 //!
 //! [`ContextMenu`]: ui::widget::context_menu::ContextMenu
 
+pub mod actions;
 pub mod app;
 pub mod art;
 pub mod audio;
@@ -109,6 +110,8 @@ pub fn app_root() -> Box<dyn Widget> {
 /// * `"nowplaying"` — a bundled track playing (cover art in the transport bar +
 ///   a live equalizer on the current row). Pair with a narrow `--viewport` to
 ///   capture the compact bottom bar.
+/// * `"queue"` — the Queue view with a live "Next up" list (a bundled track
+///   plays and the sample queue trails it).
 /// * `"lyrics"` — the synced-lyrics view with the current line highlighted.
 /// * `"downloading"` — the song list with a few rows mid-download (the animated
 ///   download spinner) beside idle rows.
@@ -128,6 +131,7 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "search-focus" => app.snap_search_focus(),
         "skeleton" => app.snap_skeleton(),
         "nowplaying" => app.snap_nowplaying(),
+        "queue" => app.snap_queue(),
         "lyrics" => app.snap_lyrics(),
         "downloading" => app.snap_downloading(),
         "search-tabs" => app.snap_search_results(app::SearchTab::All),

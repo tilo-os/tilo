@@ -26,8 +26,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         // Headless screenshot: render the deterministic offline snapshot so
-        // the frame is fully populated without touching the engine.
-        render_shot_to_png(containers::app_root_offline(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // the frame is fully populated without touching the engine. An optional
+        // `--scenario NAME` seeds a modal (confirm / prompt) into the frame.
+        let root = match parse_scenario_arg(&args) {
+            Some(scenario) => containers::app_root_shot(&scenario),
+            None => containers::app_root_offline(),
+        };
+        render_shot_to_png(root, DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
@@ -57,6 +62,20 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Parse `--scenario NAME` (or `--scenario=NAME`) for a seeded `--shots` frame.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
 fn render_shot_to_png(
@@ -65,7 +84,13 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

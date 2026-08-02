@@ -28,13 +28,15 @@ use vello::Scene;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use uuid::Uuid;
+
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
 
 use crate::connect_modal::ConnectModal;
-use crate::doc::EditorDoc;
+use crate::doc::{ConnectionsDoc, EditorDoc};
 use crate::editor::SqlEditor;
 use crate::grid::GridView;
 use crate::model::Engine;
@@ -61,6 +63,13 @@ pub struct DbClientApp {
     data_grid: GridView,
     tree: SchemaTree,
     modal: ConnectModal,
+    /// Dispatches saved-connection CRUD through the shared action model, so the
+    /// connection list is collaborative, undoable document state.
+    actions: ui::ActionHost,
+    /// Id of a connection the local user just added and wants opened as soon as
+    /// it lands back through the document reconcile (peer-added connections do
+    /// not set this, so they are listed but not auto-connected).
+    pending_connect_id: Option<Uuid>,
 
     rect: Rect,
     node: Option<NodeId>,
@@ -101,11 +110,13 @@ pub struct DbClientApp {
     empty_new_conn_btn: Rect,
     tab_rects: Vec<(MainTab, Rect)>,
     conn_rects: Vec<(usize, Rect)>,
+    /// Per-row delete ("×") hit rects in the sidebar, shown on hover.
+    conn_delete_rects: Vec<(usize, Rect)>,
     /// Whether the grid bound the current result (avoids rebinding each frame).
+    /// Compared against the session's result generations, which the worker
+    /// bumps when a fresh result lands.
     bound_query_gen: usize,
     bound_data_gen: usize,
-    query_gen: usize,
-    data_gen: usize,
     /// Drives a one-shot redraw request flag.
     dirty: bool,
 }
@@ -137,7 +148,15 @@ impl DbClientApp {
                 session.load_table_data();
             }
         }
-        Self::build(session, true)
+        // Await any table page requested by the screenshot hooks so the single
+        // offscreen frame is fully populated.
+        session.block_until_idle();
+        let mut app = Self::build(session, true);
+        // Screenshot hook: open the new-connection dialog for a dialog shot.
+        if std::env::var("DB_CLIENT_MODAL").is_ok() {
+            app.modal.open_new();
+        }
+        app
     }
 
     fn build(session: Session, demo: bool) -> Self {
@@ -149,6 +168,8 @@ impl DbClientApp {
             data_grid: GridView::new(),
             tree: SchemaTree::new(),
             modal: ConnectModal::new(),
+            actions: ui::ActionHost::new(),
+            pending_connect_id: None,
             rect: Rect::ZERO,
             node: None,
             seeded: false,
@@ -168,10 +189,9 @@ impl DbClientApp {
             new_conn_btn: Rect::ZERO,
             tab_rects: Vec::new(),
             conn_rects: Vec::new(),
+            conn_delete_rects: Vec::new(),
             bound_query_gen: usize::MAX,
             bound_data_gen: usize::MAX,
-            query_gen: 0,
-            data_gen: 0,
             dirty: true,
         }
     }
@@ -179,7 +199,6 @@ impl DbClientApp {
     fn run_current_query(&mut self) {
         let sql = self.editor.buffer().to_string();
         self.session.run_query(&sql);
-        self.query_gen += 1;
         self.dirty = true;
     }
 
@@ -188,6 +207,40 @@ impl DbClientApp {
         self.editor.sync(doc);
         self.snippets_open = false;
         self.dirty = true;
+    }
+
+    /// Save a new connection profile. The live app routes it through the action
+    /// model — the metadata lands in `root["connections"]` (collaborative,
+    /// undoable) while the password is kept in memory only — and remembers to
+    /// open it once it reconciles back. The demo keeps its roster as view state.
+    fn save_connection(&mut self, profile: crate::model::ConnectionProfile, doc: &mut AutoCommit) {
+        if self.demo {
+            self.session.add_connection_blocking(profile);
+            return;
+        }
+        let id = profile.id;
+        self.session.remember_password(id, profile.password.clone());
+        let action = crate::actions::add_connection_action(&profile);
+        self.actions
+            .dispatch(doc, crate::actions::DB_ACTION_TYPE, &action);
+        self.pending_connect_id = Some(id);
+    }
+
+    /// Remove a saved connection by its index in the sidebar list.
+    fn remove_connection(&mut self, idx: usize, doc: &mut AutoCommit) {
+        let Some(profile) = self.session.connections.get(idx).cloned() else {
+            return;
+        };
+        if self.demo {
+            self.session.connections.remove(idx);
+            if self.session.active >= self.session.connections.len() {
+                self.session.active = self.session.connections.len().saturating_sub(1);
+            }
+            return;
+        }
+        let action = crate::actions::remove_connection_action(profile.id);
+        self.actions
+            .dispatch(doc, crate::actions::DB_ACTION_TYPE, &action);
     }
 
     /// Resolve the sidebar layout (docked vs overlay) from the *allocated*
@@ -331,6 +384,30 @@ impl Widget for DbClientApp {
             }
             self.seeded = true;
         }
+
+        // Fold in any results the background worker has finished (connect
+        // outcomes, query result sets, table pages). This is what makes a
+        // remote query land on screen without further user input.
+        self.session.drain();
+
+        // The live app's saved-connection list is collaborative document
+        // state: reconcile the session from `root["connections"]` each frame.
+        // The demo keeps its seeded sample roster as view state instead.
+        if !self.demo {
+            let doc_conns = ConnectionsDoc::read(state);
+            self.session.set_connections(doc_conns);
+            // Open a connection the local user just added, once it has landed
+            // back through the reconcile.
+            if let Some(id) = self.pending_connect_id {
+                if let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
+                    self.session.active = idx;
+                    self.session.connect_active();
+                    self.pending_connect_id = None;
+                    self.dirty = true;
+                }
+            }
+        }
+
         self.editor.sync(state);
     }
 
@@ -404,18 +481,19 @@ impl Widget for DbClientApp {
         // App background.
         scene.fill(Fill::NonZero, transform, p.panel_bg, None, &self.rect);
 
-        // Bind result sets to grids if they changed.
-        if self.query_gen != self.bound_query_gen {
+        // Bind result sets to grids when the worker has delivered a fresh one
+        // (the session bumps these generations as replies land).
+        if self.session.query_gen != self.bound_query_gen {
             if let Some(res) = &self.session.query_result {
                 self.grid.bind(res, tr);
             }
-            self.bound_query_gen = self.query_gen;
+            self.bound_query_gen = self.session.query_gen;
         }
-        if self.data_gen != self.bound_data_gen {
+        if self.session.data_gen != self.bound_data_gen {
             if let Some(res) = &self.session.data_result {
                 self.data_grid.bind(res, tr);
             }
-            self.bound_data_gen = self.data_gen;
+            self.bound_data_gen = self.session.data_gen;
         }
 
         // Main panel first (it sits behind the overlay flap), then the scrim
@@ -463,11 +541,7 @@ impl Widget for DbClientApp {
             self.modal
                 .handle_event(event, scale_factor, modifiers, handled, &mut act);
             if let Some(profile) = act {
-                let id = self.session.add_connection(profile);
-                // Select the freshly-added connection.
-                if let Some(idx) = self.session.connections.iter().position(|c| c.id == id) {
-                    self.session.select_connection(idx);
-                }
+                self.save_connection(profile, state);
                 self.dirty = true;
             }
             return;
@@ -492,30 +566,46 @@ impl Widget for DbClientApp {
                 self.tree.set_cursor(self.cursor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / 24.0,
+                let (dx_px, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 40.0, *y as f64),
+                    MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y / 24.0),
                 };
                 let step = (-dy * 3.0) as isize;
+                // Shift+wheel scrolls horizontally, as does a native x-delta.
+                let shift = modifiers.state().shift_key();
                 if self.session.tab == MainTab::Query && self.grid.rect().contains(self.cursor) {
-                    let total = self
-                        .session
-                        .query_result
-                        .as_ref()
-                        .map(|r| r.rows.len())
-                        .unwrap_or(0);
-                    self.grid.scroll(step, total);
+                    if shift {
+                        self.grid.scroll_h(-dy * 40.0);
+                    } else {
+                        let total = self
+                            .session
+                            .query_result
+                            .as_ref()
+                            .map(|r| r.rows.len())
+                            .unwrap_or(0);
+                        self.grid.scroll(step, total);
+                        if dx_px != 0.0 {
+                            self.grid.scroll_h(dx_px);
+                        }
+                    }
                     *handled = true;
                 } else if self.session.tab == MainTab::Data
                     && self.data_grid.rect().contains(self.cursor)
                 {
-                    let total = self
-                        .session
-                        .data_result
-                        .as_ref()
-                        .map(|r| r.rows.len())
-                        .unwrap_or(0);
-                    self.data_grid.scroll(step, total);
+                    if shift {
+                        self.data_grid.scroll_h(-dy * 40.0);
+                    } else {
+                        let total = self
+                            .session
+                            .data_result
+                            .as_ref()
+                            .map(|r| r.rows.len())
+                            .unwrap_or(0);
+                        self.data_grid.scroll(step, total);
+                        if dx_px != 0.0 {
+                            self.data_grid.scroll_h(dx_px);
+                        }
+                    }
                     *handled = true;
                 } else if self.tree.rect().contains(self.cursor) {
                     self.tree.scroll(step);
@@ -612,8 +702,16 @@ impl Widget for DbClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the sidebar flap is sliding.
-        self.flap_animating()
+        // Keep frames coming while the sidebar flap is sliding OR the worker
+        // has a connect/query in flight, so its result lands without any
+        // further user input.
+        self.flap_animating() || self.session.busy()
+    }
+
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        // Hand the action model's undo bracket to the host so saved-connection
+        // CRUD becomes a single undo boundary and replicates to peers.
+        self.actions.take_committed()
     }
 }
 
@@ -668,6 +766,17 @@ impl DbClientApp {
                 return;
             }
 
+            // Per-row delete ("×") button, shown on hover — takes priority
+            // over selecting the row it sits on.
+            for (idx, dr) in self.conn_delete_rects.clone() {
+                if dr.contains(c) {
+                    self.remove_connection(idx, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+            }
+
             // Connection rows.
             for (idx, r) in self.conn_rects.clone() {
                 if r.contains(c) {
@@ -685,7 +794,6 @@ impl DbClientApp {
                 self.session.tab = tab;
                 if tab == MainTab::Data {
                     self.session.load_table_data();
-                    self.data_gen += 1;
                 }
                 self.relayout();
                 self.dirty = true;
@@ -753,7 +861,6 @@ impl DbClientApp {
                     }
                     TreeClick::SelectTable(name) => {
                         self.session.select_table(&name);
-                        self.data_gen += 1;
                         // Auto-switch to Data when picking a table from the tree.
                         if self.session.tab == MainTab::Structure {
                             // keep structure
@@ -818,6 +925,7 @@ impl DbClientApp {
 
         // Connection rows.
         self.conn_rects.clear();
+        self.conn_delete_rects.clear();
         let mut y = r.y0 + 56.0;
         let active = self.session.active;
         for (idx, conn) in self.session.connections.iter().enumerate() {
@@ -860,21 +968,43 @@ impl DbClientApp {
                 Some((row.width() - 56.0) as f32),
             );
 
-            // Connection status dot.
-            let dot_c = if conn.connected {
-                theme.tokens.colors.semantic.success
-            } else if conn.is_remote() {
-                theme.tokens.colors.semantic.warning
+            // On hover, offer a delete ("×") button; otherwise show the
+            // connection status dot. The sample connection can't be deleted.
+            let hovered = self.conn_hover == Some(idx);
+            if hovered && !conn.is_sample {
+                let del = Rect::new(row.x1 - 26.0, y + 4.0, row.x1 - 6.0, y + 24.0);
+                self.conn_delete_rects.push((idx, del));
+                let dc = del.center();
+                let over = del.contains(self.cursor);
+                if over {
+                    scene.fill(Fill::NonZero, t, p.hover, None, &del.to_rounded_rect(5.0));
+                }
+                let col = if over {
+                    theme.tokens.colors.semantic.danger
+                } else {
+                    theme.text_dim
+                };
+                let a = 4.0;
+                scene.stroke(&Stroke::new(1.5), t, col, None,
+                    &Line::new(Point::new(dc.x - a, dc.y - a), Point::new(dc.x + a, dc.y + a)));
+                scene.stroke(&Stroke::new(1.5), t, col, None,
+                    &Line::new(Point::new(dc.x + a, dc.y - a), Point::new(dc.x - a, dc.y + a)));
             } else {
-                theme.text_dim
-            };
-            scene.fill(
-                Fill::NonZero,
-                t,
-                dot_c,
-                None,
-                &vello::kurbo::Circle::new(Point::new(row.x1 - 12.0, y + 12.0), 3.5),
-            );
+                let dot_c = if conn.connected {
+                    theme.tokens.colors.semantic.success
+                } else if conn.is_remote() {
+                    theme.tokens.colors.semantic.warning
+                } else {
+                    theme.text_dim
+                };
+                scene.fill(
+                    Fill::NonZero,
+                    t,
+                    dot_c,
+                    None,
+                    &vello::kurbo::Circle::new(Point::new(row.x1 - 12.0, y + 12.0), 3.5),
+                );
+            }
             y += 44.0;
         }
 
@@ -1223,6 +1353,7 @@ impl DbClientApp {
         let (msg, color) = match &self.session.status {
             RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
             RunStatus::Error(m) => (format!("✕ {m}"), theme.tokens.colors.semantic.danger),
+            RunStatus::Busy(m) => (m.clone(), theme.accent_primary),
             RunStatus::Idle => ("Ready".to_string(), theme.text_dim),
         };
         tr.draw_text(
@@ -1370,6 +1501,7 @@ impl DbClientApp {
         let (msg, color) = match &self.session.status {
             RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
             RunStatus::Error(_) => ("error".to_string(), theme.tokens.colors.semantic.danger),
+            RunStatus::Busy(_) => ("working…".to_string(), theme.accent_primary),
             RunStatus::Idle => ("ready".to_string(), theme.text_dim),
         };
         let (mw, _) = tr.measure(&msg, 11.5, None);
@@ -1492,18 +1624,14 @@ mod responsive_tests {
 mod honesty_tests {
     use super::*;
 
-    fn temp_dir() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("db-client-app-{}", uuid::Uuid::new_v4()))
-    }
-
     #[test]
     fn live_app_starts_empty() {
         // The live constructor path fabricates nothing: no connections, no
         // live engine, no schema.
-        let app = DbClientApp::build(Session::load_from(temp_dir()), false);
+        let app = DbClientApp::build(Session::new(), false);
         assert!(!app.demo, "live build is not the demo build");
         assert!(app.session.connections.is_empty(), "no fabricated connections");
-        assert!(app.session.engine.is_none(), "no live engine on a fresh machine");
+        assert!(!app.session.connected, "no live engine on a fresh machine");
         assert_eq!(app.session.schema.table_count(), 0, "no fabricated schema");
     }
 
@@ -1513,7 +1641,147 @@ mod honesty_tests {
         let app = DbClientApp::new_demo();
         assert!(app.demo, "demo build is flagged");
         assert!(!app.session.connections.is_empty(), "demo seeds sample connections");
-        assert!(app.session.engine.is_some(), "demo opens the sample engine");
+        assert!(app.session.connected, "demo opens the sample engine");
         assert!(app.session.schema.table_count() >= 4, "demo has the sample schema");
+    }
+}
+
+#[cfg(test)]
+mod behavior_tests {
+    use super::*;
+    use automerge::ROOT;
+    use qos_actions::Action;
+    use winit::event::{DeviceId, KeyEvent};
+    use winit::keyboard::{
+        KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey, SmolStr,
+    };
+
+    use crate::model::ConnectionProfile;
+
+    fn device_id() -> DeviceId {
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn char_event(c: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(SmolStr::new(c));
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(SmolStr::new(c));
+        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+    }
+
+    fn enter_event() -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Enter);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+    }
+
+    fn send(app: &mut DbClientApp, doc: &mut AutoCommit, ev: &WindowEvent, mods: &Modifiers) -> bool {
+        let taffy = TaffyTree::<()>::new();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(ev, 1.0, mods, doc, &ROOT, &mut handled, &mut focus, NodeId::new(0), &taffy);
+        handled
+    }
+
+    fn synced() -> (DbClientApp, AutoCommit) {
+        let mut app = DbClientApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+        (app, doc)
+    }
+
+    /// A keystroke driven through the production `handle_event` splices into the
+    /// shared SQL `Text` and converges byte-identically on a peer — the native
+    /// text path, unchanged by the async engine.
+    #[test]
+    fn typing_replicates_byte_identically_on_a_peer() {
+        let (mut app, mut doc) = synced();
+        doc.commit();
+        let base = doc.save();
+        let before = crate::doc::EditorDoc::read_sql(&doc);
+
+        let mut peer = AutoCommit::load(&base).unwrap();
+        assert_eq!(doc.get_heads(), peer.get_heads(), "precondition: replicas share a base");
+
+        assert!(send(&mut app, &mut doc, &char_event("Z"), &Modifiers::default()));
+        doc.commit();
+        let after = crate::doc::EditorDoc::read_sql(&doc);
+        assert_eq!(after.chars().count(), before.chars().count() + 1, "one char inserted");
+
+        peer.merge(&mut doc).unwrap();
+        assert_eq!(doc.get_heads(), peer.get_heads(), "byte-identical convergence");
+    }
+
+    /// Running a query is external: Ctrl+Enter dispatches work to the engine
+    /// worker and writes nothing to the shared document.
+    #[test]
+    fn running_a_query_writes_nothing_to_the_document() {
+        let (mut app, mut doc) = synced();
+        doc.commit();
+        let before = doc.get_heads();
+
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(send(&mut app, &mut doc, &enter_event(), &ctrl), "Ctrl+Enter runs the query");
+        assert_eq!(
+            doc.get_heads(),
+            before,
+            "query execution is a driver side effect, never a document mutation"
+        );
+    }
+
+    /// Saving a connection goes through the action model: the metadata lands in
+    /// `root["connections"]`, an undo boundary is recorded, the password never
+    /// enters the document, and the app remembers to connect it.
+    #[test]
+    fn saving_a_connection_dispatches_an_action_into_the_doc() {
+        let mut app = DbClientApp::build(Session::new(), false);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ROOT);
+
+        let mut profile = ConnectionProfile::new("Prod", Engine::Postgres);
+        profile.host = "db.internal".into();
+        profile.password = "hunter2".into();
+        let id = profile.id;
+        app.save_connection(profile, &mut doc);
+
+        let conns = crate::doc::ConnectionsDoc::read(&doc);
+        assert_eq!(conns.len(), 1, "the connection was written to the document");
+        assert_eq!(conns[0].name, "Prod");
+        assert!(
+            app.take_committed_action().is_some(),
+            "the action host recorded an undo boundary for the CRUD"
+        );
+        assert_eq!(app.pending_connect_id, Some(id), "the app will open it on reconcile");
+
+        let bytes = doc.save();
+        assert!(
+            !bytes.windows(7).any(|w| w == b"hunter2"),
+            "the password must never enter the shared document"
+        );
+    }
+
+    /// A reconcile from the document surfaces a peer-added connection in the
+    /// live session without auto-connecting it (no local password).
+    #[test]
+    fn reconcile_surfaces_document_connections() {
+        let mut app = DbClientApp::build(Session::new(), false);
+        let mut doc = AutoCommit::new();
+        // A peer (or a prior session) added a connection to the document.
+        let p = ConnectionProfile::new("Team DB", Engine::MySql);
+        crate::actions::add_connection_action(&p).apply(&mut doc).unwrap();
+
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(app.session.connections.len(), 1, "the document connection is listed");
+        assert_eq!(app.session.connections[0].name, "Team DB");
+        assert!(!app.session.connected, "a peer-added connection is not auto-opened");
     }
 }

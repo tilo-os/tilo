@@ -32,29 +32,280 @@ pub struct UndoEntry {
     pub author: Option<UserId>,
 }
 
-/// The unified state object that holds our CRDT document.
-pub struct State {
-    pub doc: AutoCommit,
-    pub root: ObjId,
-    pub collab: CollaborationState,
+/// One document's history: what can be undone in it, and what can be
+/// redone.
+///
+/// Separated from [`State`] because a history belongs to a *document*,
+/// not to a process. An [`UndoEntry`] is a pair of change hashes in one
+/// document's change graph, so a stack shared between two documents can
+/// only ever revert against the wrong one — which is what a second tab
+/// sharing the first tab's undo stack would do. Anything that owns a
+/// document owns one of these beside it: [`State`] for the app's live
+/// document, [`crate::record::RecordSet`] for each record it holds.
+#[derive(Default)]
+pub struct UndoLog {
     undo_stack: Vec<UndoEntry>,
     redo_stack: Vec<UndoEntry>,
     /// Heads as of the last commit boundary — the `before` for the next action.
     last_heads: Vec<ChangeHash>,
 }
 
+impl UndoLog {
+    /// An empty history over `doc` as it stands. The current heads become
+    /// the baseline the next action brackets against, so content already
+    /// in the document is not attributed to an action nobody performed.
+    pub fn new(doc: &mut AutoCommit) -> Self {
+        Self {
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_heads: doc.get_heads(),
+        }
+    }
+
+    /// Re-baseline against the document's current heads, without touching
+    /// the stacks. What a merge of remote changes needs: existing entries
+    /// keep naming their own changes (still valid addresses in an
+    /// append-only graph) while the *next* local action brackets against
+    /// the merged picture.
+    pub fn rebase(&mut self, doc: &mut AutoCommit) {
+        self.last_heads = doc.get_heads();
+    }
+
+    pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
+        self.undo_stack.last()
+    }
+
+    /// Commit `doc`'s open transaction and push an entry bracketing it.
+    pub fn commit_action_authored(
+        &mut self,
+        doc: &mut AutoCommit,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) {
+        let before = self.last_heads.clone();
+        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
+        // automerge's advisory timestamp at zero, which is why a history pane
+        // built over a document committed that way can show authorship but not
+        // *when* — and why a date-range filter over it matches nothing.
+        if qdoc::history::commit_stamped(doc).is_some() {
+            let after = doc.get_heads();
+            self.undo_stack.push(UndoEntry {
+                before,
+                after,
+                focused_node_idx,
+                widget_metadata: metadata,
+                author,
+            });
+            self.redo_stack.clear();
+            self.last_heads = doc.get_heads();
+        }
+    }
+
+    /// Record an action already committed into `doc` out-of-band, bracketed
+    /// by the caller-supplied `before` heads. See
+    /// [`State::record_committed_action`].
+    pub fn record_committed_action(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+    ) {
+        let after = doc.get_heads();
+        if after == before {
+            return; // nothing actually changed
+        }
+        self.undo_stack.push(UndoEntry {
+            before,
+            after: after.clone(),
+            focused_node_idx,
+            widget_metadata: metadata,
+            author: None,
+        });
+        self.redo_stack.clear();
+        self.last_heads = after;
+    }
+
+    /// Apply the inverse of the change spanning `[entry.before, entry.after]`
+    /// as a NEW forward change merged into `doc`, and return the
+    /// `[before, after]` heads of that newly-written inverse change so the
+    /// opposite stack can later invert *it* (redo, or re-undo).
+    ///
+    /// Concurrent remote ops merged into `doc` between `entry.after` and now
+    /// are untouched: only the props/elements the local action itself changed
+    /// are re-derived and rewritten.
+    fn apply_inverse(
+        &mut self,
+        doc: &mut AutoCommit,
+        entry: &UndoEntry,
+    ) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
+        let inverse_before = doc.get_heads();
+        write_revert_patches(doc, &entry.after, &entry.before);
+        let _ = qdoc::history::commit_stamped(doc);
+        let inverse_after = doc.get_heads();
+        self.last_heads = inverse_after.clone();
+        (inverse_before, inverse_after)
+    }
+
+    pub fn undo(
+        &mut self,
+        doc: &mut AutoCommit,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let entry = self.undo_stack.pop()?;
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        self.redo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
+    pub fn undo_for_author(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: &UserId,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let idx = self
+            .undo_stack
+            .iter()
+            .rposition(|e| matches!(&e.author, Some(a) if a == author))?;
+        let entry = self.undo_stack.remove(idx);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        self.redo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
+    pub fn undo_as(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        match author {
+            Some(a) => self.undo_for_author(doc, a, current_focused_idx, current_metadata),
+            None => self.undo(doc, current_focused_idx, current_metadata),
+        }
+    }
+
+    pub fn redo(
+        &mut self,
+        doc: &mut AutoCommit,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let entry = self.redo_stack.pop()?;
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
+    pub fn redo_as(
+        &mut self,
+        doc: &mut AutoCommit,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let Some(a) = author else {
+            return self.redo(doc, current_focused_idx, current_metadata);
+        };
+        let idx = self
+            .redo_stack
+            .iter()
+            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+        let entry = self.redo_stack.remove(idx);
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
+    /// See [`State::restore_to_heads`].
+    pub fn restore_to_heads(
+        &mut self,
+        doc: &mut AutoCommit,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) -> bool {
+        let current = doc.get_heads();
+        if current == target_heads {
+            return false;
+        }
+        // `apply_inverse` writes the delta that leads from `after` back to
+        // `before`; naming the live state as `after` and the historical state
+        // as `before` is what turns "undo one action" into "travel to this
+        // version".
+        let entry = UndoEntry {
+            before: target_heads.to_vec(),
+            after: current,
+            focused_node_idx,
+            widget_metadata: metadata.clone(),
+            author: author.clone(),
+        };
+        let (inv_before, inv_after) = self.apply_inverse(doc, &entry);
+        if inv_before == inv_after {
+            return false;
+        }
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx,
+            widget_metadata: metadata,
+            author,
+        });
+        self.redo_stack.clear();
+        true
+    }
+}
+
+/// The unified state object that holds our CRDT document.
+pub struct State {
+    pub doc: AutoCommit,
+    pub root: ObjId,
+    pub collab: CollaborationState,
+    /// This document's history. Swapped out with the document itself in
+    /// [`Self::adopt_doc`] — see there for why it cannot travel.
+    undo: UndoLog,
+}
+
 impl State {
     pub fn new() -> Self {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
-        let last_heads = doc.get_heads();
+        let undo = UndoLog::new(&mut doc);
         Self {
             doc,
             root,
             collab: CollaborationState::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            last_heads,
+            undo,
         }
     }
 
@@ -72,9 +323,12 @@ impl State {
     pub fn adopt_doc(&mut self, doc: AutoCommit) {
         self.doc = doc;
         self.root = automerge::ROOT;
-        self.undo_stack.clear();
-        self.redo_stack.clear();
-        self.last_heads = self.doc.get_heads();
+        self.undo = UndoLog::new(&mut self.doc);
+    }
+
+    /// This document's history, for a caller that drives undo itself.
+    pub fn history_mut(&mut self) -> &mut UndoLog {
+        &mut self.undo
     }
 
     /// Commit the current transaction and push a change-based undo entry
@@ -91,45 +345,33 @@ impl State {
         metadata: Option<String>,
         author: Option<UserId>,
     ) {
-        let before = self.last_heads.clone();
-        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
-        // automerge's advisory timestamp at zero, which is why a history pane
-        // built over a document committed that way can show authorship but not
-        // *when* — and why a date-range filter over it matches nothing.
-        if qdoc::history::commit_stamped(&mut self.doc).is_some() {
-            let after = self.doc.get_heads();
-            self.undo_stack.push(UndoEntry {
-                before,
-                after,
-                focused_node_idx,
-                widget_metadata: metadata,
-                author,
-            });
-            self.redo_stack.clear();
-            self.last_heads = self.doc.get_heads();
-        }
+        self.undo.commit_action_authored(
+            &mut self.doc,
+            focused_node_idx,
+            metadata,
+            author,
+        );
     }
 
     /// Inspect the most recently pushed undo entry without popping it.
     pub fn peek_last_undo(&self) -> Option<&UndoEntry> {
-        self.undo_stack.last()
+        self.undo.peek_last_undo()
     }
 
-    /// Apply the inverse of the change spanning `[entry.before, entry.after]`
-    /// as a NEW forward change merged into the live document, and return the
-    /// `[before, after]` heads of that newly-written inverse change so the
-    /// opposite stack can later invert *it* (redo, or re-undo).
-    ///
-    /// Concurrent remote ops merged into `self.doc` between `entry.after` and
-    /// now are untouched: we only re-derive and rewrite the props/elements the
-    /// local action itself changed.
-    fn apply_inverse(&mut self, entry: &UndoEntry) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
-        let inverse_before = self.doc.get_heads();
-        write_revert_patches(&mut self.doc, &entry.after, &entry.before);
-        let _ = qdoc::history::commit_stamped(&mut self.doc);
-        let inverse_after = self.doc.get_heads();
-        self.last_heads = inverse_after.clone();
-        (inverse_before, inverse_after)
+    /// Record an action that has *already* been committed into `doc` out-of-band
+    /// (e.g. a `qos_actions` action the `App`'s Ctrl+K palette dispatched, which
+    /// owns its own actor + timestamp commit boundary). Brackets the undo entry
+    /// with the caller-supplied `before` heads and the doc's current heads,
+    /// clears the redo stack, and realigns the undo baseline — so the action is
+    /// undoable and a *later* local edit doesn't accidentally revert it too.
+    pub fn record_committed_action(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+    ) {
+        self.undo
+            .record_committed_action(&mut self.doc, before, focused_node_idx, metadata);
     }
 
     /// Rewrite the document to the content it had at `target_heads`, as a NEW
@@ -157,34 +399,13 @@ impl State {
         metadata: Option<String>,
         author: Option<UserId>,
     ) -> bool {
-        let current = self.doc.get_heads();
-        if current == target_heads {
-            return false;
-        }
-        // `apply_inverse` writes the delta that leads from `after` back to
-        // `before`; naming the live state as `after` and the historical state
-        // as `before` is what turns "undo one action" into "travel to this
-        // version".
-        let entry = UndoEntry {
-            before: target_heads.to_vec(),
-            after: current,
+        self.undo.restore_to_heads(
+            &mut self.doc,
+            target_heads,
             focused_node_idx,
-            widget_metadata: metadata.clone(),
-            author: author.clone(),
-        };
-        let (inv_before, inv_after) = self.apply_inverse(&entry);
-        if inv_before == inv_after {
-            return false;
-        }
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx,
-            widget_metadata: metadata,
+            metadata,
             author,
-        });
-        self.redo_stack.clear();
-        true
+        )
     }
 
     /// Translate a sequence index expressed as-of `anchor_heads` into its
@@ -205,17 +426,8 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let entry = self.undo_stack.pop()?;
-        let (inv_before, inv_after) = self.apply_inverse(&entry);
-        // Redo re-applies the original action = invert the inverse change.
-        self.redo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
-        Some(entry)
+        self.undo
+            .undo(&mut self.doc, current_focused_idx, current_metadata)
     }
 
     /// Multi-user aware undo. Pops the topmost entry whose `author` equals
@@ -234,19 +446,12 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let idx = self.undo_stack.iter().rposition(|e| {
-            matches!(&e.author, Some(a) if a == author)
-        })?;
-        let entry = self.undo_stack.remove(idx);
-        let (inv_before, inv_after) = self.apply_inverse(&entry);
-        self.redo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
-        Some(entry)
+        self.undo.undo_for_author(
+            &mut self.doc,
+            author,
+            current_focused_idx,
+            current_metadata,
+        )
     }
 
     /// Undo on behalf of `author`.
@@ -263,10 +468,8 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        match author {
-            Some(a) => self.undo_for_author(a, current_focused_idx, current_metadata),
-            None => self.undo(current_focused_idx, current_metadata),
-        }
+        self.undo
+            .undo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
     /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
@@ -277,23 +480,8 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let Some(a) = author else {
-            return self.redo(current_focused_idx, current_metadata);
-        };
-        let idx = self
-            .redo_stack
-            .iter()
-            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
-        let entry = self.redo_stack.remove(idx);
-        let (inv_before, inv_after) = self.apply_inverse(&entry);
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
-        Some(entry)
+        self.undo
+            .redo_as(&mut self.doc, author, current_focused_idx, current_metadata)
     }
 
     /// Redo the most recently undone action by inverting the inverse change
@@ -306,16 +494,8 @@ impl State {
         current_focused_idx: Option<usize>,
         current_metadata: Option<String>,
     ) -> Option<UndoEntry> {
-        let entry = self.redo_stack.pop()?;
-        let (inv_before, inv_after) = self.apply_inverse(&entry);
-        self.undo_stack.push(UndoEntry {
-            before: inv_before,
-            after: inv_after,
-            focused_node_idx: current_focused_idx,
-            widget_metadata: current_metadata,
-            author: entry.author.clone(),
-        });
-        Some(entry)
+        self.undo
+            .redo(&mut self.doc, current_focused_idx, current_metadata)
     }
 
     /// Serializes the entire application CRDT state into a byte vector.
@@ -329,14 +509,12 @@ impl State {
     /// the previous session's `AutoCommit` — history, actor identity and all
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
-        let last_heads = doc.get_heads();
+        let undo = UndoLog::new(&mut doc);
         Self {
             doc,
             root: automerge::ROOT,
             collab: CollaborationState::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            last_heads,
+            undo,
         }
     }
 
@@ -344,14 +522,12 @@ impl State {
     pub fn load(data: &[u8]) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::load(data)?;
         let root = automerge::ROOT;
-        let last_heads = doc.get_heads();
+        let undo = UndoLog::new(&mut doc);
         Ok(Self {
             doc,
             root,
             collab: CollaborationState::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            last_heads,
+            undo,
         })
     }
 
@@ -376,7 +552,7 @@ impl State {
         // reverts exactly that action as a new change — leaving the just-merged
         // remote ops intact. This is precisely the collab-safety the old
         // snapshot-reload design lacked.
-        self.last_heads = self.doc.get_heads();
+        self.undo.rebase(&mut self.doc);
         Ok(n)
     }
 

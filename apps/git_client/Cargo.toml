@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS ACTION model: the client's durable view preferences (diff layout,
+# syntax highlight, whitespace, wrap) are its only shared-document state, and it
+# exports them as replayable actions the shell's Ctrl+K palette dispatches.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

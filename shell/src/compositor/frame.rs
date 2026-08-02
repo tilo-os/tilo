@@ -96,6 +96,21 @@ impl FrameBuilder {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
 
+    /// Optional theme override for offscreen `shots` capture:
+    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset (production) keeps the
+    /// dark default, so this is a no-op off the shots harness. Lets a
+    /// theme-driven chrome change be proven in light + high-contrast, not just
+    /// dark — the renderers under `apps/*` grew the same hook.
+    fn shots_theme_override() -> Option<Theme> {
+        let raw = std::env::var("QOS_SHOTS_THEME").ok()?;
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "light" => Some(Theme::light()),
+            "high-contrast" | "high_contrast" | "hc" => Some(Theme::high_contrast()),
+            "dark" => Some(Theme::dark()),
+            _ => None,
+        }
+    }
+
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`],
     /// with the peer-sync palette rows on or off.
     ///
@@ -114,11 +129,32 @@ impl FrameBuilder {
         )
     }
 
+    /// As [`Self::with_handle`], but keeping each open tab's document in
+    /// `records` — the session's own store, so a note typed into a tab is
+    /// still there after a restart. Everything else keeps the in-memory
+    /// default, because a probe or a `--shots` run must leave nothing
+    /// behind.
+    pub fn with_handle_and_records(
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        enable_peer_sync: bool,
+        viewport: (u32, u32),
+        records: ui::record::RecordStore,
+    ) -> Self {
+        Self::from_parts(
+            crate::shell::build_nirios_overlay_host_with_records(
+                tree,
+                enable_peer_sync,
+                records,
+            ),
+            viewport,
+        )
+    }
+
     fn from_parts(
         (host, chrome): (ShellOverlayHost, Chrome),
         viewport: (u32, u32),
     ) -> Self {
-        let theme = Theme::dark();
+        let theme = Self::shots_theme_override().unwrap_or_else(Theme::dark);
         let mut builder = Self {
             host,
             chrome,
@@ -273,7 +309,18 @@ impl FrameBuilder {
     /// structural layout (overlay reservations).
     pub fn paint_settled(&mut self) -> Scene {
         self.relayout();
-        self.paint()
+        let scene = self.paint();
+        // A draw can discover that the layout it was handed is not the
+        // one it needs: the palette's filter band grows a row when the
+        // kind chips wrap, and only the paint knows how wide the labels
+        // measure. A live session settles that on the very next frame —
+        // a single-frame capture has no next frame, so settle here, or
+        // every screenshot shows a state the user never sees.
+        if self.host.structure_dirty() {
+            self.relayout();
+            return self.paint();
+        }
+        scene
     }
 
     /// Mutate chrome state — opens overlays, switches tabs, tweaks

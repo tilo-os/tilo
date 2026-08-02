@@ -48,7 +48,6 @@ use ui::widget::Widget;
 use crate::compile::{self, CompileOutput, WorldParts};
 use crate::diagnostics::DiagnosticsPanel;
 use crate::editor::SourceEditor;
-use crate::highlight::{self, Token};
 use crate::preview::PreviewPane;
 use crate::samples::{DEFAULT_INDEX, SAMPLES};
 use crate::worker::CompileWorker;
@@ -140,9 +139,9 @@ pub struct TypstApp {
     /// Last source text we highlighted / compiled — drives change detection.
     last_source: String,
     /// Mirror of the source read each `sync`, used by `draw` (which has no
-    /// doc access) for the editor body, syntax tokens and the caret readout.
+    /// doc access) for the caret readout and change detection. The editor body
+    /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
-    tokens: Vec<Vec<Token>>,
 
     // --- view state ---
     /// Editor↔preview horizontal split, 0..1 of the content width.
@@ -163,6 +162,8 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, drop the caret at the end of
     /// the source and scroll it into view. Never set by the live event loop.
     demo_scroll_caret_end: bool,
+    /// Screenshot harness only: select a couple of editor lines for the capture.
+    demo_editor_select: bool,
     /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
     /// it so the capture proves cursor-zoom + scroll-when-zoomed.
     demo_preview_zoom: bool,
@@ -257,7 +258,6 @@ impl TypstApp {
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
-            tokens: Vec::new(),
             split_ratio: 0.46,
             show_diagnostics: false,
             err_count: 0,
@@ -267,6 +267,7 @@ impl TypstApp {
             compact_view: CompactPane::Editor,
             menu_open: false,
             demo_scroll_caret_end: false,
+            demo_editor_select: false,
             demo_preview_zoom: false,
             demo_preview_pan: false,
             demo_preview_select: false,
@@ -313,6 +314,10 @@ impl TypstApp {
                 if let Some(d) = self.documents.get_mut(self.current) {
                     d.source = crate::samples::ERROR_WARNING.to_string();
                 }
+            }
+            "editor-select" => {
+                self.editor.focused = true;
+                self.demo_editor_select = true;
             }
             "preview-zoom" => self.demo_preview_zoom = true,
             "preview-pan" => self.demo_preview_pan = true,
@@ -365,10 +370,7 @@ impl TypstApp {
             // suffix rather than tombstoning the entire previous source.
             ui::doc::splice_text_diffed(doc, &id, &src);
         }
-        self.editor.caret = 0;
-        self.editor.anchor = 0;
-        self.editor.scroll_y = 0.0;
-        self.editor.scroll_x = 0.0;
+        self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
         self.editor.focused = !(self.compact && matches!(self.compact_view, CompactPane::Preview));
         self.preview.fit_width();
@@ -417,9 +419,10 @@ impl TypstApp {
         }
     }
 
-    /// Re-highlight and queue a fresh compile of the current source.
+    /// Queue a fresh compile of the current source. (Syntax highlighting now
+    /// lives in the shared editor widget, so there is nothing to re-tokenize
+    /// here.)
     fn request_compile(&mut self, source: &str) {
-        self.tokens = highlight::highlight(source);
         if let Some(w) = self.worker.as_mut() {
             w.request(source.to_string(), PPP);
         }
@@ -636,10 +639,10 @@ impl TypstApp {
     /// 1-based (line, col) of the editor caret within the cached source.
     /// Single pass over the leading chars — no allocation.
     fn caret_line_col(&self) -> (usize, usize) {
-        let caret = self.editor.caret;
+        let caret = self.editor.caret().min(self.source_cache.len());
         let mut line = 1usize;
         let mut col = 1usize;
-        for ch in self.source_cache.chars().take(caret) {
+        for ch in self.source_cache[..caret].chars() {
             if ch == '\n' {
                 line += 1;
                 col = 1;
@@ -709,9 +712,12 @@ impl TypstApp {
         if self.demo_scroll_caret_end && !self.source_cache.is_empty() {
             self.demo_scroll_caret_end = false;
             let src = self.source_cache.clone();
-            self.editor.caret = src.chars().count();
-            self.editor.anchor = self.editor.caret;
+            self.editor.set_caret(src.len());
             self.editor.ensure_visible(&src);
+        }
+        if self.demo_editor_select && !self.source_cache.is_empty() {
+            self.demo_editor_select = false;
+            self.editor.demo_select();
         }
 
         // Screenshot harness only: now that the preview has a real rect + pages,
@@ -1301,13 +1307,14 @@ impl Widget for TypstApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         let src_id = self.ensure_source_obj(doc);
         self.source_id = Some(src_id.clone());
+        // Bind the shared editor to the source object and pull its content.
+        self.editor.bind(src_id.clone(), doc);
         let source = doc.text(&src_id).unwrap_or_default();
 
         if !self.initialized {
             // First frame: compile synchronously so the very first paint
             // (including `--shots`) has rendered pages, then bring the async
             // worker online for subsequent edits.
-            self.tokens = highlight::highlight(&source);
             let out = compile::compile_source(&self.parts, &source, PPP);
             self.apply_output(out);
             self.worker = Some(CompileWorker::spawn(self.parts.clone()));
@@ -1376,18 +1383,12 @@ impl Widget for TypstApp {
         if self.compact {
             match self.compact_view {
                 CompactPane::Editor => {
-                    self.editor.draw(
-                        scene, t, tr, theme,
-                        &self.source_cache, &self.tokens, self.diagnostics.diags(),
-                    );
+                    self.editor.draw(scene, t, tr, theme, self.diagnostics.diags());
                 }
                 CompactPane::Preview => self.preview.draw(scene, t, tr, theme),
             }
         } else {
-            self.editor.draw(
-                scene, t, tr, theme,
-                &self.source_cache, &self.tokens, self.diagnostics.diags(),
-            );
+            self.editor.draw(scene, t, tr, theme, self.diagnostics.diags());
             self.preview.draw(scene, t, tr, theme);
             self.draw_divider(scene, t, theme);
         }
@@ -1654,6 +1655,7 @@ impl Widget for TypstApp {
                 self.dragging_divider = false;
                 self.dragging_editor = false;
                 self.dragging_preview = false;
+                self.editor.on_mouse_up();
                 self.preview.on_mouse_up();
                 self.dirty = true;
             }
@@ -1836,7 +1838,8 @@ mod tests {
     fn caret_line_col_tracks_newlines() {
         let mut app = TypstApp::with_demo_documents();
         app.source_cache = "abc\nde\nf".to_string();
-        app.editor.caret = 5; // line 2, col 2 (just after 'd')
+        app.editor.set_text("abc\nde\nf");
+        app.editor.set_caret(5); // byte 5 → line 2, col 2 (just after 'd')
         assert_eq!(app.caret_line_col(), (2, 2));
     }
 

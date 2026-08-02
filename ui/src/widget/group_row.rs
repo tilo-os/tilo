@@ -38,6 +38,23 @@ const SNAP_IDLE_MS: u64 = 200;
 /// secondary motions — long enough to read as eased, short enough to
 /// stay out of the user's way if they want to wheel again.
 const SNAP_ANIM_MS: u64 = 200;
+/// Duration of the "make space" slide played on the groups a newly
+/// inserted one pushes along. Deliberately the same 420 ms cubic-out as
+/// `window_group.rs`'s spawn fade, which runs on the new group at the
+/// same moment: the neighbours travelling and the new window arriving
+/// are one motion, and two curves of different lengths would read as
+/// two events.
+const MAKE_SPACE_ANIM_MS: u64 = 420;
+
+/// In-flight "make space" motion. `offsets` is how far *left* of its new
+/// home each affected group started, keyed by group id, so the eased
+/// paint is `new_x + offset * (1 - t)` — the group renders where it used
+/// to be and travels to where it now belongs.
+#[derive(Clone, Debug)]
+struct ShiftAnim {
+    started: Instant,
+    offsets: Vec<(u64, f64)>,
+}
 
 /// In-flight snap state: from `from` to `to` over `SNAP_ANIM_MS`,
 /// started at `started`. Cleared when the curve settles or the user
@@ -250,6 +267,23 @@ pub struct GroupRow {
     /// against the combined desktop would make a full-width window span
     /// both monitors.
     output_spans: Vec<OutputSpan>,
+    /// Every group's taffy-local x as of the most recent layout pass,
+    /// keyed by group id. The "where it used to be" half of the
+    /// make-space slide. Taffy-local rather than screen-space on
+    /// purpose: panning the strip moves every group on screen, and a
+    /// pan is not something to animate away from.
+    last_local_x: HashMap<u64, f64>,
+    /// Set by [`Self::insert_group`] when the insertion pushes existing
+    /// groups along. The next layout pass turns the positions they had
+    /// into the offsets they travel from, and clears this.
+    shift_armed: bool,
+    /// The make-space slide currently playing, if any.
+    shift_anim: Option<ShiftAnim>,
+    /// When set, the point on the curve [`Self::shift_anim_t`] reports
+    /// instead of reading the clock, and the slide is held against
+    /// retirement. Only ever set by [`Self::hold_shift_at`], which the
+    /// capture harness uses; always `None` in a running shell.
+    shift_hold: Option<Duration>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -293,6 +327,10 @@ impl GroupRow {
             group_reorder_target: None,
             pending_group_reorder: None,
             output_spans: Vec::new(),
+            last_local_x: HashMap::new(),
+            shift_armed: false,
+            shift_anim: None,
+            shift_hold: None,
         }
     }
 
@@ -438,6 +476,38 @@ impl GroupRow {
             .collect()
     }
 
+    /// Each group's horizontal extent — `(id, left, right)` — in the
+    /// strip's unscrolled canvas space, in strip order.
+    ///
+    /// Derived the same way [`Self::usable_per_group`] is: from the
+    /// groups' own stored widths and the pushed output spans, never from
+    /// a previous frame's layout. So a group spliced in this frame
+    /// already has a span, which is what lets the shell answer "which
+    /// border between windows can the user see" without waiting a frame
+    /// for taffy.
+    pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
+        let mut canvas_x = self.rect.x0 + self.leading_inset;
+        self.groups
+            .iter()
+            .map(|g| {
+                let usable = self.usable_at(canvas_x);
+                let width = g.width().resolve(usable);
+                let span = (g.id, canvas_x, canvas_x + width);
+                canvas_x += width + HANDLE_SLOT_PX;
+                span
+            })
+            .collect()
+    }
+
+    /// The slice of the strip's canvas currently on screen, in the same
+    /// space [`Self::group_canvas_spans`] reports. A group is on screen
+    /// exactly when its span overlaps this one: screen-x is canvas-x
+    /// minus [`Self::scroll_x`], so the visible canvas window is the
+    /// row's own rect shifted by the pan.
+    pub fn visible_canvas_span(&self) -> (f64, f64) {
+        (self.rect.x0 + self.scroll_x, self.rect.x1 + self.scroll_x)
+    }
+
     /// Ordered list of group ids currently held by the row. Used by
     /// the shell's `resync_strips_from_tree` (overlay_host) to diff
     /// against the persisted [`shell::state::Strip::window_groups`]
@@ -454,10 +524,76 @@ impl GroupRow {
     /// to `groups.len()` so callers don't have to bounds-check.
     /// Flags `structure_dirty` so the App's next layout pass
     /// rebuilds the taffy tree with the new child's node id.
+    /// Inserting anywhere but the end pushes the groups from `idx`
+    /// onwards along to make room. That is the moment the layout has
+    /// something to say, so the motion is armed here and measured by the
+    /// next layout pass — see [`Self::shift_offset_for`].
     pub fn insert_group(&mut self, group: WindowGroup, idx: usize) {
         let clamped = idx.min(self.groups.len());
+        if clamped < self.groups.len() {
+            self.shift_armed = true;
+        }
         self.groups.insert(clamped, group);
         self.structure_dirty = true;
+    }
+
+    /// Eased 0..=1 progress through the make-space slide, or 1.0 when
+    /// none is playing.
+    pub fn shift_anim_t(&self) -> f64 {
+        let Some(anim) = &self.shift_anim else {
+            return 1.0;
+        };
+        let elapsed = self.shift_hold.unwrap_or_else(|| anim.started.elapsed());
+        if elapsed >= Duration::from_millis(MAKE_SPACE_ANIM_MS) {
+            return 1.0;
+        }
+        let raw = (elapsed.as_secs_f64() / (MAKE_SPACE_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
+        1.0 - (1.0 - raw).powi(3)
+    }
+
+    /// How far left of its laid-out position the group with `group_id`
+    /// should be *painted* this frame, as it travels to the place the
+    /// insertion moved it to. `0.0` for a group that is not moving, and
+    /// for every group once the slide settles.
+    ///
+    /// The group's stored rect is always its final one, so hit-testing
+    /// and the app's own configure size are never mid-flight — the same
+    /// choice the per-group spawn fade makes.
+    pub fn shift_offset_for(&self, group_id: u64) -> f64 {
+        let Some(anim) = &self.shift_anim else {
+            return 0.0;
+        };
+        let Some((_, from)) = anim.offsets.iter().find(|(id, _)| *id == group_id) else {
+            return 0.0;
+        };
+        from * (1.0 - self.shift_anim_t())
+    }
+
+    /// True while any group is still travelling.
+    fn shift_in_flight(&self) -> bool {
+        self.shift_anim.is_some() && self.shift_anim_t() < 1.0
+    }
+
+    /// Freeze the in-flight slide `elapsed` into its curve, and report
+    /// whether there was one to freeze.
+    ///
+    /// The curve runs on wall time, and an offscreen render costs far
+    /// more wall time per frame than the whole curve lasts — so a
+    /// capture harness stepping frames sees the start and the end and
+    /// nothing in between. This lets it ask for a specific point
+    /// instead. What it then renders is the production `draw` at that
+    /// point, not a reconstruction of it.
+    ///
+    /// The freeze also holds the slide against the per-layout retirement,
+    /// so the harness can walk the whole curve however long each render
+    /// takes.
+    #[cfg(any(test, debug_assertions))]
+    pub fn hold_shift_at(&mut self, elapsed: Duration) -> bool {
+        if self.shift_anim.is_none() {
+            return false;
+        }
+        self.shift_hold = Some(elapsed);
+        true
     }
 
     /// Remove the group with id `id`. No-op if absent. Returns
@@ -1372,9 +1508,11 @@ impl Widget for GroupRow {
         // viewport left.
         let mut content_w = self.leading_inset;
         let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
+        let mut local_x: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         for &cn in &self.node_ids {
             let cl = taffy.layout(cn).unwrap();
             edges.push(self.leading_inset + cl.location.x as f64);
+            local_x.push(cl.location.x as f64);
             let right = self.leading_inset + cl.location.x as f64 + cl.size.width as f64;
             if right > content_w {
                 content_w = right;
@@ -1382,6 +1520,42 @@ impl Widget for GroupRow {
         }
         self.content_w = content_w;
         self.group_left_edges = edges;
+        // Make-space slide: an insertion armed the motion, and this is
+        // the first pass that knows how far each group actually moved.
+        // Only trust the reading when taffy has a node per group — an
+        // `apply_layout` that lands between the splice and the rebuild
+        // would otherwise measure a truncated strip and animate the
+        // wrong ones.
+        if self.node_ids.len() == self.groups.len() {
+            if std::mem::take(&mut self.shift_armed) {
+                let offsets: Vec<(u64, f64)> = self
+                    .groups
+                    .iter()
+                    .zip(local_x.iter())
+                    .filter_map(|(g, now)| {
+                        let was = *self.last_local_x.get(&g.id)?;
+                        let from = was - now;
+                        // Sub-pixel motion is not motion.
+                        (from.abs() > 0.5).then_some((g.id, from))
+                    })
+                    .collect();
+                self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
+                    started: Instant::now(),
+                    offsets,
+                });
+            }
+            self.last_local_x = self
+                .groups
+                .iter()
+                .zip(local_x.iter())
+                .map(|(g, x)| (g.id, *x))
+                .collect();
+        }
+        // Retire a settled slide so `needs_animation_frame` stops
+        // pumping and `draw` stops composing an extra transform.
+        if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
+            self.shift_anim = None;
+        }
         // Clamp scroll into bounds — but use the SAME widened upper
         // bound the wheel handler uses (max_scroll_x OR three
         // viewports of empty wallpaper past the rightmost group).
@@ -1509,8 +1683,33 @@ impl Widget for GroupRow {
                 g.draw(scene, transform, tr, theme, presence);
             }
         } else {
+            // A group a fresh insertion pushed along paints where it
+            // used to be and eases to where it now belongs, so the strip
+            // is seen opening a gap rather than having always had one.
+            // Widths are untouched — this is a translation, which is the
+            // only honest way to make room on a strip with unlimited
+            // space to the right.
+            let remaining = 1.0 - self.shift_anim_t();
+            let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+                self.shift_anim
+                    .as_ref()
+                    .map(|a| a.offsets.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             for g in &mut self.groups {
-                g.draw(scene, transform, tr, theme, presence);
+                let dx = offsets
+                    .iter()
+                    .find(|(id, _)| *id == g.id)
+                    .map(|(_, from)| from * remaining)
+                    .unwrap_or(0.0);
+                let t = if dx.abs() > f64::EPSILON {
+                    transform * Affine::translate((dx, 0.0))
+                } else {
+                    transform
+                };
+                g.draw(scene, t, tr, theme, presence);
             }
         }
         // Paint the inter-group resize handles after the groups so
@@ -1525,10 +1724,36 @@ impl Widget for GroupRow {
         // in the maximize branch, so their stored neighbour rects are
         // stale; painting them anyway would draw ghost rules at the
         // pre-maximize gap positions.
+        //
+        // During a make-space slide each handle travels with the group on
+        // its right — which is where the gap it marks actually is. Two
+        // adjacent windows are both white cards, so without the rule
+        // between them a slide reads as one wide window rather than two
+        // moving apart.
         let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
         if !any_drag && maximized_idx.is_none() {
-            for h in &mut self.handles {
-                h.draw(scene, transform, tr, theme, presence);
+            let remaining = 1.0 - self.shift_anim_t();
+            let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+                self.shift_anim
+                    .as_ref()
+                    .map(|a| a.offsets.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            for (i, h) in self.handles.iter_mut().enumerate() {
+                let dx = self
+                    .groups
+                    .get(i + 1)
+                    .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
+                    .map(|(_, from)| from * remaining)
+                    .unwrap_or(0.0);
+                let t = if dx.abs() > f64::EPSILON {
+                    transform * Affine::translate((dx, 0.0))
+                } else {
+                    transform
+                };
+                h.draw(scene, t, tr, theme, presence);
             }
         }
 
@@ -2166,7 +2391,13 @@ impl Widget for GroupRow {
         // must keep pumping redraws so each frame re-runs
         // `apply_layout` and the eased `scroll_x` propagates to every
         // child's stored rect.
-        self.snap_in_flight() || self.groups.iter().any(|g| g.needs_animation_frame())
+        //
+        // Same for the make-space slide the groups an insertion pushed
+        // along are playing: without a pumped redraw the strip would
+        // freeze with them still sitting on the new group.
+        self.snap_in_flight()
+            || self.shift_in_flight()
+            || self.groups.iter().any(|g| g.needs_animation_frame())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4568,5 +4799,136 @@ mod tests {
                 a.width(),
             );
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Making room. A strip has unlimited space to the right, so the way
+    // to fit a new window between two others is to move the ones on its
+    // right along — never to squeeze anybody.
+    // -----------------------------------------------------------------
+
+    /// The whole of rule "windows that move do not shrink", asserted on
+    /// the geometry a real `build_layout` + `apply_layout` produces
+    /// either side of a real `insert_group`.
+    #[test]
+    fn making_room_translates_the_groups_it_pushes_and_never_narrows_them() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let before: Vec<(u64, Rect)> = row
+            .groups
+            .iter()
+            .map(|g| (g.id, g.get_rect()))
+            .collect();
+
+        // A window opening at the border between the first two.
+        row.insert_group(make_group(999, &[9]), 1);
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+
+        let fresh = row
+            .groups
+            .iter()
+            .find(|g| g.id == 999)
+            .expect("the inserted group is in the row");
+        let travel = fresh.get_rect().width() + HANDLE_SLOT_PX;
+        assert!(travel > 1.0, "fixture: the new window has a real width");
+
+        for (idx, (id, was)) in before.iter().enumerate() {
+            let now = row
+                .groups
+                .iter()
+                .find(|g| g.id == *id)
+                .expect("no pre-existing group may disappear")
+                .get_rect();
+            assert!(
+                (now.width() - was.width()).abs() < 0.5,
+                "group {id} must keep its width when room is made for \
+                 another: was {} now {}",
+                was.width(),
+                now.width(),
+            );
+            let expected_dx = if idx == 0 { 0.0 } else { travel };
+            assert!(
+                (now.x0 - was.x0 - expected_dx).abs() < 0.5,
+                "group {id} must translate by exactly the new window's \
+                 footprint ({expected_dx}), not by some compressed \
+                 fraction of it: moved {}",
+                now.x0 - was.x0,
+            );
+        }
+    }
+
+    /// And the ones that moved are *seen* moving: they paint where they
+    /// used to be and travel to where they now belong.
+    #[test]
+    fn the_groups_that_moved_start_from_where_they_were() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let unmoved = row.groups[0].id;
+        let pushed: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
+
+        row.insert_group(make_group(999, &[9]), 1);
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+        let travel = row
+            .groups
+            .iter()
+            .find(|g| g.id == 999)
+            .expect("inserted group")
+            .get_rect()
+            .width()
+            + HANDLE_SLOT_PX;
+
+        assert_eq!(
+            row.shift_offset_for(unmoved), 0.0,
+            "a group that did not move must not be animated",
+        );
+        for id in pushed {
+            let off = row.shift_offset_for(id);
+            assert!(
+                off < 0.0,
+                "group {id} must start left of its new home, i.e. where it \
+                 was; got {off}",
+            );
+            assert!(
+                off >= -travel - 0.5 && off.abs() > travel * 0.5,
+                "group {id} must start at (about) the position it had — a \
+                 travel of {travel} px; got {off}",
+            );
+        }
+    }
+
+    /// A window opened at the end of the strip moves nobody, so nothing
+    /// animates. The strip just gets longer, which it always can.
+    #[test]
+    fn appending_at_the_end_animates_nothing() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        let existing: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
+
+        let at_end = row.groups.len();
+        row.insert_group(make_group(999, &[9]), at_end);
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+
+        for id in existing {
+            assert_eq!(
+                row.shift_offset_for(id), 0.0,
+                "nothing had to move, so group {id} must not animate",
+            );
+        }
+        assert_eq!(row.shift_anim_t(), 1.0, "and no slide is in flight");
+    }
+
+    /// The strip keeps pumping frames while the slide plays — otherwise
+    /// it would freeze with the neighbours still sitting on the new
+    /// window.
+    #[test]
+    fn a_slide_in_flight_asks_for_animation_frames() {
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        assert!(
+            !row.needs_animation_frame(),
+            "fixture: an idle strip is idle",
+        );
+        row.insert_group(make_group(999, &[9]), 0);
+        let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+        assert!(
+            row.needs_animation_frame(),
+            "a strip making room must keep redrawing until it settles",
+        );
     }
 }

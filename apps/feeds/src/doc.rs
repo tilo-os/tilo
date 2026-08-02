@@ -188,6 +188,78 @@ impl FeedsDoc {
         }
     }
 
+    fn feed_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
+        let feeds = match doc.get(&ROOT, "feeds") {
+            Ok(Some((Value::Object(ObjType::Map), m))) => m,
+            _ => return None,
+        };
+        match doc.get(&feeds, id.to_string().as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), o))) => Some(o),
+            _ => None,
+        }
+    }
+
+    fn folder_obj(doc: &mut AutoCommit, id: Id) -> Option<ObjId> {
+        let folders = match doc.get(&ROOT, "folders") {
+            Ok(Some((Value::Object(ObjType::Map), m))) => m,
+            _ => return None,
+        };
+        match doc.get(&folders, id.to_string().as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), o))) => Some(o),
+            _ => None,
+        }
+    }
+
+    /// Rename a feed — a single field-level write so a concurrent title edit
+    /// merges last-writer-wins. A no-op if the feed is unknown (a bad replay
+    /// can't wedge).
+    pub fn set_feed_title(doc: &mut AutoCommit, id: Id, title: &str) {
+        if let Some(obj) = Self::feed_obj(doc, id) {
+            ui::doc::put_if_changed(doc, &obj, "title", title);
+        }
+    }
+
+    /// Move a feed into `folder` (`None` = uncategorised). Field-level, so a
+    /// concurrent move merges last-writer-wins.
+    pub fn set_feed_folder(doc: &mut AutoCommit, id: Id, folder: Option<Id>) {
+        if let Some(obj) = Self::feed_obj(doc, id) {
+            ui::doc::put_if_changed(
+                doc,
+                &obj,
+                "folder",
+                folder.map(|x| x.to_string()).unwrap_or_default(),
+            );
+        }
+    }
+
+    /// Rename a folder — a single field-level write.
+    pub fn set_folder_name(doc: &mut AutoCommit, id: Id, name: &str) {
+        if let Some(obj) = Self::folder_obj(doc, id) {
+            ui::doc::put_if_changed(doc, &obj, "name", name);
+        }
+    }
+
+    /// Delete a folder and unparent every feed that pointed at it (the feeds
+    /// survive as uncategorised — deleting a folder never drops subscriptions).
+    /// Deterministic against the replay base: the affected feeds are read from
+    /// the document, not from any local cache.
+    pub fn remove_folder(doc: &mut AutoCommit, id: Id) {
+        let key = id.to_string();
+        if let Ok(Some((Value::Object(ObjType::Map), feeds))) = doc.get(&ROOT, "feeds") {
+            let feed_keys: Vec<String> = doc.keys(&feeds).collect();
+            for fk in feed_keys {
+                if let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(&feeds, fk.as_str()) {
+                    if Self::get_str(doc, &obj, "folder") == key {
+                        let _ = doc.put(&obj, "folder", "");
+                    }
+                }
+            }
+        }
+        if let Ok(Some((Value::Object(ObjType::Map), folders))) = doc.get(&ROOT, "folders") {
+            let _ = doc.delete(&folders, key.as_str());
+        }
+    }
+
     /// Update just the `read` flag (merge-friendly per-field write).
     pub fn set_read(doc: &mut AutoCommit, id: Id, read: bool) {
         if let Some(obj) = Self::article_obj(doc, id) {

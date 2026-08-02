@@ -151,23 +151,31 @@ pub fn plan(
 /// SAFETY-CRITICAL: raise the floor, but only after proving the running
 /// generation's token unseals *right now*.
 ///
-/// `proof` is the passphrase that was obtained by unsealing the token for the
-/// generation being confirmed. Requiring it as an argument means the caller
-/// cannot reach this function without having done the unseal — the proof is a
-/// value, not a promise.
+/// `proof` is a secret already shown to open the device for the generation being
+/// confirmed. Requiring it as an argument means the caller cannot reach this
+/// function without having established that — the proof is a value, not a promise.
+///
+/// Each step also needs a signed, single-use approval. Missing approvals stop the
+/// advance early and are reported; they never stop the disk unlocking.
 #[allow(clippy::too_many_arguments)]
 pub fn advance_floor(
     runner: &dyn Runner,
     ws: &Workspace,
     device: &Path,
+    cfg: &crate::Config,
     plan: &Plan,
     floor: FloorState,
-    nv_index: u32,
+    authority_key_name: &[u8],
+    approvals: &[crate::approval::Approval],
     proof: &[u8],
     scratch: &Path,
-) -> Result<FloorState> {
+) -> Result<counter::AdvanceOutcome> {
     if !plan.floor.advances() {
-        return Ok(floor);
+        return Ok(counter::AdvanceOutcome {
+            floor,
+            steps: 0,
+            unapproved: Vec::new(),
+        });
     }
     // 1. The token we are relying on must actually open the disk.
     if !keyslots::verify_passphrase(runner, ws, device, proof, None)? {
@@ -188,11 +196,16 @@ pub fn advance_floor(
     }
     counter::advance(
         runner,
-        nv_index,
+        ws,
+        cfg.nv_index,
         scratch,
         floor,
         plan.floor.target_floor,
         counter::MAX_INCREMENTS_PER_ADVANCE,
+        Path::new(&cfg.floor_authority_key),
+        authority_key_name,
+        approvals,
+        Some(Path::new(&cfg.approval_dir)),
     )
 }
 
@@ -310,6 +323,11 @@ pub struct Outcome {
     pub enrolled: Option<(u32, u32)>,
     pub dropped: Vec<u64>,
     pub floor: FloorState,
+    /// Counter values the floor could not reach for want of a signed approval.
+    ///
+    /// Non-empty means the protection is running on keyslot retention alone until
+    /// the authority issues more. The disk still unlocks.
+    pub unapproved_steps: Vec<u64>,
 }
 
 /// Confirm a generation: enroll it if needed, prove it, prune the window, and
@@ -397,6 +415,7 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
             enrolled: None,
             dropped: Vec::new(),
             floor,
+            unapproved_steps: Vec::new(),
         });
     }
 
@@ -461,16 +480,22 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         dropped.push(*g);
     }
 
-    floor = advance_floor(
+    let authority_key_name =
+        crate::policy::key_name(runner, ws, Path::new(&cfg.floor_authority_key))?;
+    let approvals = crate::approval::load_all(Path::new(&cfg.approval_dir))?;
+    let advanced = advance_floor(
         runner,
         ws,
         device,
+        cfg,
         &plan,
         floor,
-        cfg.nv_index,
+        &authority_key_name,
+        &approvals,
         &proof,
         req.scratch,
     )?;
+    floor = advanced.floor;
 
     save_state(
         req.state_path,
@@ -489,5 +514,6 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         enrolled,
         dropped,
         floor,
+        unapproved_steps: advanced.unapproved,
     })
 }

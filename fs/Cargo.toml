@@ -17,11 +17,15 @@ iroh-gossip.workspace = true
 automerge.workspace = true
 qdoc = { path = "../crates/doc/qdoc" }
 collab-types = { path = "../crates/collab/collab-types" }
+# The machine's one device key. The mount derives its iroh node key from
+# it rather than minting its own, so the node id names the device.
+qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 libc.workspace = true
 moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 hex.workspace = true
 blake3.workspace = true

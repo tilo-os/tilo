@@ -30,6 +30,10 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, Widget};
 
+use crate::actions::{
+    delete_clip_action, ripple_delete_action, split_clip_action, upsert_clip_action,
+    upsert_media_action, upsert_track_action, VideoResourceCtx, VIDEO_EDITOR_ACTION_TYPE,
+};
 use crate::doc::VideoDoc;
 use crate::export::{
     begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
@@ -95,6 +99,7 @@ enum TransportAction {
     ToEnd,
 }
 
+#[derive(Clone, Copy, PartialEq)]
 enum Drag {
     Playhead,
     Scrubber,
@@ -180,11 +185,13 @@ pub struct VideoEditorApp {
     initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
-    /// Set whenever an edit mutates the CRDT in a way that should be a
-    /// discrete undo step. The toolkit's `App` snapshots the doc for undo
-    /// when `needs_commit()` is true, then calls `on_commit()` to clear it.
-    /// Ctrl+Z / Ctrl+Y are then handled OS-wide by the toolkit.
-    needs_commit: bool,
+    /// Framework-owned action dispatch. Every document-mutating affordance
+    /// dispatches its [`VideoEditorAction`](crate::actions::VideoEditorAction)
+    /// through this: the host brackets the undo boundary, applies the action via
+    /// the executor (so it replays byte-identically on peers), and remembers it
+    /// for the affordance == `ActionSpec` covenant test. Ctrl+Z / Ctrl+Y are
+    /// handled OS-wide by the toolkit off the recorded boundary.
+    actions: ui::ActionHost,
     /// Copied clip, ready to paste at the playhead (Ctrl+C / Ctrl+V). Holds
     /// a full clip snapshot — trim window, filters and fades come along.
     clipboard: Option<Clip>,
@@ -244,7 +251,7 @@ impl VideoEditorApp {
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
-            needs_commit: false,
+            actions: ui::ActionHost::new(),
             clipboard: None,
             shuttle: 0.0,
             flap_settled: false,
@@ -526,42 +533,61 @@ impl VideoEditorApp {
         self.last_tick = Instant::now();
     }
 
-    // ---- mutations (write through to the CRDT) ---------------------------
+    // ---- mutations (dispatched as replayable actions) --------------------
+    // Every document-mutating edit dispatches a `VideoEditorAction` through the
+    // framework's `ActionHost`: it brackets the undo boundary, applies the
+    // action through the executor (so it replays byte-identically on peers), and
+    // remembers it for the covenant test. There is no per-edit `needs_commit`
+    // flag any more — the host records exactly one undo boundary per event.
+
+    /// Dispatch a whole-clip write for `id` — the single path add / move / trim
+    /// / grade all funnel through. Carries the clip's final shape, so it replays
+    /// deterministically with no per-frame churn.
+    fn dispatch_clip(&mut self, doc: &mut AutoCommit, id: ClipId) {
+        if let Some(c) = self.project.clip(id).cloned() {
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_clip_action(&c));
+        }
+    }
+
     fn split_selected(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
         if let Some(rid) = self.project.split_clip(id, self.playhead) {
-            if let Some(left) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, left);
-            }
-            if let Some(right) = self.project.clip(rid) {
-                VideoDoc::upsert_clip(doc, right);
+            let left = self.project.clip(id).cloned();
+            let right = self.project.clip(rid).cloned();
+            if let (Some(left), Some(right)) = (left, right) {
+                self.actions.dispatch(
+                    doc,
+                    VIDEO_EDITOR_ACTION_TYPE,
+                    &split_clip_action(&left, &right),
+                );
             }
             self.selected = Some(rid);
-            self.needs_commit = true;
         }
     }
 
     fn delete_selected(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
         self.project.delete_clip(id);
-        VideoDoc::remove_clip(doc, id);
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
         self.selected = None;
-        self.needs_commit = true;
     }
 
     /// Delete the selected clip and close the gap, shifting later clips on
-    /// the same track left. Replicates every moved clip through the CRDT.
+    /// the same track left. The whole ripple — the delete plus every shifted
+    /// clip — is carried in one action, so it lands as a single undo boundary
+    /// and replays atomically on a peer.
     fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
         let Some(id) = self.selected else { return };
-        let moved = self.project.ripple_delete(id);
-        VideoDoc::remove_clip(doc, id);
-        for mid in moved {
-            if let Some(c) = self.project.clip(mid) {
-                VideoDoc::upsert_clip(doc, c);
-            }
-        }
+        let moved_ids = self.project.ripple_delete(id);
+        let moved: Vec<Clip> = moved_ids
+            .iter()
+            .filter_map(|m| self.project.clip(*m).cloned())
+            .collect();
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &ripple_delete_action(&id, &moved));
         self.selected = None;
-        self.needs_commit = true;
     }
 
     /// Copy the selected clip to the clipboard (no CRDT change).
@@ -585,11 +611,8 @@ impl VideoEditorApp {
             .or_else(|| self.project.tracks.first().map(|t| t.id));
         let Some(track) = track else { return };
         let id = self.project.paste_clip(src, track, self.playhead);
-        if let Some(c) = self.project.clip(id) {
-            VideoDoc::upsert_clip(doc, c);
-        }
+        self.dispatch_clip(doc, id);
         self.selected = Some(id);
-        self.needs_commit = true;
     }
 
     /// Set the in-point of the selected clip to the playhead (`I`): trims
@@ -601,10 +624,7 @@ impl VideoEditorApp {
             return;
         }
         self.project.trim_in(id, delta);
-        if let Some(c) = self.project.clip(id) {
-            VideoDoc::upsert_clip(doc, c);
-        }
-        self.needs_commit = true;
+        self.dispatch_clip(doc, id);
     }
 
     /// Set the out-point of the selected clip to the playhead (`O`): trims
@@ -616,10 +636,7 @@ impl VideoEditorApp {
             return;
         }
         self.project.trim_out(id, delta);
-        if let Some(c) = self.project.clip(id) {
-            VideoDoc::upsert_clip(doc, c);
-        }
-        self.needs_commit = true;
+        self.dispatch_clip(doc, id);
     }
 
     /// Nudge the selected clip by `dt` seconds (arrow keys when a clip is
@@ -632,32 +649,32 @@ impl VideoEditorApp {
             .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
             .unwrap_or(0.0);
         self.project.move_clip(id, new_start);
-        if let Some(c) = self.project.clip(id) {
-            VideoDoc::upsert_clip(doc, c);
-        }
-        self.needs_commit = true;
+        self.dispatch_clip(doc, id);
     }
 
-    /// Apply `edit` to the selected clip and replicate it. The single
-    /// write-through path for every per-clip field edit — sets the commit
-    /// flag so each adjustment is an undo step.
+    /// Apply `edit` to the selected clip and dispatch a whole-clip write. The
+    /// single write-through path for a *discrete* per-clip field edit (a
+    /// transition / palette click, or a keyboard-driven grade) — each is one
+    /// undo step. Continuous slider drags use [`Self::preview_edit`] +
+    /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
     fn edit_selected(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut Clip)) {
         let Some(id) = self.selected else { return };
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
-        if let Some(c) = self.project.clip(id) {
-            VideoDoc::upsert_clip(doc, c);
-        }
-        self.needs_commit = true;
+        self.dispatch_clip(doc, id);
     }
 
-    fn set_opacity(&mut self, doc: &mut AutoCommit, v: f64) {
-        self.edit_selected(doc, |c| c.opacity = v.clamp(0.0, 1.0));
+    /// Apply `edit` to the selected clip **in memory only** — the live drag
+    /// preview. No action is dispatched; the final value is committed once when
+    /// the drag ends (see [`Self::commit_drag`]).
+    fn preview_edit(&mut self, edit: impl FnOnce(&mut Clip)) {
+        let Some(id) = self.selected else { return };
+        if let Some(c) = self.project.clip_mut(id) {
+            edit(c);
+        }
     }
-    fn set_volume(&mut self, doc: &mut AutoCommit, v: f64) {
-        self.edit_selected(doc, |c| c.volume = v.clamp(0.0, 1.0));
-    }
+
     fn set_filter(&mut self, doc: &mut AutoCommit, field: FilterField, v: f64) {
         let v = v.clamp(0.0, 1.0);
         self.edit_selected(doc, move |c| match field {
@@ -665,12 +682,6 @@ impl VideoEditorApp {
             FilterField::Contrast => c.filters.contrast = v,
             FilterField::Saturation => c.filters.saturation = v,
         });
-    }
-    fn set_fade_in(&mut self, doc: &mut AutoCommit, secs: f64) {
-        self.edit_selected(doc, move |c| c.fade_in = secs.clamp(0.0, c.duration()));
-    }
-    fn set_fade_out(&mut self, doc: &mut AutoCommit, secs: f64) {
-        self.edit_selected(doc, move |c| c.fade_out = secs.clamp(0.0, c.duration()));
     }
     fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
         self.edit_selected(doc, move |c| c.transition = t);
@@ -700,11 +711,8 @@ impl VideoEditorApp {
             .map(|c| c.end())
             .unwrap_or(0.0);
         if let Some(id) = self.project.add_clip(track, media, start) {
-            if let Some(c) = self.project.clip(id) {
-                VideoDoc::upsert_clip(doc, c);
-            }
+            self.dispatch_clip(doc, id);
             self.selected = Some(id);
-            self.needs_commit = true;
         }
     }
 
@@ -791,9 +799,9 @@ impl VideoEditorApp {
         };
         let id = item.id;
         self.project.media.push(item.clone());
-        VideoDoc::upsert_media(doc, &item);
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&item));
         self.selected_media = Some(id);
-        self.needs_commit = true;
         true
     }
 
@@ -813,7 +821,8 @@ impl VideoEditorApp {
                 muted: false,
                 locked: false,
             };
-            VideoDoc::upsert_track(doc, &track);
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
             self.project.tracks.push(track);
         }
         self.add_media_to_timeline(doc, media_id);
@@ -978,6 +987,20 @@ impl VideoEditorApp {
         self.selected_media = self.project.media.first().map(|m| m.id);
         self.initialised_selection = true;
     }
+
+    /// The presentation context Ctrl+K's resource tree is built from: a snapshot
+    /// of the open project plus the live playhead. Returns `None` when nothing
+    /// is open (a blank project), so the palette shows an empty tree — a steady,
+    /// level-triggered value recomputed each frame.
+    pub(crate) fn video_resource_ctx(&self) -> Option<VideoResourceCtx> {
+        if self.project.tracks.is_empty() && self.project.clips.is_empty() {
+            return None;
+        }
+        Some(VideoResourceCtx {
+            project: self.project.clone(),
+            playhead: self.playhead,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -1021,7 +1044,12 @@ impl Widget for VideoEditorApp {
             }
             self.seeded = true;
         }
-        self.project = VideoDoc::load_project(state);
+        // While a clip-editing drag is in flight, the live preview lives only in
+        // the in-memory project — the CRDT isn't written until the drag commits
+        // — so don't clobber it by reloading a stale document mid-drag.
+        if !self.drag_is_editing() {
+            self.project = VideoDoc::load_project(state);
+        }
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
         self.drain_import(state);
@@ -1156,6 +1184,9 @@ impl Widget for VideoEditorApp {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if self.drag.is_some() {
+                    // Commit the drag's final position / trim / grade as one
+                    // action (one undo boundary), then end the drag.
+                    self.commit_drag(state);
                     self.drag = None;
                     *handled = true;
                 }
@@ -1164,7 +1195,7 @@ impl Widget for VideoEditorApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
                 self.update_hover(&r);
-                self.apply_drag(state, &r);
+                self.apply_drag(&r);
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1188,15 +1219,19 @@ impl Widget for VideoEditorApp {
         Some("video_editor_root")
     }
 
-    /// Undo/redo is the toolkit's full-CRDT snapshot mechanism: when an edit
-    /// has flagged `needs_commit`, `App` pushes an undo point before the next
-    /// frame and clears it via `on_commit`. Ctrl+Z / Ctrl+Y then restore the
-    /// document OS-wide — no editor-local undo stack.
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
+    /// Publish the open project + its tracks and clips so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
-    fn on_commit(&mut self) {
-        self.needs_commit = false;
+
+    /// Hand the host the document heads captured before an on-screen affordance
+    /// dispatched its timeline action, so it records exactly one undo boundary
+    /// bracketing it (Ctrl+Z reverts it OS-wide). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -1484,11 +1519,14 @@ impl VideoEditorApp {
         if !l.valid {
             return;
         }
+        // The slider controls start a drag and preview the click position in
+        // memory; the final value is dispatched as one action on mouse-up
+        // (see `commit_drag`), so a slider interaction is one undo step.
         if let Some(track) = l.opacity {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::Opacity);
                 let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_opacity(state, v);
+                self.preview_edit(|c| c.opacity = v);
                 return;
             }
         }
@@ -1496,7 +1534,7 @@ impl VideoEditorApp {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::Volume);
                 let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_volume(state, v);
+                self.preview_edit(|c| c.volume = v);
                 return;
             }
         }
@@ -1510,7 +1548,11 @@ impl VideoEditorApp {
                 if hit_slider(track, p) {
                     self.drag = Some(drag);
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.set_filter(state, field, v);
+                    self.preview_edit(move |c| match field {
+                        FilterField::Brightness => c.filters.brightness = v,
+                        FilterField::Contrast => c.filters.contrast = v,
+                        FilterField::Saturation => c.filters.saturation = v,
+                    });
                     return;
                 }
             }
@@ -1521,7 +1563,7 @@ impl VideoEditorApp {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::FadeIn);
                 let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_fade_in(state, frac * max);
+                self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 return;
             }
         }
@@ -1529,7 +1571,7 @@ impl VideoEditorApp {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::FadeOut);
                 let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_fade_out(state, frac * max);
+                self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 return;
             }
         }
@@ -1605,8 +1647,13 @@ impl VideoEditorApp {
         }
     }
 
-    fn apply_drag(&mut self, state: &mut AutoCommit, r: &Regions) {
-        let Some(drag) = &self.drag else { return };
+    /// Track the live drag, updating **only the in-memory project** for a
+    /// smooth preview. Nothing is written to the CRDT here — the clip's final
+    /// position / trim / grade is dispatched as one action when the drag ends
+    /// (see [`Self::commit_drag`]), so a drag is one undo step, not sixty a
+    /// second of doc churn. The playhead / scrubber drags are pure presentation.
+    fn apply_drag(&mut self, r: &Regions) {
+        let Some(drag) = self.drag else { return };
         let p = self.last_mouse;
         match drag {
             Drag::Playhead => {
@@ -1615,52 +1662,35 @@ impl VideoEditorApp {
             }
             Drag::Scrubber => self.apply_scrubber(p, r),
             Drag::ClipMove { id, grab_dt } => {
-                let (id, grab_dt) = (*id, *grab_dt);
                 let raw = (self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0);
                 // Snap the clip's left edge to a neighbouring edge / playhead
                 // when within a few pixels, then to the frame grid.
                 let snapped = self.snap_time(raw, id);
                 let new_start = snap_to_frame(snapped, self.project.fps);
                 self.project.move_clip(id, new_start);
-                if let Some(c) = self.project.clip(id) {
-                    VideoDoc::upsert_clip(state, c);
-                }
-                self.needs_commit = true;
             }
             Drag::TrimIn { id } => {
-                let id = *id;
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map(|c| target - c.start).unwrap_or(0.0);
                 self.project.trim_in(id, delta);
-                if let Some(c) = self.project.clip(id) {
-                    VideoDoc::upsert_clip(state, c);
-                }
-                self.needs_commit = true;
             }
             Drag::TrimOut { id } => {
-                let id = *id;
                 let raw = self.x_to_time(p.x, &r.lanes);
                 let target = snap_to_frame(self.snap_time(raw, id), self.project.fps);
                 let delta = self.project.clip(id).map(|c| target - c.end()).unwrap_or(0.0);
                 self.project.trim_out(id, delta);
-                if let Some(c) = self.project.clip(id) {
-                    VideoDoc::upsert_clip(state, c);
-                }
-                self.needs_commit = true;
             }
             Drag::Opacity => {
-                let l = self.inspector_layout(r);
-                if let Some(track) = l.opacity {
+                if let Some(track) = self.inspector_layout(r).opacity {
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.set_opacity(state, v);
+                    self.preview_edit(|c| c.opacity = v);
                 }
             }
             Drag::Volume => {
-                let l = self.inspector_layout(r);
-                if let Some(track) = l.volume {
+                if let Some(track) = self.inspector_layout(r).volume {
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.set_volume(state, v);
+                    self.preview_edit(|c| c.volume = v);
                 }
             }
             Drag::Brightness | Drag::Contrast | Drag::Saturation => {
@@ -1671,24 +1701,74 @@ impl VideoEditorApp {
                 };
                 if let Some(track) = track {
                     let v = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    self.set_filter(state, field, v);
+                    self.preview_edit(move |c| match field {
+                        FilterField::Brightness => c.filters.brightness = v,
+                        FilterField::Contrast => c.filters.contrast = v,
+                        FilterField::Saturation => c.filters.saturation = v,
+                    });
                 }
             }
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
                     let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
-                    self.set_fade_in(state, frac * max);
+                    self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
                     let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
-                    self.set_fade_out(state, frac * max);
+                    self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
         }
+    }
+
+    /// Commit the edit a drag just made: dispatch one action carrying the final
+    /// shape of the clip the drag touched. Called on mouse-up, before the drag
+    /// is cleared. Playhead / scrubber drags are presentation and commit
+    /// nothing.
+    fn commit_drag(&mut self, doc: &mut AutoCommit) {
+        let Some(drag) = self.drag else { return };
+        match drag {
+            Drag::Playhead | Drag::Scrubber => {}
+            Drag::ClipMove { id, .. } | Drag::TrimIn { id } | Drag::TrimOut { id } => {
+                self.dispatch_clip(doc, id);
+            }
+            Drag::Opacity
+            | Drag::Volume
+            | Drag::Brightness
+            | Drag::Contrast
+            | Drag::Saturation
+            | Drag::FadeIn
+            | Drag::FadeOut => {
+                if let Some(id) = self.selected {
+                    self.dispatch_clip(doc, id);
+                }
+            }
+        }
+    }
+
+    /// True while a drag that edits a clip is in flight, so [`Widget::sync`]
+    /// leaves the live in-memory preview alone instead of reloading it from the
+    /// (not-yet-written) document mid-drag.
+    fn drag_is_editing(&self) -> bool {
+        matches!(
+            self.drag,
+            Some(
+                Drag::ClipMove { .. }
+                    | Drag::TrimIn { .. }
+                    | Drag::TrimOut { .. }
+                    | Drag::Opacity
+                    | Drag::Volume
+                    | Drag::Brightness
+                    | Drag::Contrast
+                    | Drag::Saturation
+                    | Drag::FadeIn
+                    | Drag::FadeOut
+            )
+        )
     }
 
     /// Magnetic snap for a dragged clip edge at raw time `t`: snaps to the
@@ -2821,7 +2901,10 @@ mod tests {
         // The new clip is in the *document*, not just the in-memory mirror.
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.clips.len(), before + 1, "split wrote a clip to the CRDT");
-        assert!(app.needs_commit, "split is an undo point");
+        assert!(
+            app.actions.take_committed().is_some(),
+            "split dispatched an action, arming one undo boundary",
+        );
     }
 
     #[test]
@@ -2833,7 +2916,10 @@ mod tests {
         app.set_filter(&mut doc, FilterField::Brightness, 0.9);
         let reloaded = VideoDoc::load_project(&doc);
         assert!((reloaded.clip(id).unwrap().filters.brightness - 0.9).abs() < 1e-9);
-        assert!(app.needs_commit);
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the grade dispatched an action, arming one undo boundary",
+        );
     }
 
     #[test]
@@ -2864,7 +2950,10 @@ mod tests {
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
         let reloaded = VideoDoc::load_project(&doc);
         assert!((reloaded.clip(id).unwrap().end() - 15.0).abs() < 1e-6, "O trims the tail to the playhead");
-        assert!(app.needs_commit);
+        assert!(
+            app.actions.take_committed().is_some(),
+            "setting the out-point dispatched an action, arming one undo boundary",
+        );
     }
 
     #[test]

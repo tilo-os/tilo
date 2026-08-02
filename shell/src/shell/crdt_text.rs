@@ -52,11 +52,11 @@ pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 /// This is the read half of [`CrdtTextBody::sync`]'s layout and it lives
 /// beside it deliberately: anything that wants at a text tile's content —
 /// the shell's in-app search, above all — has to look exactly where the
-/// app puts it. `TileHost` hands every hosted app the *same* document
-/// root, so a body sits at `<root>/<key>`; there is no per-tab map. The
-/// notes search provider used to guess at one keyed by the tab id, found
-/// nothing there, and silently fell back to matching titles — so a query
-/// that only appeared in a note's body returned no results at all.
+/// app puts it. A body sits at `<root>/<key>` of **the tab's own
+/// document**, one per record; reach it through
+/// [`crate::shell::tab_documents::tab_body`], which knows which document
+/// a tab is. Reading one body and attributing it to every tab is what
+/// made two Notes tabs show each other's text.
 pub fn read_body(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
     match doc.get(root, key) {
         Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
@@ -70,6 +70,12 @@ pub struct CrdtTextBody {
     /// Automerge key under the tile's root. Distinct per app so two text
     /// tiles hosted in the same shell don't write over each other.
     key: &'static str,
+    /// The record whose document this body lives in, once the host has
+    /// said. Part of the presence key and nothing else: the body's
+    /// *content* is addressed by `key` inside that document, but its
+    /// *identity to a peer* has to name the document too, or two tabs of
+    /// one app publish the same caret address.
+    record: Option<String>,
     /// Mirror of the CRDT text, in step after every [`Self::sync`] and
     /// every [`Self::splice`]. Byte-indexed.
     pub text: String,
@@ -82,6 +88,7 @@ impl CrdtTextBody {
     pub fn new(key: &'static str) -> Self {
         Self {
             key,
+            record: None,
             text: String::new(),
             last_edit: None,
         }
@@ -93,16 +100,39 @@ impl CrdtTextBody {
     pub fn with_seed(key: &'static str, text: impl Into<String>) -> Self {
         Self {
             key,
+            record: None,
             text: text.into(),
             last_edit: None,
         }
     }
 
+    /// Name the record this body's document is. Called by the tile that
+    /// hosts the app, through
+    /// [`ui::widget::Widget::set_record_scope`].
+    pub fn set_record(&mut self, record: &ui::record::RecordId) {
+        self.record = Some(record.as_str().to_string());
+    }
+
     /// Presence key for this body — a widget-level path, so the peer
     /// caret / selection helpers pick it up.
+    ///
+    /// The path names the record first and the field second, because a
+    /// caret is a position in a *document*: two Notes tabs are two
+    /// documents with a `notes_body` each, and a key that only said
+    /// "notes_body" addressed both of them at once — a peer typing in one
+    /// tab drew a caret in the other. An unhosted body (no record named
+    /// yet) keeps the bare field path.
     pub fn presence_key(&self) -> PresenceKey {
-        PresenceKey::Widget {
-            path: vec![PathSegment::Field(self.key.into())],
+        match &self.record {
+            Some(record) => PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field(record.clone()),
+                    PathSegment::Field(self.key.into()),
+                ],
+            },
+            None => PresenceKey::Widget {
+                path: vec![PathSegment::Field(self.key.into())],
+            },
         }
     }
 

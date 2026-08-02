@@ -1,13 +1,16 @@
 # Code Editor — qOS application manifest.
 #
 # The project tree lives in the CRDT — the editor opens and saves no
-# file of the user's today. What it does need is the host bin dirs, for
-# `$SHELL` in the built-in terminal tab and for any language server
-# enabled through `QOS_CODE_LSP`.
+# file of the user's today.
 #
 # The PTY the terminal tab needs comes from the devpts bwrap mounts at
 # /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
 # and slave across two devpts instances and openpty() fails EACCES.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read+exec on the host bin dirs, for `$SHELL` in the built-in
+# terminal tab and for any language server enabled through
+# `QOS_CODE_LSP`.
 #
 # Pack and install:
 #
@@ -52,49 +55,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "/etc/passwd",
-    "/etc/shells",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.code-editor",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-]
 
 [sandbox.net]
 mode = "off"

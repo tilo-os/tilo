@@ -173,6 +173,26 @@ document exists to remove: the moment "personal" is a different sort of thing
 from "shared", every feature has to be built twice and sharing becomes a
 migration instead of a reference.
 
+## An app's disk is per-room; its index is not
+
+"An app opened in a room starts empty" holds on disk. An app does not name a
+writable path — the launcher gives it one, at
+`<data home>/qos-rooms/<room>/<package>`, bound at `/run/qos/app` with `HOME`
+and the `XDG_*` variables pointed inside it. Two rooms are two directories, so
+`cli::standalone_state_dir`, `dirs::home_dir()` and a hard-coded
+`~/.local/share/<package>` all partition by room without an app changing a
+line, and there is no manifest field with which to opt out. A launch with no
+workspace gets the `personal` room, which is a room like any other.
+`crates/packaging/launcher/tests/room_confinement.rs` proves it: a record
+written in room A is `ENOENT` in room B, under a real `bwrap`.
+
+The room *index* is a separate question, and it is the compositor's — one
+document per room, which is where a fact about a room belongs anyway. The gap
+that leaves is worth naming: **an app launched into a room does not read that
+room's index.** A record's own `home` stamp is what carries its room across the
+gap, which is why a record is attributed to its home room even when no index
+references it.
+
 ## Still open
 
 - Whether a record's *type* is app-owned or system-owned. App-owned is less

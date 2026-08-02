@@ -15,6 +15,9 @@
 //! set by the launcher), and its absence is what previously caused
 //! every app to sit at "no signing identity" — join_channel then
 //! carried empty identity bytes and no signed op could be minted.
+//! The record is encoded by `ui::widget::identity_flow::IdentityRecord`,
+//! the same type the interactive ceremony writes, so both paths mint
+//! the same shape.
 //!
 //! See `os/usr/lib/systemd/system/quick-desktop-firstboot.service` for
 //! the boot chain and `CLAUDE.md`'s "Boot chain" section for the
@@ -31,6 +34,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use rand_core::OsRng;
 use threshold_identity::ThresholdIdentity;
+use ui::widget::identity_flow::IdentityRecord;
 
 /// File name for the primary single-device identity record. Matches
 /// what `runtime-identity::load()` expects (via the `QOS_USER_IDENTITY`
@@ -187,44 +191,22 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
         return Ok(ProvisionOutcome::Existing);
     }
 
-    // Generate a fresh dalek-seed-shaped single-device identity via
-    // `threshold-identity`. We must NOT use the frost variant here:
-    // the on-disk JSON schema treats `secret_bytes` as an
-    // `ed25519_dalek::SigningKey::from_bytes` input (i.e. a SEED,
-    // expanded via SHA-512 to reach the scalar), whereas frost stores
-    // the scalar directly — round-tripping the frost value through
-    // this schema derives a different signing key and produced sigs
-    // stop verifying. See the seed helper's doc for the full story.
+    // Mint through the same encoder the interactive ceremony uses, so
+    // there is exactly one writer of the on-disk record and the two
+    // provisioning paths cannot drift apart in what they store.
     let mut rng = OsRng;
-    let (seed, group_pk) = ThresholdIdentity::bootstrap_single_device_seed(&mut rng);
-    let pubkey_hex = hex_encode(group_pk.as_bytes());
-
-    // Timestamp in RFC 3339 so a recovery flow can identify when the
-    // record was minted — same format the UI identity-flow uses.
-    let created_at = chrono::Utc::now().to_rfc3339();
-
-    // Build the JSON body inline. Deliberately *not* routed through
-    // `ui::widget::identity_flow::IdentityRecord::from_threshold_identity` —
-    // that path pipes through `SerializableIdentity::from_identity`
-    // which writes a placeholder SHA-512 digest as `secret_bytes`
-    // (see the module comment). The bytes we write here are the real
-    // dalek seed, so `runtime-identity::load()` derives the same
-    // pubkey it finds in the record.
-    let record = serde_json::json!({
-        "display_name": "",
-        "avatar_color": [128u8, 128u8, 128u8],
-        "threshold_identity": {
-            "single_device": true,
-            "group_public_key": group_pk.as_bytes(),
-            "threshold": 1u16,
-            "total_shares": 1u16,
-            "share_index": 1u16,
-            "secret_bytes": seed.to_vec(),
-        },
-        "created_at": created_at,
-        "schema_version": 1u32,
-    });
-    let bytes = serde_json::to_vec_pretty(&record)
+    let identity = ThresholdIdentity::bootstrap_single_device(&mut rng)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+    let pubkey_hex = hex_encode(identity.group_public_key().as_bytes());
+    let record = IdentityRecord::from_threshold_identity(
+        &identity,
+        "",
+        [128, 128, 128],
+        std::time::SystemTime::now(),
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    let bytes = record
+        .to_json_bytes()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
     // The 0600 is applied to the temp file before the rename, so the record

@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use qos_actions::EncodedAction;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};
@@ -28,7 +29,7 @@ use vello::peniko::Color;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Image, ImageFit, Widget};
+use ui::widget::{Image, ImageFit, Toggle, ToggleFace, Widget};
 use winit::event::WindowEvent;
 
 use crate::doc;
@@ -162,6 +163,11 @@ pub struct CameraApp {
     regions: Vec<(Rect, Action)>,
     dirty: bool,
     initialized: bool,
+
+    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
+    /// dispatches each action, and remembers the last one so a test can prove a
+    /// button and its palette `ActionSpec` build the same `EncodedAction`.
+    actions: ui::ActionHost,
 }
 
 impl Default for CameraApp {
@@ -221,6 +227,7 @@ impl CameraApp {
             regions: Vec::new(),
             dirty: true,
             initialized: false,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -327,6 +334,35 @@ impl CameraApp {
         self.lib_dirty = false;
     }
 
+    /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
+    /// single mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The doc
+    /// heads captured just before the first action of the event are stashed so the
+    /// host records **one** undo boundary bracketing it
+    /// ([`ui::widget::Widget::take_committed_action`]).
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::CameraAction) {
+        self.actions
+            .dispatch(doc, crate::actions::CAMERA_ACTION_TYPE, &action);
+    }
+
+    /// The context Ctrl+K needs to build Camera's resource tree: the gallery
+    /// shots currently in the library cache, with their favorite state. Derived
+    /// entirely from state the app already holds; nothing is fabricated.
+    pub(crate) fn camera_resource_ctx(&self) -> crate::actions::CameraResourceCtx {
+        let items = self
+            .captures
+            .iter()
+            .map(|c| crate::actions::GalleryItem {
+                id: c.id.clone(),
+                label: c.label.clone(),
+                favorite: c.favorite,
+                is_video: c.is_video(),
+            })
+            .collect();
+        crate::actions::CameraResourceCtx { items }
+    }
+
     fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
         self.dirty = true;
         // Any interaction clears a transient confirmation; the action below
@@ -384,17 +420,24 @@ impl CameraApp {
             Action::CloseDetail => self.selected_capture = None,
             Action::ToggleFavSelected => {
                 if let Some(id) = self.selected_capture.clone() {
+                    // Flip the cached state for immediate feedback, then route
+                    // the doc write through the shared action so the heart, a
+                    // delete's cleanup, and Ctrl+K all dispatch one thing.
+                    let mut toggled = None;
                     if let Some(c) = self.captures.iter_mut().find(|c| c.id == id) {
                         c.favorite = !c.favorite;
-                        let on = c.favorite;
+                        toggled = Some(c.favorite);
+                    }
+                    if let Some(on) = toggled {
                         if on {
                             self.favorites.insert(id.clone());
                         } else {
                             self.favorites.remove(&id);
                         }
-                        if matches!(self.storage, Storage::Disk(_)) {
-                            doc::set_favorite(doc, root, &id, on);
-                        }
+                        self.perform_action(
+                            doc,
+                            crate::actions::CameraAction::SetFavorite { id: id.clone(), on },
+                        );
                     }
                 }
             }
@@ -403,7 +446,17 @@ impl CameraApp {
                     if let Storage::Disk(dir) = &self.storage {
                         let _ = library::delete(dir, &id);
                     }
-                    doc::set_favorite(doc, root, &id, false);
+                    // The pixels are device I/O (removed above / reconciled via
+                    // FUSE); the shot's only collaborative trace is its favorite
+                    // flag, cleared through the same action the heart uses — but
+                    // only when it was actually starred, so an unstarred delete
+                    // touches the document not at all.
+                    if self.favorites.contains(&id) {
+                        self.perform_action(
+                            doc,
+                            crate::actions::CameraAction::SetFavorite { id: id.clone(), on: false },
+                        );
+                    }
                     self.captures.retain(|c| c.id != id);
                     self.thumbs.remove(&id);
                     self.favorites.remove(&id);
@@ -425,8 +478,13 @@ impl CameraApp {
             }
             Action::ScanAction(i) => {
                 if let Some(s) = self.scanned.clone() {
+                    // The chosen action (open / connect / copy) is external; the
+                    // scan-history row-insert is the collaborative action.
                     self.perform_scan_action(&s, i);
-                    doc::record_scan(doc, root, &s.raw, now_secs());
+                    self.perform_action(
+                        doc,
+                        crate::actions::CameraAction::RecordScan { raw: s.raw.clone(), ts: now_secs() },
+                    );
                     self.scans = doc::read_scans(doc, root);
                 }
             }
@@ -528,7 +586,12 @@ impl CameraApp {
         match crate::scan::decode_and_classify(&luma, w, h, |p| p) {
             Some(s) => {
                 self.scanned = Some(s.clone());
-                doc::record_scan(doc, root, &s.raw, now_secs());
+                // Decoding is device I/O; recording it into the shared history
+                // is the collaborative action.
+                self.perform_action(
+                    doc,
+                    crate::actions::CameraAction::RecordScan { raw: s.raw.clone(), ts: now_secs() },
+                );
                 self.scans = doc::read_scans(doc, root);
                 self.toast = Some(format!("{} found", s.kind.title()));
             }
@@ -715,6 +778,21 @@ fn sample_captures() -> Vec<Capture> {
 }
 
 impl Widget for CameraApp {
+    /// Publish the open gallery + its shots so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its metadata action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.initialized {
             doc::init_defaults(state, path, self.initial_screen);
@@ -1007,12 +1085,11 @@ impl CameraApp {
     }
 
     fn toggle_switch(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, on: bool, action: Action) {
-        let c = &theme.tokens.colors;
-        let track = if on { theme.accent_primary } else { p::alpha(c.neutral[6], 0.9) };
-        p::fill_round(scene, t, rect, rect.height() / 2.0, track);
-        let r = rect.height() / 2.0 - 3.0;
-        let kx = if on { rect.x1 - r - 3.0 } else { rect.x0 + r + 3.0 };
-        p::circle(scene, t, kx, rect.center().y, r, white());
+        // Shared switch face on the settings sheet (solid chrome, not over-media):
+        // themed track/knob/focus plus hover feedback, replacing the hand-painted
+        // pill. The existing region hit-test still fires the toggle action.
+        let hovered = rect.contains(self.last_mouse);
+        Toggle::paint(scene, t, theme, &ToggleFace::new(rect, on).hovered(hovered));
         self.push_region(rect, action);
     }
 
@@ -2556,5 +2633,28 @@ mod tests {
         assert_eq!(app.scans.len(), 1);
         assert_eq!(app.scans[0].raw, payload);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Test-only accessors that let sibling modules (`crate::actions` tests) drive
+/// the *real* affordance path and observe its result, without exposing internal
+/// fields to the rest of the crate. Each helper routes through the same
+/// production code an on-screen control does.
+#[cfg(test)]
+impl CameraApp {
+    /// Select a gallery shot by id, exactly as clicking its card does.
+    pub(crate) fn test_select(&mut self, id: &str) {
+        self.apply(Action::SelectCapture(id.to_string()), &mut AutoCommit::new(), &automerge::ROOT);
+    }
+
+    /// Fire the favorite affordance on the current selection through the real
+    /// handler (which dispatches the shared action).
+    pub(crate) fn test_toggle_favorite(&mut self, doc: &mut AutoCommit) {
+        self.apply(Action::ToggleFavSelected, doc, &automerge::ROOT);
+    }
+
+    /// The `EncodedAction` the most recent affordance dispatched.
+    pub(crate) fn test_last_dispatched(&self) -> Option<EncodedAction> {
+        self.actions.last_dispatched().cloned()
     }
 }

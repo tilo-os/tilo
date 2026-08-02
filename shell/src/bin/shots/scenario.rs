@@ -102,6 +102,56 @@ pub enum Action {
     /// setup steps where dispatching real events would be brittle —
     /// e.g. opening the palette before typing a query).
     OpenPalette,
+    /// Open a window, the way opening one actually happens: adopt a
+    /// toplevel for `app_id` into the chrome's tree through the
+    /// production `tab_binding::adopt_toplevel`, so the placement rule
+    /// decides where it lands and the strip resync splices it in with
+    /// the motion that goes with that.
+    ///
+    /// `surface_id` only has to be unique within a scenario.
+    OpenWindow {
+        app_id: &'static str,
+        surface_id: u64,
+    },
+    /// Open a second tab of a **shell-hosted** app — Notes, Editor —
+    /// into the active group.
+    ///
+    /// The sibling of [`Action::OpenWindow`], which adopts a foreign
+    /// Wayland toplevel and so can never produce a hosted app. Both go
+    /// the same production route: mutate the tree, bump the chrome
+    /// revision, and let the strip resync splice the new tab into the
+    /// live group — the path that gives a spliced tab its own document.
+    AddHostedTab {
+        app: &'static str,
+        title: &'static str,
+    },
+    /// Sample the make-space slide at fixed points along its curve and
+    /// capture each as `prefix-<ms>`.
+    ///
+    /// An offscreen frame costs far more wall time than the 420 ms curve
+    /// lasts, so stepping frames only ever catches the start and the end.
+    /// This asks the strip for a specific point on the curve instead —
+    /// what gets rendered is the production `draw` at that point.
+    SampleMakeSpace {
+        prefix: &'static str,
+        /// Milliseconds into the curve.
+        at_ms: &'static [u64],
+    },
+    /// Put the selection on the `idx`-th group of the active strip, or
+    /// clear it entirely with `None` — which is the state rule 3 (place
+    /// at a seam) is about.
+    SelectGroup(Option<usize>),
+    /// Cut the `idx`-th group of the active strip down to one tab, so a
+    /// scenario can set up the "lone window selected" shape rather than
+    /// the four-tab group the default workspace boots with.
+    LoneWindow(usize),
+    /// Resize every window in the active strip to `permille` of the
+    /// display's usable width — what dragging the resize handles gets
+    /// you.
+    ///
+    /// A capture of windows moving needs more than one of them on
+    /// screen, and the default width is the whole display.
+    SetWindowWidths(u16),
     SwitchWorkspace(usize),
     SetWsSettings(WsTab),
     PushQsLevel(QsLevel),
@@ -247,6 +297,196 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.set_modifiers(ModifiersState::CONTROL);
             driver.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
             driver.set_modifiers(ModifiersState::empty());
+        }
+        Action::OpenWindow { app_id, surface_id } => {
+            let app_id = *app_id;
+            let surface_id = *surface_id;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    // Exactly what opening an app does: decide where the
+                    // window goes now, against the layout the user is
+                    // looking at, and leave it as a note for the adoption.
+                    let tree = st.tree();
+                    shell::shell::placement::note_placement_for_launch(
+                        app_id,
+                        &tree,
+                        st.strip_viewport(),
+                    );
+                }
+                {
+                    let mut tree = st.tree_mut();
+                    shell::compositor::tab_binding::adopt_toplevel(
+                        &mut tree,
+                        surface_id,
+                        Some(app_id.to_string()),
+                    );
+                }
+                st.bump();
+            });
+        }
+        Action::AddHostedTab { app, title } => {
+            let app = *app;
+            let title = *title;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let mut tree = st.tree_mut();
+                    // One past the highest tab id anywhere in the tree.
+                    // The production minter is crate-private, and a
+                    // scenario only needs an id no open tab already uses
+                    // — but it has to be *every* tab, not just this
+                    // group's: a tab id names the record its document
+                    // lives in, so reusing one from another workspace
+                    // would put two tabs on one document, which is the
+                    // thing this scenario exists to show cannot happen.
+                    let id = tree
+                        .workspaces
+                        .iter()
+                        .flat_map(|w| &w.strips)
+                        .flat_map(|s| &s.window_groups)
+                        .flat_map(|g| &g.tabs)
+                        .map(|t| t.id)
+                        .max()
+                        .unwrap_or(0)
+                        + 1;
+                    let Some(ws) = tree.active_workspace_mut() else {
+                        return;
+                    };
+                    let Some(group) = ws
+                        .strips
+                        .first_mut()
+                        .and_then(|s| s.window_groups.first_mut())
+                    else {
+                        return;
+                    };
+                    group.tabs.push(shell::shell::state::Tab {
+                        id,
+                        title: title.to_string(),
+                        tile: shell::shell::state::TileContent::AppPlaceholder {
+                            kind: shell::shell::state::AppKind::Other(app.to_string()),
+                            label: title.to_string(),
+                        },
+                    });
+                    group.active_tab = id;
+                }
+                st.bump();
+            });
+        }
+        Action::SampleMakeSpace { prefix, at_ms } => {
+            // Splice the new window into the widget tree, then lay out —
+            // which is the pass that measures how far each pushed group
+            // travels and starts the slide. Freeze it immediately, before
+            // a render's worth of wall time can retire it.
+            driver.step_frames(1);
+            driver.relayout();
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for ms in at_ms.iter() {
+                let mut any = false;
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        any |= row.hold_shift_at(std::time::Duration::from_millis(*ms));
+                    }
+                }
+                if !any {
+                    eprintln!(
+                        "scenario: no make-space slide in flight to sample at {ms} ms"
+                    );
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
+        }
+        Action::SetWindowWidths(permille) => {
+            let permille = *permille;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let mut tree = st.tree_mut();
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        for strip in ws.strips.iter_mut() {
+                            for g in strip.window_groups.iter_mut() {
+                                g.width =
+                                    shell::shell::state::WindowWidth::Fraction(permille);
+                            }
+                        }
+                    }
+                }
+                st.bump();
+            });
+            // The persisted width is the durable one, but the strip resync
+            // only splices whole groups — so push it onto the live widgets
+            // too, which is what a resize gesture would have done.
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for sid in strips {
+                if let Some(row) = driver.host_mut().group_row_mut_for_tests(sid) {
+                    for g in row.groups.iter_mut() {
+                        g.set_width(ui::widget::WindowWidth::Fraction(permille));
+                    }
+                }
+            }
+        }
+        Action::SelectGroup(idx) => {
+            let idx = *idx;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let mut tree = st.tree_mut();
+                    let Some(strip_id) = tree
+                        .active_workspace()
+                        .and_then(|ws| ws.strips.first().map(|s| s.id))
+                    else {
+                        return;
+                    };
+                    match idx {
+                        Some(i) => {
+                            let gid = tree
+                                .active_workspace()
+                                .and_then(|ws| ws.strips[0].window_groups.get(i).map(|g| g.id));
+                            if let Some(gid) = gid {
+                                let active = tree.active;
+                                tree.active_strip.insert(active, strip_id);
+                                tree.set_active_group(strip_id, gid);
+                            }
+                        }
+                        None => {
+                            tree.active_group.remove(&strip_id);
+                        }
+                    }
+                }
+                st.bump();
+            });
+        }
+        Action::LoneWindow(idx) => {
+            let idx = *idx;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let mut tree = st.tree_mut();
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        if let Some(g) = ws
+                            .strips
+                            .first_mut()
+                            .and_then(|s| s.window_groups.get_mut(idx))
+                        {
+                            g.tabs.truncate(1);
+                            if let Some(t) = g.tabs.first() {
+                                g.active_tab = t.id;
+                            }
+                        }
+                    }
+                }
+                st.bump();
+            });
         }
         Action::SwitchWorkspace(idx) => {
             driver.with_chrome(|st: &mut ChromeState| {
@@ -492,10 +732,28 @@ pub fn catalogue() -> Vec<Scenario> {
         wheel_scroll_workspaces(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
+        two_notes_tabs_keep_their_own_text(),
         cycle_all_tabs(),
         room_activity_from_palette(),
+        window_open_beside_selection(),
+        window_open_into_tabbed_group(),
+        window_open_at_visible_seam(),
+        window_open_at_next_seam_rightwards(),
     ]
 }
+
+// =====================================================================
+// Where a new window lands, and the motion that makes room for it.
+// One scenario per branch of `shell::shell::placement`, each driving the
+// production adopt path so the recording shows the rule, not a mock.
+// =====================================================================
+
+/// Frames to let the motion finish before the settled capture.
+const PLACEMENT_SETTLE_FRAMES: u32 = 8;
+
+/// Points along the 420 ms make-space curve to render. Evenly spaced,
+/// ending past the curve so the last one is the settled layout.
+const MAKE_SPACE_SAMPLES: &[u64] = &[0, 60, 120, 180, 240, 300, 360, 420];
 
 /// The palette route to the room-activity sheet, end to end: open the
 /// palette, type the words a person would type, pick the result, and let the
@@ -541,6 +799,47 @@ fn notes_click_and_type() -> Scenario {
             Action::Type("hi".into()),
             Action::Wait(2),
             Action::Snapshot("03-post-type"),
+        ],
+    }
+}
+
+/// Two Notes tabs, each with its own text.
+///
+/// The picture of the bug this branch closes: every tab of an app used
+/// to share one document, so typing into the second tab showed up in
+/// the first. Type into the tab the desktop boots with, open a second
+/// one, type something else into it, then switch back — the first tab
+/// still has to be showing what was typed into *it*.
+///
+/// The last snapshot is the one that matters. Anything that reverted
+/// per-tab documents would show the second tab's text there.
+fn two_notes_tabs_keep_their_own_text() -> Scenario {
+    Scenario {
+        name: "two_notes_tabs_keep_their_own_text",
+        description: "Type in one Notes tab, open a second, type in it, switch back.",
+        actions: vec![
+            // Same body coordinate `notes_click_and_type` uses.
+            Action::ClickAt(Point::new(660.0, 500.0)),
+            Action::Wait(2),
+            Action::Type("first tab writes alpha".into()),
+            Action::Wait(2),
+            Action::Snapshot("01-first-tab-typed"),
+            Action::AddHostedTab { app: "Notes", title: "Notes" },
+            Action::Wait(20),
+            Action::Snapshot("02-second-tab-opened"),
+            // Reach the new tab the way a person does — its pill — so
+            // it is switched to rather than merely spliced in active.
+            Action::ClickAt(Point::new(884.0, 103.0)),
+            Action::Wait(4),
+            Action::ClickAt(Point::new(660.0, 500.0)),
+            Action::Wait(4),
+            Action::Type("second tab writes beta".into()),
+            Action::Wait(2),
+            Action::Snapshot("03-second-tab-typed"),
+            // Back to the first Notes pill, left-most in the bar.
+            Action::ClickAt(Point::new(310.0, 103.0)),
+            Action::Wait(4),
+            Action::Snapshot("04-first-tab-still-alpha"),
         ],
     }
 }
@@ -687,6 +986,117 @@ fn tab_drag_out_to_new_group() -> Scenario {
             },
             Action::Wait(4),
             Action::Snapshot("02-after-drag"),
+        ],
+    }
+}
+
+/// Rule 1: a window opened while a single window has focus takes the
+/// column immediately to its right — and the window that was there
+/// slides along to let it in.
+fn window_open_beside_selection() -> Scenario {
+    Scenario {
+        name: "window_open_beside_selection",
+        description: "Open a window beside the selected one; the neighbour to its right \
+                      slides over to make room.",
+        actions: vec![
+            Action::LoneWindow(0),
+            // A neighbour to the right, so there is something to move.
+            Action::OpenWindow { app_id: "org.example.right", surface_id: 5001 },
+            Action::Wait(20),
+            // Windows at a third of the display each: a capture of windows
+            // moving needs more than one of them on screen, and the
+            // default width is the whole display.
+            Action::SetWindowWidths(333),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Snapshot("01-before"),
+            Action::OpenWindow { app_id: "org.example.new", surface_id: 5002 },
+            Action::SampleMakeSpace {
+                prefix: "02-making-room",
+                at_ms: MAKE_SPACE_SAMPLES,
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("03-settled"),
+        ],
+    }
+}
+
+/// Rule 2: with the selection on one tab of several, the window joins
+/// that group as the next tab along. Nothing in the strip moves — which
+/// is the point.
+fn window_open_into_tabbed_group() -> Scenario {
+    Scenario {
+        name: "window_open_into_tabbed_group",
+        description: "Open a window from inside the default four-tab group; it becomes \
+                      the tab right of the selected one.",
+        actions: vec![
+            Action::SetWindowWidths(333),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Snapshot("01-before"),
+            Action::OpenWindow { app_id: "org.example.tab", surface_id: 5003 },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("02-joined-the-group"),
+        ],
+    }
+}
+
+/// Rule 3, first half: nothing selected and a border between windows on
+/// screen — the window goes into that space.
+fn window_open_at_visible_seam() -> Scenario {
+    Scenario {
+        name: "window_open_at_visible_seam",
+        description: "Three windows, no selection, a border on screen: the new window \
+                      lands at that border.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::OpenWindow { app_id: "org.example.second", surface_id: 5011 },
+            Action::Wait(20),
+            Action::OpenWindow { app_id: "org.example.third", surface_id: 5012 },
+            Action::Wait(20),
+            Action::SetWindowWidths(333),
+            Action::SelectGroup(None),
+            Action::Wait(4),
+            Action::Snapshot("01-before"),
+            Action::OpenWindow { app_id: "org.example.atseam", surface_id: 5013 },
+            Action::SampleMakeSpace {
+                prefix: "02-at-seam",
+                at_ms: MAKE_SPACE_SAMPLES,
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("03-settled"),
+        ],
+    }
+}
+
+/// Rule 3, second half: nothing selected and no border visible at all —
+/// which is what a full-width window gives you, and the reason the
+/// rightwards search is the load-bearing half of the rule.
+fn window_open_at_next_seam_rightwards() -> Scenario {
+    Scenario {
+        name: "window_open_at_next_seam_rightwards",
+        description: "Three full-width windows, no selection, no border on screen: the \
+                      new window takes the next border rightwards.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::OpenWindow { app_id: "org.example.second", surface_id: 5021 },
+            Action::Wait(20),
+            Action::OpenWindow { app_id: "org.example.third", surface_id: 5022 },
+            Action::Wait(20),
+            // Full width: the border after the window you are looking at
+            // lands exactly on the screen's right edge, so none of the
+            // space between windows is on screen.
+            Action::SetWindowWidths(1000),
+            Action::SelectGroup(None),
+            Action::Wait(4),
+            Action::Snapshot("01-before"),
+            Action::OpenWindow { app_id: "org.example.nextseam", surface_id: 5023 },
+            Action::SampleMakeSpace {
+                prefix: "02-next-seam",
+                at_ms: MAKE_SPACE_SAMPLES,
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Snapshot("03-settled"),
         ],
     }
 }

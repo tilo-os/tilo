@@ -51,6 +51,39 @@
 //! the manifest; `crate::sandbox::egress_decision` combines it with the
 //! packager's declaration to produce the policy actually enforced.
 //!
+//! ## Read-only participation
+//!
+//! [`Participation`] is the resolved answer to "may this app originate
+//! changes in the space at all?" — read participation as a capability
+//! rather than as a mode an app opts into.
+//!
+//! It needs no new vocabulary. `Scope::Workspace` matches every resource,
+//! and a `Restrict` phrased in a verb caps authority at that verb, so a
+//! workspace-scoped `Restrict` at `Verb::Read` already reads "may see
+//! everything here, may change nothing" — for CRDT artifacts, filesystem
+//! paths, devices and hosts alike. This module reads that back out of the
+//! same [`decide_capability`] every other decision goes through.
+//!
+//! What a read-only participant gets is an absence, not a refusal: the
+//! user identity is **not** bound into the sandbox, so the app holds no
+//! signing key and cannot produce an authored change for anything to
+//! reject. `runtime-identity` already has a "no identity" path, so this is
+//! a state apps handle rather than a new error. The workspace tree is
+//! bound read-only by the same capability list, and `fs` serves it
+//! read-only too, so there is no writable descriptor to a shared document
+//! anywhere in the namespace.
+//!
+//! `QOS_PARTICIPATION=read-only` tells the app which shape it is in, so
+//! chrome can present a viewer rather than an editor whose saves vanish.
+//!
+//! **The gap, stated plainly.** An app with *no* workspace-scoped
+//! capability is [`Participation::Unscoped`] and keeps its identity, which
+//! is the pre-existing behaviour. Absence-of-grant meaning read-only is
+//! the right shape, but it is a change to who may author in a room, which
+//! is decided in the collaboration layer and not here. Until then,
+//! read-only participation is something a user grants rather than
+//! something an app falls into.
+//!
 //! ## Deny by default
 //!
 //! [`load_capability_file`] returns an empty list for a file that is
@@ -65,6 +98,46 @@ use std::path::{Path, PathBuf};
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Effect, ResourceRef, Scope, Verb, decide_capability,
 };
+
+/// How an app may take part in the space it is launched into.
+///
+/// Resolved from the capability list by [`CapabilityPlan::for_app`], not
+/// declared by the app and not a UI setting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Participation {
+    /// No workspace-scoped capability names this app either way, so
+    /// nothing is inferred and the launch is shaped as it always was.
+    /// The default, deliberately: guessing here would change who may
+    /// author in a room, which is not this module's decision to make.
+    #[default]
+    Unscoped,
+    /// May see the space; may not change it. The identity is withheld, so
+    /// the app cannot originate an authored change at all.
+    ReadOnly,
+    /// May change the space.
+    Author,
+}
+
+impl Participation {
+    /// Should the sandbox carry the user identity?
+    ///
+    /// The one question the answer feeds. A read-only participant holds no
+    /// signing key, which is what makes "cannot author" structural rather
+    /// than enforced after the fact.
+    pub fn carries_identity(self) -> bool {
+        !matches!(self, Participation::ReadOnly)
+    }
+
+    /// The value of `QOS_PARTICIPATION` inside the sandbox, if the mode is
+    /// one worth telling the app about.
+    pub fn env_value(self) -> Option<&'static str> {
+        match self {
+            Participation::ReadOnly => Some("read-only"),
+            Participation::Author => Some("author"),
+            Participation::Unscoped => None,
+        }
+    }
+}
 
 /// The resolved, host-side consequence of an app's capabilities.
 ///
@@ -92,6 +165,10 @@ pub struct CapabilityPlan {
     /// list that is not exactly `["*"]` leaves the namespace isolated
     /// and becomes the allowlist [`crate::netgate`] filters on.
     pub net_hosts: Vec<String>,
+    /// Whether the app may originate changes in the space. Decides
+    /// whether the sandbox carries a signing identity at all — see
+    /// [`Participation`].
+    pub participation: Participation,
 }
 
 impl CapabilityPlan {
@@ -104,6 +181,7 @@ impl CapabilityPlan {
             devices: Vec::new(),
             allow_network: false,
             net_hosts: Vec::new(),
+            participation: Participation::Unscoped,
         }
     }
 
@@ -202,6 +280,7 @@ impl CapabilityPlan {
         let mut plan = CapabilityPlan {
             allow_network: !net_hosts.is_empty(),
             net_hosts,
+            participation: participation_for(&actor, caps, now),
             ..CapabilityPlan::empty()
         };
         for (path, writable) in fs {
@@ -221,6 +300,28 @@ impl CapabilityPlan {
         plan.devices = devices;
         plan
     }
+}
+
+/// Read the app's participation in the space out of the capability list.
+///
+/// One question asked twice of [`decide_capability`], against
+/// `ResourceRef::Workspace`: may it write, and may it read? "Read but not
+/// write" is read-only participation; a capability list that says nothing
+/// about the workspace says nothing about participation either.
+///
+/// Deliberately not a fourth thing to keep in step with the other three
+/// enforcement points — it is the same decision function on the same
+/// capability list, so a grant the compositor shows as read-only cannot be
+/// an authoring grant here.
+fn participation_for(actor: &Actor, caps: &[CapOverride], now: Option<u64>) -> Participation {
+    let resource = ResourceRef::Workspace;
+    if allows(actor, &resource, Verb::Write, caps, now) {
+        return Participation::Author;
+    }
+    if allows(actor, &resource, Verb::Read, caps, now) {
+        return Participation::ReadOnly;
+    }
+    Participation::Unscoped
 }
 
 fn allows(
@@ -505,6 +606,114 @@ mod tests {
         let wrong_shape = dir.path().join("wrong.json");
         std::fs::write(&wrong_shape, br#"{"subject":"nope"}"#).unwrap();
         assert!(load_capability_file(&wrong_shape).is_empty());
+    }
+
+    // ---- read-only participation -----------------------------------
+
+    /// A workspace-scoped `Restrict` at `Verb::Read`: "see everything
+    /// here, change nothing". The existing vocabulary, not a new one.
+    fn read_only_participation(app: &str) -> Vec<CapOverride> {
+        vec![
+            CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Read),
+            CapOverride::new(
+                Subject::app(app),
+                Scope::Workspace,
+                Effect::Restrict,
+                Verb::Read,
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_read_only_grant_resolves_to_read_only_participation() {
+        let caps = read_only_participation("dev.qos.viewer");
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(1_000), fake_device_paths);
+        assert_eq!(plan.participation, Participation::ReadOnly);
+        assert!(
+            !plan.participation.carries_identity(),
+            "a read-only participant must hold no signing key — that is what makes it unable \
+             to originate a change rather than merely refused one"
+        );
+        assert_eq!(plan.participation.env_value(), Some("read-only"));
+    }
+
+    #[test]
+    fn a_write_grant_resolves_to_authorship() {
+        let caps = vec![CapOverride::grant(
+            Subject::app("dev.qos.editor"),
+            Scope::Workspace,
+            Verb::Write,
+        )];
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.editor", &caps, Some(1_000), fake_device_paths);
+        assert_eq!(plan.participation, Participation::Author);
+        assert!(plan.participation.carries_identity());
+    }
+
+    // No workspace-scoped capability says nothing about participation, so
+    // nothing is inferred: the launch is shaped exactly as it was before
+    // this existed. Guessing here would decide who may author in a room,
+    // which is not this module's decision.
+    #[test]
+    fn no_workspace_capability_leaves_participation_unscoped() {
+        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)];
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.books", &caps, Some(1_000), fake_device_paths);
+        assert_eq!(plan.participation, Participation::Unscoped);
+        assert!(plan.participation.carries_identity());
+        assert_eq!(plan.participation.env_value(), None);
+
+        let none = CapabilityPlan::for_app_with("dev.qos.books", &[], Some(1_000), fake_device_paths);
+        assert_eq!(none.participation, Participation::Unscoped);
+    }
+
+    // The same restriction that caps participation caps the filesystem,
+    // because `Scope::Workspace` matches every resource. So a read-only
+    // participant has no writable bind either — the two answers come from
+    // one capability rather than from two rules that could disagree.
+    #[test]
+    fn read_only_participation_leaves_no_writable_bind() {
+        let mut caps = read_only_participation("dev.qos.viewer");
+        caps.push(fs_grant("dev.qos.viewer", "/var/workspace/shared", Verb::Write));
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(1_000), fake_device_paths);
+        assert_eq!(plan.participation, Participation::ReadOnly);
+        assert!(
+            plan.rw_paths.is_empty(),
+            "a read-only participant must have no writable path: {plan:?}"
+        );
+        assert_eq!(
+            plan.ro_paths,
+            vec![PathBuf::from("/var/workspace/shared")],
+            "it still sees the shared tree — read-only participation is participation"
+        );
+    }
+
+    // Participation is another app's business only if it names that app.
+    #[test]
+    fn another_apps_read_only_grant_does_not_apply() {
+        let caps = read_only_participation("dev.qos.viewer");
+        let plan =
+            CapabilityPlan::for_app_with("dev.qos.editor", &caps, Some(1_000), fake_device_paths);
+        assert_eq!(plan.participation, Participation::Unscoped);
+    }
+
+    // An expired read-only grant is not a read-only grant. It expires into
+    // "nothing said", not into authorship — the identity comes back only
+    // because nothing scopes it, which is the documented Unscoped shape.
+    #[test]
+    fn an_expired_participation_grant_says_nothing() {
+        let caps: Vec<CapOverride> = read_only_participation("dev.qos.viewer")
+            .into_iter()
+            .map(|c| c.expiring(Expiry::AtUnix(500)))
+            .collect();
+        let live =
+            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(499), fake_device_paths);
+        assert_eq!(live.participation, Participation::ReadOnly);
+        let lapsed =
+            CapabilityPlan::for_app_with("dev.qos.viewer", &caps, Some(501), fake_device_paths);
+        assert_eq!(lapsed.participation, Participation::Unscoped);
     }
 
     #[test]

@@ -37,11 +37,38 @@
 //! (tests and callers that already hold a resolved answer). Entries are
 //! unconditional: they union with, and cannot be narrowed by, a bound
 //! capability list.
+//!
+//! # Visibility: a denial is an absence
+//!
+//! [`WorkspaceAcl::permits`] answers "may this identity do this?".
+//! [`WorkspaceAcl::visible`] answers the different question the
+//! filesystem needs first: **is this path part of the view this identity
+//! sees at all?**
+//!
+//! A path is in the view if the identity may read it, or if it is an
+//! ancestor of something the identity may read — an ancestor has to
+//! exist or the grant beneath it is unreachable. Everything else is
+//! absent, and [`crate::QuickFS`] reports it as absent rather than as
+//! refused: it does not appear in a directory listing, and a lookup for
+//! it answers `ENOENT`.
+//!
+//! The distinction matters because `EACCES` is a state most software
+//! handles by crashing or by nagging the user, while "the directory
+//! contains these three files" is a state every program handles
+//! correctly. Presenting a denial as an absence turns the permission
+//! system into something applications cannot argue with, and stops
+//! training users to click through prompts.
+//!
+//! Ancestor visibility is decided by asking the *real* decision function
+//! about the granted path itself, so a `Restrict` that removes a grant
+//! also removes the visibility of the directories that led to it. There
+//! is no second, more permissive notion of "readable" here.
 
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 use collab_types::{
-    Actor, CapDecision, CapOverride, Ed25519PublicKey, Principal, ResourceRef, Verb,
+    Actor, CapDecision, CapOverride, Ed25519PublicKey, Effect, Principal, ResourceRef, Scope, Verb,
     decide_capability, path_covers,
 };
 
@@ -120,6 +147,27 @@ impl CapBinding {
             &self.caps,
             Some(self.fixed_now.unwrap_or_else(unix_now)),
         ) == CapDecision::Allow
+    }
+
+    /// The paths this binding's *grants* nominate for reading.
+    ///
+    /// Candidates only — a nomination is not a decision. They are the
+    /// paths worth asking [`Self::permits`] about when deciding whether
+    /// some ancestor directory has to exist, which is why a `Restrict`
+    /// is not consulted here: it can never introduce a path, only take
+    /// one away, and it takes it away in `permits`.
+    fn read_nominations(&self) -> impl Iterator<Item = &str> {
+        self.caps
+            .iter()
+            .filter(|c| {
+                c.effect == Effect::Grant
+                    && c.verb.implies(Verb::Read)
+                    && c.subject.matches_actor(&self.actor)
+            })
+            .filter_map(|c| match &c.scope {
+                Scope::FsPath(p) => Some(p.as_str()),
+                _ => None,
+            })
     }
 }
 
@@ -258,6 +306,12 @@ impl WorkspaceAcl {
         self.grant(identity, path_prefix, true, true)
     }
 
+    /// How many capabilities are bound, across every binding. For
+    /// logging what a reload put in force.
+    pub fn capability_count(&self) -> usize {
+        self.bindings.iter().map(|b| b.caps.len()).sum()
+    }
+
     /// The set of identities that appear in the ACL — as a direct grant
     /// or as a capability binding.
     pub fn identities(&self) -> HashSet<IdentityKey> {
@@ -293,6 +347,130 @@ impl WorkspaceAcl {
                 .bindings
                 .iter()
                 .any(|b| &b.identity == identity && b.permits(path, access))
+    }
+
+    /// Is `path` part of the view `identity` sees?
+    ///
+    /// True when the identity may read `path`, or when `path` is an
+    /// ancestor of a path it may read — a granted subtree that cannot be
+    /// walked to is not granted at all. False for everything else, and
+    /// "false" is what [`crate::QuickFS`] turns into `ENOENT` and into an
+    /// omitted directory entry.
+    ///
+    /// The mount root is always visible. An identity that holds nothing
+    /// therefore sees an ordinary empty directory — the state every
+    /// program already handles — rather than a mount that errors.
+    ///
+    /// Ancestry is decided against the *granted* paths, each re-checked
+    /// through [`Self::permits`]. A `Restrict` that removes the grant
+    /// removes the ancestors with it, so a restriction cannot leave
+    /// behind a trail of empty directories pointing at what it hid.
+    pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
+        if path == "/" {
+            return true;
+        }
+        if self.permits(identity, path, Access::Read) {
+            return true;
+        }
+        let direct = self.entries.iter().any(|e| {
+            &e.identity == identity
+                && e.read
+                && path_covers(path, &e.path_prefix)
+                && self.permits(identity, &e.path_prefix, Access::Read)
+        });
+        direct
+            || self.bindings.iter().any(|b| {
+                &b.identity == identity
+                    && b.read_nominations().any(|granted| {
+                        path_covers(path, granted)
+                            && self.permits(identity, granted, Access::Read)
+                    })
+            })
+    }
+}
+
+/// The ACL a live mount enforces, in a form that can be replaced while
+/// the mount is up.
+///
+/// A [`WorkspaceAcl`] is a snapshot of a decision. Handing that snapshot
+/// to [`crate::QuickFS`] by value made the mount's policy fixed at mount
+/// time: a capability granted (or revoked) a minute later did not reach
+/// the filesystem until the next remount, so the recorded grant and the
+/// enforced grant disagreed for as long as the mount lived. That is the
+/// same class of bug the capability model exists to prevent, only with
+/// the drift in time rather than in vocabulary.
+///
+/// So the mount holds a handle, and whoever owns the policy source —
+/// [`crate::CapabilityFile`] in production — swaps the contents under it.
+/// Reads take the lock per access; a `RwLock` read is uncontended in the
+/// steady state and is dwarfed by the FUSE round-trip it sits inside.
+#[derive(Clone, Debug)]
+pub struct AclHandle(Arc<RwLock<WorkspaceAcl>>);
+
+impl AclHandle {
+    /// A handle over `acl`.
+    pub fn new(acl: WorkspaceAcl) -> Self {
+        Self(Arc::new(RwLock::new(acl)))
+    }
+
+    /// Does `identity` hold `access` on `path`, per the ACL bound *right
+    /// now*? Delegates to [`WorkspaceAcl::permits`] — there is no second
+    /// decision here, only a load.
+    pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
+        // A poisoned lock means a writer panicked mid-swap. Fail closed:
+        // the alternative is to answer from a value nobody vouches for.
+        match self.0.read() {
+            Ok(acl) => acl.permits(identity, path, access),
+            Err(_) => false,
+        }
+    }
+
+    /// Is `path` part of the view `identity` sees, per the ACL bound
+    /// *right now*? Delegates to [`WorkspaceAcl::visible`].
+    ///
+    /// Visibility has to be read through the same live handle as
+    /// [`Self::permits`], not from a snapshot taken at mount time: a
+    /// revocation that stops permitting a path but keeps listing it turns
+    /// denial back into a signal, which is exactly what deciding both
+    /// against one bound ACL prevents.
+    pub fn visible(&self, identity: &IdentityKey, path: &str) -> bool {
+        // Fail closed on a poisoned lock, as `permits` does — an
+        // unvouched-for ACL must hide, not reveal.
+        match self.0.read() {
+            Ok(acl) => acl.visible(identity, path),
+            Err(_) => false,
+        }
+    }
+
+    /// Replace the bound ACL. Every access after this call is decided by
+    /// `acl`; accesses already in flight finish against the old one.
+    pub fn replace(&self, acl: WorkspaceAcl) {
+        match self.0.write() {
+            Ok(mut slot) => *slot = acl,
+            // Re-establish a known value rather than leaving the mount
+            // deciding from a poisoned lock (which `permits` denies on).
+            Err(poisoned) => *poisoned.into_inner() = acl,
+        }
+    }
+
+    /// The currently-bound ACL, cloned. For tests and for logging.
+    pub fn snapshot(&self) -> WorkspaceAcl {
+        match self.0.read() {
+            Ok(acl) => acl.clone(),
+            Err(_) => WorkspaceAcl::new(),
+        }
+    }
+}
+
+impl From<WorkspaceAcl> for AclHandle {
+    fn from(acl: WorkspaceAcl) -> Self {
+        Self::new(acl)
+    }
+}
+
+impl From<&AclHandle> for AclHandle {
+    fn from(handle: &AclHandle) -> Self {
+        handle.clone()
     }
 }
 
@@ -437,5 +615,143 @@ mod tests {
 
         assert!(member.permits(&ALICE, "/w/team/plan.md", Access::Write));
         assert!(!outsider.permits(&BOB, "/w/team/plan.md", Access::Read));
+    }
+
+    // The view is the granted subtree plus the directories that lead to
+    // it, and nothing else. The ancestors have to be there or the grant
+    // cannot be walked to; the siblings must not be, or the denial is a
+    // refusal rather than an absence.
+    #[test]
+    fn the_view_is_the_grant_plus_the_path_to_it() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/w/docs".into()),
+            Effect::Grant,
+            Verb::Read,
+        );
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+
+        for present in ["/", "/w", "/w/docs", "/w/docs/a", "/w/docs/a/b.txt"] {
+            assert!(
+                acl.visible(&ALICE, present),
+                "{present} must be part of the view"
+            );
+        }
+        for absent in ["/w/other", "/w/other/private.md", "/w/docsSECRET", "/elsewhere"] {
+            assert!(
+                !acl.visible(&ALICE, absent),
+                "{absent} must be absent from the view, not merely denied"
+            );
+        }
+    }
+
+    // An identity holding nothing sees an empty root, not a broken
+    // mount. "The folder is empty" is a state every program handles.
+    #[test]
+    fn an_identity_with_no_grant_sees_an_empty_root() {
+        let acl = WorkspaceAcl::new();
+        assert!(acl.visible(&ALICE, "/"), "the mount root always exists");
+        assert!(!acl.visible(&ALICE, "/anything"));
+        assert!(!acl.visible(&ALICE, "/w/docs"));
+    }
+
+    // A `Restrict` narrows what may be done, never what may be seen:
+    // every verb implies `Read`, so no restriction can take reading away
+    // (see `decide_actor`). A restricted subtree therefore stays in the
+    // view and becomes read-only.
+    //
+    // The consequence is worth stating, because it is what makes the
+    // filtered view safe to write into: **inside a writable subtree,
+    // nothing is hidden.** A capability cannot produce a name that is
+    // absent from the listing but present in the tree, so an app that
+    // holds write on a directory cannot discover a hidden sibling by
+    // trying to create it.
+    #[test]
+    fn a_restriction_narrows_writing_without_hiding_anything() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let key = Ed25519PublicKey(ALICE);
+        let caps = vec![
+            CapOverride::new(
+                Subject::User(key),
+                Scope::FsPath("/w".into()),
+                Effect::Grant,
+                Verb::Write,
+            ),
+            CapOverride::new(
+                Subject::User(key),
+                Scope::FsPath("/w/readonly".into()),
+                Effect::Restrict,
+                Verb::Read,
+            ),
+        ];
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &caps, &[], Some(0));
+
+        assert!(acl.visible(&ALICE, "/w/readonly/x.txt"));
+        assert!(acl.permits(&ALICE, "/w/readonly/x.txt", Access::Read));
+        assert!(!acl.permits(&ALICE, "/w/readonly/x.txt", Access::Write));
+        // …and everything the write grant covers is visible, so there is
+        // no name in it that the listing omits.
+        for path in ["/w", "/w/notes.txt", "/w/readonly", "/w/sub/deep.txt"] {
+            assert!(
+                acl.visible(&ALICE, path),
+                "{path} is inside the write grant and must be in the view"
+            );
+        }
+    }
+
+    // An expired grant nominates nothing: the ancestor test re-runs the
+    // real decision, so expiry removes the trail as well as the target.
+    #[test]
+    fn an_expired_grant_leaves_no_visible_ancestors() {
+        use collab_types::{Effect, Expiry, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/w/docs".into()),
+            Effect::Grant,
+            Verb::Read,
+        )
+        .expiring(Expiry::AtUnix(500));
+
+        let live = WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&cap), &[], Some(499));
+        assert!(live.visible(&ALICE, "/w"), "while live, the trail exists");
+
+        let lapsed = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(501));
+        assert!(!lapsed.visible(&ALICE, "/w/docs"));
+        assert!(!lapsed.visible(&ALICE, "/w"));
+    }
+
+    // Write-only-looking grants still make the subtree visible: `Write`
+    // implies `Read`, so a writable subtree is a readable one and its
+    // ancestors must exist.
+    #[test]
+    fn a_write_grant_is_visible_and_so_are_its_ancestors() {
+        use collab_types::{Effect, Scope, Subject, Verb};
+
+        let cap = CapOverride::new(
+            Subject::User(Ed25519PublicKey(ALICE)),
+            Scope::FsPath("/w/inbox".into()),
+            Effect::Grant,
+            Verb::Write,
+        );
+        let acl = WorkspaceAcl::from_capabilities(ALICE, &[cap], &[], Some(0));
+        assert!(acl.visible(&ALICE, "/w"));
+        assert!(acl.visible(&ALICE, "/w/inbox/note.md"));
+        assert!(!acl.visible(&ALICE, "/w/outbox"));
+    }
+
+    // Direct entries take the same route as capabilities, so a
+    // capability-free grant also produces walkable ancestors.
+    #[test]
+    fn direct_entries_produce_visible_ancestors_too() {
+        let mut acl = WorkspaceAcl::new();
+        acl.grant_read(ALICE, "/w/docs");
+        assert!(acl.visible(&ALICE, "/w"));
+        assert!(acl.visible(&ALICE, "/w/docs/report.md"));
+        assert!(!acl.visible(&ALICE, "/w/other"));
+        assert!(!acl.visible(&BOB, "/w"));
     }
 }

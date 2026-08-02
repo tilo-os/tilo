@@ -30,6 +30,27 @@ impl FeedKind {
             FeedKind::Gemini => "Gemini",
         }
     }
+
+    /// The wire form persisted in the CRDT (see [`crate::doc`]). Matches the
+    /// `kind` scalar written by `FeedsDoc::upsert_feed`, so it is the form an
+    /// [`crate::actions::FeedsAction`] carries in its payload.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeedKind::Rss => "rss",
+            FeedKind::Atom => "atom",
+            FeedKind::Json => "json",
+            FeedKind::Gemini => "gemini",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "atom" => FeedKind::Atom,
+            "json" => FeedKind::Json,
+            "gemini" => FeedKind::Gemini,
+            _ => FeedKind::Rss,
+        }
+    }
 }
 
 /// One rendered content block in an article body. Articles store a small
@@ -401,14 +422,20 @@ impl Store {
         false
     }
 
-    /// Mark every article matching `filter` as read. Returns affected ids.
-    pub fn mark_all_read(&mut self, filter: Filter) -> Vec<Id> {
-        let ids: Vec<Id> = self
-            .articles
+    /// The unread article ids matching `filter`, in document order. Shared by
+    /// [`Self::mark_all_read`] and the action model's "Mark all as read" so the
+    /// affordance and the palette resolve the byte-identical id batch.
+    pub fn unread_ids_for(&self, filter: Filter) -> Vec<Id> {
+        self.articles
             .iter()
             .filter(|a| self.matches(a, filter) && !a.read)
             .map(|a| a.id)
-            .collect();
+            .collect()
+    }
+
+    /// Mark every article matching `filter` as read. Returns affected ids.
+    pub fn mark_all_read(&mut self, filter: Filter) -> Vec<Id> {
+        let ids = self.unread_ids_for(filter);
         for id in &ids {
             if let Some(a) = self.article_mut(*id) {
                 a.read = true;

@@ -28,8 +28,11 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{SidebarDrawer, TextInput, Widget};
+use ui::widget::{
+    SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 
+use crate::actions::FirewallAction;
 use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
 use crate::model::{
@@ -216,6 +219,12 @@ pub struct FirewallApp {
     /// `false` means firewalld is absent/stopped and we show an honest
     /// unavailable state instead of any fabricated ruleset.
     available: bool,
+
+    /// Framework-owned action dispatch: every on-screen affordance routes its
+    /// [`FirewallAction`] through here so it brackets exactly **one** undo
+    /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl FirewallApp {
@@ -260,6 +269,7 @@ impl FirewallApp {
             last_json: None,
             seeded: false,
             available,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -282,10 +292,48 @@ impl FirewallApp {
             .collect()
     }
 
-    /// Persist the current config into the shared document.
-    fn persist(&mut self, state: &mut AutoCommit) {
-        let json = FirewallDoc::store(state, &self.config);
-        self.last_json = Some(json);
+    /// Dispatch one [`FirewallAction`] — the single CRDT-mutation path shared
+    /// with the Ctrl+K palette. The action is applied through the qOS action
+    /// executor (a pinned actor + committed change, so it replays byte-identically
+    /// on peers), exactly as the palette does. The document heads captured just
+    /// before the first action of an event are stashed so the host records
+    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// The action mutates the shared config blob in the document; we then adopt
+    /// the result back into the in-memory view so the next frame paints it, and
+    /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
+    /// edit.
+    ///
+    /// This is *only* the CRDT mutation. Pushing the ruleset to the kernel
+    /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
+    /// driven by the resulting document state — never part of an action.
+    fn perform_action(&mut self, state: &mut AutoCommit, action: FirewallAction) {
+        self.actions.dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, &action);
+        // Adopt the mutated config so the in-memory view matches the document.
+        if let Some(json) = FirewallDoc::load_json(state) {
+            if let Some(cfg) = FirewallConfig::from_json(&json) {
+                self.config = cfg;
+            }
+            self.last_json = Some(json);
+        }
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// The configuration Ctrl+K builds its resource tree from, or `None` when the
+    /// firewall is unavailable / has no zones (nothing to act on). Exposed to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`], which can't read the app's private fields directly.
+    pub(crate) fn firewall_resource_ctx(&self) -> Option<FirewallConfig> {
+        if !self.available || self.config.zones.is_empty() {
+            None
+        } else {
+            Some(self.config.clone())
+        }
     }
 
     // ---- layout ---------------------------------------------------------
@@ -548,60 +596,62 @@ impl FirewallApp {
     }
 
     fn add_rule_from_form(&mut self, state: &mut AutoCommit) {
+        // Nothing to append to if the selected zone isn't in the config.
+        if self.config.zone(self.selected_zone).is_none() {
+            return;
+        }
         let matcher = self.form.matcher();
         let source = self.form.source.value().trim().to_string();
         let action = self.form.action;
         let label = matcher.label();
-        if let Some(z) = self.config.zone_mut(self.selected_zone) {
-            let rule = Rule::new(matcher, action, source);
-            self.selected_rule = Some(rule.id);
-            z.rules.push(rule);
-        }
-        self.persist(state);
+        // Mint the rule (id and all) at authoring time, then dispatch it as the
+        // action both the form and the palette build.
+        let rule = Rule::new(matcher, action, source);
+        let id = rule.id;
+        self.perform_action(state, crate::actions::add_rule_action(self.selected_zone, rule));
+        self.selected_rule = Some(id);
         self.status = format!("Added {} {} rule", action.label(), label);
     }
 
     fn delete_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
-        if let Some(z) = self.config.zone_mut(self.selected_zone) {
-            z.rules.retain(|r| r.id != id);
-        }
+        self.perform_action(state, crate::actions::delete_rule_action(self.selected_zone, id));
         if self.selected_rule == Some(id) {
             self.selected_rule = None;
         }
-        self.persist(state);
         self.status = "Rule deleted".to_string();
     }
 
     fn toggle_rule(&mut self, id: RuleId, state: &mut AutoCommit) {
-        if let Some(z) = self.config.zone_mut(self.selected_zone) {
-            if let Some(r) = z.rules.iter_mut().find(|r| r.id == id) {
-                r.enabled = !r.enabled;
-            }
-        }
-        self.persist(state);
+        self.perform_action(state, crate::actions::toggle_rule_action(self.selected_zone, id));
     }
 
     fn toggle_service(&mut self, idx: usize, state: &mut AutoCommit) {
         let Some(def) = ServiceCatalog::ALL.get(idx) else { return };
         let id = def.id.to_string();
-        let mut on = false;
-        if let Some(z) = self.config.zone_mut(self.selected_zone) {
-            on = z.toggle_service(&id);
-        }
-        self.persist(state);
+        // Resolve the target state at authoring time so the action is
+        // order-free on replay.
+        let currently = self
+            .config
+            .zone(self.selected_zone)
+            .map(|z| z.has_service(&id))
+            .unwrap_or(false);
+        let on = !currently;
+        self.perform_action(
+            state,
+            crate::actions::set_service_action(self.selected_zone, id, on),
+        );
         self.status = format!("{} {} in {}", def.name, if on { "enabled" } else { "disabled" }, self.selected_zone.name());
     }
 
     fn set_active_zone(&mut self, state: &mut AutoCommit) {
-        self.config.default_zone = self.selected_zone;
-        self.persist(state);
+        self.perform_action(state, crate::actions::set_default_zone_action(self.selected_zone));
         self.status = format!("{} is now the active zone", self.selected_zone.name());
     }
 
     fn toggle_panic(&mut self, state: &mut AutoCommit) {
-        self.config.panic_mode = !self.config.panic_mode;
-        self.persist(state);
-        self.status = if self.config.panic_mode {
+        let on = !self.config.panic_mode;
+        self.perform_action(state, crate::actions::set_panic_action(on));
+        self.status = if on {
             "PANIC MODE ON — all traffic dropped".to_string()
         } else {
             "Panic mode off".to_string()
@@ -609,9 +659,9 @@ impl FirewallApp {
     }
 
     fn toggle_enabled(&mut self, state: &mut AutoCommit) {
-        self.config.enabled = !self.config.enabled;
-        self.persist(state);
-        self.status = if self.config.enabled { "Firewall enabled".to_string() } else { "Firewall stopped".to_string() };
+        let on = !self.config.enabled;
+        self.perform_action(state, crate::actions::set_enabled_action(on));
+        self.status = if on { "Firewall enabled".to_string() } else { "Firewall stopped".to_string() };
     }
 
     fn apply(&mut self) {
@@ -801,6 +851,21 @@ impl Widget for FirewallApp {
 
     fn needs_animation_frame(&self) -> bool {
         self.rail.is_animating()
+    }
+
+    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its firewall action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -1082,16 +1147,7 @@ fn trust_color(theme: &Theme, trust: u8) -> Color {
 }
 
 fn draw_toggle(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, on: bool) {
-    let track_color = if on {
-        theme.accent_primary
-    } else {
-        theme.tokens.colors.neutral[3]
-    };
-    paint::fill_rrect(scene, t, rect, rect.height() / 2.0, track_color);
-    let kr = rect.height() / 2.0 - 3.0;
-    let cy = (rect.y0 + rect.y1) / 2.0;
-    let cx = if on { rect.x1 - kr - 3.0 } else { rect.x0 + kr + 3.0 };
-    paint::dot(scene, t, Point::new(cx, cy), kr, Color::WHITE);
+    Toggle::paint(scene, t, theme, &ToggleFace::new(rect, on));
 }
 
 impl FirewallApp {
@@ -1105,22 +1161,15 @@ impl FirewallApp {
         labels: &[&str],
         selected: usize,
     ) {
-        for (i, rect) in rects.iter().enumerate() {
-            let cell = *rect;
-            let sel = i == selected;
-            let bg = if sel {
-                theme.accent_primary
-            } else {
-                theme.tokens.colors.neutral[2]
-            };
-            let body = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
-            paint::fill_rrect(scene, t, body, 7.0, bg);
-            let fg = if sel { Color::WHITE } else { theme.text_dim };
-            let label = labels.get(i).copied().unwrap_or("");
-            let w = paint::text_width(tr, label, 13.0);
-            let x = cell.x0 + (cell.width() - w) / 2.0;
-            paint::label_v(tr, scene, t, label, 13.0, fg, x, cell.y0, cell.height(), w + 2.0);
-        }
+        // Shared segmented control: contiguous rects render as one themed
+        // strip (accent-selected + separators + border) via `ToggleGroup::paint`.
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(rects, labels, selected).radius(7.0),
+        );
     }
 
     fn draw_app(
@@ -1716,6 +1765,9 @@ mod tests {
     fn add_rule_from_form_appends_and_selects() {
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
+        // Actions read the shared config from the document, so seed it first —
+        // the same publish `sync` does on the app's first frame.
+        a.sync(&mut doc, &automerge::ROOT);
         let before = a.selected_zone_ref().unwrap().rules.len();
         a.form.is_service = false;
         a.form.port.set_text("9000");
@@ -1733,7 +1785,7 @@ mod tests {
     fn toggle_service_round_trips_through_doc() {
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
-        a.seeded = true;
+        a.sync(&mut doc, &automerge::ROOT);
         // ssh (idx 0) is enabled on public in the sample.
         let was = a.selected_zone_ref().unwrap().has_service("ssh");
         a.toggle_service(0, &mut doc);
@@ -1748,9 +1800,12 @@ mod tests {
     fn set_active_zone_changes_default() {
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
         a.select_zone(ZoneKind::Home);
         a.set_active_zone(&mut doc);
         assert_eq!(a.config.default_zone, ZoneKind::Home);
+        // The change lands in the shared document, not just the in-memory view.
+        assert_eq!(FirewallDoc::load(&doc).unwrap().default_zone, ZoneKind::Home);
     }
 
     #[test]
@@ -1767,9 +1822,54 @@ mod tests {
     fn delete_rule_removes_from_zone() {
         let mut a = app_with_rect();
         let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
         let id = a.selected_zone_ref().unwrap().rules[0].id;
         let before = a.selected_zone_ref().unwrap().rules.len();
         a.delete_rule(id, &mut doc);
         assert_eq!(a.selected_zone_ref().unwrap().rules.len(), before - 1);
+        // …and the shared document agrees.
+        assert!(
+            !FirewallDoc::load(&doc)
+                .unwrap()
+                .zone(a.selected_zone)
+                .unwrap()
+                .rules
+                .iter()
+                .any(|r| r.id == id),
+            "the deleted rule is gone from the document too"
+        );
+    }
+
+    /// One source of truth: the real trash-button path (`delete_rule`) dispatches
+    /// the byte-identical [`EncodedAction`] the palette's per-rule "delete" spec
+    /// builds. Proven on the production method, not a reconstruction of it.
+    #[test]
+    fn delete_button_dispatches_the_palette_action() {
+        use qos_actions::ActionInput;
+
+        let mut a = app_with_rect();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let zone = a.selected_zone;
+        let id = a.selected_zone_ref().unwrap().rules[0].id;
+
+        // The palette's delete spec for this exact rule.
+        let resources = Widget::resources(&a, &doc);
+        let spec_encoded = resources[0]
+            .children
+            .iter()
+            .find(|z| z.id.as_str() == format!("firewall.zone:{}", zone.name()))
+            .and_then(|z| z.children.iter().find(|r| r.id.as_str() == format!("firewall.rule:{id}")))
+            .and_then(|r| r.actions.iter().find(|act| act.id == "delete"))
+            .map(|act| match &act.input {
+                ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("delete is an immediate action"),
+            })
+            .expect("a delete spec for the rule");
+
+        // The real button path records what it dispatched.
+        a.delete_rule(id, &mut doc);
+        let dispatched = a.last_dispatched().cloned().expect("the button dispatched an action");
+        assert_eq!(dispatched, spec_encoded, "button and palette are one action");
     }
 }

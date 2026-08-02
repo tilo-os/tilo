@@ -230,10 +230,11 @@ impl TargetDrive {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
-    /// Raw `dd`-style copy of an ISO onto a removable drive, then verify.
+    /// Raw `dd`-style copy of an image onto a drive, then verify. The plain
+    /// "write this image to this drive" case (a USB stick or SD card).
     Flash,
-    /// Full qOS install (live stick, persistent stick, or onto a disk),
-    /// driven by an [`InstallProfile`].
+    /// Full qOS install onto the target, driven by an [`InstallProfile`] — the
+    /// pre-configuration the Customize step collects is baked into the media.
     Install,
 }
 
@@ -244,10 +245,26 @@ impl Action {
             Action::Install => "install",
         }
     }
+    /// The plain-language name of the whole operation, for titles and reviews.
     pub fn title(&self) -> &'static str {
         match self {
-            Action::Flash => "Write ISO",
+            Action::Flash => "Write image",
             Action::Install => "Install qOS",
+        }
+    }
+    /// The imperative verb for the primary button and the step caption —
+    /// deliberately short and unambiguous ("Write" vs "Install").
+    pub fn verb(&self) -> &'static str {
+        match self {
+            Action::Flash => "Write",
+            Action::Install => "Install",
+        }
+    }
+    /// Past-tense form for the Done screen ("written" / "installed").
+    pub fn past(&self) -> &'static str {
+        match self {
+            Action::Flash => "written",
+            Action::Install => "installed",
         }
     }
     pub fn from_key(k: &str) -> Action {
@@ -262,54 +279,82 @@ impl Action {
 // Wizard flow — the ordered steps the app walks the user through.
 // ---------------------------------------------------------------------------
 
-/// One step of the guided flow. The app is a linear wizard: pick a source
-/// image, pick a target drive, optionally pre-configure the image, then write
-/// (which streams and then verifies). Verify is a phase *within* the Write
-/// step, not a separate destination, so the breadcrumb stays short.
+/// One step of the guided flow. The app is a linear wizard with a visible,
+/// six-station step indicator:
+///
+///   Source → Drive → Customize → Confirm → Write → Done
+///
+/// * **Confirm** is the last screen before anything destructive happens: a
+///   read-only review of every choice plus the typed device-name gate.
+/// * **Write** shows live progress; the read-back verify is a phase *within*
+///   it (so "writing" and "verifying" share one station).
+/// * **Done** is the terminal outcome (verified / failed) with a fresh-start
+///   affordance.
+///
+/// Customize is skipped for a plain ISO (only a qOS image carries a profile),
+/// but it always occupies a station in the indicator so the flow reads the
+/// same length every time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Step {
     Source,
     Drive,
     Customize,
+    Confirm,
     Write,
+    Done,
 }
 
 impl Step {
-    pub fn all() -> [Step; 4] {
-        [Step::Source, Step::Drive, Step::Customize, Step::Write]
+    pub fn all() -> [Step; 6] {
+        [
+            Step::Source,
+            Step::Drive,
+            Step::Customize,
+            Step::Confirm,
+            Step::Write,
+            Step::Done,
+        ]
     }
     pub fn key(&self) -> &'static str {
         match self {
             Step::Source => "source",
             Step::Drive => "drive",
             Step::Customize => "customize",
+            Step::Confirm => "confirm",
             Step::Write => "write",
+            Step::Done => "done",
         }
     }
     pub fn from_key(k: &str) -> Step {
         match k {
             "drive" => Step::Drive,
             "customize" => Step::Customize,
+            "confirm" => Step::Confirm,
             "write" => Step::Write,
+            "done" => Step::Done,
             _ => Step::Source,
         }
     }
-    /// Zero-based order used for the breadcrumb + "is this step done" logic.
+    /// Zero-based order used for the step indicator + "is this step done" logic.
     pub fn index(&self) -> usize {
         match self {
             Step::Source => 0,
             Step::Drive => 1,
             Step::Customize => 2,
-            Step::Write => 3,
+            Step::Confirm => 3,
+            Step::Write => 4,
+            Step::Done => 5,
         }
     }
-    /// Short breadcrumb title.
+    /// Short step-indicator caption.
     pub fn title(&self) -> &'static str {
         match self {
             Step::Source => "Source",
             Step::Drive => "Drive",
             Step::Customize => "Customize",
+            Step::Confirm => "Confirm",
             Step::Write => "Write",
+            Step::Done => "Done",
         }
     }
     /// The next step in the flow (saturates at the last step).
@@ -317,8 +362,10 @@ impl Step {
         match self {
             Step::Source => Step::Drive,
             Step::Drive => Step::Customize,
-            Step::Customize => Step::Write,
-            Step::Write => Step::Write,
+            Step::Customize => Step::Confirm,
+            Step::Confirm => Step::Write,
+            Step::Write => Step::Done,
+            Step::Done => Step::Done,
         }
     }
     /// The previous step (saturates at the first step).
@@ -327,7 +374,9 @@ impl Step {
             Step::Source => Step::Source,
             Step::Drive => Step::Source,
             Step::Customize => Step::Drive,
-            Step::Write => Step::Customize,
+            Step::Confirm => Step::Customize,
+            Step::Write => Step::Confirm,
+            Step::Done => Step::Write,
         }
     }
 }
@@ -764,14 +813,6 @@ pub fn sample_recent_sources() -> Vec<Source> {
     ]
 }
 
-/// Saved install profiles shown in the options panel.
-pub fn sample_profiles() -> Vec<(String, InstallProfile)> {
-    vec![
-        ("Default live stick".into(), InstallProfile::default()),
-        ("Encrypted workstation".into(), InstallProfile::sample_workstation()),
-    ]
-}
-
 // ---------------------------------------------------------------------------
 // Formatting helpers.
 // ---------------------------------------------------------------------------
@@ -874,12 +915,19 @@ mod tests {
     fn step_flow_advances_and_retreats_and_saturates() {
         assert_eq!(Step::Source.next(), Step::Drive);
         assert_eq!(Step::Drive.next(), Step::Customize);
-        assert_eq!(Step::Customize.next(), Step::Write);
-        assert_eq!(Step::Write.next(), Step::Write, "last step saturates");
-        assert_eq!(Step::Write.prev(), Step::Customize);
+        assert_eq!(Step::Customize.next(), Step::Confirm);
+        assert_eq!(Step::Confirm.next(), Step::Write);
+        assert_eq!(Step::Write.next(), Step::Done);
+        assert_eq!(Step::Done.next(), Step::Done, "last step saturates");
+        assert_eq!(Step::Done.prev(), Step::Write);
+        assert_eq!(Step::Write.prev(), Step::Confirm);
+        assert_eq!(Step::Confirm.prev(), Step::Customize);
         assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
-        assert_eq!(Step::all().len(), 4);
-        assert_eq!(Step::from_key(Step::Customize.key()), Step::Customize);
+        assert_eq!(Step::all().len(), 6);
+        // Every station round-trips through its stable document key.
+        for s in Step::all() {
+            assert_eq!(Step::from_key(s.key()), s);
+        }
     }
 
     #[test]

@@ -30,8 +30,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::VideoPlayer;
+use ui::widget::{TextInput, VideoPlayer};
 
+use crate::actions::{self, ChatAction};
 use crate::call::{CallState, OverlayDrag, SoundEngine};
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
@@ -98,8 +99,15 @@ pub(crate) enum MenuAction {
     NewVoiceChannelHere,
     NewCategory,
     ToggleCollapse,
+    /// Archive / unarchive a channel — hides it from the sidebar (reversible
+    /// from Ctrl+K). Dispatches [`ChatAction::ArchiveChannel`](crate::actions::ChatAction).
+    Archive,
     /// Load one of your own messages into the inline editor.
     EditMessage,
+    /// Pin / unpin one of your own messages (shared truth every peer sees).
+    PinMessage,
+    /// Delete one of your own messages.
+    DeleteMessage,
 }
 
 impl MenuAction {
@@ -113,16 +121,25 @@ impl MenuAction {
             MenuAction::NewVoiceChannelHere => "New voice channel",
             MenuAction::NewCategory => "New category",
             MenuAction::ToggleCollapse => "Collapse / expand",
+            MenuAction::Archive => "Archive / unarchive",
             MenuAction::EditMessage => "Edit message",
+            MenuAction::PinMessage => "Pin / unpin",
+            MenuAction::DeleteMessage => "Delete message",
         }
     }
     pub fn is_destructive(self) -> bool {
-        matches!(self, MenuAction::Delete)
+        matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
     }
     /// Menu items for a channel row, in order. The first (`Delete`) is the
     /// swipe-left action.
-    pub fn for_channel() -> [MenuAction; 4] {
-        [MenuAction::Delete, MenuAction::Rename, MenuAction::MoveUp, MenuAction::MoveDown]
+    pub fn for_channel() -> [MenuAction; 5] {
+        [
+            MenuAction::Delete,
+            MenuAction::Archive,
+            MenuAction::Rename,
+            MenuAction::MoveUp,
+            MenuAction::MoveDown,
+        ]
     }
     /// Menu items for a category row.
     pub fn for_category() -> [MenuAction; 5] {
@@ -139,8 +156,8 @@ impl MenuAction {
         Self::for_channel()[0]
     }
     /// Menu items for one of your own messages.
-    pub fn for_message() -> [MenuAction; 1] {
-        [MenuAction::EditMessage]
+    pub fn for_message() -> [MenuAction; 3] {
+        [MenuAction::EditMessage, MenuAction::PinMessage, MenuAction::DeleteMessage]
     }
 }
 
@@ -232,13 +249,30 @@ pub struct ChatApp {
     /// Voice membership per channel in the active workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
+    /// Cached plain text of the focused drafts, mirrored from the composer
+    /// widgets each `reload`. Kept only so the composer's auto-grow height
+    /// (`composer_height`) and the tests can read the draft without reaching
+    /// into the widget; the editable source of truth is the `TextInput`.
     pub(crate) draft_main: String,
     pub(crate) draft_thread: String,
+
+    /// The message composers — shared multiline [`TextInput`]s (Enter sends,
+    /// Shift+Enter inserts a newline) so the composer gets real caret,
+    /// selection, clipboard (Ctrl+C/V/X), focus ring, a11y, and theming for
+    /// free instead of a hand-rolled `String` + caret index. One per surface:
+    /// the main timeline and the open thread. Both are local-mode; each
+    /// keystroke is written back into the per-channel/thread draft `Text` in
+    /// the CRDT (diff-spliced) so a draft stays collaborative + persistent.
+    pub(crate) composer_main: TextInput,
+    pub(crate) composer_thread: TextInput,
 
     // Per-peer view state.
     pub(crate) active_ws: Id,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
+    /// Caret index for the in-memory inline editors only — the message-edit
+    /// working text (`editing`) and the inline rename (`rename`). The
+    /// composers own their own caret inside their `TextInput`.
     pub(crate) caret: usize,
     pub(crate) scroll: f64,
     pub(crate) thread_open: Option<Id>,
@@ -287,6 +321,13 @@ pub struct ChatApp {
     // `PermissionContext` the compositor passes into `draw`.
     pub(crate) perms: ChatPermissions,
 
+    // Framework-owned action dispatch: every doc-mutating affordance (Send, a
+    // reaction, the channel/message context menus, the Ctrl+K palette) routes
+    // through this one field. It brackets the undo boundary, encodes under
+    // `CHAT_ACTION_TYPE`, and applies through the executor so a peer replays the
+    // byte-identical change. See [`crate::actions`].
+    pub(crate) actions: ui::ActionHost,
+
     // Persistence (None for ephemeral / `--shots` instances).
 
     // Background image loader/cache for attachment thumbnails (decodes off
@@ -307,6 +348,10 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// `--shots` only: a draft to stage into the main composer so a screenshot
+    /// can show the composer mid-compose (caret + wrapped text). `None` in every
+    /// live/interactive path, so production is unaffected.
+    shot_composer_draft: Option<String>,
     /// True for the live binary (`ChatApp::new`). A live instance always seeds
     /// the honest empty starter and never the fabricated demo workspace — even
     /// when nothing is persisting behind it. Only the ephemeral `--shots`/test
@@ -414,6 +459,8 @@ impl ChatApp {
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),
+            composer_main: Self::new_composer(),
+            composer_thread: Self::new_composer(),
             active_ws: "ws_acme".into(),
             active_channel: "c_crit".into(),
             focus: Focus::Main,
@@ -444,6 +491,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
+            actions: ui::ActionHost::new(),
             images: ui::ImageStore::new(crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
@@ -454,6 +502,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -499,6 +548,101 @@ impl ChatApp {
     /// the file — the permission boundary for a projected FUSE share.
     pub(crate) fn embed_allowed(&self, path: &str) -> bool {
         self.perms.can_embed(path)
+    }
+
+    // --- action dispatch ----------------------------------------------------
+
+    /// Dispatch one [`ChatAction`] — the single CRDT-mutation path shared by the
+    /// on-screen affordances and the Ctrl+K palette. Delegates to the framework's
+    /// [`ActionHost`](ui::ActionHost), which brackets the undo boundary and applies
+    /// the action through the executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// in-memory projection is reconciled from the document by the caller's
+    /// `reload`. This app supplies only its domain: the action and its type.
+    pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: ChatAction) {
+        self.actions.dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant test: a control and its Ctrl+K entry must build the identical action.
+    #[cfg(test)]
+    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// The context Ctrl+K needs to build Chat's resource tree: the active
+    /// workspace, its channels (including archived, so they can be unarchived from
+    /// the palette), the open channel, and that channel's messages. Derived
+    /// entirely from the projection the document already holds.
+    pub(crate) fn chat_resource_ctx(&self) -> actions::ChatResourceCtx {
+        let workspace_name = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == self.active_ws)
+            .map(|w| w.name.clone())
+            .unwrap_or_default();
+        let mut channels: Vec<&Channel> =
+            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        channels.sort_by_key(|c| c.order);
+        let channels = channels
+            .into_iter()
+            .map(|c| actions::ChannelResource {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                kind: c.kind,
+                archived: c.archived,
+            })
+            .collect();
+        let messages = self
+            .messages
+            .iter()
+            .map(|m| actions::MessageResource {
+                id: m.id.clone(),
+                label: self.message_resource_label(m),
+                pinned: m.pinned,
+            })
+            .collect();
+        actions::ChatResourceCtx {
+            me: self.me.id.clone(),
+            workspace_id: self.active_ws.clone(),
+            workspace_name,
+            channels,
+            active_channel: self.active_channel.clone(),
+            messages,
+        }
+    }
+
+    /// Build the reaction action a click on `msg`/`emoji` should dispatch,
+    /// deciding add-vs-remove from the currently-loaded state at authoring time.
+    /// A toggle is a presentation decision; the resulting action is a pure,
+    /// idempotent add or remove — the single source of truth both the reaction
+    /// chip and the emoji picker resolve to.
+    pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
+        let reacting = self
+            .message(msg)
+            .map(|m| m.reactions.iter().any(|r| r.emoji == emoji && r.reacted_by(&self.me.id)))
+            .unwrap_or(false);
+        if reacting {
+            actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
+        } else {
+            actions::add_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
+        }
+    }
+
+    /// A palette label for a message resource: the author's name and a short
+    /// snippet of the body (or the attachment name for a media-only post).
+    fn message_resource_label(&self, m: &Message) -> String {
+        let author = self.user_name(&m.author);
+        let snippet: String = if m.text.trim().is_empty() {
+            m.attachment
+                .as_ref()
+                .map(|a| a.name().to_string())
+                .unwrap_or_else(|| "(no text)".to_string())
+        } else {
+            m.text.trim().chars().take(40).collect()
+        };
+        format!("{author}: {snippet}")
     }
 
     /// Stage a named scenario for a headless screenshot against the ephemeral
@@ -596,6 +740,20 @@ impl ChatApp {
                 ));
                 self.focus = Focus::Main;
                 self.caret = usize::MAX; // clamped to the working text length on reload
+            }
+            "composer" => {
+                // The composer mid-compose: a multi-line draft with the caret,
+                // so the shared TextInput's text + caret + focus ring can be
+                // graded. Thread/call closed to keep the composer prominent.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.focus = Focus::Main;
+                self.shot_composer_draft = Some(
+                    "Shipping the composer on the shared TextInput — real caret, \
+                     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
+                        .into(),
+                );
             }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
@@ -854,10 +1012,14 @@ impl ChatApp {
         self.messages.iter().find(|m| m.id == id)
     }
 
-    /// Channels in the active workspace, ordered.
+    /// Channels in the active workspace, ordered. Archived channels are hidden
+    /// from the sidebar (they stay in the document and are reachable via Ctrl+K).
     pub(crate) fn ws_channels(&self) -> Vec<&Channel> {
-        let mut v: Vec<&Channel> =
-            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut v: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|c| c.workspace == self.active_ws && !c.archived)
+            .collect();
         v.sort_by_key(|c| c.order);
         v
     }
@@ -886,22 +1048,55 @@ impl ChatApp {
         crate::model::CallSession::select(self.voice_in(&self.call.channel).len().max(1))
     }
 
-    /// Channels in `category` within the active workspace, ordered.
+    /// Channels in `category` within the active workspace, ordered. Archived
+    /// channels are hidden from the sidebar.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
         let mut v: Vec<&Channel> = self
             .channels
             .iter()
-            .filter(|c| c.workspace == self.active_ws && c.category == category)
+            .filter(|c| c.workspace == self.active_ws && c.category == category && !c.archived)
             .collect();
         v.sort_by_key(|c| c.order);
         v
     }
 
-    pub(crate) fn focused_draft(&self) -> &str {
+    /// Build a composer `TextInput`: multiline (Enter sends, Shift+Enter adds a
+    /// newline), plain chrome (the composer draws its own rounded box around the
+    /// text), sized to match the surrounding chat body.
+    fn new_composer() -> TextInput {
+        let mut t = TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_font_size(15.0);
+        t.set_plain_chrome(true);
+        t
+    }
+
+    /// The composer for the surface the user is typing in.
+    pub(crate) fn focused_composer(&self) -> &TextInput {
         match self.focus {
-            Focus::Thread if self.thread_open.is_some() => &self.draft_thread,
-            _ => &self.draft_main,
+            Focus::Thread if self.thread_open.is_some() => &self.composer_thread,
+            _ => &self.composer_main,
         }
+    }
+
+    pub(crate) fn focused_composer_mut(&mut self) -> &mut TextInput {
+        match self.focus {
+            Focus::Thread if self.thread_open.is_some() => &mut self.composer_thread,
+            _ => &mut self.composer_main,
+        }
+    }
+
+    /// Point keyboard focus at the composer for the current surface — but only
+    /// when no inline editor / rename is capturing input. Idempotent; called
+    /// from `reload` and after any focus change.
+    pub(crate) fn set_composer_focus(&mut self) {
+        let editing = self.editing.is_some() || self.rename.is_some();
+        let main = matches!(self.focus, Focus::Main) && !editing;
+        let thread =
+            matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        ui::Widget::set_focus(&mut self.composer_main, main);
+        ui::Widget::set_focus(&mut self.composer_thread, thread);
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -950,18 +1145,41 @@ impl ChatApp {
                 self.voice_members.insert(ch.id.clone(), members);
             }
         }
+        // Load the per-surface drafts from the CRDT into the composer widgets.
+        // `set_text` is a no-op when the value is unchanged, so this preserves
+        // the caret/selection while typing (the draft we just wrote back equals
+        // the widget's value) and only reloads when the surface actually
+        // changed (a channel/thread switch), where a caret reset is correct.
         self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
+        self.composer_main.set_text(&self.draft_main);
+        let ch_name =
+            self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
+        self.composer_main.set_placeholder(&format!("Message #{ch_name}"));
+        self.composer_main.set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
             Some(k) => ChatDoc::draft_text(doc, &k),
             None => String::new(),
         };
-        // Clamp the caret to whatever text it currently indexes: the inline
-        // message editor when one is open, otherwise the focused draft.
+        self.composer_thread.set_text(&self.draft_thread);
+        self.composer_thread.set_placeholder("Reply…");
+        self.composer_thread.set_local_author(Some(self.me.id.clone()));
+        // `--shots` only: stage a mid-compose draft into the main composer so a
+        // screenshot shows real text + caret. Never set in a live/interactive
+        // run, so this is inert in production.
+        if let Some(draft) = self.shot_composer_draft.clone() {
+            self.composer_main.set_text(&draft);
+            self.composer_main.set_cursor_pos(draft.len());
+            self.draft_main = draft;
+        }
+        self.set_composer_focus();
+        // Clamp the caret to whatever text the inline editor currently indexes
+        // (message-edit working text, or the rename buffer). The composers own
+        // their own caret, so it is not clamped here.
         let max = match &self.editing {
             Some((_, text)) => text.chars().count(),
-            None => self.focused_draft().chars().count(),
+            None => 0,
         };
-        if self.caret > max {
+        if self.editing.is_some() && self.caret > max {
             self.caret = max;
         }
     }
@@ -1380,7 +1598,7 @@ impl Widget for ChatApp {
         crate::paint::push_clip(scene, tf, msg_area);
         self.draw_messages(scene, tf, tr, theme, msg_area, &mut hits);
         scene.pop_layer();
-        self.draw_composer(scene, tf, tr, theme, &mut hits);
+        self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
         // Right flap (members / thread). In overlay mode a scrim dims the
         // content behind the floating panel.
@@ -1394,7 +1612,7 @@ impl Widget for ChatApp {
             // when one is up, otherwise the workspace members roster (so the
             // "👥 N" pill always reveals a real panel, never a blank column).
             if self.thread_open.is_some() {
-                self.draw_thread(scene, tf, tr, theme, &mut hits);
+                self.draw_thread(scene, tf, tr, theme, presence, &mut hits);
             } else {
                 self.draw_members(scene, tf, tr, theme, &mut hits);
             }
@@ -1488,6 +1706,22 @@ impl Widget for ChatApp {
         _taffy: &TaffyTree<()>,
     ) {
         self.dispatch_event(event, scale_factor, modifiers, state, handled);
+    }
+
+    /// The resource tree Chat currently has open — the active workspace, its
+    /// channels, and the open channel's messages — each exporting the actions
+    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// impl in [`crate::actions`], the same builder the affordance covenant tests
+    /// drive. Recomputed each frame; empty until a workspace is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing the event —
+    /// the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {

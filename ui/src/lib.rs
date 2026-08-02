@@ -29,8 +29,11 @@
 //! app drop the direct dependency when it is next touched.
 
 pub mod a11y;
+pub mod a11y_tree;
 pub mod accesskit_bridge;
 pub mod screen_reader;
+pub mod action_host;
+pub mod action_palette;
 pub mod app;
 pub mod color_compat;
 pub mod doc;
@@ -41,12 +44,14 @@ pub mod record;
 pub mod portal;
 pub mod uri;
 pub mod state;
+pub mod view;
 pub mod widget;
 pub mod text_render;
 pub mod richtext;
 pub mod chrome;
 pub mod gesture;
 pub mod text_selection;
+pub mod text_edit;
 pub mod theme;
 pub mod caps_lock;
 pub mod i18n;
@@ -66,6 +71,7 @@ pub mod render_thread;
 pub mod warmup;
 pub mod webview;
 pub mod fullscreen;
+pub mod scale;
 pub mod mpris;
 pub mod format;
 pub mod nav_stack;
@@ -86,9 +92,12 @@ pub use app::App;
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
-pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet};
-pub use state::{State, UndoEntry};
-pub use theme::Theme;
+pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use state::{State, UndoEntry, UndoLog};
+pub use view::{
+    FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect, FROZEN_VERSION,
+};
+pub use theme::{AppearanceIntent, Theme};
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
@@ -100,6 +109,9 @@ pub use selection::SelectionModel;
 // through the module path to avoid clashing with `permissions::{Role}` /
 // `permissions::Verb`, which are already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
+// The retained semantic tree: stable frame-to-frame node identity + diffing,
+// with per-node affordances tied to the qOS action model.
+pub use a11y_tree::{SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta};
 
 // Built-in screen reader (W6): the first-party narrator over the a11y tree +
 // qos-tts. `describe` is the pure phrase-builder; `ScreenReader` the imperative
@@ -110,10 +122,16 @@ pub use widget::{Widget, Element};
 pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{Card, CardGrid, card_column_width, card_columns};
 pub use widget::{EditableLabel, EditOutcome};
+pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode,
+    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
+// The qOS ACTION model (re-exported so apps get the whole vocabulary through
+// `ui::` without a second `use qos_actions` line) + the Ctrl+K bridge.
+pub use action_host::ActionHost;
+pub use action_palette::ActionPalette;
+pub use qos_actions;
 // Phase 1 (Audit timeline) widgets + their shared types. The
 // `collab_types::OpClass` / `ArtifactKind` re-exports flow through
 // these widgets, so callers can build a `HistoryEntry` without taking
@@ -161,6 +179,7 @@ pub use text_selection::{
     next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
     prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
 };
+pub use text_edit::{Edit, EditCore, Motion};
 
 // Shared motion system — one curve set, one wall-clock driver, one
 // interruptible open/close transition, one interactive spring.

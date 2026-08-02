@@ -113,6 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut app = App::new(state, widget)
             .with_autosave(room_autosave)
             .with_records(records, room.doc);
+        // Register the word processor's action decoder so the Ctrl+K palette and
+        // remote replay can reconstruct every document-mutating operation.
+        word_processor::actions::register(app.action_registry_mut());
         // Announce ourselves under a stable document scope: this drives the
         // late-join handshake (peers already in the room reply with full state)
         // and is the scope under which our pointer presence is broadcast. The
@@ -252,7 +255,13 @@ fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).
 fn render_shot(mut state: State, mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) -> Result<(), Box<dyn Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
+    // theme-driven chrome can be proven across palettes; defaults to dark.
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();

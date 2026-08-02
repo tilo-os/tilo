@@ -14,6 +14,7 @@ use vello::peniko::{BlendMode, Color, Fill, ImageBrush};
 use ui::ImageStore;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::Avatar;
 
 use crate::model::Addr;
 
@@ -130,20 +131,12 @@ pub fn draw_avatar(
             return;
         }
     }
+    // No photo: fall back to a coloured initials disc. The per-address hue
+    // (a stable hash of the email) is preserved; the disc + centred monogram
+    // come from the shared toolkit avatar so shape/placement match every app.
+    let rect = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
     let col = avatar_color(theme, &addr.email, tint);
-    scene.fill(Fill::NonZero, t, col, None, &Circle::new(center, radius));
-    let initials = addr.initials();
-    let size = (radius * 0.9) as f32;
-    let (w, _h) = tr.measure_weighted(&initials, size, None, TextWeight::Semibold);
-    tr.draw_text_weighted(
-        scene,
-        &initials,
-        size,
-        Color::WHITE,
-        t * Affine::translate((center.x - w as f64 / 2.0, center.y - size as f64 * 0.62)),
-        None,
-        TextWeight::Semibold,
-    );
+    Avatar::draw_at(scene, t, rect, &addr.initials(), col, theme, tr);
 }
 
 // ---- md5 (RFC 1321), inline to avoid a dependency for one hash ------------

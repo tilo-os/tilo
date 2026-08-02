@@ -145,10 +145,6 @@ namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read  = []
-write = []
-
 [sandbox.net]
 mode = "off"
 
@@ -160,6 +156,11 @@ mode = "off"
 bin  = "bin/my-example-hello"
 type = "gui"
 ```
+
+There is no filesystem block. A manifest names no path to read or write —
+the launcher supplies both, and a manifest that declares `sandbox.fs.read`
+or `sandbox.fs.write` is refused at install and at launch. See
+[`sandbox.md`](./sandbox.md).
 
 Notes on the placeholder `publisher.identity`: `qos-pkg pack` with no
 `--identity` flag generates a fresh Ed25519 keypair, signs the package
@@ -213,7 +214,6 @@ harden.
 
 ```
 $ qos-install run my.example.hello --no-services
- INFO landlock plan derived rules=0 net_restricted=true enforce=true
 qos-sandbox-exec: landlock: partially enforced (kernel ABI dropped some rights) (12 ro, 2 rw, net_restricted=true)
 my-example-hello: running as qOS-native = false
   collab  : not available (graceful)
@@ -225,15 +225,19 @@ my-example-hello: done.
 The launcher:
 
 1. Verified the trust policy (no revocation, no `--require-attestor`).
-2. Built a bubblewrap argv from the manifest.
-3. Bind-mounted your payload → `/var/qos-apps/my.example.hello/` and
-   the runtime bundle → `/usr/lib/qos-runtime/2026.07/`.
+2. Built a bubblewrap argv from the manifest and the fixed system read
+   profile.
+3. Bind-mounted your payload → `/var/qos-apps/my.example.hello/` and the
+   runtime bundle → `/usr/lib/qos-runtime/2026.07/`, both read-only, plus
+   your app's own directory → `/run/qos/app`, read-write.
 4. Installed the seccomp filter.
 5. Forked bwrap, which fork-execed the sandbox-exec shim.
-6. The shim installed the Landlock ruleset (12 ro rules from binds, 2
-   rw rules for `/tmp` and one implicit for the runtime), enforced the
-   network restriction, and finally execvp'd
-   `/var/qos-apps/my.example.hello/bin/my-example-hello`.
+6. The shim installed the Landlock ruleset — read rights on the profile
+   entries and the payload, write rights on `/run/qos/app` and `/tmp` —
+   enforced the network restriction, and finally execvp'd
+   `/var/qos-apps/my.example.hello/bin/my-example-hello`. The rule counts
+   in the line above track the profile and what your kernel's Landlock
+   ABI accepts, so they move between hosts.
 7. Your `main()` ran. The `collab`/`fs`/`identity` calls all returned
    `NotAvailable::ServiceFdMissing` gracefully — the launcher didn't
    pass any fds because `--no-services` was set and the manifest
