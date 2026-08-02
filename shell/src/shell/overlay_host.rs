@@ -2385,7 +2385,6 @@ impl ShellOverlayHost {
     /// SAFETY mirrors [`Self::with_group_row_ptrs`]: the pointer is valid
     /// for the host's lifetime, and the `&mut self` borrow on this method
     /// keeps any other reconcile path from aliasing.
-    #[cfg(any(test, debug_assertions))]
     pub fn group_at_for_tests(
         &mut self,
         strip_id: StripId,
@@ -2466,10 +2465,12 @@ impl ShellOverlayHost {
         self.scroll_active_group_into_view();
     }
 
+    // NOT cfg-gated, despite the name: `shots` calls this, `shots` ships in the
+    // image, and it is built in release. Gating it on debug_assertions made
+    // `cargo build --release -p shell` fail to compile the binary.
     /// Test-only mutable access to a strip's live [`GroupRow`] so
     /// integration tests can read `scroll_x` / handle geometry and drive
     /// the reorder / resize / scroll gestures through the real widget.
-    #[cfg(any(test, debug_assertions))]
     pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
