@@ -433,19 +433,31 @@ pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
 
 /// Create a new empty playlist, returning its generated id.
 pub fn create_playlist(doc: &mut AutoCommit, name: &str) -> String {
+    let id = format!("pl_{}", uuid::Uuid::new_v4().simple());
+    create_playlist_with_id(doc, &id, name);
+    id
+}
+
+/// Create a new empty playlist with a caller-supplied id (minted at authoring
+/// time). Appending at the current list length is deterministic against a
+/// shared base state, so replaying this on a peer reproduces the identical
+/// change — the property the action model relies on. No-op if a playlist with
+/// this id already exists (so a duplicate replay can't double-insert).
+pub fn create_playlist_with_id(doc: &mut AutoCommit, id: &str, name: &str) {
+    if find_playlist_obj(doc, id).is_some() {
+        return;
+    }
     let playlists = match get_list(doc, &ROOT, "playlists") {
         Some(p) => p,
         None => doc.put_object(&ROOT, "playlists", ObjType::List).expect("playlists"),
     };
-    let id = format!("pl_{}", uuid::Uuid::new_v4().simple());
     let idx = doc.length(&playlists);
     write_playlist(
         doc,
         &playlists,
         idx,
-        &Playlist { id: id.clone(), name: name.into(), description: String::new(), track_ids: vec![], cover: String::new() },
+        &Playlist { id: id.to_string(), name: name.into(), description: String::new(), track_ids: vec![], cover: String::new() },
     );
-    id
 }
 
 /// Set (or clear) a playlist's cover image URL (`file://…` from the picker, or

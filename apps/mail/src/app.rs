@@ -547,6 +547,7 @@ impl MailApp {
                     read: true,
                     starred: false,
                     folder: Folder::Sent,
+                    labels: Vec::new(),
                 };
                 let id = msg.id;
                 let edited_draft = self.editing_draft.take();
@@ -580,8 +581,9 @@ impl MailApp {
 
     fn save_compose_draft(&mut self, doc: &mut AutoCommit) {
         let draft = self.compose.to_draft();
-        // Persist the draft (survives a crash / syncs to peers) …
-        MailDoc::store_draft(doc, &draft);
+        // Persist the draft as an action (survives a crash / syncs to peers /
+        // one undo boundary) …
+        self.shared.borrow_mut().save_draft(doc, &draft);
         // … and materialise it as a real, visible message in the Drafts folder
         // so it can be found and reopened — not a write-only slot.
         let id = self.upsert_draft_message(doc, &draft);
@@ -616,6 +618,7 @@ impl MailApp {
             read: true,
             starred: false,
             folder: Folder::Drafts,
+            labels: Vec::new(),
         };
         {
             let mut st = self.shared.borrow_mut();
@@ -1252,6 +1255,46 @@ impl MailApp {
         }
     }
 
+    /// The context the Ctrl+K resource tree is built from: the account label, the
+    /// open folder and its messages, the user's local-folder registry, and
+    /// whether a draft is in progress. Everything is read from state the document
+    /// already holds; nothing is fabricated. See [`crate::actions`].
+    pub(crate) fn mail_resource_ctx(&self, doc: &AutoCommit) -> crate::actions::MailResourceCtx {
+        // Cap the enumerated messages so an enormous folder can't build an
+        // enormous resource tree every frame; the palette is fuzzy-searched, and
+        // the open folder is the "open" scope the model intends.
+        const MAX_MESSAGES: usize = 200;
+        let st = self.shared.borrow();
+        let mailbox_label = {
+            let cfg = st.accounts.active_config();
+            if cfg.email.is_empty() { "Mailbox".to_string() } else { cfg.email }
+        };
+        let current_folder = st.folder;
+        let messages = st
+            .mailbox
+            .messages_in(current_folder)
+            .into_iter()
+            .take(MAX_MESSAGES)
+            .map(|m| crate::actions::MessageRow {
+                id: m.id.to_string(),
+                subject: m.subject.clone(),
+                read: m.read,
+                starred: m.starred,
+                labels: m.labels.clone(),
+            })
+            .collect();
+        let custom_folders = MailDoc::list_folders(doc);
+        let draft = MailDoc::load_draft(doc);
+        let has_draft = !draft.to.is_empty() || !draft.subject.is_empty() || !draft.body.is_empty();
+        crate::actions::MailResourceCtx {
+            mailbox_label,
+            current_folder,
+            messages,
+            custom_folders,
+            has_draft,
+        }
+    }
+
     // ---- drawing the app-owned overlays ----------------------------------
 
     fn draw_context_menu(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -1683,6 +1726,22 @@ impl Widget for MailApp {
             self.maybe_auto_refresh();
         }
         self.nav.sync(state, path);
+    }
+
+    /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its mail action, so it records one undo boundary bracketing it (the same
+    /// `record_committed_action` path a Ctrl+K dispatch takes). Rising-edge:
+    /// cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.shared.borrow_mut().take_committed_action()
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {

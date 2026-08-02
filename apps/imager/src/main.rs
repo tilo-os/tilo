@@ -1,9 +1,12 @@
-//! Image Writer — thin binary entry point. All logic lives in the library.
+//! Disk Imager — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default            — run the live winit event loop via `ui::App`.
+//!   * default            — run the live winit event loop via `ui::App`,
+//!                          starting blank with a real `lsblk` drive probe.
+//!   * `--demo`           — run live but seed sample content (drives, a qOS
+//!                          image, recent history) for a walkthrough / review.
 //!   * `--shots PATH`     — render one offscreen frame to a PNG and exit.
-//!                          `--scenario NAME` picks which wizard state
+//!                          `--scenario NAME` picks which wizard station
 //!                          (defaults to `source`); `--viewport WxH` sizes it.
 //!   * `--shots-dir DIR`  — render *every* wizard scenario into `DIR` as
 //!                          `NN-name.png` (the screenshot gallery).
@@ -49,12 +52,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Live mode: enumerate real write targets (lsblk). The `--shots` paths
-    // above never set this, so a screenshot stays on the curated sample and is
-    // fully populated offline.
-    // SAFETY: set once at startup before any threads read the environment.
-    unsafe {
-        std::env::set_var("IMAGER_LIVE", "1");
+    // `--demo`: seed sample content (drives, a qOS image, recent history) for a
+    // walkthrough or review, instead of probing real hardware. The default live
+    // run stays blank and enumerates real write targets (lsblk).
+    let demo = args.iter().any(|a| a == "--demo");
+    if !demo {
+        // SAFETY: set once at startup before any threads read the environment.
+        unsafe {
+            std::env::set_var("IMAGER_LIVE", "1");
+        }
     }
     // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
     // keystrokes against the real widget tree with no display, persisting
@@ -63,8 +69,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(ui::headless::run(spec, imager::app_root(), "dev.qos.imager"));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.imager");
-    let app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
+    let (mut state, autosave) = ui::persist::open("dev.qos.imager");
+    if demo {
+        imager::doc::ImagerDoc::seed_demo(&mut state.doc);
+    }
+    let mut app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
+    // Register the imager's install-profile actions so the shell's Ctrl+K palette
+    // can decode + replay the same profile-customization actions the on-screen
+    // toggles and fields dispatch.
+    imager::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
@@ -110,7 +123,13 @@ fn render_scenario(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
+    // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme
+    // so the same frame can be graded in both light and dark (default dark).
+    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

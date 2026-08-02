@@ -553,15 +553,40 @@ fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
     // development. Guard against accidental breakage: the key must match
     // what `EditorApp` reads, and the registered caret + selection must be
     // retrievable by user.
+    //
+    // The key names the Editor tab's *record* as well as the body field.
+    // Each Editor tab is its own document with an `editor_body` of its
+    // own, so a caret published under the bare field name would be drawn
+    // in every Editor tab at once.
     use shell::shell::seed_demo_editor_presence;
+    use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
+    use shell::shell::tab_documents::scratch_tab_record;
     use ui::permissions::UserId;
     use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let editor_tab = {
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let id = group.tabs[0].id ^ 0xEd;
+        group.tabs.push(shell::shell::state::Tab {
+            id,
+            title: "Editor".into(),
+            tile: TileContent::AppPlaceholder {
+                kind: AppKind::Other("Editor".into()),
+                label: "Editor".into(),
+            },
+        });
+        id
+    };
+
     let mut ctx = PresenceCtx::empty();
-    seed_demo_editor_presence(&mut ctx);
+    seed_demo_editor_presence(&tree, &mut ctx);
 
     let key = PresenceKey::Widget {
-        path: vec![PathSegment::Field("editor_body".into())],
+        path: vec![
+            PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
+            PathSegment::Field("editor_body".into()),
+        ],
     };
     let alice = UserId("alice".into());
 

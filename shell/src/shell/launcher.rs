@@ -930,7 +930,7 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
 /// it is the package id's trailing component (`dev.qos.hello` ↔
 /// `hello`) — the same reverse-DNS convention the package ids follow.
 /// Nothing here guesses by timing.
-fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
+pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();
     pid == needle || pid.rsplit('.').next() == Some(needle.as_str())
@@ -1019,9 +1019,14 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Guards the tests that repoint `QOS_APPS_DATA_DIR` /
-    /// `QOS_LAUNCHER_BIN`, which are process-global.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    // The tests that repoint `QOS_APPS_DATA_DIR` / `QOS_LAUNCHER_BIN` /
+    // the published wayland socket are serialised on `process_env` — the
+    // crate's one group for process-global environment. They used to
+    // hold a private mutex in this module instead, which serialised them
+    // against each other but not against the rest of the crate: any test
+    // elsewhere that repoints the same variables (`shell::doc_open`'s
+    // opens, for instance) raced them, and the failure landed in
+    // whichever of the two got there second.
 
     /// Write a registry + manifest pair into `dir` and point the
     /// launcher's registry reader at it. Returns the app's payload root.
@@ -1062,12 +1067,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn enumeration_reads_the_registry_and_flags_gui_apps() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "dev.qos.hello", "gui");
         install_fixture(tmp.path(), "dev.qos.notes-cli", "cli");
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         let apps = read_installed_apps().expect("registry readable");
@@ -1164,10 +1169,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn launch_refuses_an_unknown_package() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         let err = launch("dev.qos.nope", RoomId::new()).unwrap_err();
@@ -1183,11 +1188,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn launch_refuses_a_cli_only_package() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "dev.qos.notes-cli", "cli");
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         let err = launch("dev.qos.notes-cli", RoomId::new()).unwrap_err();
@@ -1202,11 +1207,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn launch_refuses_when_no_compositor_socket_is_published() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "dev.qos.hello", "gui");
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         set_wayland_socket_path(None);
@@ -1220,8 +1225,8 @@ mod tests {
     /// replaced by a recorder: a real child process is forked, gets the
     /// real argv, and its failure comes back as a `LaunchEvent`.
     #[test]
+    #[serial_test::serial(process_env)]
     fn launch_execs_the_launcher_binary_with_the_compositor_socket() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         install_fixture(tmp.path(), "dev.qos.hello", "gui");
         let record = tmp.path().join("argv.txt");
@@ -1240,7 +1245,7 @@ mod tests {
         }
         std::fs::set_permissions(&fake, perms).unwrap();
 
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe {
             std::env::set_var("QOS_APPS_DATA_DIR", tmp.path());
             std::env::set_var("QOS_LAUNCHER_BIN", &fake);
@@ -1430,8 +1435,8 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn published_capabilities_are_filtered_to_the_launching_app() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_workspace_capabilities(vec![
             fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read),
             fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
@@ -1452,8 +1457,8 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn nothing_published_means_nothing_granted() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_workspace_capabilities();
         assert!(
             capabilities_for_app("dev.qos.books").is_empty(),
@@ -1466,10 +1471,10 @@ mod tests {
     /// `qos-launcher`'s **own** loader and planner — the same code the
     /// launcher process runs — and check the bind that comes out.
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
         set_workspace_capabilities(vec![
             fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read),
@@ -1516,10 +1521,10 @@ mod tests {
     /// go away too, or the next launch would honour a grant the user
     /// took back.
     #[test]
+    #[serial_test::serial(process_env)]
     fn revoking_the_last_capability_removes_the_file() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
 
         let granted = vec![fs_grant(
@@ -1547,10 +1552,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_package_id_that_could_escape_the_directory_is_refused() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: guarded by ENV_LOCK.
+        // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
         let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
         let escaped = write_capabilities_file("../../etc/x", &caps);

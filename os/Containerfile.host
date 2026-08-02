@@ -14,15 +14,18 @@
 # a target machine. See os/build-host.sh.
 # ============================================================================
 
-# ---- Frozen RPM repo (cross-time reproducibility) --------------------------
-# Same digest-pinned snapshot the desktop image uses (see os/Containerfile
-# comment + os/rpms-snapshot.env). Every `dnf install` in this file pulls
-# from it, never live Fedora mirrors.
+# ---- Frozen RPM repo + mirrored base (cross-time reproducibility) ----------
+# Same digest-pinned snapshot and same mirrored Fedora bootc base the desktop
+# image uses (see os/Containerfile's comment, os/rpms-snapshot.env and
+# os/base-snapshot.env). Every `dnf install` in this file pulls from the frozen
+# repo, never live Fedora mirrors. Both ARGs go before the first FROM so
+# they're global — an ARG between two FROMs belongs to the previous stage.
+ARG BASE_REF
 ARG RPMS_REF
 FROM ${RPMS_REF} AS rpms
 
 # ---- Stage 1: builder (same base + toolchain as the desktop image) ---------
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS builder
+FROM ${BASE_REF} AS builder
 
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache \
@@ -58,7 +61,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/
 
 # ---- Stage 2: runtime image ------------------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06
+FROM ${BASE_REF}
 
 # Minimal runtime — no display stack, no PipeWire, no greetd. Just
 # what a headless network appliance needs: time sync, firewall,
@@ -81,6 +84,12 @@ COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-rel
 COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
 COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
 COPY os/usr/lib/tmpfiles.d/qos-host.conf /usr/lib/tmpfiles.d/qos-host.conf
+# The device-trust group owns the identity directory, so it has to exist
+# before tmpfiles-setup runs. No session user joins it on a host image —
+# there is no session — but the group is what the directory is created
+# with, and the identity layout is shared with the desktop image.
+COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 RUN chmod 0755 /usr/libexec/qos-relay-firstboot
 
 # The first-boot script consumes /etc/qos/enrollment-token.txt (a

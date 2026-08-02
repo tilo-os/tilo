@@ -933,19 +933,11 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
     }
 }
 
+/// Report a failed palette open, attributed to the Files surface the row
+/// came from. The reporting itself is shared with every other open
+/// surface — see [`crate::shell::doc_open::report_open_failure`].
 fn notify_open_failure(path: &Path, detail: &str, chrome: &Chrome) {
-    use crate::shell::notification::{Notification, NotificationSeverity};
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.display().to_string());
-    let mut st = chrome.borrow_mut();
-    st.push_notification_full(
-        Notification::new(format!("Couldn't open {name}"), detail.to_string())
-            .with_severity(NotificationSeverity::Error)
-            .with_app_name("Files"),
-    );
-    st.bump();
+    crate::shell::doc_open::report_open_failure(chrome, path, detail, Some("Files"));
 }
 
 /// Best-effort `xdg-open`. The fallback for directories and for file

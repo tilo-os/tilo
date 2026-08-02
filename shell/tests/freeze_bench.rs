@@ -87,20 +87,23 @@ fn terminal_first_sync_crdt_cost() {
 #[test]
 #[ignore]
 fn rematerialize_group_cost() {
+    // The benchmark keeps its records in memory: it measures widget
+    // construction, not what a session writes to disk.
+    let records = ui::record::RecordStore::in_memory();
     // Warm the OS caches once so we measure steady-state, not first-touch.
-    let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"));
+    let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"), &records);
 
     let files = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"));
+        let _ = to_ui_window_group(&placeholder_group(UiKind::Files, "Files"), &records);
     });
     let terminal = ms(|| {
-        let _ = to_ui_window_group(&placeholder_group(UiKind::Terminal, "Terminal"));
+        let _ = to_ui_window_group(&placeholder_group(UiKind::Terminal, "Terminal"), &records);
     });
     let notes = ms(|| {
         let _ = to_ui_window_group(&placeholder_group(
             UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
             "Notes",
-        ));
+        ), &records);
     });
 
     println!("--- re-materialize cost (render-thread stall per detached group) ---");

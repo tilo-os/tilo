@@ -44,6 +44,29 @@ impl Engine {
     pub fn all() -> [Engine; 3] {
         [Engine::Sqlite, Engine::Postgres, Engine::MySql]
     }
+
+    /// Stable string key used when a connection profile is stored in the shared
+    /// Automerge document (see [`crate::doc::ConnectionsDoc`]). Kept distinct
+    /// from [`label`](Self::label) so the on-wire key never shifts with a UI
+    /// rename.
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Engine::Sqlite => "sqlite",
+            Engine::Postgres => "postgres",
+            Engine::MySql => "mysql",
+        }
+    }
+
+    /// Parse an engine back from its [`as_key`](Self::as_key) form, defaulting
+    /// to PostgreSQL for an unknown key so a forward-compatible document still
+    /// renders something sensible.
+    pub fn from_key(key: &str) -> Engine {
+        match key {
+            "sqlite" => Engine::Sqlite,
+            "mysql" => Engine::MySql,
+            _ => Engine::Postgres,
+        }
+    }
 }
 
 /// A saved connection. Network engines carry host/port/user; SQLite carries

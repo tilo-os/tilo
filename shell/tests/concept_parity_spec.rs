@@ -155,12 +155,57 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
 /// 0xff, which covers every spec-relevant fill in the shell (we never
 /// pre-blend the indigo accent or the emerald monitor colour against an
 /// alpha < 255 — those compositions happen at the layer level).
+/// How many `u32`s a tag writes into `draw_data`.
+///
+/// **Not** `DrawTag::info_size()`, which is the size of the *info* buffer
+/// — a different stream. The two agree for `COLOR`, which is why walking
+/// `draw_data` by `info_size()` appeared to work, but they diverge badly
+/// elsewhere: `IMAGE` reports 10 and writes 3, `BEGIN_CLIP` reports 1 and
+/// writes 2 (`blend_mode` + `alpha`).
+///
+/// Over-advancing runs the cursor off the end, after which every
+/// remaining colour is silently skipped and a parity test reports "the
+/// widget stopped painting indigo" instead of "the walker lost its
+/// place". That is exactly what happened when `soft_shadow` went from
+/// one image fill to eight.
+///
+/// `None` means a tag this walker has never measured. Callers must treat
+/// that as "cannot decode" rather than guessing, so a new brush kind
+/// fails loudly instead of corrupting every assertion downstream.
+fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
+    use vello_encoding::DrawTag;
+    // vello_encoding's own source annotates the two that differ most:
+    // `IMAGE // info: 10, scene: 3` and `BLUR_RECT // info: 11, scene: 5`.
+    // "scene" is this stream. The gradients follow their `Draw*Gradient`
+    // structs: linear `{index, p0[2], p1[2]}`, sweep `{index, p0[2], t0,
+    // t1}`, radial `{index, p0[2], p1[2], r0, r1}`.
+    Some(match tag {
+        DrawTag::COLOR => 1,
+        DrawTag::IMAGE => 3,
+        DrawTag::LINEAR_GRADIENT => 5,
+        DrawTag::SWEEP_GRADIENT => 5,
+        DrawTag::RADIAL_GRADIENT => 7,
+        DrawTag::BLUR_RECT => 5,
+        DrawTag::BEGIN_CLIP => 2,
+        DrawTag::END_CLIP => 0,
+        _ => return None,
+    })
+}
+
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
     let mut out = Vec::new();
     let mut data_cursor = 0usize;
     for tag in enc.draw_tags.iter() {
+        let Some(words) = draw_data_words(*tag) else {
+            panic!(
+                "collect_solid_colors met an unmeasured draw tag ({:#x}); add its \
+                 draw_data word count to `draw_data_words` rather than letting the \
+                 cursor drift and silently corrupt every colour after this point",
+                tag.0
+            );
+        };
         if *tag == DrawTag::COLOR {
             // `draw_data` is `Vec<u32>` in vello_encoding 0.9. Each
             // `DrawColor` is a single packed u32 with red in the low
@@ -173,11 +218,8 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
                 let a = ((packed >> 24) & 0xff) as u8;
                 out.push((r, g, b, a));
             }
-            data_cursor += 1;
-        } else {
-            // info_size is already in u32 words.
-            data_cursor += tag.info_size() as usize;
         }
+        data_cursor += words;
     }
     out
 }
@@ -1721,6 +1763,114 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     );
 }
 
+/// The top-bar collaborator cluster is painted through the shared
+/// `ui::Avatar` (`draw_ringed_at` per chip, `draw_overflow_at` for the tail),
+/// so it must render the *expected count* — three peer chips plus a "+N"
+/// overflow — with each chip in that peer's **own** cursor hue rather than a
+/// single flat accent for everyone. Five peers in the active workspace →
+/// three chips (alice / bob / charlie) + a "+2" overflow. Asserting the real
+/// `TopBarChrome::draw` scene contains all three distinct peer hues proves the
+/// per-identity fill flows through the shared widget, and the non-empty glyph
+/// runs prove the initials + overflow label paint.
+#[test]
+fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
+    use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
+
+    let mut ws = Workspace::new(WorkspaceId::new(), "Home");
+    ws.collaborators = vec![
+        Collaborator::new("alice", "Ada"),
+        Collaborator::new("bob", "Bo"),
+        Collaborator::new("charlie", "Cy"),
+        Collaborator::new("dave", "Di"),
+        Collaborator::new("erin", "Ed"),
+    ];
+    let ws_id = ws.id;
+    let mut tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip: Default::default(),
+        active_group: Default::default(),
+        collaborators: vec![],
+        ..Default::default()
+    };
+    tree.active = ws_id;
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    // Count/initials contract feeding the shared widget: three chips (peers
+    // beyond the local user, capped at three) and a "+2" overflow.
+    assert_eq!(
+        chrome.collaborator_initials().len(),
+        3,
+        "cluster must show exactly three avatar chips for five peers",
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        2,
+        "the remaining two peers must flow into the overflow chip",
+    );
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    let fills = collect_solid_colors(&scene);
+    // Each shown peer paints its OWN cursor hue via `Avatar::draw_ringed_at`
+    // (`ui::presence::user_color`: alice → pink-500, bob → orange-500,
+    // charlie → emerald-500) — three distinct chips, not one flat accent.
+    assert!(
+        contains_color_close(&fills, (236, 72, 153), 8),
+        "cluster must paint alice's pink chip through the shared avatar; fills: {fills:?}",
+    );
+    assert!(
+        contains_color_close(&fills, (249, 115, 22), 8),
+        "cluster must paint bob's orange chip through the shared avatar; fills: {fills:?}",
+    );
+    assert!(
+        contains_color_close(&fills, (16, 185, 129), 8),
+        "cluster must paint charlie's emerald chip through the shared avatar; fills: {fills:?}",
+    );
+    // Initials + the "+2" overflow label render as glyph runs.
+    assert!(
+        !scene.encoding().resources.glyph_runs.is_empty(),
+        "cluster must paint initials and the overflow label as glyph runs",
+    );
+}
+
 // ===========================================================================
 // Overview "+ Add workspace" affordance
 // ===========================================================================
@@ -1996,11 +2146,10 @@ mod helper_tests {
 // Overview card: the faces on a workspace card are the people who can reach it
 // ===========================================================================
 
-/// The overview's collaborator avatars must come from the workspace's
-/// capability-derived roster, not from a display list.
+/// The faces on a workspace card are the people who can reach it.
 ///
 /// The card paints a "Members" badge counted from [`Workspace::roster`]
-/// and, below it, a stack of avatars. Those two used to read different
+/// and, beneath it, a stack of avatars. Those two used to read different
 /// sources: the badge counted the roster while the avatars came from
 /// `ws.collaborators`, falling back to the *tree-wide* collaborator list
 /// when the workspace's own was empty. A card could therefore read
@@ -2008,83 +2157,26 @@ mod helper_tests {
 /// faces on every card in the overview.
 ///
 /// On a permissions surface that is not a cosmetic mismatch: showing
-/// someone on a workspace card states that they can reach it. The
-/// avatars have to be derived from the same model the enforcement path
-/// reads, so the card cannot claim access the compositor would refuse.
+/// someone on a workspace card states that they can reach it.
 ///
-/// Asserted by counting `accent[5]` fills — the avatar disc colour —
-/// with the overview settled open, for a tree whose workspaces have
-/// collaborator records but an empty roster, against the same tree with
-/// one real member added.
+/// Asserted against `overview_card_faces`, the function the draw pass
+/// itself calls. An earlier version of this test counted avatar-coloured
+/// fills in the rendered scene, which stopped meaning anything the moment
+/// avatars moved to the shared `ui::Avatar` widget with a per-identity
+/// fill — the product was still correct and the proxy had gone stale.
+/// Assert on the production path, not on something that correlates with
+/// it.
 ///
 /// Forbidden modifications (re: the file header covenant):
-/// - Don't assert only that the member case has *some* fills; the point
-///   is the difference between "has a capability here" and "is merely
+/// - Don't assert only that the member case is non-empty; the point is
+///   the difference between "holds a capability here" and "is merely
 ///   listed", so both halves have to be pinned.
-/// - Don't relax `no_member_discs == 0` to `<= n`. Zero is the claim: a
-///   person with no capability in the workspace gets no face on it.
+/// - Don't relax the listed-only case to "at most N". Empty is the
+///   claim: a person with no capability in the workspace gets no face.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
+    use shell::shell::overlay_host::overview_card_faces;
     use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
-
-    fn accent_discs(tree: &WorkspaceTree) -> usize {
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
-        chrome.borrow_mut().overlays.overview = true;
-        host.force_overview_settled(true);
-
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let accent = Theme::dark().tokens.colors.accent[5];
-        let target = (
-            (accent.components[0] * 255.0).round() as u8,
-            (accent.components[1] * 255.0).round() as u8,
-            (accent.components[2] * 255.0).round() as u8,
-        );
-        collect_solid_colors(&scene)
-            .iter()
-            .filter(|&&(r, g, b, _)| {
-                r.abs_diff(target.0) <= 2 && g.abs_diff(target.1) <= 2 && b.abs_diff(target.2) <= 2
-            })
-            .count()
-    }
 
     // Listed but powerless: collaborator records on every workspace, and
     // no capability anywhere, so every roster is empty.
@@ -2105,7 +2197,18 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
             },
         ];
     }
-    let listed_discs = accent_discs(&listed_only);
+    for ws in &listed_only.workspaces {
+        assert!(
+            overview_card_faces(ws, &listed_only).is_empty(),
+            "a person who holds no capability in the workspace gets no face on \
+             its card; workspace {:?} showed {:?}",
+            ws.name,
+            overview_card_faces(ws, &listed_only)
+                .iter()
+                .map(|(u, _)| u.clone())
+                .collect::<Vec<_>>()
+        );
+    }
 
     // The same tree, plus one person who actually holds a capability in
     // the first workspace.
@@ -2116,20 +2219,63 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
         room,
         Verb::Write,
     ));
-    let member_discs = accent_discs(&with_member);
 
+    let faces = overview_card_faces(&with_member.workspaces[0], &with_member);
     assert_eq!(
-        with_member.workspaces[0].roster().len(),
-        1,
-        "fixture must put exactly one person in the first workspace's roster"
+        faces.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(),
+        vec!["ada"],
+        "the member who holds a capability is exactly who the card shows"
+    );
+    assert_eq!(
+        faces[0].1.map(|c| c.name.as_str()),
+        Some("Ada"),
+        "the collaborator record still supplies the display name"
     );
 
+    // And only that workspace's card changed.
+    for ws in with_member.workspaces.iter().skip(1) {
+        assert!(
+            overview_card_faces(ws, &with_member).is_empty(),
+            "granting in one workspace must not put a face on another's card"
+        );
+    }
+}
+
+/// The word table in [`draw_data_words`] must account for **every** word
+/// of a real chrome scene's `draw_data`.
+///
+/// Every colour assertion in this file walks that stream by hand, so a
+/// tag whose size is wrong does not fail loudly — it slides the cursor
+/// and makes later fills decode as neighbouring garbage, or run off the
+/// end and vanish. That is how a long-standing `IMAGE` error (10 words
+/// assumed, 3 actual) stayed hidden until `soft_shadow` went from one
+/// image fill to eight and the drift became fatal.
+///
+/// Walk a full overlay-host render and require the total to land exactly
+/// on `draw_data.len()`. A new brush kind then fails here, once, with a
+/// clear message — instead of quietly weakening every parity assertion.
+#[test]
+fn draw_data_word_table_accounts_for_the_whole_stream() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let (scene, _chrome) = render_overlay_host(&tree);
+    let enc = scene.encoding();
+    let mut walked = 0usize;
+    for tag in enc.draw_tags.iter() {
+        let words = draw_data_words(*tag).unwrap_or_else(|| {
+            panic!(
+                "draw tag {:#x} has no measured draw_data size; add it to \
+                 `draw_data_words` (vello_encoding::draw annotates several \
+                 as `scene: N`) rather than letting the cursor drift",
+                tag.0
+            )
+        });
+        walked += words;
+    }
     assert_eq!(
-        member_discs,
-        listed_discs + 1,
-        "a person holding a capability in the workspace must get exactly one \
-         avatar disc on its card (listed_only={listed_discs}, \
-         with_member={member_discs}); the card's faces have to come from the \
-         roster the Members badge counts"
+        walked,
+        enc.draw_data.len(),
+        "the draw_data word table must consume the stream exactly; a \
+         mismatch means some tag's size is wrong and every colour decoded \
+         after it is suspect"
     );
 }

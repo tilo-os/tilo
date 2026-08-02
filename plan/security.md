@@ -8,22 +8,23 @@ Implementation tracked in `docs/superpowers/archive/2026-05-02-per-workspace-san
 
 The scenarios we defend against:
 
-1. **Malicious guest** — a peer joins a workspace and attempts to read files outside `/work`, snoop on tabs not in the shared workspace, or inject input into the host's private windows.
+1. **Malicious guest** — a peer joins a workspace and attempts to read files the workspace was never granted, snoop on tabs not in the shared workspace, or inject input into the host's private windows.
 2. **Compromised app** — a valid sandboxed app has a vulnerability that a remote attacker exploits to attempt sandbox escape, network exfil, or privilege escalation.
 3. **Misbehaving peer** — a connected peer issues capability requests the owner didn't authorise. The portal backend gates everything.
 4. **Man-in-the-middle** — an attacker intercepts P2P traffic to inject fake input events or steal file data.
 
 ## Identity
 
-- Per-host ed25519 keypair at `/var/lib/qos-fs/peer-key`, auto-created on first boot.
-- libp2p `PeerId` is the multihash of the protobuf-encoded public key. Used everywhere a stable peer-identity is needed.
+- One ed25519 device key per machine at `/var/lib/qos/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `qos-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
+- libp2p `PeerId` is the multihash of the protobuf-encoded public key, and the filesystem's iroh `NodeId` is the same public key. Used everywhere a stable peer-identity is needed.
+- Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - Per-user identity (display name, avatar) is self-asserted for v1; federated identity is a follow-up.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collaboration.md §7` for the wire format and validation order.
 
 ## Sandbox: Bubblewrap profile
 
-Every app launched into a workspace runs through `bwrap`, configured by a `SandboxProfile` (`shell/src/sandbox/profile.rs`):
+Every app launched into a workspace runs through `bwrap`, whose argv is built by `qos-launcher` (`crates/packaging/launcher`) from the package manifest and the capability grants the shell hands it. `SandboxProfile` (`shell/src/sandbox/profile.rs`) is the compositor-side *model* of that sandbox — the bind/env/uid shape and the seccomp + Landlock plumbing points. It is a value type, and nothing spawns an app through it:
 
 ```rust
 pub struct SandboxProfile {
@@ -39,16 +40,15 @@ pub struct SandboxProfile {
 }
 ```
 
-Default workspace profile presents the sandboxed app:
+What a sandboxed app is actually presented with. It names none of this; the launcher decides all of it, and the read side is identical for every package:
 
-- `binds_ro`: `/usr` → `/usr`. `/etc/resolv.conf` only if the workspace has network.
-- `binds_rw`: `/var/workspace/<ws_id>` → `/work`. `/var/cache/qos-fs/<ws_id>` → `/cache`. The bridge socket → `/run/user/1000/wayland-0`.
-- `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, `HOME=/work`.
-- Empty `/home` (tmpfs).
+- Read-only: the system read profile (`launcher::profile`) — loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data — plus the package payload at `/var/qos-apps/<pkg-id>` and its runtime bundle. `/etc/resolv.conf` and `/etc/hosts` only when the launch shares the host network.
+- Read-write: exactly one directory, `<data home>/qos-rooms/<room>/<pkg-id>` → `/run/qos/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the bridge socket → `/run/user/1000/wayland-0`.
+- `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `QOS_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/qos/app`.
 - Private DBus session bus per workspace.
 - `unshare(CLONE_NEWNET)` if `net_isolated`. Default: invited peers run isolated; the owner's session runs without isolation unless overridden.
 
-The profile renders to `bwrap` argv via `into_argv(command)`; `spawn_in_workspace` wraps `std::process::Command::new("bwrap")`.
+Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch. `SandboxProfile::apply_grants` mirrors the launcher's rules so the compositor can reason about the same shape; a disagreement between the two is a bug in the mirror.
 
 ## Seccomp-bpf blocklist
 
@@ -129,9 +129,16 @@ Per request:
 
 ### Filesystem
 
-- The bind-mount story already enforces FS isolation — apps see only `/work`/`/cache`.
+- An app names no path. `crates/packaging/launcher` binds a fixed system read profile (`launcher::profile`: loader and C library, fonts, GPU loader manifests, `/sys`, CA bundle, timezone data) plus one read-write directory per room per package at `/run/qos/app` (`launcher::appdir`), and nothing else. The `[sandbox.fs]` manifest block is retired; a package that still declares one is refused at install and at launch.
 - `FileChooser` returns an open file descriptor via the portal, not a path. `cap-std` wraps the FD.
-- `Always`-scoped FS grants extend `SandboxProfile::binds_{ro,rw}` on next workspace start.
+- A path outside the profile is reachable only through a capability the user grants, which becomes a bind at the next launch of that app (`launcher::capabilities`). `SandboxProfile::apply_grants` mirrors the same rules compositor-side; the launcher is the enforcement point and a disagreement between the two is a bug in the mirror.
+
+**The mount is the second enforcement point** (`fs/src/acl.rs`). `fs --acl FILE` binds a capability list to the mount, and every `open`/`read`/`write` is answered by `collab_types::decide_capability` — the same function the compositor calls, so a path readable through one and not the other is a bug rather than a policy. Without `--acl` the mount keeps the Unix-veneer-only behaviour, which is the documented opt-out.
+
+Two properties this rests on:
+
+- **The list is re-read while the mount is up** (`fs/src/caps_file.rs`). `/var/workspace` is mounted at boot and lives as long as the session, so a list read only at mount time could not express a grant — or a revocation — made afterwards. A deleted list denies everything (its absence is the producer saying nothing is granted); an unreadable or malformed one keeps the last good list, because the file is rewritten in place and a reader can catch it truncated.
+- **The shipped image enforces.** `os/usr/lib/systemd/system/fs.service` passes `--acl /var/lib/qos/fs-capabilities.json`, seeded by `tmpfiles.d` from `/usr/share/qos/fs-capabilities.json`. Be plain about what that default is: it grants the local session read+write on the whole workspace — exactly what an unenforced mount already gave. It narrows nothing on a single-user desktop. What it buys is that the enforcement point is *live*, so a restriction added to that list bites without a remount, and a mount joined from a peer's ticket has somewhere to put a narrower policy. The subject is a principal (`person:local`) rather than a key because the mount's identity is a per-start iroh endpoint key that no file written in advance could name.
 
 ### Network
 
@@ -151,6 +158,13 @@ DNS is treated as egress. An app with no grant reaches no resolver; an app with 
 This needs no privilege and no kernel feature `bwrap` does not already require. Earlier drafts of this document described per-workspace `nftables` rules; that was never implemented, and it would not have worked as described — a rule set is written against addresses and cannot express a hostname, and installing one needs `CAP_NET_ADMIN` the launcher does not have.
 
 Not constrained: **ports** (a `NetHost` scope names a host and carries no port) and **content** (the gate relays TCP and deliberately does not terminate TLS).
+
+**A filtered grant is TCP-only.** The namespace is empty, so the sole route out is the gate socket, and both protocols it serves — SOCKS5 `CONNECT` and HTTP `CONNECT` — carry TCP. SOCKS5 `UDP ASSOCIATE` is refused outright, because a connectionless path carries no name for the policy to match. So an app under a host-scoped grant has no UDP egress at all: QUIC and HTTP/3 do not work, and a client that does not fall back to TCP is offline rather than slow. A grant of `*` shares the host network and is unaffected. This is a real behavioural constraint of choosing a name-filtering broker, not an oversight — there is no way to name a host in a UDP datagram.
+
+**What the permissions panel can express is narrower than what the gate enforces.** The composer's scope picker (`shell/src/shell/workspace_settings.rs`, `GRANT_CHOICES`) is a fixed list with one network entry, "Network access", which mints `NetHost("*")`. So the mechanism accepts a host-scoped grant and enforces it exactly, but the only grant a user can *make from the UI today* is the unrestricted one. Two consequences worth stating plainly:
+
+- An app whose manifest enumerates endpoints is still filtered to them, because a `*` grant narrows to a declared allowlist rather than widening past it. This is the common case and it works.
+- An app whose manifest says `net.mode = "host"` is unrestricted once the user clicks the one network choice, and the UI offers no way to say "only `mail.example.com`". Closing this needs the composer to offer the package's declared endpoints as individual choices (the manifest is already parsed into `InstalledApp`), or a hostname text field. Until then, a host-scoped grant is reachable through the capability file and the manifest, not through the panel.
 
 If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `QOS_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it.
 
@@ -187,7 +201,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 | Attack vector              | Defense                                                 | Component                          |
 |----------------------------|---------------------------------------------------------|------------------------------------|
 | Unauthorised peer connect  | ed25519 invite token + libp2p noise                     | `network/invite.rs`, libp2p        |
-| File exfil from sandbox    | bwrap mount namespace + bind-mount whitelist            | `sandbox/profile.rs`               |
+| File exfil from sandbox    | bwrap mount namespace + fixed system read profile + one per-room app dir | `packaging/launcher/{profile,appdir}.rs` |
 | Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `sandbox/profile.rs`, `portal/`    |
 | Cross-workspace input leak | Bridge tag + per-workspace seat routing                 | `compositor/bridge.rs`             |
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |

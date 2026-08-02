@@ -227,6 +227,60 @@ version is the default and no app has to re-earn it.
 
 ---
 
+## 8. Never hand-roll an interactive primitive
+
+**Use the shared `ui` widget for every interactive primitive — text field,
+button, dialog, dropdown, checkbox, toggle, slider, tabs, menu, tooltip,
+popover. Never paint your own.** A "clickable rect + a manual hit-test" or a
+"`String` field you `push`/`pop` on raw key events" is not a lightweight
+shortcut — it is a broken control that silently drops the behaviours the shared
+widget already gets right:
+
+- **Text selection** — shift+arrows, drag-select, word-wise, select-all
+  (a hand-rolled `String` field has no selection at all).
+- **Clipboard** — Ctrl+C / X / V, and paste from other apps.
+- **Keyboard** — a painted button cannot be focused or activated with
+  Space/Enter; a hand-rolled field has no caret navigation or IME.
+- **Focus** — the 2D directional focus ring (`App::focusable_order`) skips
+  anything that is not a real widget, so hand-rolled controls are unreachable by
+  keyboard and invisible to focus-follow.
+- **Accessibility** — the AT-SPI / a11y tree is built from the widget tree; a
+  painted rect has no role, name, or state, so it does not exist to a screen
+  reader.
+- **Theming** — shared widgets read every color and metric from the `Theme`
+  (hover/press/focus/disabled included), so light/dark, high-contrast, and OS
+  accent all track automatically. A hand-rolled control with `Color::rgb(...)`
+  literals breaks all three (see §7's "Theme-driven" clause).
+
+This generalises §3 (text editing) to **all** interactive primitives. Concretely:
+
+- Editable field → `TextInput` (or `SearchField` / `NumberInput` /
+  `EditableLabel`). Never keep a per-app cursor index and splice characters into
+  a `String` on `Key::Character` / `Backspace`.
+- Clickable → `Button`. Never `draw_*_button` + a `contains()` hit-test.
+- Confirm / prompt / sheet → `ModalDialog` (scrim, focus capture, Esc, a11y are
+  built in). Never paint your own overlay + scrim rect.
+- Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
+  `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
+  `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
+
+**If the shared widget is missing a capability you need, extend the widget — do
+not fork it.** Add the feature to the one `ui` primitive so every app gets it and
+the accessible / themed / clipboard-correct version stays the default. Forking a
+private copy re-earns every bug above and guarantees drift. The only sanctioned
+"hand-rolled" text surfaces are genuine document engines whose buffer *is* the
+app (the terminal grid, a code/rich-text/cell editor) — and even those must route
+their **side** fields (find bar, rename box, cell entry, command line) through the
+shared widgets, and are themselves candidates for a shared editor primitive
+(§ toolkit gaps) rather than N private forks.
+
+> Enforcement: a new painted control is a toolkit gap, not an app feature. Grep
+> your diff for `Color::rgb`, `draw_*_button`, and `Key::Character => *.push` — each
+> hit is either a shared-widget call you skipped or a widget you should be
+> extending.
+
+---
+
 *This document is versioned with the toolkit. When a guideline here becomes a
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*

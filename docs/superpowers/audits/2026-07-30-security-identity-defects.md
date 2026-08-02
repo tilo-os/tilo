@@ -9,6 +9,10 @@ reference any of this.
 Severity: **P0** = exploitable or silently produces invalid security state. **P1** = a documented
 guarantee is not delivered. **P2** = correctness/hygiene.
 
+Findings that have since been fixed carry a **Resolved** note naming the test that holds the fix
+in place. The description of the defect is left as it was written, so the record still says what
+was wrong.
+
 ---
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
@@ -32,6 +36,15 @@ ceremony-minted identities are not, with the same on-disk format and no way to t
 
 **Fix direction:** add the key-extraction helper to `threshold-identity`, delete the placeholder
 branch, and make the mismatch fatal in `runtime-identity` rather than advisory.
+
+**Resolved.** `ThresholdIdentity` holds the single-device key in dalek form and exports its seed;
+the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` refuses a record
+whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
+in every build profile. Firstboot now goes through the same encoder, so there is one writer of
+the format. Held by
+`ui/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+and
+`crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
 
 ---
 
@@ -73,6 +86,13 @@ Consequences:
   written against the default subject is dead on the next boot**.
 - The node-id-reuse guard at `fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
+
+**Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
+Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
+mount rather than falling back to a random one. `bind_endpoint` is split into
+`bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
+every call site. Held by `fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+and `::identity_survives_a_restart`.
 
 ---
 
@@ -169,6 +189,137 @@ caller in any app.
 
 ---
 
+## P1-7 — The base-image digest pin expires in about a day, so cross-time reproducibility is half true
+
+As found: `os/Containerfile:67,88,208`, `os/Containerfile.host:25,61`, `os/kernel/Containerfile:41`
+— all pinned `FROM quay.io/fedora/fedora-bootc@sha256:…`. Digest pinning is the right instinct, but
+Fedora rebuilds the `fedora-bootc:44` tag daily and garbage-collects the manifest it replaces
+almost immediately, so the pin resolves for roughly one day.
+
+Observed twice:
+
+- A digest pinned on 2026-06-30 was gone by 2026-07-30 (`manifest unknown`), breaking every image
+  build at its first `FROM` — including `snapshot-rpms`, which resolves the frozen package set
+  against that same base. The failure is self-blocking: the package set could not be refreshed
+  either.
+- Repinned 2026-07-30 to `sha256:c466de53…`; `snapshot-rpms` succeeded with it (run 662). By
+  2026-08-01 that one-day-old digest was also gone (run 726), confirmed independently with
+  `skopeo inspect`.
+- Meanwhile `main` carried a third digest, `sha256:a0fc5a3b…`, and every `build-image` run against
+  it on 2026-08-01 failed the same way (runs 722, 724, 727, 730, 733, 736, 738). The OS image had
+  not been buildable from `main` all morning, and nothing about it was specific to any of those
+  commits.
+
+`docs/supply-chain.md` claims builds are reproducible across time. `os/rpms-snapshot.env` +
+`os/Containerfile.rpms` genuinely deliver that for the package set, but the base underneath
+evaporates, so a rebuild weeks later does not merely differ — it does not run. Supply-chain
+integrity rests on the pin being real rather than aspirational: a pin that reliably fails is one
+"just point it at whatever resolves today" away from becoming an unpinned build under deadline
+pressure, and the frozen RPM set would then be resolved against an unrecorded base.
+
+**Fix direction:** mirror the base into `code.sandbox.example/qos/fedora-bootc` and pin against the
+mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
+our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
+`mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
+as a `--build-arg`.
+
+Two adjacent holes in the same guarantee were found alongside it:
+
+- `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
+  quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
+  so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
+  `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
+  whole point is to be small is not the fix. A digest against quay.io expires the same way the
+  bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
+  written (it hardcodes the `qos/fedora-bootc` destination and asserts an `ostree.linux` label
+  fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
+  fedora-minimal, and add a second ref to `os/base-snapshot.env` that
+  `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
+- `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
+  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
+  still open. The stage was also **entirely broken**, and unpinned turned out to mean unwatched in
+  the strongest sense: nobody noticed, because the base `FROM` above failed first and the layer
+  cache served the stage before that. Once the base pin was fixed and the stage actually ran, it
+  had five independent defects stacked behind one another, each only visible after the previous
+  was fixed. The image now builds end to end — run 811, signed and pushed.
+
+  1. `build-wpe.sh` exported `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged
+     `${prefix}`. A sysroot is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it
+     emits — so system libraries in the real `/usr` were relocated too and libwpe's CMake configure
+     died on `Imported target "XkbCommon::libxkbcommon" includes non-existent path
+     "/wpe/usr/include"` (run 742). Now `PKG_CONFIG_RELOCATE_PATHS`, which derives each `${prefix}`
+     from its own `.pc` file's location and so relocates only what was actually staged.
+  2. libwpe's `wpe.pc.in` hardcodes `libdir=${exec_prefix}/lib` while the library installs into
+     `CMAKE_INSTALL_LIBDIR` (`lib64`). An unstaged install survives that because the linker
+     searches `/usr/lib64` by default; a staging root does not, and wpebackend-fdo failed to link
+     with `cannot find -lwpe-1.0` (run 754). The installed `.pc` is now corrected.
+  3. The WPE port's `ENABLE_WPE_PLATFORM_DRM` needs libinput and libudev, which the *GTK* port's
+     builddep never pulls, so `find_package(LibInput)` failed (run 755). Added to the explicit
+     package list the stage already keeps for this purpose.
+  4. With the engine finally built, the Rust builder could not find `wpe-webkit-2.0` (run 758).
+     The `.pc` was present; it declares `Requires: glib-2.0 libsoup-3.0 wpe-1.0 wpe-platform-2.0`,
+     and pkg-config fails the whole lookup when one link in that chain has no `.pc` — reported by
+     the pkg-config crate as the requested module being missing. The image ships `libsoup3` for
+     the browser at runtime but the builder never installed `libsoup3-devel`.
+  5. Linking `browser` then failed on hundreds of undefined `gst_*`/`epoxy_*`/`manette_*` symbols
+     (run 773). The engine is *not* under-linked — ld says so first: `libgstreamer-1.0.so.0,
+     needed by /usr/lib64/libWPEWebKit-2.0.so, not found`. 17 sonames, nine packages, absent from
+     the builder.
+
+  Each was found only by running the build; none is visible by reading it. Defect 5 also exposed a
+  latent runtime bug that no build would ever have caught: four of those libraries — `atk`,
+  `at-spi2-atk`, `libmanette`, `libxslt` — were missing from the *final image* too, so the browser
+  would have failed to exec on a booted system.
+
+  Guards now fail at the point of the mistake rather than somewhere downstream: every staged
+  package must resolve to an include directory that exists *and* link a trivial program; each
+  build step dumps its real output on failure instead of the `tail -1` that had been hiding the
+  compiler error behind ninja's "build stopped"; and the hour-long engine compile streams progress
+  rather than going silent, which had made three runner-level deaths (a Docker daemon that went
+  away mid-build) indistinguishable from a hang.
+
+## P1-8 — `catch_unwind` soft-fails are inert in release, so the compositor aborts at startup with no GPU adapter
+
+`ui/src/warmup.rs:191`, `shell/src/compositor/native.rs:707`,
+`shell/src/compositor/backend/headless.rs:77` (line numbers as found; now fixed)
+
+Three call sites wrapped `ui::offscreen::OffscreenRenderer::new` in `std::panic::catch_unwind` to
+degrade gracefully when wgpu finds no adapter. `[profile.release]` sets `panic = "abort"`
+(`Cargo.toml:447`) — deliberately, and correctly, since a compositor cannot meaningfully recover
+from a panic — under which the panic runtime aborts at the panic site and no unwinding, hence no
+catching, ever begins. All three guards were inert in exactly the configuration that ships, and
+`OffscreenRenderer::new`'s own doc comment told callers to use the mechanism that does not work.
+
+The load-bearing one is `ui::warmup::spawn_warmup`, called on the compositor's real startup path
+(`shell/src/main.rs:129`) from a `qos-startup-warmup` thread. Its comment claimed *"A missing
+adapter isn't fatal to the shell — the compositor's real backend surfaces its own adapter error
+later — so we swallow it here."* In a release build nothing is swallowed: on a machine where
+adapter enumeration fails the shell aborts before it ever reaches the backend that was supposed to
+report the problem. The dev build degrades; the shipped build does not. The other two are the
+test-control snapshot writer and the headless backend's renderer init, both documented as
+never-panicking and neither of which was.
+
+Found by verifying a claim, not by reading one: the resilience comment was checked against the
+panic strategy the release profile actually sets.
+
+**Fix direction (applied):** `OffscreenRenderer::try_new` returns `OffscreenError` instead of
+panicking; `new` is retained for its many test/example callers and panics through it. All three
+sites take the `Result`. `panic = "abort"` is unchanged. Pinned by
+`warmup_degrades_silently_when_no_wgpu_adapter_exists` (`ui/tests/warmup_no_adapter.rs`), which
+re-executes itself as a child with an empty wgpu backend set and an aborting panic hook — cargo
+ignores `panic` on the test profile, so the strategy has to be emulated — and fails if the child
+dies by signal rather than exiting. It first asserts no adapter is reachable, so it cannot pass
+vacuously on a GPU host. Against the previous code the child dies with SIGABRT.
+
+**Residual:** `OffscreenRenderer::render` still `expect`s internally (`ui/src/offscreen.rs`, the
+`render_to_texture` and buffer-map paths). Those were nominally inside the same dead
+`catch_unwind`s, so nothing regressed, but a mid-render driver failure still aborts a release
+build. The `catch_unwind` pair in `crates/collab/channel-crypto/src/group.rs:237,379` was checked
+and is *not* the same defect: it absorbs an openmls `debug_assert!(false, …)` that only fires in
+debug builds, which is where `catch_unwind` works.
+
+---
+
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
 `shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
@@ -176,12 +327,28 @@ public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-
 newer `PeerOrigin` (`shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
 
+**Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
+`peer_liveness_handle`, never reaches an authority decision, and has one derivation shared by the
+actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
+across Rust releases, so two peers on different toolchains would have stopped recognising each
+other's publishes. Held by
+`shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
+`shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
+
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
 `shell/src/network/behaviour.rs:122-127` — if `/var/lib/qos-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
+
+**Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
+compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
+machine's one device key, so the compositor no longer keeps a network identity of its own; an
+existing installation's libp2p keypair is adopted seed-and-all so the machine keeps its `PeerId`.
+The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
+`shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
+and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 

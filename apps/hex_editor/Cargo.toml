@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui", features = ["portal"] }
+# The qOS ACTION model: every buffer mutation (insert / delete / overwrite of
+# bytes) is a replayable action the shell's Ctrl+K palette dispatches, so a
+# keystroke and a palette row build the identical action and share one undo
+# boundary that Ctrl+Z reverts.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

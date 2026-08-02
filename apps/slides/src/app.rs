@@ -35,6 +35,7 @@ use ui::widget::{
 };
 use ui::ColorCompat;
 
+use crate::actions;
 use crate::assets::ImageStore;
 use crate::chrome;
 use crate::doc::SlidesDoc;
@@ -418,6 +419,12 @@ pub struct SlidesApp {
     select_word_click: Option<Point>,
     needs_commit: bool,
 
+    /// Framework-owned action dispatch (undo boundary + executor + last-action
+    /// record). Every structural / geometric / stylistic deck mutation goes
+    /// through it as a [`SlidesAction`](crate::actions::SlidesAction); flowing
+    /// text edits stay on the native CRDT splice path (see [`crate::actions`]).
+    actions: ui::ActionHost,
+
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
     /// the canvas; on a narrow window it collapses to an overlay flap behind a
     /// scrim, closed by default and summoned by the toolbar hamburger. This is
@@ -621,6 +628,7 @@ impl SlidesApp {
             text_drag: false,
             select_word_click: None,
             needs_commit: false,
+            actions: ui::ActionHost::new(),
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
@@ -976,6 +984,58 @@ impl SlidesApp {
         self.needs_commit = true;
     }
 
+    // --- action dispatch ----------------------------------------------------
+
+    /// Dispatch one [`SlidesAction`](crate::actions::SlidesAction) — the single
+    /// CRDT-mutation path shared with the Ctrl+K palette. Delegates to the
+    /// framework's [`ActionHost`](ui::ActionHost), which brackets the undo
+    /// boundary and applies the action through the executor (a pinned actor + a
+    /// committed change, so it replays byte-identically on peers), exactly as the
+    /// palette does. The in-memory deck mirror is reconciled from the document on
+    /// the next `reload` / `sync`. Callers never also call [`Self::mark`] — that
+    /// would double-record the undo boundary the host already records.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::SlidesAction) {
+        self.actions.dispatch(doc, crate::actions::SLIDES_ACTION_TYPE, &action);
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant test: a control and its Ctrl+K entry must build the identical
+    /// action.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// The context Ctrl+K needs to build the deck's resource tree: the deck
+    /// title and each slide (with its elements). Derived entirely from the
+    /// in-memory deck mirror, which the shared document already holds.
+    pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
+        let slides = self
+            .deck
+            .slides
+            .iter()
+            .enumerate()
+            .map(|(idx, s)| crate::actions::SlideResource {
+                idx,
+                data: crate::actions::SlideData::from_slide(s),
+                elements: s
+                    .z_sorted()
+                    .into_iter()
+                    .map(|e| crate::actions::ElementResource {
+                        id: e.id.clone(),
+                        kind: e.kind,
+                        text: e.text.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        crate::actions::SlidesResourceCtx {
+            deck_title: self.deck.title.clone(),
+            slides,
+        }
+    }
+
     // --- rail scroll geometry ----------------------------------------------
 
     /// The rail's painted rect, resolved from the current width + flap reveal.
@@ -1061,9 +1121,8 @@ impl SlidesApp {
         match ev {
             PageSidebarEvent::Select(i) => self.apply_hit(doc, Hit::SelectSlide(i)),
             PageSidebarEvent::Reorder { from, to } => {
-                SlidesDoc::move_slide(doc, from, to);
+                self.perform_action(doc, actions::move_slide_action(from, to));
                 self.cur_slide = to;
-                self.mark();
                 self.reload(doc);
                 self.scroll_rail_to_current();
             }
@@ -1811,9 +1870,7 @@ impl SlidesApp {
                 self.mode = Mode::Edit;
             }
             Hit::CyclePalette => {
-                self.deck.palette = self.deck.palette.next();
-                SlidesDoc::set_palette(doc, self.deck.palette);
-                self.mark();
+                self.perform_action(doc, actions::set_deck_palette_action(self.deck.palette.next()));
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
@@ -1863,17 +1920,13 @@ impl SlidesApp {
             Hit::DuplicateElement => self.duplicate_element(doc),
             Hit::DeleteElement => self.delete_element(doc),
             Hit::SetLayout(l) => {
-                SlidesDoc::set_slide_layout(doc, self.cur_slide, l);
-                self.mark();
+                self.perform_action(doc, actions::set_slide_layout_action(self.cur_slide, l));
             }
             Hit::SetBackground(b) => {
-                SlidesDoc::set_slide_background(doc, self.cur_slide, b);
-                self.mark();
+                self.perform_action(doc, actions::set_slide_background_action(self.cur_slide, b));
             }
             Hit::SetPalette(p) => {
-                self.deck.palette = p;
-                SlidesDoc::set_palette(doc, p);
-                self.mark();
+                self.perform_action(doc, actions::set_deck_palette_action(p));
             }
             Hit::EditNotes => {
                 self.editing_notes = true;
@@ -1889,51 +1942,37 @@ impl SlidesApp {
 
     fn set_sel_str(&mut self, doc: &mut AutoCommit, key: &str, v: &str) {
         if let Some(id) = self.sel.clone() {
-            SlidesDoc::set_element_str(doc, self.cur_slide, &id, key, v);
-            self.mark();
+            self.perform_action(doc, actions::restyle_str_action(self.cur_slide, id, key, v));
         }
     }
     fn set_sel_f64(&mut self, doc: &mut AutoCommit, key: &str, v: f64) {
         if let Some(id) = self.sel.clone() {
-            SlidesDoc::set_element_f64(doc, self.cur_slide, &id, key, v);
-            self.mark();
+            self.perform_action(doc, actions::restyle_f64_action(self.cur_slide, id, key, v));
         }
     }
     fn set_sel_bool(&mut self, doc: &mut AutoCommit, key: &str, v: bool) {
         if let Some(id) = self.sel.clone() {
-            SlidesDoc::set_element_bool(doc, self.cur_slide, &id, key, v);
-            self.mark();
+            self.perform_action(doc, actions::restyle_bool_action(self.cur_slide, id, key, v));
         }
     }
 
     fn restack(&mut self, doc: &mut AutoCommit, front: bool) {
         let Some(id) = self.sel.clone() else { return };
-        let Some(slide) = self.deck.slides.get(self.cur_slide) else { return };
-        let z = if front {
-            slide.elements.iter().map(|e| e.z).max().unwrap_or(0) + 1
+        let action = if front {
+            actions::raise_element_action(self.cur_slide, id)
         } else {
-            slide.elements.iter().map(|e| e.z).min().unwrap_or(0) - 1
+            actions::lower_element_action(self.cur_slide, id)
         };
-        SlidesDoc::set_element_z(doc, self.cur_slide, &id, z);
-        self.mark();
+        self.perform_action(doc, action);
     }
 
     fn new_slide(&mut self, doc: &mut AutoCommit) {
-        let mut s = Slide::new(Layout::TitleContent);
-        s.add(Element::text("New slide", 96.0, 90.0, 1088.0, 100.0, 54.0).with(|e| e.bold = true));
-        s.add(Element::shape(ElementKind::Rect, 96.0, 188.0, 150.0, 8.0).with(|e| {
-            e.fill = "accent".into();
-            e.radius = 4.0;
-        }));
-        s.add(Element::text("Add your content…", 96.0, 230.0, 900.0, 300.0, 32.0).with(|e| {
-            e.fill = "text-dim".into();
-        }));
+        let s = actions::new_slide_template();
         let at = self.cur_slide + 1;
-        SlidesDoc::insert_slide(doc, at, &s);
+        self.perform_action(doc, actions::insert_slide_action(at, &s));
         self.cur_slide = at;
         self.sel = None;
         self.editing_text = false;
-        self.mark();
         self.scroll_rail_to_current();
     }
 
@@ -1945,10 +1984,9 @@ impl SlidesApp {
             e.id = new_id();
         }
         let at = self.cur_slide + 1;
-        SlidesDoc::insert_slide(doc, at, &copy);
+        self.perform_action(doc, actions::insert_slide_action(at, &copy));
         self.cur_slide = at;
         self.sel = None;
-        self.mark();
         self.scroll_rail_to_current();
     }
 
@@ -1956,12 +1994,11 @@ impl SlidesApp {
         if self.deck.slides.len() <= 1 {
             return; // keep at least one slide
         }
-        SlidesDoc::remove_slide(doc, self.cur_slide);
+        self.perform_action(doc, actions::delete_slide_action(self.cur_slide));
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
         self.sel = None;
-        self.mark();
     }
 
     fn insert_element(&mut self, doc: &mut AutoCommit, kind: ElementKind) {
@@ -1972,10 +2009,9 @@ impl SlidesApp {
             other => Element::shape(other, 480.0, 260.0, 320.0, 220.0),
         };
         let id = el.id.clone();
-        SlidesDoc::add_element(doc, self.cur_slide, &el);
+        self.perform_action(doc, actions::add_element_action(self.cur_slide, &el));
         self.sel = Some(id);
         self.editing_text = false;
-        self.mark();
     }
 
     /// Ask the host desktop's file chooser to pick an image, via the XDG
@@ -2099,10 +2135,9 @@ impl SlidesApp {
         // A comfortable default frame, centred on the slide; the user resizes.
         let el = Element::image(&src, 340.0, 168.0, 600.0, 384.0);
         let id = el.id.clone();
-        SlidesDoc::add_element(doc, self.cur_slide, &el);
+        self.perform_action(doc, actions::add_element_action(self.cur_slide, &el));
         self.sel = Some(id);
         self.editing_text = false;
-        self.mark();
         self.reload(doc);
     }
 
@@ -2113,17 +2148,15 @@ impl SlidesApp {
         copy.x += 24.0;
         copy.y += 24.0;
         let id = copy.id.clone();
-        SlidesDoc::add_element(doc, self.cur_slide, &copy);
+        self.perform_action(doc, actions::add_element_action(self.cur_slide, &copy));
         self.sel = Some(id);
-        self.mark();
     }
 
     fn delete_element(&mut self, doc: &mut AutoCommit) {
         if let Some(id) = self.sel.clone() {
-            SlidesDoc::remove_element(doc, self.cur_slide, &id);
+            self.perform_action(doc, actions::delete_element_action(self.cur_slide, id));
             self.sel = None;
             self.editing_text = false;
-            self.mark();
         }
     }
 
@@ -2131,8 +2164,7 @@ impl SlidesApp {
         if let Some(el) = self.selected_element().cloned() {
             let nx = (el.x + dx).clamp(-el.w + 20.0, SLIDE_W - 20.0);
             let ny = (el.y + dy).clamp(-el.h + 20.0, SLIDE_H - 20.0);
-            SlidesDoc::set_element_pos(doc, self.cur_slide, &el.id, nx, ny);
-            self.mark();
+            self.perform_action(doc, actions::move_element_action(self.cur_slide, el.id, nx, ny));
         }
     }
 
@@ -4754,6 +4786,20 @@ impl Widget for SlidesApp {
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }
+
+    /// The deck's resource tree for the shell's one Ctrl+K palette — every
+    /// document-mutating affordance exported as the same action it dispatches on
+    /// screen. See [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its slides action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
 }
 
 impl SlidesApp {
@@ -5490,8 +5536,12 @@ impl SlidesApp {
         };
         if let Some(id) = id {
             if let Some(el) = self.deck.slides.get(self.cur_slide).and_then(|s| s.element(&id)).cloned() {
-                SlidesDoc::set_element_rect(doc, self.cur_slide, &id, el.x, el.y, el.w, el.h);
-                self.mark();
+                // The drag preview lived only in the in-memory deck; commit the
+                // element's FINAL rect once, on drop — never a write per frame.
+                self.perform_action(
+                    doc,
+                    actions::resize_element_action(self.cur_slide, id, el.x, el.y, el.w, el.h),
+                );
                 *handled = true;
             }
             self.reload(doc);

@@ -22,13 +22,18 @@ pub enum DiffLayout {
 }
 
 impl DiffLayout {
-    fn as_str(self) -> &'static str {
+    /// The document's string form (`"unified"` | `"split"`). Public so the
+    /// preference [`crate::actions`] can carry the target layout in its payload
+    /// and write the identical shape [`Settings::write`] does.
+    pub fn as_str(self) -> &'static str {
         match self {
             DiffLayout::Unified => "unified",
             DiffLayout::SideBySide => "split",
         }
     }
-    fn from_str(s: &str) -> Self {
+    /// Parse the document's string form back into the enum, defaulting to
+    /// [`DiffLayout::Unified`] for any unknown value.
+    pub fn from_str(s: &str) -> Self {
         match s {
             "split" => DiffLayout::SideBySide,
             _ => DiffLayout::Unified,
@@ -56,14 +61,34 @@ impl Default for Settings {
     }
 }
 
-const KEY: &str = "settings";
+/// Document keys for the durable settings, shared by [`Settings`] and the
+/// preference [`crate::actions`] so both read and write the identical shape.
+pub mod keys {
+    /// The settings map under the document root.
+    pub const SETTINGS: &str = "settings";
+    pub const DIFF_LAYOUT: &str = "diff_layout";
+    pub const SHOW_WHITESPACE: &str = "show_whitespace";
+    pub const SYNTAX_HIGHLIGHT: &str = "syntax_highlight";
+    pub const WRAP_LINES: &str = "wrap_lines";
+}
 
-fn settings_obj(doc: &mut AutoCommit) -> ObjId {
-    match doc.get(&automerge::ROOT, KEY) {
+/// Resolve (creating if absent) the `root.settings` map. Crate-visible so the
+/// preference [`crate::actions`] mutate the same object the app seeds here.
+pub(crate) fn settings_obj(doc: &mut AutoCommit) -> ObjId {
+    match doc.get(&automerge::ROOT, keys::SETTINGS) {
         Ok(Some((Value::Object(ObjType::Map), id))) => id,
         _ => doc
-            .put_object(&automerge::ROOT, KEY, ObjType::Map)
+            .put_object(&automerge::ROOT, keys::SETTINGS, ObjType::Map)
             .expect("put settings map"),
+    }
+}
+
+/// Resolve the `root.settings` map without creating it, for read-only callers
+/// (the Ctrl+K resource tree gets an immutable `&AutoCommit`).
+fn settings_obj_ref(doc: &AutoCommit) -> Option<ObjId> {
+    match doc.get(&automerge::ROOT, keys::SETTINGS) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
     }
 }
 
@@ -93,25 +118,41 @@ impl Settings {
     /// read also seeds it.
     pub fn read(doc: &mut AutoCommit) -> Self {
         let obj = settings_obj(doc);
+        Self::from_obj(doc, &obj)
+    }
+
+    /// Read the current settings from an immutable document, without creating
+    /// the settings map. Returns the defaults when the map is absent. Used by
+    /// the Ctrl+K resource tree, which only borrows the document.
+    pub fn read_only(doc: &AutoCommit) -> Self {
+        match settings_obj_ref(doc) {
+            Some(obj) => Self::from_obj(doc, &obj),
+            None => Settings::default(),
+        }
+    }
+
+    /// Read every field out of an already-resolved settings map, falling back
+    /// to the defaults for any unset key.
+    fn from_obj(doc: &AutoCommit, obj: &ObjId) -> Self {
         let def = Settings::default();
-        let layout = get_str(doc, &obj, "diff_layout")
+        let layout = get_str(doc, obj, keys::DIFF_LAYOUT)
             .map(|s| DiffLayout::from_str(&s))
             .unwrap_or(def.diff_layout);
         Self {
             diff_layout: layout,
-            show_whitespace: get_bool(doc, &obj, "show_whitespace", def.show_whitespace),
-            syntax_highlight: get_bool(doc, &obj, "syntax_highlight", def.syntax_highlight),
-            wrap_lines: get_bool(doc, &obj, "wrap_lines", def.wrap_lines),
+            show_whitespace: get_bool(doc, obj, keys::SHOW_WHITESPACE, def.show_whitespace),
+            syntax_highlight: get_bool(doc, obj, keys::SYNTAX_HIGHLIGHT, def.syntax_highlight),
+            wrap_lines: get_bool(doc, obj, keys::WRAP_LINES, def.wrap_lines),
         }
     }
 
     /// Persist this snapshot into the document.
     pub fn write(&self, doc: &mut AutoCommit) {
         let obj = settings_obj(doc);
-        let _ = doc.put(&obj, "diff_layout", self.diff_layout.as_str());
-        let _ = doc.put(&obj, "show_whitespace", self.show_whitespace);
-        let _ = doc.put(&obj, "syntax_highlight", self.syntax_highlight);
-        let _ = doc.put(&obj, "wrap_lines", self.wrap_lines);
+        let _ = doc.put(&obj, keys::DIFF_LAYOUT, self.diff_layout.as_str());
+        let _ = doc.put(&obj, keys::SHOW_WHITESPACE, self.show_whitespace);
+        let _ = doc.put(&obj, keys::SYNTAX_HIGHLIGHT, self.syntax_highlight);
+        let _ = doc.put(&obj, keys::WRAP_LINES, self.wrap_lines);
     }
 
     pub fn toggle_layout(&mut self) {

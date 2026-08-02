@@ -23,10 +23,6 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-fn temp_data_dir(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("db-client-live-{tag}-{}", uuid::Uuid::new_v4()))
-}
-
 /// A table name unique to this run so parallel/repeat runs never collide.
 fn unique_table() -> String {
     format!("qos_dbtest_{}", uuid::Uuid::new_v4().simple())
@@ -46,18 +42,15 @@ fn postgres_real_round_trip() {
     profile.password = env_or("QOS_DB_TEST_PG_PASS", "");
     profile.database = env_or("QOS_DB_TEST_PG_DB", "postgres");
 
-    let mut s = Session::load_from(temp_data_dir("pg"));
-    s.add_connection(profile);
-    assert!(
-        s.engine.is_some(),
-        "postgres connect failed: {:?}",
-        s.status
-    );
+    let mut s = Session::new();
+    s.add_connection_blocking(profile);
+    assert!(s.connected, "postgres connect failed: {:?}", s.status);
 
     let table = unique_table();
     s.run_query(&format!(
         "CREATE TABLE {table} (id integer PRIMARY KEY, name text NOT NULL)"
     ));
+    s.block_until_idle();
     let create = s.query_result.as_ref();
     assert!(
         matches!(&s.status, db_client::session::RunStatus::Ok(_)),
@@ -70,11 +63,13 @@ fn postgres_real_round_trip() {
     s.run_query(&format!(
         "INSERT INTO {table} (id, name) VALUES (1, 'alice'), (2, 'bob')"
     ));
+    s.block_until_idle();
     let ins = s.query_result.as_ref().expect("insert result");
     assert!(!ins.is_select, "INSERT should be DML");
     assert_eq!(ins.rows_affected, Some(2), "two rows inserted");
 
     s.run_query(&format!("SELECT id, name FROM {table} ORDER BY id"));
+    s.block_until_idle();
     let sel = s.query_result.as_ref().expect("select result");
     assert!(sel.is_select);
     assert_eq!(sel.columns, vec!["id".to_string(), "name".to_string()]);
@@ -101,6 +96,7 @@ fn postgres_real_round_trip() {
 
     // Clean up so repeat runs against a persistent server stay green.
     s.run_query(&format!("DROP TABLE {table}"));
+    s.block_until_idle();
     assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
 }
 
@@ -120,14 +116,15 @@ fn mysql_real_round_trip() {
     profile.password = env_or("QOS_DB_TEST_MYSQL_PASS", "");
     profile.database = env_or("QOS_DB_TEST_MYSQL_DB", "mysql");
 
-    let mut s = Session::load_from(temp_data_dir("mysql"));
-    s.add_connection(profile);
-    assert!(s.engine.is_some(), "mysql connect failed: {:?}", s.status);
+    let mut s = Session::new();
+    s.add_connection_blocking(profile);
+    assert!(s.connected, "mysql connect failed: {:?}", s.status);
 
     let table = unique_table();
     s.run_query(&format!(
         "CREATE TABLE {table} (id INT PRIMARY KEY, name VARCHAR(64) NOT NULL)"
     ));
+    s.block_until_idle();
     assert!(
         matches!(&s.status, db_client::session::RunStatus::Ok(_)),
         "CREATE failed: {:?}",
@@ -137,11 +134,13 @@ fn mysql_real_round_trip() {
     s.run_query(&format!(
         "INSERT INTO {table} (id, name) VALUES (1, 'alice'), (2, 'bob')"
     ));
+    s.block_until_idle();
     let ins = s.query_result.as_ref().expect("insert result");
     assert!(!ins.is_select, "INSERT should be DML");
     assert_eq!(ins.rows_affected, Some(2), "two rows inserted");
 
     s.run_query(&format!("SELECT id, name FROM {table} ORDER BY id"));
+    s.block_until_idle();
     let sel = s.query_result.as_ref().expect("select result");
     assert!(sel.is_select);
     assert_eq!(sel.columns, vec!["id".to_string(), "name".to_string()]);
@@ -163,5 +162,6 @@ fn mysql_real_round_trip() {
     assert_eq!(t.row_count, Some(2), "row count from the live catalog");
 
     s.run_query(&format!("DROP TABLE {table}"));
+    s.block_until_idle();
     assert!(matches!(&s.status, db_client::session::RunStatus::Ok(_)));
 }

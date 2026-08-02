@@ -1,22 +1,25 @@
-//! Root widget for the Image Writer (imager) app.
+//! Root widget for the Disk Imager (imager) app.
 //!
-//! `ImagerApp` is a single self-drawing "canvas" widget that renders a linear
-//! **wizard** — Source → Drive → Customize → Write — with a persistent step
-//! breadcrumb and a Back / primary-action footer, modelled on media writers
-//! like Fedora Media Writer and balenaEtcher.
+//! `ImagerApp` is a single self-drawing "canvas" widget that renders a guided
+//! **wizard** with a six-station step indicator —
+//! Source → Drive → Customize → Confirm → Write → Done — and a Back /
+//! primary-action footer, covering both writing an image to a stick and
+//! installing qOS onto a disk.
 //!
 //! * **Source** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), or a known qOS release.
-//! * **Drive** — choose a target from the *real* removable block devices
-//!   (`lsblk`); internal disks are hidden behind an explicit opt-in.
-//! * **Customize** (optional) — pre-configure a qOS image (hostname, first
-//!   user, region) so the written media boots ready; plain ISOs are written
-//!   as-is and this step is a no-op.
-//! * **Write** — a typed device-name confirmation gates a real, byte-for-byte
-//!   streaming copy with live progress, then a read-back **verify** pass, then
-//!   a done / failure screen.
+//! * **Drive** — choose the target from the *real* block devices (`lsblk`);
+//!   internal disks are hidden behind an explicit opt-in, and the **system
+//!   disk** cannot be selected without a separate acknowledgement.
+//! * **Customize** (qOS only) — the shared guided-customization step, delegated
+//!   in full to [`CustomizePanel`](crate::customize); a plain ISO skips it.
+//! * **Confirm** — a read-only review of every choice, an erase warning that
+//!   escalates for an internal / system disk, and the typed device-name gate.
+//! * **Write** — a real, byte-for-byte streaming copy with live progress and a
+//!   read-back **verify** pass (captioned "Write" or "Install").
+//! * **Done** — the verified / failed outcome with a fresh-start affordance.
 //!
-//! Every write is doubly gated: the typed confirmation here, plus the
+//! Every write is doubly gated: the typed confirmation at Confirm, plus the
 //! `QOS_IMAGER_ALLOW_WRITE=1` allow-gate in [`crate::write`]. With the gate off
 //! (tests, `--shots`, normal dev runs) the exact same progress UI is driven by
 //! a simulated worker that touches no device.
@@ -44,35 +47,26 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
 use crate::model::{
-    fmt_eta, fmt_rate, fmt_size, Action, InstallMode, InstallProfile, JobPhase, Progress, Source,
-    SourceKind, Step, TargetDrive, TargetKind,
+    fmt_eta, fmt_rate, fmt_size, Action, InstallProfile, JobPhase, Progress, Source, SourceKind,
+    Step, TargetDrive, TargetKind,
 };
 use crate::write::{spawn_job, WriteRequest};
 
 // ---- layout constants (logical px) -------------------------------------
 const OUTER: f64 = 28.0;
-const HEADER_H: f64 = 30.0;
-const CRUMB_TOP: f64 = 78.0;
+// The compositor draws the window chrome + app name (OS owns chrome), so the
+// app itself opens straight into the step indicator — no in-app title bar.
+const CRUMB_TOP: f64 = 26.0;
 const CRUMB_H: f64 = 34.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
 
-/// Which text field, if any, is currently capturing keystrokes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Field {
-    Hostname,
-    Username,
-    FullName,
-    Password,
-    Timezone,
-    Keyboard,
-    Confirm,
-}
-
 /// A clickable hit-target for one frame. Pure function of the viewport +
-/// state, so `draw` and `handle_event` agree without ordering hazards.
+/// state, so `draw` and `handle_event` agree without ordering hazards. The
+/// Customize step's own affordances live inside [`CustomizePanel`], not here.
 #[derive(Clone)]
 enum Hit {
     PickFile,
@@ -80,12 +74,9 @@ enum Hit {
     Recent(usize),
     Target(usize),
     ToggleInternal,
+    ToggleSystemAck,
     Rescan,
-    Field(Field),
-    ToggleAutologin,
-    ToggleEncrypt,
-    TogglePersist,
-    ExportConfig,
+    ConfirmField,
     StepJump(Step),
     Back,
     Next,
@@ -99,24 +90,6 @@ struct Layout {
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
     content: Rect,
-}
-
-/// The exact rects of the Customize step, computed once and shared by
-/// `layout_customize` (hit-testing) and `draw_customize_step` (painting) so the
-/// two can never drift out of alignment.
-struct CustomizeGeom {
-    identity_label_y: f64,
-    hostname: Rect,
-    full_name: Rect,
-    username: Rect,
-    password: Rect,
-    timezone: Rect,
-    region_label_y: f64,
-    keyboard: Rect,
-    autologin: Rect,
-    encrypt: Rect,
-    persist: Rect,
-    export: Rect,
 }
 
 pub struct ImagerApp {
@@ -135,14 +108,32 @@ pub struct ImagerApp {
     job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
     portal_rx: Option<PortalChannel>,
     show_internal: bool,
+    /// The user has explicitly acknowledged that selecting the **system** disk
+    /// (the one the running OS boots from) will destroy it. A system disk can
+    /// never be selected without this — the guard against picking it by
+    /// accident. Reset whenever the drive inventory changes.
+    system_ack: bool,
     export_text: Option<String>,
-    focus: Option<Field>,
+    /// Whether the Confirm step's typed device-name field is capturing keys.
+    confirm_focused: bool,
     // ---- render caches ----
     seeded: bool,
     rect: Rect,
     dirty: bool,
     last_mouse: Point,
     hover_target: Option<usize>,
+    /// The shared guided-customization panel — the one component the write and
+    /// install flows both use to collect the install profile. It owns its own
+    /// fields (real [`ui::widget::TextInput`]s, the password masked + a11y
+    /// protected) and dispatches each edit through [`Self::actions`]. See
+    /// [`crate::customize`].
+    customize: CustomizePanel,
+    /// Framework-owned action dispatch (the only action-dispatch state the app
+    /// holds). Every guided-customization profile edit dispatches its
+    /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
+    /// brackets the undo boundary and applies it through the executor so it
+    /// records one Ctrl+Z step and replays byte-identically on peers.
+    actions: ui::ActionHost,
 }
 
 impl Default for ImagerApp {
@@ -167,13 +158,16 @@ impl ImagerApp {
             job_rx: None,
             portal_rx: None,
             show_internal: false,
+            system_ack: false,
             export_text: None,
-            focus: None,
+            confirm_focused: false,
             seeded: false,
             rect: Rect::ZERO,
             dirty: true,
             last_mouse: Point::ZERO,
             hover_target: None,
+            customize: CustomizePanel::new(),
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -199,29 +193,79 @@ impl ImagerApp {
         self.targets.iter().filter(|d| d.removable).count()
     }
 
-    /// Can the flow move forward from `from`? (Also gates breadcrumb jumps.)
+    /// Whether the currently-visible drive list contains the system disk — the
+    /// only case where the extra "I understand" acknowledgement is offered.
+    fn has_visible_system_disk(&self) -> bool {
+        self.visible_targets().iter().any(|(_, d)| d.is_system)
+    }
+
+    /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
         match from {
             Step::Source => self.source.is_some(),
             Step::Drive => self.selected.is_some(),
             Step::Customize => true,
-            Step::Write => false,
+            // Confirm advances into the (destructive) write only once armed.
+            Step::Confirm => self.confirm_matches() && self.image_fits(),
+            // Write is in-progress and Done is terminal — neither advances.
+            Step::Write | Step::Done => false,
         }
     }
 
-    /// Whether a completed/available breadcrumb step can be jumped to.
+    /// Whether `s` is a completed station (drawn with a green check). A step is
+    /// completed once the flow has moved past it — except a Customize station
+    /// that was *skipped* (a plain ISO carries no profile), which reads as
+    /// not-engaged rather than done.
+    fn step_completed(&self, s: Step) -> bool {
+        s.index() < self.step.index() && !(s == Step::Customize && !self.customizable())
+    }
+
+    /// Whether a step can be jumped to by clicking its indicator station. The
+    /// execution stations (Write, Done) are never jump targets.
     fn crumb_reachable(&self, s: Step) -> bool {
         match s {
             Step::Source => true,
             Step::Drive => self.source.is_some(),
             Step::Customize => self.selected.is_some() && self.customizable(),
-            Step::Write => self.selected.is_some(),
+            Step::Confirm => self.selected.is_some(),
+            Step::Write | Step::Done => false,
         }
     }
 
     /// Only qOS images can be pre-configured; a plain ISO is written as-is.
     fn customizable(&self) -> bool {
         self.source.as_ref().map(|s| s.installable).unwrap_or(false)
+    }
+
+    /// Writing to a **removable** drive is a plain image write ([`Action::Flash`],
+    /// verb "Write"); a customizable qOS image aimed at a **fixed/internal** disk
+    /// is a full install ([`Action::Install`], verb "Install"). This single
+    /// helper is the source of truth for the write-vs-install naming everywhere.
+    fn intended_action(&self) -> Action {
+        match (self.customizable(), self.target()) {
+            (true, Some(t)) if !t.removable => Action::Install,
+            _ => Action::Flash,
+        }
+    }
+
+    /// The label for the customization resource Ctrl+K publishes, or `None` when
+    /// the current source has no profile to configure (a plain ISO, or nothing
+    /// selected) so the palette shows nothing to act on. Used by the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    pub(crate) fn customization_source_label(&self) -> Option<String> {
+        if !self.customizable() {
+            return None;
+        }
+        Some(self.source.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| "qOS image".into()))
+    }
+
+    /// The last profile [`EncodedAction`](qos_actions::EncodedAction) an
+    /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
+    /// test.
+    #[doc(hidden)]
+    pub fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     fn confirm_matches(&self) -> bool {
@@ -236,6 +280,13 @@ impl ImagerApp {
             _ => false,
         }
     }
+}
+
+/// Whether this process should enumerate real block devices. The live binary
+/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
+/// document's seeded/posed state is authoritative and no `lsblk` runs.
+fn live_probe_enabled() -> bool {
+    std::env::var("IMAGER_LIVE").is_ok()
 }
 
 // ---- theme-derived colour helpers --------------------------------------
@@ -346,26 +397,6 @@ impl ImagerApp {
         scene.stroke(&Stroke::new(rad * 0.24), t, tick, None, &p);
     }
 
-    /// A pill toggle switch with a trailing label. Returns nothing; the caller
-    /// registers the hit-rect.
-    fn draw_toggle(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, label: &str, sub: &str, on: bool) {
-        let c = &theme.tokens.colors;
-        let hov = r.contains(self.last_mouse);
-        Self::fill_rr(scene, t, r, 12.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, r, 12.0, if on { with_alpha(c.semantic.success, 150) } else { c.border_standard }, 1.0);
-        // Switch.
-        let sw = Rect::new(r.x0 + 14.0, r.y0 + (r.height() - 22.0) / 2.0, r.x0 + 14.0 + 40.0, r.y0 + (r.height() - 22.0) / 2.0 + 22.0);
-        Self::fill_rr(scene, t, sw, 11.0, if on { c.semantic.success } else { c.neutral[4] });
-        let knob_x = if on { sw.x1 - 20.0 } else { sw.x0 + 2.0 };
-        let knob = Rect::new(knob_x, sw.y0 + 2.0, knob_x + 18.0, sw.y1 - 2.0);
-        Self::fill_rr(scene, t, knob, 9.0, Color::WHITE);
-        let tx = sw.x1 + 12.0;
-        self.txt(scene, tr, label, 13.5, c.text_primary, tx, r.y0 + 12.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Semibold);
-        if !sub.is_empty() {
-            self.txt(scene, tr, sub, 11.5, c.text_dim, tx, r.y0 + 30.0, Some((r.x1 - tx - 12.0) as f32), TextWeight::Regular);
-        }
-    }
-
     fn section_label(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, s: &str, x: f64, y: f64) {
         self.txt(scene, tr, s, 11.0, theme.tokens.colors.text_dim, x, y, None, TextWeight::Semibold);
     }
@@ -377,7 +408,7 @@ impl ImagerApp {
 impl ImagerApp {
     fn content_rect(&self) -> Rect {
         let v = self.rect;
-        let top = CRUMB_TOP + CRUMB_H + 22.0;
+        let top = CRUMB_TOP + CRUMB_H + 30.0;
         let bottom = v.y1 - FOOTER_H - 10.0;
         let avail_w = v.width() - OUTER * 2.0;
         let w = avail_w.min(CONTENT_MAX_W);
@@ -390,10 +421,10 @@ impl ImagerApp {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let content = self.content_rect();
 
-        // ---- Breadcrumb pills ----
+        // ---- Step-indicator pills ----
         let steps = Step::all();
-        let crumb_w = 150.0f64;
-        let gap = 20.0f64;
+        let crumb_w = 132.0f64;
+        let gap = 14.0f64;
         let total = crumb_w * steps.len() as f64 + gap * (steps.len() as f64 - 1.0);
         let mut cx = v.x0 + (v.width() - total) / 2.0;
         let cy = v.y0 + CRUMB_TOP;
@@ -411,48 +442,48 @@ impl ImagerApp {
         match self.step {
             Step::Source => self.layout_source(content, &mut hits),
             Step::Drive => self.layout_drive(content, &mut hits),
-            Step::Customize => self.layout_customize(content, &mut hits),
-            Step::Write => self.layout_write(content, &mut hits),
+            // The Customize step's fields/toggles are owned by `CustomizePanel`,
+            // which hit-tests its own rects in `handle_event` — no app hits here.
+            Step::Customize => {}
+            Step::Confirm => self.layout_confirm(content, &mut hits),
+            // Write (in progress) and Done have no interactive content beyond
+            // the footer.
+            Step::Write | Step::Done => {}
         }
 
         // ---- Footer (Back + primary) ----
         let fy = v.y1 - FOOTER_H;
         let by = fy + (FOOTER_H - 44.0) / 2.0;
         let (mut back, mut primary) = (None, None);
-        let show_back = matches!(self.step, Step::Drive | Step::Customize)
-            || (self.step == Step::Write && self.progress.phase == JobPhase::Idle);
+        let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
         if show_back {
             let r = Rect::new(content.x0, by, content.x0 + 120.0, by + 44.0);
             hits.push((r, Hit::Back));
             back = Some(r);
         }
+        // The Write station is a live progress screen with no primary action.
         if let Some(p) = self.primary_button_rect(content, by) {
             let hit = match self.step {
-                Step::Write if self.progress.phase == JobPhase::Idle => Hit::StartWrite,
-                Step::Write if matches!(self.progress.phase, JobPhase::Success | JobPhase::Failed) => {
-                    Hit::WriteAnother
-                }
-                Step::Write => Hit::Next, // active: no-op placeholder, not registered below
+                Step::Confirm => Hit::StartWrite,
+                Step::Done => Hit::WriteAnother,
                 _ => Hit::Next,
             };
-            if !(self.step == Step::Write && self.progress.phase.is_active()) {
-                hits.push((p, hit));
-                primary = Some(p);
-            }
+            hits.push((p, hit));
+            primary = Some(p);
         }
 
         Layout { crumbs, back, primary, hits, content }
     }
 
     /// The primary action button rect, right-aligned in the footer — or `None`
-    /// when the current step has no primary (mid-write).
+    /// on the Write station (a live-progress screen with no primary).
     fn primary_button_rect(&self, content: Rect, by: f64) -> Option<Rect> {
-        if self.step == Step::Write && self.progress.phase.is_active() {
+        if self.step == Step::Write {
             return None;
         }
-        let w = match (self.step, self.progress.phase) {
-            (Step::Write, JobPhase::Idle) => 240.0,
-            (Step::Write, _) => 190.0,
+        let w = match self.step {
+            Step::Confirm => 250.0,
+            Step::Done => 190.0,
             _ => 170.0,
         };
         Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
@@ -513,78 +544,18 @@ impl ImagerApp {
         // "Show internal disks" toggle pinned near the bottom of the content.
         let tr = Rect::new(x0, content.y1 - 44.0, x0 + 320.0, content.y1 - 44.0 + 34.0);
         hits.push((tr, Hit::ToggleInternal));
-    }
-
-    /// Shared geometry for the Customize step. Uses a deliberate vertical
-    /// rhythm so section labels, field labels and inputs never overlap.
-    fn customize_geom(&self, content: Rect) -> CustomizeGeom {
-        let x0 = content.x0;
-        let x1 = content.x1;
-        let fw = (content.width() - 16.0) / 2.0;
-        let fh = 38.0;
-        let row_pitch = fh + 40.0; // input + label + gap
-        // Identity block: label, then hostname, then two field rows.
-        let identity_label_y = content.y0 + 52.0;
-        let host_y = content.y0 + 92.0;
-        let hostname = Rect::new(x0, host_y, x1, host_y + fh);
-        let r2 = host_y + row_pitch;
-        let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
-        let username = Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh);
-        let r3 = r2 + row_pitch;
-        let password = Rect::new(x0, r3, x0 + fw, r3 + fh);
-        let timezone = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
-        // Region & options block (same label→field rhythm as Identity above).
-        let region_label_y = r3 + fh + 26.0;
-        let kb_y = region_label_y + 40.0;
-        let keyboard = Rect::new(x0, kb_y, x0 + fw, kb_y + fh);
-        let tog_y = kb_y + fh + 22.0;
-        let th = 46.0;
-        let autologin = Rect::new(x0, tog_y, x0 + fw, tog_y + th);
-        let encrypt = Rect::new(x0 + fw + 16.0, tog_y, x1, tog_y + th);
-        let p_y = tog_y + th + 12.0;
-        let persist = Rect::new(x0, p_y, x0 + fw, p_y + th);
-        let export = Rect::new(x1 - 250.0, p_y + 8.0, x1, p_y + 8.0 + 32.0);
-        CustomizeGeom {
-            identity_label_y,
-            hostname,
-            full_name,
-            username,
-            password,
-            timezone,
-            region_label_y,
-            keyboard,
-            autologin,
-            encrypt,
-            persist,
-            export,
+        // The system-disk acknowledgement sits beside it, only once a system
+        // disk is actually visible.
+        if self.has_visible_system_disk() {
+            let ack = Rect::new(tr.x1 + 12.0, tr.y0, (tr.x1 + 12.0 + 470.0).min(x1), tr.y1);
+            hits.push((ack, Hit::ToggleSystemAck));
         }
     }
 
-    fn layout_customize(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        if !self.customizable() {
-            return; // informational only
-        }
-        let g = self.customize_geom(content);
-        hits.push((g.hostname, Hit::Field(Field::Hostname)));
-        hits.push((g.full_name, Hit::Field(Field::FullName)));
-        hits.push((g.username, Hit::Field(Field::Username)));
-        hits.push((g.password, Hit::Field(Field::Password)));
-        hits.push((g.timezone, Hit::Field(Field::Timezone)));
-        hits.push((g.keyboard, Hit::Field(Field::Keyboard)));
-        hits.push((g.autologin, Hit::ToggleAutologin));
-        hits.push((g.encrypt, Hit::ToggleEncrypt));
-        if self.target().map(|d| d.removable).unwrap_or(false) {
-            hits.push((g.persist, Hit::TogglePersist));
-        }
-        hits.push((g.export, Hit::ExportConfig));
-    }
-
-    fn layout_write(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        if self.progress.phase == JobPhase::Idle {
-            // The typed-confirmation field sits under the review card.
-            let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-            hits.push((field, Hit::Field(Field::Confirm)));
-        }
+    fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
+        // The typed device-name confirmation field sits under the review card.
+        let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
+        hits.push((field, Hit::ConfirmField));
     }
 }
 
@@ -595,33 +566,21 @@ impl ImagerApp {
     fn draw_header(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let v = self.rect;
-        // Title + subtitle.
-        self.txt(scene, tr, "Image Writer", 24.0, c.text_primary, v.x0 + OUTER, v.y0 + 18.0, None, TextWeight::Bold);
-        self.txt(
-            scene,
-            tr,
-            "Write a disk image to a USB drive",
-            13.0,
-            c.text_dim,
-            v.x0 + OUTER + 190.0,
-            v.y0 + 26.0,
-            None,
-            TextWeight::Regular,
-        );
-        // A subtle status chip on the right of the header.
+        // No in-app app-name header: the compositor owns the window chrome and
+        // shows the app's name. The app opens straight into the step indicator,
+        // with a slim status line tucked into the top-right margin.
         if !self.status.is_empty() {
             let col = match self.progress.phase {
                 JobPhase::Failed => c.semantic.danger,
                 JobPhase::Success => c.semantic.success,
                 _ => c.text_dim,
             };
-            self.txt_right(scene, tr, &self.status, 12.0, col, v.x1 - OUTER, v.y0 + 24.0, TextWeight::Medium);
+            self.txt_right(scene, tr, &self.status, 11.5, col, v.x1 - OUTER, v.y0 + 8.0, TextWeight::Medium);
         }
-        let _ = HEADER_H;
 
-        // ---- Breadcrumb ----
+        // ---- Step indicator ----
         for (i, (r, s)) in lay.crumbs.iter().enumerate() {
-            let done = s.index() < self.step.index() && self.crumb_reachable(*s);
+            let done = self.step_completed(*s);
             let current = *s == self.step;
             let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
             let bg = if current {
@@ -687,10 +646,10 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.source.is_none() => Some("Choose an image to continue".into()),
             Step::Drive if self.selected.is_none() => Some("Select a drive to continue".into()),
-            Step::Write if self.progress.phase == JobPhase::Idle && !self.confirm_matches() => {
-                self.target().map(|d| format!("Type “{}” to unlock the write", d.name))
+            Step::Confirm if !self.confirm_matches() => {
+                self.target().map(|d| format!("Type “{}” to unlock", d.name))
             }
-            Step::Write if self.progress.phase.is_active() => Some("Do not remove the drive…".into()),
+            Step::Write => Some("Keep the drive connected until this finishes…".into()),
             _ => None,
         }
     }
@@ -702,14 +661,22 @@ impl ImagerApp {
             Step::Source => ("Continue  ›".to_string(), self.can_advance(Step::Source), false),
             Step::Drive => ("Continue  ›".to_string(), self.can_advance(Step::Drive), false),
             Step::Customize => ("Continue  ›".to_string(), true, false),
-            Step::Write => match self.progress.phase {
-                JobPhase::Idle => {
-                    let dev = self.target().map(|d| d.dev_path()).unwrap_or_default();
-                    (format!("Erase & write  {dev}"), self.confirm_matches() && self.image_fits(), true)
-                }
-                JobPhase::Success => ("Write another".to_string(), true, false),
+            Step::Confirm => {
+                let dev = self.target().map(|d| d.dev_path()).unwrap_or_default();
+                // "Erase & write /dev/sdb" for a stick; "Erase & install
+                // /dev/nvme0n1" for a disk install — the verb reads plainly.
+                (
+                    format!("Erase & {}  {dev}", self.action.verb().to_ascii_lowercase()),
+                    self.can_advance(Step::Confirm),
+                    true,
+                )
+            }
+            // The Write station has no primary (returned None above); Done
+            // offers a fresh start.
+            Step::Write => ("Writing…".to_string(), false, false),
+            Step::Done => match self.progress.phase {
                 JobPhase::Failed => ("Try again".to_string(), true, false),
-                _ => ("Writing…".to_string(), false, false),
+                _ => ("Start over".to_string(), true, false),
             },
         };
         let bg = if !enabled {
@@ -740,7 +707,7 @@ impl ImagerApp {
     fn draw_source_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Choose an image", "Pick a local .iso or .img file, or a qOS release below.");
+        self.draw_step_title(scene, tr, theme, content, "Choose the source image", "The image to write. Pick a local .iso or .img file, or a qOS release below.");
         let mut y = content.y0 + 44.0;
 
         // Browse drop-zone.
@@ -832,7 +799,7 @@ impl ImagerApp {
     fn draw_drive_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Select a drive", "Everything on the chosen drive will be erased.");
+        self.draw_step_title(scene, tr, theme, content, "Select the target drive", "The drive to write to — everything on it will be erased.");
         // Detected count (to the left of the Rescan button).
         let detected = if self.show_internal {
             format!("{} drive(s)", self.targets.len())
@@ -864,15 +831,58 @@ impl ImagerApp {
 
         // Show-internal toggle.
         let tr_rect = Rect::new(content.x0, content.y1 - 44.0, content.x0 + 340.0, content.y1 - 44.0 + 34.0);
-        let hov = tr_rect.contains(self.last_mouse);
-        Self::fill_rr(scene, t, tr_rect, 10.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, tr_rect, 10.0, if self.show_internal { with_alpha(c.semantic.danger, 150) } else { c.border_standard }, 1.0);
-        let box_r = Rect::new(tr_rect.x0 + 12.0, tr_rect.y0 + 9.0, tr_rect.x0 + 12.0 + 16.0, tr_rect.y0 + 9.0 + 16.0);
-        Self::fill_rr(scene, t, box_r, 4.0, if self.show_internal { c.semantic.danger } else { c.neutral[4] });
-        if self.show_internal {
-            Self::check_disc(scene, t, Point::new((box_r.x0 + box_r.x1) / 2.0, (box_r.y0 + box_r.y1) / 2.0), 8.0, c.semantic.danger, Color::WHITE);
+        self.draw_check_row(
+            scene,
+            tr,
+            theme,
+            t,
+            tr_rect,
+            self.show_internal,
+            c.semantic.danger,
+            "Show internal disks",
+        );
+        // System-disk acknowledgement, shown only when the system disk is
+        // actually in the list. It is the explicit gate that lets the system
+        // disk be selected at all (see `select_target`).
+        if self.has_visible_system_disk() {
+            let ack = Rect::new(tr_rect.x1 + 12.0, tr_rect.y0, (tr_rect.x1 + 12.0 + 470.0).min(content.x1), tr_rect.y1);
+            self.draw_check_row(
+                scene,
+                tr,
+                theme,
+                t,
+                ack,
+                self.system_ack,
+                c.semantic.danger,
+                "I understand — erasing my system disk destroys the running OS",
+            );
         }
-        self.txt(scene, tr, "Show internal disks (dangerous)", 12.5, c.text_primary, box_r.x1 + 10.0, tr_rect.y0 + 9.0, None, TextWeight::Medium);
+    }
+
+    /// A labelled checkbox row (box + tick + caption) used by the Drive step's
+    /// reveal + acknowledgement gates. `accent` tints the checked box.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_check_row(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        t: Affine,
+        row: Rect,
+        checked: bool,
+        accent: Color,
+        label: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let hov = row.contains(self.last_mouse);
+        Self::fill_rr(scene, t, row, 10.0, if hov { c.neutral[3] } else { c.neutral[2] });
+        Self::stroke_rr(scene, t, row, 10.0, if checked { with_alpha(accent, 170) } else { c.border_standard }, 1.0);
+        let box_r = Rect::new(row.x0 + 12.0, row.y0 + 9.0, row.x0 + 12.0 + 16.0, row.y0 + 9.0 + 16.0);
+        Self::fill_rr(scene, t, box_r, 4.0, if checked { accent } else { c.neutral[4] });
+        if checked {
+            Self::check_disc(scene, t, Point::new((box_r.x0 + box_r.x1) / 2.0, (box_r.y0 + box_r.y1) / 2.0), 8.0, accent, Color::WHITE);
+        }
+        self.txt(scene, tr, label, 12.5, c.text_primary, box_r.x1 + 10.0, row.y0 + 9.0, Some((row.width() - 40.0) as f32), TextWeight::Medium);
     }
 
     fn draw_drive_empty(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, content: Rect) {
@@ -887,9 +897,14 @@ impl ImagerApp {
         Self::fill_rr(scene, t, body, 6.0, c.neutral[4]);
         let cap = Rect::new(cx - 10.0, gy - 16.0, cx + 10.0, gy);
         Self::fill_rr(scene, t, cap, 3.0, c.neutral[5]);
-        self.txt_center(scene, tr, "Insert a USB drive", 17.0, c.text_primary, cx, card.y0 + 140.0, TextWeight::Semibold);
+        self.txt_center(scene, tr, "Insert a drive", 17.0, c.text_primary, cx, card.y0 + 140.0, TextWeight::Semibold);
         self.txt_center(scene, tr, "Plug in a USB stick or SD card, then press Rescan.", 13.0, c.text_dim, cx, card.y0 + 168.0, TextWeight::Regular);
-        self.txt_center(scene, tr, "No removable drives detected.", 12.0, c.neutral[6], cx, card.y0 + 196.0, TextWeight::Regular);
+        let hint = if self.show_internal {
+            "No drives detected."
+        } else {
+            "No removable drives detected — enable “Show internal disks” to target a fixed disk."
+        };
+        self.txt_center(scene, tr, hint, 12.0, c.neutral[6], cx, card.y0 + 196.0, TextWeight::Regular);
     }
 
     fn draw_drive_card(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, idx: usize, drive: &TargetDrive) {
@@ -919,8 +934,14 @@ impl ImagerApp {
         Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
         self.txt_center(scene, tr, drive.kind.tag(), 12.0, Color::WHITE, (badge.x0 + badge.x1) / 2.0, badge.y0 + 5.0, TextWeight::Bold);
 
-        // Removable / fixed chip on the right.
-        let (chip_label, chip_c) = if drive.removable { ("REMOVABLE", c.semantic.success) } else { ("INTERNAL DISK", c.semantic.danger) };
+        // Removable / fixed / system chip on the right.
+        let (chip_label, chip_c) = if drive.is_system {
+            ("SYSTEM DISK", c.semantic.danger)
+        } else if drive.removable {
+            ("REMOVABLE", c.semantic.success)
+        } else {
+            ("INTERNAL DISK", c.semantic.warning)
+        };
         let (cw, _) = tr.measure_weighted(chip_label, 10.5, None, TextWeight::Bold);
         let chip = Rect::new(r.x1 - 16.0 - cw as f64 - 18.0, r.y0 + 18.0, r.x1 - 16.0, r.y0 + 18.0 + 24.0);
         Self::fill_rr(scene, t, chip, 6.0, with_alpha(chip_c, 40));
@@ -930,11 +951,17 @@ impl ImagerApp {
         self.txt(scene, tr, &drive.model, 16.0, c.text_primary, left, r.y0 + 50.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Semibold);
         self.txt(scene, tr, &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)), 12.5, c.text_dim, left, r.y0 + 72.0, None, TextWeight::Regular);
 
-        // Destructive line.
-        self.txt(scene, tr, &format!("⚠ Erases {}", drive.contents_summary()), 11.5, c.semantic.danger, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
+        // Destructive line — or, for a not-yet-acknowledged system disk, a
+        // clear "locked" note pointing at the acknowledgement gate.
+        let (line, col) = if drive.is_system && !self.system_ack {
+            ("🔒 Locked — this is your system disk. Acknowledge below to select it.".to_string(), c.text_dim)
+        } else {
+            (format!("⚠ Erases {}", drive.contents_summary()), c.semantic.danger)
+        };
+        self.txt(scene, tr, &line, 11.5, col, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
     }
 
-    fn draw_customize_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+    fn draw_customize_step(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         let content = lay.content;
         if !self.customizable() {
@@ -947,66 +974,33 @@ impl ImagerApp {
             self.txt_center(scene, tr, "images. Press Continue to write it as-is.", 13.0, c.text_dim, (card.x0 + card.x1) / 2.0, card.y0 + 96.0, TextWeight::Regular);
             return;
         }
-        self.draw_step_title(scene, tr, theme, content, "Customize (optional)", "Pre-configure the written media so it boots ready to use.");
-
-        let g = self.customize_geom(content);
-        self.section_label(scene, tr, theme, "IDENTITY", content.x0, g.identity_label_y);
-        self.draw_field(scene, tr, theme, t, g.hostname, Field::Hostname, "Hostname", &self.profile.hostname, false);
-        self.draw_field(scene, tr, theme, t, g.full_name, Field::FullName, "Full name", &self.profile.user.full_name, false);
-        self.draw_field(scene, tr, theme, t, g.username, Field::Username, "Username", &self.profile.user.username, false);
-        self.draw_field(scene, tr, theme, t, g.password, Field::Password, "Password", &self.profile.user.password, true);
-        self.draw_field(scene, tr, theme, t, g.timezone, Field::Timezone, "Time zone", &self.profile.timezone, false);
-
-        self.section_label(scene, tr, theme, "REGION & OPTIONS", content.x0, g.region_label_y);
-        self.draw_field(scene, tr, theme, t, g.keyboard, Field::Keyboard, "Keyboard", &self.profile.keyboard, false);
-        self.draw_toggle(scene, tr, theme, t, g.autologin, "Auto-login", "Sign in without a password prompt", self.profile.user.autologin);
-        self.draw_toggle(scene, tr, theme, t, g.encrypt, "Encrypt storage", "Protect user data with LUKS", self.profile.encrypt);
-        if self.target().map(|d| d.removable).unwrap_or(false) {
-            let persist = self.profile.mode == InstallMode::Persistent;
-            self.draw_toggle(scene, tr, theme, t, g.persist, "Persistent storage", "Keep changes across reboots on the stick", persist);
-        }
-        // Export config (secondary).
-        let hov = g.export.contains(self.last_mouse);
-        Self::fill_rr(scene, t, g.export, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
-        self.txt_center(scene, tr, "⤓ Export unattended config", 12.0, c.accent[7], (g.export.x0 + g.export.x1) / 2.0, g.export.y0 + 8.0, TextWeight::Semibold);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn draw_field(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, f: Field, label: &str, value: &str, secret: bool) {
-        let c = &theme.tokens.colors;
-        self.txt(scene, tr, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
-        let focused = self.focus == Some(f);
-        Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
-        Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
-        let shown = if secret {
-            "•".repeat(value.chars().count().min(16))
-        } else if value.is_empty() {
-            String::new()
+        let installing = self.action == Action::Install;
+        let sub = if installing {
+            "Set up the machine qOS will install — you can change any of this later."
         } else {
-            value.to_string()
+            "Pre-configure the written media so it boots ready to use."
         };
-        self.txt(scene, tr, &shown, 13.5, c.text_primary, r.x0 + 12.0, r.y0 + 10.0, Some((r.width() - 24.0) as f32), TextWeight::Regular);
-        if focused {
-            let (tw, _) = tr.measure_weighted(&shown, 13.5, None, TextWeight::Regular);
-            let cx = r.x0 + 12.0 + tw as f64 + 2.0;
-            scene.stroke(&Stroke::new(1.4), t, c.accent[6], None, &Line::new(Point::new(cx, r.y0 + 8.0), Point::new(cx, r.y1 - 8.0)));
-        }
+        self.draw_step_title(scene, tr, theme, content, "Customize (optional)", sub);
+
+        // The whole form is the shared guided-customization panel.
+        let removable = self.target().map(|d| d.removable).unwrap_or(false);
+        self.customize.draw(scene, t, tr, theme, presence, content, &self.profile, removable);
     }
 
-    fn draw_write_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
-        match self.progress.phase {
-            JobPhase::Idle => self.draw_write_review(scene, tr, theme, t, lay),
-            JobPhase::Writing | JobPhase::Verifying => self.draw_write_progress(scene, tr, theme, t, lay),
-            JobPhase::Success => self.draw_write_done(scene, tr, theme, t, lay, true),
-            JobPhase::Failed => self.draw_write_done(scene, tr, theme, t, lay, false),
-        }
-    }
-
-    fn draw_write_review(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+    fn draw_confirm_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Review & write", "Confirm the target, then type its name to unlock the write.");
+        let (title, sub) = match self.action {
+            Action::Install => (
+                "Confirm & install",
+                "Review the install, then type the drive's name to unlock it.",
+            ),
+            Action::Flash => (
+                "Confirm & write",
+                "Review the write, then type the drive's name to unlock it.",
+            ),
+        };
+        self.draw_step_title(scene, tr, theme, content, title, sub);
 
         // Review card: Image → Drive.
         let card = Rect::new(content.x0, content.y0 + 46.0, content.x1, content.y0 + 46.0 + 150.0);
@@ -1024,7 +1018,7 @@ impl ImagerApp {
         // Fit line + mode.
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
             let fit = if tgt.fits(src.size) {
-                (format!("fits — {} free after write", fmt_size(tgt.size.saturating_sub(src.size))), c.semantic.success)
+                (format!("fits — {} free afterwards", fmt_size(tgt.size.saturating_sub(src.size))), c.semantic.success)
             } else {
                 ("image is larger than the drive".into(), c.semantic.danger)
             };
@@ -1032,23 +1026,38 @@ impl ImagerApp {
             self.txt(scene, tr, &fit.0, 13.0, fit.1, card.x0 + 96.0, card.y0 + 91.0, None, TextWeight::Medium);
         }
         // Action summary.
-        let act = if self.customizable() && self.action == Action::Install {
-            format!("Write qOS + pre-config ({}, user {})", self.profile.hostname, self.profile.user.username)
-        } else {
-            "Raw image write, then read-back verify".to_string()
+        let act = match self.action {
+            Action::Install => format!(
+                "Install qOS with your settings (host {}, user {})",
+                self.profile.hostname, self.profile.user.username
+            ),
+            Action::Flash if self.customizable() => format!(
+                "Write qOS, pre-configured (host {}, user {})",
+                self.profile.hostname, self.profile.user.username
+            ),
+            Action::Flash => "Write the image, then read-back verify".to_string(),
         };
         self.txt(scene, tr, "Action", 12.0, c.text_dim, card.x0 + 20.0, card.y0 + 122.0, None, TextWeight::Semibold);
         self.txt(scene, tr, &act, 13.0, c.text_primary, card.x0 + 96.0, card.y0 + 121.0, Some((card.width() - 116.0) as f32), TextWeight::Medium);
 
-        // Danger banner.
+        // Danger banner — louder for a fixed/internal (install) target.
+        let internal = self.target().map(|d| !d.removable).unwrap_or(false);
+        let system = self.target().map(|d| d.is_system).unwrap_or(false);
         let banner = Rect::new(content.x0, card.y1 + 16.0, content.x1, card.y1 + 16.0 + 44.0);
-        Self::fill_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, 28));
-        Self::stroke_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, 130), 1.0);
-        self.txt(scene, tr, "⚠  This permanently erases the drive. This cannot be undone.", 13.0, c.semantic.danger, banner.x0 + 16.0, banner.y0 + 14.0, None, TextWeight::Semibold);
+        Self::fill_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 40 } else { 28 }));
+        Self::stroke_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 170 } else { 130 }), if internal { 1.4 } else { 1.0 });
+        let warn = if system {
+            "⚠  This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
+        } else if internal {
+            "⚠  This erases the entire internal disk. This cannot be undone."
+        } else {
+            "⚠  This permanently erases the drive. This cannot be undone."
+        };
+        self.txt(scene, tr, warn, 13.0, c.semantic.danger, banner.x0 + 16.0, banner.y0 + 14.0, Some((banner.width() - 32.0) as f32), TextWeight::Semibold);
 
         // Typed confirmation field.
         let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-        let focused = self.focus == Some(Field::Confirm);
+        let focused = self.confirm_focused;
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
         self.txt(scene, tr, "CONFIRM THE TARGET DEVICE", 11.0, c.text_dim, field.x0 + 2.0, field.y0 - 17.0, None, TextWeight::Semibold);
@@ -1077,8 +1086,12 @@ impl ImagerApp {
         let content = lay.content;
         let p = &self.progress;
         let writing = p.phase == JobPhase::Writing;
-        let title = if writing { "Writing…" } else { "Verifying…" };
-        self.draw_step_title(scene, tr, theme, content, title, "");
+        let verb_ing = match self.action {
+            Action::Install => "Installing",
+            Action::Flash => "Writing",
+        };
+        let title = if writing { format!("{verb_ing}…") } else { "Verifying…".to_string() };
+        self.draw_step_title(scene, tr, theme, content, &title, "");
 
         // Big overall ring.
         let cxp = (content.x0 + content.x1) / 2.0;
@@ -1100,7 +1113,8 @@ impl ImagerApp {
             scene.stroke(&Stroke::new(12.0), t, ring_c, None, &arc);
         }
         self.txt_center(scene, tr, &format!("{:.0}%", overall * 100.0), 30.0, c.text_primary, cxp, cyp - 22.0, TextWeight::Bold);
-        self.txt_center(scene, tr, if writing { "writing" } else { "verifying" }, 12.0, c.text_dim, cxp, cyp + 14.0, TextWeight::Medium);
+        let caption = if writing { verb_ing.to_ascii_lowercase() } else { "verifying".to_string() };
+        self.txt_center(scene, tr, &caption, 12.0, c.text_dim, cxp, cyp + 14.0, TextWeight::Medium);
 
         // Rate + ETA line.
         let mut meta = String::new();
@@ -1144,16 +1158,23 @@ impl ImagerApp {
         let content = lay.content;
         let cxp = (content.x0 + content.x1) / 2.0;
         let cyp = content.y0 + 120.0;
+        let install = self.action == Action::Install;
         if ok {
             Self::check_disc(scene, t, Point::new(cxp, cyp), 46.0, c.semantic.success, Color::WHITE);
-            self.txt_center(scene, tr, "Done", 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "The image was written and verified.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
+            let (headline, sub): (&str, &str) = if install {
+                ("qOS is installed", "The disk was written and verified — remove the media and reboot.")
+            } else {
+                ("Drive is ready", "The image was written and verified — you can safely remove the drive.")
+            };
+            self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
+            self.txt_center(scene, tr, sub, 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
         } else {
             // Danger disc with an "!".
             scene.fill(Fill::NonZero, t, c.semantic.danger, None, &Circle::new(Point::new(cxp, cyp), 46.0));
             self.txt_center(scene, tr, "!", 44.0, Color::WHITE, cxp, cyp - 34.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "Write failed", 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
-            self.txt_center(scene, tr, "The drive was not written. See the message below.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
+            let headline = if install { "Install failed" } else { "Write failed" };
+            self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
+            self.txt_center(scene, tr, "The drive was not changed. See the message below.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
         }
         // Summary card.
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
@@ -1235,13 +1256,23 @@ impl ImagerApp {
     }
 
     fn select_target(&mut self, state: &mut AutoCommit, idx: usize) {
-        if idx < self.targets.len() {
-            self.selected = Some(idx);
-            ImagerDoc::set_selected(state, Some(idx));
-            self.confirm.clear();
-            ImagerDoc::set_confirm(state, "");
+        let Some(drive) = self.targets.get(idx) else { return };
+        // Hard guard: the system disk (the one the running OS boots from) can
+        // never be selected by a stray click. It only becomes selectable after
+        // the user ticks the explicit acknowledgement below the list.
+        if drive.is_system && !self.system_ack {
+            self.set_status(
+                state,
+                "That is your system disk — tick “I understand” below to select it.",
+            );
             self.dirty = true;
+            return;
         }
+        self.selected = Some(idx);
+        ImagerDoc::set_selected(state, Some(idx));
+        self.confirm.clear();
+        ImagerDoc::set_confirm(state, "");
+        self.dirty = true;
     }
 
     fn set_status(&mut self, state: &mut AutoCommit, s: &str) {
@@ -1252,7 +1283,8 @@ impl ImagerApp {
     fn goto(&mut self, state: &mut AutoCommit, s: Step) {
         self.step = s;
         ImagerDoc::set_step(state, s);
-        self.focus = None;
+        self.confirm_focused = false;
+        self.customize.clear_focus();
         self.dirty = true;
     }
 
@@ -1260,27 +1292,34 @@ impl ImagerApp {
         match self.step {
             Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
-                // A qOS image goes through Customize; a plain ISO skips it.
+                // Record whether this is a write or an install (drives the
+                // naming), then route: a qOS image goes through Customize; a
+                // plain ISO skips straight to the Confirm review.
+                let act = self.intended_action();
+                self.action = act;
+                ImagerDoc::set_action(state, act);
                 if self.customizable() {
-                    self.action = Action::Install;
-                    ImagerDoc::set_action(state, Action::Install);
                     self.goto(state, Step::Customize);
                 } else {
-                    self.goto(state, Step::Write);
+                    self.goto(state, Step::Confirm);
                 }
             }
-            Step::Customize => self.goto(state, Step::Write),
+            Step::Customize => self.goto(state, Step::Confirm),
+            // Confirm advances into the write only when the typed-name gate is
+            // armed; that same gesture kicks off the (external) job.
+            Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(state),
             _ => {}
         }
     }
 
     fn back(&mut self, state: &mut AutoCommit) {
         match self.step {
-            Step::Write if self.customizable() => self.goto(state, Step::Customize),
-            Step::Write => self.goto(state, Step::Drive),
+            Step::Confirm if self.customizable() => self.goto(state, Step::Customize),
+            Step::Confirm => self.goto(state, Step::Drive),
             Step::Customize => self.goto(state, Step::Drive),
             Step::Drive => self.goto(state, Step::Source),
-            Step::Source => {}
+            // No going back from the source, an in-flight write, or the outcome.
+            Step::Source | Step::Write | Step::Done => {}
         }
     }
 
@@ -1304,6 +1343,8 @@ impl ImagerApp {
                 ImagerDoc::set_progress(state, &self.progress);
                 let mode = if crate::write::allow_write() { "writing" } else { "simulated write" };
                 self.set_status(state, &format!("{} → {} ({mode})", self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default(), tgt.dev_path()));
+                // The write has begun: move onto the live-progress station.
+                self.goto(state, Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => self.set_status(state, "Confirmation does not match — write refused."),
             crate::write::JobStart::TooSmall => self.set_status(state, "Image is larger than the drive — write refused."),
@@ -1327,6 +1368,7 @@ impl ImagerApp {
                         self.progress.phase = JobPhase::Failed;
                         ImagerDoc::set_progress(state, &self.progress);
                         self.set_status(state, "Write ended unexpectedly.");
+                        self.goto(state, Step::Done);
                     }
                     self.job_rx = None;
                     self.dirty = true;
@@ -1340,12 +1382,15 @@ impl ImagerApp {
             self.dirty = true;
             if matches!(p.phase, JobPhase::Success | JobPhase::Failed) {
                 self.job_rx = None;
+                let name = self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default();
                 let msg = if p.phase == JobPhase::Success {
-                    format!("Done — {} written and verified", self.source.as_ref().map(|s| s.name.clone()).unwrap_or_default())
+                    format!("Done — {name} {} and verified", self.action.past())
                 } else {
-                    "Write failed.".to_string()
+                    format!("{} failed.", self.action.title())
                 };
                 self.set_status(state, &msg);
+                // Terminal phase → show the outcome station.
+                self.goto(state, Step::Done);
             }
         }
     }
@@ -1364,44 +1409,53 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn type_into_field(&mut self, state: &mut AutoCommit, f: Field, ch: Option<char>, backspace: bool) {
-        let target: &mut String = match f {
-            Field::Hostname => &mut self.profile.hostname,
-            Field::FullName => &mut self.profile.user.full_name,
-            Field::Username => &mut self.profile.user.username,
-            Field::Password => &mut self.profile.user.password,
-            Field::Timezone => &mut self.profile.timezone,
-            Field::Keyboard => &mut self.profile.keyboard,
-            Field::Confirm => &mut self.confirm,
-        };
+    /// Edit the Confirm step's typed device-name field. This is a *transient*
+    /// arming gesture for the (external) write — presentation, not a document
+    /// action — so it writes only the `confirm` scalar. (The profile fields, by
+    /// contrast, are real actions handled by [`CustomizePanel`].)
+    fn type_into_confirm(&mut self, state: &mut AutoCommit, ch: Option<char>, backspace: bool) {
         if backspace {
-            target.pop();
+            self.confirm.pop();
         } else if let Some(c) = ch {
             if !c.is_control() {
-                target.push(c);
+                self.confirm.push(c);
             }
         }
-        if f == Field::Confirm {
-            let conf = self.confirm.clone();
-            ImagerDoc::set_confirm(state, &conf);
-        } else {
-            ImagerDoc::set_profile(state, &self.profile);
-        }
+        let conf = self.confirm.clone();
+        ImagerDoc::set_confirm(state, &conf);
         self.dirty = true;
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
-        if std::env::var("IMAGER_LIVE").is_ok() {
+        if live_probe_enabled() {
+            // Re-read the live block-device inventory. `probe()` returns `None`
+            // only when `lsblk` is unavailable — a transient failure — so in
+            // that case we keep the last-known list rather than blanking it.
+            // A real (possibly empty) result is authoritative and replaces it,
+            // so unplugging the selected drive genuinely drops it from the list.
+            let remembered = self.target().map(|d| d.name.clone());
             if let Some(t) = crate::probe::probe() {
                 self.targets = t.clone();
                 ImagerDoc::write_targets(state, &t);
+                // Keep the same physical drive selected across a rescan by name,
+                // not by index (indices shift as drives come and go).
+                self.selected = remembered.and_then(|name| {
+                    self.targets.iter().position(|d| d.name == name)
+                });
             }
-            self.set_status(state, &format!("Rescanned — {} drive(s)", self.targets.len()));
+            let n = self.targets.len();
+            let removable = self.removable_count();
+            self.set_status(
+                state,
+                &format!("Rescanned — {removable} removable, {n} total"),
+            );
         } else {
             self.set_status(state, "Rescanned drives");
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         ImagerDoc::set_selected(state, self.selected);
+        // A vanished/changed inventory invalidates any system-disk acknowledgement.
+        self.system_ack = false;
         self.dirty = true;
     }
 
@@ -1421,29 +1475,31 @@ impl ImagerApp {
             Hit::Target(i) => self.select_target(state, i),
             Hit::ToggleInternal => {
                 self.show_internal = !self.show_internal;
+                ImagerDoc::set_show_internal(state, self.show_internal);
+                // Hiding internal disks again also withdraws the system-disk
+                // acknowledgement, so re-revealing them re-arms the guard.
+                if !self.show_internal {
+                    self.system_ack = false;
+                }
+                self.dirty = true;
+            }
+            Hit::ToggleSystemAck => {
+                self.system_ack = !self.system_ack;
+                if !self.system_ack {
+                    // Withdrawing consent deselects the system disk if it was chosen.
+                    if self.target().map(|d| d.is_system).unwrap_or(false) {
+                        self.selected = None;
+                        ImagerDoc::set_selected(state, None);
+                    }
+                }
                 self.dirty = true;
             }
             Hit::Rescan => self.do_rescan(state),
-            Hit::Field(f) => {
-                self.focus = Some(f);
+            Hit::ConfirmField => {
+                self.confirm_focused = true;
+                self.customize.clear_focus();
                 self.dirty = true;
             }
-            Hit::ToggleAutologin => {
-                self.profile.user.autologin = !self.profile.user.autologin;
-                ImagerDoc::set_profile(state, &self.profile);
-                self.dirty = true;
-            }
-            Hit::ToggleEncrypt => {
-                self.profile.encrypt = !self.profile.encrypt;
-                ImagerDoc::set_profile(state, &self.profile);
-                self.dirty = true;
-            }
-            Hit::TogglePersist => {
-                self.profile.mode = if self.profile.mode == InstallMode::Persistent { InstallMode::Live } else { InstallMode::Persistent };
-                ImagerDoc::set_profile(state, &self.profile);
-                self.dirty = true;
-            }
-            Hit::ExportConfig => self.export_config(state),
             Hit::StepJump(s) => {
                 if self.crumb_reachable(s) {
                     self.goto(state, s);
@@ -1464,10 +1520,16 @@ impl Widget for ImagerApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
-                let targets = if std::env::var("IMAGER_LIVE").is_ok() {
-                    crate::probe::probe().unwrap_or_else(crate::model::sample_targets)
+                // Start genuinely blank. In the live app a real `lsblk` probe
+                // fills the drive list; if it finds nothing (or is unavailable)
+                // the list stays empty and the Drive step shows its honest
+                // "insert a drive" state — the imager never invents drives.
+                // Sample content is opt-in (`--demo` / `--shots`), which seeds
+                // the document *before* the first sync so this branch is skipped.
+                let targets = if live_probe_enabled() {
+                    crate::probe::probe().unwrap_or_default()
                 } else {
-                    crate::model::sample_targets()
+                    Vec::new()
                 };
                 ImagerDoc::seed(state, &targets);
             }
@@ -1487,7 +1549,13 @@ impl Widget for ImagerApp {
         self.confirm = ImagerDoc::confirm(state);
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
+        self.show_internal = ImagerDoc::show_internal(state);
         self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
+
+        // Refresh the shared customization panel's fields from the profile
+        // (each unfocused field mirrors the stored value; a focused one stays
+        // the source of truth).
+        self.customize.sync(&self.profile);
         self.dirty = true;
     }
 
@@ -1518,7 +1586,7 @@ impl Widget for ImagerApp {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
         let lay = self.compute_layout();
@@ -1528,8 +1596,10 @@ impl Widget for ImagerApp {
         match self.step {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
-            Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay),
-            Step::Write => self.draw_write_step(scene, tr, theme, transform, &lay),
+            Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay, presence),
+            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
+            Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
+            Step::Done => self.draw_write_done(scene, tr, theme, transform, &lay, self.progress.phase == JobPhase::Success),
         }
         self.draw_footer(scene, tr, theme, transform, &lay);
 
@@ -1542,25 +1612,46 @@ impl Widget for ImagerApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::{Key, NamedKey};
 
         let lay = self.compute_layout();
+
+        // The Customize step is delegated in full to the shared customization
+        // panel, which owns its fields, toggles and export affordance. Only
+        // events it does not consume (footer clicks, global keys) fall through
+        // to the wizard chrome below.
+        if self.step == Step::Customize && self.customizable() && self.export_text.is_none() {
+            let removable = self.target().map(|d| d.removable).unwrap_or(false);
+            let profile = self.profile.clone();
+            let resp = self.customize.handle_event(
+                event, scale_factor, modifiers, state, path, &mut self.actions, &profile, removable,
+                lay.content, node_id, taffy,
+            );
+            if resp.export_requested {
+                self.export_config(state);
+            }
+            if resp.handled {
+                *handled = true;
+                self.dirty = true;
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
                 // Which drive card (if any) is under the pointer, resolved from
-                // this frame's hit-rects. Computed into a local first so the
-                // `visible_targets()` borrow ends before we write the field.
+                // this frame's hit-rects.
                 let hover_now = lay.hits.iter().find_map(|(r, h)| match h {
                     Hit::Target(i) if r.contains(p) => Some(*i),
                     _ => None,
@@ -1577,13 +1668,15 @@ impl Widget for ImagerApp {
                     self.dirty = true;
                     return;
                 }
-                if let Some((_, hit)) = lay.hits.iter().find(|(r, _)| r.contains(p)) {
-                    self.dispatch_hit(state, hit.clone());
+                let hit = lay.hits.iter().find(|(r, _)| r.contains(p)).map(|(_, h)| h.clone());
+                if let Some(hit) = hit {
+                    self.dispatch_hit(state, hit);
                     *handled = true;
                     self.dirty = true;
                     return;
                 }
-                self.focus = None;
+                // A click on empty space drops the confirm field's focus.
+                self.confirm_focused = false;
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, .. } => {
                 if self.export_text.is_some() {
@@ -1594,33 +1687,34 @@ impl Widget for ImagerApp {
                     }
                     return;
                 }
-                // Field typing.
-                if let Some(f) = self.focus {
+                // The Confirm step's typed device-name field (a transient arming
+                // gesture, not a profile edit).
+                if self.confirm_focused && self.step == Step::Confirm {
                     match logical_key {
                         Key::Named(NamedKey::Backspace) => {
-                            self.type_into_field(state, f, None, true);
+                            self.type_into_confirm(state, None, true);
                             *handled = true;
                         }
                         Key::Named(NamedKey::Enter) => {
-                            if f == Field::Confirm && self.step == Step::Write {
+                            if self.can_advance(Step::Confirm) {
                                 self.start_write(state);
                             }
-                            self.focus = None;
+                            self.confirm_focused = false;
                             *handled = true;
                             self.dirty = true;
                         }
                         Key::Named(NamedKey::Escape) => {
-                            self.focus = None;
+                            self.confirm_focused = false;
                             *handled = true;
                             self.dirty = true;
                         }
                         Key::Named(NamedKey::Space) => {
-                            self.type_into_field(state, f, Some(' '), false);
+                            self.type_into_confirm(state, Some(' '), false);
                             *handled = true;
                         }
                         Key::Character(s) => {
                             if let Some(ch) = s.chars().next() {
-                                self.type_into_field(state, f, Some(ch), false);
+                                self.type_into_confirm(state, Some(ch), false);
                                 *handled = true;
                             }
                         }
@@ -1647,6 +1741,20 @@ impl Widget for ImagerApp {
             }
             _ => {}
         }
+    }
+
+    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`]. Empty unless an installable qOS image is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// The framework host drains the undo boundary an on-screen profile control
+    /// dispatched, so it records exactly one boundary bracketing it — the same
+    /// path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {
@@ -1722,15 +1830,80 @@ mod tests {
     use super::*;
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
+        // Tests drive the wizard against the demo document (sample drives + a
+        // qOS image + recent history) — the same content `--shots`/`--demo` use.
         let mut app = ImagerApp::new();
         let mut doc = AutoCommit::new();
+        ImagerDoc::seed_demo(&mut doc);
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
     }
 
+    // ---- synthetic winit events for driving the real event path -----------
+
+    fn char_ev(s: &str) -> WindowEvent {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{Key, SmolStr};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(SmolStr::new(s));
+        WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false }
+    }
+
+    fn cursor_ev(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn click_ev() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    /// Feed one event through the real `handle_event` path with throwaway
+    /// framework out-params.
+    fn feed(app: &mut ImagerApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+        let m = winit::event::Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let (mut h, mut ft) = (false, None);
+        app.handle_event(ev, 1.0, &m, doc, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
+    }
+
+    /// Click at a point: move the pointer there (so hover state settles), then
+    /// press — exactly the real winit sequence the compositor delivers.
+    fn click_at(app: &mut ImagerApp, doc: &mut AutoCommit, p: Point) {
+        feed(app, doc, &cursor_ev(p.x, p.y));
+        feed(app, doc, &click_ev());
+    }
+
+    fn center(r: Rect) -> Point {
+        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+    }
+
+    /// The rect of the first hit matching `pred`, from this frame's layout.
+    fn hit_rect(app: &ImagerApp, pred: impl Fn(&Hit) -> bool) -> Rect {
+        app.compute_layout()
+            .hits
+            .into_iter()
+            .find(|(_, h)| pred(h))
+            .unwrap_or_else(|| panic!("expected a matching hit target this frame"))
+            .0
+    }
+
     #[test]
-    fn sync_seeds_sample_state_at_source_step() {
+    fn sync_reads_demo_state_at_source_step() {
         let (app, _doc) = seeded_app();
         assert_eq!(app.targets.len(), 2);
         assert!(app.source.is_some());
@@ -1739,11 +1912,24 @@ mod tests {
     }
 
     #[test]
-    fn layout_has_four_breadcrumb_steps() {
+    fn live_app_starts_blank_with_no_fabricated_content() {
+        // The live path (no demo seed) starts genuinely empty: no drives are
+        // invented and no image is pre-selected.
+        let mut app = ImagerApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.targets.is_empty(), "no fabricated drives");
+        assert!(app.source.is_none(), "no fabricated image");
+        assert!(app.recent.is_empty(), "no fabricated recent history");
+        assert_eq!(app.step, Step::Source);
+    }
+
+    #[test]
+    fn layout_has_six_step_stations() {
         let (mut app, _doc) = seeded_app();
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
-        assert_eq!(lay.crumbs.len(), 4);
+        assert_eq!(lay.crumbs.len(), 6);
     }
 
     #[test]
@@ -1760,7 +1946,67 @@ mod tests {
         // Seeded source is an installable qOS image → goes through Customize.
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
+        assert_eq!(app.step, Step::Confirm);
+    }
+
+    /// The primary interaction, proven end to end by clicking the real
+    /// on-screen targets: walk Source → Drive → Customize → Confirm → Write,
+    /// then let the (simulated) job finish and land on Done. Every transition
+    /// goes through the actual hit-testing + dispatch path, not a shortcut.
+    #[test]
+    fn clicking_through_the_wizard_reaches_write_then_done() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        assert_eq!(app.step, Step::Source);
+
+        // Source → Drive: click Continue.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Drive);
+
+        // Pick the USB stick by clicking its card.
+        let usb = hit_rect(&app, |h| matches!(h, Hit::Target(0)));
+        click_at(&mut app, &mut doc, center(usb));
+        assert_eq!(app.selected, Some(0));
+
+        // Drive → Customize (the seeded qOS image is customizable).
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Customize);
+
+        // Customize → Confirm.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Confirm);
+
+        // Arm the write: click the typed-name field, then type the device name.
+        let field = hit_rect(&app, |h| matches!(h, Hit::ConfirmField));
+        click_at(&mut app, &mut doc, center(field));
+        assert!(app.confirm_focused);
+        for s in ["s", "d", "b"] {
+            feed(&mut app, &mut doc, &char_ev(s));
+        }
+        assert!(app.confirm_matches(), "typed name armed the write");
+
+        // Confirm → Write: click the (now-enabled) primary button.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
         assert_eq!(app.step, Step::Write);
+        assert_eq!(app.progress.phase, JobPhase::Writing);
+        assert!(app.job_rx.is_some());
+
+        // The job reports success → the flow lands on the Done station. (Drive
+        // the drain with a terminal progress so the test is deterministic and
+        // never waits on the worker thread.)
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 }).unwrap();
+        app.job_rx = Some(rx);
+        app.drain_job(&mut doc);
+        // Keep the sender alive past the drain: dropping it first would look like
+        // the worker died and be reported as a failure rather than success.
+        drop(tx);
+        assert_eq!(app.step, Step::Done);
+        assert_eq!(app.progress.phase, JobPhase::Success);
     }
 
     #[test]
@@ -1770,8 +2016,8 @@ mod tests {
         app.select_source(&mut doc, iso);
         app.advance(&mut doc); // → Drive
         app.select_target(&mut doc, 0);
-        app.advance(&mut doc); // installable == false → straight to Write
-        assert_eq!(app.step, Step::Write);
+        app.advance(&mut doc); // installable == false → straight to Confirm
+        assert_eq!(app.step, Step::Confirm);
         assert!(!app.customizable());
     }
 
@@ -1779,27 +2025,29 @@ mod tests {
     fn write_refused_without_matching_confirmation() {
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
-        app.goto(&mut doc, Step::Write);
+        app.goto(&mut doc, Step::Confirm);
         app.confirm = "wrong".into();
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
         assert!(app.job_rx.is_none());
+        assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
         assert!(ImagerDoc::status(&doc).to_lowercase().contains("confirm"));
     }
 
     #[test]
-    fn write_starts_with_matching_confirmation() {
+    fn write_starts_with_matching_confirmation_and_advances_to_write_station() {
         // A matching typed confirmation starts a job: the phase advances to
-        // Writing and a progress channel is installed. Whether the backend is
-        // simulated or real is decided by the allow-gate in write.rs (tested
-        // there); either way these UI invariants hold and the assertions below
-        // never depend on the process environment.
+        // Writing, the flow moves onto the Write station, and a progress channel
+        // is installed. Whether the backend is simulated or real is decided by
+        // the allow-gate in write.rs (tested there); either way these UI
+        // invariants hold and never depend on the process environment.
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
-        app.goto(&mut doc, Step::Write);
+        app.goto(&mut doc, Step::Confirm);
         app.confirm = "sdb".into();
         app.start_write(&mut doc);
         assert_eq!(app.progress.phase, JobPhase::Writing);
+        assert_eq!(app.step, Step::Write, "the write station is now showing");
         assert!(app.job_rx.is_some());
         assert!(app.needs_animation_frame());
     }
@@ -1827,18 +2075,87 @@ mod tests {
         assert_eq!(app.visible_targets().len(), 2);
     }
 
+    /// The system disk can never be selected by a stray click; it takes an
+    /// explicit acknowledgement, and withdrawing that consent deselects it.
     #[test]
-    fn typing_into_hostname_persists_to_profile() {
+    fn system_disk_needs_acknowledgement_before_selection() {
+        let mut app = ImagerApp::new();
+        let mut doc = AutoCommit::new();
+        let mut targets = crate::model::sample_targets();
+        targets[1].is_system = true; // the internal NVMe is the system disk
+        ImagerDoc::seed(&mut doc, &targets);
+        ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
+        app.sync(&mut doc, &automerge::ROOT);
+        app.show_internal = true; // reveal internal disks
+        assert!(app.has_visible_system_disk());
+
+        // A stray click on the system disk is refused with a clear reason.
+        app.dispatch_hit(&mut doc, Hit::Target(1));
+        assert_eq!(app.selected, None, "the system disk is not selectable by accident");
+        assert!(ImagerDoc::status(&doc).to_lowercase().contains("system disk"));
+
+        // The explicit acknowledgement unlocks it.
+        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
+        assert!(app.system_ack);
+        app.dispatch_hit(&mut doc, Hit::Target(1));
+        assert_eq!(app.selected, Some(1), "acknowledged → the system disk can be selected");
+
+        // Withdrawing the acknowledgement drops the selection again.
+        app.dispatch_hit(&mut doc, Hit::ToggleSystemAck);
+        assert!(!app.system_ack);
+        assert_eq!(app.selected, None, "withdrawing consent deselects the system disk");
+    }
+
+    /// Set the Customize step up with one field cleared and focused, ready for
+    /// the shared panel to receive keystrokes through the real event path.
+    fn customize_with_field_focused(field: crate::customize::CzField) -> (ImagerApp, AutoCommit) {
         let (mut app, mut doc) = seeded_app();
-        app.focus = Some(Field::Hostname);
-        for _ in 0..app.profile.hostname.len() {
-            app.type_into_field(&mut doc, Field::Hostname, None, true);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        // Clear the target field so the typed assertion is exact.
+        let mut p = ImagerDoc::profile(&doc);
+        match field {
+            crate::customize::CzField::Password => p.user.password.clear(),
+            crate::customize::CzField::Hostname => p.hostname.clear(),
+            _ => {}
         }
-        for ch in "lab01".chars() {
-            app.type_into_field(&mut doc, Field::Hostname, Some(ch), false);
+        ImagerDoc::set_profile(&mut doc, &p);
+        ImagerDoc::set_step(&mut doc, Step::Customize);
+        app.sync(&mut doc, &automerge::ROOT); // reads the profile + step back
+        assert_eq!(app.step, Step::Customize, "the panel only handles events on this step");
+        assert!(app.customizable(), "the seeded qOS image is customizable");
+        app.customize.focus_for_test(field);
+        (app, doc)
+    }
+
+    /// The password field is a shared secret `TextInput` inside the customization
+    /// panel: typing through the real keyboard/event path persists to the doc,
+    /// the input holds the true value, and its a11y node stays protected with no
+    /// value (the plaintext never leaks).
+    #[test]
+    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
+        use crate::customize::CzField;
+        let (mut app, mut doc) = customize_with_field_focused(CzField::Password);
+        for s in ["h", "u", "n", "t", "2"] {
+            feed(&mut app, &mut doc, &char_ev(s));
         }
-        assert_eq!(app.profile.hostname, "lab01");
-        assert_eq!(ImagerDoc::profile(&doc).hostname, "lab01");
+
+        assert_eq!(ImagerDoc::profile(&doc).user.password, "hunt2", "typed value persisted to the doc");
+        assert_eq!(app.customize.field_value(CzField::Password), "hunt2", "the input holds the real secret");
+
+        let node = Widget::accessibility(app.customize.password_input()).expect("a11y node");
+        assert_eq!(node.value, None, "the secret must not reach the a11y tree");
+        assert!(node.state.protected, "password input is marked protected");
+    }
+
+    #[test]
+    fn typing_into_hostname_persists_to_profile_through_the_panel() {
+        use crate::customize::CzField;
+        let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
+        for s in ["l", "a", "b", "0", "1"] {
+            feed(&mut app, &mut doc, &char_ev(s));
+        }
+        assert_eq!(ImagerDoc::profile(&doc).hostname, "lab01", "persisted to the doc");
+        assert_eq!(app.customize.field_value(CzField::Hostname), "lab01", "the input holds it");
     }
 
     #[test]
@@ -1859,5 +2176,51 @@ mod tests {
         app.write_another(&mut doc);
         assert_eq!(app.step, Step::Source);
         assert_eq!(app.progress.phase, JobPhase::Idle);
+    }
+
+    /// The affordance == `ActionSpec` covenant on the *real* production path: a
+    /// click on the on-screen Customize encryption toggle (routed through the
+    /// shared panel's real event handling) applies to the document, records
+    /// exactly one undo boundary, and dispatches the byte-identical
+    /// `EncodedAction` the Ctrl+K palette would — one source of truth.
+    #[test]
+    fn encrypt_toggle_dispatches_the_palette_action_and_records_one_undo_boundary() {
+        use qos_actions::ActionInput;
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.step = Step::Customize;
+        // The seeded qOS source is customizable; encryption defaults off.
+        assert!(app.customizable());
+        assert!(!ImagerDoc::profile(&doc).encrypt);
+
+        // The action Ctrl+K would dispatch right now: enable encryption.
+        let label = app.customization_source_label().unwrap();
+        let resources = crate::actions::provide_resources(&label, &ImagerDoc::profile(&doc));
+        let spec = resources[0].actions.iter().find(|a| a.id == "encrypt").unwrap();
+        let palette_action = match &spec.input {
+            ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("encrypt is an immediate action"),
+        };
+
+        // Click the real on-screen toggle: move the pointer onto it, then press.
+        let rect = CustomizePanel::encrypt_rect(app.content_rect());
+        let (cx, cy) = ((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        feed(&mut app, &mut doc, &cursor_ev(cx, cy));
+        feed(&mut app, &mut doc, &click_ev());
+
+        // It applied to the document...
+        assert!(ImagerDoc::profile(&doc).encrypt, "the toggle enabled encryption in the doc");
+        // ...recorded exactly one undo boundary...
+        assert!(
+            app.take_committed_action().is_some(),
+            "one undo boundary bracketed the toggle"
+        );
+        // ...and dispatched the byte-identical action Ctrl+K would.
+        let dispatched = app.last_dispatched().expect("the toggle dispatched an action");
+        assert_eq!(dispatched.type_id, crate::actions::IMAGER_ACTION_TYPE);
+        assert_eq!(
+            dispatched, &palette_action,
+            "the toggle and Ctrl+K are one source of truth"
+        );
     }
 }

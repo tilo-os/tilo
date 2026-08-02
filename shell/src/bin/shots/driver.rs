@@ -343,6 +343,45 @@ impl ShellDriver {
     /// portal both use. Nothing here writes a capability the enforcement
     /// path would not honour, so a shot of this scene is a shot of a
     /// state the compositor can actually be in.
+    /// Put a few records in the rooms the user is *not* in, so a search
+    /// has something to bring here.
+    ///
+    /// Sample content, and only ever reachable from `--shots`: the live
+    /// compositor's corpus is the records apps actually wrote. It goes
+    /// through the same `RoomRecords::reference` the palette's own Enter
+    /// does, so what the scene paints is what a real room index produces.
+    fn seed_records_in_other_rooms(&mut self) {
+        use ui::record::{RecordId, RecordKind};
+        let rooms: Vec<_> = {
+            let handle = self.chrome_handle();
+            let st = handle.borrow();
+            let tree = st.tree();
+            let active = tree.active_workspace().map(|w| w.room);
+            tree.workspaces
+                .iter()
+                .filter(|w| Some(w.room) != active)
+                .map(|w| w.room)
+                .collect()
+        };
+        if rooms.is_empty() {
+            return;
+        }
+        let records = [
+            ("/home/q/books/dune.epub", "book"),
+            ("/home/q/books/dune-messiah.epub", "book"),
+            ("/home/q/notes/dune-reading-notes.md", "document"),
+        ];
+        let index = self.fb.host().room_records();
+        let mut index = index.borrow_mut();
+        for (i, (path, kind)) in records.iter().enumerate() {
+            index.reference(
+                rooms[i % rooms.len()],
+                &RecordId::for_file(path),
+                &RecordKind::new(*kind),
+            );
+        }
+    }
+
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
         let handle = self.chrome_handle();
@@ -455,6 +494,40 @@ impl ShellDriver {
                 self.fb.host_mut().set_palette_focus(true);
                 self.fb.host_mut().force_palette_settled();
                 self.fb.host_mut().set_palette_query("nirios");
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
+            // Records from other rooms, which is what makes a room that
+            // starts empty workable: the rows say where each record
+            // lives, and Enter brings it here.
+            //
+            // The records are seeded into rooms *other* than the active
+            // one, because that is the case the gesture exists for — a
+            // record already here needs no bringing.
+            "palette_records" => {
+                self.seed_records_in_other_rooms();
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().set_palette_focus(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb.host_mut().set_palette_query("dune");
+                let root = self.root_obj.clone();
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
+            // What the card looks like when nothing matches. Worth a
+            // scene of its own: an empty result list is the state a
+            // palette spends real time in, and it is the one most likely
+            // to be left looking broken.
+            "palette_no_results" => {
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().set_palette_focus(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb
+                    .host_mut()
+                    .set_palette_query("zzzz-nothing-matches-this");
+                let root = self.root_obj.clone();
                 self.fb
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
@@ -781,6 +854,8 @@ impl ShellDriver {
         "palette_typed",
         "palette_in_app_query",
         "palette_app_query",
+        "palette_records",
+        "palette_no_results",
         "quick-settings",
         "qs-wifi-drillin",
         "qs-bt-drillin",

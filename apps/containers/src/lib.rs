@@ -11,6 +11,7 @@
 //! [`app_root`] is the single integration point used by both the live winit
 //! loop and the headless `--shots` renderer.
 
+pub mod actions;
 pub mod app;
 pub mod combobox;
 pub mod doc;
@@ -35,4 +36,12 @@ pub fn app_root() -> Box<dyn Widget> {
 /// screenshot is fully populated offline.
 pub fn app_root_offline() -> Box<dyn Widget> {
     Box::new(ContainersApp::new(false))
+}
+
+/// Offline root with a modal seeded for a deterministic `--shots` frame
+/// (`--scenario confirm` / `--scenario prompt`).
+pub fn app_root_shot(scenario: &str) -> Box<dyn Widget> {
+    let mut app = ContainersApp::new(false);
+    app.seed_shot(scenario);
+    Box::new(app)
 }
