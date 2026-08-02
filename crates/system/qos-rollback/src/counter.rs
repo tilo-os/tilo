@@ -50,6 +50,8 @@
 
 use crate::argv;
 use crate::exec::{Runner, require};
+use crate::policy::Workspace;
+use crate::tpm_policy;
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
@@ -58,29 +60,72 @@ pub const DEFAULT_NV_INDEX: u32 = 0x01D9_1100;
 
 /// Attributes for the floor counter.
 ///
-/// `authwrite`/`authread` with an empty auth value: any local caller may
-/// increment. That is deliberate and worth being explicit about, because it is a
-/// real limit rather than an oversight —
+/// `authread` with an empty auth value, because the floor is not secret and every
+/// unseal has to read it. `policywrite` and **no** `authwrite` or `ownerwrite`,
+/// because an increment must present a signed, single-use approval — see
+/// [`crate::approval`] for why, and for what happens when the authority that
+/// issues them is unavailable.
+pub const NV_ATTRS: &str = "authread|policywrite|nt=counter";
+
+/// [`NV_ATTRS`] as the bitmask the TPM reports, for computing the index's Name.
+pub const NV_ATTRS_BITS: u32 =
+    tpm_policy::nv_attr::AUTHREAD | tpm_policy::nv_attr::POLICYWRITE | tpm_policy::nv_attr::NT_COUNTER;
+
+/// Size of the counter's data area, in bytes.
+pub const NV_DATA_SIZE: u16 = 8;
+
+/// The index's `authPolicy`: a signed approval, or the one-time materialise path.
 ///
-/// * The floor can only ever move in the *safe* direction. A caller who
-///   increments it cannot make an old image bootable; they can only make fewer
-///   images bootable.
-/// * The damage available to a local attacker is therefore denial of service:
-///   push the floor above the running generation and the machine unlocks by
-///   recovery key until it is re-enrolled. That is unpleasant, but it is not a
-///   data-loss event, and root can already do worse (`cryptsetup luksKillSlot`).
-/// * Making it *not* root-reachable requires an offline authority: define the
-///   index with `policywrite` and a `PolicyAuthorize` policy, and have the update
-///   signer emit a single-use approval whose policy includes
-///   `PolicyNV(counter == F-1)`, so each shipped signature authorises exactly one
-///   step and cannot be replayed once taken. That is the right end state and it
-///   is not built here; the increment path is structured so it can be added
-///   behind `AUTH_POLICY_WRITE` without changing the index's Name (see
-///   [`define`]).
+/// ```text
+/// PolicyOR(
+///     PolicyAuthorize(authority, "qos-rollback-floor"),
+///     PolicyNvWritten(clear) -> PolicyCommandCode(TPM2_NV_Increment),
+/// )
+/// ```
 ///
-/// Note that `ownerwrite` is deliberately absent, so owner authorisation alone
-/// does not increment the floor.
-pub const NV_ATTRS: &str = "authread|authwrite|nt=counter";
+/// The second branch is what lets a device with no signing key bring the counter
+/// into existence. It is self-limiting: the write it performs sets
+/// `TPMA_NV_WRITTEN`, after which `PolicyNvWritten(clear)` can never be satisfied
+/// again. Proven against a TPM in `tests/mechanism.rs`.
+pub fn auth_policy(authority_key_name: &[u8]) -> tpm_policy::Digest256 {
+    tpm_policy::or(&[
+        signed_branch(authority_key_name),
+        first_write_branch(),
+    ])
+}
+
+/// The `PolicyAuthorize` branch of [`auth_policy`].
+pub fn signed_branch(authority_key_name: &[u8]) -> tpm_policy::Digest256 {
+    tpm_policy::authorize(authority_key_name, crate::approval::POLICY_REF)
+}
+
+/// The one-time materialise branch of [`auth_policy`].
+pub fn first_write_branch() -> tpm_policy::Digest256 {
+    tpm_policy::command_code(
+        tpm_policy::nv_written(tpm_policy::ZERO, false),
+        tpm_policy::CC_NV_INCREMENT,
+    )
+}
+
+/// The index's TPM Name once it has been written.
+///
+/// The written flag lives in the public area, so this is *not* the Name the index
+/// has before its first increment. Everything that seals against the index — every
+/// token's `PolicyNV`, every approval — must use this one, which is why the
+/// counter is materialised before anything is sealed.
+pub fn written_name(index: u32, auth_policy: &tpm_policy::Digest256) -> Vec<u8> {
+    tpm_policy::nv_index_name(
+        index,
+        NV_ATTRS_BITS | tpm_policy::nv_attr::WRITTEN,
+        auth_policy,
+        NV_DATA_SIZE,
+    )
+}
+
+/// The index's TPM Name before its first write.
+pub fn unwritten_name(index: u32, auth_policy: &tpm_policy::Digest256) -> Vec<u8> {
+    tpm_policy::nv_index_name(index, NV_ATTRS_BITS, auth_policy, NV_DATA_SIZE)
+}
 
 /// Refuse to perform more than this many increments in one advance without an
 /// explicit override. A legitimate advance moves the floor by a handful of
@@ -151,20 +196,72 @@ pub fn exists(runner: &dyn Runner, index: u32) -> Result<bool> {
     Ok(out.ok())
 }
 
-/// Define the counter. Idempotent: an existing index is left alone.
+/// Read the index's TPM Name as the TPM reports it.
+pub fn read_name(runner: &dyn Runner, index: u32) -> Result<Vec<u8>> {
+    let i = idx(index);
+    let out = require(
+        runner,
+        "tpm2_nvreadpublic",
+        &argv![&i],
+        &format!("reading the public area of {i}"),
+    )?;
+    let text = out.stdout_utf8();
+    let hex_name = text
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("name:"))
+        .map(str::trim)
+        .next()
+        .with_context(|| format!("no name in tpm2_nvreadpublic output for {i}:\n{text}"))?;
+    hex::decode(hex_name).with_context(|| format!("NV index name {hex_name:?} is not hex"))
+}
+
+/// Define the counter. Idempotent, and it verifies that an existing index is
+/// really ours.
 ///
-/// SAFETY-CRITICAL: never `tpm2_nvundefine` here. Undefining the index makes
-/// every sealed token permanently unopenable (its policy cannot execute at all),
-/// which turns the recovery key from a backstop into the only path.
-pub fn define(runner: &dyn Runner, index: u32) -> Result<bool> {
+/// SAFETY-CRITICAL, twice over:
+///
+/// * Never `tpm2_nvundefine` here. Undefining the index makes every sealed token
+///   permanently unopenable — its policy cannot execute at all — which turns the
+///   recovery key from a backstop into the only path.
+/// * An index that exists with different attributes or a different `authPolicy`
+///   has a different Name, and every token sealed against the old Name will fail
+///   to unseal. That is reported here, by name, rather than being discovered at
+///   the next boot.
+pub fn define(
+    runner: &dyn Runner,
+    index: u32,
+    auth_policy: &tpm_policy::Digest256,
+    ws: &Workspace,
+) -> Result<bool> {
+    let i = idx(index);
     if exists(runner, index)? {
+        let actual = read_name(runner, index)?;
+        let expect_written = written_name(index, auth_policy);
+        let expect_unwritten = unwritten_name(index, auth_policy);
+        if actual != expect_written && actual != expect_unwritten {
+            bail!(
+                "the NV index at {i} already exists but is not the one this configuration \
+                 describes: its Name is {} where {} (unwritten) or {} (written) was expected. \
+                 Something else owns that index, or it was created with a different floor authority \
+                 key. Tokens sealed against it cannot be unsealed by this build; unlock with the \
+                 recovery key and re-enroll, or point --nv-index somewhere else.",
+                hex::encode(&actual),
+                hex::encode(&expect_unwritten),
+                hex::encode(&expect_written),
+            );
+        }
         return Ok(false);
     }
-    let i = idx(index);
+    let policy_file = ws.put("nv_auth_policy.bin", auth_policy)?;
     require(
         runner,
         "tpm2_nvdefine",
-        &argv![&i, "-C", "o", "-a", NV_ATTRS],
+        &argv![
+            &i,
+            "-C", "o",
+            "-a", NV_ATTRS,
+            "-L", policy_file.as_os_str(),
+        ],
         &format!("defining the rollback floor counter at {i}"),
     )?;
     Ok(true)
@@ -206,28 +303,225 @@ pub fn decode(bytes: &[u8]) -> Result<Option<u64>> {
     Ok(Some(u64::from_be_bytes(v)))
 }
 
-/// One increment.
-pub fn increment(runner: &dyn Runner, index: u32) -> Result<()> {
+/// Write the two `PolicyOR` branch digests to files, as tpm2-tools wants them.
+fn branch_files(
+    ws: &Workspace,
+    authority_key_name: &[u8],
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let a = ws.put("branch_signed.bin", &signed_branch(authority_key_name))?;
+    let b = ws.put("branch_first.bin", &first_write_branch())?;
+    Ok((a, b))
+}
+
+/// The one increment that needs no approval: the one that brings the counter into
+/// existence.
+///
+/// Works exactly once per index, enforced by the TPM.
+pub fn increment_first(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    index: u32,
+    authority_key_name: &[u8],
+) -> Result<()> {
     let i = idx(index);
+    let (a, b) = branch_files(ws, authority_key_name)?;
+    let list = format!("sha256:{},{}", a.display(), b.display());
+    let sess = ws.path("nv_first.ctx");
+    crate::policy::flush(runner);
     require(
         runner,
-        "tpm2_nvincrement",
-        &argv![&i, "-C", &i],
-        &format!("incrementing the rollback floor counter at {i}"),
+        "tpm2_startauthsession",
+        &argv!["--policy-session", "-S", sess.as_os_str()],
+        "starting the counter's policy session",
     )?;
-    Ok(())
+    let run = || -> Result<()> {
+        require(
+            runner,
+            "tpm2_policynvwritten",
+            &argv!["-S", sess.as_os_str(), "c"],
+            "asserting the counter has never been written",
+        )?;
+        require(
+            runner,
+            "tpm2_policycommandcode",
+            &argv!["-S", sess.as_os_str(), "TPM2_CC_NV_Increment"],
+            "restricting the session to NV_Increment",
+        )?;
+        require(
+            runner,
+            "tpm2_policyor",
+            &argv!["-S", sess.as_os_str(), "-l", &list],
+            "selecting the materialise branch",
+        )?;
+        let auth = format!("session:{}", sess.display());
+        require(
+            runner,
+            "tpm2_nvincrement",
+            &argv![&i, "-C", &i, "-P", &auth],
+            &format!("materialising the rollback floor counter at {i}"),
+        )?;
+        Ok(())
+    };
+    let r = run();
+    let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+    r
+}
+
+/// One increment, authorised by a signed single-use approval.
+///
+/// The approval is spent by the TPM, not by this function: after the increment the
+/// counter no longer equals `target - 1`, so the same approval cannot be used
+/// again even if the file survives.
+pub fn increment_approved(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    index: u32,
+    authority_public_key: &std::path::Path,
+    authority_key_name: &[u8],
+    approval: &crate::approval::Approval,
+) -> Result<()> {
+    let i = idx(index);
+    // SAFETY-CRITICAL: validate against the Name the TPM reports for the index,
+    // never against the Name the approval claims for itself. Trusting the
+    // approval's own copy makes the check vacuous — an approval issued for another
+    // machine would validate happily and then fail deep inside the policy session
+    // with an unhelpful error. Caught by
+    // `an_approval_for_another_machines_index_is_refused`.
+    let nv_name = read_name(runner, index)?;
+    approval.validate_for(index, &nv_name)?;
+    let policy = approval.decoded_policy()?;
+    let signature = approval.decoded_signature()?;
+
+    // Mint the verification ticket first, with only the authority's public key
+    // loaded — the same transient-slot discipline the unseal path uses.
+    crate::policy::flush(runner);
+    let ak = ws.path("floor_authority.ctx");
+    require(
+        runner,
+        "tpm2_loadexternal",
+        &argv![
+            "-C", "o",
+            "-G", "rsa",
+            "-u", authority_public_key.as_os_str(),
+            "-c", ak.as_os_str(),
+        ],
+        "loading the floor authority public key",
+    )?;
+    let message =
+        tpm_policy::authorize_signed_message(&policy, crate::approval::POLICY_REF);
+    let msg = ws.put("floor_verify_msg.bin", &message)?;
+    let sig = ws.put(
+        "floor_approval.sig",
+        &crate::policy::marshal_rsassa_sha256(&signature)?,
+    )?;
+    let ticket = ws.path("floor_ticket.bin");
+    let vs = runner.run(
+        "tpm2_verifysignature",
+        &argv![
+            "-c", ak.as_os_str(),
+            "-g", "sha256",
+            "-m", msg.as_os_str(),
+            "-s", sig.as_os_str(),
+            "-t", ticket.as_os_str(),
+        ],
+        None,
+    )?;
+    let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
+    if !vs.ok() {
+        bail!(
+            "the floor-advance approval for counter {} is not signed by the configured authority: {}",
+            approval.target_counter,
+            vs.last_error_line()
+        );
+    }
+
+    let approved_file = ws.put("floor_approved.bin", &policy)?;
+    let name_file = ws.put("floor_authority.name", authority_key_name)?;
+    let ref_file = ws.put("floor_ref.bin", crate::approval::POLICY_REF)?;
+    let operand = ws.put(
+        "floor_operand.bin",
+        &(approval.target_counter - 1).to_be_bytes(),
+    )?;
+    let (a, b) = branch_files(ws, authority_key_name)?;
+    let list = format!("sha256:{},{}", a.display(), b.display());
+    let sess = ws.path("nv_advance.ctx");
+    require(
+        runner,
+        "tpm2_startauthsession",
+        &argv!["--policy-session", "-S", sess.as_os_str()],
+        "starting the counter's policy session",
+    )?;
+    let run = || -> Result<()> {
+        require(
+            runner,
+            "tpm2_policycommandcode",
+            &argv!["-S", sess.as_os_str(), "TPM2_CC_NV_Increment"],
+            "restricting the session to NV_Increment",
+        )?;
+        let pnv = runner.run(
+            "tpm2_policynv",
+            &argv![
+                "-S", sess.as_os_str(),
+                "-i", operand.as_os_str(),
+                &i, "eq",
+                "-C", &i,
+            ],
+            None,
+        )?;
+        if !pnv.ok() {
+            bail!(
+                "the approval for counter {} does not apply: the counter is not {} right now. An \
+                 approval authorises exactly one step and is spent once taken, so this one has \
+                 already been used or was issued for a different point.",
+                approval.target_counter,
+                approval.target_counter - 1
+            );
+        }
+        require(
+            runner,
+            "tpm2_policyauthorize",
+            &argv![
+                "-S", sess.as_os_str(),
+                "-i", approved_file.as_os_str(),
+                "-n", name_file.as_os_str(),
+                "-q", ref_file.as_os_str(),
+                "-t", ticket.as_os_str(),
+            ],
+            "applying the signed floor-advance approval",
+        )?;
+        require(
+            runner,
+            "tpm2_policyor",
+            &argv!["-S", sess.as_os_str(), "-l", &list],
+            "selecting the signed-approval branch",
+        )?;
+        let auth = format!("session:{}", sess.display());
+        require(
+            runner,
+            "tpm2_nvincrement",
+            &argv![&i, "-C", &i, "-P", &auth],
+            &format!("advancing the rollback floor counter at {i}"),
+        )?;
+        Ok(())
+    };
+    let r = run();
+    let _ = runner.run("tpm2_flushcontext", &argv![sess.as_os_str()], None);
+    crate::policy::flush(runner);
+    r
 }
 
 /// Materialise a freshly defined counter and pick `base` so that the floor
 /// starts at `initial_floor`.
 pub fn materialise(
     runner: &dyn Runner,
+    ws: &Workspace,
     index: u32,
     scratch: &Path,
     initial_floor: u64,
+    authority_key_name: &[u8],
 ) -> Result<FloorState> {
     if read(runner, index, scratch)?.is_none() {
-        increment(runner, index)?;
+        increment_first(runner, ws, index, authority_key_name)?;
     }
     let counter = read(runner, index, scratch)?
         .context("the rollback floor counter is still unreadable after an increment")?;
@@ -242,22 +536,54 @@ pub fn materialise(
     Ok(FloorState { counter, base })
 }
 
-/// Raise the floor by repeated increment, re-reading after each step.
+/// Outcome of an attempt to raise the floor.
+#[derive(Debug, Clone)]
+pub struct AdvanceOutcome {
+    pub floor: FloorState,
+    /// Steps actually taken.
+    pub steps: u64,
+    /// Steps that could not be taken because no approval covered them.
+    pub unapproved: Vec<u64>,
+}
+
+impl AdvanceOutcome {
+    pub fn reached_target(&self, target_floor: u64) -> bool {
+        self.floor.floor_generation() >= target_floor
+    }
+}
+
+/// Raise the floor towards `target_floor`, spending one signed approval per step.
+///
+/// Advances as far as the available approvals allow and reports the rest. A
+/// partial advance is safe — the counter only ever moves in the permitted
+/// direction — and stopping short is much better than the alternatives: refusing
+/// to advance at all would leave the floor pinned forever after one missing
+/// approval, and there is no way to advance without one.
 ///
 /// SAFETY-CRITICAL: callers must have already proved that a token at or above
 /// `target_floor` unseals. This function does not and cannot check that — see
 /// [`crate::confirm::advance_floor`], which is the only intended caller.
+#[allow(clippy::too_many_arguments)]
 pub fn advance(
     runner: &dyn Runner,
+    ws: &Workspace,
     index: u32,
     scratch: &Path,
     state: FloorState,
     target_floor: u64,
     max_increments: u64,
-) -> Result<FloorState> {
+    authority_public_key: &Path,
+    authority_key_name: &[u8],
+    approvals: &[crate::approval::Approval],
+    approval_dir: Option<&Path>,
+) -> Result<AdvanceOutcome> {
     let n = state.increments_to(target_floor)?;
     if n == 0 {
-        return Ok(state);
+        return Ok(AdvanceOutcome {
+            floor: state,
+            steps: 0,
+            unapproved: Vec::new(),
+        });
     }
     if n > max_increments {
         bail!(
@@ -267,20 +593,53 @@ pub fn advance(
             state.base
         );
     }
+    let mut current = state;
+    let mut steps = 0;
+    let mut unapproved = Vec::new();
     for _ in 0..n {
-        increment(runner, index)?;
+        let next = current.counter + 1;
+        let Some(approval) = crate::approval::find(approvals, next) else {
+            unapproved.push(next);
+            break;
+        };
+        increment_approved(
+            runner,
+            ws,
+            index,
+            authority_public_key,
+            authority_key_name,
+            approval,
+        )?;
+        if let Some(d) = approval_dir {
+            crate::approval::discard(d, approval);
+        }
+        let counter = read(runner, index, scratch)?
+            .context("the rollback floor counter became unreadable mid-advance")?;
+        if counter <= current.counter {
+            bail!(
+                "the counter did not move after an approved increment (still {counter}); refusing to \
+                 continue"
+            );
+        }
+        current = FloorState {
+            counter,
+            base: current.base,
+        };
+        steps += 1;
     }
-    let counter = read(runner, index, scratch)?
-        .context("the rollback floor counter became unreadable mid-advance")?;
-    let after = FloorState { counter, base: state.base };
-    if after.floor_generation() < target_floor {
-        bail!(
-            "floor advance fell short: wanted generation {target_floor}, counter is now {counter} \
-             (floor {})",
-            after.floor_generation()
-        );
+    // Anything still between here and the target had no approval.
+    let remaining = current.increments_to(target_floor).unwrap_or(0);
+    for k in 0..remaining {
+        let want = current.counter + 1 + k;
+        if !unapproved.contains(&want) {
+            unapproved.push(want);
+        }
     }
-    Ok(after)
+    Ok(AdvanceOutcome {
+        floor: current,
+        steps,
+        unapproved,
+    })
 }
 
 #[cfg(test)]
