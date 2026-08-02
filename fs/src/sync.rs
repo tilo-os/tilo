@@ -84,15 +84,33 @@ impl Ticket {
     }
 }
 
-/// Bind an endpoint with an in-memory address lookup (so gossip can dial peers
-/// we learn about by id). Returns both so callers can register peer addresses.
-pub async fn bind_endpoint() -> Result<(Endpoint, MemoryLookup)> {
+/// Bind an endpoint under this device's own key, with an in-memory address
+/// lookup (so gossip can dial peers we learn about by id). Returns both so
+/// callers can register peer addresses.
+///
+/// The `NodeId` this produces is the device's Ed25519 public key: iroh's
+/// secret key and the device key are the same 32 bytes. That is what makes the
+/// node id a *name* — authorship attribution and any access-control grant
+/// written against it still mean the same thing after a restart.
+pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
+        .secret_key(secret)
         .address_lookup(lookup.clone())
         .bind()
         .await?;
     Ok((endpoint, lookup))
+}
+
+/// Bind an endpoint under a freshly-generated key.
+///
+/// **The node id is different on every call**, so nothing durable may be
+/// keyed on it: authorship recorded under it is anonymous, and an access
+/// grant naming it is dead as soon as the process exits. Only for tests and
+/// throwaway probes — a real mount binds with
+/// [`bind_endpoint_with_key`] so its identity is the device's.
+pub async fn bind_ephemeral_endpoint() -> Result<(Endpoint, MemoryLookup)> {
+    bind_endpoint_with_key(iroh::SecretKey::generate()).await
 }
 
 /// Fetch the full namespace document from a peer over the bootstrap ALPN.
@@ -463,7 +481,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn structural_changes_propagate_both_ways() {
         // --- host A: seed a dir, then start hosting ---
-        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
@@ -474,7 +492,7 @@ mod tests {
                 .unwrap();
 
         // --- joiner B: bootstrap the doc, then join ---
-        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
         let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
@@ -531,7 +549,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn content_written_on_one_peer_hydrates_on_another() {
         // host A
-        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
@@ -541,7 +559,7 @@ mod tests {
                 .unwrap();
 
         // joiner B
-        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
         let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
