@@ -33,7 +33,12 @@ If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 
 ```bash
 # 1. Build the image (≈ a few min incremental; first cargo build is long).
-./os/dev/build-image.sh                 # 4 core binaries, browser omitted
+./os/dev/build-image.sh
+
+# …or skip the browser and the WPE WebKit engine stage that builds its engine
+# from source — ~45 of the ~60 minutes a cold build costs. The boot chain is
+# untouched, so this is the build to use when the question is "does it boot?".
+QOS_WITH_BROWSER=0 ./os/dev/build-image.sh
 
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
 ./os/dev/vm.sh capture-boot ./vm-artifacts
