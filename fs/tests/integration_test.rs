@@ -735,6 +735,12 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
 // in either direction. These drive `QuickFS::check_access`, the exact
 // function `open`, `read` and `write` route every access through, on one
 // `QuickFS` that is never rebuilt.
+//
+// A denied path answers `ENOENT`, not `EACCES`: an ungranted path is
+// indistinguishable from an absent one (see "Denial is an absence"
+// below). What these tests turn on is that the answer *changes* when the
+// list is re-read — the code it changes between is that policy's, not
+// theirs.
 // ---------------------------------------------------------------------
 
 /// Write `caps` to `path` as the JSON array the mount reads.
@@ -759,7 +765,7 @@ async fn a_grant_made_after_the_mount_reaches_the_live_access_check() {
     // Reproduces the bug's precondition: the sibling subtree is denied.
     assert_eq!(
         f.fs.check_access(f.other_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "the sibling subtree must be denied before it is granted, or the reload proves nothing"
     );
     assert_eq!(f.fs.check_access(f.docs_child, Access::Read), Ok(()));
@@ -801,7 +807,7 @@ async fn a_revocation_after_the_mount_reaches_the_live_access_check() {
 
     assert_eq!(
         f.fs.check_access(f.other_child, Access::Read),
-        Err(libc::EACCES),
+        Err(libc::ENOENT),
         "a revoked capability must stop working on the live mount, not at the next remount"
     );
     assert_eq!(
