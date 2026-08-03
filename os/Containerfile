@@ -922,7 +922,12 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     for d in /usr/lib/modules/*; do \
       [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
     done; \
+    # --add rather than trusting the base's drop-ins to pull these in: the same
+    # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
+    # them under the CI builder, silently, and a missing module here is a root
+    # that cannot be unlocked. Naming them makes dracut fail instead of omit.
     dracut --force --reproducible --kver "$kver" \
+        --add "crypt systemd-cryptsetup tpm2-tss" \
         "/usr/lib/modules/$kver/initramfs.img"; \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
     # /boot belongs to the deployment, not the image: whatever the kernel
