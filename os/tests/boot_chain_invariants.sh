@@ -64,7 +64,20 @@ fi
 for kver in "${kvers[@]}"; do
   img="$OS_ROOT/usr/lib/modules/$kver/initramfs.img"
   [ -s "$img" ] || continue
-  if command -v lsinitrd >/dev/null 2>&1; then
+  # Prefer the module list the build recorded from dracut's own output. Reading
+  # the image back needs to descend into a squashfs, which needs privileges an
+  # unprivileged image builder does not have — there, lsinitrd returns nothing
+  # and an initramfs that does carry cryptsetup looks like one that does not.
+  mods="$OS_ROOT/usr/lib/qos/initramfs-modules.txt"
+  if [ -s "$mods" ]; then
+    for want in crypt systemd-cryptsetup tpm2-tss; do
+      if grep -qx "$want" "$mods"; then
+        ok "initramfs includes the $want module"
+      else
+        bad "initramfs has no $want module — it cannot unlock an encrypted root"
+      fi
+    done
+  elif command -v lsinitrd >/dev/null 2>&1 && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
     for want in systemd-cryptsetup cryptsetup; do
       if printf '%s' "$listing" | grep -q "$want"; then
@@ -74,7 +87,7 @@ for kver in "${kvers[@]}"; do
       fi
     done
   else
-    printf 'skip  initramfs contents (lsinitrd not available)\n'
+    bad "cannot tell what is in the initramfs: no $mods, and lsinitrd read nothing"
   fi
 done
 
