@@ -894,12 +894,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck --allowerasing \
         kernel-core qos-kernel-core; \
     rm -rf /etc/qos-swap.d; \
-    kver="$(rpm -q --provides qos-kernel-core | sed -n 's/^kernel-uname-r = //p' | head -1)"; \
-    if [ -z "$kver" ]; then \
-      kver="$(rpm -ql qos-kernel-core | sed -n 's|^/usr/lib/modules/\([^/]*\)/vmlinuz$|\1|p' | head -1)"; \
+    # Which kernel version did the swap leave behind? Ask the filesystem, not
+    # rpm: qos-kernel-core provides no kernel-uname-r, and its file list records
+    # /lib/modules/... rather than /usr/lib/modules/..., so both of the obvious
+    # rpm probes come back empty. Removing the old kernel-core took its vmlinuz
+    # with it, so the one modules directory still holding a vmlinuz is the new
+    # kernel's, and requiring exactly one makes any future ambiguity loud.
+    kver=""; n=0; \
+    for d in /usr/lib/modules/*/; do \
+      if [ -f "$d/vmlinuz" ]; then kver="$(basename "$d")"; n=$((n+1)); fi; \
+    done; \
+    if [ "$n" -ne 1 ]; then \
+      echo "expected exactly one /usr/lib/modules/*/vmlinuz after the kernel swap, found $n" >&2; \
+      ls -la /usr/lib/modules/*/ >&2 || true; \
+      exit 1; \
     fi; \
-    test -n "$kver"; \
-    test -d "/usr/lib/modules/$kver"; \
     # The base ships a prebuilt initramfs for ITS kernel, and that file is
     # owned by no RPM — so removing kernel-core leaves the old modules
     # directory behind and the image would carry two kernel versions.
