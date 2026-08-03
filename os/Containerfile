@@ -926,10 +926,26 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
     # them under the CI builder, silently, and a missing module here is a root
     # that cannot be unlocked. Naming them makes dracut fail instead of omit.
-    dracut --force --reproducible --kver "$kver" \
+    dracut --force --reproducible -v --kver "$kver" \
         --add "crypt systemd-cryptsetup tpm2-tss" \
-        "/usr/lib/modules/$kver/initramfs.img"; \
+        "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
+      || { cat /tmp/dracut.log >&2; exit 1; }; \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
+    # Record what dracut says it included, and check THAT rather than reading the
+    # image back. dracut wraps the contents in a squashfs, and listing one needs
+    # privileges an unprivileged image builder does not have — so inspecting the
+    # artefact reports "no cryptsetup" for an initramfs that has it. dracut's own
+    # report is the same fact without the privilege dependency, and shipping the
+    # list lets the runtime check use it too.
+    mkdir -p /usr/lib/qos; \
+    sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
+      | sort -u > /usr/lib/qos/initramfs-modules.txt; \
+    for m in crypt systemd-cryptsetup tpm2-tss; do \
+      grep -qx "$m" /usr/lib/qos/initramfs-modules.txt || { \
+        echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
+        cat /usr/lib/qos/initramfs-modules.txt >&2; exit 1; }; \
+    done; \
+    rm -f /tmp/dracut.log; \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
