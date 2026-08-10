@@ -144,6 +144,31 @@ snapshot, so the fix is to stop removing them. Keeping systemd-boot is possible 
 bootc's composefs backend — a change to how the root filesystem is composed, not a bootloader
 swap, and a decision to take deliberately.
 
+**Confirmed against a real install.** With the GRUB stack restored and `bootloader = "grub"`,
+bootc-image-builder runs to `Build complete!` and writes a qcow2: bootc reports `Bootloader: grub`,
+`Installing bootloader via bootupd`, `Installation complete!`, and the ESP carries
+`EFI/fedora/{shimx64,grubx64,mmx64}.efi` + `grub.cfg` + `EFI/BOOT/BOOTX64.EFI`. That disk boots
+under OVMF through GRUB 2.12 into the qOS kernel (`Linux version 7.0.14 (qos@qos-build)`, with the
+`kargs.d` hardening set applied) and reaches `multi-user.target` and `graphical.target`, with
+`greetd` and `fs.service` up. An encrypted install driven from that booted image
+(`os/dev/test-encrypted-install.sh`) also completes — LUKS2 root, `rd.luks.uuid=…tpm2-device=auto`
+kargs, kernel and initramfs both on `/boot` with an `initrd` line in the BLS entry — and the
+resulting disk boots far enough to run early userspace, find the LUKS device, start
+`systemd-cryptsetup@…`, and ask for the unlock secret. So the initramfs and the LUKS unlock path
+are real, and `P1-2`'s "`--encrypt` and the custom kernel appear mutually exclusive" is now
+disproved rather than unverified.
+
+Two things observed while proving it, both distinct from this finding and neither yet fixed:
+
+- The `--tpm` run reached `Please enter recovery key for disk root` rather than unsealing from the
+  TPM, having logged `Expecting device dev-tpm0.device`. PCR 7 measures Secure Boot policy, and the
+  volume is sealed inside the installer host and then opened on a different machine boot, so a
+  broken seal is the expected outcome of sealing to PCR 7 across that boundary. Worth confirming
+  against a real machine before treating TPM auto-unlock as working.
+- `os/dev/test-encrypted-install.sh` keeps only the first line of the `enrol` step, which is
+  exactly the step that prints the recovery key. The key it enrolled is therefore unrecoverable
+  from the run's artefacts, which makes a `--tpm` target impossible to open afterwards.
+
 ---
 
 ## P1-1 — Secure Boot is removed from the image, and dependent hardening is inert
@@ -165,6 +190,15 @@ Knock-on effects:
   kernel (Fedora-signed)"* — that the image explicitly deletes. The document is stale and
   actively misleading.
 
+**Partly resolved.** The `rpm -e --nodeps` line is gone and shim + GRUB are back in the image,
+because without them the image cannot be installed at all (`P0-4`). So the chain
+`firmware → shim (MS-signed) → GRUB (Fedora-signed) → kernel` holds again as far as the kernel, and
+`docs/secure-boot.md` now describes that chain instead of a systemd-boot one. What remains is the
+part restoring shim does not fix: the kernel is still a local build no distribution key covers, so
+Secure Boot with factory keys still stops at the kernel, `lockdown=integrity` still does not engage
+until the owner has enrolled their own keys, and PCR 7 still measures a policy nothing has bound to
+yet. `qos-disk-encrypt` does now pass `--tpm2-pcrs=7` explicitly rather than inheriting a default.
+
 ---
 
 ## P1-2 — Disk encryption is opt-in, TPM-mandatory, and conflicts with the initrd-less kernel
@@ -181,6 +215,15 @@ the mapping; static drivers let the kernel mount root but cannot run `systemd-cr
 `--encrypt` and the custom kernel therefore appear mutually exclusive. **Not yet confirmed by
 booting an encrypted install** — verify with `os/dev/vm.sh boot --tpm` before treating as fact. The
 enrollment sequence itself was verified against loopback LUKS + swtpm, not against a real boot.
+
+**The "mutually exclusive" half is resolved, and the reason it stayed unverified for so long is
+`P0-4`: no install ever completed, so there was never a disk to boot.** The image now builds an
+initramfs explicitly (`os/Containerfile`, dracut invoked by the build rather than by
+kernel-install), and a booted encrypted install runs dracut's hooks, finds the LUKS device by UUID,
+starts `systemd-cryptsetup@luks-…`, and prompts for the unlock secret — so early userspace exists
+and can open the mapping. The BLS entry carries an `initrd` line and both `vmlinuz-7.0.14` and
+`initramfs-7.0.14.img` are present under `/boot/ostree/…`. The TPM-mandatory half of this finding is
+untouched.
 
 ---
 
