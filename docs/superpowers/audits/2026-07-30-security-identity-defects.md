@@ -96,6 +96,56 @@ and `::identity_survives_a_restart`.
 
 ---
 
+## P0-4 — The image cannot be installed, so no boot-chain claim in this file was ever testable
+
+`os/usr/lib/bootc/install/40-qos.toml` sets `bootloader = "systemd"`. Every `bootc install` against
+a qOS image therefore ends at the bootloader step:
+
+```
+Bootloader: systemd
+error: Installing to filesystem: bootupd is required for ostree-based installs
+```
+
+bootc has two install backends and only the **composefs** one can plant systemd-boot. The
+**ostree** backend — what bootc-image-builder, Anaconda's `ostreecontainer`, and `qos-install` all
+drive — matches on the resolved bootloader in `install_with_sysroot()` and, for `Systemd`, does
+nothing but `anyhow::bail!("bootupd is required for ostree-based installs")`. The single caller of
+bootc's `install_systemd_boot()` is `crates/lib/src/bootc_composefs/boot.rs`. This is unchanged on
+bootc `main`, so it is not a version to wait out. bootc-image-builder exposes no
+`--composefs-backend` flag, and that backend is otherwise only auto-selected for a unified kernel
+image, which the qOS kernel is not.
+
+So `bootloader = "systemd"` is not a slower path or a fallback — it is an image that cannot be
+installed, on a VM or on hardware.
+
+The near-miss worth recording: the image *also* has inconsistent bootupd state, and it looks like
+the cause. `rpm -e --nodeps` of `grub2-*`/`shim-x64` (P1-1) empties the payload dirs under
+`/usr/lib/efi/<component>/<rpm_evr>/EFI/` while
+`/usr/lib/bootupd/updates/EFI.json` still reads `grub2-1:2.12-60.fc44,shim-16.1-5`. But repairing
+that metadata cannot fix the install, twice over: the bail happens before bootupd is consulted at
+all, and bootupd 0.2.35's EFI component knows only grub2 + shim — `bootupctl backend
+generate-update-metadata` re-derives the *same* grub2+shim names from the emptied directories and
+exits 0. There is no metadata that describes systemd-boot for it to write.
+
+Why it went undetected for a month: the container image built, linted, signed, and pushed cleanly,
+and that is all CI does. Nothing in CI installs the image, so CI was green throughout. The
+verification failure it caused was read as a VM problem.
+
+This is the reason `P1-2` ends with *"Not yet confirmed by booting an encrypted install"*, and the
+reason a missing initramfs survived so long unnoticed: nothing ever got as far as installing, so no
+boot-chain claim in this file — Secure Boot, `lockdown=integrity`, PCR binding, LUKS unlock — had
+ever been observed on a running system.
+
+**Fix direction:** the bootloader has to be one bootc's ostree backend can plant, which today means
+GRUB via bootupd, which means `grub2` + `shim-x64` stay in the image rather than being deleted after
+the fact. Note that "put them back" is *not* a `dnf install`: they are inherited from the
+fedora-bootc base, and once this file stopped installing them they also left the frozen RPM
+snapshot, so the fix is to stop removing them. Keeping systemd-boot is possible only by moving to
+bootc's composefs backend — a change to how the root filesystem is composed, not a bootloader
+swap, and a decision to take deliberately.
+
+---
+
 ## P1-1 — Secure Boot is removed from the image, and dependent hardening is inert
 
 `os/Containerfile:498` runs `rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps`,
