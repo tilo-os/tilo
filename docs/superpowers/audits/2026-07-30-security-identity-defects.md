@@ -158,16 +158,41 @@ resulting disk boots far enough to run early userspace, find the LUKS device, st
 are real, and `P1-2`'s "`--encrypt` and the custom kernel appear mutually exclusive" is now
 disproved rather than unverified.
 
-Two things observed while proving it, both distinct from this finding and neither yet fixed:
+**What is still not proved: the root filesystem opening.** Both encrypted runs stop at the unlock
+prompt and stay there, and the reason is enrolment, not the boot path. An offline `cryptsetup
+luksDump` of the `--no-tpm --passphrase hunter2` target shows the LUKS2 header carries **exactly one
+keyslot**, keyslot 1, bound to token `0: systemd-recovery`:
 
-- The `--tpm` run reached `Please enter recovery key for disk root` rather than unsealing from the
-  TPM, having logged `Expecting device dev-tpm0.device`. PCR 7 measures Secure Boot policy, and the
-  volume is sealed inside the installer host and then opened on a different machine boot, so a
-  broken seal is the expected outcome of sealing to PCR 7 across that boundary. Worth confirming
-  against a real machine before treating TPM auto-unlock as working.
-- `os/dev/test-encrypted-install.sh` keeps only the first line of the `enrol` step, which is
-  exactly the step that prints the recovery key. The key it enrolled is therefore unrecoverable
-  from the run's artefacts, which makes a `--tpm` target impossible to open afterwards.
+```
+Keyslots:
+  1: luks2
+	PBKDF:      pbkdf2
+Tokens:
+  0: systemd-recovery
+	Keyslot:    1
+```
+
+There is no passphrase keyslot, so typing `hunter2` at the boot prompt is rejected and the prompt
+repeats — observed directly. Three separate defects sit behind that, all distinct from this finding:
+
+- **`qos-disk-encrypt enrol --pin-file` adds no keyslot on the no-TPM path.** The volume was enrolled
+  with `--pin-file` holding `hunter2`, and the header has no second keyslot. The
+  `cryptsetup luksAddKey --new-keyfile` call in the no-TPM branch either did not run or failed
+  without the `die` being surfaced.
+- **`os/dev/test-encrypted-install.sh` keeps only the first line of the `enrol` step** — the step
+  whose whole purpose is to print the recovery key. Execution appears to stop after
+  `enrolling the recovery key…`, so the one factor that *was* enrolled is unrecoverable from the
+  run's artefacts and a finished target cannot be opened at all.
+- **The harness watches the wrong console.** It greps the serial log for the passphrase prompt, but
+  the kargs `qos-disk-encrypt` composes carry no `console=` entry, so the installed system logs only
+  to tty0. The prompt is on the framebuffer, the serial log stays at 7 lines, and the run reports
+  `NO passphrase prompt within 150s` on a system that is sitting at the prompt.
+
+Also worth confirming on real hardware: the `--tpm` run reached `Please enter recovery key` rather
+than unsealing, having logged `Expecting device dev-tpm0.device`. PCR 7 measures Secure Boot policy
+and the volume is sealed inside the installer host then opened on a different machine boot, so a
+broken seal is the expected outcome of sealing across that boundary rather than evidence about a
+real machine.
 
 ---
 
