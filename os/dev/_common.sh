@@ -117,14 +117,47 @@ detect_rendernode() {
   echo /dev/dri/renderD128
 }
 
-# Locate OVMF firmware inside the env.
+# Locate OVMF firmware inside the env. QOS_SECBOOT=1 selects the Secure-Boot
+# build (`*.secboot.fd`), whose variable store starts in SETUP MODE — no keys
+# enrolled — which is precisely the state `qos-secureboot enroll` expects, so the
+# guest can enrol its own PK and then boot under enforcement. The plain build has
+# no Secure Boot support at all, so an SB test against it proves nothing.
+QOS_SECBOOT="${QOS_SECBOOT:-0}"
 ovmf_code() {
+  if [ "$QOS_SECBOOT" = "1" ]; then
+    inenv 'for f in /usr/share/edk2/ovmf/OVMF_CODE.secboot.fd /usr/share/OVMF/OVMF_CODE.secboot.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
+      || die "OVMF_CODE.secboot.fd not found (install edk2-ovmf in ${QOS_DISTROBOX:-the host})"
+    return
+  fi
   inenv 'for f in /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
     || die "OVMF not found (install edk2-ovmf in ${QOS_DISTROBOX:-the host})"
 }
 ovmf_vars() {
+  if [ "$QOS_SECBOOT" = "1" ]; then
+    inenv 'for f in /usr/share/edk2/ovmf/OVMF_VARS.secboot.fd /usr/share/OVMF/OVMF_VARS.secboot.fd /usr/share/edk2/ovmf/OVMF_VARS.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
+      || die "OVMF_VARS.secboot.fd not found"
+    return
+  fi
   inenv 'for f in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
     || die "OVMF_VARS not found"
+}
+
+# Extra qemu args the Secure-Boot firmware needs to actually ENFORCE: SMM, and a
+# pflash that refuses writes from outside SMM. Without both, the variable store
+# is writable from the guest and enforcement is theatre.
+secboot_qemu_args() {
+  [ "$QOS_SECBOOT" = "1" ] || return 0
+  # disable_s3: the SMM-protected variable store and S3 resume do not coexist in
+  # OVMF, and leaving S3 on makes the firmware complain and fall back.
+  printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
+}
+# q35 machine options; SMM is required by the Secure-Boot firmware.
+machine_args() {
+  if [ "$QOS_SECBOOT" = "1" ]; then
+    printf -- '-machine q35,accel=kvm,smm=on'
+  else
+    printf -- '-machine q35,accel=kvm'
+  fi
 }
 
 # --- software TPM (swtpm) -----------------------------------------------------

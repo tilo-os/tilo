@@ -44,6 +44,17 @@
 ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
+
+# QOS_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
+# stage, no `browser` binary. Default 1 — a normal build is unchanged.
+#
+# The engine stage compiles libwpe + wpebackend-fdo + wpewebkit from source and
+# takes ~45 of the ~60 minutes a cold build costs. Nothing about the boot chain
+# (kernel, initramfs, LUKS/TPM unlock, greeter, installer, rollback) depends on
+# it, so an engine failure should not be able to block boot verification. Opting
+# out is how you get an image to boot-test in minutes while the browser's own
+# build is being repaired.
+ARG QOS_WITH_BROWSER=1
 FROM ${RPMS_REF} AS rpms
 
 # ---- Custom kernel repo ----------------------------------------------------
@@ -71,7 +82,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM ${BASE_REF} AS wpe-builder
+FROM ${BASE_REF} AS wpe-builder-1
 
 # The explicit list covers what the WPE port needs and the GTK port does not,
 # so `builddep webkitgtk6.0` never pulls it: libinput + libudev (systemd-devel)
@@ -89,6 +100,21 @@ RUN --mount=type=cache,target=/wpe-cache \
     QOS_WPE_CACHE=/wpe-cache QOS_WPE_PREFIX=/usr QOS_WPE_DESTDIR=/wpe \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+
+# ---- Stage 1a-off: the same stage with no engine in it ----------------------
+# Selected when QOS_WITH_BROWSER=0. It only has to satisfy the two
+# `COPY --from=wpe-builder /wpe/ /` instructions below — copying the contents of
+# an empty directory is a no-op, so both overlays vanish without either COPY
+# needing to be conditional (a Containerfile has no conditional COPY).
+FROM ${BASE_REF} AS wpe-builder-0
+RUN mkdir -p /wpe
+
+# Whichever of the two above QOS_WITH_BROWSER names becomes `wpe-builder`. The
+# other is never built: an unreferenced stage is pruned from the build graph by
+# both buildkit and buildah, so QOS_WITH_BROWSER=0 skips the engine compile
+# rather than building and discarding it.
+FROM wpe-builder-${QOS_WITH_BROWSER} AS wpe-builder
 
 
 # ---- Stage 1: builder ------------------------------------------------------
@@ -181,20 +207,29 @@ COPY --from=wpe-builder /wpe/ /
 #  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
 #    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
+#
+# The browser is the one optional binary (QOS_WITH_BROWSER, top of file). It is
+# staged into /out/optional/ rather than /out/ so the final image can copy the
+# directory's contents unconditionally: empty means no browser, and no COPY
+# needs a condition it cannot express.
+ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    cargo build --release \
+    if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
+    else BROWSER_PKG="-p browser --features browser/wpe"; fi \
+    && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback \
-        -p browser --features browser/wpe \
-    && mkdir -p /out \
+        ${BROWSER_PKG} \
+    && mkdir -p /out /out/optional \
+    && { [ "${QOS_WITH_BROWSER}" = "0" ] \
+         || cp target/release/browser /out/optional/browser; } \
     && cp target/release/shell \
           target/release/fs \
           target/release/terminal \
           target/release/file-explorer \
-          target/release/browser \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -359,8 +394,10 @@ COPY --from=builder /out/terminal /usr/bin/terminal
 COPY --from=builder /out/file-explorer /usr/bin/file-explorer
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
-# into this rootfs below).
-COPY --from=builder /out/browser /usr/bin/browser
+# into this rootfs below). Copied as the contents of /out/optional/ because the
+# browser is omitted under QOS_WITH_BROWSER=0, and that leaves the directory
+# empty rather than leaving this COPY pointing at a path that does not exist.
+COPY --from=builder /out/optional/ /usr/bin/
 # Graphical login greeter (ui-toolkit based). Launched at the greetd VT inside
 # `cage` — see etc/greetd/config.toml.
 COPY --from=builder /out/qos-greeter /usr/bin/qos-greeter
@@ -381,9 +418,10 @@ COPY --from=builder /out/qos-power /usr/bin/qos-power
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
 COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
-              /usr/bin/file-explorer /usr/bin/browser /usr/bin/qos-greeter \
+              /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
-              /usr/bin/qos-power /usr/libexec/qos-unlock-helper
+              /usr/bin/qos-power /usr/libexec/qos-unlock-helper \
+    && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -395,6 +433,11 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
 # browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
 # are there because the engine is built with accessibility, gamepad and XSLT
 # support; they arrive via no other package in this image.
+#
+# Copies nothing under QOS_WITH_BROWSER=0 (the stage is an empty /wpe then). The
+# dnf list below still runs: those are ordinary frozen-repo packages that cost
+# seconds, and installing them either way keeps the two images' package sets —
+# and this layer's cache entry — identical.
 COPY --from=wpe-builder /wpe/ /
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     libepoxy \
@@ -472,9 +515,12 @@ COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49
 # Public keys only (the private keys are git-excluded; see keys/README.md).
 #  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
 #    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
-#  - tpm2-pcr-signing.public.pem is the trust root for measured-boot PCR
-#    predictions; baked here so the installer/enroll path can bind LUKS to it
-#    once the build-side prediction-signing + UKI land (see §4 — not yet active).
+#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
+#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
+#    that value is stable across OS updates; binding to PCR 4 — the boot
+#    artefacts themselves — needs a signed prediction, or every update would
+#    break the seal. This key is what such a prediction would verify against.
+#    See docs/secure-boot.md.
 COPY keys/cosign.pub /usr/share/qos/cosign.pub
 COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
 
@@ -528,6 +574,10 @@ COPY os/etc/locale.conf /etc/locale.conf
 # peer-sync trade-off doc users are pointed at from the .desktop
 # Comment field and the systemd unit Documentation= line).
 COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
+# The Secure Boot + disk-encryption procedure. On-image because the enrolment
+# sequence has to be readable from the machine being enrolled, which is the one
+# place a wrong step stops it from booting.
+COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -551,9 +601,30 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # The systemd-boot install already satisfies the "some bootloader must
 # exist" invariant, so shell out to `rpm -e --nodeps` for the protected
 # ones — dnf handles the unprotected ones on the same pass.
+#
+# sbsigntools and efitools are what replaces the trust that removal takes away.
+# Deleting shim and GRUB, and building our own kernel, leaves nothing on the boot
+# path that a distribution key covers — so the machine has to be able to sign its
+# own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
+# cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
+# /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
+    && dnf clean all
+
+# The signing tools, in their own transaction and allowed to be absent.
+#
+# They are named here so the snapshot job keeps resolving them into the frozen
+# package set, but a snapshot that predates them must not fail the whole image
+# build: nothing on the boot path needs them, and the one thing that does —
+# /usr/libexec/qos-secureboot — already refuses every command with the exact
+# remedy when they are missing. The safety property lives in the tool failing
+# closed, not in the build failing open. systemd-boot-unsigned above stays in a
+# strict transaction, because an image with no bootloader IS a broken image.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-unavailable --setopt=reposdir=/repo \
+        sbsigntools \
+        efitools \
     && dnf clean all
 
 # The install-config drop-in that flips bootc's bootloader choice to
@@ -571,6 +642,33 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
 # install/upgrade.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+
+# Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
+# Used by the installer (os/Containerfile.installer layers qos-install on top of
+# this image), and afterwards on the installed system — `enrol` is also how a
+# volume is re-sealed to a replaced TPM, which is exactly the case where the
+# machine can only be reached with the recovery key.
+COPY os/usr/libexec/qos-disk-encrypt /usr/libexec/qos-disk-encrypt
+RUN chmod 0755 /usr/libexec/qos-disk-encrypt
+
+# Owner-enrolled Secure Boot. qOS builds its own kernel, so the base image's
+# Fedora/Microsoft-signed chain cannot cover it; the machine generates its own
+# Platform Key instead, which is also what keeps a self-built image attestable
+# to a collaborator who trusts that key.
+#
+# Generating and enrolling keys is a deliberate act the owner takes — nothing
+# here does it, and the image build must never do it. What IS enabled by default
+# is the re-signing unit, so the hook is already in place before any key is
+# enrolled; it is a no-op until keys exist (ConditionPathExists). Getting that
+# order wrong — keys enrolled, signing hook missing — is what leaves a machine
+# refusing its own kernel.
+COPY os/usr/libexec/qos-secureboot /usr/libexec/qos-secureboot
+COPY os/usr/lib/systemd/system/qos-secureboot-sign.service /usr/lib/systemd/system/qos-secureboot-sign.service
+COPY os/usr/lib/systemd/system/qos-secureboot-sign.path /usr/lib/systemd/system/qos-secureboot-sign.path
+COPY os/usr/lib/systemd/system/qos-secureboot-sign-shutdown.service /usr/lib/systemd/system/qos-secureboot-sign-shutdown.service
+RUN chmod 0755 /usr/libexec/qos-secureboot \
+    && systemctl enable qos-secureboot-sign.service qos-secureboot-sign.path \
+                        qos-secureboot-sign-shutdown.service
 
 # Runtime tunables: no cross-process debugging, no kernel pointers or ring
 # buffer for unprivileged readers, no unprivileged BPF, no kexec, no io_uring
@@ -676,7 +774,16 @@ COPY os/usr/lib/systemd/system/fs.service.d/20-selinux.conf /usr/lib/systemd/sys
 # install and fails "File exists" if any prior partial state carried
 # forward (a caching quirk under rootless podman that CI's docker
 # daemon happens to sidestep). Clear it first.
-RUN rm -rf /etc/selinux/targeted/tmp \
+# libsemanage builds its sandbox by hardlinking the current policy store, and a
+# hardlink to a file that lives in a lower container layer fails EEXIST — which
+# surfaces as "Could not copy files to sandbox /etc/selinux/targeted/tmp (File
+# exists)" while that directory is demonstrably absent. Removing the stale
+# sandbox, which this step already did, addresses the wrong half: the store
+# itself has to exist in this layer. Copy it into place first.
+RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
+ && rm -rf /etc/selinux/targeted \
+ && mv /var/tmp/qos-sestore /etc/selinux/targeted \
+ && rm -rf /etc/selinux/targeted/tmp \
  && semodule -i /usr/share/qos/selinux/qos-base.cil \
  && echo "qos-base SELinux module loaded"
 
@@ -750,7 +857,7 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
 # The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
 # build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
 #   * links the storage/net/USB/HID boot-path drivers statically, so the
-#     kernel can mount the root FS without an initramfs stage, and
+#     boot path needs no module loading to reach the root device, and
 #   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
 #     SCHED_MC), and
 #   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
@@ -762,12 +869,15 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
 # image is verified via cosign against code.sandbox.example/qos/qos-kernel
 # (see os/etc/containers/policy.json).
 #
-# Because the qos-kernel package ships every boot-path driver in-kernel,
-# also disable initramfs generation: systemd's kernel-install reads
-# /etc/kernel/install.conf and skips initrd creation when
-# `initrd_generator=none`.  Verified post-install by the absence of
-# /boot/initramfs-*.img.
-COPY os/etc/kernel/install.conf /etc/kernel/install.conf
+# An initramfs is mandatory, and the static drivers do not remove the need
+# for one: unlocking an encrypted root takes early USERSPACE (device-mapper
+# setup, a TPM unseal or a passphrase prompt, systemd-cryptsetup). Static
+# drivers get the kernel as far as seeing the block device; they cannot open
+# a LUKS volume. Under the base's `layout=ostree` kernel-install config,
+# kernel-install deliberately does not run dracut, so the image build owns
+# initramfs generation — hence the explicit dracut call below. The base's
+# dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
+# crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     set -eux; \
@@ -784,10 +894,70 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck --allowerasing \
         kernel-core qos-kernel-core; \
     rm -rf /etc/qos-swap.d; \
-    # If any initramfs was produced by the swap's %post scripts, drop it —
-    # we boot without one.
-    rm -f /boot/initramfs-*.img; \
+    # Which kernel version did the swap leave behind? Ask the filesystem: rpm is
+    # no help here, because qos-kernel-core provides no kernel-uname-r and its
+    # file list records /lib/modules/... where a query would say /usr/lib/... .
+    # Exactly one modules directory must remain, and anything else is a build
+    # failure that says what it saw rather than an empty variable.
+    kver=""; n=0; \
+    for d in /usr/lib/modules/*/; do kver="$(basename "$d")"; n=$((n+1)); done; \
+    if [ "$n" -ne 1 ]; then \
+      echo "expected exactly one /usr/lib/modules entry after the kernel swap, found $n" >&2; \
+      ls -la /usr/lib/modules/ >&2 || true; \
+      exit 1; \
+    fi; \
+    # qos-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the
+    # modules directory the way Fedora's kernel-core does. ostree does find it
+    # there — it falls back to /boot/vmlinuz-<kver> — which is why nobody noticed,
+    # but it means the image carried a kernel and no initramfs beside it, and
+    # every tool that goes looking for the pair (this build included) came up
+    # empty. Put both where the base image puts them.
+    if [ -f "/boot/vmlinuz-$kver" ] && [ ! -f "/usr/lib/modules/$kver/vmlinuz" ]; then \
+      mv "/boot/vmlinuz-$kver" "/usr/lib/modules/$kver/vmlinuz"; \
+    fi; \
+    test -f "/usr/lib/modules/$kver/vmlinuz"; \
+    # The base ships a prebuilt initramfs for ITS kernel, and that file is
+    # owned by no RPM — so removing kernel-core leaves the old modules
+    # directory behind and the image would carry two kernel versions.
+    for d in /usr/lib/modules/*; do \
+      [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
+    done; \
+    # --add rather than trusting the base's drop-ins to pull these in: the same
+    # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
+    # them under the CI builder, silently, and a missing module here is a root
+    # that cannot be unlocked. Naming them makes dracut fail instead of omit.
+    dracut --force --reproducible -v --kver "$kver" \
+        --add "crypt systemd-cryptsetup tpm2-tss" \
+        "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
+      || { cat /tmp/dracut.log >&2; exit 1; }; \
+    test -s "/usr/lib/modules/$kver/initramfs.img"; \
+    # Record what dracut says it included, and check THAT rather than reading the
+    # image back. dracut wraps the contents in a squashfs, and listing one needs
+    # privileges an unprivileged image builder does not have — so inspecting the
+    # artefact reports "no cryptsetup" for an initramfs that has it. dracut's own
+    # report is the same fact without the privilege dependency, and shipping the
+    # list lets the runtime check use it too.
+    mkdir -p /usr/lib/qos; \
+    sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
+      | sort -u > /usr/lib/qos/initramfs-modules.txt; \
+    for m in crypt systemd-cryptsetup tpm2-tss; do \
+      grep -qx "$m" /usr/lib/qos/initramfs-modules.txt || { \
+        echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
+        cat /usr/lib/qos/initramfs-modules.txt >&2; exit 1; }; \
+    done; \
+    rm -f /tmp/dracut.log; \
+    # /boot belongs to the deployment, not the image: whatever the kernel
+    # packages dropped there is now duplicated under the modules directory.
+    rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
     dnf clean all
+
+# Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
+# state it once did: offering `qos-install --encrypt` while carrying no
+# initramfs, which leaves the kernel able to see the LUKS device and unable to
+# open it. Also bundled so an operator can re-run it on a live machine.
+COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
+RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
+    && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
 
 # Validate
 RUN bootc container lint

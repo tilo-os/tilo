@@ -12,13 +12,22 @@
 #     --timezone <Area/City>          IANA time zone (default: system default / UTC)
 #     --keymap <xkb-layout>           keyboard layout, e.g. us, de (default: us)
 #     --keyvariant <xkb-variant>      keyboard variant, e.g. dvorak (default: none)
+#     --encrypt                       LUKS2 full-disk encryption on the root
+#     --pin                           unlock secret on stdin line 2: a TPM2 PIN
+#                                     where there is a TPM, otherwise the boot
+#                                     passphrase (requires --encrypt)
+#     --fido2                         also enrol a FIDO2 token (requires --encrypt)
 #
 # (These are optional so an older UI that omits them still works.) We:
 #
 #   1. copy the currently-booted bootc image into local container storage
 #      (`bootc image copy-to-storage` -> containers-storage:localhost/bootc),
-#   2. run `bootc install to-disk` from that copied image, in a privileged
-#      podman container, onto the target disk (wipes it, --filesystem layout),
+#   2. install from that copied image, in a privileged podman container, onto
+#      the target disk (wipes it, --filesystem layout). Without --encrypt that
+#      is `bootc install to-disk`; with it, qos-disk-encrypt builds the
+#      GPT + LUKS2 layout and bootc installs `to-filesystem` into the opened
+#      mapping — see that script for why the volume is not created by
+#      `--block-setup tpm2-luks`,
 #   3. create the user account: `bootc install` does NOT make users, so we
 #      hash the password and drop `<name>:<hash>` into the freshly-installed
 #      deployment's WRITABLE /etc/qos/install-user.conf, which a baked
@@ -48,6 +57,10 @@ QOS_TARGET_IMGREF="${QOS_TARGET_IMGREF:-code.sandbox.example/qos/qos:latest}"
 
 # The local-storage tag `bootc image copy-to-storage` writes to by default.
 LOCAL_IMG="localhost/bootc"
+
+# The block-level half of an encrypted install (partitioning, LUKS2, factor
+# enrolment). Overridable so it can be driven directly in a test VM.
+DISK_ENCRYPT="${QOS_DISK_ENCRYPT:-/usr/libexec/qos-disk-encrypt}"
 
 log()  { printf '%s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -156,7 +169,7 @@ while [ $# -gt 0 ]; do
     --pin) WANT_PIN=1; shift ;;
     --fido2) WANT_FIDO2=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,52p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,49p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -170,12 +183,9 @@ case "$FILESYSTEM" in
   *) die "unsupported --filesystem '$FILESYSTEM' (use btrfs, ext4 or xfs)" ;;
 esac
 
-# Encryption uses bootc `--block-setup tpm2-luks`, which binds the LUKS unlock
-# to the machine's TPM2. Refuse early (clear message) if there's no TPM2 device
-# rather than letting bootc fail partway through the install.
-if [ "$ENCRYPT" -eq 1 ] && [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
-  die "--encrypt requires a TPM2 device (/dev/tpm*), none found on this machine"
-fi
+# Encryption does NOT require a TPM. The volume is created with a recovery key
+# and the TPM is one more slot on top of it, so a machine without one still gets
+# an encrypted disk that it unlocks by typing a secret. See qos-disk-encrypt.
 # The extra factors only make sense on an encrypted disk.
 if [ "$ENCRYPT" -eq 0 ] && { [ "$WANT_PIN" -eq 1 ] || [ "$WANT_FIDO2" -eq 1 ]; }; then
   die "--pin/--fido2 require --encrypt"
@@ -269,93 +279,98 @@ step "Copying the running qOS image into local container storage"
 bootc image copy-to-storage
 log "  -> $LOCAL_IMG"
 
-# --- 2. bootc install to-disk ------------------------------------------------
-# direct = plain filesystem; tpm2-luks = TPM2-bound LUKS full-disk encryption.
-# bootc sets up a single TPM2-sealed keyslot; the multi-factor enrollment that
-# follows the install (below) adds the recovery key + optional PIN/FIDO2.
-BLOCK_SETUP=direct
-[ "$ENCRYPT" -eq 1 ] && BLOCK_SETUP=tpm2-luks
-step "Installing qOS onto $DISK (this ERASES the disk; block-setup=$BLOCK_SETUP)"
-podman run --rm --privileged --pid=host --ipc=host \
-  -v /var/lib/containers:/var/lib/containers \
-  -v /dev:/dev \
-  --security-opt label=type:unconfined_t \
-  "$LOCAL_IMG" \
-  bootc install to-disk \
-    --wipe \
-    --filesystem "$FILESYSTEM" \
-    --block-setup "$BLOCK_SETUP" \
-    --target-imgref "$QOS_TARGET_IMGREF" \
-    "$DISK"
+# --- 2. install the base system ----------------------------------------------
+# Unencrypted: `bootc install to-disk` owns the whole layout.
+# Encrypted: we build the layout ourselves (qos-disk-encrypt prepare) and hand
+# bootc the mounted tree, because `--block-setup tpm2-luks` can only produce a
+# TPM-sealed single-slot volume and refuses to run at all without a TPM.
+ENC_MNT=""
+ENC_LUKS=""
+ENC_KEYFILE=""
+if [ "$ENCRYPT" -eq 1 ]; then
+  step "Preparing an encrypted root on $DISK (this ERASES the disk)"
+  # The helper reports the volume it made on stdout and its progress on stderr;
+  # keep the report and let the progress through to the UI, which reads our
+  # stdout. fd 3 is this script's stdout for the duration.
+  exec 3>&1
+  PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  exec 3>&-
+  ENC_MNT="$(printf '%s\n' "$PREP" | sed -n 's/^MNT=//p')"
+  ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
+  ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
+  ENC_ROOT_UUID="$(printf '%s\n' "$PREP" | sed -n 's/^ROOT_FS_UUID=//p')"
+  ENC_KARGS="$(printf '%s\n' "$PREP" | sed -n 's/^KARGS=//p')"
+  [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
+    || die "encryption: qos-disk-encrypt prepare did not report the volume it made"
+
+  # From here the volume is open and the tree is mounted. If anything below fails
+  # the installer exits without reaching `finish`, so close them on the way out —
+  # otherwise a retry finds a mounted disk it refuses to touch. Key slots are
+  # left alone; only `finish` removes the install key.
+  trap '"$DISK_ENCRYPT" teardown "$DISK" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
+
+  # Every karg the volume needs becomes a --karg; word-splitting KARGS is
+  # intentional (it is a space-separated list this script produced).
+  KARG_ARGS=()
+  for k in $ENC_KARGS; do KARG_ARGS+=(--karg "$k"); done
+
+  # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
+  # and the account/hostname/keyboard seeding below writes into the deployment's
+  # /etc on that same mount. qos-disk-encrypt finish unmounts and closes the
+  # volume immediately afterwards, so the step bootc would have performed buys
+  # nothing here.
+  step "Installing qOS into the encrypted root"
+  podman run --rm --privileged --pid=host --ipc=host \
+    -v /var/lib/containers:/var/lib/containers \
+    -v /dev:/dev \
+    -v "$ENC_MNT:/target" \
+    --security-opt label=type:unconfined_t \
+    "$LOCAL_IMG" \
+    bootc install to-filesystem \
+      --root-mount-spec "UUID=$ENC_ROOT_UUID" \
+      "${KARG_ARGS[@]}" \
+      --target-imgref "$QOS_TARGET_IMGREF" \
+      --skip-finalize \
+      /target
+else
+  step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
+  podman run --rm --privileged --pid=host --ipc=host \
+    -v /var/lib/containers:/var/lib/containers \
+    -v /dev:/dev \
+    --security-opt label=type:unconfined_t \
+    "$LOCAL_IMG" \
+    bootc install to-disk \
+      --wipe \
+      --filesystem "$FILESYSTEM" \
+      --block-setup direct \
+      --target-imgref "$QOS_TARGET_IMGREF" \
+      "$DISK"
+fi
 log "  base system installed."
 
 # Make sure the kernel sees the freshly written partition table.
 udevadm settle 2>/dev/null || true
-partprobe "$DISK" 2>/dev/null || true
 
 # --- 2b. multi-factor LUKS enrollment ----------------------------------------
-# bootc left ONE TPM2-sealed keyslot. A TPM-only disk is a single point of
-# failure: a cleared/dead TPM or a swapped board means the data is gone, and a
-# bare TPM (no PIN) gives weak protection against powered-off theft. So we add
-# independent factors with systemd-cryptenroll (run here on the live host, which
-# has systemd + the TPM): ALWAYS a recovery key (the non-TPM backstop), TPM2+PIN
-# in place of the bare-TPM slot when a PIN was given, and optionally a FIDO2 key.
+# The volume currently opens only with the throwaway install key. Layer the real
+# factors on: always a recovery key, then FIDO2 / TPM2(+PIN) or — with no TPM —
+# the supplied passphrase. qos-disk-encrypt aborts rather than leaving a volume
+# whose only factor is one the user cannot reproduce.
 if [ "$ENCRYPT" -eq 1 ]; then
   step "Enrolling disk-encryption factors"
-  # Find the freshly-created LUKS partition on the target disk.
-  LUKS_DEV=""
-  while IFS= read -r _name _fstype; do
-    [ "$_fstype" = "crypto_LUKS" ] && LUKS_DEV="/dev/$_name" && break
-  done <<EOF
-$(lsblk -rno NAME,FSTYPE "$DISK" 2>/dev/null)
-EOF
-  [ -n "$LUKS_DEV" ] || die "encryption: no crypto_LUKS partition found on $DISK after install"
-  log "  LUKS device: $LUKS_DEV"
-
-  # (1) Recovery key — the mandatory, TPM-independent backstop. Authorise via the
-  # TPM slot bootc just created. Capture + show it ONCE; refuse to continue if it
-  # fails (never leave a TPM-only disk).
-  log "  enrolling recovery key…"
-  REC_OUT="$(systemd-cryptenroll --unlock-tpm2-device=auto --recovery-key "$LUKS_DEV" 2>&1)" \
-    || die "encryption: recovery-key enrollment failed; aborting (refusing a TPM-only disk):"$'\n'"$REC_OUT"
-  REC_KEY="$(printf '%s\n' "$REC_OUT" | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' | tail -1)"
-  [ -n "$REC_KEY" ] || REC_KEY="$(printf '%s\n' "$REC_OUT" | tail -1)"
-  log ""
-  log "  ============================================================"
-  log "   RECOVERY KEY — write this down / save it off-device NOW."
-  log "   It unlocks the disk if the TPM or PIN ever fails."
-  log ""
-  log "       $REC_KEY"
-  log ""
-  if command -v qrencode >/dev/null 2>&1; then
-    qrencode -t ANSIUTF8 "$REC_KEY" 2>/dev/null || true
-  fi
-  log "  ============================================================"
-  log ""
-
-  # (2) Optional FIDO2 — enroll while the bare-TPM slot still exists to authorise.
-  if [ "$WANT_FIDO2" -eq 1 ]; then
-    log "  enrolling FIDO2 security key (touch it now if prompted)…"
-    if systemd-cryptenroll --unlock-tpm2-device=auto --fido2-device=auto "$LUKS_DEV"; then
-      log "  FIDO2 key enrolled."
-    else
-      log "  WARNING: FIDO2 enrollment failed (no token?) — continuing; recovery key + TPM still protect the disk."
-    fi
-  fi
-
-  # (3) TPM2+PIN — replace bootc's bare-TPM slot with a PIN-protected one. PIN via
-  # env, never argv. Last, because it wipes the slot used to authorise the above.
+  ENROL_ARGS=()
+  [ "$WANT_FIDO2" -eq 1 ] && ENROL_ARGS+=(--fido2)
   if [ "$WANT_PIN" -eq 1 ]; then
-    log "  re-enrolling TPM2 with a PIN…"
-    if NEWPIN="$PIN" systemd-cryptenroll --unlock-tpm2-device=auto \
-         --wipe-slot=tpm2 --tpm2-device=auto --tpm2-with-pin=yes "$LUKS_DEV"; then
-      log "  TPM2+PIN enrolled (bare-TPM slot removed)."
-    else
-      die "encryption: TPM2+PIN enrollment failed; the recovery key still works, but aborting so the disk isn't left in a half-configured state."
-    fi
+    PIN_FILE=/run/qos-install/pin
+    install -d -m 0700 /run/qos-install
+    ( umask 0077; printf '%s' "$PIN" > "$PIN_FILE" )
+    ENROL_ARGS+=(--pin-file "$PIN_FILE")
   fi
-  unset PIN NEWPIN 2>/dev/null || true
-  log "  encryption factors enrolled."
+  # The helper logs to stderr; fold it into our stdout so the UI sees the
+  # recovery key it has to show the user.
+  "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" 2>&1
+  [ -n "${PIN_FILE:-}" ] && { shred -u "$PIN_FILE" 2>/dev/null || rm -f "$PIN_FILE"; }
+  unset PIN
 fi
 udevadm settle 2>/dev/null || true
 
@@ -371,33 +386,45 @@ HASH="$(printf '%s\n' "$PASSWORD" | openssl passwd -6 -stdin)"
 # of the target and looking for an ostree deployment. The bootc btrfs layout
 # is ESP(vfat) + /boot(ext4) + root(btrfs, subvol 'root'); the partition
 # *numbers* aren't fixed, so we discover by content, not by index.
-MNT="$(mktemp -d)"
+#
+# The encrypted path skips the probe: the root is already open and mounted, and
+# probing would find only the LUKS header on the raw partition anyway.
 DEPLOY_ETC=""
 MOUNTED=""
-cleanup() {
-  [ -n "$MOUNTED" ] && umount "$MOUNTED" 2>/dev/null || true
-  [ -d "$MNT" ] && rmdir "$MNT" 2>/dev/null || true
+find_deploy_etc() {
+  # The WRITABLE per-deployment /etc — NOT the read-only, hardlinked
+  # <csum>.0/usr/etc (writing there corrupts the shared ostree repo).
+  find "$1" -regextype posix-extended \
+    -regex '.*/ostree/deploy/[^/]+/deploy/[^/]+\.[0-9]+/etc' \
+    -type d 2>/dev/null | head -1
 }
-trap cleanup EXIT
 
-for part in $(lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | awk '$2=="part"{print $1}'); do
-  if mount "$part" "$MNT" 2>/dev/null; then
-    MOUNTED="$MNT"
-    # Is this the root fs (contains an ostree/deploy tree)? Works whether the
-    # btrfs top-level (.../root/ostree/deploy) or the 'root' subvol
-    # (.../ostree/deploy) got mounted — the regex below tolerates either.
-    if find "$MNT" -maxdepth 6 -type d -path '*/ostree/deploy' 2>/dev/null | grep -q .; then
-      # The WRITABLE per-deployment /etc — NOT the read-only, hardlinked
-      # <csum>.0/usr/etc (writing there corrupts the shared ostree repo).
-      DEPLOY_ETC="$(find "$MNT" -regextype posix-extended \
-        -regex '.*/ostree/deploy/[^/]+/deploy/[^/]+\.[0-9]+/etc' \
-        -type d 2>/dev/null | head -1)"
-      [ -n "$DEPLOY_ETC" ] && break
+if [ "$ENCRYPT" -eq 1 ]; then
+  MNT="$ENC_MNT"
+  DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+else
+  MNT="$(mktemp -d)"
+  cleanup() {
+    [ -n "$MOUNTED" ] && umount "$MOUNTED" 2>/dev/null || true
+    [ -d "$MNT" ] && rmdir "$MNT" 2>/dev/null || true
+  }
+  trap cleanup EXIT
+
+  for part in $(lsblk -lnpo NAME,TYPE "$DISK" 2>/dev/null | awk '$2=="part"{print $1}'); do
+    if mount "$part" "$MNT" 2>/dev/null; then
+      MOUNTED="$MNT"
+      # Is this the root fs (contains an ostree/deploy tree)? Works whether the
+      # btrfs top-level (.../root/ostree/deploy) or the 'root' subvol
+      # (.../ostree/deploy) got mounted — the regex below tolerates either.
+      if find "$MNT" -maxdepth 6 -type d -path '*/ostree/deploy' 2>/dev/null | grep -q .; then
+        DEPLOY_ETC="$(find_deploy_etc "$MNT")"
+        [ -n "$DEPLOY_ETC" ] && break
+      fi
+      umount "$MNT" 2>/dev/null || true
+      MOUNTED=""
     fi
-    umount "$MNT" 2>/dev/null || true
-    MOUNTED=""
-  fi
-done
+  done
+fi
 
 [ -n "$DEPLOY_ETC" ] || die "could not locate the installed deployment's writable /etc on $DISK"
 
@@ -453,8 +480,15 @@ chmod 0644 "$DEPLOY_ETC/vconsole.conf"
 log "  wrote KEYMAP=$VCONSOLE_KEYMAP to $DEPLOY_ETC/vconsole.conf"
 
 sync
-umount "$MOUNTED" 2>/dev/null || true
-MOUNTED=""
+if [ "$ENCRYPT" -eq 1 ]; then
+  # Drops the throwaway install key slot (only once another factor exists),
+  # unmounts the tree and closes the mapping.
+  step "Closing the encrypted root"
+  "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT" 2>&1
+else
+  umount "$MOUNTED" 2>/dev/null || true
+  MOUNTED=""
+fi
 
 step "Install complete — you can reboot into qOS now."
 log "Remove the installer medium before rebooting."
