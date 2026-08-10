@@ -24,7 +24,7 @@
 
 # --- INTERACTIVE (default) ---
 # Bootloader: no `bootloader ...` directive here. The embedded qOS image ships
-# /usr/lib/bootc/install/40-qos.toml, which tells bootc to plant systemd-boot on
+# /usr/lib/bootc/install/40-qos.toml, which names the bootloader bootc plants on
 # the ESP at install time; Anaconda's `ostreecontainer` path invokes bootc for
 # the bootloader plumbing, so the choice propagates without a kickstart hint.
 [customizations.installer.kickstart]

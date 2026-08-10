@@ -1,24 +1,31 @@
 # Secure Boot and disk encryption on qOS
 
-qOS boots UEFI → systemd-boot → its own kernel → its own initramfs → systemd.
-There is no shim and no GRUB: the image removes both, and the kernel is built
-here rather than taken from Fedora. Every one of those facts changes what Secure
-Boot can mean, so this document describes the chain as it is, not as a stock
-Fedora bootc image's would be.
+qOS boots UEFI → shim → GRUB → its own kernel → its own initramfs → systemd.
+shim and GRUB are inherited from the Fedora bootc base and keep their vendor
+signatures; the kernel is built here rather than taken from Fedora. Every one of
+those facts changes what Secure Boot can mean, so this document describes the
+chain as it is, not as a stock Fedora bootc image's would be.
 
-## The chain has no vendor signature, and cannot get one
+The loader is not a free choice. bootc's ostree backend — the backend every qOS
+install path uses — installs the bootloader by calling bootupd, and bootupd's
+only EFI payload is grub2 + shim. `bootloader = "systemd"` is refused outright by
+that backend rather than falling back, so systemd-boot would mean moving to
+bootc's composefs backend. See `os/usr/lib/bootc/install/40-qos.toml`.
+
+## The chain's vendor signatures stop at the kernel
 
 A stock Fedora bootc image inherits a chain that verifies out of the box on a
 factory machine: shim is signed by the Microsoft UEFI CA, GRUB by Fedora, the
-kernel by Fedora. qOS ships none of those three. `systemd-boot-unsigned` is, as
-the name says, unsigned, and the kernel is a local rebuild
-(`os/kernel/Containerfile`) that no distribution key has ever touched.
+kernel by Fedora. qOS keeps the first two and breaks the third: the kernel is a
+local rebuild (`os/kernel/Containerfile`) that no distribution key has ever
+touched.
 
-So on a machine with the factory keys enrolled and Secure Boot on, qOS does not
-boot. That is not a packaging oversight to be fixed by re-adding shim — a
-qOS-signed chain would only move the problem. A vendor key means images *we*
-signed are attestable and an image the owner built is not, which is the property
-this system is specifically designed to keep.
+So on a machine with the factory keys enrolled and Secure Boot on, shim and GRUB
+load and the kernel is rejected — qOS does not boot. That is not a packaging
+oversight to be fixed by getting the kernel signed by someone: a qOS vendor key
+would only move the problem. A vendor key means images *we* signed are attestable
+and an image the owner built is not, which is the property this system is
+specifically designed to keep.
 
 The answer is that the machine's own key is the root: the owner clears the
 factory keys, enrols a Platform Key generated on that machine, and signs the boot
@@ -114,9 +121,13 @@ property we lack", so they are worth setting out rather than filing.
 
 #### What signing actually covers on the ostree backend
 
-The firmware verifies what it `LoadImage()`s. On this backend that is
-systemd-boot, and then the kernel — both PE binaries, both signable, both signed
-by `qos-secureboot sign`. What it does **not** cover:
+The firmware verifies what it `LoadImage()`s. On this backend that is shim, then
+GRUB, then the kernel — all PE binaries, all signable, all signed by
+`qos-secureboot sign`. shim and GRUB already carry Fedora/Microsoft signatures,
+but owner enrolment replaces the factory db with the machine's own, so those
+signatures stop being trusted and the owner's is the one that counts; signing
+appends rather than replaces, so a machine that has *not* been through enrolment
+still boots on the vendor chain. What signing does **not** cover:
 
 - **The initramfs.** ostree deploys it as a plain cpio blob beside the kernel and
   the loader hands it to the kernel after the verification step, so it is not

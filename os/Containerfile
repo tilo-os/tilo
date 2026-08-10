@@ -580,38 +580,59 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 
 # ---------------------------------------------------------------------------
-# Bootloader — swap GRUB for systemd-boot
+# Bootloader — GRUB via bootupd
 # ---------------------------------------------------------------------------
-# systemd-boot is smaller + simpler than GRUB (no menu render step, no module
-# load path, BLS entries loaded straight off the ESP), so cold boot to the
-# kernel handoff is measurably shorter. bootc chooses which bootloader to
-# plant on the ESP at install time based on the `bootloader` key in the
-# /usr/lib/bootc/install/*.toml drop-ins baked into this image (see the
-# 40-qos.toml file below). The `systemd-boot-unsigned` package supplies the
-# actual EFI binaries + BLS layout that bootc/bootupd copy across.
+# The GRUB stack (grub2 + shim, and the payload bootupd plants from them) comes
+# from the fedora-bootc base and MUST stay. bootc's ostree backend — the backend
+# every qOS install path uses — installs the bootloader by calling bootupd, and
+# bootupd's only EFI payload is grub2 + shim. See the long comment in
+# os/usr/lib/bootc/install/40-qos.toml for the code path; the short version is
+# that bootc has no systemd-boot support outside its composefs backend, so an
+# image without GRUB cannot be installed at all.
 #
-# The GRUB stack (grub2 + shim + bootupd's grub2 side) is pulled in by the
-# fedora-bootc base and would otherwise still ship on the rootfs, wasting
-# ~30 MB and leaving dead code paths in bootupd. Drop it after installing
-# systemd-boot so nothing during install can pick GRUB by accident.
+# Two things make that failure mode easy to reintroduce, so they are called out:
 #
-# dnf5 refuses to remove grub2-efi-x64 / grub2-pc / grub2-tools-minimal /
-# shim-x64 (each ships an `/etc/dnf/protected.d/*.conf` marking itself
-# protected against removal) and won't accept `--allowerasing` on `remove`.
-# The systemd-boot install already satisfies the "some bootloader must
-# exist" invariant, so shell out to `rpm -e --nodeps` for the protected
-# ones — dnf handles the unprotected ones on the same pass.
+#  * The payload lives in /usr/lib/efi/<component>/<rpm_evr>/EFI/, owned by
+#    grub2-efi-x64 and shim-x64. Removing those packages empties the payload
+#    while leaving /usr/lib/bootupd/updates/EFI.json still naming them, and
+#    `bootupctl backend generate-update-metadata` re-derives the same names from
+#    the now-empty directories and exits 0 — so the image looks self-consistent
+#    and still fails at install time.
+#  * The frozen RPM snapshot resolves against what this file installs. Once the
+#    packages were removed here they left the snapshot too, so putting them back
+#    is "stop removing them", not "dnf install them" — they are only ever
+#    inherited from the base.
 #
-# sbsigntools and efitools are what replaces the trust that removal takes away.
-# Deleting shim and GRUB, and building our own kernel, leaves nothing on the boot
-# path that a distribution key covers — so the machine has to be able to sign its
-# own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
-# cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
+# systemd-boot-unsigned stays installed: it costs ~150 KB, it is what a future
+# move to bootc's composefs backend would plant, and /usr/libexec/qos-secureboot
+# signs whichever loader is actually on the ESP.
+#
+# sbsigntools and efitools cover the trust that building our own kernel takes
+# away. shim and GRUB carry Fedora signatures, but the qOS kernel they chainload
+# does not, so the machine still has to sign its own kernels and enrol its own
+# Platform Key. sbsign/sbverify do the signing, cert-to-efi-sig-list/
+# efi-updatevar/efi-readvar the enrolment; without them
 # /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
-    && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && dnf clean all
+
+# Fail the build rather than ship an uninstallable image. Each of these is a
+# thing that was true of the image that could not be installed: the bootloader
+# bootc will ask bootupd for has to have a payload on disk, and the install
+# config has to name a bootloader bootc's ostree backend can actually plant.
+RUN set -eu; \
+    test -f /usr/lib/bootupd/updates/EFI.json \
+      || { echo "bootupd EFI metadata missing"; exit 1; }; \
+    grep -q '"name":"shim"' /usr/lib/bootupd/updates/EFI.json \
+      || { echo "bootupd EFI metadata does not describe shim"; exit 1; }; \
+    grep -q '"name":"grub2"' /usr/lib/bootupd/updates/EFI.json \
+      || { echo "bootupd EFI metadata does not describe grub2"; exit 1; }; \
+    test -n "$(find /usr/lib/efi -name 'shimx64.efi' -print -quit)" \
+      || { echo "bootupd EFI payload has no shimx64.efi"; exit 1; }; \
+    test -n "$(find /usr/lib/efi -name 'grubx64.efi' -print -quit)" \
+      || { echo "bootupd EFI payload has no grubx64.efi"; exit 1; }; \
+    echo "bootupd EFI payload + metadata present"
 
 # The signing tools, in their own transaction and allowed to be absent.
 #
@@ -627,13 +648,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         efitools \
     && dnf clean all
 
-# The install-config drop-in that flips bootc's bootloader choice to
-# systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
-# merges at every `bootc install {to-disk,to-filesystem}` invocation. bib
-# (bootc-image-builder) runs the same install code path when it builds a
-# qcow2, so this covers both interactive Anaconda installs and the direct
-# bib->qcow2 path.
+# The install-config drop-in that pins bootc's bootloader choice. Lives at
+# /usr/lib/bootc/install/*.toml — a drop-in dir bootc merges at every
+# `bootc install {to-disk,to-filesystem}` invocation. bib (bootc-image-builder)
+# runs the same install code path when it builds a qcow2, so this covers both
+# interactive Anaconda installs and the direct bib->qcow2 path.
 COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
+
+# `bootloader = "systemd"` here is what made every install fail; bootc's ostree
+# backend bails on it instead of falling back. Refuse to build the image rather
+# than discover that from a failed install.
+RUN set -eu; \
+    grep -qE '^[[:space:]]*bootloader[[:space:]]*=[[:space:]]*"grub"' \
+        /usr/lib/bootc/install/40-qos.toml \
+      || { echo "install config does not select a bootloader bootc's ostree backend can plant"; exit 1; }; \
+    echo "install config selects grub"
 
 # ---------------------------------------------------------------------------
 # Kernel/userspace hardening (security plan §11 — "table stakes")

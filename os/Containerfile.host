@@ -149,17 +149,18 @@ COPY keys/cosign.pub /usr/share/qos/cosign.pub
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
 
-# Same bootloader swap as the desktop image: install systemd-boot,
-# drop the GRUB stack, tell bootc to plant systemd-boot on the ESP at
-# install time (see os/usr/lib/bootc/install/40-qos.toml for why).
+# Same bootloader story as the desktop image: GRUB stays, because bootc's ostree
+# backend can only install a bootloader through bootupd and bootupd's payload is
+# grub2 + shim (see os/usr/lib/bootc/install/40-qos.toml for the code path).
+# systemd-boot-unsigned is installed but unused by the install path.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     systemd-boot-unsigned \
-    && dnf remove -y --allowerasing \
-        grub2-common grub2-tools grub2-tools-minimal grub2-tools-extra \
-        grub2-pc grub2-pc-modules grub2-efi-x64 grub2-efi-x64-modules \
-        shim-x64 \
     && dnf clean all
 COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
+RUN set -eu; \
+    test -n "$(find /usr/lib/efi -name 'shimx64.efi' -print -quit)" \
+      && test -n "$(find /usr/lib/efi -name 'grubx64.efi' -print -quit)" \
+      || { echo "bootupd EFI payload incomplete — image would not install"; exit 1; }
 
 # firewalld default zone: the FedoraServer zone drops all inbound
 # except explicitly permitted. Iroh punches out; the relay does not

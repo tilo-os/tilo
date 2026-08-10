@@ -86,14 +86,28 @@ resign_armed() {
 # --- the artefacts the firmware checks ---------------------------------------
 #
 # Two kinds. The EFI loaders on the ESP, planted by bootupd. And the kernels
-# under /boot/ostree, which systemd-boot loads through the firmware's
-# LoadImage — so each deployment's vmlinuz is verified too, and a new deployment
-# means a new file to sign.
+# under /boot/ostree, which the loader hands to the firmware's LoadImage — so
+# each deployment's vmlinuz is verified too, and a new deployment means a new
+# file to sign.
+#
+# Both loader layouts are listed because which one is on the ESP depends on the
+# bootloader bootc installed: shim + grubx64.efi for the GRUB path (what bootc's
+# ostree backend plants), systemd-bootx64.efi for the composefs path. Only the
+# files that exist are returned, so this is layout-agnostic rather than a guess.
+#
+# Under owner-enrolled Secure Boot the machine's own db replaces the factory one,
+# so shim's Microsoft signature and GRUB's Fedora signature stop being trusted —
+# they need the owner's signature exactly as the kernel does. Signing an already
+# signed binary appends; it does not invalidate the existing signature.
 artefacts() {
   local f
   for f in "$ESP/EFI/systemd/systemd-bootx64.efi" \
+           "$ESP/EFI/systemd/systemd-bootia32.efi" \
+           "$ESP/EFI/fedora/shimx64.efi" \
+           "$ESP/EFI/fedora/grubx64.efi" \
+           "$ESP/EFI/fedora/mmx64.efi" \
            "$ESP/EFI/BOOT/BOOTX64.EFI" \
-           "$ESP/EFI/systemd/systemd-bootia32.efi"; do
+           "$ESP/EFI/BOOT/fbx64.efi"; do
     if [ -f "$f" ]; then printf '%s\n' "$f"; fi
   done
   find "$BOOTDIR" -maxdepth 4 -name 'vmlinuz*' -type f 2>/dev/null | sort

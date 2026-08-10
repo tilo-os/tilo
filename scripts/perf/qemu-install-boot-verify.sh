@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
-# Prove the bootloader swap took: verify the produced desktop qcow2 has
-# systemd-boot on its ESP, boots on UEFI/OVMF, and reaches multi-user.target.
+# Prove the install produced a bootable disk: verify the desktop qcow2 has a
+# planted bootloader on its ESP, boots on UEFI/OVMF, and reaches
+# multi-user.target.
 #
 # bootc-image-builder invokes the same install code path bootc uses at
 # install-time (bootc install to-filesystem), reading the drop-in at
-# /usr/lib/bootc/install/*.toml baked into the image. If bib produced a
-# qcow2 whose ESP holds systemd-bootx64.efi + loader.conf (and NOT
-# grubx64.efi), the swap is live for every install path that shares that
+# /usr/lib/bootc/install/*.toml baked into the image. So a qcow2 whose ESP
+# carries a complete loader is evidence for every install path that shares that
 # code path — including the custom installer (`qos-install` -> `bootc install
 # to-disk`) and the Anaconda `ostreecontainer` install path.
+#
+# The expected layout is GRUB's (shim + grubx64.efi + grub.cfg), because that is
+# what bootc's ostree backend can plant: it installs the bootloader by calling
+# bootupd, and bootupd's payload is grub2 + shim. systemd-boot is accepted here
+# too — it is what bootc's composefs backend plants — but an ESP carrying
+# *neither* is the failure this script exists to catch, and the one that shipped:
+# `bootloader = "systemd"` on the ostree backend does not fall back, it aborts
+# the install, so there was no disk to inspect at all.
 #
 # Fully non-interactive. No window pops open; nothing waits for a keypress.
 # Emits a machine-readable JSON summary on stdout for CI + a human-readable
 # log to $OUT_DIR/verify.log. Exit codes:
-#   0  systemd-boot verified on the ESP + guest reached multi-user.target
+#   0  a complete bootloader verified on the ESP + guest reached multi-user.target
 #   2  usage (bad arg or missing input)
 #   3  precondition failed (no qcow2 to test)
-#   6  ESP layout is not systemd-boot's
+#   6  ESP carries no complete bootloader
 #   7  guest failed to reach the multi-user/graphical target
 #   8  qemu did not start
 #
@@ -27,7 +35,7 @@
 #   DISK           path to the qcow2 to verify
 #                  (default: os/output/qcow2/disk.qcow2)
 #   OUT_DIR        where to leave logs + JSON
-#                  (default: target/perf/systemd-boot-verify)
+#                  (default: target/perf/install-boot-verify)
 #   BOOT_TIMEOUT   how long to wait for multi-user.target, seconds
 #                  (default: 240)
 #
@@ -39,7 +47,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 DISK="${DISK:-$REPO_ROOT/os/output/qcow2/disk.qcow2}"
-OUT_DIR="${OUT_DIR:-$REPO_ROOT/target/perf/systemd-boot-verify}"
+OUT_DIR="${OUT_DIR:-$REPO_ROOT/target/perf/install-boot-verify}"
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-240}"
 
 while [ $# -gt 0 ]; do
@@ -47,7 +55,7 @@ while [ $# -gt 0 ]; do
     --disk) DISK="$2"; shift 2 ;;
     --out) OUT_DIR="$2"; shift 2 ;;
     --timeout) BOOT_TIMEOUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,43p' "$0"; exit 0 ;;
     *) printf 'unknown arg: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -76,7 +84,10 @@ mkdir -p "$OUT_DIR" "$SHORT_RUN"
 : > "$LOG"
 SB_PRESENT=null
 GRUB_PRESENT=null
+GRUB_CFG_PRESENT=null
+SHIM_PRESENT=null
 LOADER_CONF_PRESENT=null
+BOOTLOADER=unknown
 BOOT_MS=null
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$LOG"; }
@@ -102,7 +113,10 @@ emit_json() {
   "detail": "$3",
   "systemd_boot_efi_present": $SB_PRESENT,
   "grub_efi_present": $GRUB_PRESENT,
+  "grub_cfg_present": $GRUB_CFG_PRESENT,
+  "shim_present": $SHIM_PRESENT,
   "loader_conf_present": $LOADER_CONF_PRESENT,
+  "bootloader": "$BOOTLOADER",
   "boot_ms": $BOOT_MS,
   "log": "$LOG",
   "disk": "$DISK"
@@ -170,34 +184,48 @@ dd if="$FULL_RAW" of="$ESP_RAW" bs=512 skip=$((ESP_OFFSET/512)) count=$((ESP_SIZ
 rm -f "$FULL_RAW"
 
 # Layout signals per bootloader:
+#   * GRUB:         EFI/fedora/grubx64.efi + EFI/fedora/grub.cfg, chainloaded
+#                   from EFI/fedora/shimx64.efi
 #   * systemd-boot: EFI/systemd/systemd-bootx64.efi + loader/loader.conf
 #     (BOOTX64.EFI is the removable-media fallback and may be either).
-#   * GRUB:         EFI/fedora/grubx64.efi + EFI/fedora/grub.cfg + shim
-# Assert the systemd-boot pair is present AND the GRUB pair is not — the
-# strongest one-shot signal for the swap. `mdir -i FILE ::PATH` walks the
-# FAT tree directly; mtype (or a `mattrib` existence check) verifies files.
+# Assert exactly one of those pairs is *complete*. A half-planted ESP — a loader
+# with no config, or a shim with nothing to chainload — is a disk that reaches
+# the firmware and stops, which is worth failing on distinctly from an ESP with
+# nothing on it at all. `mdir -i FILE ::PATH` walks the FAT tree directly;
+# a `mattrib` existence check verifies individual files.
 SB_PRESENT=false
 GRUB_PRESENT=false
 LOADER_CONF_PRESENT=false
+GRUB_CFG_PRESENT=false
+SHIM_PRESENT=false
 mtools_has() {
   # $1 = image, $2 = /-rooted path. Non-zero if not found.
   MTOOLS_SKIP_CHECK=1 mattrib -i "$1" "::$2" >/dev/null 2>&1
 }
 mtools_has "$ESP_RAW" "EFI/systemd/systemd-bootx64.efi" && SB_PRESENT=true
 mtools_has "$ESP_RAW" "loader/loader.conf"              && LOADER_CONF_PRESENT=true
-if mtools_has "$ESP_RAW" "EFI/fedora/grubx64.efi" || mtools_has "$ESP_RAW" "EFI/fedora/grub.cfg"; then
-  GRUB_PRESENT=true
+mtools_has "$ESP_RAW" "EFI/fedora/grubx64.efi"          && GRUB_PRESENT=true
+mtools_has "$ESP_RAW" "EFI/fedora/grub.cfg"             && GRUB_CFG_PRESENT=true
+mtools_has "$ESP_RAW" "EFI/fedora/shimx64.efi"          && SHIM_PRESENT=true
+
+BOOTLOADER=none
+if [ "$GRUB_PRESENT" = "true" ] && [ "$GRUB_CFG_PRESENT" = "true" ]; then
+  BOOTLOADER=grub
+elif [ "$SB_PRESENT" = "true" ] && [ "$LOADER_CONF_PRESENT" = "true" ]; then
+  BOOTLOADER=systemd
 fi
 
 log "phase 1: ESP tree:"
 MTOOLS_SKIP_CHECK=1 mdir -i "$ESP_RAW" -/ ::/EFI 2>&1 | tee -a "$LOG" || true
-log "phase 1: systemd-boot=$SB_PRESENT loader.conf=$LOADER_CONF_PRESENT grub=$GRUB_PRESENT"
+log "phase 1: grub=$GRUB_PRESENT grub.cfg=$GRUB_CFG_PRESENT shim=$SHIM_PRESENT systemd-boot=$SB_PRESENT loader.conf=$LOADER_CONF_PRESENT -> $BOOTLOADER"
 
 rm -f "$ESP_RAW"
 
-if [ "$SB_PRESENT" != "true" ] || [ "$LOADER_CONF_PRESENT" != "true" ] || [ "$GRUB_PRESENT" = "true" ]; then
-  emit_json "inspect" false "ESP layout does not match systemd-boot"; exit 6
+if [ "$BOOTLOADER" = "none" ]; then
+  emit_json "inspect" false "ESP carries no complete bootloader (grub=$GRUB_PRESENT/$GRUB_CFG_PRESENT systemd-boot=$SB_PRESENT/$LOADER_CONF_PRESENT)"
+  exit 6
 fi
+log "phase 1: bootloader on ESP: $BOOTLOADER"
 
 # --- Phase 2: boot the snapshot and measure --------------------------------
 log "phase 2: boot snapshot=$SNAP under OVMF, wait for multi-user.target"
@@ -213,7 +241,7 @@ BOOT_ARGS="\
   -nic user,model=virtio-net-pci \
   -monitor unix:$MON,server,nowait \
   -serial file:$CONSOLE \
-  -pidfile $PID -name qos-systemd-boot-verify"
+  -pidfile $PID -name qos-install-boot-verify"
 
 inenv "setsid nohup qemu-system-x86_64 $BOOT_ARGS >/dev/null 2>&1 & disown"
 sleep 2
@@ -252,14 +280,13 @@ BOOT_MS="$(sed 's/\x1b\[[0-9;]*[mGKH]//g' "$CONSOLE" 2>/dev/null | \
   ' || echo 0)"
 [ -n "$BOOT_MS" ] || BOOT_MS=0
 
-# Look for the systemd-boot marker in the serial log ("Loading Boot Loader
-# Menu" won't appear on a single-entry silent boot, but the systemd-boot
-# kernel-cmdline plumbing sets `systemd.boot-loader-entry` / prints the
-# entry title on the console; also, grub's own `GNU GRUB` banner MUST NOT
-# be there). Log for humans; do not use as the pass/fail gate — the on-disk
-# check is the source of truth.
-if grep -qi "GNU GRUB" "$CONSOLE" 2>/dev/null; then
-  log "warn: serial console contains 'GNU GRUB' — swap did not take"
+# Cross-check the serial console against what the ESP said. Neither loader is
+# guaranteed to announce itself on a single-entry silent boot, so a missing
+# banner is not a failure — but a banner belonging to the *other* loader means
+# the ESP check and the firmware disagree, which is worth surfacing. The on-disk
+# check remains the source of truth for pass/fail.
+if grep -qi "GNU GRUB" "$CONSOLE" 2>/dev/null && [ "$BOOTLOADER" != "grub" ]; then
+  log "warn: ESP says $BOOTLOADER but the console shows 'GNU GRUB'"
 fi
 
 log "phase 2: state=$BOOT_STATE boot_ms=$BOOT_MS"
@@ -276,7 +303,7 @@ fi
 rm -f "$PID"
 
 if [ "$BOOT_STATE" = "reached" ]; then
-  emit_json "verified" true "systemd-boot on ESP + boot completed in ${BOOT_MS}ms"
+  emit_json "verified" true "$BOOTLOADER on ESP + boot completed in ${BOOT_MS}ms"
   exit 0
 fi
 

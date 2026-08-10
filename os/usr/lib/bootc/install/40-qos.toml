@@ -1,26 +1,42 @@
 # bootc reads every /usr/lib/bootc/install/*.toml at `bootc install {to-disk,
 # to-filesystem}` time and merges them into the install configuration. Baking
-# this drop-in into the image makes systemd-boot the default bootloader for
-# every install path — the desktop qcow2 that bootc-image-builder produces
-# (the same install code path bib drives internally), the Anaconda
-# `ostreecontainer` path from the ISO, and the custom `qos-install` frontend
-# that ultimately execs `bootc install to-disk` — without every caller having
-# to pass `--bootloader systemd`.
+# this drop-in into the image makes the choice apply to every install path — the
+# desktop qcow2 that bootc-image-builder produces (the same install code path
+# bib drives internally), the Anaconda `ostreecontainer` path from the ISO, and
+# the custom `qos-install` frontend that ultimately execs `bootc install
+# to-disk` — without every caller having to pass `--bootloader`.
 #
-# systemd-boot vs GRUB, why:
-#   * Faster boot (no menu render step, no grub2 module load, no font/theme).
-#   * Simpler chain (BLS entries live on the ESP; kernel + initrd load in one
-#     hop; no chainload from grub2-efi -> shim -> vmlinuz).
-#   * Aligned with the direction of UKI + measured-boot: systemd-boot has
-#     first-class UKI verification; grub2's story is bolt-on.
+# The accepted values for the `bootloader` key are `grub`, `grub-cc`, `systemd`,
+# `none`.
 #
-# The accepted values for the `bootloader` key are `grub`, `systemd`, `none`
-# (verified against bootc 1.15.2's config schema — `systemd-boot` is rejected).
-# The `systemd-boot-unsigned` RPM must be installed in the image (see
-# os/Containerfile) — that's the package bootupd hands to bootc when it plants
-# the loader on the ESP. `shim-x64` isn't required for the systemd path (there
-# is no third-party Secure Boot chain today for systemd-boot on Fedora); a
-# Secure Boot story that binds the systemd-boot EFI binary itself is a
-# follow-up.
+# Why `grub` and not `systemd`:
+#
+# bootc has two install backends. The **ostree** backend is what every qOS
+# install path uses today, and it has no systemd-boot code path at all —
+# `install_with_sysroot()` in bootc's crates/lib/src/install.rs matches on the
+# resolved bootloader and installs via bootupd for `Grub`, skips for `None`, and
+# for `Systemd` it does nothing but
+#
+#     anyhow::bail!("bootupd is required for ostree-based installs");
+#
+# The only caller of bootc's `install_systemd_boot()` is its **composefs**
+# backend (crates/lib/src/bootc_composefs/boot.rs). That backend is selected by
+# `bootc install --composefs-backend`, or implicitly when the image ships a
+# unified kernel image; bootc-image-builder exposes no flag for it and the qOS
+# kernel is not a UKI, so bib always takes the ostree path.
+#
+# So `bootloader = "systemd"` does not produce a slower install or a fallback —
+# it makes the image **uninstallable**, and it did: every `bootc install` against
+# a qOS image failed at the bootloader step with the bail above. This is a
+# property of bootc's code, not of the image's bootupd metadata; the bail happens
+# before bootupd is consulted, and bootupd 0.2.35 cannot describe systemd-boot
+# anyway (its EFI component knows only grub2 + shim, and
+# `bootupctl backend generate-update-metadata` re-emits exactly that).
+#
+# Moving to systemd-boot therefore means moving to bootc's composefs backend —
+# a real change to how the root filesystem is composed, not a bootloader swap.
+# Until that is a deliberate decision, GRUB is the bootloader that installs, and
+# `grub2` + `shim-x64` must stay in the image so bootupd has a payload to plant
+# (see the bootloader section of os/Containerfile).
 [install]
-bootloader = "systemd"
+bootloader = "grub"
