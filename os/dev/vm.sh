@@ -3,9 +3,15 @@
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
-#   ./os/dev/vm.sh boot [--gl] [--disk PATH]   start the VM (detached)
+#   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--tpm] [--secboot] [--attach PATH]
+#                                              start the VM (detached)
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
+#
+# --tpm attaches a software TPM 2.0 (swtpm), state persisted across boots so an
+# enrolled disk can be unlock-tested. --secboot selects the Secure-Boot OVMF
+# build, whose variable store starts in setup mode with SMM enforcement on, so
+# `qos-secureboot enroll` inside the guest is a real test.
 #   ./os/dev/vm.sh wait                        block until the greeter is up
 #   ./os/dev/vm.sh login [USER PASS]           type credentials into tuigreet
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $QOS_RUN/NAME.png
@@ -50,13 +56,24 @@ char_key() {
 vm_running() { [ -f "$QOS_PIDFILE" ] && inenv "kill -0 \$(cat '$QOS_PIDFILE') 2>/dev/null"; }
 
 cmd_boot() {
-  local mode=2d disk="$QOS_DISK"
+  local mode=2d disk="$QOS_DISK" attach=""
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
+    --secboot) QOS_SECBOOT=1;;
+    # Attach a SECOND virtio disk (/dev/vdb), creating it blank if absent. Lets a
+    # booted image install onto a fresh disk (encryption tests) without building
+    # the installer medium.
+    --attach) attach="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$QOS_PIDFILE")); stop it first"
+  local attach_arg=""
+  if [ -n "$attach" ]; then
+    inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$QOS_TARGET_SIZE'" >/dev/null
+    attach_arg="-drive file=$attach,format=qcow2,if=virtio"
+    msg "attaching $attach as /dev/vdb"
+  fi
 
   local code vars rn display
   code="$(ovmf_code)"
@@ -80,15 +97,15 @@ cmd_boot() {
       msg "boot (2D headless, ${QOS_XRES}x${QOS_YRES}) disk=$disk" ;;
   esac
 
-  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     -drive if=pflash,format=raw,readonly=on,file=$code \
     -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
-    -drive file=$disk,format=qcow2,if=virtio \
+    -drive file=$disk,format=qcow2,if=virtio $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor socket not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot failed"; }
   msg "up. monitor=$QOS_MON serial=$QOS_SERIAL"
@@ -119,7 +136,7 @@ cmd_boot_iso() {
     *) display="-device virtio-vga,$res -display none";;
   esac
   msg "boot-iso ($mode, ${QOS_XRES}x${QOS_YRES}) iso=$iso -> target=$target"
-  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     -drive if=pflash,format=raw,readonly=on,file=$code \
     -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
     -drive file=$iso,format=raw,media=cdrom,if=ide \
@@ -143,6 +160,7 @@ cmd_boot_installer() {
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
     --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
+    --secboot) QOS_SECBOOT=1;;
     *) die "boot-installer: unknown arg $1";; esac; shift; done
   local disk="$QOS_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
@@ -161,7 +179,7 @@ cmd_boot_installer() {
   esac
   msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
-  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     -drive if=pflash,format=raw,readonly=on,file=$code \
     -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
     -drive file=$disk,format=qcow2,if=virtio \
@@ -170,7 +188,7 @@ cmd_boot_installer() {
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-custom-installer"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-installer failed"; }
   msg "installer up. monitor=$QOS_MON serial=$QOS_SERIAL  (installs onto $target as /dev/vdb)"
@@ -183,6 +201,7 @@ cmd_boot_target() {
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
+    --secboot) QOS_SECBOOT=1;;
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   vm_running && die "VM already running; stop it first"
@@ -197,7 +216,7 @@ cmd_boot_target() {
     *) display="-device virtio-vga,$res -display none";;
   esac
   msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
-  local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
+  local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     -drive if=pflash,format=raw,readonly=on,file=$code \
     -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
     -drive file=$disk,format=qcow2,if=virtio \
@@ -205,7 +224,7 @@ cmd_boot_target() {
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos-target"
   swtpm_start
-  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
+  inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$QOS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$QOS_MON'" || { warn "monitor not up; qemu.log:"; cat "$QOS_QEMU_LOG" >&2; die "boot-target failed"; }
   msg "target up. monitor=$QOS_MON serial=$QOS_SERIAL"

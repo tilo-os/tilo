@@ -23,6 +23,10 @@ distrobox enter my-distrobox -- sudo dnf install -y \
     qemu-system-x86 qemu-img edk2-ovmf virglrenderer socat ImageMagick
 ```
 
+Note that `qemu-img` may resolve to an Android SDK copy earlier on `$PATH`; the
+scripts call it through a login shell inside the box, so check
+`command -v qemu-img` if disk creation behaves oddly.
+
 Host needs: rootless `podman`, **passwordless `sudo`** (for bootc-image-builder
 and offline journal extraction), `/dev/kvm`, and a GPU render node under
 `/dev/dri` (a Mesa iGPU is strongly preferred for GL — see gotchas).
@@ -33,7 +37,12 @@ If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 
 ```bash
 # 1. Build the image (≈ a few min incremental; first cargo build is long).
-./os/dev/build-image.sh                 # 4 core binaries, browser omitted
+./os/dev/build-image.sh
+
+# …or skip the browser and the WPE WebKit engine stage that builds its engine
+# from source — ~45 of the ~60 minutes a cold build costs. The boot chain is
+# untouched, so this is the build to use when the question is "does it boot?".
+QOS_WITH_BROWSER=0 ./os/dev/build-image.sh
 
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
 ./os/dev/vm.sh capture-boot ./vm-artifacts
@@ -62,6 +71,43 @@ compositor**, so pick per task:
 
 So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
+
+## Testing the boot chain (TPM, encryption, Secure Boot)
+
+```bash
+distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
+    sbsigntools efitools
+```
+
+| Flag | Effect |
+|------|--------|
+| `--tpm` | software TPM 2.0 via swtpm; state persists in `$QOS_TPM_DIR`, so a disk enrolled in one boot unlocks in the next |
+| `--secboot` | the Secure-Boot OVMF build, SMM on, pflash marked secure. The variable store starts in **setup mode** with no keys, which is what `qos-secureboot enroll` expects |
+| `--attach PATH` | a blank second virtio disk (`/dev/vdb`), created if missing — lets a booted image install onto a fresh disk without building the installer medium |
+
+The default firmware (`OVMF_CODE.fd`) has no Secure Boot support at all, so an SB
+test against it proves nothing. Use one TPM state dir per scenario
+(`QOS_TPM_DIR=…`) or a second run unseals against the first run's TPM.
+
+See `docs/secure-boot.md` for what these are for.
+
+Two drivers automate the scenarios end to end. Both drive the guest's own
+`/usr/libexec/` tooling, so what they exercise is the shipped path rather than a
+re-implementation of it, and both need `sshpass` on the host.
+
+```bash
+# encrypted install + boot the result. --passphrase types the secret at the
+# LUKS prompt, which is the proof that early userspace opened the root.
+./os/dev/test-encrypted-install.sh tpm      os/output/qcow2/disk.qcow2
+./os/dev/test-encrypted-install.sh no-tpm   os/output/qcow2/disk.qcow2 \
+    --no-tpm --passphrase hunter2
+# reproduce the pre-initramfs state on a real boot: same install, initrd line
+# removed from the boot entry.
+./os/dev/test-encrypted-install.sh noinitrd os/output/qcow2/disk.qcow2 --no-initrd
+
+# generate keys, sign, check enrolment refuses unsigned, enrol, reboot enforcing
+./os/dev/test-secureboot.sh os/output/qcow2/disk.qcow2
+```
 
 ## Extracting logs
 
