@@ -2385,7 +2385,6 @@ impl ShellOverlayHost {
     /// SAFETY mirrors [`Self::with_group_row_ptrs`]: the pointer is valid
     /// for the host's lifetime, and the `&mut self` borrow on this method
     /// keeps any other reconcile path from aliasing.
-    #[cfg(any(test, debug_assertions))]
     pub fn group_at_for_tests(
         &mut self,
         strip_id: StripId,

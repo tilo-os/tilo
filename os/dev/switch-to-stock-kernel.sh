@@ -18,10 +18,11 @@
 #      because neither our RPMs nor the frozen-repo mirror carry the fedora
 #      RPM signature; the image is signed as a whole via cosign upstream.
 #
-#   3. Re-enable initrd generation: the qos-kernel expects to boot without
-#      one, but a swapped-in Fedora kernel needs dracut.  Edit
-#      /etc/kernel/install.conf, then re-run `kernel-install add` for the
-#      newly-swapped kernel version so /boot gets an initramfs.
+#   3. Build an initramfs for the swapped-in kernel.  Under the base's
+#      `layout=ostree` config, kernel-install deliberately leaves initrd
+#      generation to whoever assembles the image, so nothing produces one
+#      here either — and without one the kernel cannot open an encrypted
+#      root, or load any module the qos-kernel had built in.
 #
 #   4. Suggest reboot.
 #
@@ -50,19 +51,17 @@ bootc usr-overlay
 echo "[2/4] Swapping qos-kernel-core → kernel-core..."
 dnf swap -y --nogpgcheck qos-kernel-core kernel-core
 
-echo "[3/4] Re-enabling initrd generation (Fedora kernel expects one)..."
-if [ -f /etc/kernel/install.conf ]; then
-    sed -i -e 's/^initrd_generator=none/initrd_generator=dracut/' \
-           -e 's/^uki_generator=none/#uki_generator=none/' \
-           /etc/kernel/install.conf
-fi
-# Regenerate for the currently-installed Fedora kernel(s).
-for kver in /lib/modules/*; do
-    [ -d "$kver" ] || continue
-    kver="$(basename "$kver")"
-    if [ -f "/lib/modules/$kver/vmlinuz" ]; then
-        kernel-install add "$kver" "/lib/modules/$kver/vmlinuz" || true
-    fi
+echo "[3/4] Building an initramfs for the swapped-in kernel..."
+# Same incantation os/Containerfile uses after its kernel swap: the ostree layout
+# means kernel-install runs no dracut, so the initramfs is built explicitly and
+# written next to the kernel where ostree looks for it.
+for d in /usr/lib/modules/*; do
+    [ -d "$d" ] || continue
+    kver="$(basename "$d")"
+    [ -f "$d/vmlinuz" ] || continue
+    [ -s "$d/initramfs.img" ] && { echo "     $kver already has an initramfs"; continue; }
+    dracut --force --reproducible --kver "$kver" "$d/initramfs.img"
+    echo "     built $d/initramfs.img"
 done
 
 echo "[4/4] Done.  Reboot to boot the stock Fedora kernel."
