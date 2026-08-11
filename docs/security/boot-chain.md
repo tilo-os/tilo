@@ -70,11 +70,14 @@ enrolling side does not.
 Three things keep the artefacts signed, in decreasing order of how much they are
 relied on:
 
-- **`qos-secureboot-sign.path`** watches `/boot/ostree`, so a hand-run
-  `bootc upgrade` gets its new kernel signed immediately rather than at the next
-  boot — which would be the boot the firmware refuses. It also watches
-  `/boot/efi/EFI/systemd` and `/boot/efi/EFI/BOOT`, because `bootupctl update`
-  rewrites the loaders there and that change has no natural second chance.
+- **`qos-secureboot-sign.path`** watches `/boot/EFI/Linux`, where a `bootc upgrade`
+  writes the incoming generation's UKI, so it gets signed immediately rather than at
+  the next boot — which would be the boot the firmware refuses. It also watches
+  `/boot/EFI/systemd` and `/boot/EFI/BOOT` for whatever replaces the loaders there,
+  a change with no natural second chance. Both mount points are watched
+  (`/boot/EFI/…` and `/boot/efi/EFI/…`) because the ESP is at `/boot` on the sealed
+  layout and under `/boot/efi` on the ostree one, and `/boot/ostree` still is too,
+  for a machine that predates the move.
 - **`qos-secureboot-sign-shutdown.service`** signs once more on the way down.
   The path unit depends on inotify firing and on the change happening somewhere
   we thought to watch; this one needs neither. Whatever touched the boot
@@ -143,10 +146,13 @@ which qOS has left.** It is kept because it is the clearest account of why the U
 matters, and because the reasoning is what justified moving backends at all — but
 read it as history, not as a description of the current image. On composefs with a
 UKI: the initramfs and the command line are both inside the signature, `PCR 11`
-carries `qos.generation=`, and `os/tests/rollback-boot-check.sh` passes on a booted
-VM. What is still missing is listed in [defects.md](defects.md) — chiefly that the
-production `os/Containerfile` installs `systemd-ukify` but does not yet build a
-UKI, so a bib-built image still fails this check for real reasons.
+carries `qos.generation=`, and `os/tests/rollback-boot-check.sh` passes on a VM
+booted from an image `os/dev/build-image.sh` built.
+
+`os/Containerfile` builds that UKI. It used to install `systemd-ukify` and never
+call it, which is why this check failed on a real image for entirely correct
+reasons; the stages that close it are described under [Building the
+UKI](#building-the-uki) below.
 
 #### What signing covered on the ostree backend
 
@@ -231,31 +237,84 @@ anything bolted onto ostree, and it needs its own verified-boot campaign with th
 recovery path proven before anything depends on it. What it should **not** do is
 block generation-bound unlock, because PCR 4 gives that today.
 
+## Building the UKI
+
+Three stages at the end of `os/Containerfile`, after the rootfs is finished and
+`bootc container lint` has run over it:
+
+```
+rootfs ──▶ split ──▶ uki ──▶ final
+           kernel     bootc container    split rootfs
+           moves out  ukify over the     + the UKI under
+           of the     split rootfs       /boot
+           rootfs
+```
+
+The order is forced. bootc refuses to seal a rootfs that still carries
+`vmlinuz`/`initramfs.img` under `/usr/lib/modules/<kver>`, and the digest ukify
+seals has to be the digest of what will actually be mounted — so the split comes
+first and nothing may be added to the rootfs afterwards. `/boot` is the one tree
+excluded from the digest, which is what lets the UKI live inside the image it
+describes.
+
+`bootc container ukify` is the piece that makes this cheap: it computes the
+composefs digest itself and reads `/usr/lib/bootc/kargs.d`, so the hardening set
+and `qos.generation=` reach the sealed command line through the same mechanism
+that already existed for the unsealed one. `os/dev/uki.sh` is the script it runs,
+and it fails the build if the generation did not make it into the seal.
+
+Two things the build does *not* do:
+
+- **It does not sign the UKI.** There is no key at image-build time that a target
+  machine's firmware would accept — the root of trust is a Platform Key that
+  machine generates for itself. `qos-secureboot` signs the UKI on the installed
+  system, and `qos-secureboot-sign.path` watches `/boot/EFI/Linux` so a staged
+  update gets signed before the reboot that would otherwise be refused.
+  Measurement does not wait for any of that: `systemd-stub` extends PCR 11 with
+  the command line whether or not anyone signed the PE.
+- **It does not get the digest right first time.** `bootc container ukify` and
+  `bootc install` compute different composefs digests for the same image, so
+  install refuses the UKI:
+
+  ```
+  The UKI has the wrong composefs= parameter (is 'sha512:<A>', should be sha512:<B>)
+  ```
+
+  That is [bootc#2334](https://github.com/bootc-dev/bootc/issues/2334). The
+  recovery is to seal the value install asked for and install again, and it
+  converges because the digest covers the rootfs — rebuilding the UKI changes only
+  `/boot`, so install's expected value does not move.
+  `os/dev/build-image.sh` runs that loop; `os/dev/disk-image.sh` recognises the
+  refusal and prints the digest to seal rather than the raw error. If the expected
+  value ever *does* move between passes, the build says so and stops, because then
+  the seal is circular and needs the upstream fix.
+
 ## Interface for generation-bound unlock
 
-`crates/system/qos-rollback` wants four things from the boot chain. Two are
-available now, two are not, and the two that are not both depend on the UKI gap
-above rather than on anything that could be wired up around it.
+`crates/system/qos-rollback` wants four things from the boot chain, and the sealed
+layout supplies all four.
 
-**PCR 7 — available.** The firmware measures the Secure Boot policy into it on
-every boot, UKI or not, and the LUKS TPM slot already binds to it.
+**PCR 7.** The firmware measures the Secure Boot policy into it on every boot, UKI
+or not, and the LUKS TPM slot already binds to it.
 
-**PCR 11 — not available, and a prediction for it would seal against nothing.**
-PCR 11 is extended by `systemd-stub`, which only runs when the firmware loads a
-UKI. On the ostree backend the firmware loads the kernel directly and no stub is
-involved, so PCR 11 is never extended and stays at its reset value. A
-per-generation signed prediction for PCR 11 would therefore predict a constant,
-and a policy bound to it would be satisfied by any generation — including a rolled
-back one, which is the thing it exists to prevent.
+**PCR 11.** Extended by `systemd-stub`, which runs because the firmware loads a
+UKI. It carries the command line, so it distinguishes one generation from another
+— which is exactly what a policy bound to it needs, and what PCR 11 could not do
+on the ostree backend, where no stub was involved and the register stayed at its
+reset value.
 
-**`qos.generation=<N>` inside the signature — not available.** On this backend
-the command line lives in a Boot Loader Specification entry under `/boot`,
-assembled by the bootloader from `/usr/lib/bootc/kargs.d` plus install-time
-`--karg`s. The value can be put there in one line, and it would be readable by
-early userspace — but it would be exactly what the requirement rules out: a file
-under `/boot`, outside any signature, editable by anything that can write the ESP.
-Shipping it that way would look like compliance and provide none of it, so it is
-not shipped.
+Verifying that claim took replaying the firmware's own event log: twelve firmware
+measurements plus systemd's four runtime phases, reproducing the live register
+exactly. Reading a non-zero PCR 11 is not evidence that a *particular* string was
+measured into it.
+
+**`qos.generation=<N>` inside the signature.** Written into
+`/usr/lib/bootc/kargs.d/02-generation.toml` at image build from the
+`QOS_GENERATION` build argument, which is where `bootc container ukify` reads it.
+The alternative — a Boot Loader Specification entry under `/boot`, assembled by the
+bootloader — was available all along and deliberately not taken: a file on the ESP,
+outside any signature, editable by anything that can write there, would look like
+compliance and provide none of it.
 
 **The unlock hook — available in shape, with these concrete facts.** An encrypted
 install made by `qos-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
@@ -303,11 +362,13 @@ every boot, which is not a choice anyone makes on purpose.
 
 The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.
-PCR 4 covers the boot artefacts themselves, which sounds stronger and is
-unusable: it changes on every OS update, so every update would send the user to
-the recovery key. Making PCR 4 workable needs signed PCR policies
-(`systemd-pcrlock` or a signed prediction), which is what
-`keys/tpm2-pcr-signing.public.pem` is reserved for.
+Binding to a register that covers the boot artefacts themselves sounds stronger and
+is unusable on its own: it changes on every OS update, so every update would send
+the user to the recovery key. That is what the signed per-generation predictions in
+[rollback.md](rollback.md) are for — the authority signs the values the *next*
+generation will produce, so an expected change stops being a lockout. It is also
+why the generation has to be on a measured command line: without it, a prediction
+the authority signed for one generation would be satisfied by any other.
 
 Consequences to expect:
 
