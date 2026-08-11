@@ -1,6 +1,6 @@
 [Unit]
 Description=Sign a newly staged deployment's kernel
-Documentation=file:///usr/share/doc/qos/secure-boot.md
+Documentation=file:///usr/share/doc/qos/boot-chain.md
 # A `bootc upgrade` writes a kernel that nothing on this machine has signed.
 # Waiting for the next boot to sign it is too late — that boot is the one the
 # firmware would refuse. Signing on the directory change closes the window
