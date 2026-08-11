@@ -104,15 +104,11 @@ RUN useradd -m -G wheel tester \
 # os/tests/rollback-boot-check.sh runs here against the same files it will run
 # against on a real install. Without it the boot-side check can only report the
 # tooling as missing, which says nothing about whether the measurement works.
-# stage/ is populated by build.sh (the binary comes from cargo, the rest from os/).
-COPY stage/qos-rollback /usr/bin/qos-rollback
-COPY stage/qos-rollback-common /usr/libexec/qos-rollback-common
-COPY stage/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
-COPY stage/qos-rollback-harden /usr/libexec/qos-rollback-harden
-COPY stage/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
-COPY stage/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
-COPY stage/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
-COPY stage/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+#
+# One COPY, not eight: each layer commit here rewrites a 2.3 GB rootfs through
+# fuse-overlayfs and costs minutes, so build.sh assembles the files under
+# stage/tree/ at their final paths and this copies the tree in a single layer.
+COPY stage/tree/ /
 # ReadWritePaths=/var/lib/qos in the units is not optional: a namespace that
 # cannot bind a path it was told to make writable refuses to start, and the unit
 # then fails for a reason that has nothing to do with rollback.
