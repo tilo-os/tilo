@@ -119,9 +119,9 @@ already there.
 
 Once a name resolves to a hash, the bytes are just bytes and anybody may supply
 them. The laptop across the table. The mirror on the office network. A CDN. The
-publisher. A USB stick. Every one
-is verified locally and completely, which means the question *is this source
-trustworthy enough to download from* stops existing.
+publisher. A USB stick. Every one is verified locally and completely, which
+means the question *is this source trustworthy enough to download from* stops
+existing.
 
 The practical version of that: someone in a shared workspace is using a tool you
 do not have, and adding it is a transfer over the connection you already have
