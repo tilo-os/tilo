@@ -17,30 +17,26 @@
 #   will actually be mounted) -> final (split rootfs + the UKI under /boot,
 #   which is outside the digest).
 ARG BASE_REF
+ARG RPMS_REF
 ARG GENERATION=1
+
+FROM ${RPMS_REF} AS rpms
 
 FROM ${BASE_REF} AS rootfs
 ARG GENERATION
 
-# systemd-boot, plus what the boot-side checks need to produce evidence:
-# tpm2-tools to read PCRs and the TPM event log, fsverity-utils to inspect the
-# sealed store, sshd so checks can be driven without screen-scraping a console.
-# --refresh because the base image ships cached repository metadata, and Fedora
-# rotates the repodata files it names — a stale metalink 404s on every mirror
-# and reports "all mirrors were already tried without success", which reads like
-# an outage rather than a cache problem.
+# systemd-boot comes out of the digest-pinned RPM snapshot, not the network, so
+# this stage builds the same way the real qOS image does — and stays buildable
+# when Fedora's `updates` metalink is serving repodata checksums that 404 on
+# every mirror, which is a state it does reach.
 #
-# Note that a real qOS image cannot install from the network at all: it installs
-# only from the digest-pinned RPM snapshot, and that snapshot does not currently
-# contain systemd-ukify. Adding a UKI to the real image therefore needs the
-# snapshot refreshed first.
-RUN dnf install -y --refresh \
+# Nothing else needs installing: the Fedora bootc base already ships tpm2-tools
+# (so PCRs and the TPM event log can be read), openssh-server, sudo,
+# shadow-utils and a python3 with tomllib. The one thing the snapshot does not
+# carry is systemd-ukify — see the tools stage.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    dnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
         systemd-boot-unsigned \
-        tpm2-tools \
-        fsverity-utils \
-        openssh-server \
-        passwd \
-        sudo \
     && dnf clean all
 
 # A sealed composefs image must have systemd-boot and must NOT have bootupd.
@@ -106,7 +102,15 @@ RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output
 
 # --- uki: build (and optionally sign) the Unified Kernel Image ---------------
 FROM ${BASE_REF} AS tools
-RUN dnf install -y --refresh systemd-ukify sbsigntools binutils && dnf clean all
+# systemd-ukify is not in the frozen snapshot, so this stage does need the
+# network. `updates` is disabled because its metadata is not reliably
+# downloadable, and the downgrades that causes are harmless here: this is a
+# throwaway builder that ships nothing. The UKI is self-contained — its stub
+# comes from this stage's systemd-boot-unsigned and does not have to match the
+# systemd in the rootfs.
+RUN dnf install -y --disablerepo=updates --disablerepo=updates-archive \
+        systemd-ukify sbsigntools binutils \
+    && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
 
 FROM tools AS uki
