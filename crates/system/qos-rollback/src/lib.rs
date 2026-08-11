@@ -137,6 +137,16 @@ pub struct Config {
     pub nv_index: u32,
     /// How many generations keep a sealed keyslot, counting the current one.
     /// 3 means "this generation plus the two before it".
+    ///
+    /// Raising this costs **disk on the ESP**, not just keyslots: every
+    /// generation in the window has to stay bootable, and on the sealed layout
+    /// each one's kernel is a ~134 MB Unified Kernel Image on the ESP —
+    /// `retained_generations` of them plus up to
+    /// [`retention::RETAINED_NEWER_GENERATIONS`] staged ahead. The default 2 GiB
+    /// ESP (`ESP_SIZE` in `os/dev/disk-image.sh`) holds a window of 10; past that
+    /// an update would fail for want of space on a machine already in the field.
+    /// `os/tests/esp_capacity.sh` asserts the two agree, and the disk-image step
+    /// refuses a combination that does not fit.
     pub retained_generations: u32,
     /// PCR bank and selection the prediction authority signs over.
     pub pcr_bank: String,

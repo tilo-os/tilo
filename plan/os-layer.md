@@ -67,14 +67,14 @@ systemd -> graphical.target -> greetd.service
 ```
 1. cargo build --release    (in shell/)
 2. podman build             (builds container image from os/Containerfile)
-3. bootc-image-builder      (converts container -> QCOW2/ISO)
+3. systemd-repart + bootc install to-filesystem   (container -> QCOW2)
 4. qemu-system-x86_64       (test in VM)
 ```
 
 ### Build Requirements
 - Podman (for container build)
 - Rust toolchain (for compositor compilation)
-- bootc-image-builder (OCI -> disk image conversion)
+- systemd-repart + `bootc install to-filesystem` (OCI -> disk image conversion)
 - QEMU/KVM (for VM testing)
 
 ## Update Mechanism

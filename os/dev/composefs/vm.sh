@@ -8,7 +8,7 @@
 #   ./os/dev/composefs/vm.sh reboot              reboot the guest and wait
 #   ./os/dev/composefs/vm.sh stop                power off
 #
-# os/dev/vm.sh boots the qcow2 that bootc-image-builder produces; this boots the
+# os/dev/vm.sh boots the qcow2 os/dev/disk-image.sh produces; this boots the
 # raw file `bootc install to-disk --via-loopback` writes, and always attaches the
 # TPM because a measured command line is the whole point of the exercise. The
 # TPM state directory is per-generation-series, not per-boot, so PCR values can

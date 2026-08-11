@@ -22,7 +22,6 @@ QOS_DISTROBOX="${QOS_DISTROBOX-my-distrobox}"        # "" => run tools on host
 QOS_IMAGE="${QOS_IMAGE:-localhost/qos:latest}"
 QOS_OUTPUT="${QOS_OUTPUT:-$QOS_OS_DIR/output}"
 QOS_DISK="${QOS_DISK:-$QOS_OUTPUT/qcow2/disk.qcow2}"
-QOS_BIB="${QOS_BIB:-quay.io/centos-bootc/bootc-image-builder:latest}"
 
 # Custom (self-install) installer: a bootable live qcow2 that runs the qOS
 # graphical installer (installer/, binary qos-installer). Built by
@@ -53,7 +52,7 @@ QOS_TPM="${QOS_TPM:-0}"
 QOS_TPM_DIR="${QOS_TPM_DIR:-$QOS_RUN/tpm}"
 QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
 
-# Guest login (from os/config.toml — the bootc-image-builder user).
+# Guest login (from os/account.env — the account disk-image.sh creates).
 QOS_USER="${QOS_USER:-tester}"
 QOS_PASS="${QOS_PASS:-quickdesktop}"
 

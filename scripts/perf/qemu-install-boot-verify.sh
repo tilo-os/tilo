@@ -2,7 +2,7 @@
 # Prove the bootloader swap took: verify the produced desktop qcow2 has
 # systemd-boot on its ESP, boots on UEFI/OVMF, and reaches multi-user.target.
 #
-# bootc-image-builder invokes the same install code path bootc uses at
+# The disk-image step invokes the same install code path bootc uses at
 # install-time (bootc install to-filesystem), reading the drop-in at
 # /usr/lib/bootc/install/*.toml baked into the image. If bib produced a
 # qcow2 whose ESP holds systemd-bootx64.efi + loader.conf (and NOT
