@@ -39,6 +39,7 @@ fi
 msg "building $IMAGE (generation $GEN, sign=$QOS_CFS_SIGN)"
 podman build \
   --build-arg "BASE_REF=$QOS_CFS_BASE_REF" \
+  --build-arg "RPMS_REF=$QOS_CFS_RPMS_REF" \
   --build-arg "GENERATION=$GEN" \
   --build-arg "SIGN=$QOS_CFS_SIGN" \
   --build-arg "CFS_DIGEST=${QOS_CFS_DIGEST:-}" \
