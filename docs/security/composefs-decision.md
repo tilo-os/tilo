@@ -299,12 +299,19 @@ rootfs  →  bootc container split-kernel-and-rootfs --rootfs / --output /kernel
         →  COPY the signed .efi to /boot/EFI/Linux/
 ```
 
+The sketch is what got built, with one correction: qOS does **not** sign at build
+time. Its root of trust is a Platform Key the target machine generates for itself, so
+there is no build-time key that machine's firmware would accept —
+`/usr/libexec/qos-secureboot` signs the UKI on the installed system instead.
+Measurement does not depend on the signature.
+
 Two things fit qOS unusually well here:
 
 - `bootc container ukify` "reads extra kernel arguments from
   `/usr/lib/bootc/kargs.d`". qOS already has
   `os/usr/lib/bootc/kargs.d/01-hardening.toml`, so the existing kargs mechanism
-  feeds the UKI command line directly — including where `qos.generation=` would go.
+  feeds the UKI command line directly — which is where `qos.generation=` now goes,
+  as `02-generation.toml` written from the `QOS_GENERATION` build argument.
 - `--uki-addon` exists for machine-specific kargs as separately signed PE addons,
   if per-machine cmdline additions are ever needed without rebuilding the UKI.
 
@@ -314,7 +321,7 @@ have bootupd**. qOS installs `systemd-boot-unsigned` (good) but
 are built around `bootupctl update` rewriting the ESP. That machinery needs
 rethinking under a sealed composefs image. (bootc 1.16.7's `packaging: Drop shim
 alongside bootupd when switching to systemd-boot` is upstream moving in the same
-direction.)
+direction.) — Resolved, and it was less than it looked: see the addendum.
 
 ### 3. The deployment-naming problem that blocked us before is not real
 
@@ -446,11 +453,39 @@ was therefore not a cost of adopting composefs — the composefs backend is what
 makes the bootloader qOS already asks for installable.
 
 The same image installs and boots through `systemd-repart` +
-`bootc install to-filesystem --composefs-backend`, with no UKI: systemd-boot on
-the ESP, a BLS entry pointing at vmlinuz + initrd there, and a root mounted
-`composefs:<digest> overlay ro,…,verity=require`. So fsverity enforcement arrives
-with the backend; what the UKI adds on top is a *signed and measured* command
-line, which is what binds `qos.generation=` to PCR 11.
+`bootc install to-filesystem --composefs-backend`. It first did so with no UKI:
+systemd-boot on the ESP, a BLS entry pointing at vmlinuz + initrd there, and a root
+mounted `composefs:<digest> overlay ro,…,verity=require`. So fsverity enforcement
+arrived with the backend, before any of the UKI work — what the UKI adds on top is a
+*signed and measured* command line, which is what binds `qos.generation=` to PCR 11.
+
+**The production image now builds the UKI**, in three stages at the end of
+`os/Containerfile` (split → ukify → final; see
+[boot-chain.md](boot-chain.md#building-the-uki)). Three things that cost time and are
+not obvious from the sketch at the top of this file:
+
+- **`bootc container ukify` needs a host-backed `/var/tmp`.** It builds a temporary
+  composefs repository there and writing an object needs `O_TMPFILE`, which
+  overlayfs — the filesystem a build stage's root is — does not support. The error
+  is `Creating object tmpfile: … Operation not supported (os error 95)` and it names
+  neither `/var/tmp` nor overlayfs. `--mount=type=cache,target=/var/tmp` fixes it and
+  also stops the whole rootfs being re-hashed on every build.
+- **The build has to run twice** until bootc#2334 is fixed, because
+  `bootc container ukify` and `bootc install` compute different composefs digests for
+  the same image. install's expected value is stable across a rebuild of the UKI, so
+  sealing the value it asked for converges; `os/dev/build-image.sh` runs the loop and
+  stops with an explanation if the value ever moves.
+- **The install source has to be a registry.** The composefs pull rejects
+  `containers-storage:` — including an image moved across with
+  `podman save | sudo podman load` — with `Opening stream '': Creating new
+  splitstream reader: Invalid splitstream content type`. `os/dev/disk-image.sh`
+  starts a local registry for that reason rather than assuming one.
+
+**bootupd had to go.** A sealed image may not offer its install path, and this was
+listed above as a real conflict because `qos-secureboot` was built around
+`bootupctl update` rewriting the ESP. It turned out not to be one: with a UKI there
+is exactly one PE binary on the boot path, `sbsign` over it is the whole job, and
+`qos-secureboot-sign.path` already watched `/boot/EFI/Linux`.
 
 **`bootc container lint` survives a split-kernel UKI image.** It exits 0 against
 a built one under bootc 1.16.4 (4 warnings, none of them about the kernel or

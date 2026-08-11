@@ -164,10 +164,33 @@ firmware update from turning into a recovery-key prompt.
    under `/boot` — either would make the number attacker-controlled and the whole
    feature decorative.
 2. **`N` dense and monotonic**: `+1` per published image. Set at build time via
-   the `QOS_GENERATION` build argument, which also writes `/usr/lib/qos/generation`
-   so a staged deployment's generation can be read before it has booted. A
-   timestamp is monotonic and still wrong: the retention window is arithmetic on
-   the number, and moving the floor costs one NV write per step.
+   the `QOS_GENERATION` build argument, which writes both
+   `/usr/lib/bootc/kargs.d/02-generation.toml` — the copy `bootc container ukify`
+   seals — and `/usr/lib/qos/generation`, so a staged deployment's generation can be
+   read before it has booted. A timestamp is monotonic and still wrong: the
+   retention window is arithmetic on the number, and moving the floor costs one NV
+   write per step.
+
+   **Where the number comes from.** The published series is its own record: every
+   published image carries a `gen<N>` tag in the registry, and the next number is
+   `max + 1`. `os/dev/next-generation.sh` reads that, `os/dev/build-image.sh` uses
+   it, and the `build-image` CI job resolves it the same way and pushes the `gen<N>`
+   tag alongside the release tags — so a number is consumed exactly when an image
+   carrying it becomes reachable. A counter file would have to be kept in step with
+   what was actually published, in both directions, and nothing would notice when it
+   drifted.
+
+   There is no default, and nothing falls back to one when the registry cannot be
+   read. A constant is the failure this replaces: it produced images that all
+   claimed generation 0, and a floor that can never move is a machine that stops
+   unsealing a few updates later, long after the cause.
+
+   A commit count is the tempting wrong answer. It is dense in itself but sparse per
+   *image*: the gap between two releases is however many commits landed between
+   them, "the last three generations" would then name one image, and advancing the
+   floor across such a gap costs that many `TPM2_NV_Increment` calls —
+   `MAX_INCREMENTS_PER_ADVANCE` (64) refuses it outright rather than performing
+   thousands of NV writes.
 3. **Early userspace that calls the unlock helper** before
    `systemd-cryptsetup@<volume>.service`:
 
@@ -201,10 +224,29 @@ sudo /usr/libexec/qos-rollback-boot-check
 The boot-side check is the one that establishes what the host cannot: that the
 generation number arrived on the sealed command line, that PCR 7 and 11 hold
 meaningful measurements, that early userspace produced the key file before
-`systemd-cryptsetup` wanted it, and that the units fired. It needs the UKI to carry
-`qos.generation=` and an initramfs hook that calls `qos-rollback unlock`; until
-both exist it reports those as failures, which is the correct answer rather than a
-skip.
+`systemd-cryptsetup` wanted it, and that the units fired. It passes on a VM booted
+from an image `os/dev/build-image.sh` produced. The unlock hand-off is reported
+`n/a` on an unencrypted disk and asserted on an encrypted one; the initramfs hook
+that calls `qos-rollback unlock` is still outstanding, and the check reports its
+absence as a failure rather than a skip.
+
+**A check that only ever passes is not evidence**, so there are two ways to make it
+fail on purpose:
+
+```bash
+# At build time: a UKI that measures normally and carries no generation.
+QOS_SEAL_GENERATION=0 ./os/dev/build-image.sh
+
+# On an installed machine: blank the generation out of the UKI in place. Same
+# length, so the PE layout is untouched and the boot still measures — into a
+# different PCR 11, which is the point.
+sudo ./os/dev/uki-cmdline.py show
+sudo ./os/dev/uki-cmdline.py blank qos.generation
+```
+
+Either way the check must fail on the generation assertions specifically, not on
+"nothing was measured" — those two look identical from inside the guest, and telling
+them apart is the only thing that makes a pass mean something.
 
 ## Recovery
 
