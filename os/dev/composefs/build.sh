@@ -41,6 +41,7 @@ podman build \
   --build-arg "BASE_REF=$QOS_CFS_BASE_REF" \
   --build-arg "GENERATION=$GEN" \
   --build-arg "SIGN=$QOS_CFS_SIGN" \
+  --build-arg "CFS_DIGEST=${QOS_CFS_DIGEST:-}" \
   --secret "id=secureboot_key,src=$sb_key" \
   --secret "id=secureboot_cert,src=$sb_crt" \
   --target final \
