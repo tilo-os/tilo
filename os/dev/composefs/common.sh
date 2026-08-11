@@ -33,4 +33,12 @@ if [ -z "$QOS_CFS_BASE_REF" ]; then
   QOS_CFS_BASE_REF="$BASE_REF"
 fi
 
+# The same digest-pinned frozen RPM snapshot the real image installs from.
+QOS_CFS_RPMS_REF="${QOS_CFS_RPMS_REF:-}"
+if [ -z "$QOS_CFS_RPMS_REF" ]; then
+  # shellcheck source=/dev/null
+  source "$QOS_OS_DIR/rpms-snapshot.env"
+  QOS_CFS_RPMS_REF="$RPMS_REF"
+fi
+
 QOS_CFS_DISK="${QOS_CFS_DISK:-$QOS_CFS_RUN/disk.raw}"
