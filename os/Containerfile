@@ -1105,5 +1105,17 @@ RUN --mount=type=cache,target=/var/tmp,sharing=locked \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
     bash /usr/local/bin/uki.sh
 
+# NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
+# the rootfs has a different composefs digest from the one its inherited UKI seals,
+# and `bootc install` refuses it — correctly, since the seal no longer describes
+# what would be mounted. Rebuilding the UKI in the derived image is not a way out
+# either: the kernel and initramfs are no longer in the rootfs to build one from,
+# they are sections of the UKI it inherited.
+#
+# So `os/Containerfile.test` and `os/Containerfile.installer`, which both do
+# `FROM localhost/qos:latest`, have to be built from the UNSEALED rootfs and sealed
+# themselves — `podman build --target rootfs` gives them that. Until they are, the
+# disk step for those two images fails at the digest check with the message
+# os/dev/disk-image.sh prints, rather than producing something that boots wrong.
 FROM split AS final
 COPY --from=uki /out/*.efi /boot/EFI/Linux/
