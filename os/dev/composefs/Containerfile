@@ -103,7 +103,19 @@ COPY uki.sh /usr/local/bin/uki.sh
 FROM tools AS uki
 ARG SIGN=0
 ENV SIGN=${SIGN}
-RUN --mount=type=bind,from=split,target=/target \
+# The cache mount on /var/tmp is not an optimisation, it is required. Computing
+# the composefs digest builds a temporary composefs repository under /var/tmp,
+# and writing an object there needs O_TMPFILE — which overlayfs, the filesystem
+# a build stage's root is, does not support. The failure is
+# "Creating object tmpfile: ... Operation not supported (os error 95)" and it
+# names neither /var/tmp nor overlayfs. A cache mount is host-backed, so it both
+# supports O_TMPFILE and lets the objects survive between generations instead of
+# re-hashing the whole rootfs each time. tmpfs would also work but would hold
+# the entire rootfs content in RAM.
+RUN --mount=type=cache,target=/var/tmp,sharing=locked \
+    --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target \
     --mount=type=bind,from=split,source=/kernel,target=/kernel \
     --mount=type=secret,id=secureboot_key \
     --mount=type=secret,id=secureboot_cert \
