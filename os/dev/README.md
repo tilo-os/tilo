@@ -146,12 +146,13 @@ re-implementation of it, and both need `sshpass` on the host.
   `.desktop` entries launch it with **`--backend drm`** (smithay libseat + udev +
   DRM/KMS) so it can be the display server on real hardware / in the VM.
 
-## Custom installer (self-install)
+## Installer (self-install)
 
-Besides the Anaconda ISO (`build-installer.sh` / `installer.toml`), there is a
-**custom, qOS-branded installer**: a bootable live qcow2 that runs the graphical
-installer (`installer/`, binary `qos-installer`) under `cage` and **self-installs
-the booted image** onto a target disk — offline, no network pull.
+qOS installs with its own **qOS-branded installer**: a bootable live qcow2 that
+runs the graphical installer (`installer/`, binary `qos-installer`) under `cage`
+and **self-installs the booted image** onto a target disk — offline, no network
+pull. This is the only installer; an early Anaconda ISO path was scaffolding
+from before this existed and has been removed.
 
 How it works:
 
