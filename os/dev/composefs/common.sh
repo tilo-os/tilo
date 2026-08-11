@@ -8,8 +8,11 @@ set -euo pipefail
 _CFS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_CFS_DIR/../_common.sh"
 
-# Scratch dir. Kept short for the same AF_UNIX reason QOS_RUN is.
-QOS_CFS_RUN="${QOS_CFS_RUN:-/tmp/qos-cfs}"
+# Scratch dir. NOT under /tmp: that is a 16 GiB tmpfs here, and a 20 GiB disk
+# image on it fails with "Quota exceeded" from whichever command happens to be
+# writing when it fills — which is never the command at fault. Still short,
+# because the qemu monitor socket lives here and AF_UNIX paths cap at 108 bytes.
+QOS_CFS_RUN="${QOS_CFS_RUN:-$HOME/.cache/qos-cfs}"
 QOS_CFS_IMAGE="${QOS_CFS_IMAGE:-localhost/qos-composefs}"
 QOS_CFS_SIGN="${QOS_CFS_SIGN:-1}"
 QOS_CFS_DISK_SIZE="${QOS_CFS_DISK_SIZE:-20G}"
