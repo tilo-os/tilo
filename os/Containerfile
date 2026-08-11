@@ -959,13 +959,29 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # Which kernel version did the swap leave behind? Ask the filesystem: rpm is
     # no help here, because qos-kernel-core provides no kernel-uname-r and its
     # file list records /lib/modules/... where a query would say /usr/lib/... .
-    # Exactly one modules directory must remain, and anything else is a build
-    # failure that says what it saw rather than an empty variable.
+    #
+    # Count kernel IMAGES, not directories. Removing kernel-core does not remove
+    # its modules directory: the base ships a prebuilt initramfs there that no
+    # package owns, so the directory survives with that file in it and a count of
+    # directories finds two. The loop further down exists to clear exactly that
+    # leftover — so asserting on directories here is the cleanup firing too late
+    # rather than a real ambiguity, and it failed every build that did not restore
+    # this layer from cache.
+    #
+    # A kernel image is /usr/lib/modules/<kver>/vmlinuz (Fedora's layout) or
+    # /boot/vmlinuz-<kver> (qos-kernel-core's, moved into place below). The
+    # leftover directory has neither, because its vmlinuz belonged to the package
+    # that was just removed.
     kver=""; n=0; \
-    for d in /usr/lib/modules/*/; do kver="$(basename "$d")"; n=$((n+1)); done; \
+    for d in /usr/lib/modules/*/; do \
+      k="$(basename "$d")"; \
+      if [ -f "$d/vmlinuz" ] || [ -f "/boot/vmlinuz-$k" ]; then \
+        kver="$k"; n=$((n+1)); \
+      fi; \
+    done; \
     if [ "$n" -ne 1 ]; then \
-      echo "expected exactly one /usr/lib/modules entry after the kernel swap, found $n" >&2; \
-      ls -la /usr/lib/modules/ >&2 || true; \
+      echo "expected exactly one kernel image after the kernel swap, found $n" >&2; \
+      ls -la /usr/lib/modules/ /boot >&2 || true; \
       exit 1; \
     fi; \
     # qos-kernel-core installs its kernel as /boot/vmlinuz-<kver>, not into the

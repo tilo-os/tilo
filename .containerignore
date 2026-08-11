@@ -30,3 +30,10 @@ os/browser
 **/*.h264
 
 # Keep Cargo.lock — needed for a reproducible resolve in the builder stage.
+
+# The Containerfiles themselves. podman reads them via -f, from the filesystem, so
+# they never need to be IN the context — and while they were, editing one
+# invalidated the builder stage's `COPY . /build` and re-ran the whole Rust compile
+# to fix a typo in a step near the end.
+os/Containerfile
+os/Containerfile.*
