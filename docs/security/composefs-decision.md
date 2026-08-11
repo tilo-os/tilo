@@ -481,6 +481,20 @@ not obvious from the sketch at the top of this file:
   splitstream reader: Invalid splitstream content type`. `os/dev/disk-image.sh`
   starts a local registry for that reason rather than assuming one.
 
+**Nothing can be layered on a sealed image**, and that is the cost the probe never
+had to pay — it was one thin image with nothing derived from it. A derived image that
+adds a single file has a different composefs digest from the one its inherited UKI
+seals, so `bootc install` refuses it, correctly. Rebuilding the UKI inside the
+derived image is not a way out either: the kernel and initramfs are no longer in the
+rootfs to build one from, they are sections of the UKI it inherited.
+
+`os/Containerfile.test` and `os/Containerfile.installer` both do
+`FROM localhost/qos:latest`, so both have to be rebuilt from the unsealed rootfs
+(`podman build --target rootfs`) and sealed themselves. Until they are, their
+container builds still succeed and the *disk* step fails at the digest check with
+the message `os/dev/disk-image.sh` prints — a legible failure rather than an image
+that boots wrong, but outstanding work either way.
+
 **bootupd had to go.** A sealed image may not offer its install path, and this was
 listed above as a real conflict because `qos-secureboot` was built around
 `bootupctl update` rewriting the ESP. It turned out not to be one: with a UKI there
