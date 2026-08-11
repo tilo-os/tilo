@@ -79,8 +79,27 @@ note "--- boot-side evidence, generation 1 ---"
 for gen in 2 3; do
   step "update to generation $gen"
   publish "$gen"
-  guest "bootc upgrade --apply=false" 2>&1 | tee -a "$LOG" || \
-    { warn "bootc upgrade to generation $gen FAILED"; break; }
+  # bootc#2334 is titled for the upgrade path, not the install path, so expect
+  # the same digest mismatch here. The recovery is the same two passes: read the
+  # digest the upgrade wants out of its own error, rebuild the UKI sealing it,
+  # republish, retry. If the second attempt reports a *different* expected digest
+  # again, the value depends on the UKI and the seal cannot be closed.
+  if ! guest "bootc upgrade --apply=false" 2>&1 | tee -a "$LOG.up$gen" | tee -a "$LOG"; then
+    want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG.up$gen" | tail -1)"
+    if [ -z "$want" ]; then
+      warn "bootc upgrade to generation $gen FAILED for another reason"; break
+    fi
+    note "upgrade wants sha512:${want:0:32}… — rebuilding generation $gen sealing it"
+    QOS_CFS_DIGEST="$want" bash "$HERE/build.sh" "$gen" >>"$LOG" 2>&1
+    publish "$gen"
+    if ! guest "bootc upgrade --apply=false" 2>&1 | tee -a "$LOG.up${gen}b" | tee -a "$LOG"; then
+      want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG.up${gen}b" | tail -1)"
+      if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
+        warn "the expected digest MOVED (${want:0:16}… -> ${want2:0:16}…): the seal is circular"
+      fi
+      warn "bootc upgrade to generation $gen FAILED after the second pass"; break
+    fi
+  fi
   note "--- staged state before reboot ---"
   guest 'bootc status' 2>&1 | tee -a "$LOG"
   guest 'ls -l /boot/EFI/Linux/ /boot/loader/entries 2>&1' 2>&1 | tee -a "$LOG"
