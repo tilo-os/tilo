@@ -275,8 +275,12 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
     && rm -f /out/runtime-bundle-identity.json
 
 
-# ---- Stage 2: final (the OS image) -----------------------------------------
-FROM ${BASE_REF}
+# ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
+# Named, because it is no longer the last stage: the sealed layout needs the
+# kernel moved out of this tree and into a Unified Kernel Image, and the UKI has
+# to be built over the *finished* rootfs (its composefs digest is the digest of
+# what will actually be mounted). See the split/uki/final stages at the end.
+FROM ${BASE_REF} AS rootfs
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
@@ -608,9 +612,18 @@ COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 # own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
 # cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
 # /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
+# bootupd goes with them, and that is a requirement of the sealed layout rather
+# than tidiness: bootc refuses to seal an image that still offers a bootupd
+# install path, because bootupd only ever plants GRUB. Its payload directory and
+# the legacy ostree boot dir have to go too — bootc finds the path through either.
+# Nothing on this image needs it: with a UKI there is exactly one PE binary on the
+# boot path, /usr/libexec/qos-secureboot signs it with sbsign, and
+# qos-secureboot-sign.path already watches /boot/EFI/Linux for a newly staged one.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
+    && rpm -e --nodeps bootupd \
+    && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all
 
 # The signing tools, in their own transaction and allowed to be absent.
@@ -646,8 +659,11 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # ---------------------------------------------------------------------------
 # Kernel args (init_on_alloc/free, lockdown=integrity, slab_nomerge, kstack
 # randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
-# install/upgrade.
+# install/upgrade, and `bootc container ukify` seals it into the UKI command line
+# at build time — which is what makes this set measured rather than merely
+# applied. 03-boot.toml carries the arguments the install step used to inject.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+COPY os/usr/lib/bootc/kargs.d/03-boot.toml /usr/lib/bootc/kargs.d/03-boot.toml
 
 # Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
 # Used by the installer (os/Containerfile.installer layers qos-install on top of
@@ -707,14 +723,48 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 #
 # The generation number this image carries. It MUST be a dense monotonic integer
 # (+1 per published image), because the retention window is arithmetic on it —
-# "the last three generations" is meaningless if the numbering is a timestamp. It
-# MUST also match the `qos.generation=` value on the sealed UKI command line: that
-# is the copy an attacker cannot forge, and the copy every unseal is bound to.
-# The file below exists only so that a *staged* deployment's generation can be
-# read before it has ever booted, which is when its keyslot has to be sealed.
-ARG QOS_GENERATION=0
-RUN install -d -m 0755 /usr/lib/qos \
- && printf '%s\n' "${QOS_GENERATION}" > /usr/lib/qos/generation
+# "the last three generations" is meaningless if the numbering is a timestamp, and
+# moving the floor costs one TPM NV write per step (qos-rollback refuses an
+# advance of more than MAX_INCREMENTS_PER_ADVANCE at all). os/dev/build-image.sh
+# resolves it from the published series; the CI job that publishes an image
+# derives it the same way and tags the result `gen<N>`.
+#
+# It reaches the running system by two routes, for two different jobs:
+#
+#   /usr/lib/bootc/kargs.d/02-generation.toml
+#       `bootc container ukify` reads this directory and puts what it finds on the
+#       UKI's sealed command line, which systemd-stub measures into PCR 11. That
+#       is the authoritative copy — inside the signature, measured, and therefore
+#       the one an unseal can be bound to. A number the bootloader assembled from
+#       an editable file would look identical and be worth nothing.
+#   /usr/lib/qos/generation
+#       A plain file holding the same number, for the one question the command
+#       line cannot answer: what generation is the deployment that has been
+#       *staged* but never booted? Its keyslot has to be sealed before the reboot
+#       that first runs it. Not trusted for anything — at that moment the machine
+#       is already unlocked.
+#
+# Both are written from the same build argument in the same step, so they cannot
+# disagree; rollback-boot-check.sh asserts on a booted machine that they don't.
+#
+# There is deliberately no default. A default is what a constant looks like once
+# a caller forgets the argument, and an image that silently ships generation 0 is
+# one whose rollback floor can never move — the failure would appear months later
+# as a machine that will not unseal.
+ARG QOS_GENERATION
+RUN case "${QOS_GENERATION}" in \
+      ''|*[!0-9]*) \
+        echo "QOS_GENERATION must be a decimal integer; got '${QOS_GENERATION}'." >&2; \
+        echo "It is the generation this image carries: +1 per published image, sealed" >&2; \
+        echo "onto the UKI command line. os/dev/build-image.sh resolves it from the" >&2; \
+        echo "published series; pass QOS_GENERATION=<N> to build one by hand." >&2; \
+        exit 1 ;; \
+    esac \
+ && install -d -m 0755 /usr/lib/qos \
+ && printf '%s\n' "${QOS_GENERATION}" > /usr/lib/qos/generation \
+ && printf '# Written by the image build from the QOS_GENERATION build argument.\nkargs = ["qos.generation=%s"]\n' \
+      "${QOS_GENERATION}" > /usr/lib/bootc/kargs.d/02-generation.toml \
+ && echo "generation ${QOS_GENERATION}: sealed via kargs.d, readable at /usr/lib/qos/generation"
 
 # tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
 # through it. Also reachable from recovery mode, which is where someone will need
@@ -988,3 +1038,65 @@ RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
 # place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
 # fatal, so a UKI in /boot does not fail it either.
 RUN bootc container lint
+
+# ---------------------------------------------------------------------------
+# The sealed layout: split the kernel out, build the UKI over what remains
+# ---------------------------------------------------------------------------
+# Three stages, following bootc's documented sealed-image pattern:
+#
+#   split   the kernel and initramfs move out of /usr/lib/modules/<kver> — bootc
+#           refuses to seal an image that still carries them in the rootfs, and
+#           they belong in the UKI now.
+#   uki     `bootc container ukify` over the split rootfs, so the composefs digest
+#           it seals is the digest of what will actually be mounted.
+#   final   the split rootfs plus the UKI under /boot, which is the one tree
+#           excluded from that digest.
+#
+# Nothing may be added to the rootfs after the split: the digest was computed over
+# it, and a later layer would invalidate the seal. That is why the sealed command
+# line and ukify's measurement report are pulled off the `uki` stage by
+# os/dev/build-image.sh instead of being copied into the image.
+
+FROM rootfs AS split
+RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+# A throwaway builder, so ukify and binutils do not ship in the OS image. It comes
+# out of the same digest-pinned base and the same frozen RPM snapshot as
+# everything else, so no stage of this build reaches the network. The UKI is
+# self-contained: its EFI stub comes from this stage's systemd-boot and does not
+# have to match the systemd in the rootfs.
+FROM ${BASE_REF} AS uki-tools
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        systemd-ukify \
+        systemd-boot-unsigned \
+        binutils \
+    && dnf clean all
+COPY os/dev/uki.sh /usr/local/bin/uki.sh
+
+FROM uki-tools AS uki
+# Set to the digest `bootc install` asked for, to close the seal in a second pass
+# (bootc#2334). Empty on a first pass; see os/dev/uki.sh.
+ARG QOS_CFS_DIGEST=
+ENV CFS_DIGEST=${QOS_CFS_DIGEST}
+# The negative control: 0 builds a UKI that measures perfectly and carries no
+# generation, which is what proves rollback-boot-check.sh fails on the generation
+# assertions rather than on "nothing measured". Always 1 for a real image.
+ARG QOS_SEAL_GENERATION=1
+ENV QOS_SEAL_GENERATION=${QOS_SEAL_GENERATION}
+# The cache mount on /var/tmp is not an optimisation, it is required. Computing
+# the composefs digest builds a temporary composefs repository there, and writing
+# an object into it needs O_TMPFILE — which overlayfs, the filesystem a build
+# stage's root is, does not support. The failure is "Creating object tmpfile: ...
+# Operation not supported (os error 95)" and it names neither /var/tmp nor
+# overlayfs. A cache mount is host-backed, so it both supports O_TMPFILE and lets
+# the objects survive between builds instead of re-hashing the whole rootfs each
+# time. tmpfs would work too but would hold the entire rootfs content in RAM.
+RUN --mount=type=cache,target=/var/tmp,sharing=locked \
+    --mount=type=tmpfs,target=/tmp \
+    --mount=type=tmpfs,target=/run \
+    --mount=type=bind,from=split,target=/target \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+    bash /usr/local/bin/uki.sh
+
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
