@@ -2,9 +2,9 @@
 #
 # Layered on top of the already-built qOS desktop image (localhost/qos:latest),
 # this adds the qOS-branded graphical installer and the OS plumbing that makes a
-# live medium self-install the booted image to a target disk. It is a SEPARATE
-# path from the Anaconda ISO (installer.toml / build-installer.sh) — that one
-# stays as-is.
+# live medium self-install the booted image to a target disk. This is the only
+# installer path; the Anaconda ISO it used to sit beside was scaffolding from
+# before this existed and has been removed.
 #
 # Build context is the os/ dir (see os/dev/build-custom-installer.sh):
 #     podman build -t localhost/qos-installer:latest -f os/Containerfile.installer os/
