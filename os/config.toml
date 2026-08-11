@@ -1,8 +1,0 @@
-[[customizations.user]]
-name = "quickuser"
-password = "quickdesktop"
-# `qos-identity` is read access to the machine's device key. The
-# compositor runs in this user's session and has to present the device
-# identity on the network, the same identity fs.service presents as
-# root — so the session user is in the group and nobody else is.
-groups = ["wheel", "qos-identity"]

@@ -42,24 +42,17 @@ podman build -f "$SCRIPT_DIR/Containerfile" -t localhost/qos:latest \
     "$PROJECT_DIR"
 echo "Container image built: localhost/qos:latest"
 
-# Step 2: Transfer image to root storage (bootc-image-builder runs as root)
-echo "--- Step 2: Transferring image to root storage ---"
-podman save localhost/qos:latest | sudo podman load
-echo "Image loaded into root storage"
-
-# Step 3: Build QCOW2 disk image
-echo "--- Step 3: Building QCOW2 disk image ---"
-mkdir -p "$SCRIPT_DIR/output"
-sudo podman run --rm --privileged \
-    --security-opt label=type:unconfined_t \
-    -v "$SCRIPT_DIR/config.toml:/config.toml:ro" \
-    -v "$SCRIPT_DIR/output:/output" \
-    -v /var/lib/containers/storage:/var/lib/containers/storage \
-    quay.io/centos-bootc/bootc-image-builder:latest \
-    --type qcow2 \
-    --rootfs btrfs \
-    --chown "$(id -u):$(id -g)" \
-    localhost/qos:latest
+# Step 2: Build the QCOW2 disk image.
+#
+# systemd-repart for the partitions, `bootc install to-filesystem` into them.
+# That is what bootc-image-builder was doing here, minus a container: bib has no
+# composefs, UKI or backend-selection surface, and this image asks for
+# systemd-boot, which bib's ostree-backend install refuses outright.
+echo "--- Step 2: Building QCOW2 disk image ---"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/account.env"
+"$SCRIPT_DIR/dev/disk-image.sh" localhost/qos:latest "$SCRIPT_DIR/output/qcow2" \
+    --user "$QOS_ACCOUNT"
 
 echo "=== Build complete ==="
 echo "QCOW2 image: $SCRIPT_DIR/output/qcow2/disk.qcow2"

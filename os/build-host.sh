@@ -46,22 +46,11 @@ if [[ "${1:-}" == "--container-only" ]]; then
     exit 0
 fi
 
-echo "--- Step 2: Transferring image to root storage ---"
-podman save localhost/qos-host:latest | sudo podman load
-echo "Image loaded into root storage"
-
-echo "--- Step 3: Building QCOW2 disk image ---"
-mkdir -p "$SCRIPT_DIR/output-host"
-sudo podman run --rm --privileged \
-    --security-opt label=type:unconfined_t \
-    -v "$SCRIPT_DIR/config.toml:/config.toml:ro" \
-    -v "$SCRIPT_DIR/output-host:/output" \
-    -v /var/lib/containers/storage:/var/lib/containers/storage \
-    quay.io/centos-bootc/bootc-image-builder:latest \
-    --type qcow2 \
-    --rootfs btrfs \
-    --chown "$(id -u):$(id -g)" \
-    localhost/qos-host:latest
+echo "--- Step 2: Building QCOW2 disk image ---"
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/account.env"
+"$SCRIPT_DIR/dev/disk-image.sh" localhost/qos-host:latest \
+    "$SCRIPT_DIR/output-host/qcow2" --user "$QOS_ACCOUNT"
 
 echo "=== Build complete ==="
 echo "QCOW2 image: $SCRIPT_DIR/output-host/qcow2/disk.qcow2"

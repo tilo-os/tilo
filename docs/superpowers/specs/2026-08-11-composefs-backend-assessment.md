@@ -422,3 +422,38 @@ Stated plainly:
   be checked against a real build log.
 - Release-note quotes come from the GitHub releases API rather than each release
   page read in full, so they are accurate but not necessarily complete.
+
+---
+
+## Addendum: measured against real builds
+
+Two open items above are now settled by running them.
+
+**qOS's bib path could not install systemd-boot — it could not install at all.**
+`bootc-image-builder` on the current desktop image fails after deploying the
+container, at the bootloader step:
+
+```
+Bootloader: systemd
+error: Installing to filesystem: bootupd is required for ostree-based installs
+```
+
+bootupd only plants GRUB, so `bootloader = "systemd"` and the ostree backend are
+mutually exclusive, and bib has no way to ask for the other backend. The
+inference from the `bail!` was right, and stronger than stated: the bib path was
+not silently falling back to GRUB, it was not producing a qcow2. Replacing bib
+was therefore not a cost of adopting composefs — the composefs backend is what
+makes the bootloader qOS already asks for installable.
+
+The same image installs and boots through `systemd-repart` +
+`bootc install to-filesystem --composefs-backend`, with no UKI: systemd-boot on
+the ESP, a BLS entry pointing at vmlinuz + initrd there, and a root mounted
+`composefs:<digest> overlay ro,…,verity=require`. So fsverity enforcement arrives
+with the backend; what the UKI adds on top is a *signed and measured* command
+line, which is what binds `qos.generation=` to PCR 11.
+
+**`bootc container lint` survives a split-kernel UKI image.** It exits 0 against
+a built one under bootc 1.16.4 (4 warnings, none of them about the kernel or
+/boot), so it does not have to move ahead of the kernel split. The `kernel` fatal
+check counts `/usr/lib/modules/$kver` directories and the split leaves the
+directory in place; `nonempty-boot` is a warning, not a fatal.
