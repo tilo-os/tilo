@@ -1,0 +1,118 @@
+# composefs-backend + UKI probe image.
+#
+# A deliberately thin image: the qOS *boot chain* pieces that the composefs
+# question turns on (hardening kargs, a generation number on the measured
+# command line, systemd-boot, no bootupd) on top of the same digest-pinned
+# Fedora bootc base the real image uses — and nothing else. The full qOS
+# rootfs takes ~25 minutes to build and none of it participates in the
+# mechanism under test, so building it three times to prove an update series
+# would only slow the answer down. os/dev/composefs/build-qos.sh does the real
+# image once the mechanism is settled.
+#
+# Build with os/dev/composefs/build.sh (it passes BASE_REF and GENERATION).
+#
+# Stages follow bootc's documented sealed-image pattern:
+#   rootfs -> split (kernel/initrd moved out of the rootfs) -> uki (ukify over
+#   the split rootfs, so the composefs digest it embeds is the digest of what
+#   will actually be mounted) -> final (split rootfs + the UKI under /boot,
+#   which is outside the digest).
+ARG BASE_REF
+ARG GENERATION=1
+
+FROM ${BASE_REF} AS rootfs
+ARG GENERATION
+
+# systemd-boot, plus what the boot-side checks need to produce evidence:
+# tpm2-tools to read PCRs and the TPM event log, fsverity-utils to inspect the
+# sealed store, sshd so checks can be driven without screen-scraping a console.
+RUN dnf install -y \
+        systemd-boot-unsigned \
+        tpm2-tools \
+        fsverity-utils \
+        openssh-server \
+        passwd \
+        sudo \
+    && dnf clean all
+
+# A sealed composefs image must have systemd-boot and must NOT have bootupd.
+# The GRUB stack goes with it: qOS already drops shim + grub2, and bootupd's
+# payload directory and the legacy ostree boot dir have to go too, or bootc
+# still finds a bootupd install path.
+RUN rpm -e --nodeps bootupd \
+    && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
+    && (rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps)
+
+# qOS's real hardening kargs, unmodified. This is the file whose contents have
+# to reach the *measured* command line for the rollback design to work.
+COPY 01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+
+# The generation number. qOS binds rollback protection to it, and it has to be
+# sealed into the UKI rather than written by a bootloader, so it enters through
+# the same kargs.d mechanism the hardening set uses.
+RUN mkdir -p /usr/lib/qos /boot/EFI/Linux \
+    && printf '%s\n' "${GENERATION}" > /usr/lib/qos/generation \
+    && printf 'kargs = ["qos.generation=%s"]\n' "${GENERATION}" \
+        > /usr/lib/bootc/kargs.d/02-generation.toml
+
+# Spike-only kargs: a writable root (bootc's composefs root is mounted
+# read-only without it) and a serial console so a headless boot leaves a log.
+RUN printf '%s\n' \
+        'kargs = [' \
+        '  "rw",' \
+        '  "rootflags=compress=zstd:1",' \
+        '  "console=tty0",' \
+        '  "console=ttyS0,115200",' \
+        ']' > /usr/lib/bootc/kargs.d/03-spike.toml
+
+# btrfs root (matching qOS) and systemd-boot, both through the same install
+# drop-in mechanism the real image uses.
+RUN printf '%s\n' '[install]' 'bootloader = "systemd"' \
+        > /usr/lib/bootc/install/40-qos.toml \
+    && printf '%s\n' '[install.filesystem.root]' 'type = "btrfs"' \
+        > /usr/lib/bootc/install/80-rootfs.toml
+
+# A login. The evidence for every numbered step is collected over ssh.
+RUN useradd -m -G wheel quickuser \
+    && printf 'quickuser:quickdesktop\n' | chpasswd \
+    && printf 'root:quickdesktop\n' | chpasswd \
+    && printf '%%wheel ALL=(ALL) NOPASSWD: ALL\n' > /etc/sudoers.d/wheel-nopasswd \
+    && chmod 0440 /etc/sudoers.d/wheel-nopasswd \
+    && systemctl enable sshd.service \
+    && mkdir -p /etc/ssh/sshd_config.d \
+    && printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' \
+        > /etc/ssh/sshd_config.d/01-spike.conf
+
+# The registry the update series is served from runs on the VM host, reachable
+# from user-mode networking at 10.0.2.2 over plain HTTP.
+RUN printf '%s\n' \
+        '[[registry]]' \
+        'location = "10.0.2.2:5000"' \
+        'insecure = true' > /etc/containers/registries.conf.d/99-spike.conf
+
+# --- split: move the kernel and initramfs out of the rootfs ------------------
+# They go into the UKI instead, and bootc refuses a sealed image that still
+# carries them in /usr/lib/modules/<kver>/.
+FROM rootfs AS split
+RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output /kernel
+
+# --- uki: build (and optionally sign) the Unified Kernel Image ---------------
+FROM ${BASE_REF} AS tools
+RUN dnf install -y systemd-ukify sbsigntools binutils && dnf clean all
+COPY uki.sh /usr/local/bin/uki.sh
+
+FROM tools AS uki
+ARG SIGN=0
+ENV SIGN=${SIGN}
+RUN --mount=type=bind,from=split,target=/target \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+    --mount=type=secret,id=secureboot_key \
+    --mount=type=secret,id=secureboot_cert \
+    bash /usr/local/bin/uki.sh
+
+# --- final: the split rootfs plus the UKI ------------------------------------
+# Nothing may be added outside /boot here: the composefs digest the UKI embeds
+# was computed over the split stage, and /boot is the only tree excluded from
+# it. The sealed command line and the ukify measurement report are pulled off
+# the uki stage by build.sh instead of being copied into the rootfs.
+FROM split AS final
+COPY --from=uki /out/*.efi /boot/EFI/Linux/
