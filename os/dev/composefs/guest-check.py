@@ -140,10 +140,17 @@ if state_dir:
 else:
     no(f"none of {', '.join(STATE_DIRS)} exists — not a composefs-backend system")
 
-if os.path.isdir("/ostree/repo") or os.path.isdir("/sysroot/ostree/repo"):
-    no("an ostree repo exists — this looks like the ostree backend")
+# A composefs install still creates an /ostree directory, so its mere presence
+# proves nothing. An ostree *repository* has an objects store; that is the thing
+# whose absence says this is not the ostree backend.
+ostree_repos = [
+    d for d in ("/ostree/repo/objects", "/sysroot/ostree/repo/objects")
+    if os.path.isdir(d)
+]
+if ostree_repos:
+    no(f"an ostree object store exists ({ostree_repos[0]}) — this is the ostree backend")
 else:
-    ok("no ostree repo on the system")
+    ok("no ostree object store — not the ostree backend")
 
 # --- UEFI + the stub --------------------------------------------------------
 if os.path.isdir("/sys/firmware/efi"):
@@ -282,16 +289,57 @@ else:
                 info(f"  tried {label}: {hashlib.sha256(blob).hexdigest()[:24]}…")
             info(f"  chain: {[c[:16] for c in chain]}")
 
-        # Replay: fold the chain and compare to the live register.
+        # Replay: fold the firmware chain, then systemd's own runtime extensions.
+        #
+        # PCR 11 does not stop growing when the stub is done: systemd extends it
+        # once per boot phase (enter-initrd, leave-initrd, sysinit, ready) and
+        # those events are NOT in the firmware event log — they are recorded in
+        # /run/log/systemd/tpm2-measure.log instead. Folding only the firmware log
+        # therefore reproduces an intermediate value, not the live register, and
+        # reporting that as a mismatch would be wrong.
         acc = bytes(32)
         for d in chain:
             acc = hashlib.sha256(acc + bytes.fromhex(d)).digest()
+        firmware_only = acc.hex()
+
+        runtime = []
+        mlog = "/run/log/systemd/tpm2-measure.log"
+        if os.path.exists(mlog):
+            for line in open(mlog):
+                # RFC 7464 JSON text sequence: every record is prefixed with an
+                # ASCII record separator (0x1e), which json.loads rejects with
+                # "Expecting value: line 1 column 1".
+                try:
+                    ev = json.loads(line.lstrip("\x1e").strip())
+                except ValueError:
+                    continue
+                if ev.get("pcr") != 11:
+                    continue
+                for dg in ev.get("digests", []):
+                    if dg.get("hashAlg") == "sha256":
+                        runtime.append((dg["digest"].lower(),
+                                        (ev.get("content") or {}).get("string", "?")))
+        for d, label in runtime:
+            acc = hashlib.sha256(acc + bytes.fromhex(d)).digest()
+        if runtime:
+            info(
+                f"systemd extended PCR 11 {len(runtime)} more time(s) at runtime: "
+                + ", ".join(label for _, label in runtime)
+            )
+
         if live.get(11) == acc.hex():
-            ok("replaying the PCR 11 event chain reproduces the live PCR 11 exactly")
+            ok(
+                f"replaying PCR 11 reproduces the live register exactly "
+                f"({len(chain)} firmware + {len(runtime)} runtime measurements)"
+            )
+
+
+
+
         else:
             no(
-                f"PCR 11 replay mismatch: replay {acc.hex()[:16]}… vs live "
-                f"{(live.get(11) or '?')[:16]}…"
+                f"PCR 11 replay mismatch: firmware-only {firmware_only[:16]}…, "
+                f"with runtime {acc.hex()[:16]}…, live {(live.get(11) or '?')[:16]}…"
             )
 
 # --- bootc's own view --------------------------------------------------------
