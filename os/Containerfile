@@ -988,5 +988,16 @@ COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
 RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
     && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
 
+# Enrolment invariants, likewise at BUILD time. A build container has no
+# /dev/tpm*, which is exactly the path this needs to exercise: the machine with
+# no TPM, whose owner has nothing but the passphrase they were asked for. The
+# image once shipped an `enrol` that added no passphrase key slot on that path,
+# so the volume it produced could not be opened by the secret it had just asked
+# for and printed no usable recovery key either. Runs against a throwaway sparse
+# file, needs no device-mapper, and takes about ten seconds.
+COPY os/tests/luks_enrolment.sh /usr/libexec/qos/luks-enrolment-test.sh
+RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
+    && bash /usr/libexec/qos/luks-enrolment-test.sh
+
 # Validate
 RUN bootc container lint

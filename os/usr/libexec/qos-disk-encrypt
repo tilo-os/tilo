@@ -232,30 +232,62 @@ cmd_enrol() {
     return 0
   fi
 
+  # A private scratch dir for the secrets this function has to hand to
+  # cryptsetup as files. 0700 from mktemp, removed on every exit path.
+  local scratch
+  scratch="$(mktemp -d)" || die "enrol: could not create a scratch directory"
+  # shellcheck disable=SC2064  # $scratch must expand now, not at trap time
+  trap "rm -rf '$scratch'" EXIT
+
   # (1) The recovery key, first and mandatory. Every other factor is a
   # convenience that can be lost with the hardware; this one is the guarantee,
   # so a failure here aborts rather than leaving a disk only a TPM can open.
   log "  enrolling the recovery key…"
-  local rec_out rec_key
-  rec_out="$(systemd-cryptenroll "${unlock[@]}" --recovery-key "$dev" 2>&1)" \
-    || die "recovery-key enrolment failed; aborting rather than shipping a disk with no recoverable factor:"$'\n'"$rec_out"
-  rec_key="$(printf '%s\n' "$rec_out" \
-    | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' \
-    | tail -1)"
-  [ -n "$rec_key" ] || rec_key="$(printf '%s\n' "$rec_out" | tail -1)"
-
-  log ""
-  log "  ============================================================"
-  log "   RECOVERY KEY — write this down / save it off-device NOW."
-  log "   It unlocks the disk when no other factor can."
-  log ""
-  log "       $rec_key"
-  log ""
-  if command -v qrencode >/dev/null 2>&1; then
-    qrencode -t ANSIUTF8 "$rec_key" 2>/dev/null || true
+  local rec_key=""
+  # systemd-cryptenroll prints the key, and nothing but the key, on stdout; the
+  # prose around it and any failure go to stderr. Reading the two apart is what
+  # makes the key recoverable without matching it against a shape it may not
+  # have — how the modhex is grouped is systemd's business, not ours. Matching
+  # a shape here is what once aborted the whole enrolment: the pattern expected
+  # eight groups of six characters, systemd emits eight groups of eight, and
+  # under `set -e` the failed match took the remaining factors down with it.
+  if ! rec_key="$(systemd-cryptenroll "${unlock[@]}" --recovery-key "$dev" 2>"$scratch/rec.err")"; then
+    die "recovery-key enrolment failed; aborting rather than shipping a disk with no recoverable factor:"$'\n'"$(cat "$scratch/rec.err")"
   fi
-  log "  ============================================================"
-  log ""
+  # Last non-blank line, and deliberately never fatal: the key slot is already
+  # on the volume by now, so failing to read the value back must not stop the
+  # factors below from being enrolled.
+  rec_key="$(printf '%s\n' "$rec_key" | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -1 || true)"
+
+  if [ -n "$rec_key" ]; then
+    log ""
+    log "  ============================================================"
+    log "   RECOVERY KEY — write this down / save it off-device NOW."
+    log "   It unlocks the disk when no other factor can."
+    log ""
+    log "       $rec_key"
+    log ""
+    if command -v qrencode >/dev/null 2>&1; then
+      qrencode -t ANSIUTF8 "$rec_key" 2>/dev/null || true
+    fi
+    log "  ============================================================"
+    log ""
+    # Prove the string just shown actually opens the volume. A recovery key that
+    # was displayed but does not work is indistinguishable, to its owner, from
+    # no recovery key at all — so read it back through cryptsetup rather than
+    # trusting that what we parsed is what was enrolled.
+    ( umask 0077; printf '%s' "$rec_key" > "$scratch/recovery" )
+    if cryptsetup open --test-passphrase --key-file "$scratch/recovery" "$dev" 2>/dev/null; then
+      log "  recovery key verified: it opens the volume."
+    else
+      log "  WARNING: the key printed above did not open the volume when tested."
+      log "  Treat it as unusable and make sure another factor is enrolled."
+    fi
+  else
+    log "  WARNING: a recovery key slot was enrolled but its value could not be"
+    log "  read back from systemd-cryptenroll, so it has not been shown to you."
+    log "  Do not rely on it; the factors below are what will open this disk."
+  fi
 
   # (2) FIDO2, if a token was asked for. Never fatal: the recovery key (and the
   # TPM slot below) still open the volume.
@@ -292,14 +324,25 @@ cmd_enrol() {
       # The PIN the caller collected becomes an ordinary passphrase slot, so the
       # user has something short to type at boot instead of the recovery key.
       log "  enrolling the supplied passphrase as a LUKS key slot…"
+      # A key file's bytes are the passphrase verbatim, trailing newline
+      # included — and a newline is exactly what the boot prompt cannot send. A
+      # pin file written with `echo` would otherwise enrol a secret that nobody
+      # can type, so normalise to the bytes the user will actually enter.
+      ( umask 0077; printf '%s' "$(cat "$pin_file")" > "$scratch/pin" )
+      [ -s "$scratch/pin" ] || die "enrol: the pin file $pin_file is empty"
       # cryptsetup takes the authorising key as --key-file and the new one as
       # --new-keyfile; with no install key it prompts for the existing secret.
       local addkey=()
       [ -f "$key" ] && addkey=(--key-file "$key")
       cryptsetup luksAddKey --batch-mode \
-        "${addkey[@]}" --new-keyfile "$pin_file" "$dev" \
+        "${addkey[@]}" --new-keyfile "$scratch/pin" "$dev" \
         || die "passphrase enrolment failed"
-      log "  passphrase enrolled."
+      # The whole point of this slot is that the secret its owner was told to
+      # remember opens the disk, so verify that rather than assume it. Without
+      # this the failure surfaces at the next boot, on a disk with data on it.
+      cryptsetup open --test-passphrase --key-file "$scratch/pin" "$dev" 2>/dev/null \
+        || die "the passphrase was added but does not open $dev — refusing to call this enrolled"
+      log "  passphrase enrolled and verified to open the volume."
     else
       log "  no passphrase was supplied, so the RECOVERY KEY above is the boot"
       log "  passphrase. Keep it; there is no other way in."
