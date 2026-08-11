@@ -237,9 +237,17 @@ does `rm -f /boot/initramfs-*.img`. A LUKS root needs early **userspace** to uns
 the mapping; static drivers let the kernel mount root but cannot run `systemd-cryptsetup`. No
 `crypttab`, dracut config, or conditional re-enable exists in `os/`.
 
-`--encrypt` and the custom kernel therefore appear mutually exclusive. **Not yet confirmed by
-booting an encrypted install** — verify with `os/dev/vm.sh boot --tpm` before treating as fact. The
-enrollment sequence itself was verified against loopback LUKS + swtpm, not against a real boot.
+`--encrypt` and the custom kernel therefore appear mutually exclusive. ~~Not yet confirmed by
+booting an encrypted install~~ — **DISPROVED.** An encrypted install of the current image boots
+through GRUB 2.12 into kernel 7.0.14, runs dracut's early userspace, finds the LUKS device by
+`rd.luks.uuid`, starts `systemd-cryptsetup@luks-…`, takes a passphrase at the prompt and opens the
+root: the `no-tpm` run of `os/dev/test-encrypted-install.sh` reaches a login on the encrypted
+volume. The two are not exclusive and were never tested together, which is the actual finding —
+see `P0-4` for why nothing was ever installed, and `P1-2a`/`P1-2b`/`P1-2c` below for the enrolment
+and harness defects that kept the claim looking true for another week after `P0-4` was fixed. The
+enrollment sequence had been "verified against loopback LUKS + swtpm" — that verification asserted
+that the commands exited, not that the resulting volume opened, which is exactly how `P1-2a`
+survived it.
 
 **The "mutually exclusive" half is resolved, and the reason it stayed unverified for so long is
 `P0-4`: no install ever completed, so there was never a disk to boot.** The image now builds an
