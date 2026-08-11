@@ -23,9 +23,28 @@ IMAGE="$QOS_CFS_IMAGE:gen$GEN"
 
 mkdir -p "$QOS_CFS_RUN"
 
-# The hardening kargs come from the real image, not a copy, so the probe cannot
-# drift from what qOS actually ships.
+# Everything the probe shares with the real image is copied in at build time, not
+# duplicated in this directory, so the probe cannot drift from what qOS ships.
 cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
+
+mkdir -p "$HERE/stage"
+for f in usr/libexec/qos-rollback-common \
+         usr/libexec/qos-rollback-confirm \
+         usr/libexec/qos-rollback-harden \
+         usr/lib/systemd/system/qos-rollback-confirm.service \
+         usr/lib/systemd/system/qos-rollback-confirm.timer \
+         usr/lib/systemd/system/qos-rollback-harden.service \
+         tests/rollback-boot-check.sh; do
+  cp -f "$QOS_OS_DIR/$f" "$HERE/stage/$(basename "$f")"
+done
+
+# The rollback binary. Built here rather than shipped, because the boot-side check
+# asserts the tool the image carries — a stale copy would pass a check about a
+# version nobody is running.
+ROLLBACK_BIN="${ROLLBACK_BIN:-$QOS_REPO/target/release/qos-rollback}"
+[ -x "$ROLLBACK_BIN" ] || die "no qos-rollback binary at $ROLLBACK_BIN
+  Remedy: cargo build -p qos-rollback --release"
+cp -f "$ROLLBACK_BIN" "$HERE/stage/qos-rollback"
 
 sb_key="$QOS_CFS_RUN/sb/db.key"
 sb_crt="$QOS_CFS_RUN/sb/db.crt"
@@ -41,6 +60,7 @@ podman build \
   --build-arg "BASE_REF=$QOS_CFS_BASE_REF" \
   --build-arg "RPMS_REF=$QOS_CFS_RPMS_REF" \
   --build-arg "GENERATION=$GEN" \
+  --build-arg "SEAL_GENERATION=${QOS_CFS_SEAL_GENERATION:-1}" \
   --build-arg "SIGN=$QOS_CFS_SIGN" \
   --build-arg "CFS_DIGEST=${QOS_CFS_DIGEST:-}" \
   --secret "id=secureboot_key,src=$sb_key" \

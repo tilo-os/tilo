@@ -303,10 +303,10 @@ machine_args() {
   fi
 }
 
-# Back-compat single-value accessors. Prefer firmware_setup + QOS_FW_*: these
-# re-probe the env on every call and cannot tell the caller the pflash format.
-ovmf_code() { firmware_setup >/dev/null 2>&1; printf '%s\n' "$QOS_FW_CODE"; }
-ovmf_vars() { firmware_setup >/dev/null 2>&1; printf '%s\n' "$QOS_FW_VARS"; }
+# There are deliberately no single-value ovmf_code/ovmf_vars accessors any more.
+# Read in a command substitution they swallowed the refusals above — the caller
+# got an empty string and carried on booting something unmeasurable, which is the
+# class of bug this file exists to remove.
 
 # --- software TPM (swtpm) -----------------------------------------------------
 # Start a persistent swtpm 2.0 socket inside the env (where qemu runs). Idempotent
