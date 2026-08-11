@@ -44,16 +44,20 @@ fi
 if [ -n "${CFS_DIGEST:-}" ]; then
   # Assemble the command line by hand: the kargs the image declares, in
   # kargs.d order, then the digest install told us it wants.
-  cmdline=""
-  for f in "$target"/usr/lib/bootc/kargs.d/*.toml; do
-    [ -e "$f" ] || continue
-    while IFS= read -r karg; do
-      cmdline="${cmdline}${karg} "
-      # Comment lines are skipped first: these files explain themselves at
-      # length and a quoted phrase in prose is not a kernel argument.
-    done < <(sed -e '/^[[:space:]]*#/d' -n -e 's/.*"\([^"]\+\)".*/\1/p' "$f")
-  done
-  cmdline="${cmdline}composefs=${CFS_DIGEST#sha512:}"
+  # Read the kargs as TOML, not as quoted strings in a text file. These
+  # drop-ins carry long prose comments, and a quoted phrase inside one is not a
+  # kernel argument — grepping for quotes put the words "table stakes" on the
+  # kernel command line, which is the kind of mistake that boots.
+  cmdline="$(python3 - "$target" <<'EOPY'
+import glob, sys, tomllib
+args = []
+for path in sorted(glob.glob(f"{sys.argv[1]}/usr/lib/bootc/kargs.d/*.toml")):
+    with open(path, "rb") as fh:
+        args += tomllib.load(fh).get("kargs", [])
+print(" ".join(args))
+EOPY
+)"
+  cmdline="${cmdline} composefs=${CFS_DIGEST#sha512:}"
   printf '%s\n' "$cmdline" > /out/cmdline.in
   echo "sealing an explicitly supplied digest"
   ukify build \
