@@ -138,7 +138,14 @@ if [ -n "$DEV" ]; then
 
   # The hand-off: early userspace writes the passphrase where systemd-cryptsetup
   # looks for it. It is removed after use, so the evidence is in the journal.
-  if journalctl -b --no-pager -o cat 2>/dev/null | grep -q "qos-rollback: generation .* unsealed to /run/cryptsetup-keys.d/"; then
+  #
+  # grep -c, not grep -q. This script runs under `set -o pipefail`, and a boot
+  # journal is far larger than the 64 KB pipe buffer: `grep -q` exits at the first
+  # match, journalctl dies of SIGPIPE, and pipefail makes the pipeline fail — so
+  # finding the record would be reported as not finding it. -c consumes all input.
+  unsealed="$(journalctl -b --no-pager -o cat 2>/dev/null \
+              | grep -c "qos-rollback: generation .* unsealed to /run/cryptsetup-keys.d/" || true)"
+  if [ "${unsealed:-0}" -gt 0 ]; then
     ok "early userspace unsealed a generation into /run/cryptsetup-keys.d/"
   else
     no "no journal record of qos-rollback unlocking into /run/cryptsetup-keys.d/"
