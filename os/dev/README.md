@@ -8,7 +8,8 @@ in a distrobox), but configurable for any host via env vars.
 ```
 os/dev/
   _common.sh       shared config + helpers (override via env)
-  build-image.sh   cargo build -> podman build -> bootc-image-builder -> qcow2
+  build-image.sh   podman build (in-image compile) -> disk-image.sh -> qcow2
+  disk-image.sh    container image -> bootable qcow2 (systemd-repart + bootc install)
   vm.sh            boot / login / screenshot / logs / stop
   README.md        this file
 ```
@@ -23,13 +24,15 @@ distrobox enter my-distrobox -- sudo dnf install -y \
     qemu-system-x86 qemu-img edk2-ovmf virglrenderer socat ImageMagick
 ```
 
-Note that `qemu-img` may resolve to an Android SDK copy earlier on `$PATH`; the
-scripts call it through a login shell inside the box, so check
-`command -v qemu-img` if disk creation behaves oddly.
+Note that `qemu-img` may resolve to an Android SDK copy earlier on `$PATH`;
+`disk-image.sh` calls `/usr/bin/qemu-img` by path for that reason.
 
-Host needs: rootless `podman`, **passwordless `sudo`** (for bootc-image-builder
-and offline journal extraction), `/dev/kvm`, and a GPU render node under
-`/dev/dri` (a Mesa iGPU is strongly preferred for GL — see gotchas).
+Host needs: rootless `podman`, **passwordless `sudo`** (for the loopback mounts
+`disk-image.sh` needs and for offline journal extraction), `/dev/kvm`, and a GPU
+render node under `/dev/dri` (a Mesa iGPU is strongly preferred for GL — see
+gotchas). The disk-image step also needs a **local registry** it can push to
+(`docker.io/library/registry:2`, started on demand): the composefs backend
+refuses to install from container storage.
 
 If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 
@@ -195,7 +198,8 @@ re-exec via the live-medium sudoers `env_keep`).
 
 ## Configuration (env vars)
 
-`QOS_DISTROBOX` `QOS_IMAGE` `QOS_OUTPUT` `QOS_DISK` `QOS_BIB` `QOS_RUN`
+`QOS_DISTROBOX` `QOS_IMAGE` `QOS_OUTPUT` `QOS_DISK` `QOS_RUN`
 `QOS_RENDERNODE` `QOS_USER` `QOS_PASS` `QOS_MEM` `QOS_SMP` — see `_common.sh`.
 Custom installer: `QOS_INSTALLER_IMAGE` `QOS_INSTALLER_OUTPUT`
 `QOS_INSTALLER_DISK` `QOS_TARGET_DISK` `QOS_TARGET_SIZE` `QOS_TARGET_IMGREF`.
+Disk image: `QOS_DISK_REG_PORT` (registry port), `QOS_RETAINED_GENERATIONS`.

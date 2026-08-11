@@ -135,7 +135,7 @@ QUICK_UI_DEBUG=1 cargo run -p ui --example gallery
 ./os/test-vm.sh [path/to/disk.qcow2]    # boot it in QEMU (needs OVMF + KVM)
 ```
 
-`./os/build.sh` compiles each component in release mode, copies the binaries into `os/`, then calls `bootc-image-builder` to produce `os/output*/qcow2/disk.qcow2`. The container build step uses rootless `podman`; the disk image step needs `sudo` for loopback mounts.
+`./os/build.sh` builds the container image (the Rust binaries compile *inside* it) and then calls `os/dev/disk-image.sh` to produce `os/output*/qcow2/disk.qcow2` — `systemd-repart` for the partitions, `bootc install to-filesystem` into them. `bootc-image-builder` is gone: it has no composefs/UKI surface, and it cannot install this image at all, since qOS asks for systemd-boot and the ostree backend refuses it. The container build step uses rootless `podman`; the disk-image step needs `sudo` for loopback mounts and a local registry to push to (the composefs backend will not install from container storage).
 
 **VM login:** `quickuser` / `quickdesktop`. Verify the FUSE mount with `mountpoint /var/workspace`. The test image runs `quick-fs-test.service` on boot — check results with `journalctl -u quick-fs-test`.
 
