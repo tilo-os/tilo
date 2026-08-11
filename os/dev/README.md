@@ -81,13 +81,36 @@ distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
 
 | Flag | Effect |
 |------|--------|
-| `--tpm` | software TPM 2.0 via swtpm; state persists in `$QOS_TPM_DIR`, so a disk enrolled in one boot unlocks in the next |
-| `--secboot` | the Secure-Boot OVMF build, SMM on, pflash marked secure. The variable store starts in **setup mode** with no keys, which is what `qos-secureboot enroll` expects |
+| `--tpm` | software TPM 2.0 via swtpm, **started** (`--flags not-need-init,startup-clear`); state persists in `$QOS_TPM_DIR`, so a disk enrolled in one boot unlocks in the next |
+| `--secboot` | keep the variable store across boots, so keys enrolled in the guest survive a restart of qemu |
 | `--attach PATH` | a blank second virtio disk (`/dev/vdb`), created if missing — lets a booted image install onto a fresh disk without building the installer medium |
 
-The default firmware (`OVMF_CODE.fd`) has no Secure Boot support at all, so an SB
-test against it proves nothing. Use one TPM state dir per scenario
-(`QOS_TPM_DIR=…`) or a second run unseals against the first run's TPM.
+### Firmware: only the 4 MB OVMF build can measure
+
+Fedora ships two. `OVMF_CODE_4M.secboot.qcow2` has TPM support compiled in;
+`OVMF_CODE.secboot.fd` (2 MB) does not, and its TCG2 reports **zero active PCR
+banks** — every PCR reads zero, no event log appears, and the TPM is never
+started, which is indistinguishable from a UKI that failed to measure. So the
+4 MB build is selected unconditionally, and `--tpm` against a host that only has
+the 2 MB one is **refused** rather than run. `vm.sh firmware [--tpm] [--secboot]`
+prints the selection, including whether it can measure.
+
+Secure Boot *enforcement* is not a qemu flag — it is whether the variable store
+carries keys. `QOS_SECBOOT_KEYS` picks the store:
+
+| Value | Store |
+|-------|-------|
+| `none` (default) | `OVMF_VARS_4M.qcow2` — no keys, setup mode. Measures into PCR 7, accepts an owner-signed UKI, re-seeded every boot |
+| `persist` (`--secboot`) | the same pristine store, kept across boots so an enrolment in the guest sticks |
+| `microsoft` | `OVMF_VARS_4M.secboot.qcow2` — Microsoft's KEK/db. **Rejects owner-signed images**, so nothing boots; for testing vendor-key enforcement on purpose |
+| *path* | a prepared store |
+
+Enrolling owner keys is a deliberate step, never something the template arrives
+with: boot with `--secboot`, run `/usr/libexec/qos-secureboot enroll` in the
+guest, reboot the guest.
+
+Use one TPM state dir per scenario (`QOS_TPM_DIR=…`) or a second run unseals
+against the first run's TPM.
 
 See `docs/secure-boot.md` for what these are for.
 

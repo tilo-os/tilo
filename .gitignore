@@ -44,5 +44,7 @@ keys/*.private.pem
 .claude/app-status.md
 .claude/*.log
 
-# build.sh copies the real hardening kargs into the composefs build context
+# build.sh copies the real hardening kargs, the rollback machinery and the
+# freshly built qos-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
+os/dev/composefs/stage/
