@@ -75,6 +75,12 @@ podman push --tls-verify=false "$IMAGE" "$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
 REGCONF="$QOS_CFS_RUN/98-local-registry.conf"
 printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$QOS_CFS_REG_HOST" > "$REGCONF"
 
+# bootc runs *out of* the image being installed, so root podman needs it too.
+# Rather than move it across with save|load — which is the transfer that breaks
+# the composefs pull — run the copy that is already in the registry. One
+# reference then serves as both the container to run and the install source.
+RUNREF="$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest"
+
 cleanup() {
   sudo -n umount -R "$MNT" 2>/dev/null || true
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
@@ -92,7 +98,7 @@ if [ "$MODE" = to-disk ]; then
     -v /var/lib/containers:/var/lib/containers \
     -v /dev:/dev -v "$QOS_CFS_RUN:$QOS_CFS_RUN" \
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro" \
-    "$IMAGE" \
+    --tls-verify=false "$RUNREF" \
     bootc install to-disk --via-loopback --composefs-backend \
       --bootloader systemd --filesystem btrfs --wipe --skip-fetch-check \
       --source-imgref "docker://$QOS_CFS_REG_HOST/$QOS_CFS_REPO:latest" \
@@ -126,7 +132,7 @@ else
     -v /var/lib/containers:/var/lib/containers \
     -v /dev:/dev -v /:/run/host \
     -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro" \
-    "$IMAGE" \
+    --tls-verify=false "$RUNREF" \
     bootc install to-filesystem \
       --composefs-backend \
       --bootloader systemd \
