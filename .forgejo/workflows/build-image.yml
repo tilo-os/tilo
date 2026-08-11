@@ -73,6 +73,24 @@ jobs:
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
         run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
 
+      # The generation number sealed into the UKI's command line, which bounded
+      # rollback binds every unseal to. It has to advance by exactly one per
+      # published image: the retention window is arithmetic on it, and the floor is
+      # a TPM NV counter that costs one write per step (qos-rollback refuses an
+      # advance of more than 64). So it is read from the published series — every
+      # published image carries a `gen<N>` tag, and the next number is max + 1 —
+      # rather than from a timestamp, a commit count, or a counter file that can
+      # drift from what was actually published.
+      #
+      # This runs on build-only runs too, even though they publish nothing: the
+      # resolution is then exercised on every push instead of only at release time,
+      # which is when a broken series would otherwise be discovered.
+      - name: Resolve the image generation from the published series
+        run: |
+          gen="$(./os/dev/next-generation.sh)"
+          echo "QOS_GENERATION=$gen" >> "$GITHUB_ENV"
+          echo "::notice::building generation $gen"
+
       # Set up buildx with the docker-container driver — the default `docker`
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
@@ -96,6 +114,11 @@ jobs:
             # "<branch>-<sha>" tag so a manual dispatch from a feature branch still
             # produces a discoverable image without polluting the `latest` channel.
             type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+            # The generation tag is what makes the series self-recording: the next
+            # build reads these back to learn which numbers are taken. It is only
+            # ever pushed on a run that publishes, so a number is consumed exactly
+            # when an image carrying it becomes reachable.
+            type=raw,value=gen${{ env.QOS_GENERATION }}
 
       # Build the multi-stage bootc image. Context is the repo root so the
       # builder stage can COPY the whole workspace; the
@@ -123,6 +146,7 @@ jobs:
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
             QOS_WITH_BROWSER=${{ github.event.inputs.with_browser || '1' }}
+            QOS_GENERATION=${{ env.QOS_GENERATION }}
           # buildkit clamps layer timestamps to SOURCE_DATE_EPOCH for
           # reproducible image digests.
           provenance: false
