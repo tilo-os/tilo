@@ -25,6 +25,16 @@
 #     minutes a cold build costs. The boot chain (kernel, initramfs, LUKS/TPM,
 #     greeter, installer, rollback) is all still there, so this is the image to
 #     build when the question is "does it boot?". Default is the full image.
+#   * The image is SEALED: it carries a Unified Kernel Image whose signed command
+#     line includes the hardening kargs and `qos.generation=<N>`, which
+#     systemd-stub measures into PCR 11. Two consequences for this script:
+#       - the generation has to come from somewhere real, so it is resolved from
+#         the published series (os/dev/next-generation.sh) rather than defaulted;
+#       - the build runs TWICE when bootc#2334 bites, because `bootc container
+#         ukify` and `bootc install` compute different composefs digests for the
+#         same image. The loop below reads the digest install asked for, rebuilds
+#         the UKI sealing it, and installs again. Only the UKI stage rebuilds — the
+#         rootfs digest is unchanged, which is why two passes converge.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Fail loudly: a broken container build must NOT silently fall through to imaging
@@ -64,31 +74,85 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+# The generation number the image will carry and seal. Resolved from the published
+# series unless given, and never defaulted: a constant here is what made every
+# image claim to be generation 0, and a rollback floor that cannot move is a
+# machine that will not unseal after a few updates. Reproducibility is
+# "same commit + same QOS_GENERATION -> same image" — a published image is genuinely
+# new content, so it must be a new generation.
+if [ -z "${QOS_GENERATION:-}" ]; then
+  QOS_GENERATION="$("$QOS_OS_DIR/dev/next-generation.sh")" \
+    || die "could not resolve the generation for this image (see above).
+  Pass one explicitly if you know the series: QOS_GENERATION=<N> $0"
+fi
+export QOS_GENERATION
+# The negative control, off by default: QOS_SEAL_GENERATION=0 builds a UKI that
+# measures normally and carries no generation, which is how the boot-side check is
+# shown to fail on the generation assertions rather than on "nothing measured".
+: "${QOS_SEAL_GENERATION:=1}"
+
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${QOS_WITH_BROWSER:=1}"
-msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER)"
+msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
 # base image plainly has are missing — QOS_BUILD_ARGS=--no-cache is the way out.
 read -r -a _qos_build_args <<< "${QOS_BUILD_ARGS:-}"
-podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
-  "${_qos_build_args[@]}" \
-  --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
-  --build-arg "BASE_REF=$BASE_REF" \
-  --build-arg "RPMS_REF=$RPMS_REF" \
-  --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
-  --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
-  --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
-  "$QOS_REPO"
+
+# $1 = the composefs digest to seal into the UKI ("" to let bootc compute it).
+build_image() {
+  podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
+    "${_qos_build_args[@]}" \
+    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    --build-arg "BASE_REF=$BASE_REF" \
+    --build-arg "RPMS_REF=$RPMS_REF" \
+    --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
+    --build-arg "QOS_WITH_BROWSER=$QOS_WITH_BROWSER" \
+    --build-arg "QOS_GENERATION=$QOS_GENERATION" \
+    --build-arg "QOS_SEAL_GENERATION=$QOS_SEAL_GENERATION" \
+    --build-arg "QOS_CFS_DIGEST=${1:-}" \
+    --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
+    "$QOS_REPO"
+}
+
+build_image ""
 
 msg "2/2 disk image -> qcow2"
 # shellcheck disable=SC1091
 . "$QOS_OS_DIR/account.env"
 rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
-"$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$(dirname "$QOS_DISK")" \
-  --user "$QOS_ACCOUNT"
+OUTDIR="$(dirname "$QOS_DISK")"
+INSTALL_LOG="$OUTDIR/.install.log"
 
-msg "DONE: $QOS_DISK"
+# Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
+# and `bootc install` compute different composefs digests for the same image
+# (bootc#2334), and install will not accept a UKI sealing anything but its own
+# value. disk-image.sh recognises that failure and prints the digest to seal, so
+# the recovery is to rebuild the UKI with it and install again.
+if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT"; then
+  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
+  seal; see the message above and $INSTALL_LOG"
+  had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
+  msg "pass 2: rebuilding the UKI with the digest install asked for"
+  # Only the uki + final stages rebuild: the rootfs is untouched, so its digest —
+  # the value install computes — does not move, which is what makes this converge
+  # rather than chase itself. If it does move, the second install says so.
+  build_image "sha512:$want"
+  if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT"; then
+    want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
+      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…).
+  It therefore depends on the UKI, which depends on it: the seal is circular and
+  cannot be closed here. That needs the upstream fix for bootc#2334."
+    fi
+    die "the second install pass failed too; see above and $INSTALL_LOG"
+  fi
+  msg "seal closed in two passes (install's expected digest was stable)"
+fi
+
+msg "DONE: $QOS_DISK (generation $QOS_GENERATION)"
 ls -lh "$QOS_DISK"
