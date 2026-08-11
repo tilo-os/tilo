@@ -5,17 +5,30 @@
 # `bootc container ukify` is what makes this worth doing rather than calling
 # ukify directly: it computes the composefs digest of /target, reads the extra
 # kernel arguments out of /target/usr/lib/bootc/kargs.d, and hands both to
-# ukify. So the sealed command line carries the image's own kargs — which is
-# how a generation number reaches a *measured* command line.
+# ukify. So the sealed command line carries the image's own kargs — which is how
+# a generation number reaches a *measured* command line.
+#
+# CFS_DIGEST overrides the digest it would compute. That exists because
+# `bootc container ukify` and `bootc install` do not agree on the digest of the
+# same image: install refuses the UKI with
+#
+#   The UKI has the wrong composefs= parameter (is 'sha512:<A>', should be
+#   sha512:<B>)
+#
+# which is bootc#2334. Passing install's own expected value produces a UKI it
+# accepts, and whether that value is stable across a rebuild is exactly the
+# question — if it is, the seal is workable today with a two-pass build; if it
+# moves every time, sealing is circular and blocked upstream.
 set -euo pipefail
 
+target=/target
 mkdir -p /out
 kver="$(ls /kernel)"
 
 ukify_args=(
   --output "/out/${kver}.efi"
   # Print the PCR 11 values this UKI will produce, per boot phase. This is the
-  # host-side prediction the booted machine's PCR 11 is compared against.
+  # host-side prediction a booted machine's PCR 11 is compared against.
   --measure
   --json pretty
 )
@@ -28,10 +41,34 @@ if [ "${SIGN:-0}" = "1" ]; then
   )
 fi
 
-bootc container ukify \
-  --rootfs /target \
-  --kernel-dir "/kernel/${kver}" \
-  -- "${ukify_args[@]}" | tee /out/ukify.json
+if [ -n "${CFS_DIGEST:-}" ]; then
+  # Assemble the command line by hand: the kargs the image declares, in
+  # kargs.d order, then the digest install told us it wants.
+  cmdline=""
+  for f in "$target"/usr/lib/bootc/kargs.d/*.toml; do
+    [ -e "$f" ] || continue
+    while IFS= read -r karg; do
+      cmdline="${cmdline}${karg} "
+      # Comment lines are skipped first: these files explain themselves at
+      # length and a quoted phrase in prose is not a kernel argument.
+    done < <(sed -e '/^[[:space:]]*#/d' -n -e 's/.*"\([^"]\+\)".*/\1/p' "$f")
+  done
+  cmdline="${cmdline}composefs=${CFS_DIGEST#sha512:}"
+  printf '%s\n' "$cmdline" > /out/cmdline.in
+  echo "sealing an explicitly supplied digest"
+  ukify build \
+    --linux "/kernel/${kver}/vmlinuz" \
+    --initrd "/kernel/${kver}/initramfs.img" \
+    --uname "${kver}" \
+    --cmdline "@/out/cmdline.in" \
+    --os-release "@${target}/usr/lib/os-release" \
+    "${ukify_args[@]}" | tee /out/ukify.json
+else
+  bootc container ukify \
+    --rootfs "$target" \
+    --kernel-dir "/kernel/${kver}" \
+    -- "${ukify_args[@]}" | tee /out/ukify.json
+fi
 
 # The sealed command line, extracted back out of the PE image. Nothing else can
 # tell you what a UKI will actually pass to the kernel.
