@@ -43,3 +43,6 @@ keys/*.private.pem
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
+
+# build.sh copies the real hardening kargs into the composefs build context
+os/dev/composefs/01-hardening.toml
