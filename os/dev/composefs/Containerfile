@@ -103,6 +103,9 @@ COPY uki.sh /usr/local/bin/uki.sh
 FROM tools AS uki
 ARG SIGN=0
 ENV SIGN=${SIGN}
+# Set to install's expected digest to work around bootc#2334; see uki.sh.
+ARG CFS_DIGEST=
+ENV CFS_DIGEST=${CFS_DIGEST}
 # The cache mount on /var/tmp is not an optimisation, it is required. Computing
 # the composefs digest builds a temporary composefs repository under /var/tmp,
 # and writing an object there needs O_TMPFILE — which overlayfs, the filesystem
