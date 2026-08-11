@@ -25,7 +25,16 @@ ARG GENERATION
 # systemd-boot, plus what the boot-side checks need to produce evidence:
 # tpm2-tools to read PCRs and the TPM event log, fsverity-utils to inspect the
 # sealed store, sshd so checks can be driven without screen-scraping a console.
-RUN dnf install -y \
+# --refresh because the base image ships cached repository metadata, and Fedora
+# rotates the repodata files it names — a stale metalink 404s on every mirror
+# and reports "all mirrors were already tried without success", which reads like
+# an outage rather than a cache problem.
+#
+# Note that a real qOS image cannot install from the network at all: it installs
+# only from the digest-pinned RPM snapshot, and that snapshot does not currently
+# contain systemd-ukify. Adding a UKI to the real image therefore needs the
+# snapshot refreshed first.
+RUN dnf install -y --refresh \
         systemd-boot-unsigned \
         tpm2-tools \
         fsverity-utils \
@@ -97,7 +106,7 @@ RUN mkdir /kernel && bootc container split-kernel-and-rootfs --rootfs / --output
 
 # --- uki: build (and optionally sign) the Unified Kernel Image ---------------
 FROM ${BASE_REF} AS tools
-RUN dnf install -y systemd-ukify sbsigntools binutils && dnf clean all
+RUN dnf install -y --refresh systemd-ukify sbsigntools binutils && dnf clean all
 COPY uki.sh /usr/local/bin/uki.sh
 
 FROM tools AS uki
