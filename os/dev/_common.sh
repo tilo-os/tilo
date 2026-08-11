@@ -378,17 +378,33 @@ tpm_qemu_args() {
 # that give up on a boot call this first, and it names the cause and the remedy
 # from the evidence on the host. $1 = serial log. Returns 0 if it explained
 # something.
-boot_diagnose() {
-  local log="${1:-}" text=""
-  [ -n "$log" ] && [ -f "$log" ] && text="$(tr -d '\000' < "$log" 2>/dev/null | tr -d '\r')"
+#
+# Patterns are matched against the file, never against a captured copy piped into
+# grep. This file sets `set -o pipefail`, and under it `printf "$text" | grep -q P`
+# reports NO MATCH for any log larger than the 64 KB pipe buffer: grep -q exits at
+# the first hit, printf dies of SIGPIPE, and pipefail turns that into a failed
+# pipeline. That is this file's own bug in miniature — a check that cannot observe
+# reporting absence — and it silently mis-diagnosed a boot whose serial log had
+# grown past 64 KB, which is every boot that reaches userspace.
+_serial_has() {   # $1 = log, $2 = extended regex
+  [ -n "$1" ] && [ -f "$1" ] && grep -qiaE "$2" "$1"
+}
 
-  if printf '%s' "$text" | grep -qiE 'A TPM error \(256\)|TPM_RC_INITIALIZE'; then
-    warn "the guest found a TPM that had never been started (error 256):"
-    warn "  nothing was measured, so every PCR is zero and there is no event log."
-    warn "  Remedy: swtpm must run with --flags not-need-init,startup-clear."
+boot_diagnose() {
+  local log="${1:-}" empty=1
+  [ -n "$log" ] && [ -s "$log" ] && empty=0
+
+  if _serial_has "$log" 'A TPM error \(256\)|TPM_RC_INITIALIZE'; then
+    warn "the guest found a TPM nobody had started (error 256), and started it by"
+    warn "hand — long after the boot it was supposed to measure. Expect every PCR"
+    warn "to read zero, no event log, and ConditionSecurity=measured-uki unmet."
+    warn "  Two things start a TPM, and neither did: the firmware issues"
+    warn "  TPM2_Startup only if it has TPM support (the 2 MB OVMF build does not),"
+    warn "  and swtpm issues it itself only with --flags not-need-init,startup-clear."
+    warn "  Firmware in use: ${QOS_FW_CODE:-<not selected>} (measures=${QOS_FW_MEASURES:-?})"
     return 0
   fi
-  if [ -z "$text" ] && [ "$QOS_SECBOOT_KEYS" != "none" ] && [ "$QOS_SECBOOT_KEYS" != "persist" ]; then
+  if [ "$empty" = 1 ] && [ "$QOS_SECBOOT_KEYS" != "none" ] && [ "$QOS_SECBOOT_KEYS" != "persist" ]; then
     warn "nothing at all on the serial line, with '$QOS_SECBOOT_KEYS' keys in the"
     warn "variable store: the firmware refuses an image signed with any other key"
     warn "before it prints a character, so this is what a rejected image looks like."
@@ -396,8 +412,8 @@ boot_diagnose() {
     warn "  the signing certificate in the guest and keep the store (--secboot)."
     return 0
   fi
-  if [ "$QOS_TPM" = "1" ] && [ -n "$text" ] && \
-     ! printf '%s' "$text" | grep -qiE 'tpm_tis|tpm_crb|TPM.?2\.0|tpm[0-9]'; then
+  if [ "$QOS_TPM" = "1" ] && [ "$empty" = 0 ] && \
+     ! _serial_has "$log" 'tpm_tis|tpm_crb|TPM.?2\.0|tpm[0-9]'; then
     warn "a TPM was attached but the guest never reported one: the firmware did not"
     warn "expose TCG2, so PCR and event-log checks in the guest would report"
     warn "'nothing measured' whatever the kernel did. Firmware in use:"
