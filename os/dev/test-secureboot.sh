@@ -4,10 +4,13 @@
 #
 #   os/dev/test-secureboot.sh <desktop-qcow2> [--out DIR]
 #
-# The reboot happens from INSIDE the guest, not by restarting qemu: vm.sh reseeds
-# the pflash variable store from the firmware template on every boot, so a
-# restart would throw the enrolled keys away and the test would look like it
-# passed for the wrong reason.
+# The reboot happens from INSIDE the guest rather than by restarting qemu. Under
+# --secboot the variable store is kept across boots (QOS_SECBOOT_KEYS=persist), so
+# a restart would work too — but rebooting the guest is what a real machine does
+# after enrolling, and it keeps the test independent of how the harness seeds
+# pflash. Without --secboot the store is re-seeded pristine every boot, which
+# would throw the enrolled keys away and make the test look like it passed for
+# the wrong reason.
 set -uo pipefail
 
 DEV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
