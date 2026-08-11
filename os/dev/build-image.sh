@@ -10,9 +10,12 @@
 #      glibc coupling. The build context is the REPO ROOT (the in-image compile
 #      needs the workspace source); .containerignore trims target/, os/output
 #      and .git.
-#   2. `podman save | sudo podman load` into root storage (bootc-image-builder
-#      runs as root and reads from there).
-#   3. bootc-image-builder -> os/output/qcow2/disk.qcow2.
+#   2. os/dev/disk-image.sh -> os/output/qcow2/disk.qcow2: systemd-repart for the
+#      partitions, `bootc install to-filesystem` into them. That replaced
+#      bootc-image-builder, which has no composefs/UKI surface — and which cannot
+#      build this image at all, because qOS asks for systemd-boot and bib's
+#      ostree-backend install refuses it ("bootupd is required for ostree-based
+#      installs").
 #
 # Notes / gotchas baked in from bringup:
 #   * First build is a long COLD Rust compile inside the container; the
@@ -64,7 +67,7 @@ export SOURCE_DATE_EPOCH
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${QOS_WITH_BROWSER:=1}"
-msg "1/3 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER)"
+msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER)"
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
@@ -80,20 +83,12 @@ podman build -f "$QOS_OS_DIR/Containerfile" -t "$QOS_IMAGE" \
   --source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp \
   "$QOS_REPO"
 
-msg "2/3 transfer image to root storage"
-podman save "$QOS_IMAGE" | sudo podman load
-
-msg "3/3 bootc-image-builder -> qcow2"
-mkdir -p "$QOS_OUTPUT"
+msg "2/2 disk image -> qcow2"
+# shellcheck disable=SC1091
+. "$QOS_OS_DIR/account.env"
 rm -rf "$QOS_OUTPUT/qcow2" "$QOS_OUTPUT"/manifest* 2>/dev/null || true
-sudo podman run --rm --privileged \
-  --security-opt label=type:unconfined_t \
-  -v "$QOS_OS_DIR/config.toml:/config.toml:ro" \
-  -v "$QOS_OUTPUT:/output" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  "$QOS_BIB" \
-  --type qcow2 --rootfs btrfs --chown "$(id -u):$(id -g)" \
-  "$QOS_IMAGE"
+"$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$(dirname "$QOS_DISK")" \
+  --user "$QOS_ACCOUNT"
 
 msg "DONE: $QOS_DISK"
 ls -lh "$QOS_DISK"

@@ -637,9 +637,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
 # merges at every `bootc install {to-disk,to-filesystem}` invocation. bib
-# (bootc-image-builder) runs the same install code path when it builds a
-# qcow2, so this covers both interactive Anaconda installs and the direct
-# bib->qcow2 path.
+# runs the same install code path, so this covers the disk-image step
+# (os/dev/disk-image.sh) and the installer's `bootc install to-disk` alike.
 COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 
 # ---------------------------------------------------------------------------
@@ -977,5 +976,15 @@ COPY os/tests/luks_enrolment.sh /usr/libexec/qos/luks-enrolment-test.sh
 RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
     && bash /usr/libexec/qos/luks-enrolment-test.sh
 
-# Validate
+# Validate.
+#
+# This stays at the end, including once the image gains a Unified Kernel Image.
+# The worry was that lint would reject a split-kernel rootfs — `bootc container
+# split-kernel-and-rootfs` moves vmlinuz and initramfs.img out of
+# /usr/lib/modules/$kver and into a UKI under /boot — and would have to run
+# before the split. It does not: checked against a built split-kernel UKI image
+# under bootc 1.16.4, lint exits 0. The `kernel` check counts
+# /usr/lib/modules/$kver *directories*, and the split leaves that directory in
+# place, so one kernel is still one kernel; `nonempty-boot` is a warning, not a
+# fatal, so a UKI in /boot does not fail it either.
 RUN bootc container lint
