@@ -622,9 +622,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # remedy when they are missing. The safety property lives in the tool failing
 # closed, not in the build failing open. systemd-boot-unsigned above stays in a
 # strict transaction, because an image with no bootloader IS a broken image.
+# systemd-ukify joins them for the same reason and with the same tolerance. It
+# builds the Unified Kernel Image that seals the kernel, initramfs and command
+# line into one signed artefact — which is what puts `qos.generation=` inside a
+# signature and into PCR 11, where the rollback policy can bind to it. A bare
+# kernel plus a loader entry cannot: the command line sits beside it as an
+# editable file.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-unavailable --setopt=reposdir=/repo \
         sbsigntools \
         efitools \
+        systemd-ukify \
     && dnf clean all
 
 # The install-config drop-in that flips bootc's bootloader choice to
