@@ -3,7 +3,7 @@
 Findings from a four-way survey of the boot chain, identity/key management, threat-model
 documentation, and the cryptographic-roles implementation. This file records **defects in the
 code as it stands today**. The forward-looking design lives in
-`docs/superpowers/specs/2026-07-30-security-identity-architecture.md` and deliberately does not
+`docs/security/architecture.md` and deliberately does not
 reference any of this.
 
 Severity: **P0** = exploitable or silently produces invalid security state. **P1** = a documented
@@ -357,7 +357,7 @@ Knock-on effects:
   No `--tpm2-pcrs` is set anywhere; the `bootc` default policy is inherited unexamined.
 - `keys/tpm2-pcr-signing.public.pem` is baked to `/usr/share/qos/` (`os/Containerfile:427`) and
   read by nothing.
-- `docs/secure-boot.md` describes a chain — *"firmware → shim (MS-signed) → GRUB (Fedora-signed) →
+- `docs/security/boot-chain.md` describes a chain — *"firmware → shim (MS-signed) → GRUB (Fedora-signed) →
   kernel (Fedora-signed)"* — that the image explicitly deletes. The document is stale and
   actively misleading.
 
