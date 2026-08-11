@@ -91,7 +91,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ! sudo -n podman image exists "$IMAGE" 2>/dev/null; then
+# The install source has to be a registry when the composefs backend is in play.
+# Installing from containers-storage — including an image moved into root storage
+# with `podman save | sudo podman load`, which is what os/build.sh does today —
+# fails inside the composefs pull with "Opening stream '': Creating new
+# splitstream reader: Invalid splitstream content type". The same image pulled
+# over HTTP installs. So a local registry is started and the image published to
+# it; this is a genuine new requirement of dropping bib, not a preference.
+REG_PORT="${QOS_DISK_REG_PORT:-5000}"
+REG="localhost:$REG_PORT"
+SRC_REF=""
+if [ "$COMPOSEFS" = yes ]; then
+  if ! podman container exists qos-disk-registry 2>/dev/null; then
+    msg "starting a registry on :$REG_PORT for the install source"
+    podman run -d --name qos-disk-registry -p "$REG_PORT:5000" \
+      docker.io/library/registry:2 >/dev/null
+  elif [ "$(podman inspect -f '{{.State.Running}}' qos-disk-registry)" != true ]; then
+    podman start qos-disk-registry >/dev/null
+  fi
+  for _ in $(seq 1 30); do curl -sf "http://$REG/v2/" >/dev/null && break; sleep 1; done
+  curl -sf "http://$REG/v2/" >/dev/null || die "registry did not come up on $REG"
+  repo="$(basename "${IMAGE%%:*}")"
+  msg "publishing $IMAGE to $REG/$repo:disk-install"
+  podman push --tls-verify=false "$IMAGE" "$REG/$repo:disk-install"
+  SRC_REF="docker://$REG/$repo:disk-install"
+  REGCONF="$OUTDIR/.registries.conf"
+  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+elif ! sudo -n podman image exists "$IMAGE" 2>/dev/null; then
   msg "transfer $IMAGE into root container storage"
   podman save "$IMAGE" | sudo -n podman load
 fi
@@ -125,15 +151,21 @@ msg "2/4 mounted ${LOOP}p2 -> $MNT, ${LOOP}p1 -> $MNT/boot"
 install_args=(to-filesystem --skip-fetch-check)
 [ "$COMPOSEFS" = yes ] && install_args+=(--composefs-backend)
 [ -n "$BOOTLOADER" ] && install_args+=(--bootloader "$BOOTLOADER")
+[ -n "$SRC_REF" ] && install_args+=(--source-imgref "$SRC_REF")
 install_args+=("${KARGS[@]+"${KARGS[@]}"}")
 install_args+=("/run/host$MNT")
 
+run_args=(--rm --privileged --pid=host
+  --security-opt label=type:unconfined_t
+  -v /var/lib/containers:/var/lib/containers
+  -v /dev:/dev -v /:/run/host)
+if [ -n "$SRC_REF" ]; then
+  run_args+=(--network host
+    -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+fi
+
 msg "3/4 bootc install ${install_args[*]}"
-sudo -n podman run --rm --privileged --pid=host \
-  --security-opt label=type:unconfined_t \
-  -v /var/lib/containers:/var/lib/containers \
-  -v /dev:/dev -v /:/run/host \
-  "$IMAGE" bootc install "${install_args[@]}"
+sudo -n podman run "${run_args[@]}" "$IMAGE" bootc install "${install_args[@]}"
 
 # bib's customizations.user, replaced. The installed root's /etc is a real
 # directory on the target filesystem for both backends, so useradd run inside
