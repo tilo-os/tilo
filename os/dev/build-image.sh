@@ -74,6 +74,13 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+# Pre-flight: every host-side COPY source exists. Decidable in a second, and the
+# alternative is finding out ~20 minutes in from a message naming a path with a
+# leading slash that exists nowhere — which is how a stale `COPY docs/secure-boot.md`
+# blocked every image build on main until someone tried to build one.
+bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
+  || { bash "$QOS_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
+
 # Where the build unpacks layers. Two failure modes converge here, and neither
 # names its cause:
 #
