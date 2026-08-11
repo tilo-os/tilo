@@ -45,28 +45,65 @@ case "${1:-}" in
   *) die "unknown argument: $1" ;;
 esac
 
-# Reading the tag list needs skopeo, which is not installed everywhere this runs:
-# the host is image-based and the CI runner ships neither. So fall back to skopeo
-# in a container, mounting whichever auth file the local tooling wrote — the
-# registry is private, and an anonymous list returns nothing rather than failing,
-# which would silently restart the series at 1.
+# The registry is private, so the listing has to be authenticated: an anonymous
+# read fails rather than returning an empty list, which is the right way round —
+# an empty list would silently restart the series at 1 and hand out a number that
+# is already taken.
+#
+# QOS_REGISTRY_CREDS ("user:token") is the explicit path, and it is what CI uses.
+# Discovering an auth file works interactively and is unreliable in a job: the
+# runner's `docker login` may write a `credsStore` entry with no credential in the
+# file at all, and the first file that *exists* is not necessarily the one with the
+# entry — which fails as "authentication required" and looks like a permissions
+# problem rather than a lookup one.
+QOS_REGISTRY_CREDS="${QOS_REGISTRY_CREDS:-}"
+
+# skopeo is not installed everywhere this runs — the host is image-based and the CI
+# runner does not ship it — so fall back to running it in a container.
 SKOPEO_IMAGE="${QOS_SKOPEO_IMAGE:-quay.io/skopeo/stable:latest}"
+
+# An auth file that actually carries an entry for this registry, not merely the
+# first one that exists.
+find_authfile() {
+  local host="${QOS_PUBLISH_REPO%%/*}" f
+  for f in "${REGISTRY_AUTH_FILE:-}" \
+           "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" \
+           "$HOME/.config/containers/auth.json" \
+           "$HOME/.docker/config.json"; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    grep -q "\"$host\"" "$f" 2>/dev/null || continue
+    printf '%s\n' "$f"; return 0
+  done
+  return 1
+}
+
 list_tags() {
+  local creds_args=() auth tmp rc
+  if [ -n "$QOS_REGISTRY_CREDS" ]; then
+    creds_args=(--creds "$QOS_REGISTRY_CREDS")
+  fi
+
   if command -v skopeo >/dev/null 2>&1; then
-    skopeo list-tags "docker://$QOS_PUBLISH_REPO" 2>&1
+    skopeo list-tags "${creds_args[@]+"${creds_args[@]}"}" \
+      "docker://$QOS_PUBLISH_REPO" 2>&1
     return
   fi
-  local engine auth tmp rc
+
+  local engine
   engine="$(command -v podman || command -v docker)" || {
     echo "no skopeo, and no podman or docker to run it in" >&2; return 1; }
-  for auth in "${REGISTRY_AUTH_FILE:-}" \
-              "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json" \
-              "$HOME/.config/containers/auth.json" \
-              "$HOME/.docker/config.json"; do
-    [ -n "$auth" ] && [ -f "$auth" ] && break
-    auth=""
-  done
-  [ -n "$auth" ] || { echo "no container auth file found; log in to the registry first" >&2; return 1; }
+
+  if [ ${#creds_args[@]} -gt 0 ]; then
+    "$engine" run --rm "$SKOPEO_IMAGE" \
+      list-tags "${creds_args[@]}" "docker://$QOS_PUBLISH_REPO" 2>&1
+    return
+  fi
+
+  auth="$(find_authfile)" || {
+    echo "no container auth file carries an entry for ${QOS_PUBLISH_REPO%%/*}." >&2
+    echo "Log in (podman login ${QOS_PUBLISH_REPO%%/*}), or set" >&2
+    echo "QOS_REGISTRY_CREDS=user:token." >&2
+    return 1; }
   # A copy in a directory of our own, mounted with an SELinux relabel. Bind-mounting
   # the credential file straight in fails "permission denied" reading it — the
   # container cannot see through the label on $XDG_RUNTIME_DIR — and relabelling the

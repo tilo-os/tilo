@@ -86,6 +86,12 @@ jobs:
       # resolution is then exercised on every push instead of only at release time,
       # which is when a broken series would otherwise be discovered.
       - name: Resolve the image generation from the published series
+        env:
+          # Explicit credentials rather than the auth file `docker login` left
+          # behind: the runner writes a credsStore entry the file itself does not
+          # carry, so a lookup finds a file with no credential in it and the read
+          # fails as "authentication required".
+          QOS_REGISTRY_CREDS: ${{ github.actor }}:${{ secrets.REGISTRY_TOKEN }}
         run: |
           gen="$(./os/dev/next-generation.sh)"
           echo "QOS_GENERATION=$gen" >> "$GITHUB_ENV"

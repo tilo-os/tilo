@@ -524,7 +524,7 @@ COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49
 #    that value is stable across OS updates; binding to PCR 4 — the boot
 #    artefacts themselves — needs a signed prediction, or every update would
 #    break the seal. This key is what such a prediction would verify against.
-#    See docs/secure-boot.md.
+#    See docs/security/boot-chain.md.
 COPY keys/cosign.pub /usr/share/qos/cosign.pub
 COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
 
@@ -581,7 +581,13 @@ COPY os/docs/peer-sync.md /usr/share/doc/qos/peer-sync.md
 # The Secure Boot + disk-encryption procedure. On-image because the enrolment
 # sequence has to be readable from the machine being enrolled, which is the one
 # place a wrong step stops it from booting.
-COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
+# The boot-chain document the Secure Boot units and qos-security-audit point at.
+# It used to be copied from docs/secure-boot.md, which was folded into
+# docs/security/ — and the COPY was not updated, so every image build since has
+# failed at this line with `"/docs/secure-boot.md": not found`. Installed under its
+# real name, and the Documentation= lines that referenced the old one follow it.
+COPY docs/security/boot-chain.md /usr/share/doc/qos/boot-chain.md
+COPY docs/security/rollback.md /usr/share/doc/qos/rollback.md
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -611,7 +617,7 @@ COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 # path that a distribution key covers — so the machine has to be able to sign its
 # own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
 # cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
-# /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
+# /usr/libexec/qos-secureboot can only refuse. See docs/security/boot-chain.md.
 # bootupd goes with them, and that is a requirement of the sealed layout rather
 # than tidiness: bootc refuses to seal an image that still offers a bootupd
 # install path, because bootupd only ever plants GRUB. Its payload directory and

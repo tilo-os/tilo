@@ -1,6 +1,6 @@
 [Unit]
 Description=Sign boot artefacts on the way down
-Documentation=file:///usr/share/doc/qos/secure-boot.md
+Documentation=file:///usr/share/doc/qos/boot-chain.md
 # The last net before a reboot that the firmware might refuse.
 #
 # The path unit catches the two known ways artefacts go stale — a staged
