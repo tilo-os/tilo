@@ -31,12 +31,44 @@ fi
 
 # 2. That version has a non-empty initramfs. This is the check that would have
 #    caught the initrd-less image.
+#
+#    A sealed composefs image moves the kernel and initramfs out of
+#    /usr/lib/modules and into a Unified Kernel Image on the ESP — so an absent
+#    initramfs.img there is correct on that layout, and the invariant has to be
+#    checked against the UKI instead. Requiring the bare file would fail exactly
+#    the images that are built properly.
+uki=""
+for candidate in "$OS_ROOT"/boot/EFI/Linux/*.efi; do
+  [ -f "$candidate" ] && uki="$candidate" && break
+done
+
 for kver in "${kvers[@]}"; do
   img="$OS_ROOT/usr/lib/modules/$kver/initramfs.img"
   if [ -s "$img" ]; then
     ok "initramfs present for $kver ($(stat -c %s "$img" 2>/dev/null) bytes)"
+  elif [ -n "$uki" ]; then
+    # The .initrd section is the initramfs on this layout. objcopy is not in
+    # every image, so read the PE section table directly.
+    isize="$(python3 - "$uki" <<'EOPY' 2>/dev/null
+import struct, sys
+d = open(sys.argv[1], "rb").read()
+pe = struct.unpack_from("<I", d, 0x3C)[0]
+nsec = struct.unpack_from("<H", d, pe + 6)[0]
+base = pe + 24 + struct.unpack_from("<H", d, pe + 20)[0]
+for i in range(nsec):
+    o = base + i * 40
+    if d[o:o+8].rstrip(b"\0") == b".initrd":
+        print(struct.unpack_from("<I", d, o + 8)[0])
+        break
+EOPY
+)"
+    if [ -n "$isize" ] && [ "$isize" -gt 0 ] 2>/dev/null; then
+      ok "initramfs is in the UKI for $kver ($uki, .initrd is $isize bytes)"
+    else
+      bad "$uki has no .initrd section — an encrypted root cannot be opened without one"
+    fi
   else
-    bad "no initramfs at $img — an encrypted root cannot be opened without one"
+    bad "no initramfs at $img and no UKI under /boot/EFI/Linux — an encrypted root cannot be opened without one"
   fi
 done
 
@@ -63,7 +95,14 @@ fi
 #    the dracut config, since a config drop-in can be added and still not apply.
 for kver in "${kvers[@]}"; do
   img="$OS_ROOT/usr/lib/modules/$kver/initramfs.img"
-  [ -s "$img" ] || continue
+  # Do NOT skip when the bare initramfs is absent: on a sealed composefs image
+  # it always is, and skipping would drop the one invariant that says an
+  # encrypted root can be opened. The recorded module list is in the rootfs
+  # either way, so it answers the question on both layouts.
+  if [ ! -s "$img" ] && [ -z "$uki" ]; then
+    bad "no initramfs and no UKI for $kver — cannot check the unlock modules"
+    continue
+  fi
   # Prefer the module list the build recorded from dracut's own output. Reading
   # the image back needs to descend into a squashfs, which needs privileges an
   # unprivileged image builder does not have — there, lsinitrd returns nothing
@@ -77,7 +116,8 @@ for kver in "${kvers[@]}"; do
         bad "initramfs has no $want module — it cannot unlock an encrypted root"
       fi
     done
-  elif command -v lsinitrd >/dev/null 2>&1 && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
+  elif [ -s "$img" ] && command -v lsinitrd >/dev/null 2>&1 \
+       && [ -n "$(lsinitrd "$img" 2>/dev/null)" ]; then
     listing="$(lsinitrd "$img" 2>/dev/null)"
     for want in systemd-cryptsetup cryptsetup; do
       if printf '%s' "$listing" | grep -q "$want"; then
