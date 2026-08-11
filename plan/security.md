@@ -1,5 +1,11 @@
 # Security Architecture
 
+> **Scope note.** This is the *workspace-scoped* threat model: the remote-input
+> firewall, the per-workspace sandbox and the portal capability model, in more
+> detail than anywhere else. It predates the machine-scoped work, so on identity,
+> the boot chain and disk encryption it is superseded by
+> [docs/security/](../docs/security/README.md).
+
 The security boundary is the **workspace**. Every workspace runs apps inside its own Bubblewrap sandbox with its own user namespace, mount namespace, seccomp-bpf filter, and a per-workspace Wayland bridge socket. Capabilities (filesystem, hardware, network) require explicit grants surfaced as inline prompts; grants persist in the workspace's CRDT and replicate to peers.
 
 Implementation tracked in `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` (sandbox phases 1-6 + portal 4.3 landed). Where this design diverges from earlier "global host" framings, the current code wins.

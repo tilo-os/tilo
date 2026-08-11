@@ -112,7 +112,7 @@ guest, reboot the guest.
 Use one TPM state dir per scenario (`QOS_TPM_DIR=…`) or a second run unseals
 against the first run's TPM.
 
-See `docs/secure-boot.md` for what these are for.
+See `docs/security/boot-chain.md` for what these are for.
 
 Two drivers automate the scenarios end to end. Both drive the guest's own
 `/usr/libexec/` tooling, so what they exercise is the shipped path rather than a
