@@ -2,8 +2,9 @@
 #
 # A deliberately thin image: the qOS *boot chain* pieces that the composefs
 # question turns on (hardening kargs, a generation number on the measured
-# command line, systemd-boot, no bootupd) on top of the same digest-pinned
-# Fedora bootc base the real image uses — and nothing else. The full qOS
+# command line, the bounded-rollback machinery that binds to it, systemd-boot, no
+# bootupd) on top of the same digest-pinned Fedora bootc base the real image uses
+# — and nothing else. The full qOS
 # rootfs takes ~25 minutes to build and none of it participates in the
 # mechanism under test, so building it three times to prove an update series
 # would only slow the answer down. os/dev/composefs/build-qos.sh does the real
@@ -19,6 +20,12 @@
 ARG BASE_REF
 ARG RPMS_REF
 ARG GENERATION=1
+# Whether the generation number reaches the sealed command line at all. Always 1
+# for a real image; 0 builds the negative control — a UKI that measures perfectly
+# but carries no generation — so that a check reporting the generation as measured
+# can be shown to fail when it is not there. A check that only ever passes is not
+# evidence.
+ARG SEAL_GENERATION=1
 
 FROM ${RPMS_REF} AS rpms
 
@@ -54,10 +61,15 @@ COPY 01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
 # The generation number. qOS binds rollback protection to it, and it has to be
 # sealed into the UKI rather than written by a bootloader, so it enters through
 # the same kargs.d mechanism the hardening set uses.
+ARG SEAL_GENERATION
 RUN mkdir -p /usr/lib/qos /boot/EFI/Linux \
     && printf '%s\n' "${GENERATION}" > /usr/lib/qos/generation \
-    && printf 'kargs = ["qos.generation=%s"]\n' "${GENERATION}" \
-        > /usr/lib/bootc/kargs.d/02-generation.toml
+    && if [ "${SEAL_GENERATION}" = 1 ]; then \
+         printf 'kargs = ["qos.generation=%s"]\n' "${GENERATION}" \
+           > /usr/lib/bootc/kargs.d/02-generation.toml; \
+       else \
+         echo "NEGATIVE CONTROL: no generation on the sealed command line"; \
+       fi
 
 # Spike-only kargs: a writable root (bootc's composefs root is mounted
 # read-only without it) and a serial console so a headless boot leaves a log.
@@ -86,6 +98,30 @@ RUN useradd -m -G wheel quickuser \
     && mkdir -p /etc/ssh/sshd_config.d \
     && printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' \
         > /etc/ssh/sshd_config.d/01-spike.conf
+
+# The consumer of that measured generation: qOS's bounded-rollback machinery,
+# copied from the real image rather than reimplemented, so that
+# os/tests/rollback-boot-check.sh runs here against the same files it will run
+# against on a real install. Without it the boot-side check can only report the
+# tooling as missing, which says nothing about whether the measurement works.
+# stage/ is populated by build.sh (the binary comes from cargo, the rest from os/).
+COPY stage/qos-rollback /usr/bin/qos-rollback
+COPY stage/qos-rollback-common /usr/libexec/qos-rollback-common
+COPY stage/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
+COPY stage/qos-rollback-harden /usr/libexec/qos-rollback-harden
+COPY stage/rollback-boot-check.sh /usr/libexec/qos-rollback-boot-check
+COPY stage/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
+COPY stage/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
+COPY stage/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+# ReadWritePaths=/var/lib/qos in the units is not optional: a namespace that
+# cannot bind a path it was told to make writable refuses to start, and the unit
+# then fails for a reason that has nothing to do with rollback.
+RUN chmod 0755 /usr/bin/qos-rollback /usr/libexec/qos-rollback-common \
+        /usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-harden \
+        /usr/libexec/qos-rollback-boot-check \
+    && printf 'd /var/lib/qos 0755 root root -\n' \
+        > /usr/lib/tmpfiles.d/qos-rollback.conf \
+    && systemctl enable qos-rollback-harden.service qos-rollback-confirm.timer
 
 # The registry the update series is served from runs on the VM host, reachable
 # from user-mode networking at 10.0.2.2 over plain HTTP.
