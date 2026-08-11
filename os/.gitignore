@@ -1,6 +1,6 @@
-# Binary artifacts staged by ./build.sh before bootc-image-builder picks
-# them up. Produced by `cargo build --release -p shell -p fs -p terminal
-# -p browser -p file-explorer` and copied here; never commit them.
+# Binary artifacts some build paths stage here. Produced by
+# `cargo build --release -p shell -p fs -p terminal -p browser -p file-explorer`
+# and copied in; never commit them.
 /shell
 /fs
 /terminal
@@ -16,7 +16,7 @@
 /quick-terminal
 /quick-browser
 
-# bootc-image-builder outputs
+# disk-image.sh outputs
 /output/
 /output-*/
 
