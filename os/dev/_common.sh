@@ -46,9 +46,11 @@ QOS_TARGET_DISK="${QOS_TARGET_DISK:-$QOS_RUN/target.qcow2}"
 QOS_TARGET_SIZE="${QOS_TARGET_SIZE:-20G}"
 
 # Software TPM 2.0 (swtpm) so encrypted/TPM-bound installs can be booted and
-# unlock-tested. Off by default; enable with `--tpm` on a boot subcommand or
-# QOS_TPM=1. State persists in QOS_TPM_DIR so boot-installer (enroll) and
-# boot-target (unlock) share the same emulated TPM across a reboot.
+# unlock-tested, and so a measured boot can be observed at all. Off by default;
+# enable with `--tpm` on a boot subcommand or QOS_TPM=1. State persists in
+# QOS_TPM_DIR so boot-installer (enroll) and boot-target (unlock) share the same
+# emulated TPM across a reboot. Attaching a TPM also pins the firmware choice —
+# see the OVMF section below.
 QOS_TPM="${QOS_TPM:-0}"
 QOS_TPM_DIR="${QOS_TPM_DIR:-$QOS_RUN/tpm}"
 QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
@@ -116,48 +118,195 @@ detect_rendernode() {
   echo /dev/dri/renderD128
 }
 
-# Locate OVMF firmware inside the env. QOS_SECBOOT=1 selects the Secure-Boot
-# build (`*.secboot.fd`), whose variable store starts in SETUP MODE — no keys
-# enrolled — which is precisely the state `qos-secureboot enroll` expects, so the
-# guest can enrol its own PK and then boot under enforcement. The plain build has
-# no Secure Boot support at all, so an SB test against it proves nothing.
+# --- OVMF firmware ------------------------------------------------------------
+# Fedora ships two OVMF builds and only one of them can measure:
+#
+#   OVMF_CODE_4M.secboot.qcow2  4 MB. TPM support compiled in. Its TCG2 protocol
+#                               reports an active SHA-256 PCR bank, so the
+#                               firmware starts the TPM, extends PCRs 0-7 itself,
+#                               writes an event log, and hands systemd-stub a
+#                               TCG2 it can extend PCR 11 through.
+#   OVMF_CODE.secboot.fd        2 MB. No TPM support. TCG2 reports ZERO active
+#                               PCR banks, so nothing is ever extended: every PCR
+#                               reads zero, no firmware event log appears, the TPM
+#                               is never started (Linux logs "A TPM error (256)
+#                               occurred attempting the self test") and
+#                               ConditionSecurity=measured-uki is unmet.
+#
+# That second list is exactly what a UKI which failed to measure looks like, so
+# the 4 MB build is a requirement here rather than a preference: under the 2 MB
+# one os/tests/rollback-boot-check.sh reports "nothing measured into PCR 11" for a
+# kernel that measured perfectly, and no amount of guest-side checking can tell
+# the two apart. When a TPM is attached and the 4 MB build is absent this harness
+# refuses to boot and says how to get it, instead of producing a result that
+# cannot mean anything.
+#
+# The secboot flavour is chosen for its measurement support, not to enforce
+# anything: Secure Boot enforcement is not a qemu flag, it is a property of the
+# variable store (see QOS_SECBOOT_KEYS). SMM and a write-protected pflash go with
+# the secboot build unconditionally, because that firmware expects them and a
+# variable store the guest can rewrite makes enforcement theatre.
 QOS_SECBOOT="${QOS_SECBOOT:-0}"
-ovmf_code() {
-  if [ "$QOS_SECBOOT" = "1" ]; then
-    inenv 'for f in /usr/share/edk2/ovmf/OVMF_CODE.secboot.fd /usr/share/OVMF/OVMF_CODE.secboot.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
-      || die "OVMF_CODE.secboot.fd not found (install edk2-ovmf in ${QOS_DISTROBOX:-the host})"
-    return
-  fi
-  inenv 'for f in /usr/share/edk2/ovmf/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
-    || die "OVMF not found (install edk2-ovmf in ${QOS_DISTROBOX:-the host})"
-}
-ovmf_vars() {
-  if [ "$QOS_SECBOOT" = "1" ]; then
-    inenv 'for f in /usr/share/edk2/ovmf/OVMF_VARS.secboot.fd /usr/share/OVMF/OVMF_VARS.secboot.fd /usr/share/edk2/ovmf/OVMF_VARS.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
-      || die "OVMF_VARS.secboot.fd not found"
-    return
-  fi
-  inenv 'for f in /usr/share/edk2/ovmf/OVMF_VARS.fd /usr/share/OVMF/OVMF_VARS.fd; do [ -f "$f" ] && { echo "$f"; exit 0; }; done; exit 1' \
-    || die "OVMF_VARS not found"
+
+# Which keys the variable store starts with. This decides whether an owner-signed
+# image is bootable at all, so it is a deliberate choice rather than whichever
+# template happens to sit next to the firmware:
+#
+#   none       (default) OVMF_VARS_4M.qcow2 — no keys, Secure Boot in setup mode.
+#              Measures into PCR 7 like any other store, and accepts an
+#              owner-signed UKI. Re-seeded from the template on every boot, so
+#              every boot starts from the same firmware state.
+#   persist    the same pristine template, but kept across boots so that an
+#              enrolment performed in the guest survives a restart of qemu. This
+#              is what `--secboot` selects: enrolment is then an explicit act
+#              (`/usr/libexec/qos-secureboot enroll` in the guest), not something
+#              the template did for us.
+#   microsoft  OVMF_VARS_4M.secboot.qcow2 — Microsoft's KEK and db. NOT "the
+#              secure one": a qOS UKI is signed with the owner's key, which that
+#              db does not cover, so under it nothing boots and the firmware says
+#              nothing about why. Selecting it is an explicit request to test
+#              vendor-key enforcement.
+#   <path>     a prepared store, used as-is and kept across boots.
+QOS_SECBOOT_KEYS="${QOS_SECBOOT_KEYS:-none}"
+
+# Where to look for the firmware. Overridable so the "this firmware cannot
+# measure" refusal can be exercised against a directory holding only the 2 MB
+# build, instead of being a branch nobody ever takes.
+QOS_OVMF_DIRS="${QOS_OVMF_DIRS:-/usr/share/edk2/ovmf /usr/share/OVMF}"
+
+# Filled in by firmware_setup; read by machine_args/secboot_qemu_args/pflash_args.
+QOS_FW_CODE=""; QOS_FW_VARS=""; QOS_FW_FMT=""; QOS_FW_MEASURES=0; QOS_FW_SMM=0
+
+# Echo the first of $@ that exists in the env, or nothing.
+_env_first_file() {
+  local f list=""
+  for f in "$@"; do list="$list '$f'"; done
+  inenv "for f in $list; do [ -f \"\$f\" ] && { printf '%s\n' \"\$f\"; exit 0; }; done; exit 1" \
+    2>/dev/null || true
 }
 
-# Extra qemu args the Secure-Boot firmware needs to actually ENFORCE: SMM, and a
-# pflash that refuses writes from outside SMM. Without both, the variable store
-# is writable from the guest and enforcement is theatre.
+# Resolve the firmware for the current settings into QOS_FW_*, or die with the
+# remedy. Must be called before machine_args / secboot_qemu_args / pflash_args:
+# the pflash format is part of the answer (the 4 MB build ships as qcow2, the
+# 2 MB one as raw, and the wrong `format=` makes qemu read firmware as garbage).
+firmware_setup() {
+  if [ "$QOS_SECBOOT" = "1" ] && [ "$QOS_SECBOOT_KEYS" = "none" ]; then
+    QOS_SECBOOT_KEYS=persist
+    msg "--secboot: variable store will persist across boots so an enrolment sticks"
+  fi
+
+  local dir d cands
+  cands=""; for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.qcow2"; done
+  # shellcheck disable=SC2086
+  QOS_FW_CODE="$(_env_first_file $cands)"
+  if [ -n "$QOS_FW_CODE" ]; then
+    QOS_FW_FMT=qcow2; QOS_FW_MEASURES=1; QOS_FW_SMM=1
+    dir="$(dirname "$QOS_FW_CODE")"
+    case "$QOS_SECBOOT_KEYS" in
+      none|persist) QOS_FW_VARS="$dir/OVMF_VARS_4M.qcow2" ;;
+      microsoft)    QOS_FW_VARS="$dir/OVMF_VARS_4M.secboot.qcow2" ;;
+      *)            QOS_FW_VARS="$QOS_SECBOOT_KEYS" ;;
+    esac
+  else
+    cands=""
+    for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
+    for d in $QOS_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
+    # shellcheck disable=SC2086
+    QOS_FW_CODE="$(_env_first_file $cands)"
+    [ -n "$QOS_FW_CODE" ] || die "no OVMF firmware in ${QOS_DISTROBOX:-the host}.
+  Remedy: distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf"
+    if [ "$QOS_TPM" = "1" ]; then
+      die "the only OVMF build here is the 2 MB one ($QOS_FW_CODE), which has no TPM
+  support: its TCG2 protocol reports zero active PCR banks, so nothing is ever
+  measured. Every PCR would read zero and no event log would appear — the same
+  evidence a UKI that failed to measure leaves behind — so a measured-boot check
+  would fail for a reason that has nothing to do with the kernel. Refusing to
+  attach a TPM to a firmware that cannot measure into it.
+  Remedy: install a current edk2-ovmf in ${QOS_DISTROBOX:-the host}; it ships
+    /usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 + OVMF_VARS_4M.qcow2
+    (distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf)"
+    fi
+    QOS_FW_FMT=raw; QOS_FW_MEASURES=0
+    case "$QOS_FW_CODE" in *.secboot.fd) QOS_FW_SMM=1 ;; *) QOS_FW_SMM=0 ;; esac
+    warn "the 2 MB OVMF build ($QOS_FW_CODE) cannot measure: no PCR, event-log or"
+    warn "measured-boot result from this VM is evidence of anything."
+    dir="$(dirname "$QOS_FW_CODE")"
+    case "$QOS_SECBOOT_KEYS" in
+      none|persist) QOS_FW_VARS="$dir/OVMF_VARS.fd" ;;
+      microsoft)    QOS_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
+      *)            QOS_FW_VARS="$QOS_SECBOOT_KEYS" ;;
+    esac
+  fi
+
+  if [ -z "$(_env_first_file "$QOS_FW_VARS")" ]; then
+    case "$QOS_SECBOOT_KEYS" in
+      none|persist|microsoft)
+        die "OVMF variable-store template missing: $QOS_FW_VARS
+  Remedy: distrobox enter ${QOS_DISTROBOX:-…} -- sudo dnf install edk2-ovmf" ;;
+      *)
+        die "QOS_SECBOOT_KEYS=$QOS_SECBOOT_KEYS names a variable store that does not
+  exist. Enrolling an owner key is a deliberate step, not something a boot does
+  on the way past: boot with QOS_SECBOOT=1 (pristine store, setup mode, kept
+  across boots), run \`/usr/libexec/qos-secureboot enroll\` in the guest, and
+  reboot the guest — the store then carries the owner PK/KEK/db." ;;
+    esac
+  fi
+
+  if [ "$QOS_SECBOOT_KEYS" = "microsoft" ]; then
+    warn "variable store: Microsoft's keys ($QOS_FW_VARS). The firmware refuses an"
+    warn "image signed with any other key before it prints anything, so an"
+    warn "owner-signed UKI produces a guest that never appears. Use"
+    warn "QOS_SECBOOT_KEYS=none (setup mode — still measures) unless you are"
+    warn "specifically testing vendor-key enforcement."
+  fi
+
+  msg "firmware: $(basename "$QOS_FW_CODE") [$QOS_FW_FMT] keys=$QOS_SECBOOT_KEYS measures=$QOS_FW_MEASURES smm=$QOS_FW_SMM"
+}
+
+# Seed and echo the working variable store for this VM. `none` is re-seeded every
+# boot so a boot is reproducible; every other selection is kept, because an
+# enrolment a restart silently threw away is indistinguishable from one that
+# never happened. $1 = run dir (defaults to QOS_RUN).
+firmware_varstore() {
+  local run="${1:-$QOS_RUN}" tag out
+  tag="$(printf '%s' "$QOS_SECBOOT_KEYS" | tr -c 'a-zA-Z0-9' '-')"
+  out="$run/vars-$QOS_FW_FMT-$tag.img"
+  if [ "$QOS_SECBOOT_KEYS" = "none" ]; then
+    inenv "mkdir -p '$run' && cp -f '$QOS_FW_VARS' '$out'"
+  else
+    inenv "mkdir -p '$run' && { test -f '$out' || cp -f '$QOS_FW_VARS' '$out'; }"
+  fi
+  printf '%s\n' "$out"
+}
+
+# The two -drive lines for the firmware. $1 = working variable store.
+pflash_args() {
+  printf -- '-drive if=pflash,format=%s,readonly=on,file=%s -drive if=pflash,format=%s,file=%s' \
+    "$QOS_FW_FMT" "$QOS_FW_CODE" "$QOS_FW_FMT" "$1"
+}
+
+# Extra qemu args the Secure-Boot firmware needs: SMM, and a pflash that refuses
+# writes from outside SMM. Without both, the variable store is writable from the
+# guest and enforcement is theatre.
 secboot_qemu_args() {
-  [ "$QOS_SECBOOT" = "1" ] || return 0
+  [ "$QOS_FW_SMM" = "1" ] || return 0
   # disable_s3: the SMM-protected variable store and S3 resume do not coexist in
   # OVMF, and leaving S3 on makes the firmware complain and fall back.
   printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
 machine_args() {
-  if [ "$QOS_SECBOOT" = "1" ]; then
+  if [ "$QOS_FW_SMM" = "1" ]; then
     printf -- '-machine q35,accel=kvm,smm=on'
   else
     printf -- '-machine q35,accel=kvm'
   fi
 }
+
+# Back-compat single-value accessors. Prefer firmware_setup + QOS_FW_*: these
+# re-probe the env on every call and cannot tell the caller the pflash format.
+ovmf_code() { firmware_setup >/dev/null 2>&1; printf '%s\n' "$QOS_FW_CODE"; }
+ovmf_vars() { firmware_setup >/dev/null 2>&1; printf '%s\n' "$QOS_FW_VARS"; }
 
 # --- software TPM (swtpm) -----------------------------------------------------
 # Start a persistent swtpm 2.0 socket inside the env (where qemu runs). Idempotent
@@ -166,16 +315,43 @@ swtpm_start() {
   [ "$QOS_TPM" = "1" ] || return 0
   inenv "command -v swtpm >/dev/null || { echo 'swtpm not installed in ${QOS_DISTROBOX:-env}'; exit 1; }" \
     || die "swtpm missing (sudo dnf install swtpm swtpm-tools in ${QOS_DISTROBOX:-the env})"
+
+  # A leftover swtpm from before this fix would be reused silently and put the
+  # unstarted TPM back, so check what is actually listening rather than trusting
+  # the socket's existence.
+  if inenv "test -S '$QOS_TPM_SOCK'" && \
+     ! inenv "pgrep -af 'swtpm socket' | grep -F -- '$QOS_TPM_SOCK' | grep -q startup-clear"; then
+    warn "a swtpm without --flags startup-clear holds $QOS_TPM_SOCK; replacing it"
+    swtpm_stop; sleep 1; inenv "rm -f '$QOS_TPM_SOCK'"
+  fi
+
+  # --flags not-need-init,startup-clear is what makes this a *started* TPM.
+  # Without it swtpm answers every command with TPM_RC_INITIALIZE (256): the
+  # firmware measures nothing, no event log is produced, every PCR reads zero, and
+  # Linux logs "A TPM error (256) occurred attempting the self test" before
+  # issuing TPM2_Startup itself — far too late for the boot to have been measured.
+  # The evidence that leaves behind is identical to a firmware without TPM
+  # support, so it is ruled out here rather than diagnosed afterwards.
   inenv "mkdir -p '$QOS_TPM_DIR'; \
     if ! test -S '$QOS_TPM_SOCK'; then \
       setsid nohup swtpm socket --tpmstate dir='$QOS_TPM_DIR' \
         --ctrl type=unixio,path='$QOS_TPM_SOCK' --tpm2 \
+        --flags not-need-init,startup-clear \
         >'$QOS_TPM_DIR/swtpm.log' 2>&1 & disown; \
       for _ in \$(seq 1 50); do test -S '$QOS_TPM_SOCK' && break; sleep 0.1; done; \
     fi; \
     test -S '$QOS_TPM_SOCK'" \
-    || die "swtpm failed to start (see $QOS_TPM_DIR/swtpm.log)"
-  msg "swtpm up (TPM 2.0, state=$QOS_TPM_DIR)"
+    || die "swtpm failed to start (see $QOS_TPM_DIR/swtpm.log).
+  If it rejected '--flags not-need-init,startup-clear', the swtpm in
+  ${QOS_DISTROBOX:-the env} is too old to start the TPM itself; without that the
+  firmware cannot measure. Remedy: sudo dnf install --refresh swtpm swtpm-tools"
+
+  # Prove the emulator answers, rather than reading a socket as a working TPM.
+  inenv "command -v swtpm_ioctl >/dev/null || exit 0; swtpm_ioctl -c --unix '$QOS_TPM_SOCK' >/dev/null" \
+    || die "swtpm is listening on $QOS_TPM_SOCK but not answering control commands
+  (see $QOS_TPM_DIR/swtpm.log). A guest booted against it would measure nothing
+  and report every PCR as zero."
+  msg "swtpm up (TPM 2.0, started, state=$QOS_TPM_DIR)"
 }
 swtpm_stop() {
   inenv "pkill -f \"swtpm socket .*$QOS_TPM_SOCK\" 2>/dev/null || true"
@@ -184,4 +360,39 @@ swtpm_stop() {
 tpm_qemu_args() {
   [ "$QOS_TPM" = "1" ] || return 0
   printf -- '-chardev socket,id=chrtpm,path=%s -tpmdev emulator,id=tpm0,chardev=chrtpm -device tpm-tis,tpmdev=tpm0' "$QOS_TPM_SOCK"
+}
+
+# --- explaining a boot that produced nothing ----------------------------------
+# Every failure this file guards against has the same shape: the harness could
+# not observe something and would otherwise report that as absence. So the paths
+# that give up on a boot call this first, and it names the cause and the remedy
+# from the evidence on the host. $1 = serial log. Returns 0 if it explained
+# something.
+boot_diagnose() {
+  local log="${1:-}" text=""
+  [ -n "$log" ] && [ -f "$log" ] && text="$(tr -d '\000' < "$log" 2>/dev/null | tr -d '\r')"
+
+  if printf '%s' "$text" | grep -qiE 'A TPM error \(256\)|TPM_RC_INITIALIZE'; then
+    warn "the guest found a TPM that had never been started (error 256):"
+    warn "  nothing was measured, so every PCR is zero and there is no event log."
+    warn "  Remedy: swtpm must run with --flags not-need-init,startup-clear."
+    return 0
+  fi
+  if [ -z "$text" ] && [ "$QOS_SECBOOT_KEYS" != "none" ] && [ "$QOS_SECBOOT_KEYS" != "persist" ]; then
+    warn "nothing at all on the serial line, with '$QOS_SECBOOT_KEYS' keys in the"
+    warn "variable store: the firmware refuses an image signed with any other key"
+    warn "before it prints a character, so this is what a rejected image looks like."
+    warn "  Remedy: QOS_SECBOOT_KEYS=none (setup mode — still measures), or enrol"
+    warn "  the signing certificate in the guest and keep the store (--secboot)."
+    return 0
+  fi
+  if [ "$QOS_TPM" = "1" ] && [ -n "$text" ] && \
+     ! printf '%s' "$text" | grep -qiE 'tpm_tis|tpm_crb|TPM.?2\.0|tpm[0-9]'; then
+    warn "a TPM was attached but the guest never reported one: the firmware did not"
+    warn "expose TCG2, so PCR and event-log checks in the guest would report"
+    warn "'nothing measured' whatever the kernel did. Firmware in use:"
+    warn "  $QOS_FW_CODE (measures=$QOS_FW_MEASURES)"
+    return 0
+  fi
+  return 1
 }
