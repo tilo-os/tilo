@@ -2,7 +2,8 @@
 
 Three kinds of thing arrive on a computer, and they are not alike.
 
-Some **act**: applications, codecs, themes, rankers, the runtime, the OS image.
+Some **act**: applications, codecs, themes, input methods, the runtime, the OS
+image.
 Some **describe**: your settings, your keybindings, the sources you trust, an
 employer's policy. Some are **acted upon**: an article, a book, a spreadsheet, a
 route, a playlist.
@@ -77,7 +78,7 @@ inertness**.
 > A **package** changes what the machine does.
 > A **record** changes what is in your world, and can act on nothing.
 
-An application is a package. So is a codec, a theme, a font, a ranker, a
+An application is a package. So is a codec, a theme, a font, an input method, a
 configuration layer, the runtime bundle, and the OS image — all of them change
 the machine's behaviour, so all of them are signed, content-addressed,
 versioned, and replaced wholesale. An article is a record. So is a book, a
@@ -191,9 +192,11 @@ have, offline-capable, no round trip to anyone's infrastructure. Distribution
 becomes a side effect of collaboration.
 
 **Curation is not hosting.** A source vouches; a catalogue recommends; neither
-serves. A catalogue is a **list** (§8) and has no powers that a person's
-hand-written list of favourites does not have. The qOS catalogue is a list
-published by the qOS org. It is a default, not a gate.
+serves. A catalogue is a **list** — a record holding an ordered set of
+references with notes, authored by a key, and a CRDT so several people can
+curate one together — and it has no powers a person's hand-written list of
+favourites lacks. The qOS catalogue is a list published by the qOS org. It is a
+default, not a gate.
 
 ### 4. Trust is three separate questions
 
@@ -394,7 +397,7 @@ Applications that do not cooperate — a foreign Flatpak, a legacy binary — ge
 their config directory versioned as an opaque blob. Degraded, and honest about
 being degraded.
 
-### 7. Records leave the machine: sharing, then publishing
+### 7. Records leave the machine
 
 `plan/rooms.md` settles the mechanics inside a machine: a record exists once,
 rooms hold **references** rather than copies, and the reference is what grants
@@ -412,19 +415,23 @@ record in from another room: it is a search result you activate.
 The property being protected is worth stating: **nothing enters your rooms
 because someone else decided it should.** A room contains what you put in it.
 
-**Reach requires a relationship; publication is pull-only.** Offering a record
-to a specific person requires a shared room, a contact, or a subscription. Any
-stranger may **publish**, which means the record becomes findable — it exists,
-it is searchable, and it never arrives. Spam is not filtered here, it is
-structurally unable to be addressed to you.
+**Reach requires a relationship.** Offering a record to a specific person
+requires a shared room, a contact, or a subscription. Nobody else can put
+anything in front of you. Spam is not filtered here; it has no address to arrive
+at.
 
-**Publishing attaches a public descriptor.** A descriptor is a small signed
-document: record identity, type, title and summary, language, tags, author key,
-timestamps, and the content hash of any immutable payload. The descriptor is
-public; the content may still be fetched on demand and may still require a
-capability. Publication is per-record and revocable, with the honest caveat
-`rooms.md` already states — withdrawal stops future changes flowing, it does not
-recall bytes anyone already has, and the interface must never imply otherwise.
+**A record can be made public, which makes it reachable, not findable.** A
+public record is fetchable by anyone holding its identity, so a reference to it
+can be handed out beyond your contacts — posted, mailed, printed on a poster.
+Withdrawal stops future changes flowing and does not recall bytes anyone already
+has, exactly as `rooms.md` states for references, and the interface must never
+imply otherwise.
+
+*Finding* public records — indexes, search across machines, ranking — is
+deliberately out of scope. It is a large, largely unsolved design with weak
+guarantees available to it, and nothing else here depends on it. Search inside
+your own reach (your rooms, your subscriptions, your catalogues) is
+`plan/search.md`'s question and is unaffected.
 
 **Record types are declared by packages and published.** This answers the
 question `rooms.md` left open. A type declaration is itself a published thing:
@@ -434,98 +441,21 @@ article side by side. Two applications that declare the same type interoperate.
 The OS knows nothing about `article` and can still display one, which is what
 app-owned identity plus system-owned mechanism buys.
 
-### 8. Discovery: retrieval is remote, ranking is local
-
-Search is not a nice-to-have bolted onto publication. A world of published
-records with no way to find them is worse than no publication, and it is the
-part of the web that is genuinely hard to replace. It gets a real design.
-
-An **index** ingests descriptors and answers queries. Anyone can run one. It
-holds no content. Descriptors reach it because publishing announces to the
-indexes you publish to, because indexes peer and pull from each other, and
-because peers gossip descriptors they already hold — there is no crawling,
-because publication is an act rather than a side effect of being reachable.
-
-The security property is an asymmetry:
-
-> **An index can omit, but it cannot forge.**
-
-Every result is a signed descriptor pointing at content-addressed bytes, so a
-lying index is caught the moment a result is opened. Omission is not
-cryptographically detectable, and pretending otherwise would be dishonest. The
-mitigation is structural: indexes are cheap to run, cheap to fork, and you
-subscribe to several.
-
-**The split.** The index does **retrieval** and returns candidates *with their
-signals attached*. Your device does **ranking**. The signals travel; the
-judgement does not. Three consequences:
-
-- Whoever runs the index cannot decide what you see.
-- **Rankers are packages** — added from a source, sandboxed, no network, given
-  the candidate set and your local graph. This separates the index from the
-  ranker, which everywhere else are welded together, and that weld is the actual
-  moat around incumbent search. Here, a better ranker is a package you add.
-- Ranking explains itself, because you own every input. *First because three
-  lists you follow include it, and its author has published in this type for
-  four years.* Provenance for a search result, in the same spirit as provenance
-  for a setting.
-
-**Three signal families.**
-
-*Match* — text and structured relevance, computed index-side. Ordinary
-information retrieval, no politics.
-
-*The public vouching graph* — who points at this. List inclusions, subscription
-edges, citations between records, attestations. These are signed, typed edges,
-which makes the graph better structured than a graph of hyperlinks: an edge says
-what kind of endorsement it is. It is walked from *your* neighbourhood rather
-than from a global authority, which is what makes it sybil-resistant in
-practice — minting a million publishers is free, getting one of them subscribed
-to is not, and subscriptions are public signed edges.
-
-*Personal* — your subscriptions, your rooms, your history. Computed on device,
-never transmitted.
-
-**A list is a record type**: an ordered set of references, each with an optional
-note, authored by a key, and a CRDT so lists can be co-curated live. Lists
-compose — a list whose entries are lists. Everything that would otherwise be a
-special-cased product is a list: an app catalogue, a magazine issue, a syllabus,
-a playlist, a distribution. Recommendation becomes subscription, performed by
-identifiable parties who can be dropped.
-
-**Subscription is the primitive.** Following a person, taking a config layer,
-trusting an index, trusting a source, and granting someone reach are one
-concept: a signed edge with a scope. One place to see them all, one place to
-revoke, and portable, because they live in the Profile.
-
-**Findable and ranked are two tiers.** Publishing is free; *being ranked*
-requires an edge into somebody's neighbourhood. A record with no vouching edges
-still matches queries, sorted last and marked unvouched. A new author is
-findable immediately and ranked as soon as one person lists them.
-
-**Search is one surface.** Super+K spans records in your rooms, records in your
-other rooms, pending offers, published records from your subscribed indexes, and
-packages in your subscribed catalogues, each row carrying where it came from.
-`rooms.md` already specifies this for bringing your own records in from another
-room; publication widens the corpus without adding a second search box.
-
 ## What this fixes
 
 - Adding software stops being a decision, because adding cannot execute code or
   acquire authority. That is what makes casual trial safe, which is the property
   the web has and native platforms lost.
-- The gatekeeper disappears without discovery collapsing. Anyone may publish;
-  curation is a subscription; the official catalogue has no special powers.
+- The gatekeeper disappears. Anyone may publish a package; curation is a
+  subscription to somebody's list; the official catalogue has no special powers.
 - "Which of my applications contains this vulnerable library" becomes a local
   query with an instant answer, and revocation can target the library.
 - The declarative/imperative seam disappears — not by picking a side, but
   because the imperative act writes the declarative document, and the API draws
   the config/state line for every application at once.
 - Content gets a distribution story that is the collaboration story, with no new
-  nouns: an offer is a reference, publication is a descriptor, and search is the
-  gesture that already exists for bringing a record into a room.
-- Ranking becomes contestable, because retrieval and judgement are separated by
-  an interface instead of welded inside one company.
+  nouns: an offer is a reference, and accepting one is the gesture that already
+  exists for bringing a record into a room.
 
 ## What it costs
 
@@ -550,14 +480,11 @@ getting the merge semantics wrong is worse than not offering text editing at
 all — a text editor that silently drops a co-editor's line is a data-loss bug
 with a friendly face.
 
-**On-device ranking gives up cross-user collaborative filtering.** No "people
-who liked this also liked that" without a service that watches everybody. Part
-of it is recovered by subscribing to lists made by people, which is
-collaborative filtering done deliberately and by hand, but the cold, broad,
-statistical version is genuinely forfeited.
-
-**Index omission is unsolved and stays unsolved.** Multiple subscriptions and
-cheap forking are a mitigation, not a proof.
+**Reach-requires-relationship costs you strangers.** Nothing can be put in
+front of you by someone you have no edge to, which is the anti-spam property and
+also means first contact needs an out-of-band introduction. With public
+discovery out of scope, a stranger's work reaches you only if somebody you
+already follow passes it along.
 
 **Per-origin network implication needs a real mechanism.** Deriving "this app
 may reach this host" from "the user pasted this URL" is easy to state and fiddly
@@ -569,18 +496,18 @@ and federated services.
 - **Where a rebuilder's inputs come from.** Reproducing a build requires the
   source and the toolchain to be addressable, which means source itself needs a
   distribution story — probably as records, possibly as packages.
-- **Descriptor spam at index scale.** Publication is free and descriptors are
-  small; an index needs an admission policy, and the obvious ones (proof of
-  work, deposits, invitation) each have a politics.
 - **Whether budgets are enforceable enough to be worth promising.** cgroup
   ceilings are real; "this app used 40 minutes of CPU" is easy; "this app was
   wasteful" is a judgement no mechanism makes.
 - **Delegation of reach.** If a person may offer me records, may a list they
   publish do so on their behalf? Subscribing to a list is not obviously
   subscribing to everything its curator wants to hand me.
-- **What a room's deletion does to published descriptors** — `rooms.md` leaves
-  orphaned records open, and publication adds a public pointer that outlives the
-  room.
+- **What a room's deletion does to a public record** — `rooms.md` leaves
+  orphaned records open, and making one public adds an outside pointer that
+  outlives the room.
+- **Finding things beyond your own reach.** Deferred, not answered. Whether it
+  is ever worth building is a separate question from whether this design is
+  right, and nothing above depends on it.
 
 ## What exists today
 
@@ -602,5 +529,4 @@ The parts of this that are built, so the gap is visible rather than implied:
   (`docs/supply-chain.md`).
 
 Not built: source logs and witnessing, rebuilder attestations, the Profile,
-descriptors, indexes, rankers, offers, budgets, and per-origin network
-implication.
+offers, public records, budgets, and per-origin network implication.

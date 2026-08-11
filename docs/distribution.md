@@ -1,11 +1,11 @@
 # How things arrive
 
-Installing software is the last place in ordinary computing where a person is
-asked to make a decision they have no way to make. A dialog appears. It says
-this program would like to make changes to your computer. There is no
-description of the changes, no bound on them, and no way to find out what they
-were afterwards. The only inputs to the decision are a logo and a feeling. Then
-you click yes, because you wanted the program.
+Installing software asks a person to make a decision nobody has ever been
+equipped to make. A dialog appears. It says this program would like to make
+changes to your computer. There is no description of the changes, no bound on
+them, and no way to find out afterwards what they were. The only inputs to the
+decision are a logo and a feeling. Then you click yes, because you wanted the
+program.
 
 Everything downstream of that moment is damage control. Stores exist because
 someone had to make the decision on your behalf. Reviews and gatekeepers exist
@@ -20,8 +20,8 @@ much can we take off the table before anyone has to decide anything."
 
 ## Three things arrive, and they are not alike
 
-Some things **act**. Applications, codecs, themes, rankers, the runtime itself.
-They change what the machine does.
+Some things **act**. Applications, codecs, themes, input methods, the runtime
+itself. They change what the machine does.
 
 Some things **describe**. Your settings, your keybindings, the sources you
 follow, your employer's policy. They change what the machine is configured to
@@ -46,7 +46,7 @@ So the first decision is a line, and it is not the obvious one. The line is not
 code versus content. It is **authority versus inertness**.
 
 A **package** changes what the machine does. An application, a codec, a theme, a
-font, a configuration layer, a search ranker, the OS image. It is signed,
+font, an input method, a configuration layer, the OS image. It is signed,
 content-addressed, immutable, and replaced whole.
 
 A **record** changes what is in your world and can act on nothing. An article, a
@@ -74,14 +74,13 @@ hook, no trigger, no compilation, no `configure`. Adding is verifying a
 signature and unpacking bytes. A program that wants something to happen on first
 run does it on first run, inside its sandbox, like everything else.
 
-That single rule deletes the largest remote-code-execution class in every
-mainstream package manager, and it is what makes the rest affordable. If adding
-cannot hurt you, adding does not have to be a decision. So it stops looking like
-one. There is no administrator password, no progress theatre, no warning. There
-is a button that says **Add**, and it means *keep this*. The listing next to it
-says what the package expects to be able to do, in a sentence — and that is the
-only thing on the screen worth reading, because it is the only thing that is
-still true after you click.
+That single rule deletes the install-time code-execution class outright, and it
+is what makes the rest affordable. If adding cannot hurt you, adding does not
+have to be a decision. So it stops looking like one. There is no administrator
+password, no progress theatre, no warning. There is a button that says **Add**,
+and it means *keep this*. Beside it, one sentence says what the package expects
+to be able to do — the only claim on the screen the system will actually hold it
+to, and therefore the only one worth reading.
 
 Next to it is a button that says **Open**, and it runs the thing right now:
 ephemeral room, no grants, gone when you close it. This is the property the web
@@ -90,10 +89,10 @@ look at it without entering into a relationship with it. Sandboxing is what
 earns it back. It also reframes Add honestly: not *do you trust this*, but *do
 you want to keep it*.
 
-Removal is total, because there was never anything global to undo. An
-application's writable state is one directory per room, so removing it is
-deleting what it made, and nothing is left in a lib directory somewhere to
-haunt the machine.
+Removal is total, because there was never anything global to undo. It takes the
+software away and leaves what the software made — one directory per room, which
+you can keep or delete — and there is nowhere else to look. Nothing lingers in a
+lib directory somewhere to haunt the machine.
 
 Updates are silent, atomic, and reversible — old content is still content, so
 going back to yesterday's version is a lookup rather than a reinstall. Silent
@@ -119,8 +118,8 @@ audit population is the user base, and it costs nothing because the network was
 already there.
 
 Once a name resolves to a hash, the bytes are just bytes and anybody may supply
-them. The peer sitting across the table from you, in the room you are both in.
-The mirror on the office network. A CDN. The publisher. A USB stick. Every one
+them. The laptop across the table. The mirror on the office network. A CDN. The
+publisher. A USB stick. Every one
 is verified locally and completely, which means the question *is this source
 trustworthy enough to download from* stops existing.
 
@@ -130,9 +129,10 @@ open. No round trip to anyone's infrastructure, works on a train. Distribution
 becomes a side effect of collaboration.
 
 And because a source only vouches, curation stops being a chokepoint. Anyone may
-publish. A catalogue is a list somebody maintains — the qOS catalogue is a list
-published by the qOS org, with no powers your own list of favourites lacks. It
-is a default, not a gate.
+publish a package, anyone may run a source, anyone may keep a list. A catalogue
+*is* a list somebody maintains — the qOS catalogue is a list published by the
+qOS org, with no powers your own list of favourites lacks. It is a default, not
+a gate.
 
 ## Reproducibility is not safety
 
@@ -140,11 +140,11 @@ Nix gets something profound right: a machine that can be described and rebuilt
 exactly is a machine you understand. Nothing here disputes that, and the Profile
 below is an attempt to keep the property while paying less for it.
 
-But reproducibility answers exactly one question — *did I get what they built* —
-and it is quietly the least important of three.
+But reproducibility answers exactly one of three questions, and not the one that
+decides whether you are safe.
 
 **Provenance**: did these bytes come from who they claim? Signatures answer
-this, and it is the smallest question of the three.
+this, cheaply and well.
 
 **Integrity**: do these bytes correspond to the source they claim? This is
 reproducibility's question. qOS treats it as a *check* rather than a property: a
@@ -154,8 +154,9 @@ shows the count — *reproduced independently by four rebuilders*. Reproducibili
 that nobody verifies is a press release. Putting the number in front of users is
 what makes rebuilding worth someone's time.
 
-**Authority**: what can it do once it runs? Nobody else answers this properly,
-and it is the only one that matters when the first two fail.
+**Authority**: what can it do once it runs? This is the question every other
+system answers last, if at all — which is why sandboxing arrives late and stays
+optional. It is also the only one still standing when the first two fail.
 
 Because they do fail, and not by breaking. Supply-chain attacks succeed
 *through* signatures, not around them: a maintainer account taken over, a
@@ -180,10 +181,10 @@ The whole permission model comes out of one rule:
 
 **A manifest never grants anything.**
 
-An application asks for a capability and gets a handle or a shrug. Whether that
-answer came from a preset, a standing grant, a prompt you just saw, or a policy
-that will never allow it, is invisible to the application. There is one code
-path and the app is on the wrong side of it.
+An application asks for a capability and gets back a handle or *not available*.
+Whether that answer came from a preset, a standing grant, a prompt you just saw,
+or a policy that will never allow it, is invisible to the application. There is
+one code path, and the application is on the far side of it.
 
 That invisibility is doing more work than it looks. An application that cannot
 detect refusal cannot nag you about it, cannot break spitefully to punish you,
@@ -201,14 +202,21 @@ most are already implied by something you did:
 
 - You picked a file in the OS file dialog. That file is granted.
 - You dragged a record onto the window. That record is granted.
-- You opened the app in a room. That room's contents are granted.
+- You opened a record with the application. That record is granted.
 - You pasted. That clipboard item is granted.
 
 No dialog appears, because you already said it. This is capability handoff as
 the primary mechanism rather than a fallback, and it eats the overwhelming
-majority of what applications ask for. What remains is short enough to take
-seriously: camera, microphone, location, screen capture, background execution,
-open-ended network, and *all my records of type X*.
+majority of what applications ask for.
+
+It works because of a confinement that is not a grant at all: an application
+opened in a room is scoped to that room, sees nothing outside it, and starts
+empty. Handoff can afford to be granular precisely because the floor underneath
+it is already small.
+
+What is left over is short enough to take seriously: camera, microphone,
+location, screen capture, background execution, open-ended network, and *all my
+records of type X*.
 
 Those get a real moment, with real shapes — **just this time**, *while it is
 open*, *until I revoke it*. While any of them is live, the OS shows it: an
@@ -218,10 +226,10 @@ which is also the fastest way to turn it off.
 Network is on that list. No application reaches the network by default, which
 sounds severe and mostly is not, because most applications need exactly one
 origin and that origin is implied by something you did — you configured the mail
-account, you pasted the feed address, you opened the map. What warrants a prompt
-is open-ended egress: *this application wants to reach anywhere.* That is rare,
-it is worth interrupting for, and it is the sentence people most want to be able
-to answer no to. "This application has no network access" becomes a checkbox on
+account, you pasted the feed address, you signed in. What warrants a prompt is
+open-ended egress: *this application wants to reach anywhere.* That is rare, it
+is worth interrupting for, and it is the sentence people most want to be able to
+answer no to. "This application has no network access" becomes a checkbox on
 every listing that actually works.
 
 The OS authors can attach a preset to a package — *this map viewer expects
@@ -230,13 +238,15 @@ a **proposal**. It is on the listing before you add, and on the screen at the
 moment you add, and it takes effect because you added the app while seeing it.
 Strip it afterward and the application keeps running. The publisher writes what
 their app needs; a curator vouches for it; your presence is what turns it into
-authority. Nobody — not the publisher, not a curator, not us — can turn a
-manifest into a grant.
+authority. The distinction is the whole thing: a preset is a sentence on a
+screen you were looking at, and a manifest is a file you have never seen.
+Nobody — not the publisher, not a curator, not us — can turn the second into a
+grant.
 
 Which is why silent updates are safe. **No update ever widens authority.** A new
 version that wants more gets exactly what its predecessor had, and a request at
-the moment it first needs the new thing, with you in the room. There is no path
-by which an application acquires power while nobody is looking.
+the moment it first needs the new thing, with you there to answer it. There is
+no path by which an application acquires power while nobody is looking.
 
 Two smaller things follow. A package nobody you trust has vouched for does not
 get a frightening dialog; it gets a **tighter default** — no network, no
@@ -248,12 +258,14 @@ useful without it. That last part is not politeness. **A permission system is
 only real if saying no is cheap.** If refusing costs you the app, you will not
 refuse, and the prompt was theatre.
 
-Finally, the failure mode that nobody models: the application that is not
-malicious, merely expensive. Manifests declare memory, CPU and disk ceilings,
-enforced as cgroup limits, and consumption shows up in the same place as
-permissions — because *this app used forty minutes of CPU in the background
-yesterday* is the same kind of fact as *this app used your microphone*, and it
-is the one you currently never get to see.
+Finally, the application that is not malicious, merely expensive. Phones already
+report this — a battery screen that ranks your applications by how much they
+cost you — and then do nothing with it, because reporting is not a bound. A qOS
+manifest declares memory, CPU and disk ceilings, and the launcher enforces them
+as cgroup limits. Consumption then belongs in the same surface as permissions,
+because *this application used forty minutes of CPU in the background yesterday*
+is the same kind of fact as *this application used your microphone* — and here
+it is a fact with a lever next to it.
 
 ## Your settings are a document
 
@@ -291,7 +303,7 @@ a value you never looked at.
 The buffer is live. Change a setting in the interface while the file is open and
 the line changes under your cursor. Text and interface are not two
 representations to reconcile; they are two editors on one document, exactly the
-way two people are two editors on one document.
+way two people are.
 
 You only ever edit your own layer. Values inherited from somewhere else render
 as dimmed inlays carrying their origin, and typing over one promotes it into
@@ -317,120 +329,75 @@ writing a field, not building a UI, and every application's settings are
 consistent, searchable, translatable, accessible and scriptable without any
 application doing work.
 
-What you get for it: your machine has a hash. A fresh install, that hash, and
-your sources reproduce it. History is continuous rather than generational, so
-you can revert your terminal without reverting your machine. And *what is
-different about this computer* is a diff you can look at, any time.
+What you get for it: your machine has a hash. A fresh install, that hash and
+your sources reproduce it — the machine, not your documents, which are records
+and live in rooms. History is continuous rather than generational, so you can
+revert your terminal without reverting your machine. And *what is different
+about this computer* is a diff you can look at, any time.
 
 ## Content, finally
 
 An application is a lens, not an owner. That is already true inside a qOS
-machine: a room holds records by reference, an ebook reader is a way of looking
-at book records, and two people sharing a book are sharing one document rather
-than two copies drifting apart.
+machine. A room is a context — a workspace, a project, your own desk — and it
+holds records by reference rather than owning them. An ebook reader is a way of
+looking at book records that happen to be in this room, and two people sharing a
+book are sharing one document rather than two copies drifting apart.
 
-Sharing across machines is the same mechanic reaching past the edge of your own
-rooms, with no new vocabulary.
+Record types are declared by packages, which is what lets one library view show
+a book, a playlist and an article side by side. The OS knows nothing about what
+an article is and can still display one.
+
+Sharing across machines is that same mechanic reaching past the edge of your own
+rooms, and it needs no new vocabulary.
 
 **Someone shares a record by offering you a reference.** It lands in *Shared
 with you*, which is a queue of pending references — not a room, not a library,
 and not usable until you file it into a room, because a record is only reachable
-through a room that references it. Accepting is the same gesture as pulling one
-of your own records in from another room: a search result you activate. The
-property being defended is that **nothing enters your rooms because someone else
-decided it should**. A room contains what you put in it.
+through a room that references it. Accepting it is the same gesture as pulling
+one of your own records in from another room. The property being defended is
+that **nothing enters your rooms because someone else decided it should**. A
+room contains what you put in it.
 
-Being able to reach you requires a relationship — a shared room, a contact, a
-subscription. Anyone else may **publish**, which is pull-only: the thing exists,
-it is searchable, and it never arrives. Spam is not filtered here. It is
-structurally unable to be addressed to you.
+Being able to put something in front of you at all requires a relationship — a
+shared room, a contact, a subscription. Spam is not filtered here; it has no
+address to arrive at. The cost is real and worth saying out loud: first contact
+needs an introduction, the way it does in physical life.
 
-Publishing attaches a small signed **descriptor** to a record: identity, type,
-title, summary, language, tags, author, timestamps, content hash. The descriptor
-is public; the content itself can still be fetched on demand and can still
-require permission. Withdrawal stops future changes from flowing and does not
-recall what anyone already has — which is a fact about giving people data, not a
-flaw in the design, and the interface says so rather than implying otherwise.
+A record can also be made **public**, which makes it *reachable* rather than
+*findable*. Anyone holding its identity can fetch it, so a reference can be
+handed out beyond your contacts — posted, mailed, printed on a poster.
+Withdrawing it stops future changes from flowing and does not recall what anyone
+already has, which is a fact about giving people data rather than a flaw in the
+design, and the interface says so instead of implying otherwise.
 
-Record types are declared by packages and published, which is what lets one
-library view show a book, a playlist and an article side by side. The OS knows
-nothing about what an article is and can still display one.
+Finding public things you have no connection to — indexes, search across
+machines, ranking — is deliberately not part of this. It is a large problem with
+only weak guarantees available to it, and nothing above depends on solving it.
+What you can search is what you can already reach: your rooms, your
+subscriptions, your catalogues.
 
-## Finding things
-
-A world of published records with nothing to find them in is worse than no
-publishing at all. Search is the part of the web that is genuinely hard to
-replace, and pretending otherwise would be the weakest point in the whole
-proposition. So it gets a real design, and it turns on one split.
-
-**An index does retrieval. Your device does ranking.**
-
-An index ingests descriptors and answers queries. Anyone can run one; it holds
-no content. Because every result is a signed descriptor pointing at
-content-addressed bytes, **an index can omit but it cannot forge** — a lying
-index is caught the moment you open a result. Omission is not detectable, and
-saying otherwise would be dishonest; the answer to omission is that indexes are
-cheap to run, cheap to fork, and you subscribe to more than one.
-
-What comes back is a candidate set *with its signals attached*. The signals
-travel; the judgement does not. Your machine ranks.
-
-Three kinds of signal. **Match** is ordinary text and structured relevance,
-computed by the index, with no politics in it. **The vouching graph** is who
-points at this — list inclusions, subscriptions, citations, attestations — all
-signed, typed edges, which makes it a better-structured graph than hyperlinks
-because every edge says what kind of endorsement it is. It is walked outward
-from your own neighbourhood rather than from a global authority, which is what
-makes it resistant in practice: minting a thousand publishers is free, getting
-one of them subscribed to is not. **Personal** signals are your subscriptions,
-your rooms, your history, and they never leave the device.
-
-Because ranking is local, **rankers are packages** — sandboxed, no network,
-handed the candidate set and your local graph. Everywhere else, the index and
-the ranker are welded together inside one company, and that weld is the actual
-moat. Here a better ranker is something you add. And ranking can explain itself,
-because you own every input: *first because three lists you follow include it,
-and its author has published in this type for four years.*
-
-Curation is a **list**, and a list is just a record type: an ordered set of
-references with notes, authored by somebody, and a CRDT so a list can be
-curated by several people at once. Lists compose. Every product that would
-otherwise be special-cased is a list — an app catalogue, a magazine issue, a
-syllabus, a reading list, an entire distribution. Recommendation becomes
-subscription, performed by parties with names, who can be dropped.
-
-Subscription is the primitive under all of it. Following a person, taking a
-config layer, trusting an index, trusting a source, letting someone reach you —
-one signed edge with a scope, one place to see them all, one place to revoke,
-and portable, because they live in your Profile.
-
-Publishing is free; being *ranked* is not. A record nobody has vouched for still
-matches your queries and still appears, sorted last and marked unvouched. A new
-author is findable immediately and ranked the moment one person lists them.
-
-And it is all one surface. Super+K spans records in this room, records in your
-other rooms, offers waiting for you, published records from the indexes you
-subscribe to, and packages in the catalogues you follow — each row saying where
-it came from. There is no separate app store to visit, because there is no
-separate kind of finding.
+Subscription is the primitive underneath all of it, one concept doing five jobs:
+following a person, taking a configuration layer, trusting a source, following a
+catalogue, and letting someone reach you. One signed edge with a scope. One
+place to see them all, one place to revoke, and portable, because they live in
+your Profile.
 
 ## What kind of computer this is
 
 Adding software stops being a decision, because adding cannot run code and
 cannot acquire power. Trying something stops being a commitment. Where the bytes
 came from stops being a security property. Your configuration is something you
-can read, diff, carry, and hand to a colleague without ever having written it.
-Content moves the way collaboration already moves. Nothing reaches you that you
-did not invite, and nothing is ranked for you by a party you cannot name and
-replace.
+can read, diff, carry and hand to a colleague without ever having written it.
+Content moves the way collaboration already moves, and nothing reaches you that
+you did not invite.
 
 None of that comes from asking people to be careful. It comes from arranging
 things so that carelessness is survivable — which is the only security model
-that has ever worked on a computer someone actually uses.
+that has ever worked on a computer somebody actually uses.
 
 ---
 
 *This describes the model. `plan/distribution.md` has the technical design,
 including what is built today and what is not — the packaging, sandbox and
-image-reproducibility layers exist; source logs, the Profile, descriptors,
-indexes and rankers do not yet.*
+image-reproducibility layers exist; source logs, rebuilder attestations, the
+Profile and offers do not yet.*
