@@ -1,10 +1,33 @@
 # Secure Boot and disk encryption on qOS
 
-qOS boots UEFI → systemd-boot → its own kernel → its own initramfs → systemd.
-There is no shim and no GRUB: the image removes both, and the kernel is built
-here rather than taken from Fedora. Every one of those facts changes what Secure
-Boot can mean, so this document describes the chain as it is, not as a stock
-Fedora bootc image's would be.
+qOS boots UEFI → systemd-boot → a **unified kernel image** → systemd. There is no
+shim and no GRUB: the image removes both, and the kernel is built here rather
+than taken from Fedora. Every one of those facts changes what Secure Boot can
+mean, so this document describes the chain as it is, not as a stock Fedora bootc
+image's would be.
+
+**One correction to note if you have read an earlier version of this file.** It
+used to describe a bare kernel plus a separate initramfs, and before that a
+shim → GRUB chain the image had already deleted. Both were wrong at the time of
+writing. The chain is now a UKI on bootc's composefs backend, which changes three
+things that matter:
+
+- **The command line is inside the signature.** It used to sit beside the kernel
+  as an editable file on the EFI system partition, so any hardening option could
+  be stripped by anything that could write there. Sealing it into the UKI is what
+  makes `qos.generation=` trustworthy enough to bind an unlock policy to — see
+  [rollback.md](rollback.md).
+- **The initramfs is inside the signature too.** Previously it was a plain archive
+  the loader handed to the kernel *after* verification, and it is where the
+  encrypted root gets unlocked — so anyone able to write the boot partition ran
+  code before the root opened, with Secure Boot on and every signature valid.
+  That gap is closed: secure boot here now buys a verified *boot*, not merely a
+  verified kernel.
+- **There is no bootupd.** A sealed image must not carry it, and it is not needed:
+  signing is `sbsign` over one artefact.
+
+Why composefs rather than ostree at all is recorded in
+[composefs-decision.md](composefs-decision.md).
 
 ## The chain has no vendor signature, and cannot get one
 
