@@ -13,7 +13,7 @@
 # command line rather than an editable file beside the kernel.
 #
 # The UKI is NOT signed here. qOS's root of trust is a Platform Key the machine
-# generates for itself (docs/secure-boot.md), so there is no key at image-build
+# generates for itself (docs/security/boot-chain.md), so there is no key at image-build
 # time that the target firmware would accept. /usr/libexec/qos-secureboot signs
 # the UKI on the installed machine, and qos-secureboot-sign.path already watches
 # /boot/EFI/Linux for a newly staged one. Measurement does not depend on the
