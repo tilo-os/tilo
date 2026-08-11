@@ -101,6 +101,21 @@ if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
   else
     no "no StubPcrKernelImage EFI variable — this was probably not booted as a UKI, so the command line is not measured"
   fi
+
+  # systemd's own verdict on the same question, which is the one the units use.
+  # Asking it directly beats inferring it from the variables above: this is the
+  # condition a unit gated on a measured boot will be evaluated against.
+  if command -v systemd-analyze >/dev/null 2>&1; then
+    if systemd-analyze condition 'ConditionSecurity=measured-uki' >/dev/null 2>&1; then
+      ok "systemd agrees this is a measured UKI (ConditionSecurity=measured-uki)"
+    else
+      no "systemd says ConditionSecurity=measured-uki is unmet — anything gated on a
+         measured boot will be skipped, and a seal to PCR 11 is not bound to this
+         command line"
+    fi
+  else
+    no "systemd-analyze is missing; systemd's own measured-UKI verdict cannot be read"
+  fi
 else
   na "no TPM on this machine; rollback binding is unavailable by design"
 fi
