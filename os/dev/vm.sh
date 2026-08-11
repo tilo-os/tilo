@@ -8,11 +8,21 @@
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #
-# --tpm attaches a software TPM 2.0 (swtpm), state persisted across boots so an
-# enrolled disk can be unlock-tested. --secboot selects the Secure-Boot OVMF
-# build, whose variable store starts in setup mode with SMM enforcement on, so
-# `qos-secureboot enroll` inside the guest is a real test.
+# --tpm attaches a software TPM 2.0 (swtpm), started, state persisted across boots
+# so an enrolled disk can be unlock-tested and a measured boot can be observed.
+# It also pins the firmware to the 4 MB OVMF build — the only one with TPM
+# support; the boot is refused rather than run against a firmware that cannot
+# measure (see os/dev/_common.sh). `vm.sh firmware` prints what was selected.
+#
+# The variable store is PRISTINE by default: no keys, Secure Boot in setup mode,
+# re-seeded every boot, which is the state that both measures and accepts an
+# owner-signed image. --secboot keeps that store across boots instead, so that
+# enrolling keys in the guest (`/usr/libexec/qos-secureboot enroll`) sticks —
+# enrolment is an explicit step, never something the template arrives with.
+# QOS_SECBOOT_KEYS=microsoft boots the vendor-key store on purpose.
 #   ./os/dev/vm.sh wait                        block until the greeter is up
+#   ./os/dev/vm.sh firmware [--tpm] [--secboot]  which OVMF/varstore/format, and
+#                                              whether it can measure
 #   ./os/dev/vm.sh login [USER PASS]           type credentials into tuigreet
 #   ./os/dev/vm.sh shot NAME                   framebuffer -> $QOS_RUN/NAME.png
 #   ./os/dev/vm.sh type STRING                 type a string (sendkey)
@@ -75,11 +85,10 @@ cmd_boot() {
     msg "attaching $attach as /dev/vdb"
   fi
 
-  local code vars rn display
-  code="$(ovmf_code)"
-  vars="$(ovmf_vars)"
+  local varstore rn display
+  firmware_setup
+  varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
   local res="xres=$QOS_XRES,yres=$QOS_YRES"
   case "$mode" in
     gl)
@@ -98,8 +107,7 @@ cmd_boot() {
   esac
 
   local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
-    -drive if=pflash,format=raw,readonly=on,file=$code \
-    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
@@ -129,10 +137,10 @@ cmd_boot_installer() {
   local disk="$QOS_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
   vm_running && die "VM already running; stop it first"
-  local code vars display rn
-  code="$(ovmf_code)"; vars="$(ovmf_vars)"
+  local varstore display rn
+  firmware_setup
+  varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
   local target="$QOS_TARGET_DISK"
   inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$QOS_TARGET_SIZE'" >/dev/null
   local res="xres=$QOS_XRES,yres=$QOS_YRES"
@@ -144,8 +152,7 @@ cmd_boot_installer() {
   msg "boot-installer ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
-    -drive if=pflash,format=raw,readonly=on,file=$code \
-    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio \
     -drive file=$target,format=qcow2,if=virtio \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
@@ -169,10 +176,10 @@ cmd_boot_target() {
     *) die "boot-target: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "target disk not found: $disk (run vm.sh boot-installer and install first)"
   vm_running && die "VM already running; stop it first"
-  local code vars display rn
-  code="$(ovmf_code)"; vars="$(ovmf_vars)"
+  local varstore display rn
+  firmware_setup
+  varstore="$(firmware_varstore)"
   rm -f "$QOS_SERIAL" "$QOS_MON" "$QOS_PIDFILE"
-  inenv "cp -f '$vars' '$QOS_RUN/vars.fd'"
   local res="xres=$QOS_XRES,yres=$QOS_YRES"
   case "$mode" in
     gl) rn="$(detect_rendernode)"; display="-device virtio-vga-gl,$res -display egl-headless,rendernode=$rn";;
@@ -181,8 +188,7 @@ cmd_boot_target() {
   esac
   msg "boot-target ($mode, ${QOS_XRES}x${QOS_YRES}) disk=$disk (installed system)"
   local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
-    -drive if=pflash,format=raw,readonly=on,file=$code \
-    -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
+    $(pflash_args "$varstore") \
     -drive file=$disk,format=qcow2,if=virtio \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
@@ -201,10 +207,29 @@ cmd_wait() {
     if tr -d '\000' < "$QOS_SERIAL" 2>/dev/null | grep -aq 'Started.*greetd.service\|session-c1.scope'; then
       msg "greeter up (~$((i*2))s)"; return 0
     fi
-    vm_running || die "qemu exited during boot; see $QOS_QEMU_LOG / $QOS_SERIAL"
+    vm_running || { boot_diagnose "$QOS_SERIAL" || true
+      die "qemu exited during boot; see $QOS_QEMU_LOG / $QOS_SERIAL"; }
     sleep 2
   done
+  boot_diagnose "$QOS_SERIAL" || true
   die "timed out waiting for greeter (see $QOS_SERIAL)"
+}
+
+# Print the firmware this configuration resolves to, and why. The selection
+# decides whether anything can be measured at all, so it has to be inspectable
+# without booting.
+cmd_firmware() {
+  while [ $# -gt 0 ]; do case "$1" in
+    --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;; --secboot) QOS_SECBOOT=1;;
+    *) die "firmware: unknown arg $1";; esac; shift; done
+  firmware_setup
+  printf 'code       %s\n' "$QOS_FW_CODE"
+  printf 'vars       %s\n' "$QOS_FW_VARS"
+  printf 'format     %s\n' "$QOS_FW_FMT"
+  printf 'keys       %s\n' "$QOS_SECBOOT_KEYS"
+  printf 'measures   %s\n' "$QOS_FW_MEASURES"
+  printf 'smm        %s\n' "$QOS_FW_SMM"
+  printf 'tpm        %s\n' "$QOS_TPM"
 }
 
 cmd_shot() {
@@ -305,6 +330,7 @@ case "$sub" in
   boot-installer) cmd_boot_installer "$@";;
   boot-target) cmd_boot_target "$@";;
   wait) cmd_wait "$@";;
+  firmware) cmd_firmware "$@";;
   login) cmd_login "$@";;
   shot) cmd_shot "$@";;
   type) cmd_type "$@";;
@@ -316,6 +342,6 @@ case "$sub" in
   status) cmd_status;;
   stop) cmd_stop;;
   capture-boot) cmd_capture_boot "$@";;
-  -h|--help|"") sed -n '2,40p' "$0";;
+  -h|--help|"") sed -n '2,48p' "$0";;
   *) die "unknown subcommand: $sub (try --help)";;
 esac

@@ -117,9 +117,8 @@ EOF
   emit_json "precondition" false "missing qcow2"; exit 3
 }
 
-CODE="$(ovmf_code)"
-VARS_SRC="$(ovmf_vars)"
-inenv "cp -f '$VARS_SRC' '$VARS'"
+firmware_setup
+inenv "cp -f '$QOS_FW_VARS' '$VARS'"
 
 # Backing-file snapshot so the input qcow2 stays byte-for-byte identical.
 # Same trick scripts/perf/qemu-boot-measure.sh uses.
@@ -205,9 +204,8 @@ BOOT_START="$(date +%s)"
 rm -f "$MON" "$CONSOLE"
 
 BOOT_ARGS="\
-  -machine q35,accel=kvm -enable-kvm -m 4096 -cpu host -smp 2 \
-  -drive if=pflash,format=raw,readonly=on,file=$CODE \
-  -drive if=pflash,format=raw,file=$VARS \
+  $(machine_args) $(secboot_qemu_args) -enable-kvm -m 4096 -cpu host -smp 2 \
+  $(pflash_args "$VARS") \
   -drive file=$SNAP,format=qcow2,if=virtio \
   -device virtio-vga -display none \
   -nic user,model=virtio-net-pci \
