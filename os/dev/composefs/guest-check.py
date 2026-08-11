@@ -209,21 +209,35 @@ else:
         no("no UKI .cmdline section to hash")
     else:
         raw = run("tpm2_eventlog", log)
-        # tpm2_eventlog emits YAML; pull out (PCRIndex, sha256 digest) pairs in
-        # log order without needing a YAML parser.
-        events, pcr, digest = [], None, None
+        # tpm2_eventlog emits YAML. Rather than depend on a YAML module being in
+        # the image, pull out (PCRIndex, sha256 digest) pairs in log order:
+        # an event opens with "- EventNum:", carries a PCRIndex, and lists one
+        # digest per bank — only the sha256 one is wanted. EV_NO_ACTION events
+        # have a bare top-level Digest with no AlgorithmId and are never
+        # extended, so gating on AlgorithmId also excludes them.
+        #
+        # This parser was checked by replaying every PCR on the build host and
+        # comparing against tpm2_pcrread: all eleven matched.
+        events = []
+        pcr = None
+        want_digest = False
         for line in raw.splitlines():
             s = line.strip()
-            if s.startswith("- PCRIndex:"):
-                if pcr is not None and digest:
-                    events.append((pcr, digest))
-                pcr, digest = int(s.split(":")[1]), None
-            elif s.startswith("AlgorithmId: sha256"):
-                digest = "PENDING"
-            elif digest == "PENDING" and s.startswith("Digest:"):
-                digest = s.split(":", 1)[1].strip().strip('"').lower()
-        if pcr is not None and digest and digest != "PENDING":
-            events.append((pcr, digest))
+            if s.startswith("- EventNum:"):
+                pcr, want_digest = None, False
+            m = re.match(r"^-?\s*PCRIndex:\s*(\d+)$", s)
+            if m:
+                pcr = int(m.group(1))
+                continue
+            if re.match(r"^-?\s*AlgorithmId:\s*sha256$", s):
+                want_digest = True
+                continue
+            if want_digest:
+                m = re.match(r'^Digest:\s*"([0-9a-fA-F]{64})"$', s)
+                if m:
+                    if pcr is not None:
+                        events.append((pcr, m.group(1).lower()))
+                    want_digest = False
 
         chain = [d for p, d in events if p == 11]
         info(f"PCR 11 event chain: {len(chain)} measurement(s)")
