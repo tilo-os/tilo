@@ -56,7 +56,7 @@ snapshot() {
   guest 'set -e
     gen=$(tr " " "\n" < /proc/cmdline | sed -n "s/^qos\.generation=//p" | head -1)
     cfs=$(tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p" | head -1)
-    pcr11=$(tpm2_pcrread sha256:11 2>/dev/null | awk "/11 *:/{print \$3}")
+    pcr11=$(tpm2_pcrread sha256:11 2>/dev/null | sed -n "s/.*11 *: *0x\([0-9A-Fa-f]*\).*/\1/p")
     echo "booted_generation=${gen:-none}"
     echo "composefs=${cfs:0:16}"
     echo "pcr11=${pcr11}"
@@ -84,7 +84,7 @@ for gen in 2 3; do
   # digest the upgrade wants out of its own error, rebuild the UKI sealing it,
   # republish, retry. If the second attempt reports a *different* expected digest
   # again, the value depends on the UKI and the seal cannot be closed.
-  if ! guest "bootc upgrade --apply=false" 2>&1 | tee -a "$LOG.up$gen" | tee -a "$LOG"; then
+  if ! guest "bootc upgrade" 2>&1 | tee -a "$LOG.up$gen" | tee -a "$LOG"; then
     want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG.up$gen" | tail -1)"
     if [ -z "$want" ]; then
       warn "bootc upgrade to generation $gen FAILED for another reason"; break
@@ -92,7 +92,7 @@ for gen in 2 3; do
     note "upgrade wants sha512:${want:0:32}… — rebuilding generation $gen sealing it"
     QOS_CFS_DIGEST="$want" bash "$HERE/build.sh" "$gen" >>"$LOG" 2>&1
     publish "$gen"
-    if ! guest "bootc upgrade --apply=false" 2>&1 | tee -a "$LOG.up${gen}b" | tee -a "$LOG"; then
+    if ! guest "bootc upgrade" 2>&1 | tee -a "$LOG.up${gen}b" | tee -a "$LOG"; then
       want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$LOG.up${gen}b" | tail -1)"
       if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
         warn "the expected digest MOVED (${want:0:16}… -> ${want2:0:16}…): the seal is circular"
