@@ -1,11 +1,16 @@
 # bootc reads every /usr/lib/bootc/install/*.toml at `bootc install {to-disk,
 # to-filesystem}` time and merges them into the install configuration. Baking
 # this drop-in into the image makes systemd-boot the default bootloader for
-# every install path — the desktop qcow2 that bootc-image-builder produces
-# (the same install code path bib drives internally), the Anaconda
-# `ostreecontainer` path from the ISO, and the custom `qos-install` frontend
-# that ultimately execs `bootc install to-disk` — without every caller having
-# to pass `--bootloader systemd`.
+# every install path — the desktop qcow2 os/dev/disk-image.sh produces and the
+# custom `qos-install` frontend that ultimately execs `bootc install to-disk` —
+# without every caller having to pass `--bootloader systemd`.
+#
+# This key is also what forces the *composefs* backend: `bootc install` refuses
+# systemd-boot on the ostree backend ("bootupd is required for ostree-based
+# installs"), because bootupd only plants GRUB. disk-image.sh reads this file and
+# selects the backend accordingly. It is also why bootc-image-builder could not
+# build this image — bib hits the same refusal and has no way to ask for the
+# composefs backend.
 #
 # systemd-boot vs GRUB, why:
 #   * Faster boot (no menu render step, no grub2 module load, no font/theme).
