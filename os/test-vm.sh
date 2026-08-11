@@ -17,7 +17,7 @@ if [ ! -f "$OVMF" ]; then
 fi
 
 echo "Starting qOS VM with disk: $DISK"
-echo "Login: quickuser / qos"
+echo "Login: quickuser / quickdesktop"
 
 qemu-system-x86_64 \
     -enable-kvm \

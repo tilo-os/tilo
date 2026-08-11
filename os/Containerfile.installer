@@ -44,6 +44,24 @@ COPY usr/share/qos/selinux/qos-installer.cil /usr/share/qos/selinux/qos-installe
 # Point greetd at the session selector (installer-vs-greeter by cmdline).
 COPY etc/greetd/config.installer.toml /etc/greetd/config.toml
 
+# `qos.installer=1` — the one thing that distinguishes the live medium from a
+# normal install:
+#   * qos-session-select sees it and launches the installer, not the greeter.
+#   * qos-install refuses to run without it (a safety guard).
+#   * qos-installer-setup.service (ConditionKernelCommandLine=qos.installer)
+#     drops in the passwordless sudoers rule only here.
+# The INSTALLED system has no such argument, so it boots straight to the desktop.
+#
+# It belongs to the image rather than to the disk-image step. It used to be
+# bootc-image-builder's `[customizations.kernel] append` in os/installer-disk.toml,
+# which reached only that one build path — and could not reach a sealed image at
+# all, since a UKI's command line is signed at build time. /usr/lib/bootc/kargs.d
+# is read by every install path AND by `bootc container ukify`, so the same two
+# lines put the argument on an unsealed command line today and inside the signed,
+# measured one the moment this image grows a UKI.
+RUN printf 'kargs = ["qos.installer=1"]\n' \
+      > /usr/lib/bootc/kargs.d/50-installer.toml
+
 # Enable the two new units. greetd / graphical.target are already enabled by
 # the base qOS image.
 RUN systemctl enable qos-firstboot-user.service qos-installer-setup.service

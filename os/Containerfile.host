@@ -10,7 +10,7 @@
 #     podman build -f os/Containerfile.host -t localhost/qos-host:latest .
 #
 # The disk-image step is the same as the desktop image:
-# `bootc-image-builder` writes a qcow2 the operator installs onto
+# `os/build-host.sh` writes a qcow2 the operator installs onto
 # a target machine. See os/build-host.sh.
 # ============================================================================
 
