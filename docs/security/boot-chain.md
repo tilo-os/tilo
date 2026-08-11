@@ -110,12 +110,19 @@ displace a live Platform Key.
 ### Prerequisite: the signing tools
 
 `qos-secureboot` needs `sbsign`/`sbverify` (`sbsigntools`) and
-`cert-to-efi-sig-list`/`efi-updatevar`/`efi-readvar` (`efitools`). Neither is in
-the image's frozen package snapshot yet, and each subcommand refuses with the
-exact remedy rather than half-signing a boot chain. To ship them: add
-`sbsigntools efitools` to a `dnf install` block in `os/Containerfile` and re-run
-the `snapshot-rpms` workflow, which scrapes those blocks to derive the snapshot's
-package set (`os/Containerfile.rpms`), then commit the new `RPMS_REF`.
+`cert-to-efi-sig-list`/`efi-updatevar`/`efi-readvar` (`efitools`). Both are now in
+the image and in the frozen package snapshot, along with `systemd-ukify` for
+building the UKI. Each subcommand still refuses with the exact remedy if a tool is
+missing, rather than half-signing a boot chain.
+
+Worth knowing how they were absent for so long: they were *named* in
+`os/Containerfile` but not present in the digest-pinned snapshot, and they live in
+a deliberately tolerant `dnf install` — so it installed nothing, silently, while
+every build stayed green. The snapshot's package set is scraped from those
+`dnf install` blocks, so adding a package means re-running the `snapshot-rpms`
+workflow and committing the new `RPMS_REF`; naming it alone does nothing. The
+tolerance is right (the tool fails closed), but it means a missing package is
+invisible unless something checks.
 
 ### What owner-enrolled Secure Boot buys
 
@@ -129,13 +136,19 @@ With Secure Boot off, that binding records "Secure Boot is off" — which is a
 consistent measurement but not a meaningful one, since the state it attests to is
 the state in which the boot chain is unverified.
 
-### The Unified Kernel Image gap, and what it costs
+### The gap this used to have, and what closing it changed
 
-The design calls for kernel, initramfs and command line sealed into one signed
-binary. qOS does not have that, and the consequences are larger than "a nice
-property we lack", so they are worth setting out rather than filing.
+**Everything from here to the end of this section describes the *ostree* backend,
+which qOS has left.** It is kept because it is the clearest account of why the UKI
+matters, and because the reasoning is what justified moving backends at all — but
+read it as history, not as a description of the current image. On composefs with a
+UKI: the initramfs and the command line are both inside the signature, `PCR 11`
+carries `qos.generation=`, and `os/tests/rollback-boot-check.sh` passes on a booted
+VM. What is still missing is listed in [defects.md](defects.md) — chiefly that the
+production `os/Containerfile` installs `systemd-ukify` but does not yet build a
+UKI, so a bib-built image still fails this check for real reasons.
 
-#### What signing actually covers on the ostree backend
+#### What signing covered on the ostree backend
 
 The firmware verifies what it `LoadImage()`s. On this backend that is
 systemd-boot, and then the kernel — both PE binaries, both signable, both signed
