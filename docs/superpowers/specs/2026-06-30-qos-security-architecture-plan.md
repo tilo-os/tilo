@@ -1,8 +1,15 @@
 # qOS security architecture — full defense-in-depth plan (UX-first)
 
+> **Superseded on identity and boot.** The identity model here was the first
+> statement of the device-key ≠ account-key invariant, and that part is still
+> load-bearing — but the current concept, threat model and boot chain live in
+> [docs/security/](../../security/README.md). Read this for the reasoning behind
+> §6.1 and for detail the newer document does not repeat, not as a description of
+> what qOS does today.
+
 Status: **plan / design.** Supersedes nothing; **extends** `plan/security.md`
 (sandbox, seccomp, portals, capability grants, input firewall, P2P identity —
-all built) and `docs/secure-boot.md` (Secure Boot assessment), and upgrades the
+all built) and `docs/security/boot-chain.md` (Secure Boot assessment), and upgrades the
 naive `tpm2-luks` shipped in E2 into a real, recoverable, measured boot+unlock
 story.
 
@@ -105,7 +112,7 @@ Concrete rules applied throughout:
 ## 4. Boot integrity (T0) — **load-bearing, design into the updater now**
 
 ### What exists
-`docs/secure-boot.md`: the `fedora-bootc:44` base ships the signed chain
+`docs/security/boot-chain.md`: the `fedora-bootc:44` base ships the signed chain
 (MS-signed shim → Fedora-signed GRUB → Fedora-signed kernel). qOS needs no MOK
 today (no out-of-tree modules). SB is HW-gated for verification (dev OVMF is
 non-SB).
@@ -458,7 +465,7 @@ the chip alone:
 
 ## 14. Verification (how we prove each layer is real, not aspirational)
 
-- **Boot/disk:** the QEMU **SB harness** from `docs/secure-boot.md` (`*.secboot.fd`
+- **Boot/disk:** the QEMU **SB harness** from `docs/security/boot-chain.md` (`*.secboot.fd`
   + enrolled vars) + a **swTPM** (`-tpmdev emulator`) in the dev VM → test:
   healthy silent unlock, post-update re-seal (no recovery prompt), tamper →
   recovery path, recovery-key + FIDO2 unlock. None of this needs real hardware
@@ -477,7 +484,7 @@ the chip alone:
 
 - **Extends** `plan/security.md` (T1/T2 sandbox + identity — unchanged, still
   current).
-- **Extends** `docs/secure-boot.md` (§4 adds measured boot + signed predictions
+- **Extends** `docs/security/boot-chain.md` (§4 adds measured boot + signed predictions
   on top of its SB assessment).
 - **Upgrades** E2 (`os/usr/libexec/qos-install` `--encrypt`) from §5's naive
   TPM-only to multi-factor + recovery.
