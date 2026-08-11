@@ -425,16 +425,35 @@ if [ -n "$USERSPEC" ]; then
   # lock rather than like a read-only filesystem.
   sudo -n mount -o remount,rw "$MNT"
   msg "creating user $u_name (groups: ${u_groups:-none}) in $t_etc"
-  sudo -n podman run --rm --privileged \
-    -v "$t_etc:/target-etc" -v "$t_var:/target-var" "$IMAGE" \
+  # $RUNREF, not $IMAGE: on the composefs path the image was never copied into
+  # ROOT container storage — only pushed to the local registry, which is where
+  # the install pulled it from — so root podman resolves the rootless-storage
+  # name as a registry reference and fails "pinging container registry localhost".
+  user_run_args=(--rm --privileged
+    -v "$t_etc:/target-etc" -v "$t_var:/target-var")
+  if [ -n "$SRC_REF" ]; then
+    user_run_args+=(--network host
+      -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+  fi
+  sudo -n podman run "${user_run_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+    "$RUNREF" \
     bash -c "set -e
       mount --bind /target-etc /etc
       mount --bind /target-var /var
       useradd -m ${u_groups:+-G '$u_groups'} '$u_name'
       printf '%s:%s\n' '$u_name' '$u_pass' | chpasswd
-      # An unlabelled home directory is a login failure on an SELinux-enforcing
-      # image, and the policy that knows the right label is in this image.
-      restorecon -R /var/home 2>/dev/null || true"
+      # Label the new home. A home directory inherited from /var comes out
+      # \`var_t\` rather than \`user_home_dir_t\`, which an SELinux-enforcing session
+      # does not get to use.
+      #
+      # \`restorecon\` cannot do this: a container has no /sys/fs/selinux, so
+      # is_selinux_enabled() is false and restorecon exits 0 having relabelled
+      # nothing — silently, which is how this shipped mislabelled the first time.
+      # \`setfiles\` given an explicit file_contexts works with SELinux inactive,
+      # which is exactly the offline-relabel case it exists for.
+      fc=/etc/selinux/targeted/contexts/files/file_contexts
+      [ -r \"\$fc\" ] || { echo 'no file_contexts in the image; home left unlabelled' >&2; exit 1; }
+      setfiles -F \"\$fc\" /var/home"
 fi
 
 cleanup
