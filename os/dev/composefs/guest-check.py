@@ -123,9 +123,13 @@ else:
     no("no composefs= on the command line — this is not a composefs boot")
 
 # --- is this actually the composefs backend? ---------------------------------
-if os.path.isdir("/sysroot/state/deploy"):
-    deploys = sorted(os.listdir("/sysroot/state/deploy"))
-    ok(f"composefs state dir present: {len(deploys)} deployment(s) under /sysroot/state/deploy")
+# Where the physical root is mounted depends on how the initramfs handed over, so
+# look in each place it can be rather than assuming one.
+STATE_DIRS = ["/sysroot/state/deploy", "/state/deploy", "/run/host/state/deploy"]
+state_dir = next((d for d in STATE_DIRS if os.path.isdir(d)), None)
+if state_dir:
+    deploys = sorted(os.listdir(state_dir))
+    ok(f"composefs state dir present: {len(deploys)} deployment(s) under {state_dir}")
     for d in deploys:
         marker = " <- booted" if cfs and d == cfs.group(1) else ""
         info(f"  {d[:24]}…{marker}")
@@ -134,7 +138,7 @@ if os.path.isdir("/sysroot/state/deploy"):
     elif cfs:
         no("no deployment directory matches the composefs digest on the command line")
 else:
-    no("/sysroot/state/deploy is missing — not a composefs-backend system")
+    no(f"none of {', '.join(STATE_DIRS)} exists — not a composefs-backend system")
 
 if os.path.isdir("/ostree/repo") or os.path.isdir("/sysroot/ostree/repo"):
     no("an ostree repo exists — this looks like the ostree backend")
