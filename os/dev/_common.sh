@@ -319,8 +319,14 @@ swtpm_start() {
   # A leftover swtpm from before this fix would be reused silently and put the
   # unstarted TPM back, so check what is actually listening rather than trusting
   # the socket's existence.
+  #
+  # The '^' matters. `pgrep -f 'swtpm socket'` also matches the shell running this
+  # very check — its command line contains the pattern, the socket path and the
+  # flag name — so an unanchored match finds itself and reports every leftover as
+  # correctly started. Anchoring restricts it to processes whose command line
+  # begins with swtpm.
   if inenv "test -S '$QOS_TPM_SOCK'" && \
-     ! inenv "pgrep -af 'swtpm socket' | grep -F -- '$QOS_TPM_SOCK' | grep -q startup-clear"; then
+     ! inenv "pgrep -af '^swtpm socket' | grep -F -- '$QOS_TPM_SOCK' | grep -q startup-clear"; then
     warn "a swtpm without --flags startup-clear holds $QOS_TPM_SOCK; replacing it"
     swtpm_stop; sleep 1; inenv "rm -f '$QOS_TPM_SOCK'"
   fi
@@ -354,7 +360,11 @@ swtpm_start() {
   msg "swtpm up (TPM 2.0, started, state=$QOS_TPM_DIR)"
 }
 swtpm_stop() {
-  inenv "pkill -f \"swtpm socket .*$QOS_TPM_SOCK\" 2>/dev/null || true"
+  # Anchored for the same reason as the check above, and here it also stops the
+  # kill from landing on the wrong process: unanchored, the pattern matches the
+  # shell running pkill — so this killed its own wrapper (that is the "Terminated"
+  # line every `vm.sh stop` printed) and could leave the emulator running.
+  inenv "pkill -f \"^swtpm socket .*$QOS_TPM_SOCK\" 2>/dev/null || true"
 }
 # qemu args attaching the swtpm to the guest (empty when TPM disabled).
 tpm_qemu_args() {
