@@ -1028,7 +1028,8 @@ RUN chmod 0755 /usr/libexec/qos/luks-enrolment-test.sh \
 
 # Validate.
 #
-# This stays at the end, including once the image gains a Unified Kernel Image.
+# This stays at the end of the rootfs stage, ahead of the kernel split rather than
+# moved before it defensively.
 # The worry was that lint would reject a split-kernel rootfs — `bootc container
 # split-kernel-and-rootfs` moves vmlinuz and initramfs.img out of
 # /usr/lib/modules/$kver and into a UKI under /boot — and would have to run
