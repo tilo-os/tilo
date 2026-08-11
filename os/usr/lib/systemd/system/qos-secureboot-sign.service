@@ -1,6 +1,6 @@
 [Unit]
 Description=Sign boot artefacts with the owner's Secure Boot key
-Documentation=file:///usr/share/doc/qos/secure-boot.md
+Documentation=file:///usr/share/doc/qos/boot-chain.md
 # A staged deployment brings a new kernel file that nothing has signed yet. Sign
 # it as soon as the system is up, and again right after the update timer runs, so
 # the window in which a reboot would find an unsigned kernel is as small as it
