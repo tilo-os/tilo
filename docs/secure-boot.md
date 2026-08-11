@@ -300,20 +300,29 @@ initrd generation to the image build.
 
 ## Testing it in a VM
 
-`os/dev/vm.sh` boots the plain OVMF build by default, which has no Secure Boot
-support at all — an SB test against it proves nothing.
+`os/dev/vm.sh` always boots the 4 MB Secure-Boot OVMF build with SMM on and the
+pflash marked secure, because that is the only Fedora build with TPM support: the
+2 MB one reports zero active PCR banks, so nothing is measured and every PCR reads
+zero. `vm.sh firmware` prints what was selected and whether it can measure; a
+`--tpm` boot on a host that has only the 2 MB build is refused rather than run
+against a firmware that cannot measure into it.
 
 ```bash
 ./os/dev/vm.sh boot --tpm --attach /tmp/qos-vm/enc.qcow2   # TPM 2.0 via swtpm
-./os/dev/vm.sh boot --secboot                              # SB firmware, SMM enforced
+./os/dev/vm.sh boot --secboot                              # keep the variable store
 ```
 
-`--secboot` selects `OVMF_CODE.secboot.fd`, enables SMM, and marks the pflash
-secure so the variable store is not writable from outside SMM — without that,
-enforcement is nominal and the guest could rewrite `db` itself. Its variable
-store starts in setup mode with no keys enrolled, which is exactly the state
-`qos-secureboot enroll` expects, so the whole owner-enrolment flow can be driven
-inside the guest.
+Enforcement is a property of the **variable store**, not of a qemu flag. By
+default the store is pristine — no keys, Secure Boot in setup mode, re-seeded
+every boot — which still measures into PCR 7 and is exactly the state
+`qos-secureboot enroll` expects. `--secboot` keeps that store across boots so the
+enrolment done inside the guest survives a restart of qemu, making enrolment an
+explicit step rather than something the firmware template arrived with.
+`QOS_SECBOOT_KEYS=microsoft` boots the vendor-key store on purpose; note that it
+rejects an owner-signed UKI outright, so nothing boots.
 
-`--tpm` attaches a software TPM whose state persists in `$QOS_TPM_DIR`, so a disk
-enrolled in one boot can be unlock-tested in the next.
+`--tpm` attaches a software TPM, **started** (`--flags
+not-need-init,startup-clear`), whose state persists in `$QOS_TPM_DIR`, so a disk
+enrolled in one boot can be unlock-tested in the next. Without that flag the
+emulator answers `TPM_RC_INITIALIZE` to every command and the boot is not measured
+at all, which looks exactly like a UKI that failed to measure.
