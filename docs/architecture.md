@@ -26,7 +26,7 @@ A P2P collaborative filesystem mounted at `/var/workspace`.
 
 ## Image Structure
 
-The OS is built using `Containerfile` and converted to a bootable image via `bootc-image-builder`.
+The OS is built using `Containerfile` and converted to a bootable image via `os/dev/disk-image.sh`, which partitions with `systemd-repart` and installs with `bootc install to-filesystem`.
 
 -   **Base**: Fedora bootc 44, mirrored into `code.podesta.ai/qos/fedora-bootc` and pinned by digest in `os/base-snapshot.env` (see `docs/supply-chain.md` for why the mirror exists).
 -   **FUSE Support**: `fuse3` installed for userspace filesystem mounting.
