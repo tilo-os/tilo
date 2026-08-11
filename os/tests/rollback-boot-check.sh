@@ -54,13 +54,36 @@ fi
 if [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; then
   ok "a TPM is present ($( [ -e /dev/tpmrm0 ] && echo /dev/tpmrm0 || echo /dev/tpm0 ))"
 
+  # The firmware's own event log. Without it the firmware never exposed a working
+  # TCG2 protocol, and then every PCR below reads zero no matter what the kernel
+  # did — so this is checked first and named, rather than letting a firmware
+  # problem surface as "the UKI did not measure".
+  evlog=/sys/kernel/security/tpm0/binary_bios_measurements
+  if [ -r "$evlog" ] && [ "$(head -c 1 "$evlog" 2>/dev/null | wc -c)" -gt 0 ]; then
+    ok "the firmware produced a TPM event log ($evlog)"
+  else
+    no "no firmware TPM event log at $evlog — the firmware exposed no working TCG2,
+         so nothing was measured and the PCR values below cannot mean anything.
+         On a VM this is the 2 MB OVMF build (no TPM support) or a software TPM
+         that was never sent TPM2_Startup; see os/dev/_common.sh."
+  fi
+
   if command -v tpm2_pcrread >/dev/null 2>&1; then
-    zero='0000000000000000000000000000000000000000000000000000000000000000'
     for pcr in 7 11; do
-      val="$(tpm2_pcrread "sha256:$pcr" 2>/dev/null | awk -v p="$pcr:" '$1==p{print tolower($2)}' | tr -d '0x')"
+      # tpm2_pcrread pads the index column, so a single-digit PCR prints as
+      # "  7 : 0x…" while a two-digit one prints as " 11: 0x…". Matching a field
+      # against "$pcr:" therefore misses every single-digit PCR and reports a
+      # perfectly good measurement as unreadable. Match the punctuation instead of
+      # assuming the layout, and keep the digits: deleting the "0x" prefix with
+      # `tr -d '0x'` deletes every 0 and every x in the value too, which turns an
+      # all-zero PCR into an empty string — i.e. reports "could not be read" for
+      # the one state this check exists to catch.
+      val="$(tpm2_pcrread "sha256:$pcr" 2>/dev/null \
+             | sed -n "s/^[[:space:]]*$pcr[[:space:]]*:[[:space:]]*0[xX]\([0-9a-fA-F]\{16,\}\).*/\1/p" \
+             | head -1 | tr 'A-F' 'a-f')"
       if [ -z "$val" ]; then
-        no "PCR $pcr could not be read"
-      elif [ "$val" = "$zero" ]; then
+        no "PCR $pcr could not be read (no sha256:$pcr value in tpm2_pcrread output)"
+      elif [ -z "${val//0/}" ]; then
         no "PCR $pcr is all zeroes — nothing measured into it, so sealing to it means nothing"
       else
         ok "PCR $pcr holds a non-zero measurement"
@@ -159,13 +182,24 @@ for unit in qos-rollback-harden.service qos-rollback-confirm.timer; do
   fi
 done
 
-state="$(systemctl show -p Result --value qos-rollback-harden.service 2>/dev/null)"
-case "$state" in
-  success) ok "qos-rollback-harden ran successfully" ;;
-  "")      na "qos-rollback-harden has not run" ;;
-  *)       no "qos-rollback-harden result: $state"
-           journalctl -b --no-pager -u qos-rollback-harden.service | tail -10 | sed 's/^/         /' ;;
-esac
+# systemd answers Result=success for a unit it has never heard of, so a missing
+# unit would otherwise be reported as one that ran and succeeded. Ask whether it
+# exists first, and treat "not loaded" as its own answer.
+if ! systemctl cat qos-rollback-harden.service >/dev/null 2>&1; then
+  no "qos-rollback-harden.service does not exist in this image"
+else
+  state="$(systemctl show -p Result --value qos-rollback-harden.service 2>/dev/null)"
+  active="$(systemctl show -p ActiveState --value qos-rollback-harden.service 2>/dev/null)"
+  case "$state:$active" in
+    success:active|success:activating) ok "qos-rollback-harden ran successfully" ;;
+    success:inactive)
+      # Never started this boot. Its conditions may have skipped it, which is a
+      # legitimate outcome; "it ran and worked" is not what that means.
+      na "qos-rollback-harden has not run on this boot" ;;
+    *) no "qos-rollback-harden result: $state (state: $active)"
+       journalctl -b --no-pager -u qos-rollback-harden.service | tail -10 | sed 's/^/         /' ;;
+  esac
+fi
 
 if command -v qos-rollback >/dev/null 2>&1; then
   ok "qos-rollback is installed"
