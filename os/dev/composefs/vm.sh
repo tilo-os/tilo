@@ -21,7 +21,10 @@ source "$HERE/common.sh"
 QOS_TPM=1
 # Pristine (setup mode) but kept across boots: the store is per-generation-series,
 # not per-boot, so anything enrolled during a series is still there afterwards.
-QOS_SECBOOT_KEYS="${QOS_SECBOOT_KEYS:-persist}"
+# Assigned from QOS_CFS_SECBOOT_KEYS, not from itself: _common.sh has already set
+# QOS_SECBOOT_KEYS, and `:-` only fires on unset or empty, so a default written
+# that way would never apply.
+QOS_SECBOOT_KEYS="${QOS_CFS_SECBOOT_KEYS:-persist}"
 QOS_TPM_DIR="$QOS_CFS_RUN/tpm"
 QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
 CFS_MON="$QOS_CFS_RUN/mon.sock"
