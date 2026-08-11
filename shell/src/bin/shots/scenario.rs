@@ -125,6 +125,24 @@ pub enum Action {
         app: &'static str,
         title: &'static str,
     },
+    /// Open a **shell-hosted** app — Notes, Editor, Files, Terminal — as
+    /// its own window, wherever the placement rule puts it.
+    ///
+    /// [`Action::AddHostedTab`] appends to the group that is already
+    /// there, so a scenario built out of it can only ever end up with one
+    /// window on screen. This one goes through
+    /// `placement::placement_for_new_window` and
+    /// `tab_binding::open_hosted_app`, so with a lone window selected the
+    /// app lands in a *new group* beside it — which is what puts two
+    /// apps, both drawing their real content, side by side in the strip.
+    ///
+    /// `app` names the app the way the tab pill does: "Notes", "Editor",
+    /// "Files", "Terminal", "Browser", "Settings". Anything else becomes
+    /// an `AppKind::Other`, which renders as a stub card.
+    OpenHostedWindow {
+        app: &'static str,
+        title: &'static str,
+    },
     /// Sample the make-space slide at fixed points along its curve and
     /// capture each as `prefix-<ms>`.
     ///
@@ -371,6 +389,28 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 st.bump();
             });
         }
+        Action::OpenHostedWindow { app, title } => {
+            let kind = app_kind_for(app);
+            let title = *title;
+            driver.with_chrome(|st: &mut ChromeState| {
+                // Where the window goes is decided now, against the
+                // layout on screen — the same rule a launch applies. A
+                // hosted app has no client process to correlate a
+                // pending-placement note against, so the answer is used
+                // here rather than left for an adoption to pick up.
+                let placement = {
+                    let tree = st.tree();
+                    shell::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+                };
+                {
+                    let mut tree = st.tree_mut();
+                    shell::compositor::tab_binding::open_hosted_app(
+                        &mut tree, kind, title, placement,
+                    );
+                }
+                st.bump();
+            });
+        }
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
             // which is the pass that measures how far each pushed group
@@ -513,6 +553,28 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 st.quick_settings.push_level(lvl);
             });
         }
+    }
+}
+
+/// The [`AppKind`] behind an app name written the way a tab pill spells
+/// it. Inverse of `AppKind::as_str`, so a scenario names apps the way the
+/// screen does rather than the way the enum does.
+///
+/// Unknown names fall through to `AppKind::Other`, which is the same
+/// thing the persisted tree carries for an app the shell has no built-in
+/// widget for — it renders as a stub card rather than panicking.
+fn app_kind_for(app: &str) -> shell::shell::state::AppKind {
+    use shell::shell::state::AppKind;
+    if app.eq_ignore_ascii_case("Terminal") {
+        AppKind::Terminal
+    } else if app.eq_ignore_ascii_case("Files") || app.eq_ignore_ascii_case("FileExplorer") {
+        AppKind::FileExplorer
+    } else if app.eq_ignore_ascii_case("Browser") {
+        AppKind::Browser
+    } else if app.eq_ignore_ascii_case("Settings") {
+        AppKind::Settings
+    } else {
+        AppKind::Other(app.to_string())
     }
 }
 
@@ -739,7 +801,131 @@ pub fn catalogue() -> Vec<Scenario> {
         window_open_into_tabbed_group(),
         window_open_at_visible_seam(),
         window_open_at_next_seam_rightwards(),
+        strip_scroll_across_apps(),
     ]
+}
+
+// =====================================================================
+// The strip itself: several real apps along it, and the pan across them.
+// =====================================================================
+
+/// Lines of wheel delta per pan step. One `LineDelta` is 30 px in
+/// `GroupRow::handle_event`, so this is 60 px of travel per step — small
+/// enough that a recording reads as a pan rather than a cut.
+const PAN_STEP_LINES: f32 = 2.0;
+
+/// Pan steps in each direction. 16 × 60 px ≈ 960 px, which is a little
+/// under the overflow four half-width windows produce on a 1600 px
+/// desktop — so the pan runs the length of the strip without stranding
+/// it in the empty canvas past the last window.
+const PAN_STEPS: usize = 16;
+
+/// Window width the strip is held at, in per-mille of the display's
+/// usable width. Half a screen each puts two windows in view with a
+/// third clipped at the edge.
+const HALF_WIDTH_PERMILLE: u16 = 500;
+
+/// Four shell-hosted apps side by side along the strip, then the strip
+/// panned across them.
+///
+/// The scrollable strip is the compositor's whole spatial model, and
+/// nothing else in the catalogue shows it doing its job: the placement
+/// scenarios open *foreign* toplevels, which render as an empty
+/// "waiting for first frame" card until a real client attaches a buffer,
+/// and every hosted-app scenario has one window in the strip. So this
+/// one opens Notes, Files, Terminal and Editor — each drawing its own
+/// content in-process — as four separate windows, then wheels the strip
+/// across them and back.
+///
+/// Each app is opened with the previous one selected and alone in its
+/// group, which is the placement rule's first branch: a window opened
+/// beside a lone window takes the column to its right. So the strip
+/// grows rightwards one real window at a time, rather than the apps
+/// stacking up as tabs of a single group.
+///
+/// Half-width windows are what make the pan legible — two windows on
+/// screen at once, a third clipped at the right edge, and content
+/// leaving the left edge as the strip moves.
+fn strip_scroll_across_apps() -> Scenario {
+    let mut actions = vec![
+        // The desktop boots with one four-tab group. Cut it to Notes so
+        // the first window is a lone window — the shape the placement
+        // rule turns into a column of its own for the next app.
+        Action::LoneWindow(0),
+        Action::SelectGroup(Some(0)),
+        // One frame first: the resize reaches the live widgets through
+        // the strip's `GroupRow`, which does not exist until a layout
+        // pass has run, and the persisted width alone only shows up on
+        // groups the resync splices in later.
+        Action::Wait(4),
+        // Half the usable width each, held there as the strip fills up:
+        // two windows on screen at a time with a third clipped at the
+        // edge is what makes both the arrivals and the pan legible. A
+        // window opens at its own default width, so this is re-applied
+        // after each one rather than set once.
+        Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+        Action::Wait(2),
+        Action::Snapshot("01-one-window"),
+        Action::OpenHostedWindow {
+            app: "Files",
+            title: "Files",
+        },
+        Action::Wait(PLACEMENT_SETTLE_FRAMES),
+        Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+        Action::SelectGroup(Some(1)),
+        Action::Wait(4),
+        Action::Snapshot("02-two-windows"),
+        Action::OpenHostedWindow {
+            app: "Terminal",
+            title: "Terminal",
+        },
+        Action::Wait(PLACEMENT_SETTLE_FRAMES),
+        Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+        Action::SelectGroup(Some(2)),
+        Action::Wait(4),
+        Action::Snapshot("03-three-windows"),
+        Action::OpenHostedWindow {
+            app: "Editor",
+            title: "Editor",
+        },
+        Action::Wait(PLACEMENT_SETTLE_FRAMES),
+        Action::SetWindowWidths(HALF_WIDTH_PERMILLE),
+        Action::Wait(4),
+        Action::Snapshot("04-four-windows"),
+        // Back to the first window, which pans the strip home the way
+        // focus always does — the starting position for the pan.
+        Action::SelectGroup(Some(0)),
+        Action::Wait(6),
+        Action::Snapshot("05-strip-at-rest"),
+        // Park the cursor over the strip — `GroupRow` gates its wheel
+        // handler on the cursor being inside the row, and a `MouseWheel`
+        // event carries no position of its own.
+        Action::MoveCursor(Point::new(900.0, 520.0)),
+    ];
+    // Pan forward, then back. Each step is its own action so recording
+    // mode encodes a frame per step: the strip's position is where the
+    // wheel left it, so the motion survives the harness spending far
+    // more wall time per frame than a real one costs.
+    for _ in 0..PAN_STEPS {
+        actions.push(Action::MouseWheel {
+            dx: -PAN_STEP_LINES,
+            dy: 0.0,
+        });
+    }
+    actions.push(Action::Snapshot("06-panned-right"));
+    for _ in 0..PAN_STEPS {
+        actions.push(Action::MouseWheel {
+            dx: PAN_STEP_LINES,
+            dy: 0.0,
+        });
+    }
+    actions.push(Action::Snapshot("07-panned-back"));
+    Scenario {
+        name: "strip_scroll_across_apps",
+        description: "Open Notes, Files, Terminal and Editor as four windows along the strip, \
+                      then wheel the strip across them and back.",
+        actions,
+    }
 }
 
 // =====================================================================
@@ -1432,6 +1618,113 @@ mod tests {
         let mut sink = NameSink { names: Vec::new() };
         run_with(&mut d, &scenario, &mut sink, None);
         assert_eq!(sink.names, vec!["first".to_string(), "second".to_string()],);
+    }
+
+    /// Sink that records what the strip's scroll looks like at each
+    /// named snapshot, straight off the live `GroupRow` the shell pans.
+    struct StripScrollSink {
+        seen: Vec<(String, f64, f64)>,
+    }
+    impl SnapshotSink for StripScrollSink {
+        fn capture(&mut self, driver: &mut ShellDriver, name: &str) {
+            let strip_id = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .and_then(|ws| ws.strips.first().map(|s| s.id))
+            };
+            let (scroll_x, max_scroll_x) = strip_id
+                .and_then(|sid| driver.host_mut().group_row_mut_for_tests(sid))
+                .map(|row| (row.scroll_x(), row.max_scroll_x()))
+                .unwrap_or((f64::NAN, f64::NAN));
+            self.seen.push((name.to_string(), scroll_x, max_scroll_x));
+        }
+    }
+
+    /// The strip scenario has to end up with four *windows*, each one a
+    /// live app — not four tabs of one window, and not stub cards.
+    #[test]
+    fn strip_scroll_scenario_opens_four_hosted_windows_side_by_side() {
+        let mut d = ShellDriver::new((1600, 900));
+        let mut sink = NullSink;
+        run(&mut d, &strip_scroll_across_apps(), &mut sink);
+
+        let st = d.chrome();
+        let tree = st.tree();
+        let strip = &tree.active_workspace().expect("active workspace").strips[0];
+        let kinds: Vec<&shell::shell::state::AppKind> = strip
+            .window_groups
+            .iter()
+            .map(|g| {
+                assert_eq!(
+                    g.tabs.len(),
+                    1,
+                    "each app has to be its own window, not a tab of the one before it"
+                );
+                match &g.tabs[0].tile {
+                    shell::shell::state::TileContent::AppPlaceholder { kind, .. } => kind,
+                    other => panic!("expected a hosted app tile, got {other:?}"),
+                }
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                &shell::shell::state::AppKind::Other("Notes".into()),
+                &shell::shell::state::AppKind::FileExplorer,
+                &shell::shell::state::AppKind::Terminal,
+                &shell::shell::state::AppKind::Other("Editor".into()),
+            ],
+            "four distinct apps, in the order the scenario opens them"
+        );
+        for g in &strip.window_groups {
+            assert_eq!(
+                shell::shell::resolve_tile_shape_for_test(&g.tabs[0].tile),
+                "App",
+                "every window in the strip has to render a real app, not a stub card"
+            );
+        }
+    }
+
+    /// And it has to actually pan: the strip holds more than fits, the
+    /// wheel moves it off its resting position, and wheeling back returns
+    /// it home. Read off the live `GroupRow` the production wheel handler
+    /// writes to.
+    #[test]
+    fn strip_scroll_scenario_pans_the_strip_and_back() {
+        let mut d = ShellDriver::new((1600, 900));
+        let mut sink = StripScrollSink { seen: Vec::new() };
+        run(&mut d, &strip_scroll_across_apps(), &mut sink);
+
+        let at = |name: &str| -> (f64, f64) {
+            let (_, sx, mx) = sink
+                .seen
+                .iter()
+                .find(|(n, _, _)| n == name)
+                .unwrap_or_else(|| panic!("scenario should snapshot {name}"));
+            (*sx, *mx)
+        };
+        let (rest_x, rest_max) = at("05-strip-at-rest");
+        assert!(
+            rest_max > 400.0,
+            "four half-width windows must overflow the display by more than a third of \
+             a screen, or there is nothing to pan across (max_scroll_x = {rest_max})"
+        );
+        assert!(
+            rest_x < 1.0,
+            "the strip starts at its leftmost position (scroll_x = {rest_x})"
+        );
+        let (panned_x, _) = at("06-panned-right");
+        assert!(
+            panned_x > 600.0,
+            "wheeling {PAN_STEPS} steps of {PAN_STEP_LINES} lines must carry the strip \
+             most of the way along it (scroll_x = {panned_x})"
+        );
+        let (back_x, _) = at("07-panned-back");
+        assert!(
+            back_x < 1.0,
+            "wheeling the same distance back returns the strip home (scroll_x = {back_x})"
+        );
     }
 
     #[test]
