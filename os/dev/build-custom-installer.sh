@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build the qOS CUSTOM (self-install) installer: a bootable live qcow2 that runs
 # the qOS-branded graphical installer (installer/, binary qos-installer) under
-# cage and installs the booted image onto a target disk. This is SEPARATE from
-# the Anaconda ISO path (build-installer.sh / installer.toml).
+# cage and installs the booted image onto a target disk. It is the only installer
+# path; the Anaconda ISO it used to sit beside has been retired.
 #
 #   ./os/dev/build-image.sh                 # build + load localhost/qos first
 #   ./os/dev/build-custom-installer.sh      # -> os/output/installer/qcow2/disk.qcow2
@@ -14,9 +14,8 @@
 #      (--stub-ui skips cargo and writes a placeholder qos-installer so you can
 #      test the OS plumbing — session-select, sudoers, units — without the UI.)
 #   2. rootless `podman build` of localhost/qos-installer (FROM localhost/qos).
-#   3. `podman save | sudo podman load` into root storage for bootc-image-builder.
-#   4. bootc-image-builder --type qcow2 --rootfs btrfs, with installer-disk.toml
-#      (bakes qos.installer=1) -> os/output/installer/qcow2/disk.qcow2.
+#      qos.installer=1 is baked in here, as a kargs.d drop-in.
+#   3. os/dev/disk-image.sh -> os/output/installer/qcow2/disk.qcow2.
 #
 # Flags: --stub-ui (no cargo; placeholder UI)  --no-cargo (reuse os/qos-installer)
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
@@ -38,7 +37,7 @@ podman image exists "$QOS_IMAGE" \
   || die "$QOS_IMAGE not in rootless podman storage — run ./os/dev/build-image.sh first"
 
 if [ "$STUB_UI" = 1 ]; then
-  msg "1/4 writing stub qos-installer (--stub-ui: OS-plumbing test, no UI)"
+  msg "1/3 writing stub qos-installer (--stub-ui: OS-plumbing test, no UI)"
   cat > "$QOS_OS_DIR/qos-installer" <<'STUB'
 #!/bin/bash
 # Placeholder qOS installer (built with --stub-ui). The real UI is omitted;
@@ -50,34 +49,40 @@ exec sleep infinity
 STUB
   chmod 755 "$QOS_OS_DIR/qos-installer"
 elif [ "$DO_CARGO" = 1 ]; then
-  msg "1/4 cargo build --release -p installer in ${QOS_DISTROBOX:-host}"
+  msg "1/3 cargo build --release -p installer in ${QOS_DISTROBOX:-host}"
   inenv "cd '$QOS_REPO' && cargo build --release -p installer"
   REL="$QOS_REPO/target/release"
   [ -f "$REL/qos-installer" ] || die "missing built binary: $REL/qos-installer"
   cp -f "$REL/qos-installer" "$QOS_OS_DIR/qos-installer"
   msg "   staged qos-installer ($(du -h "$REL/qos-installer" | cut -f1))"
 else
-  msg "1/4 skipping cargo (--no-cargo); reusing $QOS_OS_DIR/qos-installer"
+  msg "1/3 skipping cargo (--no-cargo); reusing $QOS_OS_DIR/qos-installer"
   [ -f "$QOS_OS_DIR/qos-installer" ] || die "no $QOS_OS_DIR/qos-installer present (drop --no-cargo)"
 fi
 
-msg "2/4 podman build $QOS_INSTALLER_IMAGE (rootless)"
+msg "2/3 podman build $QOS_INSTALLER_IMAGE (rootless)"
 podman build -t "$QOS_INSTALLER_IMAGE" -f "$QOS_OS_DIR/Containerfile.installer" "$QOS_OS_DIR"
 
-msg "3/4 transfer image to root storage"
-podman save "$QOS_INSTALLER_IMAGE" | sudo podman load
-
-msg "4/4 bootc-image-builder -> installer qcow2"
-mkdir -p "$QOS_INSTALLER_OUTPUT"
+msg "3/3 disk image -> installer qcow2"
+# The live root is sized generously: the self-install model copies the booted
+# image into the live medium's /var/lib/containers (`bootc image copy-to-storage`)
+# before `bootc install`, which needs ~2x the image size free. A default ~12 GiB
+# root runs out mid-copy ("no space left on device"). The qcow2 stays sparse, so
+# the file is still small.
+#
+# The login account here is for SSH/console debugging of the installer itself
+# (vm.sh boot-installer forwards :22) and is deliberately NOT the desktop
+# account: it has no qos-identity, because the live medium has no device key to
+# read. The account the installer creates on the TARGET disk comes from the
+# installer UI and has nothing to do with this one.
+#
+# `qos.installer=1` is not passed here — it lives in the image, as
+# /usr/lib/bootc/kargs.d/50-installer.toml (see os/Containerfile.installer).
 rm -rf "$QOS_INSTALLER_OUTPUT/qcow2" "$QOS_INSTALLER_OUTPUT"/manifest* 2>/dev/null || true
-sudo podman run --rm --privileged \
-  --security-opt label=type:unconfined_t \
-  -v "$QOS_OS_DIR/installer-disk.toml:/config.toml:ro" \
-  -v "$QOS_INSTALLER_OUTPUT:/output" \
-  -v /var/lib/containers/storage:/var/lib/containers/storage \
-  "$QOS_BIB" \
-  --type qcow2 --rootfs btrfs --chown "$(id -u):$(id -g)" \
-  "$QOS_INSTALLER_IMAGE"
+"$QOS_OS_DIR/dev/disk-image.sh" "$QOS_INSTALLER_IMAGE" \
+  "$(dirname "$QOS_INSTALLER_DISK")" \
+  --root-min 30G \
+  --user "tester:quickdesktop:wheel"
 
 msg "DONE: $QOS_INSTALLER_DISK"
 ls -lh "$QOS_INSTALLER_DISK"

@@ -6,7 +6,7 @@ A spatial, collaborative Linux desktop built as a vertically-integrated stack:
 - **`ui/`** — Retained-mode CRDT-native UI toolkit. Every widget reads/writes a shared automerge document, so undo, redo, persistence, and remote collaboration all share one mechanism. Stack: `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`.
 - **`fs/`** — FUSE3 driver. Iroh content addressing, `blake3` hashes, `moka` cache. Mounted at `/var/workspace`; cache at `/var/cache/qos-fs`. Projects metadata on first byte; hydrates content on demand.
 - **`apps/`** — 40+ native applications (terminal, file-explorer, browser, mail, calendar, sheets, music, maps, code_editor, …), each its own crate on `ui`. The browser embeds Servo for page rendering. See [`apps/README.md`](apps/README.md).
-- **`os/`** — Bootc-based Fedora image. Greetd → Wayland session → `shell`. Disk image via `bootc-image-builder`.
+- **`os/`** — Bootc-based Fedora image. Greetd → Wayland session → `shell`. Disk image via `os/dev/disk-image.sh` (`systemd-repart` + `bootc install`).
 
 ## Repository layout
 
