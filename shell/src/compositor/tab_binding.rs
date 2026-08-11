@@ -19,8 +19,8 @@
 //! `compositor::state::State::new_toplevel`).
 
 use crate::shell::state::{
-    GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, WorkspaceTree,
-    next_id,
+    AppKind, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
+    WorkspaceTree, next_id,
 };
 
 /// Where a newly-adopted toplevel should land.
@@ -141,6 +141,49 @@ pub fn adopt_toplevel_at(
             surface_id,
         },
     };
+    place_tab(tree, new_tab, placement)
+}
+
+/// Open a **shell-hosted** app — one the compositor draws in-process
+/// (Notes, Editor, Files, Terminal) rather than one that arrives as a
+/// foreign Wayland client — at `placement`.
+///
+/// The sibling of [`adopt_toplevel_at`]: the same placement rule and the
+/// same insertion, around a different kind of tile. A hosted app has no
+/// client process, so there is no toplevel to adopt and no launch note to
+/// correlate against — the caller applies
+/// [`crate::shell::placement::placement_for_new_window`] itself and hands
+/// the answer in.
+///
+/// Returns the freshly-minted tab id. The tile is a
+/// [`TileContent::AppPlaceholder`], which is what
+/// [`crate::shell::to_ui_tile`] resolves into the live app widget.
+pub fn open_hosted_app(
+    tree: &mut WorkspaceTree,
+    kind: AppKind,
+    title: impl Into<String>,
+    placement: Placement,
+) -> TabId {
+    let title = title.into();
+    let new_tab = Tab {
+        id: next_id(),
+        title: title.clone(),
+        tile: TileContent::AppPlaceholder { kind, label: title },
+    };
+    place_tab(tree, new_tab, placement)
+}
+
+/// Splice an already-built [`Tab`] into the active workspace at
+/// `placement`, and focus it.
+///
+/// Where a window lands is a property of the placement and the tree, not
+/// of what is inside the window — so both the foreign-toplevel adoption
+/// and the hosted-app open route through here rather than each growing
+/// their own copy of the strip walk.
+///
+/// Returns `new_tab`'s id, including on the paths that could not splice
+/// it (no active workspace), so callers always have the id they minted.
+pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -> TabId {
     let tab_id = new_tab.id;
 
     // Resolve the focused strip + group *before* taking the mutable
@@ -929,6 +972,65 @@ mod tests {
             "dev.qos.adoptfixture".into()
         ));
         assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
+    }
+
+    /// A shell-hosted app opened beside a lone window is a window, not a
+    /// tab: it takes the column to the right, and what lands in it is a
+    /// tile that resolves to a live app widget rather than a stub card.
+    ///
+    /// That second half is the point of the whole path — a window group
+    /// holding a placeholder nothing renders would look identical in the
+    /// tree and blank on screen.
+    #[test]
+    fn a_hosted_app_opened_beside_a_lone_window_takes_the_column_to_its_right() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let (strip_id, focused) = focus_lone_window(&mut tree);
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+
+        let placement = crate::shell::placement::placement_for_new_window(&tree, None);
+        assert_eq!(
+            placement,
+            Placement::RightOf(focused),
+            "a lone selected window puts the next window beside it"
+        );
+        let tab_id = open_hosted_app(&mut tree, AppKind::FileExplorer, "Files", placement);
+
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip.window_groups.len(),
+            groups_before + 1,
+            "the hosted app opens its own window group"
+        );
+        assert_eq!(
+            strip.window_groups[0].id, focused,
+            "the window that was selected stays where it was"
+        );
+        let opened = &strip.window_groups[1];
+        assert_eq!(
+            opened.tabs.len(),
+            1,
+            "the new group holds exactly the app that was opened"
+        );
+        assert_eq!(opened.tabs[0].id, tab_id, "returned id names the new tab");
+        assert_eq!(opened.active_tab, tab_id, "the new window takes focus");
+        assert_eq!(
+            opened.id,
+            tree.active_group_for(strip_id).unwrap(),
+            "and so does its group"
+        );
+        assert_eq!(opened.tabs[0].title, "Files");
+        match &opened.tabs[0].tile {
+            TileContent::AppPlaceholder { kind, label } => {
+                assert_eq!(*kind, AppKind::FileExplorer);
+                assert_eq!(label, "Files");
+            }
+            other => panic!("expected an AppPlaceholder tile, got {other:?}"),
+        }
+        assert_eq!(
+            crate::shell::resolve_tile_shape_for_test(&opened.tabs[0].tile),
+            "App",
+            "a hosted app's tile has to come online as a live widget, not a stub card"
+        );
     }
 
     #[test]
