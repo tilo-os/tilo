@@ -173,26 +173,172 @@ Tokens:
 ```
 
 There is no passphrase keyslot, so typing `hunter2` at the boot prompt is rejected and the prompt
-repeats — observed directly. Three separate defects sit behind that, all distinct from this finding:
-
-- **`qos-disk-encrypt enrol --pin-file` adds no keyslot on the no-TPM path.** The volume was enrolled
-  with `--pin-file` holding `hunter2`, and the header has no second keyslot. The
-  `cryptsetup luksAddKey --new-keyfile` call in the no-TPM branch either did not run or failed
-  without the `die` being surfaced.
-- **`os/dev/test-encrypted-install.sh` keeps only the first line of the `enrol` step** — the step
-  whose whole purpose is to print the recovery key. Execution appears to stop after
-  `enrolling the recovery key…`, so the one factor that *was* enrolled is unrecoverable from the
-  run's artefacts and a finished target cannot be opened at all.
-- **The harness watches the wrong console.** It greps the serial log for the passphrase prompt, but
-  the kargs `qos-disk-encrypt` composes carry no `console=` entry, so the installed system logs only
-  to tty0. The prompt is on the framebuffer, the serial log stays at 7 lines, and the run reports
-  `NO passphrase prompt within 150s` on a system that is sitting at the prompt.
+repeats — observed directly. Three separate defects sit behind that, recorded below as `P1-2a`,
+`P1-2b` and `P1-2c`. All are distinct from this finding, and all three have a single common
+character: **each one reported success, or reported nothing, while doing nothing.**
 
 Also worth confirming on real hardware: the `--tpm` run reached `Please enter recovery key` rather
 than unsealing, having logged `Expecting device dev-tpm0.device`. PCR 7 measures Secure Boot policy
 and the volume is sealed inside the installer host then opened on a different machine boot, so a
 broken seal is the expected outcome of sealing across that boundary rather than evidence about a
-real machine.
+real machine. `P1-2a` supplies a second, simpler explanation that has to be excluded first: on that
+run **no TPM key slot was ever enrolled**, because enrolment exited before reaching the TPM branch.
+Falling back to the recovery key is the correct behaviour for a volume with no TPM slot.
+
+---
+
+## P1-2a — `enrol` exits after the recovery key, so every later factor is silently skipped
+
+**FIXED.** `os/usr/libexec/qos-disk-encrypt`, `cmd_enrol`. The recovery key was read back out of
+`systemd-cryptenroll` by matching eight groups of six lowercase letters:
+
+```bash
+rec_key="$(printf '%s\n' "$rec_out" \
+  | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' \
+  | tail -1)"
+```
+
+systemd emits eight groups of **eight** — `ngfnerci-tejvujuv-dkhcejht-jbkvnuhu-…` — so the match
+never succeeded. The script runs under `set -euo pipefail`, and a command substitution in an
+assignment carries the pipeline's status, which `pipefail` sets to `grep`'s 1. **The assignment
+therefore terminated `enrol`**, three lines after the recovery key was enrolled and before any
+other factor. The `[ -n "$rec_key" ] || rec_key=…` fallback on the next line was unreachable, which
+is why it never compensated.
+
+Consequences, all observed:
+
+- No passphrase key slot on the no-TPM path, so `--passphrase`/`--pin` was a silent no-op and the
+  disk could not be opened by the secret its owner had just been asked to invent.
+- No TPM key slot on the TPM path either — the `--tpm` run's fallback to the recovery key was not a
+  broken PCR seal, it was an absent slot.
+- The recovery key was never printed, so the one factor that *was* enrolled was unknown to anyone.
+- `finish` then removed the throwaway install slot, as designed, leaving a single slot bound to a
+  `systemd-recovery` token whose value had never left the process that generated it.
+
+Reproduced exactly against a throwaway LUKS2 volume, using the shipped script and a container's
+absent `/dev/tpm*` as the no-TPM machine: `enrol` printed `enrolling the recovery key…`, exited 1,
+left two slots (install + recovery), and `cryptsetup open --test-passphrase` rejected the
+passphrase that had been supplied. After the fix: exit 0, three slots, and both the passphrase and
+the printed recovery key open the volume.
+
+The fix reads the key off **stdout**, where `systemd-cryptenroll` puts the key and nothing else,
+instead of pattern-matching the prose on stderr; makes the read-back non-fatal, since the slot
+exists by then and failing to display it must not stop later factors; and verifies each factor with
+`cryptsetup open --test-passphrase` before reporting it enrolled. It also normalises the pin file's
+bytes — a key file is taken as the passphrase verbatim, so a trailing newline would enrol a secret
+that cannot be typed at a boot prompt.
+
+**Regression check:** `os/tests/luks_enrolment.sh`, wired into `os/Containerfile` so it runs at
+image build time. It asserts the *opening*, not the exiting: the supplied passphrase opens the
+volume, the printed recovery key opens the volume, and three slots exist before `finish`. A build
+container has no `/dev/tpm*`, so the build exercises exactly the no-TPM path that was broken.
+It fails 6 of its 8 assertions against the pre-fix script and passes all 9 against the fixed one.
+
+---
+
+## P1-2b — the harness discarded every step's exit status, and with it the recovery key
+
+**FIXED.** `os/dev/test-encrypted-install.sh`. Every step ran as
+`runscript … | tee "$OUT/0N-…" | tail -N`, and a pipeline's status is its last command's, so `tail`
+made every step look successful. `enrol` had been exiting 1 for as long as `P1-2a` existed and the
+run carried on to install, `finish`, and boot a target with no usable unlock factor.
+
+The same step is the only one that prints the recovery key. With the step dying after its first
+line and no passphrase slot enrolled, the finished target had no factor anyone could use — the run
+destroyed the only evidence of the one factor it had managed to enrol.
+
+Replaced with a `step` helper that keeps the full output in a file, shows a tail, and **returns the
+step's own status**; every caller now stops on failure with a message naming the artefact. The
+recovery key is extracted from the enrol output, saved to `$OUT/recovery-key.txt`, and printed in
+the verdict.
+
+**Regression check:** the enrol step is now `step … || die`, so a non-zero `enrol` fails the run
+instead of being absorbed. `os/tests/luks_enrolment.sh` catches the underlying cause without a VM.
+
+---
+
+## P1-2c — the harness reported absence when it was watching the wrong surface
+
+**FIXED.** `os/dev/test-encrypted-install.sh` waited for the unlock prompt by grepping the serial
+log, but the installed kernel gets no `console=` karg, so the serial line carried the GRUB menu and
+then nothing at all — the whole 8 KB log was firmware output. The run printed
+`NO passphrase prompt within 150s` about a system that was sitting at its passphrase prompt, and
+that false finding is what sent the previous investigation to the boot chain instead of to
+enrolment.
+
+This is the defect to be most careful about: a harness that cannot distinguish *did not happen*
+from *I could not see it* produces false findings, and this one did.
+
+Three changes, because instrumenting the log is not by itself enough:
+
+1. The installed boot entry is instrumented with `console=ttyS0,115200 console=tty0`. Order is
+   load-bearing — `ttyS0` first so the kernel and systemd copy their log to the serial line, `tty0`
+   **last** so `/dev/console`, where the prompt is written and where a key typed through the
+   monitor arrives, stays the VGA console.
+2. Before drawing any conclusion the run checks whether a kernel marker reached the serial line at
+   all, and reports `CANNOT OBSERVE` rather than absence when it did not.
+3. The verdict no longer rests on spotting a prompt. It is taken from whether the installed system
+   can be **logged into**, which is a fact about the system rather than about what the harness
+   managed to see, and the proof step then reads the running system's own `cryptsetup luksDump`.
+
+Also fixed here: `--no-initrd` expanded to a shell string the guest ran as a command name, so the
+`initrd` line was never removed and the mode could not have reproduced the pre-initramfs state it
+exists to reproduce. It now edits the entry guest-side and asserts the line is gone.
+
+**Regression check:** the harness asserts its own instrumentation — it fails the layout step if
+`console=ttyS0` is absent from the installed entry, and fails the run if `--no-initrd` was asked
+for and the `initrd` line survived. Neither can now pass while being unobservable.
+
+**Not yet proved end to end.** The three-mode boot proof (`no-tpm`, `noinitrd`, `tpm`) has not been
+run against these fixes, because the image build on the development host currently fails before it
+produces an installable image — see `P1-2d`. `P1-2a` is proved at the source against a real LUKS2
+volume; `P1-2b` and `P1-2c` are proved structurally, not through a boot.
+
+---
+
+## P1-2d — the image build corrupts its own rpmdb, reproducibly, and blocks every boot proof
+
+**OPEN**, and unrelated to disk encryption other than by blocking its verification. Four
+consecutive `podman build` runs of `os/Containerfile` on the development host failed in the OS
+assembly stage, three of them at the same step:
+
+```
+Transaction failed: Rpm transaction failed.
+  - avahi-libs(x86-64) = 0.9~rc2-8.fc44 is needed by avahi-glib-0.9~rc2-8.fc44.x86_64
+  - fuse3 is needed by xdg-desktop-portal-1.22.1-1.fc44.x86_64
+Error: building at STEP "… dnf install -y … xdg-desktop-portal …"
+```
+
+dnf's resolver and librpm's transaction check disagree about what is installed. In the last good
+layer, `rpm -q fuse3` reports `fuse3-3.18.2-1.fc44.x86_64` while
+`rpm -q --whatprovides fuse3` reports `no package provides fuse3`, and `rpm -Va fuse3` lists
+`fuse-common` and `fuse3-libs` as unsatisfied although both are installed. The package records are
+present; the **Provides index rows for the packages installed a step earlier are missing**.
+
+The layer carries a stale `rpmdb.sqlite-shm` beside a zero-length `rpmdb.sqlite-wal` — sqlite
+WAL-mode sidecar files that should never be committed into an image. The signature fits a WAL that
+was not checkpointed before podman committed the layer: rows already in `rpmdb.sqlite` stay
+readable, rows still in the WAL are lost. Which packages lose their Provides varies between runs,
+which is what an unflushed-buffer race looks like rather than a deterministic bug.
+
+Excluded: the pinned base image is intact (`--whatprovides` resolves there);
+`--source-date-epoch`/`--rewrite-timestamp` are not the cause (the failure reproduces without them,
+and the `.......T.` entries in `rpm -Va` appear in the pristine base too); a single dnf step under
+those flags does not corrupt anything; and it is not the disk, which had 38 GiB unallocated and
+12 GiB of free memory on the final attempt. `rpm --rebuilddb` does not repair it and cannot — it
+rebuilds indexes from headers that are themselves missing.
+
+The near-miss worth recording: this is the failure mode `os/dev/build-image.sh` already documents
+as *"a disk that fills mid-build can leave a cached layer holding a corrupt RPM database, which then
+surfaces as dnf insisting that packages the base image plainly has are missing"*, with
+`QOS_BUILD_ARGS=--no-cache` offered as the way out. `--no-cache` does **not** help: it prevents
+inheriting a corrupt layer but not producing one.
+
+**Fix direction:** stop the sqlite sidecars from entering a layer — checkpoint or remove
+`rpmdb.sqlite-{wal,shm}` at the end of each `dnf` step, or collapse the twelve consecutive
+`dnf install` layers into fewer transactions. A build-time assertion that
+`rpm -q --whatprovides` still resolves a package installed in the previous step would catch it
+where it happens rather than three steps later.
 
 ---
 
@@ -238,16 +384,18 @@ the mapping; static drivers let the kernel mount root but cannot run `systemd-cr
 `crypttab`, dracut config, or conditional re-enable exists in `os/`.
 
 `--encrypt` and the custom kernel therefore appear mutually exclusive. ~~Not yet confirmed by
-booting an encrypted install~~ — **DISPROVED.** An encrypted install of the current image boots
-through GRUB 2.12 into kernel 7.0.14, runs dracut's early userspace, finds the LUKS device by
-`rd.luks.uuid`, starts `systemd-cryptsetup@luks-…`, takes a passphrase at the prompt and opens the
-root: the `no-tpm` run of `os/dev/test-encrypted-install.sh` reaches a login on the encrypted
-volume. The two are not exclusive and were never tested together, which is the actual finding —
-see `P0-4` for why nothing was ever installed, and `P1-2a`/`P1-2b`/`P1-2c` below for the enrolment
-and harness defects that kept the claim looking true for another week after `P0-4` was fixed. The
-enrollment sequence had been "verified against loopback LUKS + swtpm" — that verification asserted
-that the commands exited, not that the resulting volume opened, which is exactly how `P1-2a`
-survived it.
+booting an encrypted install~~ — **DISPROVED.** An encrypted install of the image boots through
+GRUB 2.12 into kernel 7.0.14, and dracut's early userspace runs: it finds the LUKS device by
+`rd.luks.uuid`, starts `systemd-cryptsetup@luks-…`, and asks for the unlock secret. A kernel that
+could not run early userspace could not have reached that prompt, so the claim is false. It was
+never tested together with `--encrypt`, which is the actual finding — see `P0-4` for why nothing
+was ever installed, and `P1-2a`/`P1-2b`/`P1-2c` above for the enrolment and harness defects that
+kept it looking true for another week after `P0-4` was fixed.
+
+The enrolment sequence had been "verified against loopback LUKS + swtpm". That verification
+asserted the commands exited, not that the resulting volume opened by the secret it had just been
+given — which is exactly how `P1-2a` survived it, and why its replacement
+(`os/tests/luks_enrolment.sh`) asserts the opening rather than the exiting.
 
 **The "mutually exclusive" half is resolved, and the reason it stayed unverified for so long is
 `P0-4`: no install ever completed, so there was never a disk to boot.** The image now builds an
