@@ -198,13 +198,31 @@ Two things to know when the disk gets tight:
   branch has landed. A finished worktree holding 300 GB is the usual cause of a full disk here.
 
 If builds *hang* rather than run slowly — uninterruptible sleep, no progress at all — that is
-btrfs metadata exhaustion, not memory, and **deleting files will not help**: freed space returns
-inside existing chunks, so `df` moves while `unallocated` stays at 2 MiB and metadata cannot grow.
-A daily timer balances automatically; to force it:
+btrfs metadata exhaustion, not memory, and **deleting files will not help on its own**: freed space
+returns inside existing chunks, so `df` moves while `unallocated` stays at 2 MiB and metadata cannot
+grow. A daily timer balances automatically; to force it:
 
 ```bash
-sudo btrfs balance start -dusage=30 -dlimit=40 /var/home
+sudo btrfs balance start -dusage=80 -dlimit=25 /var/home
 ```
+
+**Use 80, not 30.** `-dusage=30` relocates only chunks under 30% full, and on this filesystem the
+data chunks average ~96% full, so it finds nothing: `Done, had to relocate 0 out of 2757 chunks`,
+exit 0, `unallocated` unchanged. That looks like the remedy failing to work rather than not
+applying. `-dusage=80` recovered 8 GiB in ~300 s from the same state. Confirmed four separate times.
+
+The reliable sequence when `unallocated` is at the 2 MiB floor:
+
+1. **Free something first** — a balance can only return chunks that are mostly empty, so if nothing
+   has been deleted there is nothing to consolidate. Prune podman with `podman image prune -a -f`
+   in *both* stores (plain `prune` only removes *dangling* images; `-a` removes unreferenced tagged
+   ones, which is where the ~90 GB usually is), and delete `target/` from worktrees whose branches
+   have landed. Never `podman system prune -a` — needed containers exist.
+2. **Then balance at 80.** Pruning alone moves `df` and leaves `unallocated` flat, which is the
+   trap.
+
+Also note the shared filesystem: another session's worktree caches are usually the bulk of the
+usage and are not yours to delete.
 
 ### Cargo.lock is committed — do not regenerate it casually
 
