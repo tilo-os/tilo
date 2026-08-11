@@ -1,6 +1,15 @@
 # Security and identity architecture
 
-Status: design. This describes the system we are building toward, not the one that runs today.
+Status: design. This describes the system we are building toward, not the one that
+runs today. What runs today, and where it falls short, is [defects.md](defects.md)
+— keep the two separate rather than annotating this document with current-code
+caveats.
+
+Deliberately not repeated here: the boot chain's mechanics
+([boot-chain.md](boot-chain.md)), the rollback contract ([rollback.md](rollback.md)),
+why the deployment backend is composefs ([composefs-decision.md](composefs-decision.md)),
+and how tinkering works without ambient root ([tinkering.md](tinkering.md)).
+[README.md](README.md) is the map.
 
 ---
 
