@@ -74,6 +74,21 @@ export SOURCE_DATE_EPOCH
 # shellcheck disable=SC1091
 [ -f "$QOS_OS_DIR/kernel-snapshot.env" ] && . "$QOS_OS_DIR/kernel-snapshot.env"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run the build-kernel CI job (or podman build -f os/kernel/Containerfile) first"
+# Where the build unpacks layers. Two failure modes converge here, and neither
+# names its cause:
+#
+#   * /tmp is a 16 GiB tmpfs on the reference machine. A build that fills it fails
+#     as "Quota exceeded" from whichever command happened to be writing, which is
+#     never the one at fault.
+#   * a temp dir *inside the repository* lands in the build context, so the
+#     builder stage's `COPY . /build` copies the previous build's scratch into this
+#     one — gigabytes of it, differing per run.
+#
+# os/output is on the big disk and already excluded from the context, so it is both.
+: "${TMPDIR:=$QOS_OUTPUT/.tmp}"
+mkdir -p "$TMPDIR"
+export TMPDIR
+
 # The generation number the image will carry and seal. Resolved from the published
 # series unless given, and never defaulted: a constant here is what made every
 # image claim to be generation 0, and a rollback floor that cannot move is a
