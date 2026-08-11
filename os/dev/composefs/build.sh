@@ -27,16 +27,20 @@ mkdir -p "$QOS_CFS_RUN"
 # duplicated in this directory, so the probe cannot drift from what qOS ships.
 cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
 
-mkdir -p "$HERE/stage"
+# Assembled at the paths they occupy in the image, so the Containerfile needs one
+# COPY rather than one per file: a layer commit over this rootfs takes minutes.
+TREE="$HERE/stage/tree"
+rm -rf "$TREE"
+mkdir -p "$TREE/usr/bin" "$TREE/usr/libexec" "$TREE/usr/lib/systemd/system"
 for f in usr/libexec/qos-rollback-common \
          usr/libexec/qos-rollback-confirm \
          usr/libexec/qos-rollback-harden \
          usr/lib/systemd/system/qos-rollback-confirm.service \
          usr/lib/systemd/system/qos-rollback-confirm.timer \
-         usr/lib/systemd/system/qos-rollback-harden.service \
-         tests/rollback-boot-check.sh; do
-  cp -f "$QOS_OS_DIR/$f" "$HERE/stage/$(basename "$f")"
+         usr/lib/systemd/system/qos-rollback-harden.service; do
+  cp -f "$QOS_OS_DIR/$f" "$TREE/$f"
 done
+cp -f "$QOS_OS_DIR/tests/rollback-boot-check.sh" "$TREE/usr/libexec/qos-rollback-boot-check"
 
 # The rollback binary. Built here rather than shipped, because the boot-side check
 # asserts the tool the image carries — a stale copy would pass a check about a
@@ -44,7 +48,7 @@ done
 ROLLBACK_BIN="${ROLLBACK_BIN:-$QOS_REPO/target/release/qos-rollback}"
 [ -x "$ROLLBACK_BIN" ] || die "no qos-rollback binary at $ROLLBACK_BIN
   Remedy: cargo build -p qos-rollback --release"
-cp -f "$ROLLBACK_BIN" "$HERE/stage/qos-rollback"
+cp -f "$ROLLBACK_BIN" "$TREE/usr/bin/qos-rollback"
 
 sb_key="$QOS_CFS_RUN/sb/db.key"
 sb_crt="$QOS_CFS_RUN/sb/db.crt"
