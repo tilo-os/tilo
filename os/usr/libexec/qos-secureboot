@@ -37,9 +37,26 @@
 set -euo pipefail
 
 KEYDIR="${QOS_SB_KEYDIR:-/var/lib/qos/secureboot}"
-ESP="${QOS_SB_ESP:-/boot/efi}"
 BOOTDIR="${QOS_SB_BOOT:-/boot}"
 EFIVARS=/sys/firmware/efi/efivars
+
+# Where the ESP is mounted, which differs by backend and is not a preference:
+#
+#   ostree backend      /boot is its own filesystem and the ESP hangs off it at
+#                       /boot/efi.
+#   composefs + UKI     the UKI *is* the kernel, so there is nothing for a
+#                       separate /boot to hold and the ESP mounts at /boot
+#                       directly. That is where bootc writes EFI/Linux.
+#
+# Detect rather than assume: a machine can be either, and signing the wrong
+# directory silently signs nothing.
+esp_path() {
+  if [ -n "${QOS_SB_ESP:-}" ]; then printf '%s\n' "$QOS_SB_ESP"; return; fi
+  if [ -d "$BOOTDIR/efi/EFI" ]; then printf '%s\n' "$BOOTDIR/efi"; return; fi
+  if [ -d "$BOOTDIR/EFI" ]; then printf '%s\n' "$BOOTDIR"; return; fi
+  printf '%s\n' "$BOOTDIR/efi"
+}
+ESP="$(esp_path)"
 
 log()  { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -85,10 +102,21 @@ resign_armed() {
 
 # --- the artefacts the firmware checks ---------------------------------------
 #
-# Two kinds. The EFI loaders on the ESP, planted by bootupd. And the kernels
-# under /boot/ostree, which systemd-boot loads through the firmware's
-# LoadImage — so each deployment's vmlinuz is verified too, and a new deployment
-# means a new file to sign.
+# The EFI loaders on the ESP — bootc plants these with `bootctl install` — and
+# then whatever the loader hands to the firmware's LoadImage, which differs by
+# backend:
+#
+#   ostree backend      a bare vmlinuz per deployment under /boot/ostree, so a
+#                       new deployment means a new file to sign.
+#   composefs + UKI     one Unified Kernel Image per kernel version at
+#                       EFI/Linux/<kver>.efi, plus any signed PE addons beside
+#                       it in EFI/Linux/<kver>.efi.extra.d/.
+#
+# Both are listed unconditionally; a layout that does not exist matches nothing.
+# Signing a UKI is safe: the signature goes in the PE certificate table, which
+# is excluded from both the Authenticode hash the firmware measures into PCR 4
+# and the per-section hashes systemd-stub measures into PCR 11 — so re-signing
+# on the machine changes no measurement the disk may be sealed against.
 artefacts() {
   local f
   for f in "$ESP/EFI/systemd/systemd-bootx64.efi" \
@@ -97,7 +125,8 @@ artefacts() {
     if [ -f "$f" ]; then printf '%s\n' "$f"; fi
   done
   find "$BOOTDIR" -maxdepth 4 -name 'vmlinuz*' -type f 2>/dev/null | sort
-  find "$ESP/EFI/Linux" -maxdepth 1 -name '*.efi' -type f 2>/dev/null | sort
+  find "$ESP/EFI/Linux" -maxdepth 3 \( -name '*.efi' -o -name '*.addon.efi' \) \
+    -type f 2>/dev/null | sort
   # A loop or find that matched nothing must not look like a failure to `set -e`.
   return 0
 }
