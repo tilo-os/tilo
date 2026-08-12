@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read, or blank a key out of, a UKI's sealed command line.
+"""Read, or rewrite a key in, a UKI's sealed command line.
 
     uki-cmdline.py show [UKI]
     uki-cmdline.py blank KEY [UKI]
+    uki-cmdline.py set KEY=VALUE [UKI]
 
 Run on a booted machine (the ESP is mounted at /boot on the sealed layout, so the
 UKI is at /boot/EFI/Linux/<kver>.efi and root can write it). With no path it finds
@@ -16,6 +17,15 @@ the same length**: the section keeps its size, every following section keeps its
 file offset, and the PE stays loadable. Rewriting the section shorter would move
 the rest of the image and change what fails, which would prove nothing about the
 generation.
+
+`set` is the other side of the same coin, and it is what closes the composefs seal.
+`bootc container ukify` and `bootc install` compute different digests for the same
+image (bootc#2334), so install refuses the UKI and names the value it wants.
+*Rebuilding* the UKI with that value does not converge: a rebuild produces a new
+rootfs layer, so install then computes a third digest, and a fourth. Rewriting the
+digest inside the UKI that already exists cannot move the target — `/boot` is the one
+tree excluded from the composefs digest — so it converges in exactly two passes. Both
+digests are 128 hex characters, so the replacement is length-preserving like `blank`.
 
 Two things it deliberately does not do:
 
@@ -74,7 +84,7 @@ def default_uki():
 
 
 def main(argv):
-    if len(argv) < 2 or argv[1] not in ("show", "blank"):
+    if len(argv) < 2 or argv[1] not in ("show", "blank", "set"):
         raise SystemExit(__doc__)
     action = argv[1]
 
@@ -87,8 +97,16 @@ def main(argv):
         return 0
 
     if len(argv) < 3:
-        raise SystemExit("blank needs a key, e.g. `blank qos.generation`")
-    key = argv[2].encode()
+        raise SystemExit(f"{action} needs an argument, e.g. `{action} qos.generation"
+                         + ("=7`" if action == "set" else "`"))
+    if action == "set":
+        if "=" not in argv[2]:
+            raise SystemExit("set takes KEY=VALUE, e.g. `set composefs=<digest>`")
+        key = argv[2].split("=", 1)[0].encode()
+        replacement = argv[2].encode()
+    else:
+        key = argv[2].encode()
+        replacement = None
     path = argv[3] if len(argv) > 3 else default_uki()
 
     with open(path, "r+b") as fh:
@@ -96,7 +114,7 @@ def main(argv):
         try:
             off, size = find_cmdline(mm)
             cmdline = bytes(mm[off : off + size])
-            # The token to blank, taken from the command line as it stands rather
+            # The token to replace, taken from the command line as it stands rather
             # than assembled here: its length is what has to be preserved, and only
             # the file knows it.
             start = cmdline.find(key + b"=")
@@ -107,12 +125,29 @@ def main(argv):
             while end < len(cmdline) and cmdline[end : end + 1] not in (b" ", b"\0", b"\n"):
                 end += 1
             token = cmdline[start:end]
-            mm[off + start : off + end] = b" " * len(token)
+            if replacement is None:
+                new = b" " * len(token)
+            else:
+                # Length has to match exactly. Growing the section would move every
+                # section after it and produce a PE that does not load; padding a
+                # shorter value with spaces would work but hides a value that is not
+                # the shape expected, so it is refused instead.
+                if len(replacement) != len(token):
+                    raise SystemExit(
+                        f"replacement is {len(replacement)} bytes and the existing "
+                        f"token is {len(token)}; a length-changing edit would move "
+                        f"every following PE section\n  have: {token.decode()}\n"
+                        f"  want: {replacement.decode()}")
+                new = replacement
+            mm[off + start : off + end] = new
             mm.flush()
         finally:
             mm.close()
 
-    print(f"blanked {token.decode()} ({len(token)} bytes -> {len(token)} spaces) in {path}")
+    if replacement is None:
+        print(f"blanked {token.decode()} ({len(token)} bytes -> {len(token)} spaces) in {path}")
+    else:
+        print(f"rewrote {key.decode()}= in {path} ({len(token)} bytes, unchanged)")
     with open(path, "rb") as fh:
         data = fh.read()
     off, size = find_cmdline(data)
