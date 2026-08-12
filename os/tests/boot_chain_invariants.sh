@@ -37,8 +37,13 @@ fi
 #    initramfs.img there is correct on that layout, and the invariant has to be
 #    checked against the UKI instead. Requiring the bare file would fail exactly
 #    the images that are built properly.
+#    Two layouts: the image build writes /boot/EFI/Linux/<kver>.efi, and
+#    `bootc install` renames it after the composefs digest and nests it one deeper
+#    as /boot/EFI/Linux/bootc/bootc_composefs-<digest>.efi. An installed machine has
+#    the second, so globbing only the first finds no UKI on exactly the system an
+#    operator would re-run this on — and it would then report a missing initramfs.
 uki=""
-for candidate in "$OS_ROOT"/boot/EFI/Linux/*.efi; do
+for candidate in "$OS_ROOT"/boot/EFI/Linux/*.efi "$OS_ROOT"/boot/EFI/Linux/*/*.efi; do
   [ -f "$candidate" ] && uki="$candidate" && break
 done
 
