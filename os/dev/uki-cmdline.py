@@ -5,9 +5,9 @@
     uki-cmdline.py blank KEY [UKI]
     uki-cmdline.py set KEY=VALUE [UKI]
 
-Run on a booted machine (the ESP is mounted at /boot on the sealed layout, so the
-UKI is at /boot/EFI/Linux/<kver>.efi and root can write it). With no path it finds
-the single UKI there.
+Run on a booted machine: the ESP is mounted at /boot on the sealed layout, so the
+UKI is under /boot/EFI/Linux and root can write it. With no path it finds the single
+UKI there, in either the image build's layout or the one `bootc install` leaves.
 
 `blank` exists to make a negative result available. A check that reports the
 generation as measured is only evidence if it can be shown to fail when the
@@ -39,6 +39,7 @@ Two things it deliberately does not do:
 """
 
 import mmap
+import os
 import struct
 import sys
 from glob import glob
@@ -69,7 +70,20 @@ def find_cmdline(data):
 
 
 def default_uki():
-    found = sorted(glob("/boot/EFI/Linux/*.efi"))
+    # Two layouts, both real:
+    #   /boot/EFI/Linux/<kver>.efi                       as the image build writes it
+    #   /boot/EFI/Linux/bootc/bootc_composefs-<digest>.efi   as `bootc install` writes it
+    # The second is what an installed machine has — bootc renames the UKI after the
+    # composefs digest and nests it a directory deeper — so a single-level glob finds
+    # nothing on exactly the system this is meant to be run on.
+    #
+    # /boot is an autofs mount on the sealed layout, automounted on access. A glob
+    # alone does not always trigger it, so stat the mount point first.
+    try:
+        os.stat("/boot")
+    except OSError:
+        pass
+    found = sorted(glob("/boot/EFI/Linux/*.efi") + glob("/boot/EFI/Linux/*/*.efi"))
     if not found:
         raise SystemExit(
             "no UKI under /boot/EFI/Linux — on the sealed layout the ESP is mounted "
