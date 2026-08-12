@@ -139,6 +139,17 @@ build_image() {
     "$QOS_REPO"
 }
 
+# Rewrite the composefs digest inside the UKI the image already carries, as a layer
+# that touches nothing but /boot. $1 = the digest (no "sha512:" prefix).
+reseal_uki() {
+  podman build -t "$QOS_IMAGE" -f - "$QOS_OS_DIR/dev" <<EOF
+FROM $QOS_IMAGE
+RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py \\
+    python3 /run/uki-cmdline.py set "composefs=$1" \\
+ && python3 /run/uki-cmdline.py show
+EOF
+}
+
 build_image ""
 
 msg "2/2 disk image -> qcow2"
@@ -159,17 +170,25 @@ if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT
   seal; see the message above and $INSTALL_LOG"
   had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
   msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
-  msg "pass 2: rebuilding the UKI with the digest install asked for"
-  # Only the uki + final stages rebuild: the rootfs is untouched, so its digest —
-  # the value install computes — does not move, which is what makes this converge
-  # rather than chase itself. If it does move, the second install says so.
-  build_image "sha512:$want"
+  msg "pass 2: rewriting that digest into the UKI the image already carries"
+  # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
+  # layer, so install then computes a third digest, and a fourth — measured here as
+  # 0196…, then 40b1…, then 317b… . Rewriting the digest inside the existing UKI
+  # cannot move the target, because the added layer touches only /boot and /boot is
+  # the one tree excluded from the composefs digest. So this converges in exactly two
+  # passes, and it does not depend on the layer cache holding the rootfs identical
+  # between them.
+  #
+  # Both digests are 128 hex characters, so the edit is length-preserving and the PE
+  # layout is untouched; uki-cmdline.py refuses anything else.
+  reseal_uki "$want" || die "could not rewrite the sealed composefs digest"
   if ! "$QOS_OS_DIR/dev/disk-image.sh" "$QOS_IMAGE" "$OUTDIR" --user "$QOS_ACCOUNT"; then
     want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
-      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…).
-  It therefore depends on the UKI, which depends on it: the seal is circular and
-  cannot be closed here. That needs the upstream fix for bootc#2334."
+      die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
+  even though the only thing that changed was the UKI under /boot. That means the
+  digest is not computed over the rootfs alone, so sealing it is circular by
+  construction and cannot be closed here — it needs the upstream fix for bootc#2334."
     fi
     die "the second install pass failed too; see above and $INSTALL_LOG"
   fi
