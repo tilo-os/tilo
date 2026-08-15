@@ -49,6 +49,7 @@ pub mod widget;
 pub mod text_render;
 pub mod richtext;
 pub mod chrome;
+pub mod clipboard;
 pub mod gesture;
 pub mod text_selection;
 pub mod text_edit;
