@@ -43,10 +43,15 @@
 //! var on a TTY to assert backend construction succeeds.
 
 pub mod devices;
+pub mod gestures;
+pub mod hotplug;
+pub mod input_config;
 pub mod outputs;
 pub mod paint;
 pub mod runtime;
+pub mod scale;
 pub mod scanout;
+pub mod seat_diag;
 pub mod session;
 
 use vello::Scene;
