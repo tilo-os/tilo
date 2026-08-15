@@ -2273,9 +2273,9 @@ impl ShellOverlayHost {
     /// [`OpenTarget::Here`] pins the result to this group even when the
     /// placement rule would have opened beside it, which is exactly the
     /// distinction a user clicking a specific group's strip is making.
-    fn harvest_pending_new_tab(&mut self) {
+    fn harvest_pending_new_tab(&mut self) -> bool {
         if self.group_row_ptrs.is_empty() {
-            return;
+            return false;
         }
         let mut requested: Option<u64> = None;
         for &ptr in self.group_row_ptrs.values() {
@@ -2288,7 +2288,7 @@ impl ShellOverlayHost {
             }
         }
         let Some(group) = requested else {
-            return;
+            return false;
         };
         // Make the tree's focus match the strip that was clicked before
         // anything reads it — the palette's own scope resolution and the
@@ -2315,6 +2315,7 @@ impl ShellOverlayHost {
         // Re-run the query even when the palette was already up: the rows
         // carry a placement hint that just changed.
         self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        true
     }
 
     /// Drop a stale [`OpenTarget::Here`] once the palette is gone.
@@ -2806,8 +2807,8 @@ impl ShellOverlayHost {
 
     /// Test-only one-shot harvest for the tab strip's "+" chip.
     #[cfg(any(test, debug_assertions))]
-    pub fn tick_pending_new_tab_for_tests(&mut self) {
-        self.harvest_pending_new_tab();
+    pub fn tick_pending_new_tab_for_tests(&mut self) -> bool {
+        self.harvest_pending_new_tab()
     }
 
     /// Test-only one-shot: run the focus-follow scroll reconcile from
@@ -4210,8 +4211,15 @@ impl Widget for ShellOverlayHost {
         // user just clicked.
         self.harvest_pending_search_open();
         // Open the palette aimed at the group whose "+" chip was clicked,
-        // and retire that aim once the palette is gone.
-        self.harvest_pending_new_tab();
+        // and retire that aim once the palette is gone. The refresh has
+        // to happen here rather than inside the harvest: a picker that
+        // opens on "Nothing to show" until the user types reads as
+        // broken, and this is the frame where both the intent and the
+        // document are in hand.
+        let opened_for_new_tab = self.harvest_pending_new_tab();
+        if opened_for_new_tab {
+            self.refresh_search_results(s, p);
+        }
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         // Publish the poller's latest battery / network / volume reading
@@ -9506,16 +9514,25 @@ impl ShellOverlayHost {
     /// same contract [`Self::qs_back_chevron_rect`] follows.
     fn qs_password_field_rect(&self) -> Rect {
         let r = self.quick_settings_rect();
-        let y = r.y0 + 118.0;
+        let y = r.y0 + 104.0;
         Rect::new(r.x0 + 16.0, y, r.x1 - 16.0, y + 40.0)
     }
 
+    /// Cancel + Connect, anchored to the foot of the pane rather than
+    /// stacked under the field.
+    ///
+    /// The popover's height is set by the network list this pane
+    /// replaces, and the prompt needs about a third of it — so buttons
+    /// placed directly below the field leave the bottom two thirds
+    /// visibly empty and the pane reads as half-drawn. Pinning them to
+    /// the foot is the layout every dialog uses for the same reason:
+    /// the question sits at the top, the answer at the bottom, and the
+    /// space between them is deliberate rather than left over.
     fn qs_password_button_rects(&self) -> (Rect, Rect) {
         let r = self.quick_settings_rect();
-        let field = self.qs_password_field_rect();
-        let y = field.y1 + 34.0;
         let h = 36.0_f64;
         let gap = 10.0_f64;
+        let y = r.y1 - 16.0 - h;
         let w = (r.width() - 32.0 - gap) / 2.0;
         let cancel = Rect::new(r.x0 + 16.0, y, r.x0 + 16.0 + w, y + h);
         let connect = Rect::new(r.x1 - 16.0 - w, y, r.x1 - 16.0, y + h);
@@ -9565,6 +9582,20 @@ impl ShellOverlayHost {
         // could be off would only ever be a bug.
         let field = self.qs_password_field_rect();
         let field_shape = RoundedRect::from_rect(field, 10.0);
+        // Opaque, not the `surface_white_5` wash the popover's other
+        // cards use. The quick-settings panel is translucent by design,
+        // and a 5%-white rect over it lets whatever the app underneath
+        // is showing run straight through the input — here that put the
+        // word "Click to edit" across the passphrase. A field you cannot
+        // read is a field you cannot check what you typed into, which is
+        // the one thing a masked input has to get right.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[1],
+            None,
+            &field_shape,
+        );
         scene.fill(
             Fill::NonZero,
             transform,
