@@ -221,7 +221,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback \
+        -p qos-rollback -p qos-cli \
         ${BROWSER_PKG} \
     && mkdir -p /out /out/optional \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
@@ -237,6 +237,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-power \
           target/release/qos-unlock-helper \
           target/release/qos-rollback \
+          target/release/qos \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -820,6 +821,11 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
 # the composefs digest it has to name. It rewrites `qos.mode=normal` to
 # `qos.mode=repair` in place, same length, so every following PE section keeps its
 # offset and the image still loads.
+# The user-facing command. Thin: the work is in qos-deployment, and this is the
+# part that decides how to become root to run it — directly when already root,
+# through the polkit-authorised unit from a desktop session, and saying to use
+# sudo rather than failing with a permission error from three layers down.
+COPY --from=builder /out/qos /usr/bin/qos
 COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
 COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
 COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
@@ -842,7 +848,7 @@ COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
 COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
 RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
-        /usr/libexec/qos-recovery-boot-check \
+        /usr/libexec/qos-recovery-boot-check /usr/bin/qos \
         /usr/lib/systemd/system-generators/qos-boot-mode-generator
 
 # The signed PCR predictions this image was built with go in
