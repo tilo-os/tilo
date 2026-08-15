@@ -1071,10 +1071,23 @@ impl RemoteInputSink for State {
 /// `CompositorHandler::client_compositor_state` is required to hand back a
 /// `&CompositorClientState` for any given client; smithay's convention is to
 /// stash one inside a `ClientData` impl so it's lifetime-tied to the client.
-#[derive(Default)]
 pub struct ClientState {
     /// Smithay's per-client compositor bookkeeping (transaction queue, scale).
     pub compositor_state: CompositorClientState,
+    /// A number unique to this connection for the compositor's lifetime.
+    ///
+    /// Exists because a Wayland object id is only unique *within* a client:
+    /// two clients each get id 10 for their first `wl_surface`. The compositor
+    /// keys tabs, share sessions and input routing off a single flat
+    /// `SurfaceId` space, so a bare protocol id makes the second client's
+    /// window collide with the first's — it is never adopted as its own tab,
+    /// and input meant for one is delivered to the other. [`surface_id`]
+    /// composes this index with the protocol id to keep that space flat and
+    /// still unique.
+    ///
+    /// Starts at 1: index 0 is reserved for "the client could not be
+    /// determined", which happens only for an already-dead resource.
+    pub index: u32,
     /// Whether this connection arrived on the compositor's **privileged**
     /// socket rather than the public one.
     ///
@@ -1087,6 +1100,22 @@ pub struct ClientState {
     /// into the sandbox, the public one, so a sandboxed app has no path to a
     /// privileged connection.
     pub privileged: bool,
+}
+
+/// Hand-written rather than derived so every construction path — including
+/// `ClientState::default()` in tests — gets its own [`ClientState::index`]. A
+/// derived `Default` would hand every client index 0 and reintroduce exactly
+/// the collision the field exists to prevent.
+impl Default for ClientState {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(1);
+        Self {
+            compositor_state: CompositorClientState::default(),
+            index: NEXT.fetch_add(1, Ordering::Relaxed),
+            privileged: false,
+        }
+    }
 }
 
 impl ClientData for ClientState {
@@ -1104,10 +1133,33 @@ impl ClientState {
     /// Per-client data for a connection accepted on the privileged socket.
     pub fn privileged_arc() -> Arc<Self> {
         Arc::new(Self {
-            compositor_state: CompositorClientState::default(),
             privileged: true,
+            ..Self::default()
         })
     }
+}
+
+/// The compositor's globally unique id for `surface`.
+///
+/// A Wayland object id is unique only within one client's connection, so the
+/// bare `protocol_id` of two clients' first surfaces is the same number. Every
+/// place the compositor stores a surface — the workspace tree's foreign tabs,
+/// the input router's surface map, the share registry, the frame tracker —
+/// keys off one flat `SurfaceId`, so that collision let a second client's
+/// window overwrite the first's rather than becoming its own tab.
+///
+/// The id is the client's connection index in the high 32 bits and the
+/// protocol id in the low 32. Both halves are stable for the life of the
+/// object, so an id can be recomputed at any point rather than remembered, and
+/// the value stays a plain `u64` for the peer-sync wire protocol.
+pub fn surface_id(surface: &WlSurface) -> u64 {
+    let index = surface
+        .client()
+        .and_then(|c| c.get_data::<ClientState>().map(|d| d.index))
+        // A surface whose client is already gone cannot collide with a live
+        // one, and reserving 0 keeps it out of every live client's range.
+        .unwrap_or(0);
+    ((index as u64) << 32) | surface.id().protocol_id() as u64
 }
 
 // -----------------------------------------------------------------------------
@@ -1155,7 +1207,7 @@ impl CompositorHandler for State {
         // shared, so the lookup short-circuits at the
         // `is_surface_shared` check before we ever touch the buffer
         // state. Heavy renderer hooks land in a Phase 4 follow-up.
-        let surface_id = surface.id().protocol_id() as SurfaceId;
+        let surface_id = crate::compositor::state::surface_id(surface);
         let is_shared = self
             .workspace_tree
             .workspaces
@@ -1359,7 +1411,7 @@ impl XdgShellHandler for State {
         // this point; `adopt_toplevel` falls back to a synthetic
         // `anon-<id>` placeholder, and a future Task 6.2 step (re-adopt
         // on `set_app_id`) rewrites it once the client provides one.
-        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -1384,7 +1436,7 @@ impl XdgShellHandler for State {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Phase 6 Task 6.2 — remove the matching `Foreign` tab so the
         // chrome stops advertising a destroyed surface.
-        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         // If the destroyed surface held the output fullscreen, drop the
         // transient promotion so the layout restores rather than staying
         // collapsed around a group that no longer exists.
@@ -1422,7 +1474,7 @@ impl XdgShellHandler for State {
         // app-id from the surface data and rewrite the tab in-place so
         // the chrome (and the Phase 7 integration test) see the real
         // app-id.
-        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         let new_app_id = wl_compositor::with_states(surface.wl_surface(), |states| {
             states
                 .data_map
@@ -1469,7 +1521,7 @@ impl XdgShellHandler for State {
     /// single presentation surface (see the multi-output note in
     /// `plan/compositor.md`).
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _wl_output: Option<WlOutput>) {
-        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         self.fullscreen_group = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
         let (w, h) = self.output_size;
         surface.with_pending_state(|state| {
@@ -1491,7 +1543,7 @@ impl XdgShellHandler for State {
     /// and send a configure clearing the `Fullscreen` state and the imposed
     /// size so the surface returns to its windowed extent.
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        let surface_id = surface.wl_surface().id().protocol_id() as u64;
+        let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         // Only clear if THIS surface was the fullscreen one (a stale request
         // from a background toplevel must not steal another's fullscreen).
         if self.fullscreen_group

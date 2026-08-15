@@ -181,6 +181,16 @@ pub enum Command {
         #[serde(default)]
         destructive: bool,
     },
+    /// Move the pointer to `(x, y)` without pressing anything.
+    ///
+    /// [`Command::ClickAt`] and [`Command::Drag`] bundle press and release
+    /// together, which cannot express a drag-and-drop: the source client has
+    /// to be *holding* the button when it calls `start_drag`, and the drop
+    /// only happens on a release that arrives after the pointer has moved
+    /// over another client. These two ops decompose that.
+    PointerMove { x: f64, y: f64 },
+    /// Press or release the left pointer button at the current position.
+    PointerButton { pressed: bool },
     /// Copy `text` from **in-process chrome**, through the same
     /// `ui::text_selection::clipboard_copy` every hosted widget calls.
     ///
@@ -715,6 +725,14 @@ pub fn dispatch_command<S: ControlState>(
                 "check_failed",
             ),
             Vec::new(),
+        ),
+        Command::PointerMove { x, y } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::CursorMoved { x: *x, y: *y }],
+        ),
+        Command::PointerButton { pressed } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::MouseLeftButton { pressed: *pressed }],
         ),
         // Both clipboard ops call straight into `ui`, exactly as a hosted
         // widget does, rather than reaching into the compositor's mirror

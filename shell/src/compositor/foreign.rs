@@ -1174,7 +1174,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut sent = 0;
     for toplevel in toplevels {
-        let id = toplevel.wl_surface().id().protocol_id() as SurfaceId;
+        let id = crate::compositor::state::surface_id(toplevel.wl_surface());
         let Some((w, h)) = store().take_pending_configure(id, scale) else {
             continue;
         };
@@ -1211,7 +1211,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
     let mut signalled = 0;
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
-        let id = surface.id().protocol_id() as SurfaceId;
+        let id = crate::compositor::state::surface_id(surface);
         if !is_visible_tab(&state.workspace_tree, id) {
             continue;
         }
