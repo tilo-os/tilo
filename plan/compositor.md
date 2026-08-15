@@ -237,15 +237,33 @@ Phase 1 of the spec has landed (`shell/src/compositor/test_control.rs`): the pur
 
 ## Outputs
 
-`OutputManagerState` advertises outputs to clients. The winit backend exposes a single output sized to the winit window. The drm backend enumerates DRM connectors via udev, configures their preferred mode, allocates GBM buffers, and registers a page-flip event source on the calloop loop per output.
+`OutputManagerState` advertises outputs to clients, and `compositor::output_globals` keeps one `wl_output` global per backend output in step with it — created on plug, **updated in place** on a mode or scale change (so a client sees a re-mode rather than a monitor disappearing and a different one appearing), withdrawn on unplug. Matching is by `OutputId`, which the DRM registry mints per `(device, connector)` and keeps stable across re-enumeration.
 
-Multi-monitor support is feature-complete for the single-workspace case; multi-workspace-per-output and per-output workspace pinning are tracked in the foundation spec §4 follow-up.
+The winit backend exposes a single output sized to the winit window. The drm backend enumerates DRM connectors via udev, configures their preferred mode, and drives every connected connector on the primary card from one card fd.
+
+**Hotplug.** Every udev edge re-probes the connectors and reconciles against what is live (`backend::drm::hotplug`): new connectors are modeset, gone ones torn down, re-moded ones rebuilt keeping their id. Outputs are re-packed side by side so an unplugged monitor leaves no hole in the combined coordinate space, and the pointer is clamped back into what remains. Windows are *not* pinned to an output — the shell places groups across whatever displays it is told about — so re-pushing the display geometry re-homes whatever was on the display that went away. The card is held open on the loop thread for the whole session because libseat refuses a second `open` of a node.
+
+**Per-output scale.** Each output's factor is derived from the panel's physical size against its resolution (`backend::drm::scale`), snapped to quarter steps and clamped to 100–200 %, with the `display.scale` setting as an override. Each surface is told the scale of the output it is actually on as its preferred `wp_fractional_scale` — a laptop docked to an external monitor has two right answers.
+
+Multi-monitor support is feature-complete for the single-workspace case; multi-workspace-per-output and per-output workspace pinning are tracked in the foundation spec §4 follow-up. Connectors on *secondary* GPUs need a second card fd plus cross-GPU buffer handling and remain a follow-up.
 
 ## Sessions and seat acquisition (DRM mode)
 
 - `libseat` provides the session (TTY swap, DRM master) — works under `seatd`, `logind`, or `consolekit2`.
 - `udev` enumerates DRM and input devices and emits hotplug events into calloop.
 - `libinput` produces keyboard/pointer/touch events; the seat-state delegate routes them.
+
+**Seat acquisition failures are diagnosed, not reported as an errno.** libseat collapses "not in a logind session", "this session owns no seat" and "no seat backend is running" into one `ENOSYS`. `backend::drm::seat_diag` classifies the failure against the observed environment (`XDG_SESSION_ID`, `XDG_SEAT`, `XDG_VTNR`, the seatd socket, `/run/systemd/seats`) and prints what to do about it.
+
+**VT switch and resume.** `backend::drm::session` owns the ordered sequence both paths need. Leaving: stop scanout, then drop DRM master — in that order, or the presenter queues flips against a device it no longer owns. Returning: re-acquire master, re-modeset every output, re-bind the cursor planes, restore the panels' power state, resume presenting, force a full repaint. Nothing about a CRTC survives either event, including the in-flight page flip whose completion is thrown away with the master lock.
+
+Resume from sleep runs the *same* sequence, driven off `PowerSignal::ResumedFromSleep`, because a suspend never pauses the seat — a state machine that only acts on transitions does nothing there, which is exactly "lid close, lid open, black screen".
+
+`Ctrl+Alt+F1..F12` is handled by the compositor, ahead of every other chord and never offered to a client. The kernel does not see it: the compositor holds the keyboard in a raw mode, so without this the user cannot leave the terminal for the life of the session.
+
+**Input device configuration.** The persisted `input.*` preferences reach libinput on every `DEVICE_ADDED` and are re-applied to attached devices when the settings file changes (`backend::drm::input_config`). Tap-to-click defaults **on** — libinput's default off is right for a tablet on a desk and wrong for a laptop — with disable-while-typing and tap-and-drag turned on alongside it. Keyboard auto-repeat comes from the same `key_repeat` slider.
+
+**Gestures and touch.** Three- and four-finger swipes and pinches belong to the shell and drive workspace, tab and overview navigation, in the same directions as the equivalent chords and inverted by `natural_scroll`. One- and two-finger gestures belong to the focused client and go out over `zwp_pointer_gestures_v1`. The split is by finger count, made in one place (`backend::drm::gestures::claims`), so a gesture is never handled twice. Touch reaches clients over `wl_touch` and the shell chrome as synthesised pointer events, since the chrome has no touch path of its own.
 
 Fallback if bare DRM init fails: relaunch under `cage` as a single-window Wayland session. That's a deployment fallback, not a supported mode.
 
