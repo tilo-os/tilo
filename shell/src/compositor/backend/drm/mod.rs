@@ -615,6 +615,94 @@ impl Backend for DrmBackend {
 mod tests {
     use super::*;
 
+    /// The reconfiguration path with no live scanouts.
+    ///
+    /// Building a `ScanoutEntry` needs a modeset connector, so the
+    /// scanout-touching half of `Reconfigure` and `Resume` cannot be
+    /// exercised off hardware. What can — and what the black-screen bugs
+    /// actually turned on — is the *gating*: whether the presenter will
+    /// paint at all, and which output table it believes in.
+    #[test]
+    fn a_pause_stops_the_presenter_and_a_resume_starts_it() {
+        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+        let mut outputs: Vec<Output> = Vec::new();
+        let (mut paused, mut blanked) = (false, false);
+
+        apply_scanout_command(
+            ScanoutCommand::Pause,
+            &mut scanouts,
+            &mut outputs,
+            &mut paused,
+            &mut blanked,
+        );
+        assert!(paused, "a paused session must not present into CRTCs it lost");
+
+        apply_scanout_command(
+            ScanoutCommand::Resume { dpms_on: true },
+            &mut scanouts,
+            &mut outputs,
+            &mut paused,
+            &mut blanked,
+        );
+        assert!(!paused, "and must start again when it gets them back");
+        assert!(!blanked);
+    }
+
+    #[test]
+    fn resuming_a_blanked_session_leaves_the_panels_off() {
+        // Restoring a session that was idle-blanked must not light the
+        // screen: the user turned it off, and a VT switch is not consent.
+        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+        let mut outputs: Vec<Output> = Vec::new();
+        let (mut paused, mut blanked) = (true, false);
+        apply_scanout_command(
+            ScanoutCommand::Resume { dpms_on: false },
+            &mut scanouts,
+            &mut outputs,
+            &mut paused,
+            &mut blanked,
+        );
+        assert!(!paused, "the CRTCs are ours again");
+        assert!(blanked, "but the panels stay off");
+    }
+
+    #[test]
+    fn a_reconfigure_adopts_the_new_output_table() {
+        // The presenter sizes its paint buffer from `combined_geometry` of
+        // this table and presents each output's sub-rect from its
+        // position, so adopting it is what makes an unplugged monitor stop
+        // being painted for.
+        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+        let mut outputs: Vec<Output> = vec![
+            Output::new(OutputId(0), (1920, 1080), 1.0),
+            Output {
+                id: OutputId(1),
+                position: (1920, 0),
+                size: (2560, 1440),
+                scale: 1.0,
+            },
+        ];
+        let (mut paused, mut blanked) = (false, false);
+        apply_scanout_command(
+            ScanoutCommand::Reconfigure {
+                remove: vec![OutputId(0)],
+                add: Vec::new(),
+                outputs: vec![Output::new(OutputId(1), (2560, 1440), 1.0)],
+            },
+            &mut scanouts,
+            &mut outputs,
+            &mut paused,
+            &mut blanked,
+        );
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].id, OutputId(1));
+        assert_eq!(
+            combined_geometry(&outputs),
+            (2560, 1440),
+            "the scene must shrink to what is still plugged in"
+        );
+    }
+
     /// The DRM backend's construction must surface a real error
     /// (`Box<dyn Error>`) on any dev machine that isn't on a free TTY.
     /// The exact text varies (`failed to open libseat session: ...`
