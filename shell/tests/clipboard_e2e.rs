@@ -85,6 +85,9 @@ struct Compositor {
     /// The privileged socket — what a clipboard manager gets.
     privileged_socket: PathBuf,
     control_socket: PathBuf,
+    /// Everything the compositor wrote to stderr, so a failure can quote the
+    /// compositor's own account of what it did rather than only the client's.
+    log: Arc<Mutex<Vec<String>>>,
 }
 
 impl Compositor {
@@ -109,8 +112,22 @@ impl Compositor {
         let mut child = Command::new(env!("CARGO_BIN_EXE_shell"))
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
+            // The compositor loads its workspace tree, room identities and
+            // session records from disk. Point every XDG dir at the throwaway
+            // runtime dir so a test neither reads nor writes the developer's
+            // real desktop — and so each run starts from the same known tree
+            // instead of whatever windows happened to be open last time.
+            .env("XDG_CONFIG_HOME", runtime_dir.join("config"))
+            .env("XDG_DATA_HOME", runtime_dir.join("data"))
+            .env("XDG_STATE_HOME", runtime_dir.join("state"))
+            .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
             .env("QOS_TEST_CONTROL", &control_socket)
             .env("NIRIOS_HEADLESS_SIZE", "1280x800")
+            // smithay logs its selection and drag decisions at debug, and
+            // "denying drag from client without implicit grab" is the one
+            // line that distinguishes a rejected drag from a delivered one
+            // that went to the wrong surface.
+            .env("RUST_LOG", "warn,smithay::wayland::selection=debug,shell=debug")
             // The whole point of this suite is that it cannot reach the
             // developer's session. Removing both display variables means the
             // compositor binds a fresh socket in our private runtime dir and
@@ -123,15 +140,24 @@ impl Compositor {
             .spawn()
             .expect("spawn the compositor under test");
 
+        let log = Arc::new(Mutex::new(Vec::<String>::new()));
+
         // Both pipes must be drained continuously. A full 64 KiB pipe blocks
         // the compositor mid-write, which shows up much later as an
-        // unexplained timeout on an unrelated read.
+        // unexplained timeout on an unrelated read. `tracing` writes to
+        // stdout while the compositor's own `eprintln!`s go to stderr, so
+        // both feed the log — a failure that only quotes half of it can miss
+        // the one line that explains it.
         let stdout = child.stdout.take().expect("compositor stdout");
+        let stdout_log = Arc::clone(&log);
         std::thread::spawn(move || {
-            for _ in BufReader::new(stdout).lines() {}
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Ok(mut l) = stdout_log.lock() {
+                    l.push(line);
+                }
+            }
         });
 
-        let log = Arc::new(Mutex::new(Vec::<String>::new()));
         let (tx, rx) = mpsc::channel::<(String, String)>();
         let stderr = child.stderr.take().expect("compositor stderr");
         let log_writer = Arc::clone(&log);
@@ -183,6 +209,7 @@ impl Compositor {
             privileged_socket: runtime_dir.join(&found["privileged"]),
             control_socket: PathBuf::from(&found["control"]),
             runtime_dir,
+            log: Arc::clone(&log),
         };
         assert!(
             this.wayland_socket.exists(),
@@ -242,6 +269,17 @@ impl Compositor {
             .map(str::to_string)
     }
 
+    /// The tail of the compositor's stderr.
+    fn recent_log(&self) -> String {
+        self.log
+            .lock()
+            .map(|l| {
+                let start = l.len().saturating_sub(40);
+                l[start..].join("\n")
+            })
+            .unwrap_or_default()
+    }
+
     /// Compact view of the compositor's live shell state, for failure
     /// messages. A focus or adoption problem is unreadable from "timed out";
     /// it is obvious from the tab list.
@@ -251,13 +289,29 @@ impl Compositor {
             return format!("<no workspace_tree in {resp}>");
         };
         let mut tabs = Vec::new();
+        let mut groups = 0usize;
         walk_json(tree, &mut |value| {
             if let Some(foreign) = value.get("Foreign") {
                 tabs.push(foreign.to_string());
             }
+            if value.get("window_groups").is_some() {
+                groups += value
+                    .get("window_groups")
+                    .and_then(|g| g.as_array())
+                    .map(|g| g.len())
+                    .unwrap_or(0);
+            }
+        });
+        let mut all_tabs = Vec::new();
+        walk_json(tree, &mut |value| {
+            if let (Some(title), Some(_)) = (value.get("title"), value.get("tile")) {
+                all_tabs.push(title.to_string());
+            }
         });
         format!(
-            "foreign tiles: [{}]\nactive_strip: {}\nactive_group: {}",
+            "window groups: {groups}\nall tabs: [{}]\nforeign tiles: [{}]\n\
+             active_strip: {}\nactive_group: {}",
+            all_tabs.join(", "),
             tabs.join(", "),
             tree.get("active_strip")
                 .map(|v| v.to_string())
@@ -505,6 +559,40 @@ impl TestClient {
             "the compositor never gave `{}` keyboard focus after mapping a toplevel \
              (waited {DEADLINE:?}). Setting a selection requires focus, so nothing \
              downstream can work without it.\n{}",
+            self.app_id,
+            compositor.debug_state(),
+        );
+    }
+
+    /// Find a screen position at which this client receives pointer input.
+    ///
+    /// Asked of the client rather than computed from the compositor's layout:
+    /// "where does this window actually receive the pointer" is exactly what a
+    /// drag needs, and the client saying `wl_pointer.enter` is the only
+    /// authority on it. Probing also means the test does not encode the strip
+    /// layout, so a change to how tiles are arranged moves the drag with them
+    /// instead of silently aiming it at chrome.
+    fn pointer_target(&mut self, compositor: &Compositor) -> (f64, f64) {
+        const STEP: i32 = 40;
+        let (w, h) = (1280, 800);
+        self.state.pointer_entered = false;
+        let mut y = STEP / 2;
+        while y < h {
+            let mut x = STEP / 2;
+            while x < w {
+                compositor.pointer_move(x as f64, y as f64);
+                self.pump();
+                if self.state.pointer_entered {
+                    self.step(&format!("receives pointer input at ({x}, {y})"));
+                    return (x as f64, y as f64);
+                }
+                x += STEP;
+            }
+            y += STEP;
+        }
+        panic!(
+            "`{}` never received a pointer enter anywhere on a {w}x{h} screen, so its \
+             window is not on screen and no drag could be aimed at it.\n{}",
             self.app_id,
             compositor.debug_state(),
         );
@@ -853,6 +941,7 @@ impl Dispatch<WlPointer, ()> for ClientState {
                 state.last_serial = serial;
             }
             wl_pointer::Event::Leave { serial, .. } => {
+                state.pointer_entered = false;
                 state.last_serial = serial;
             }
             wl_pointer::Event::Button { serial, state: s, .. } => {
@@ -1343,19 +1432,40 @@ fn drag_and_drop_carries_data_between_two_clients() {
     let compositor = Compositor::start();
     let payload = "dragged between two clients";
 
+    // Both windows have to be on screen at once for a drag to cross between
+    // them, and in a scrollable-strip desktop that means separate window
+    // groups rather than two tabs of one.
+    compositor.place_next_window("org.qos.test.dnd-source");
     let mut source = TestClient::new(compositor.connect(), "org.qos.test.dnd-source");
     source.assert_is_qos_compositor();
     source.map_window(&compositor);
 
+    compositor.place_next_window("org.qos.test.dnd-target");
     let mut target = TestClient::new(compositor.connect(), "org.qos.test.dnd-target");
     target.assert_is_qos_compositor();
     target.map_window(&compositor);
 
-    let source_rect = compositor.foreign_rect("org.qos.test.dnd-source");
-    let target_rect = compositor.foreign_rect("org.qos.test.dnd-target");
+    // Click the source once before measuring anything. Clicking raises its
+    // window group, and raising scrolls the strip — so a position measured
+    // before the click is stale afterwards, and the drag would be aimed at
+    // wherever the target used to be. Settling first makes the layout the
+    // drag runs against the same one it was measured in.
+    let settle_point = source.pointer_target(&compositor);
+    compositor.pointer_move(settle_point.0, settle_point.1);
+    compositor.pointer_button(true);
+    compositor.pointer_button(false);
+
+    // Ask each client where it now receives the pointer, rather than guessing
+    // at the strip layout.
+    let target_point = target.pointer_target(&compositor);
+    let source_point = source.pointer_target(&compositor);
 
     // Press inside the source tile so the client gets a real implicit grab.
-    compositor.pointer_move(source_rect.0, source_rect.1);
+    // The serial has to come from *this* press: smithay only honours
+    // `start_drag` against the serial of the grab that is currently held, so
+    // the one left over from the settling click above would be refused.
+    source.state.pointer_button_serial = None;
+    compositor.pointer_move(source_point.0, source_point.1);
     compositor.pointer_button(true);
     source.wait_until(
         |s| s.pointer_button_serial.is_some(),
@@ -1382,11 +1492,23 @@ fn drag_and_drop_carries_data_between_two_clients() {
     source.roundtrip();
 
     // Move over the target tile and release.
-    compositor.pointer_move(target_rect.0, target_rect.1);
-    target.wait_until(
-        |s| s.dnd_entered && s.dnd_offer.is_some(),
-        "the drag never entered the target client's surface",
-    );
+    compositor.pointer_move(target_point.0, target_point.1);
+    {
+        let started = Instant::now();
+        while started.elapsed() < DEADLINE {
+            if target.state.dnd_entered && target.state.dnd_offer.is_some() {
+                break;
+            }
+            target.pump();
+            source.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            target.state.dnd_entered && target.state.dnd_offer.is_some(),
+            "the drag never entered the target client's surface.\nCompositor log:\n{}",
+            compositor.recent_log(),
+        );
+    }
     compositor.pointer_button(false);
     target.wait_until(|s| s.dnd_dropped, "the target client never saw the drop");
 
@@ -1398,65 +1520,16 @@ fn drag_and_drop_carries_data_between_two_clients() {
 }
 
 impl Compositor {
-    /// Centre of the tile a foreign toplevel with `app_id` is rendered into.
-    ///
-    /// Resolved from the live shell state and the live widget tree rather than
-    /// guessed from the viewport size: the surface id comes out of the
-    /// workspace tree, and the pixel rect out of the widget registry the
-    /// compositor actually laid out. A layout change therefore makes this fail
-    /// loudly instead of silently clicking on chrome.
-    fn foreign_rect(&self, app_id: &str) -> (f64, f64) {
-        let started = Instant::now();
-        let mut seen: Vec<String> = Vec::new();
-        while started.elapsed() < DEADLINE {
-            if let Some(surface_id) = self.foreign_surface_id(app_id) {
-                let name = format!("foreign-surface-{surface_id}");
-                let resp = self.control(serde_json::json!({"op": "list_targets"}));
-                if let Some(targets) = resp.get("targets").and_then(|t| t.as_array()) {
-                    seen = targets
-                        .iter()
-                        .filter_map(|t| t.get("name").and_then(|n| n.as_str()))
-                        .map(str::to_string)
-                        .collect();
-                    if let Some(entry) = targets
-                        .iter()
-                        .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
-                    {
-                        let rect = entry
-                            .get("rect")
-                            .and_then(|r| r.as_array())
-                            .expect("target entry carries a rect");
-                        let v: Vec<f64> = rect.iter().filter_map(|n| n.as_f64()).collect();
-                        assert_eq!(v.len(), 4, "rect must be [x, y, w, h], got {rect:?}");
-                        assert!(
-                            v[2] > 0.0 && v[3] > 0.0,
-                            "the tile for {app_id} has zero area, so a click on it \
-                             would land on whatever is underneath: {v:?}"
-                        );
-                        return (v[0] + v[2] / 2.0, v[1] + v[3] / 2.0);
-                    }
-                }
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        panic!("no laid-out tile for app_id `{app_id}`; targets seen: {seen:?}");
-    }
-
-    /// The compositor's surface id for the foreign toplevel announcing
-    /// `app_id`, read out of the live workspace tree.
-    fn foreign_surface_id(&self, app_id: &str) -> Option<u64> {
-        let resp = self.control(serde_json::json!({"op": "state_dump"}));
-        let tree = resp.get("state")?.get("workspace_tree")?;
-        let mut found = None;
-        walk_json(tree, &mut |value| {
-            let Some(foreign) = value.get("Foreign") else {
-                return;
-            };
-            if foreign.get("app_id").and_then(|a| a.as_str()) == Some(app_id) {
-                found = foreign.get("surface_id").and_then(|s| s.as_u64());
-            }
-        });
-        found
+    /// Ask the compositor to open the next window of `app_id` in its own
+    /// group, so two client windows can be on screen at the same time.
+    fn place_next_window(&self, app_id: &str) {
+        let resp = self.control(serde_json::json!({
+            "op": "place_next_window", "app_id": app_id,
+        }));
+        assert!(
+            resp.get("ok").is_some(),
+            "place_next_window failed: {resp:?}"
+        );
     }
 
     fn pointer_move(&self, x: f64, y: f64) {

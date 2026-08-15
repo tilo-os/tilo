@@ -181,6 +181,16 @@ pub enum Command {
         #[serde(default)]
         destructive: bool,
     },
+    /// Record that the next window announcing `app_id` should open in its own
+    /// window group rather than as a tab in the focused one.
+    ///
+    /// Goes through `shell::launcher::set_pending_placement`, the same note
+    /// the launcher leaves when it opens an app beside another — so this is
+    /// the production placement path, not a test-only branch in the tree.
+    /// A harness needs it because two client windows can only be visible at
+    /// once when they are in separate groups, and side-by-side windows are the
+    /// precondition for dragging anything between them.
+    PlaceNextWindow { app_id: String },
     /// Move the pointer to `(x, y)` without pressing anything.
     ///
     /// [`Command::ClickAt`] and [`Command::Drag`] bundle press and release
@@ -726,6 +736,13 @@ pub fn dispatch_command<S: ControlState>(
             ),
             Vec::new(),
         ),
+        Command::PlaceNextWindow { app_id } => {
+            crate::shell::launcher::set_pending_placement(
+                app_id,
+                crate::compositor::tab_binding::Placement::NewGroup,
+            );
+            (Response::Ok { frame: 0 }, Vec::new())
+        }
         Command::PointerMove { x, y } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],
