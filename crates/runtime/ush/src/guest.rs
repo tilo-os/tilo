@@ -121,31 +121,45 @@ impl GuestPlan {
 /// Pure. The returned vector starts with `bwrap` and ends with the guest's own
 /// argv, so a caller can print it verbatim under `-v` and get something it can
 /// paste into a shell.
-pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> Vec<OsString> {
+pub fn build_argv(
+    plan: &GuestPlan,
+    seccomp_fd: Option<std::os::fd::RawFd>,
+    userns_fd: Option<std::os::fd::RawFd>,
+) -> Vec<OsString> {
     let mut a: Vec<OsString> = Vec::new();
-    let mut push = |s: &str| a.push(OsString::from(s));
+    let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
-    push("bwrap");
+    push(&mut a, "bwrap");
 
     // ---- namespaces --------------------------------------------------
     // A fresh user namespace is what makes every mount below possible without
     // privilege, and uid 0 inside it is what lets `rpm` chown a file into the
     // layer. Outside the namespace that uid 0 is the unprivileged real user; it
     // confers nothing on the host.
-    push("--unshare-user");
-    push("--uid");
-    push("0");
-    push("--gid");
-    push("0");
-    push("--unshare-pid");
-    push("--unshare-uts");
-    push("--unshare-ipc");
-    push("--unshare-cgroup-try");
-    push("--hostname");
-    push(plan.profile.as_str());
+    //
+    // With a namespace prepared outside (see [`prepare_userns`]) `bwrap` joins
+    // it rather than creating one — that is how the guest gets more than a
+    // single mapped uid, which nested rootless container tooling needs.
+    match userns_fd {
+        Some(fd) => {
+            push(&mut a, "--userns");
+            a.push(fd.to_string().into());
+        }
+        None => push(&mut a, "--unshare-user"),
+    }
+    push(&mut a, "--uid");
+    push(&mut a, "0");
+    push(&mut a, "--gid");
+    push(&mut a, "0");
+    push(&mut a, "--unshare-pid");
+    push(&mut a, "--unshare-uts");
+    push(&mut a, "--unshare-ipc");
+    push(&mut a, "--unshare-cgroup-try");
+    push(&mut a, "--hostname");
+    push(&mut a, plan.profile.as_str());
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
-    push("--die-with-parent");
+    push(&mut a, "--die-with-parent");
     // Deliberately *not* `--new-session`. It calls `setsid`, which detaches the
     // guest from its controlling terminal and takes job control with it — no
     // Ctrl-C, no Ctrl-Z, no foreground process group. `bwrap` documents it as
@@ -154,7 +168,7 @@ pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> V
     // back into the parent's terminal, which the kernel has refused by default
     // since `dev.tty.legacy_tiocsti` shipped off.
 
-    drop(push);
+
 
     // ---- the layered root --------------------------------------------
     for subtree in BASE_SUBTREES {
@@ -254,6 +268,18 @@ pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> V
         a.push("/dev/fuse".into());
         a.push("/dev/fuse".into());
     }
+    if !plan.profile.confines_namespaces() {
+        // `bwrap` empties the capability bounding set before it execs, so a
+        // guest can call `unshare(CLONE_NEWUSER)` and then not be allowed to
+        // write the new namespace's `uid_map` — which is where nested rootless
+        // podman stops. These capabilities exist only inside the guest's own
+        // user namespace, where host uid 0 is unmapped, so they buy authority
+        // over the guest's children and none at all over the machine. They are
+        // still the difference between a boundary and a convenience, which is
+        // why only the developer profile gets them.
+        a.push("--cap-add".into());
+        a.push("ALL".into());
+    }
 
     // ---- environment --------------------------------------------------
     let setenv = |k: &str, v: &str, a: &mut Vec<OsString>| {
@@ -327,6 +353,147 @@ pub fn subid_range(subid_file: &Path, user: &str, uid: u32) -> Option<(u32, u32)
     None
 }
 
+/// Build a user namespace with the caller's whole subordinate id range mapped,
+/// and return a descriptor naming it.
+///
+/// Only [`Profile::Dsh`] uses this. `bwrap --unshare-user` maps exactly one uid,
+/// and rootless `podman` needs a range: an image's files are owned by a spread
+/// of uids, and with one mapped it can only unpack images that are entirely
+/// uid 0. The range lives in `/etc/subuid`, and installing it needs
+/// `CAP_SETUID` in the parent namespace — which no unprivileged process has, and
+/// which is exactly what `newuidmap` carries as a file capability.
+///
+/// So: fork a child into a bare user namespace, let `newuidmap` and `newgidmap`
+/// write its maps from outside, then keep the namespace alive by holding a
+/// descriptor to it while the child goes away. `bwrap --userns` joins it instead
+/// of creating its own.
+///
+/// Returns `None` when the user has no allocation or the helpers are absent;
+/// `dsh` then starts with a single uid, which is a weaker `dsh` and not a
+/// failure.
+pub fn prepare_userns(subid_dir: &Path) -> Option<std::fs::File> {
+    // SAFETY: `geteuid`/`getegid` cannot fail.
+    let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+    let user = std::env::var("USER").unwrap_or_default();
+    let (uid_start, uid_count) = subid_range(&subid_dir.join("subuid"), &user, uid)?;
+    let (gid_start, gid_count) = subid_range(&subid_dir.join("subgid"), &user, gid)?;
+
+    // A pipe is how the child says "the namespace exists" and how the parent
+    // says "the maps are written, you may go".
+    let mut ready = [0i32; 2];
+    let mut go = [0i32; 2];
+    // SAFETY: both arrays are two-element `int` buffers, which is what `pipe`
+    // fills in.
+    if unsafe { libc::pipe(ready.as_mut_ptr()) } != 0 || unsafe { libc::pipe(go.as_mut_ptr()) } != 0
+    {
+        return None;
+    }
+
+    // SAFETY: the child performs only async-signal-safe work — `unshare`,
+    // `write`, `read`, `_exit` — and never returns into this program.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return None;
+    }
+    if pid == 0 {
+        // SAFETY: as above; every call here is async-signal-safe.
+        unsafe {
+            libc::close(ready[0]);
+            libc::close(go[1]);
+            if libc::unshare(libc::CLONE_NEWUSER) != 0 {
+                libc::_exit(1);
+            }
+            let byte = 1u8;
+            libc::write(ready[1], &byte as *const u8 as *const libc::c_void, 1);
+            let mut buf = 0u8;
+            libc::read(go[0], &mut buf as *mut u8 as *mut libc::c_void, 1);
+            libc::_exit(0)
+        }
+    }
+
+    // SAFETY: descriptors this process owns.
+    unsafe {
+        libc::close(ready[1]);
+        libc::close(go[0]);
+    }
+    let mut buf = 0u8;
+    // SAFETY: `ready[0]` is a live read end owned by this process.
+    let got = unsafe { libc::read(ready[0], &mut buf as *mut u8 as *mut libc::c_void, 1) };
+    if got != 1 {
+        reap(pid, go[1], ready[0]);
+        return None;
+    }
+
+    // uid 0 in the guest is the real user; 1.. is the subordinate range. The
+    // same shape rootless podman installs on the host.
+    let ok = run_idmap(
+        "newuidmap",
+        pid,
+        &[(0, uid, 1), (1, uid_start, uid_count)],
+    ) && run_idmap(
+        "newgidmap",
+        pid,
+        &[(0, gid, 1), (1, gid_start, gid_count)],
+    );
+    if !ok {
+        reap(pid, go[1], ready[0]);
+        return None;
+    }
+
+    // Holding this open is what keeps the namespace alive after the child exits.
+    let ns = std::fs::File::open(format!("/proc/{pid}/ns/user")).ok();
+    reap(pid, go[1], ready[0]);
+    ns.and_then(|f| clear_cloexec(f).ok())
+}
+
+fn reap(pid: libc::pid_t, go_write: i32, ready_read: i32) {
+    let byte = 1u8;
+    // SAFETY: descriptors and a child pid this process owns.
+    unsafe {
+        libc::write(go_write, &byte as *const u8 as *const libc::c_void, 1);
+        libc::close(go_write);
+        libc::close(ready_read);
+        let mut status = 0i32;
+        libc::waitpid(pid, &mut status, 0);
+    }
+}
+
+fn run_idmap(program: &str, pid: libc::pid_t, ranges: &[(u32, u32, u32)]) -> bool {
+    let mut cmd = std::process::Command::new(program);
+    cmd.arg(pid.to_string());
+    for (inside, outside, count) in ranges {
+        cmd.arg(inside.to_string());
+        cmd.arg(outside.to_string());
+        cmd.arg(count.to_string());
+    }
+    match cmd.status() {
+        Ok(s) if s.success() => true,
+        Ok(s) => {
+            tracing::warn!("{program} exited {s}; the guest gets a single mapped uid");
+            false
+        }
+        Err(e) => {
+            tracing::warn!("{program} could not be run ({e}); the guest gets a single mapped uid");
+            false
+        }
+    }
+}
+
+fn clear_cloexec(file: std::fs::File) -> std::io::Result<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is owned by `file`, which is returned to the caller.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(file)
+}
+
 /// Open the compiled filter and hand back a descriptor `bwrap` will inherit.
 ///
 /// `O_CLOEXEC` has to come off: the number in the argv has to still name this
@@ -361,7 +528,8 @@ pub fn exec(plan: &GuestPlan) -> std::io::Error {
         Ok(v) => v,
         Err(e) => return e,
     };
-    let argv = build_argv(plan, Some(fd));
+    let (_ns, ns_fd) = userns_for(plan);
+    let argv = build_argv(plan, Some(fd), ns_fd);
     let mut cmd = std::process::Command::new(&argv[0]);
     cmd.args(&argv[1..]);
     cmd.exec()
@@ -370,10 +538,35 @@ pub fn exec(plan: &GuestPlan) -> std::io::Error {
 /// Spawn the guest as a child.
 pub fn spawn(plan: &GuestPlan) -> std::io::Result<std::process::Child> {
     let (_blob, fd) = open_seccomp_fd(&plan.seccomp_blob)?;
-    let argv = build_argv(plan, Some(fd));
+    let (_ns, ns_fd) = userns_for(plan);
+    let argv = build_argv(plan, Some(fd), ns_fd);
     std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .spawn()
+}
+
+/// The prepared user namespace for a plan, if its profile asks for one. The
+/// `File` is returned so the caller keeps it alive — closing it would destroy
+/// the namespace before `bwrap` joins it.
+fn userns_for(plan: &GuestPlan) -> (Option<std::fs::File>, Option<std::os::fd::RawFd>) {
+    use std::os::fd::AsRawFd;
+    if !plan.profile.grants_subid_range() {
+        return (None, None);
+    }
+    match prepare_userns(Path::new("/etc")) {
+        Some(file) => {
+            let fd = file.as_raw_fd();
+            (Some(file), Some(fd))
+        }
+        None => {
+            tracing::warn!(
+                "no subordinate id range is available; this session gets a \
+                 single mapped uid and nested rootless containers will need \
+                 storage.conf's ignore_chown_errors"
+            );
+            (None, None)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -412,7 +605,7 @@ mod tests {
     #[test]
     fn the_base_subtrees_are_overlaid_with_the_layer_on_top() {
         let p = plan();
-        let argv = build_argv(&p, Some(9));
+        let argv = build_argv(&p, Some(9), None);
         let w4 = window(&argv, 4);
         for subtree in ["usr", "etc"] {
             assert!(
@@ -431,7 +624,7 @@ mod tests {
     #[test]
     fn nothing_binds_a_base_subtree_writable() {
         let p = plan();
-        let argv = strings(&build_argv(&p, Some(9)));
+        let argv = strings(&build_argv(&p, Some(9), None));
         for (i, arg) in argv.iter().enumerate() {
             if arg == "--bind" || arg == "--bind-try" || arg == "--dev-bind" {
                 let src = &argv[i + 1];
@@ -448,7 +641,7 @@ mod tests {
 
     #[test]
     fn the_usrmerge_symlinks_exist_so_bin_sh_resolves() {
-        let argv = build_argv(&plan(), Some(9));
+        let argv = build_argv(&plan(), Some(9), None);
         let w3 = window(&argv, 3);
         for (target, link) in [
             ("usr/bin", "/bin"),
@@ -466,7 +659,7 @@ mod tests {
 
     #[test]
     fn the_guest_home_is_the_stores_copy_and_never_the_real_one() {
-        let argv = build_argv(&plan(), Some(9));
+        let argv = build_argv(&plan(), Some(9), None);
         let w3 = window(&argv, 3);
         assert!(
             w3.iter().any(|w| w[0] == "--bind"
@@ -487,7 +680,7 @@ mod tests {
         let mut p = plan();
         p.trusted_dirs = vec![PathBuf::from("/var/home/you/src")];
         p.readable_dirs = vec![PathBuf::from("/var/home/you/notes")];
-        let argv = build_argv(&p, Some(9));
+        let argv = build_argv(&p, Some(9), None);
         let w3 = window(&argv, 3);
         assert!(w3.iter().any(|w| w[0] == "--bind-try"
             && w[1] == "/var/home/you/src"
@@ -502,7 +695,7 @@ mod tests {
     /// argv rather than on the prose.
     #[test]
     fn a_guest_with_no_grants_binds_no_host_directory() {
-        let argv = strings(&build_argv(&plan(), Some(9)));
+        let argv = strings(&build_argv(&plan(), Some(9), None));
         let mut host_binds = Vec::new();
         for (i, arg) in argv.iter().enumerate() {
             if arg.starts_with("--bind") || arg.starts_with("--ro-bind") {
@@ -523,7 +716,7 @@ mod tests {
 
     #[test]
     fn the_seccomp_blob_is_applied_and_the_guest_argv_comes_last() {
-        let argv = strings(&build_argv(&plan(), Some(9)));
+        let argv = strings(&build_argv(&plan(), Some(9), None));
         let sep = argv.iter().position(|a| a == "--").expect("no -- separator");
         let blob = argv
             .iter()
@@ -541,7 +734,7 @@ mod tests {
     fn a_command_replaces_the_interactive_shell() {
         let mut p = plan();
         p.command = vec!["/usr/bin/bash".into(), "-c".into(), "echo hi".into()];
-        let argv = strings(&build_argv(&p, Some(9)));
+        let argv = strings(&build_argv(&p, Some(9), None));
         let sep = argv.iter().position(|a| a == "--").unwrap();
         assert_eq!(&argv[sep + 1..], &["/usr/bin/bash", "-c", "echo hi"]);
         assert!(
@@ -552,14 +745,14 @@ mod tests {
 
     #[test]
     fn the_runtime_commands_are_on_path_ahead_of_the_layer() {
-        let argv = strings(&build_argv(&plan(), Some(9)));
+        let argv = strings(&build_argv(&plan(), Some(9), None));
         let i = argv.iter().position(|a| a == "PATH").unwrap();
         assert!(
             argv[i + 1].starts_with(&format!("{}:", crate::GUEST_BIN_DIR)),
             "PATH is {}; the runtime's own commands must come first",
             argv[i + 1]
         );
-        let w3 = window(&build_argv(&plan(), Some(9)), 3);
+        let w3 = window(&build_argv(&plan(), Some(9), None), 3);
         for cmd in crate::GUEST_COMMANDS {
             assert!(
                 w3.iter().any(|w| w[0] == "--symlink"
@@ -572,7 +765,7 @@ mod tests {
 
     #[test]
     fn the_runtime_binary_is_bound_read_only() {
-        let argv = strings(&build_argv(&plan(), Some(9)));
+        let argv = strings(&build_argv(&plan(), Some(9), None));
         let i = argv
             .iter()
             .position(|a| a == "/usr/libexec/qos-ush")
@@ -587,19 +780,19 @@ mod tests {
 
     #[test]
     fn the_store_location_is_unset_in_the_guest() {
-        let argv = strings(&build_argv(&plan(), Some(9)));
+        let argv = strings(&build_argv(&plan(), Some(9), None));
         let i = argv.iter().position(|a| a == "--unsetenv").unwrap();
         assert_eq!(argv[i + 1], crate::store::STORE_ENV);
     }
 
     #[test]
     fn only_the_developer_profile_gets_dev_fuse() {
-        let ush = strings(&build_argv(&plan(), Some(9)));
+        let ush = strings(&build_argv(&plan(), Some(9), None));
         assert!(!ush.iter().any(|a| a == "/dev/fuse"));
 
         let mut p = plan();
         p.profile = Profile::Dsh;
-        let dsh = strings(&build_argv(&p, Some(9)));
+        let dsh = strings(&build_argv(&p, Some(9), None));
         assert!(
             dsh.windows(3)
                 .any(|w| w[0] == "--dev-bind-try" && w[1] == "/dev/fuse" && w[2] == "/dev/fuse"),
@@ -617,7 +810,7 @@ mod tests {
         let mut p = plan();
         p.upper = dir.path().join("ephemeral/s1");
         p.lower_layers = vec![persistent.clone()];
-        let argv = strings(&build_argv(&p, Some(9)));
+        let argv = strings(&build_argv(&p, Some(9), None));
 
         let usr_overlay = argv.iter().position(|a| a == "--overlay").unwrap();
         let srcs: Vec<&String> = argv[..usr_overlay]
@@ -634,6 +827,45 @@ mod tests {
             ],
             "the persistent layer must sit between the session layer and the base"
         );
+    }
+
+    /// The capability bounding set is the difference between "can create a
+    /// namespace" and "can populate one". Only the profile that is not a
+    /// sandbox gets it.
+    #[test]
+    fn only_the_developer_profile_keeps_a_capability_bounding_set() {
+        let ush = strings(&build_argv(&plan(), Some(9), None));
+        assert!(
+            !ush.iter().any(|a| a == "--cap-add"),
+            "a sandboxed guest must exec with an empty bounding set: {ush:?}"
+        );
+
+        let mut p = plan();
+        p.profile = Profile::Dsh;
+        let dsh = strings(&build_argv(&p, Some(9), None));
+        assert!(
+            dsh.windows(2).any(|w| w[0] == "--cap-add" && w[1] == "ALL"),
+            "without the bounding set a dsh guest can unshare a user namespace \
+             and then not write its uid_map, which is where nested rootless \
+             podman stops: {dsh:?}"
+        );
+    }
+
+    /// A prepared namespace replaces `--unshare-user`; the two cannot both be
+    /// passed, and getting it wrong would silently drop the id mapping.
+    #[test]
+    fn a_prepared_user_namespace_replaces_unshare_user() {
+        let without = strings(&build_argv(&plan(), Some(9), None));
+        assert!(without.iter().any(|a| a == "--unshare-user"));
+        assert!(!without.iter().any(|a| a == "--userns"));
+
+        let with = strings(&build_argv(&plan(), Some(9), Some(11)));
+        assert!(
+            !with.iter().any(|a| a == "--unshare-user"),
+            "bwrap refuses --userns together with --unshare-user"
+        );
+        let i = with.iter().position(|a| a == "--userns").unwrap();
+        assert_eq!(with[i + 1], "11");
     }
 
     #[test]
