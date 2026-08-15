@@ -145,7 +145,15 @@ impl Session {
     pub fn plan(&self, broker_socket: PathBuf, seccomp_blob: PathBuf) -> std::io::Result<GuestPlan> {
         let policy = Policy::load(&self.store.policy_path());
         let now = Some(crate::audit::now_unix());
-        let home_mountpoint = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"));
+        // Resolved, not as `$HOME` spells it. On an ostree system `/home` is a
+        // symlink to `var/home`, and `bwrap` refuses to create a mount point
+        // through a symlink — mounting `/home/you` fails with "can't mkdir"
+        // even though the guest root has the link. `/var/home/you` is a real
+        // path, the link the base ships still points at it, so both spellings
+        // work inside.
+        let home_mountpoint = dirs::home_dir()
+            .map(|h| h.canonicalize().unwrap_or(h))
+            .unwrap_or_else(|| PathBuf::from("/root"));
 
         Ok(GuestPlan {
             profile: self.opts.profile,
