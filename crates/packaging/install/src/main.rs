@@ -410,6 +410,11 @@ enum Error {
     Runtime(#[source] std::io::Error),
     #[error("payload swap for {package}: {detail}")]
     Swap { package: String, detail: String },
+    #[error(
+        "{failed} of {checked} installed package(s) no longer match what was installed. \
+         Reinstall them, or investigate — the payload has changed since it was verified."
+    )]
+    VerificationFailed { failed: usize, checked: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1462,6 +1467,7 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
         return Ok(());
     }
     let data_root = data_root()?;
+    let checked = targets.len();
     let mut bad = 0;
     for entry in targets {
         match install::integrity::verify(
@@ -1514,9 +1520,10 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
         }
     }
     if bad > 0 {
-        return Err(Error::Policy(format!(
-            "{bad} package(s) failed verification"
-        )));
+        return Err(Error::VerificationFailed {
+            failed: bad,
+            checked,
+        });
     }
     Ok(())
 }
