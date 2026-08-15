@@ -1197,6 +1197,8 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         let apps = read_installed_apps().expect("registry readable");
+        // What the palette actually offers, from the same store.
+        let offered = gui_apps();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
 
@@ -1213,6 +1215,17 @@ mod tests {
             .find(|a| a.package_id == "dev.qos.notes-cli")
             .expect("cli package present");
         assert!(!cli.has_gui, "a cli-only package is not a GUI app");
+
+        // Enumerating it is fine; offering it to launch is not. A headless
+        // package — `collab-broker` is the shipped one — has no window to
+        // show, so a row that starts it would open nothing. This asserts
+        // the filter the applications provider actually calls.
+        let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
+        assert_eq!(
+            offered_ids,
+            vec!["dev.qos.hello"],
+            "only the GUI package is launchable from the palette",
+        );
     }
 
     #[test]
