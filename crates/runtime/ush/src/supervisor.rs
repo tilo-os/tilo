@@ -218,7 +218,7 @@ impl Session {
         plan.prepare()?;
 
         if self.opts.verbose {
-            let argv = crate::guest::build_argv(&plan, None);
+            let argv = crate::guest::build_argv(&plan, None, None);
             eprintln!(
                 "ush: {}",
                 argv.iter()
