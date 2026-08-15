@@ -212,17 +212,36 @@ COPY --from=wpe-builder /wpe/ /
 # staged into /out/optional/ rather than /out/ so the final image can copy the
 # directory's contents unconditionally: empty means no browser, and no COPY
 # needs a condition it cannot express.
+#
+# The application set is read out of the workspace members rather than listed
+# here. A hand-maintained list is how the image came to ship two GUI apps while
+# the tree held forty-six: adding an app to the workspace and forgetting this
+# file was silent. Deriving it means a new `apps/<name>/` is shipped by the
+# build that follows it, and an empty match is a hard failure rather than an
+# image with no apps. The browser is filtered out only because it alone needs
+# the `wpe` feature and the QOS_WITH_BROWSER condition.
+#
+# `pkg-cli`, `install` and `cli-shim` build the packaging tools: `qos-pkg` and
+# `qos-install` pack and install those apps into the image-wide store below,
+# and `qos-install` ships so the running system can install and remove
+# packages of its own.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
     else BROWSER_PKG="-p browser --features browser/wpe"; fi \
+    && APP_PKGS="$(sed -n 's|^ *"apps/\([A-Za-z0-9_-]*\)",.*|\1|p' Cargo.toml \
+                     | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
+    && [ -n "${APP_PKGS}" ] \
+        || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback -p qos-cli \
+        -p pkg-cli -p install -p cli-shim \
+        ${APP_PKGS} \
         ${BROWSER_PKG} \
     && mkdir -p /out /out/optional \
     && { [ "${QOS_WITH_BROWSER}" = "0" ] \
@@ -240,7 +259,14 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-unlock-helper \
           target/release/qos-rollback \
           target/release/qos \
+          target/release/qos-pkg \
+          target/release/qos-install \
+          target/release/qos-cli-shim \
           /out/ \
+    && for m in /build/apps/*/qos-app.toml; do \
+           b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
+           [ -z "$b" ] || [ ! -f "target/release/$b" ] || cp "target/release/$b" /out/; \
+       done \
     && { sccache --show-stats 2>/dev/null || true; }
 
 # Read the hardening back off the linked binaries. `.cargo/config.toml` sets
@@ -259,7 +285,12 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out
 # signature-verify step accepts this bake. The private key is discarded
 # once the bundle is signed — this is fine for a build-time attestation
 # (nothing else ever needs to sign as this identity again).
-ARG RUNTIME_VERSION=1
+# Must match the `runtime = "qos-runtime/<version>"` every app manifest under
+# apps/ declares: the launcher resolves that literal version to
+# /usr/lib/qos-runtime/<version>/ and refuses to start the app when it is not
+# there. Baking "1" while the fleet asked for 2026.07 meant every packaged app
+# failed at launch with RuntimeBundleMissing.
+ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
     && ARCH="$(uname -m)" \
@@ -276,6 +307,20 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
         "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
     && rm -f /out/runtime-bundle-identity.json
+
+# ---- Pack + install every app into the image-wide app store -----------------
+# Without this the launcher's registry is empty on a fresh install and the
+# command palette's Applications provider has nothing to list, however many
+# app binaries the image contains.
+#
+# The store is written at the path it will occupy on the booted system:
+# `qos-install` records absolute payload paths in registry.toml, so staging it
+# elsewhere and relocating it afterwards would leave every row dangling.
+#
+# Packages take the ordinary route — `qos-pkg pack` then `qos-install install`
+# — so a preinstalled app is described exactly as a user-installed one is, and
+# the launcher grants it exactly the same thing. See os/scripts/pack-apps.sh.
+RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 
 
 # ---- Stage 2: rootfs (the OS filesystem) ------------------------------------
@@ -423,6 +468,14 @@ COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 # `verify` or extend the bundle from a running system.
 COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
+# Package management on the running system: `qos-install` installs, lists and
+# removes `.qpkg`s into the user's own store, `qos-pkg` packs and verifies
+# them, and `qos-cli-shim` is what `qos-install` drops on $PATH for a package
+# that declares CLI commands. Without these in the image the only apps a user
+# could ever have are the ones the image shipped.
+COPY --from=builder /out/qos-install /usr/bin/qos-install
+COPY --from=builder /out/qos-pkg /usr/bin/qos-pkg
+COPY --from=builder /out/qos-cli-shim /usr/libexec/qos-cli-shim
 COPY --from=builder /out/qos-power /usr/bin/qos-power
 # The session-unlock verify helper: the compositor spawns it while the session
 # is locked to verify the user's password via PAM (see os/etc/pam.d/qos-unlock).
@@ -432,6 +485,7 @@ COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
+              /usr/bin/qos-install /usr/bin/qos-pkg /usr/libexec/qos-cli-shim \
               /usr/bin/qos-power /usr/libexec/qos-unlock-helper \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
 
@@ -490,6 +544,28 @@ COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/qos/runtime-bun
 RUN mkdir -p /etc/qos \
     && cat /usr/share/qos/runtime-bundle-publisher.hex \
         > /etc/qos/runtime-bundle-trusted-publishers.txt
+
+# ---- Preinstalled application store -----------------------------------------
+# The registry + unpacked payloads the builder produced with `qos-pkg pack` and
+# `qos-install install`. The launcher reads this store alongside the per-user
+# one (crates/packaging/launcher/src/registry.rs), so the command palette lists
+# these apps on a first boot with nobody having installed anything, and a user
+# installing their own build of the same id shadows the preinstalled row rather
+# than duplicating it.
+#
+# Read-only, being inside the image. That is the *only* way these packages
+# differ from a user's: the sandbox is still built from the manifest, the
+# payload is still ro-bound, and the single writable directory still comes from
+# the launcher's per-room app dir. Nothing here is trusted for being shipped.
+COPY --from=builder /usr/share/qos-apps/ /usr/share/qos-apps/
+# Which key signed them, for auditing a built image. Not a trust root: package
+# trust is the user's `~/.config/qos/trusted-attestors.toml`, and this key is
+# deliberately absent from it — a preinstalled package is self-signed by the
+# image build, and claims nothing more.
+COPY --from=builder /out/app-publisher.hex /usr/share/qos/app-publisher.hex
+# Put both stores' command shims on PATH, so a package that declares CLI
+# commands can be run by name — the only way a CLI package is meant to be run.
+COPY os/etc/profile.d/qos-apps.sh /etc/profile.d/qos-apps.sh
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
