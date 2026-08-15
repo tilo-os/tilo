@@ -28,7 +28,16 @@ if ! id "$user" >/dev/null 2>&1; then
   # compositor runs in this user's session and presents the device
   # identity on the network — the same identity fs.service presents as
   # root — so without this the session has no network identity at all.
-  useradd -m -G wheel,qos-identity "$user"
+  #
+  # `video` is write access to the backlight: 90-qos-backlight.rules
+  # hands the group `/sys/class/backlight/*/brightness`, which is what
+  # the brightness keys and the quick-settings slider write. Without it
+  # brightness silently does nothing.
+  useradd -m -G wheel,qos-identity,video "$user"
+else
+  # Existing accounts from before the backlight rule shipped: joining
+  # the group is idempotent, so this is safe to run on every boot.
+  usermod -aG video "$user" || true
 fi
 
 printf '%s:%s\n' "$user" "$hash" | chpasswd -e
