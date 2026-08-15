@@ -44,7 +44,10 @@ need_file "$OS/dev/uki-cmdline.py"                               "the cmdline re
 # be "no repair entry, silently" on every machine. Assert it here, where it is one
 # line of arithmetic.
 normal="$(sed -n 's/^kargs = \["\(qos\.mode=[a-z]*\)"\]$/\1/p' "$OS/usr/lib/bootc/kargs.d/04-mode.toml" | head -1)"
-repair="$(sed -n "s/.*qos-uki-cmdline set \(qos\.mode=[a-z]*\).*/\1/p" "$OS/usr/libexec/qos-deployment" | head -1)"
+# The invocation names the tool through a variable now, so match on the verb and
+# the token rather than on the path. If this ever finds nothing the check FAILS
+# below rather than quietly asserting about an empty string.
+repair="$(sed -n 's/.*set \(qos\.mode=[a-z]*\).*/\1/p' "$OS/usr/libexec/qos-deployment" | head -1)"
 if [ -z "$normal" ]; then
   bad "could not read the normal-mode karg out of 04-mode.toml — the declaration moved"
 elif [ -z "$repair" ]; then
