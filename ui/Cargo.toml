@@ -228,6 +228,7 @@ accesskit_winit = "0.33.1"
 # `default_speaker()` never panics (falls back to `NullSpeaker` when no speech
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../crates/system/tts" }
+smithay-clipboard = "0.7"
 
 [build-dependencies]
 # Locates the WPE WebKit stack when the `webview-wpe` feature is on
