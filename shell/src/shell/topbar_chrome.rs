@@ -146,6 +146,31 @@ struct CacheFingerprint {
     status_key: StatusKey,
 }
 
+/// Reduce a reading to what the tray paints. Free function so
+/// [`TopBarChrome::needs_redraw`] can key on the *chrome's* current
+/// status without first copying it onto the widget — `needs_redraw`
+/// takes `&self`, and the whole point is to answer before the copy.
+fn status_key_of(s: &crate::shell::status::SystemStatus) -> StatusKey {
+    StatusKey {
+        battery_percent: s.battery_percent(),
+        battery_charging: s.battery_is_charging(),
+        battery_low: s.battery_is_low(),
+        battery_critical: s.battery_is_critical(),
+        link: s.link.as_ref().map(|l| {
+            let kind = match l.kind {
+                os_actions::LinkKind::Offline => 0,
+                os_actions::LinkKind::Wired => 1,
+                os_actions::LinkKind::Wifi => 2,
+            };
+            (kind, crate::shell::status::link_bars(l))
+        }),
+        volume_pct: s
+            .volume
+            .map(|v| (v.level * 100.0).round().clamp(0.0, 100.0) as u8),
+        muted: s.audio_is_silent(),
+    }
+}
+
 /// The status reading reduced to what the tray paints. See
 /// [`CacheFingerprint::status_key`].
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -308,24 +333,24 @@ impl TopBarChrome {
 
     /// The status reading quantised to what the tray paints.
     fn status_key(&self) -> StatusKey {
-        StatusKey {
-            battery_percent: self.status.battery_percent(),
-            battery_charging: self.status.battery_is_charging(),
-            battery_low: self.status.battery_is_low(),
-            battery_critical: self.status.battery_is_critical(),
-            link: self.status.link.as_ref().map(|l| {
-                let kind = match l.kind {
-                    os_actions::LinkKind::Offline => 0,
-                    os_actions::LinkKind::Wired => 1,
-                    os_actions::LinkKind::Wifi => 2,
-                };
-                (kind, crate::shell::status::link_bars(l))
-            }),
-            volume_pct: self
-                .status
-                .volume
-                .map(|v| (v.level * 100.0).round().clamp(0.0, 100.0) as u8),
-            muted: self.status.audio_is_silent(),
+        status_key_of(&self.status)
+    }
+
+    /// The status the chrome is currently holding, or the last one this
+    /// bar copied when there is no chrome attached.
+    ///
+    /// Read at draw time rather than pushed in by an `update` pass,
+    /// because nothing pumps this widget: `Column` / `Stack` /
+    /// `Container` all inherit the default [`Widget::update`], which
+    /// returns `false` without recursing, so a leaf's `update` is only
+    /// reached if some ancestor explicitly forwards — and none of the
+    /// bar's do. Pulling on the frame the value is needed is the only
+    /// arrangement that cannot be defeated by where the widget happens
+    /// to sit in the tree.
+    fn live_status(&self) -> crate::shell::status::SystemStatus {
+        match self.chrome.as_ref() {
+            Some(c) => c.borrow().status.clone(),
+            None => self.status.clone(),
         }
     }
 
@@ -334,6 +359,16 @@ impl TopBarChrome {
     /// switch the active workspace via the up/down chevrons.
     pub fn with_chrome(mut self, chrome: Chrome) -> Self {
         let rev = chrome.borrow().revision;
+        // Take the status here, not only on the next revision bump.
+        //
+        // Attaching the chrome also *declares this widget synced to it*,
+        // and the shell rebuilds its widget tree whenever the revision
+        // moves — so a bar built after a bump starts life already
+        // up to date by that rule and `update`'s sync branch never runs
+        // for it. Everything else the bar reads comes in through
+        // `from_tree`, which is why only the tray was affected: it read
+        // a field nothing seeded, and drew a permanently empty status.
+        self.status = chrome.borrow().status.clone();
         self.chrome = Some(chrome);
         self.synced_revision = rev;
         self
@@ -744,6 +779,12 @@ impl Widget for TopBarChrome {
         if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
             return;
         }
+        // Take the machine's latest reading before fingerprinting, so a
+        // battery that just dropped a percent is both *drawn* and
+        // *counted as a change* in the same pass. See
+        // [`Self::live_status`] for why this is pulled here rather than
+        // pushed in by an update.
+        self.status = self.live_status();
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
             // Cache hit — `*_btn_rect` / `center_rect` / `avatar_stack_rect`
@@ -1694,7 +1735,16 @@ impl Widget for TopBarChrome {
     /// otherwise the very first frame after layout never paints.
     fn needs_redraw(&self) -> bool {
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
-        self.cache_fp.rect_px.2 == 0
+        if self.cache_fp.rect_px.2 == 0 {
+            return true;
+        }
+        // A status change has to reach the screen without waiting for
+        // some unrelated event to force a frame. The ancestors cache
+        // this subtree's scene and only rebuild when a descendant
+        // reports dirty, so a battery that drains while the desktop
+        // sits idle would otherwise keep painting the old figure until
+        // the user happened to move the mouse.
+        status_key_of(&self.live_status()) != self.cache_fp.status_key
     }
 
     fn mark_drawn(&mut self) {
