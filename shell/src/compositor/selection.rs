@@ -625,6 +625,65 @@ impl State {
 }
 
 // -----------------------------------------------------------------------------
+// The in-process bridge
+// -----------------------------------------------------------------------------
+
+/// The clipboard the compositor's own widgets use.
+///
+/// `terminal`, `file-explorer`, the notes and editor apps and every piece of
+/// chrome are linked into the compositor binary and call `ui`'s
+/// `clipboard_copy` / `clipboard_paste` like any other widget. They are not
+/// Wayland clients, so there is no data device for them to use — and they
+/// cannot block on one either, since a client can only answer a selection
+/// request once the compositor flushes, which it cannot do while blocked
+/// inside a widget's event handler.
+///
+/// Reads therefore come straight out of the mirror, which is always current
+/// because the compositor pulls every client-owned selection into it as the
+/// selection changes hands. Writes go into the mirror and raise a publish
+/// flag; [`State::pump_selection`] turns that into a compositor-owned Wayland
+/// selection on the next tick, so a focused client sees a real offer.
+struct HostClipboard {
+    store: SharedSelection,
+}
+
+impl ui::clipboard::ClipboardBackend for HostClipboard {
+    fn set_text(&self, target: ui::clipboard::ClipboardTarget, text: &str) -> bool {
+        set_mirror_text(&self.store, ui_target(target), text);
+        true
+    }
+
+    fn text(&self, target: ui::clipboard::ClipboardTarget) -> Option<String> {
+        mirror_text(&self.store, ui_target(target))
+    }
+
+    fn name(&self) -> &'static str {
+        "compositor-mirror"
+    }
+}
+
+/// Map `ui`'s target enum onto this module's. They are deliberately separate
+/// types: `ui` must not depend on smithay, and the compositor must not depend
+/// on `ui`'s enum shape for its protocol handling.
+fn ui_target(target: ui::clipboard::ClipboardTarget) -> Target {
+    match target {
+        ui::clipboard::ClipboardTarget::Clipboard => Target::Clipboard,
+        ui::clipboard::ClipboardTarget::Primary => Target::Primary,
+    }
+}
+
+/// Point `ui`'s clipboard at the compositor's selection mirror, for every
+/// widget hosted inside this process.
+///
+/// Called once during compositor startup. Without it the hosted widgets fall
+/// back to `ui`'s in-process buffer, which round-trips within the compositor
+/// and is invisible to every client — the exact failure this module exists to
+/// remove.
+pub fn install_host_clipboard(store: SharedSelection) {
+    ui::clipboard::install_clipboard_backend(Arc::new(HostClipboard { store }));
+}
+
+// -----------------------------------------------------------------------------
 // smithay handler impls
 // -----------------------------------------------------------------------------
 

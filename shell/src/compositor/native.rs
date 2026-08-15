@@ -1186,6 +1186,12 @@ pub fn run() -> ! {
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
+    // Point `ui`'s clipboard at the compositor's selection mirror. Everything
+    // hosted in this process — the chrome, the terminal, the file explorer,
+    // notes and the editor — copies and pastes through `ui`, and none of them
+    // is a Wayland client. Without this they would share a buffer that no
+    // other process can see.
+    crate::compositor::selection::install_host_clipboard(state.selection_store());
 
     // Phase 3: construct the winit backend so the compositor has a host
     // window to render into. Phase 4 routes per-frame scenes through
