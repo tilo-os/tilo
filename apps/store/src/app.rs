@@ -428,6 +428,10 @@ impl StoreApp {
                 ActionKind::MarkInstalled => format!("Marking {id} installed…"),
                 ActionKind::Unmark => format!("Unmarking {id}…"),
                 ActionKind::FlatpakInstall => format!("Installing Flatpak {id}…"),
+                // Named as unconfined in the status line, not only in
+                // the launcher's log: this is the moment the user
+                // chooses to start it.
+                ActionKind::FlatpakOpen => format!("Opening {id} (unconfined host app)…"),
                 ActionKind::FlatpakRemove => format!("Removing Flatpak {id}…"),
                 ActionKind::NeedsFlatpakHost => {
                     "Install flatpak on the host to use this action.".to_string()
@@ -450,8 +454,13 @@ impl StoreApp {
                 }
             }
             let rm_key = format!("{}{}", REMOVE_CLICK_KEY_PREFIX, item.id);
-            if take_bool_edge(state, path, &rm_key) && item.offers_remove() {
-                secondary.push((item.id.clone(), ActionKind::Remove));
+            if take_bool_edge(state, path, &rm_key) {
+                // The item decides *how* it is removed. A Flatpak
+                // removed with `qos-install uninstall` would report
+                // "no such package installed" and leave it there.
+                if let Some(action) = item.remove_action() {
+                    secondary.push((item.id.clone(), action));
+                }
             }
         }
         for (id, action) in secondary {

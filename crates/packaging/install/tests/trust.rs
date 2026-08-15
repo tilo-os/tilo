@@ -226,7 +226,15 @@ fn install_require_attestor_refuses_self_signed() {
     env.write_revocation(&RevocationList::default());
 
     let mut cmd = env.cmd();
-    cmd.arg("install").arg(&qpkg_path).arg("--require-attestor").arg("qos-curated/2026.07");
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
+    cmd.arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
+        .arg("--require-attestor")
+        .arg("qos-curated/2026.07");
     let (ok, _stdout, stderr) = run(cmd);
     assert!(!ok, "expected refusal, stderr: {stderr}");
     assert!(
@@ -268,7 +276,15 @@ fn install_require_attestor_permits_matching_attestation() {
     env.write_revocation(&RevocationList::default());
 
     let mut cmd = env.cmd();
-    cmd.arg("install").arg(&qpkg_path).arg("--require-attestor").arg("qos-curated/2026.07");
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
+    cmd.arg("install")
+        .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
+        .arg("--require-attestor")
+        .arg("qos-curated/2026.07");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stdout={stdout} stderr={stderr}");
     assert!(stdout.contains("installed:"), "stdout: {stdout}");
@@ -305,8 +321,13 @@ fn install_require_attestor_and_allow_self_signed_takes_attestation_when_present
     env.write_revocation(&RevocationList::default());
 
     let mut cmd = env.cmd();
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
     cmd.arg("install")
         .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("qos-curated/2026.07")
         .arg("--allow-self-signed");
@@ -334,8 +355,13 @@ fn install_require_attestor_and_allow_self_signed_falls_back_when_no_match() {
     env.write_revocation(&RevocationList::default());
 
     let mut cmd = env.cmd();
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
     cmd.arg("install")
         .arg(&qpkg_path)
+        .arg("--ignore-missing-runtime")
         .arg("--require-attestor")
         .arg("qos-curated/2026.07")
         .arg("--allow-self-signed");
@@ -369,7 +395,11 @@ fn install_refuses_revoked_publisher() {
     });
 
     let mut cmd = env.cmd();
-    cmd.arg("install").arg(&qpkg_path);
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
+    cmd.arg("install").arg(&qpkg_path).arg("--ignore-missing-runtime");
     let (ok, _stdout, stderr) = run(cmd);
     assert!(!ok, "expected refusal, stderr: {stderr}");
     assert!(
@@ -396,7 +426,11 @@ fn install_default_warns_but_installs_self_signed() {
     env.write_revocation(&RevocationList::default());
 
     let mut cmd = env.cmd();
-    cmd.arg("install").arg(&qpkg_path);
+    // These prove *signature* policy. The fixture package declares a
+    // runtime bundle it does not ship, which is a separate axis and
+    // would otherwise refuse the install before the trust decision
+    // could be observed.
+    cmd.arg("install").arg(&qpkg_path).arg("--ignore-missing-runtime");
     let (ok, stdout, stderr) = run(cmd);
     assert!(ok, "expected success, stderr: {stderr}");
     assert!(stdout.contains("installed:"), "stdout: {stdout}");

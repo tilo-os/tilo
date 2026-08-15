@@ -213,6 +213,27 @@ pub fn note_placement_for_launch(
     crate::shell::launcher::set_pending_placement(package_id, placement);
 }
 
+/// [`note_placement_for_launch`] for a launch whose window identities
+/// cannot be derived from its id.
+///
+/// A `.qpkg`'s wayland app-id follows its package id by convention, so
+/// the qOS path derives both from one string. A host application's
+/// cannot be derived from anything qOS controls — the `.desktop` entry
+/// states it, or the toolkit picks the desktop-file id, or a Flatpak
+/// reports its application id — so the caller that read the entry
+/// passes them in. Without this a foreign toplevel matches no note and
+/// lands wherever the default puts it, which is the bug: the user asked
+/// for it somewhere specific and the window ignored them.
+pub fn note_placement_for_launch_identities(
+    key: &str,
+    identities: &[String],
+    tree: &WorkspaceTree,
+    viewport: Option<&StripViewport>,
+) {
+    let placement = placement_for_new_window(tree, viewport);
+    crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
