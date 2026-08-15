@@ -53,7 +53,8 @@ use winit::keyboard::{
 };
 
 use super::devices::{ModeInfo, filter_kms_nodes};
-use super::gestures::{GestureConfig, GestureTracker};
+use super::gestures::{GestureAction, GestureConfig, GestureTracker};
+use super::input_config;
 use super::hotplug::{self, ConnectedOutput, LiveOutput};
 use super::input_config::{DeviceCaps, InputSettings};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
@@ -455,11 +456,11 @@ impl DrmDispatchState {
     ///
     /// Every failure is logged at debug and ignored: libinput returns an
     /// error for a setting a device does not support, and the capability
-    /// gates in [`super::input_config::plan_for`] already avoid asking, so
+    /// gates in [`input_config::plan_for`] already avoid asking, so
     /// anything left is a driver quirk that must not take the session down.
     fn configure_device(&self, device: &mut smithay::reexports::input::Device) {
         let caps = device_caps(device);
-        let plan = super::input_config::plan_for(&self.input, &caps);
+        let plan = input_config::plan_for(&self.input, &caps);
         if let Some(on) = plan.tap {
             let _ = device.config_tap_set_enabled(on);
         }
@@ -490,7 +491,20 @@ impl DrmDispatchState {
 
     /// Route one gesture: to the shell when the finger count says so,
     /// otherwise on to the focused client.
+    #[allow(clippy::needless_pass_by_value)]
     fn handle_gesture(&mut self, ev: GestureEvent) {
+        // Decide ownership *before* touching the tracker. Only the `begin`
+        // carries a finger count, so every later event has to ask what the
+        // gesture in flight belongs to — and an `end` clears that, which
+        // would leave the closing event of a shell-owned gesture looking
+        // unowned and send a client a `swipe_end` for a swipe it never saw
+        // begin.
+        let shell_owns = match ev {
+            GestureEvent::SwipeBegin { fingers }
+            | GestureEvent::PinchBegin { fingers }
+            | GestureEvent::HoldBegin { fingers } => super::gestures::claims(fingers),
+            _ => self.gestures.shell_owns_current(),
+        };
         let action = match ev {
             GestureEvent::SwipeBegin { fingers } => {
                 self.gestures.swipe_begin(fingers);
@@ -510,7 +524,17 @@ impl DrmDispatchState {
                 self.gestures.pinch_end();
                 None
             }
-            GestureEvent::HoldBegin { .. } | GestureEvent::HoldEnd { .. } => None,
+            // A hold has no shell meaning, but it still has to register as
+            // a gesture in flight so the count that arrives with its begin
+            // governs where its end goes.
+            GestureEvent::HoldBegin { fingers } => {
+                self.gestures.swipe_begin(fingers);
+                None
+            }
+            GestureEvent::HoldEnd { .. } => {
+                self.gestures.swipe_end();
+                None
+            }
         };
         if let Some(action) = action {
             self.push(BackendEvent::ShellGesture(action));
@@ -520,7 +544,7 @@ impl DrmDispatchState {
         // Client delivery is gated on the shell not owning the gesture: a
         // three-finger swipe that switched the workspace *and* scrolled the
         // app underneath is wrong in both directions.
-        if !self.gestures.shell_owns_current() {
+        if !shell_owns {
             self.push(BackendEvent::Gesture(ev));
         }
     }
@@ -1814,6 +1838,409 @@ mod tests {
     #[test]
     fn side_by_side_layout_empty_is_empty() {
         assert!(side_by_side_layout(&[]).is_empty());
+    }
+
+    // ===================================================================
+    // Hotplug + session reconciliation, on the production methods
+    //
+    // `rescan_outputs` and `adopt_builds` need a real card (they modeset),
+    // but everything they do *after* the ioctls — re-layout, scale
+    // derivation, pointer clamping, the output table, and the commands
+    // sent to whoever owns the scanouts — is reachable without one. These
+    // drive `DrmDispatchState`'s own methods rather than re-deriving the
+    // policy in the test.
+    // ===================================================================
+
+    fn crtc(n: u32) -> smithay::reexports::drm::control::crtc::Handle {
+        smithay::reexports::drm::control::from_u32(n).expect("non-zero crtc handle")
+    }
+
+    fn entry(id: u32, connector: u32, size: (u32, u32), mm: Option<(u32, u32)>) -> LiveEntry {
+        LiveEntry {
+            key: DrmOutputKey {
+                device: 1,
+                connector,
+            },
+            id: OutputId(id),
+            size,
+            physical_mm: mm,
+            crtc: crtc(id + 1),
+            position: (0, 0),
+            scale: 1.0,
+            refresh: None,
+        }
+    }
+
+    /// A dispatch state with a command channel attached, plus the
+    /// receiving end so a test can assert on what was sent.
+    fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
+        let (tx, rx) = channel();
+        let mut state = DrmDispatchState::default();
+        state.commands = Some(tx);
+        (state, rx)
+    }
+
+    #[test]
+    fn relayout_packs_outputs_side_by_side_and_publishes_the_table() {
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), None),
+            entry(1, 11, (2560, 1440), None),
+        ];
+        state.relayout_outputs();
+
+        assert_eq!(state.live[0].position, (0, 0));
+        assert_eq!(state.live[1].position, (1920, 0));
+        assert_eq!(state.output_size, (4480, 1440));
+        let table = state.output_table();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table[0].position, (0, 0));
+        assert_eq!(table[1].position, (1920, 0));
+        assert_eq!(table[1].size, (2560, 1440));
+    }
+
+    #[test]
+    fn unplugging_the_right_monitor_brings_the_pointer_back_onto_the_left_one() {
+        // The concrete "windows stranded off-screen" symptom that is
+        // actually load-bearing: windows re-flow (they are not pinned to
+        // an output), but the pointer lives in absolute combined
+        // coordinates and would be left on a panel that is gone.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), None),
+            entry(1, 11, (1920, 1080), None),
+        ];
+        state.relayout_outputs();
+        state.pointer = (3000.0, 500.0);
+
+        state.live.retain(|l| l.id == OutputId(0));
+        state.relayout_outputs();
+
+        assert_eq!(state.output_size, (1920, 1080));
+        assert_eq!(
+            state.pointer,
+            (1919.0, 500.0),
+            "the pointer must land on the surviving panel, not off it"
+        );
+    }
+
+    #[test]
+    fn unplugging_the_left_monitor_slides_the_survivor_to_the_origin() {
+        // Leaving the survivor at x=1920 would open a 1920px hole in the
+        // combined space that no panel displays and every click into it
+        // would land on nothing.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (1920, 1080), None),
+            entry(1, 11, (2560, 1440), None),
+        ];
+        state.relayout_outputs();
+        assert_eq!(state.live[1].position, (1920, 0));
+
+        state.live.retain(|l| l.id == OutputId(1));
+        state.relayout_outputs();
+        assert_eq!(state.live[0].position, (0, 0));
+        assert_eq!(state.output_size, (2560, 1440));
+    }
+
+    #[test]
+    fn each_output_gets_the_scale_its_panel_calls_for() {
+        // A laptop docked to a desktop monitor: one dense panel, one
+        // sparse. A single session-wide scale is wrong for one of them.
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            // 13.3" 1080p laptop panel.
+            entry(0, 10, (1920, 1080), Some((294, 165))),
+            // 24" 1080p desktop monitor.
+            entry(1, 11, (1920, 1080), Some((527, 296))),
+        ];
+        state.relayout_outputs();
+        assert_eq!(state.live[0].scale, 1.5);
+        assert_eq!(state.live[1].scale, 1.0);
+        let table = state.output_table();
+        assert_eq!(table[0].scale, 1.5);
+        assert_eq!(table[1].scale, 1.0);
+    }
+
+    #[test]
+    fn a_display_scale_setting_overrides_every_output() {
+        let (mut state, _rx) = dispatch_with_channel();
+        state.scale_override = Some(1.25);
+        state.live = vec![entry(0, 10, (1920, 1080), Some((294, 165)))];
+        state.relayout_outputs();
+        assert_eq!(
+            state.live[0].scale, 1.25,
+            "a user who set a scale is not asking for a second opinion"
+        );
+    }
+
+    #[test]
+    fn a_vt_switch_away_pauses_the_scanouts() {
+        // The end-to-end of what the session state machine decided: the
+        // scanout owner is told to stop before anything else happens.
+        let (mut state, rx) = dispatch_with_channel();
+        state.session = Some(SessionState::new_active());
+        let actions = state
+            .session
+            .as_ref()
+            .expect("session")
+            .apply_with_actions(SeatTick::Pause);
+        state.perform_all(actions);
+
+        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+        assert!(
+            matches!(sent.as_slice(), [ScanoutCommand::Pause]),
+            "a pause must reach the scanout owner"
+        );
+    }
+
+    #[test]
+    fn a_vt_switch_back_tells_the_scanouts_to_re_modeset_and_forces_a_repaint() {
+        let (mut state, rx) = dispatch_with_channel();
+        state.session = Some(SessionState::new_active());
+        let pause = state
+            .session
+            .as_ref()
+            .expect("session")
+            .apply_with_actions(SeatTick::Pause);
+        state.perform_all(pause);
+        let _ = rx.try_iter().count();
+        state.events.clear();
+
+        let activate = state
+            .session
+            .as_ref()
+            .expect("session")
+            .apply_with_actions(SeatTick::Activate);
+        state.perform_all(activate);
+
+        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+        assert!(
+            matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: true }]),
+            "activation must ask for a re-modeset, not just flip a flag"
+        );
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Redraw)),
+            "the scanout buffers hold the other session's pixels; the \
+             compositor has to be told to repaint"
+        );
+    }
+
+    #[test]
+    fn a_session_blanked_for_idle_resumes_blanked() {
+        // Coming back from a VT switch must restore the power state the
+        // session had, not light a screen the user had turned off.
+        let (mut state, rx) = dispatch_with_channel();
+        let session = SessionState::new_active();
+        session.set_dpms(false);
+        state.session = Some(session.clone());
+        state.perform_all(session.apply_with_actions(SeatTick::Pause));
+        let _ = rx.try_iter().count();
+        state.perform_all(session.apply_with_actions(SeatTick::Activate));
+
+        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+        assert!(
+            matches!(sent.as_slice(), [ScanoutCommand::Resume { dpms_on: false }]),
+            "the restored power state must be the one the session had"
+        );
+    }
+
+    #[test]
+    fn resume_from_sleep_asks_for_the_same_rebuild_a_vt_switch_does() {
+        // A suspend never pauses the seat, so nothing marks the session
+        // inactive — and a handler that only acts on transitions does
+        // nothing at all, which is the black-screen-after-lid-open bug.
+        let (mut state, rx) = dispatch_with_channel();
+        let session = SessionState::new_active();
+        state.session = Some(session.clone());
+        assert!(session.is_active(), "a suspend leaves the session active");
+
+        state.perform_all(session.resume_actions());
+
+        let sent: Vec<ScanoutCommand> = rx.try_iter().collect();
+        assert!(
+            matches!(sent.as_slice(), [ScanoutCommand::Resume { .. }]),
+            "resume must re-modeset even though no state transition happened"
+        );
+        assert!(
+            state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Redraw)),
+            "and force a full repaint"
+        );
+    }
+
+    #[test]
+    fn a_headless_drm_session_survives_a_vt_switch_with_no_channel() {
+        // No output came up, so there is nobody to send commands to.
+        // Performing the sequence anyway must not panic.
+        let mut state = DrmDispatchState::default();
+        let session = SessionState::new_active();
+        state.session = Some(session.clone());
+        state.perform_all(session.apply_with_actions(SeatTick::Pause));
+        state.perform_all(session.apply_with_actions(SeatTick::Activate));
+    }
+
+    // ===================================================================
+    // Gesture routing, on the production `handle_gesture`
+    // ===================================================================
+
+    #[test]
+    fn a_three_finger_swipe_becomes_a_shell_gesture_and_never_reaches_a_client() {
+        let mut state = DrmDispatchState::default();
+        state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
+        state.handle_gesture(GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 });
+        state.handle_gesture(GestureEvent::SwipeEnd { cancelled: false });
+
+        let shell: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::ShellGesture(a) => Some(*a),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shell,
+            vec![GestureAction::SwitchWorkspace(-1)]
+        );
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Gesture(_))),
+            "a gesture the shell acted on must not also be delivered to a \
+             client — the app would scroll under the workspace switch"
+        );
+    }
+
+    #[test]
+    fn the_closing_event_of_a_shell_gesture_does_not_leak_to_the_client() {
+        // Ownership is read from the tracker, and the `end` clears it — so
+        // deciding after the mutation sends a client a `swipe_end` for a
+        // swipe it never saw begin, which is a protocol violation on a
+        // wire the client is entitled to trust.
+        let mut state = DrmDispatchState::default();
+        for ev in [
+            GestureEvent::SwipeBegin { fingers: 4 },
+            GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 },
+            GestureEvent::SwipeEnd { cancelled: false },
+        ] {
+            state.handle_gesture(ev);
+        }
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Gesture(_))),
+            "no part of a shell-owned gesture may reach a client: {:?}",
+            state.events
+        );
+    }
+
+    #[test]
+    fn a_hold_gesture_ends_where_it_began() {
+        // A hold carries its finger count only on `begin` too, and has no
+        // shell meaning — so a three-finger hold must be swallowed whole
+        // rather than half-delivered.
+        let mut state = DrmDispatchState::default();
+        state.handle_gesture(GestureEvent::HoldBegin { fingers: 3 });
+        state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::Gesture(_)))
+        );
+
+        let mut state = DrmDispatchState::default();
+        state.handle_gesture(GestureEvent::HoldBegin { fingers: 1 });
+        state.handle_gesture(GestureEvent::HoldEnd { cancelled: false });
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .filter(|e| matches!(e, BackendEvent::Gesture(_)))
+                .count(),
+            2,
+            "a one-finger hold is the client's, both halves of it"
+        );
+    }
+
+    #[test]
+    fn a_two_finger_pinch_is_forwarded_to_the_client_and_drives_nothing() {
+        // Browser zoom. `zwp_pointer_gestures_v1` has been advertised all
+        // along with nothing ever emitted into it.
+        let mut state = DrmDispatchState::default();
+        state.handle_gesture(GestureEvent::PinchBegin { fingers: 2 });
+        state.handle_gesture(GestureEvent::PinchUpdate {
+            dx: 0.0,
+            dy: 0.0,
+            scale: 2.0,
+            rotation: 0.0,
+        });
+        state.handle_gesture(GestureEvent::PinchEnd { cancelled: false });
+
+        let forwarded = state
+            .events
+            .iter()
+            .filter(|e| matches!(e, BackendEvent::Gesture(_)))
+            .count();
+        assert_eq!(forwarded, 3, "every event of the gesture must be forwarded");
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|e| matches!(e, BackendEvent::ShellGesture(_))),
+            "two fingers is the client's gesture"
+        );
+    }
+
+    #[test]
+    fn natural_scroll_flips_the_gesture_direction_through_the_dispatch_state() {
+        let mut state = DrmDispatchState {
+            gestures: GestureTracker::new(GestureConfig {
+                natural_scroll: true,
+                ..GestureConfig::default()
+            }),
+            ..Default::default()
+        };
+        state.handle_gesture(GestureEvent::SwipeBegin { fingers: 3 });
+        state.handle_gesture(GestureEvent::SwipeUpdate { dx: 0.0, dy: -150.0 });
+        assert!(
+            state.events.iter().any(|e| matches!(
+                e,
+                BackendEvent::ShellGesture(GestureAction::SwitchWorkspace(1))
+            )),
+            "the same preference that inverts scrolling inverts gestures"
+        );
+    }
+
+    // ===================================================================
+    // libinput device configuration, on the production plan
+    // ===================================================================
+
+    #[test]
+    fn a_touchpad_plan_turns_tapping_on_by_default() {
+        // The applier is one `config_*` call per `Some` in the plan, so
+        // the plan is what decides what a laptop touchpad comes up as.
+        let state = DrmDispatchState::default();
+        let caps = DeviceCaps {
+            supports_tap: true,
+            supports_natural_scroll: true,
+            supports_accel: true,
+            supports_dwt: true,
+            supports_middle_emulation: true,
+            is_pointer: true,
+        };
+        let plan = input_config::plan_for(&state.input, &caps);
+        assert_eq!(plan.tap, Some(true));
+        assert_eq!(plan.disable_while_typing, Some(true));
+        assert_eq!(plan.accel_speed(), Some(0.0));
     }
 
     #[test]
