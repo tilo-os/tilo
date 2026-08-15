@@ -6416,7 +6416,9 @@ checksum = "bd4f5b4d1c00331c5245163aacfe5f20be75b564c7112d45893d4ae038119eb0"
 name = "install"
 version = "0.1.0"
 dependencies = [
+ "app-registry",
  "atomic-file",
+ "blake3",
  "clap",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
@@ -6424,10 +6426,12 @@ dependencies = [
  "pkg",
  "rand 0.8.5",
  "runtime-bundle",
+ "semver",
  "serde",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml 0.8.23",
 ]
 
@@ -7204,6 +7208,7 @@ dependencies = [
  "landlock",
  "libc",
  "pkg",
+ "qos-desktop-entry",
  "runtime-bundle",
  "seccompiler",
  "serde",
@@ -11112,6 +11117,15 @@ version = "0.1.0"
 dependencies = [
  "openh264",
  "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "qos-desktop-entry"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
