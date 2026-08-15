@@ -146,16 +146,32 @@ cmd_list() {
   printf '  rollback : %s\n' "${rollback:-<none>}"
 
   printf '\nBoot loader entries (what the firmware will actually offer):\n'
+  # From the boot loader, not from a directory listing. The repair image is a
+  # Type #2 entry — a bare .efi with no .conf — so a listing of loader/entries
+  # would leave the one entry a person in trouble is looking for out of the list.
+  if ! bootctl list 2>/dev/null | awk -v cur="$cur" '
+      /^[[:space:]]*id:/ { sub(/^[[:space:]]*id:[[:space:]]*/, ""); id = $0 }
+      /^[[:space:]]*title:/ { t = $0; sub(/^[[:space:]]*title:[[:space:]]*/, "", t) }
+      /^[[:space:]]*sort-key:/ {
+        printf "  %-24s %s%s\n", id, t, (id == cur ? "  (booted now)" : "")
+      }' | grep .; then
+    printf '  (the boot loader could not be asked; from the ESP:)\n'
+    local f
+    for f in "$esp"/loader/entries/*.conf "$esp"/EFI/Linux/*.efi; do
+      [ -e "$f" ] || continue
+      printf '    %s\n' "${f##*/}"
+    done
+  fi
+  # The try counters live in the file names, and nothing bootctl prints shows
+  # them, so they are read where they are.
   local f name tries
   for f in "$esp"/loader/entries/*.conf; do
     [ -e "$f" ] || continue
     name="${f##*/}"
     case "$name" in
-      *+*) tries="${name#*+}"; tries="tries left ${tries%%-*}${tries#*-}" ;;
-      *)   tries="no boot counter" ;;
+      *+*) tries="${name#*+}"; tries="${tries%.conf}"
+           printf '  %-24s tries left %s\n' "$(entry_id_of "$f")" "${tries%%-*}" ;;
     esac
-    printf '  %-46s %s%s\n' "$(entry_id_of "$f")" "$tries" \
-      "$([ "$(entry_id_of "$f")" = "$cur" ] && printf ' (booted now)')"
   done
 }
 
@@ -303,17 +319,26 @@ cmd_boot() {
   [ -n "$entry" ] || die "boot needs an entry id (see \`qos-deployment list\`)"
   [ "$(id -u)" = 0 ] || die "boot needs root"
   local esp; esp="$(esp_path)" || die "no boot loader entries under /boot"
-  # Accept the id with or without the .conf, and check it exists rather than
-  # writing an EFI variable naming an entry that is not there — sd-boot would
-  # silently ignore it and the machine would boot exactly as before.
-  case "$entry" in *.conf) ;; *) entry="$entry.conf" ;; esac
-  local f found=""
-  for f in "$esp"/loader/entries/*.conf; do
-    [ -e "$f" ] || continue
-    [ "$(entry_id_of "$f")" = "$entry" ] && found="$f"
-  done
-  [ -n "$found" ] || die "no loader entry called $entry. Available:
-$(cmd_list)"
+  # Checked against what the boot loader lists, not against a directory: the
+  # repair image is a Type #2 entry with no .conf, so a file-based check would
+  # refuse the one entry most worth booting once. And an id sd-boot does not know
+  # is silently ignored, so the machine would boot exactly as before while this
+  # reported success.
+  local known
+  known="$(bootctl list 2>/dev/null | sed -n 's/^[[:space:]]*id:[[:space:]]*//p')"
+  if [ -z "$known" ]; then
+    die "the boot loader could not be asked what entries exist, so an id cannot be
+  checked before it is written. Select the entry from the firmware's boot menu."
+  fi
+  if ! printf '%s\n' "$known" | grep -qx -- "$entry"; then
+    # One forgiving retry: `.conf` is easy to leave off a Type #1 id.
+    if printf '%s\n' "$known" | grep -qx -- "$entry.conf"; then
+      entry="$entry.conf"
+    else
+      die "no boot entry called $entry. The boot loader offers:
+$(printf '%s\n' "$known" | sed 's/^/  /')"
+    fi
+  fi
   bootctl set-oneshot "$entry" \
     || die "could not write LoaderEntryOneShot — the firmware may not expose EFI
   variables read-write. Select $entry from the firmware's own boot menu instead."
