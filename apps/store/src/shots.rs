@@ -240,6 +240,7 @@ mod tests {
         let mut saw_open = false;
         let mut saw_update = false;
         let mut saw_fp_install = false;
+        let mut saw_fp_open = false;
         let mut saw_fp_remove = false;
         let mut saw_pin_toggle = false;
         for item in &cat {
@@ -247,16 +248,28 @@ mod tests {
                 ActionKind::Open => saw_open = true,
                 ActionKind::Update => saw_update = true,
                 ActionKind::FlatpakInstall => saw_fp_install = true,
-                ActionKind::FlatpakRemove => saw_fp_remove = true,
+                ActionKind::FlatpakOpen => saw_fp_open = true,
                 _ => {}
             }
             if item.pin_action().is_some() {
                 saw_pin_toggle = true;
             }
+            // Flatpak removal is a *secondary* action — the primary on
+            // an installed app is to open it — so it is covered where
+            // it now lives rather than dropped from the fixture.
+            if item.remove_action() == Some(ActionKind::FlatpakRemove) {
+                saw_fp_remove = true;
+            }
         }
         assert!(
-            saw_open && saw_update && saw_fp_install && saw_fp_remove && saw_pin_toggle,
-            "fixture must exercise Open, Update, Flatpak install/remove, and the pin toggle"
+            saw_open
+                && saw_update
+                && saw_fp_install
+                && saw_fp_open
+                && saw_fp_remove
+                && saw_pin_toggle,
+            "fixture must exercise Open, Update, Flatpak install/open/remove, \
+             and the pin toggle (open={saw_fp_open}, remove={saw_fp_remove})"
         );
     }
 
