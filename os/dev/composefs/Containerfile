@@ -57,6 +57,10 @@ RUN rpm -e --nodeps bootupd \
 # qOS's real hardening kargs, unmodified. This is the file whose contents have
 # to reach the *measured* command line for the rollback design to work.
 COPY 01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+# And the mode karg, likewise unmodified. `qos.mode=repair` on a sealed command
+# line is what makes repair mode selectable and unforgeable; the probe is where
+# that gets booted rather than reasoned about.
+COPY 04-mode.toml /usr/lib/bootc/kargs.d/04-mode.toml
 
 # The generation number. qOS binds rollback protection to it, and it has to be
 # sealed into the UKI rather than written by a bootloader, so it enters through
@@ -114,10 +118,49 @@ COPY stage/tree/ /
 # then fails for a reason that has nothing to do with rollback.
 RUN chmod 0755 /usr/bin/qos-rollback /usr/libexec/qos-rollback-common \
         /usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-harden \
-        /usr/libexec/qos-rollback-boot-check \
+        /usr/libexec/qos-rollback-boot-check /usr/libexec/qos-recovery-boot-check \
+        /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
+        /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/lib/systemd/system-generators/qos-boot-mode-generator \
     && printf 'd /var/lib/qos 0755 root root -\n' \
         > /usr/lib/tmpfiles.d/qos-rollback.conf \
-    && systemctl enable qos-rollback-harden.service qos-rollback-confirm.timer
+    && systemctl enable qos-rollback-harden.service qos-rollback-confirm.timer \
+    && systemctl enable qos-boot-entries.service qos-boot-health.service
+
+# --- what "the session came up" means on an image with no session ------------
+# qos-boot-health waits for greetd, which this image does not have — it is the
+# boot chain without the desktop. So it is pointed at a stand-in that plays the
+# same part in the same units: something the boot has to reach for the boot to
+# count. SESSION_OK=0 builds a generation whose stand-in fails, which is the
+# deliberately-broken deployment the automatic rollback is demonstrated against.
+#
+# The health check, boot-complete.target, systemd-bless-boot and the boot counters
+# are all the production ones. Only the unit being waited for differs.
+ARG SESSION_OK=1
+RUN if [ "${SESSION_OK}" = 1 ]; then start=/bin/true; else start=/bin/false; fi \
+    && printf '%s\n' \
+        '[Unit]' \
+        'Description=Stand-in for the desktop session on the boot-chain probe' \
+        'After=multi-user.target' \
+        '' \
+        '[Service]' \
+        'Type=oneshot' \
+        'RemainAfterExit=yes' \
+        "ExecStart=$start" \
+        '' \
+        '[Install]' \
+        'WantedBy=multi-user.target' > /usr/lib/systemd/system/qos-probe-session.service \
+    && mkdir -p /usr/lib/systemd/system/qos-boot-health.service.d \
+    && printf '%s\n' \
+        '[Unit]' \
+        'After=qos-probe-session.service' \
+        '' \
+        '[Service]' \
+        'Environment=QOS_BOOT_HEALTH_UNIT=qos-probe-session.service' \
+        'Environment=QOS_BOOT_HEALTH_TIMEOUT=45' \
+        > /usr/lib/systemd/system/qos-boot-health.service.d/10-probe-session.conf \
+    && systemctl enable qos-probe-session.service \
+    && echo "probe session unit: ExecStart=$start (SESSION_OK=${SESSION_OK})"
 
 # The registry the update series is served from runs on the VM host, reachable
 # from user-mode networking at 10.0.2.2 over plain HTTP.

@@ -837,8 +837,12 @@ COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-e
 COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
 COPY docs/recovery.md /usr/share/doc/qos/recovery.md
 COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
+# The boot-side check, bundled so it can be re-run on a live machine. It is the
+# only place several of these facts can be established at all — see its header.
+COPY os/tests/recovery-boot-check.sh /usr/libexec/qos-recovery-boot-check
 RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
         /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/libexec/qos-recovery-boot-check \
         /usr/lib/systemd/system-generators/qos-boot-mode-generator
 
 # The signed PCR predictions this image was built with go in
