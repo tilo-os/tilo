@@ -219,7 +219,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     if [ "${QOS_WITH_BROWSER}" = "0" ]; then BROWSER_PKG=""; \
     else BROWSER_PKG="-p browser --features browser/wpe"; fi \
     && cargo build --release \
-        -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
+        -p shell -p fs -p terminal -p file-explorer -p settings \
+        -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p qos-rollback \
         ${BROWSER_PKG} \
@@ -230,6 +231,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/fs \
           target/release/terminal \
           target/release/file-explorer \
+          target/release/settings \
           target/release/qos-greeter \
           target/release/qos-installer \
           target/release/qos-runtime-bundle \
@@ -396,6 +398,11 @@ COPY --from=builder /out/fs /usr/bin/fs
 # System apps
 COPY --from=builder /out/terminal /usr/bin/terminal
 COPY --from=builder /out/file-explorer /usr/bin/file-explorer
+# Settings. Everything the compositor's quick-settings popover cannot
+# reach lives here — Wi-Fi profiles, audio device routing, display scale,
+# keyboard layout, power policy, touchpad — so an image without it is an
+# image where those are unreachable on real hardware.
+COPY --from=builder /out/settings /usr/bin/settings
 # Browser: chrome over the ui toolkit's WebView widget, engine = WPE WebKit
 # (built in the wpe-builder stage; its libs + WebProcess binaries are copied
 # into this rootfs below). Copied as the contents of /out/optional/ because the
@@ -514,6 +521,14 @@ COPY os/etc/pam.d/qos-unlock /etc/pam.d/qos-unlock
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
 # from the pre-login screen (see the rule's header for the rationale).
 COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49-qos-greeter-power.rules
+
+# udev rule handing /sys/class/backlight/*/brightness to the `video`
+# group, so the compositor's brightness keys and quick-settings slider
+# can actually dim the panel from an unprivileged session. This is the
+# rule `brightnessctl` would have brought with it; qOS writes the sysfs
+# attribute directly (no fork per keypress — brightness keys autorepeat)
+# and therefore ships the rule rather than the package.
+COPY os/usr/lib/udev/rules.d/90-qos-backlight.rules /usr/lib/udev/rules.d/90-qos-backlight.rules
 
 # --- Signing trust roots (security plan §9 image signing, §4 measured boot) ---
 # Public keys only (the private keys are git-excluded; see keys/README.md).
