@@ -506,7 +506,14 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             version: manifest.version.clone(),
             manifest_path: entry.manifest_path,
             payload_root: entry.payload_root,
-            has_gui: manifest.entrypoint.gui_bin().is_some(),
+            // Two independent conditions, and both have to hold. The
+            // entrypoint says the package can draw; `kind` says it is
+            // something a user opens. A package can satisfy the first
+            // and not the second — the on-screen keyboard draws a real
+            // surface the shell places itself, and a palette row that
+            // opened it as a tiled window would be nonsense.
+            has_gui: manifest.entrypoint.gui_bin().is_some()
+                && manifest.kind == launcher::manifest::KIND_APP,
             opens_extensions: manifest.opens_ext.clone(),
         });
     }

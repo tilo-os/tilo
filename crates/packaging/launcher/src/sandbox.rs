@@ -800,6 +800,7 @@ mod tests {
             name: Some("Notes".to_string()),
             category: Some("Office".to_string()),
             version: "0.1.0".to_string(),
+            kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
             entrypoint: Entrypoint {
                 bin: "bin/notes".to_string(),

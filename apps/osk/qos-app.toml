@@ -5,6 +5,12 @@
 # own keymap + swipe-model files. Nothing else — no documents, no
 # network, no exec.
 #
+# `kind = "service"` because of that first sentence. It draws, so its
+# entrypoint stays `gui`, but it is a surface the shell shows when text
+# input wants one — not something a user opens from the launcher. With
+# `kind = "app"` it appeared in the command palette as "Open On-Screen
+# Keyboard", which spawned a keyboard in an ordinary tiled window.
+#
 # Pack and install:
 #
 #     cargo build -p osk -p pkg-cli -p install
@@ -19,7 +25,7 @@ id       = "dev.qos.osk"
 name     = "On-Screen Keyboard"
 category = "Accessibility"
 version  = "0.1.0"
-kind     = "app"
+kind     = "service"
 runtime  = "qos-runtime/2026.07"
 
 # The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
