@@ -116,6 +116,11 @@ pub fn text_mime_types() -> Vec<String> {
 /// paste is worse than none.
 const MAX_SELECTION_BYTES: usize = 8 * 1024 * 1024;
 
+/// Bytes a fresh pipe accepts before a write would block. Linux's default is
+/// 64 KiB; the conservative figure below keeps the "this cannot block" claim
+/// true even if a header or a smaller default is in play.
+const PIPE_BUFFER_BYTES: usize = 32 * 1024;
+
 /// Which of the two selections a value refers to. Mirrors smithay's
 /// [`SelectionTarget`] but is `serde`-friendly and usable from the test
 /// control socket and the `ui` bridge without pulling smithay into them.
@@ -616,18 +621,26 @@ impl State {
         if !text_mime_types().iter().any(|m| m == mime_type) {
             return;
         }
+        use std::io::Write;
         let text = mirror_text(&self.selection.store, target).unwrap_or_default();
-        // Written on a detached thread rather than inline. A selection larger
-        // than the 64 KiB pipe buffer would otherwise block the compositor
-        // against the requesting client's read — and that client cannot read
-        // while the compositor is stalled, because it is waiting on the
-        // compositor to flush. Off-thread, the write drains at whatever rate
-        // the client reads and the compositor never notices. The thread ends
-        // at `write_all`, and the fd closes with it, which is what signals EOF
-        // to the reader.
+        let mut file = File::from(fd);
+        // Anything that fits in the pipe buffer is written here and now: the
+        // kernel takes it whether or not the client has started reading, so
+        // there is nothing to block on, and a clipboard is almost always a
+        // line or two of text.
+        if text.len() <= PIPE_BUFFER_BYTES {
+            if let Err(e) = file.write_all(text.as_bytes()) {
+                tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
+            }
+            return;
+        }
+        // A larger payload has to go to a thread. Written inline it would
+        // block the compositor against the requesting client's read — and
+        // that client cannot read while the compositor is stalled, because it
+        // is waiting on the compositor to flush. Off-thread the write drains
+        // at whatever rate the client reads. The thread ends at `write_all`
+        // and the fd closes with it, which is what signals EOF to the reader.
         std::thread::spawn(move || {
-            use std::io::Write;
-            let mut file = File::from(fd);
             if let Err(e) = file.write_all(text.as_bytes()) {
                 tracing::debug!(target: "shell::selection", error = %e, "selection receiver went away mid-transfer");
             }
