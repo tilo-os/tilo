@@ -1,0 +1,528 @@
+//! A layer: the writable half of the guest's root filesystem.
+//!
+//! A layer is a plain directory owned by the real user, shaped like a fragment
+//! of a root filesystem. It is mounted as the `upperdir` of an `overlayfs`
+//! whose `lowerdir` is the host's, so everything the guest writes to a system
+//! path lands here and the host's own filesystem is never touched.
+//!
+//! # Why creating one is not just `mkdir`
+//!
+//! Unprivileged overlayfs has two limits that decide the whole shape of this
+//! module. Both come from the same fact: the guest's user namespace maps one
+//! uid — the real user — and host `uid 0` is *not* in that map. A capability
+//! check against an inode whose owner is unmapped fails regardless of what the
+//! process holds, so `CAP_DAC_OVERRIDE` inside the namespace buys nothing
+//! against a root-owned file.
+//!
+//! - **Directories.** Creating `/usr/bin/htop` requires copying `/usr/bin` up
+//!   into the layer first, and that copy-up is a write into a root-owned
+//!   directory. So [`Layer::create`] mirrors the base's *entire* directory tree
+//!   into the layer up front, owned by the user. ~22 000 empty directories on
+//!   Fedora 44, under a second to create, a few megabytes of metadata. After
+//!   that, a write anywhere the base has a directory needs no copy-up at all.
+//!
+//! - **Files.** `rpm` rewrites its database and `dnf` rewrites its transaction
+//!   history; both files exist in the base and are owned by root, so neither
+//!   can be copied up. [`Layer::create`] seeds the layer with the user's own
+//!   copies ([`STATE_SEED_DIRS`]). This is also what makes a layer a *delta*
+//!   rather than a second operating system: the transaction starts from the
+//!   base image's installed set, so `pkg install htop` downloads htop and not
+//!   glibc.
+//!
+//! The consequence is worth stating plainly, because it is a property and not
+//! an accident: **you can add to the base and shadow it, but you cannot alter
+//! a file that came from the image.** On an image-based OS that is the correct
+//! direction of failure.
+
+use std::path::{Path, PathBuf};
+
+/// Host subtrees a layer shadows. Everything a package installs lands under
+/// one of these.
+///
+/// `/var` is deliberately absent. The store lives under `$HOME`, which on a
+/// bootc system is `/var/home/<user>` — inside `/var` — and overlayfs refuses
+/// an `upperdir` nested in its own `lowerdir`. The guest gets layer-owned
+/// `/var/lib`, `/var/cache` and `/var/log` as plain binds instead, which is
+/// also the tighter answer: host `/var` is machine state a shell has no
+/// business reading.
+pub const BASE_SUBTREES: &[&str] = &["usr", "etc"];
+
+/// Directories whose *files* are copied into a new layer.
+///
+/// These hold package-manager state that must be rewritten in place. Anything
+/// added here is copied at layer creation, so it must be small and it must
+/// genuinely need to be writable — this is not a place to make the base
+/// mutable by the back door.
+pub const STATE_SEED_DIRS: &[&str] = &[
+    // The rpm database. `%{_dbpath}` on a Fedora bootc image.
+    "usr/share/rpm",
+    "usr/lib/sysimage/rpm",
+    // dnf5's transaction history.
+    "usr/lib/sysimage/libdnf5",
+];
+
+/// Which store slot a layer occupies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayerKind {
+    /// `layers/persistent` — survives the session.
+    Persistent,
+    /// `layers/ephemeral/<id>` — destroyed when the session ends.
+    Ephemeral,
+}
+
+impl LayerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LayerKind::Persistent => "persistent",
+            LayerKind::Ephemeral => "ephemeral",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LayerError {
+    #[error("layer {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("refusing to destroy {0}: it is not a layer (no .ush-layer marker)")]
+    NotALayer(PathBuf),
+}
+
+fn io(path: &Path, source: std::io::Error) -> LayerError {
+    LayerError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
+}
+
+/// The marker file that says a directory is a layer this runtime made.
+///
+/// [`Layer::burn`] is an `rm -rf` and refuses to run without it. A typo in a
+/// store path must not be able to delete a home directory.
+const MARKER: &str = ".ush-layer";
+
+/// One layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layer {
+    path: PathBuf,
+    kind: LayerKind,
+}
+
+impl Layer {
+    pub fn new(path: impl Into<PathBuf>, kind: LayerKind) -> Self {
+        Self {
+            path: path.into(),
+            kind,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn kind(&self) -> LayerKind {
+        self.kind
+    }
+
+    /// Has this layer been created (skeleton mirrored, state seeded)?
+    pub fn exists(&self) -> bool {
+        self.path.join(MARKER).is_file()
+    }
+
+    /// The layer's shadow of one base subtree — the overlay `upperdir`.
+    pub fn upper_for(&self, subtree: &str) -> PathBuf {
+        self.path.join(subtree)
+    }
+
+    /// Create the layer if it is not there yet.
+    ///
+    /// `base` is the root of the filesystem being shadowed — `/` in production,
+    /// a fixture in tests. Idempotent: an existing layer is left alone, so this
+    /// is safe to call at the start of every session.
+    pub fn create(&self, base: &Path) -> Result<(), LayerError> {
+        if self.exists() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.path).map_err(|e| io(&self.path, e))?;
+
+        for subtree in BASE_SUBTREES {
+            let src = base.join(subtree);
+            if !src.is_dir() {
+                continue;
+            }
+            mirror_directories(&src, &self.path.join(subtree))?;
+        }
+
+        for dir in STATE_SEED_DIRS {
+            let src = base.join(dir);
+            // `usr/lib/sysimage/rpm` is a symlink to `usr/share/rpm` on Fedora;
+            // `is_dir` follows it, and copying both is harmless because the
+            // second pass overwrites with identical bytes. A base that has
+            // neither simply gets no seed and `pkg` reports the layer as
+            // holding nothing, which is true.
+            if !src.is_dir() {
+                continue;
+            }
+            copy_files_shallow(&src, &self.path.join(dir))?;
+        }
+
+        // `rpm` still looks here on a non-ostree base, and a dangling symlink
+        // in the layer would shadow a working one in the lower.
+        let var_lib = self.path.join("var/lib");
+        std::fs::create_dir_all(&var_lib).map_err(|e| io(&var_lib, e))?;
+        for d in ["var/lib/dnf", "var/cache/libdnf5", "var/log"] {
+            let p = self.path.join(d);
+            std::fs::create_dir_all(&p).map_err(|e| io(&p, e))?;
+        }
+
+        let marker = self.path.join(MARKER);
+        std::fs::write(&marker, format!("{}\n", self.kind.as_str()))
+            .map_err(|e| io(&marker, e))?;
+        Ok(())
+    }
+
+    /// Destroy the layer's files.
+    ///
+    /// `pkg burn`. Refuses on anything without the marker — the argument is a
+    /// path and an `rm -rf` on the wrong one is unrecoverable.
+    pub fn burn(&self) -> Result<(), LayerError> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        if !self.exists() {
+            return Err(LayerError::NotALayer(self.path.clone()));
+        }
+        std::fs::remove_dir_all(&self.path).map_err(|e| io(&self.path, e))
+    }
+
+    /// What this layer changed relative to the base.
+    ///
+    /// Empty directories are skipped: the layer mirrors the base's whole
+    /// directory tree by construction, so reporting those would drown the
+    /// answer in ~22 000 lines that mean nothing. Only files, symlinks and
+    /// overlayfs whiteouts are a change the user made.
+    pub fn diff(&self, base: &Path) -> Vec<LayerChange> {
+        let mut out = Vec::new();
+        for subtree in BASE_SUBTREES {
+            let root = self.path.join(subtree);
+            if !root.is_dir() {
+                continue;
+            }
+            for entry in walkdir::WalkDir::new(&root).follow_links(false) {
+                let Ok(entry) = entry else { continue };
+                let meta = entry.path().symlink_metadata().ok();
+                let Some(meta) = meta else { continue };
+                if meta.is_dir() {
+                    continue;
+                }
+                let Ok(rel) = entry.path().strip_prefix(&self.path) else {
+                    continue;
+                };
+                let guest_path = Path::new("/").join(rel);
+                // overlayfs records a deletion as a 0/0 character device.
+                let kind = if is_whiteout(&meta) {
+                    ChangeKind::Removed
+                } else if base.join(rel).symlink_metadata().is_ok() {
+                    ChangeKind::Shadowed
+                } else {
+                    ChangeKind::Added
+                };
+                out.push(LayerChange {
+                    path: guest_path,
+                    kind,
+                    bytes: if matches!(kind, ChangeKind::Removed) {
+                        0
+                    } else {
+                        meta.len()
+                    },
+                });
+            }
+        }
+        out.sort_by(|a, b| a.path.cmp(&b.path));
+        out
+    }
+
+    /// Bytes the layer's own files occupy. Skips the mirrored directories,
+    /// which cost metadata rather than data.
+    pub fn size_bytes(&self, base: &Path) -> u64 {
+        self.diff(base).iter().map(|c| c.bytes).sum()
+    }
+}
+
+/// One entry in `pkg diff`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LayerChange {
+    /// The path as the guest sees it.
+    pub path: PathBuf,
+    pub kind: ChangeKind,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeKind {
+    /// Not in the base at all.
+    Added,
+    /// Present in the base; the layer's copy is what the guest sees.
+    Shadowed,
+    /// An overlayfs whiteout — deleted, for this guest only.
+    Removed,
+}
+
+impl ChangeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ChangeKind::Added => "added",
+            ChangeKind::Shadowed => "shadowed",
+            ChangeKind::Removed => "removed",
+        }
+    }
+}
+
+fn is_whiteout(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::MetadataExt;
+    meta.file_type().is_char_device() && meta.rdev() == 0
+}
+
+/// Recreate `src`'s directory tree under `dst`. Directories only — no file is
+/// read and nothing is copied.
+fn mirror_directories(src: &Path, dst: &Path) -> Result<(), LayerError> {
+    std::fs::create_dir_all(dst).map_err(|e| io(dst, e))?;
+    for entry in walkdir::WalkDir::new(src)
+        .follow_links(false)
+        .same_file_system(true)
+        .into_iter()
+        // An unreadable directory in the base is not a reason to refuse to
+        // build a layer; it is a directory the guest will not be able to write
+        // into, which is the same as the base's own behaviour.
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let Ok(rel) = entry.path().strip_prefix(src) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let target = dst.join(rel);
+        if let Err(e) = std::fs::create_dir_all(&target) {
+            if e.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(io(&target, e));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Copy the regular files directly inside `src` (not recursive) into `dst`.
+fn copy_files_shallow(src: &Path, dst: &Path) -> Result<(), LayerError> {
+    std::fs::create_dir_all(dst).map_err(|e| io(dst, e))?;
+    let entries = std::fs::read_dir(src).map_err(|e| io(src, e))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = path.symlink_metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name() else {
+            continue;
+        };
+        let target = dst.join(name);
+        std::fs::copy(&path, &target).map_err(|e| io(&target, e))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fixture that looks like a root filesystem: some directories, a file
+    /// standing in for the rpm database.
+    fn fake_base() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for d in [
+            "usr/bin",
+            "usr/lib64",
+            "usr/share/rpm",
+            "usr/share/terminfo/x",
+            "usr/lib/sysimage/libdnf5",
+            "etc/dnf",
+            "var/lib",
+        ] {
+            std::fs::create_dir_all(dir.path().join(d)).unwrap();
+        }
+        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
+        std::fs::write(dir.path().join("usr/share/rpm/rpmdb.sqlite"), b"BASE-RPMDB").unwrap();
+        std::fs::write(
+            dir.path().join("usr/lib/sysimage/libdnf5/transaction_history.sqlite"),
+            b"BASE-HISTORY",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("etc/passwd"), b"root:x:0:0::/root:/bin/bash\n").unwrap();
+        dir
+    }
+
+    /// The whole point of the mirror: a guest can create a file anywhere the
+    /// base has a directory, without copying up a root-owned one.
+    #[test]
+    fn creating_a_layer_mirrors_every_base_directory() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+
+        for d in ["usr/bin", "usr/lib64", "usr/share/terminfo/x", "etc/dnf"] {
+            assert!(
+                layer.path().join(d).is_dir(),
+                "{d} was not mirrored into the layer; a write there would need \
+                 a copy-up of a root-owned directory and would be refused"
+            );
+        }
+        // Directories only. Mirroring files would make the layer a second copy
+        // of the operating system.
+        assert!(
+            !layer.path().join("usr/bin/bash").exists(),
+            "the mirror copied a file; it must copy shape, not content"
+        );
+    }
+
+    /// The seeded state is what makes the layer a delta and what makes rpm's
+    /// database writable at all.
+    #[test]
+    fn creating_a_layer_seeds_the_package_manager_state() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+
+        let db = layer.path().join("usr/share/rpm/rpmdb.sqlite");
+        assert!(db.is_file(), "the rpm database was not seeded");
+        assert_eq!(std::fs::read(&db).unwrap(), b"BASE-RPMDB");
+
+        let hist = layer
+            .path()
+            .join("usr/lib/sysimage/libdnf5/transaction_history.sqlite");
+        assert!(hist.is_file(), "dnf's transaction history was not seeded");
+    }
+
+    /// `var` is not a base subtree, and it must not become one: the store lives
+    /// inside `$HOME`, which is inside `/var` on a bootc system, and overlayfs
+    /// refuses an upperdir nested in its lowerdir.
+    #[test]
+    fn var_is_not_a_shadowed_base_subtree() {
+        assert!(
+            !BASE_SUBTREES.contains(&"var"),
+            "shadowing /var makes the overlay unmountable wherever $HOME is under /var"
+        );
+        assert_eq!(BASE_SUBTREES, &["usr", "etc"]);
+    }
+
+    #[test]
+    fn create_is_idempotent_and_does_not_re_seed() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+
+        let db = layer.path().join("usr/share/rpm/rpmdb.sqlite");
+        std::fs::write(&db, b"MODIFIED-BY-A-TRANSACTION").unwrap();
+        layer.create(base.path()).unwrap();
+        assert_eq!(
+            std::fs::read(&db).unwrap(),
+            b"MODIFIED-BY-A-TRANSACTION",
+            "re-creating an existing layer overwrote its state; a second \
+             session would lose every package installed in the first"
+        );
+    }
+
+    #[test]
+    fn diff_names_added_and_shadowed_files_and_skips_mirrored_directories() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+
+        // Baseline: a fresh layer holds only the state it was seeded with.
+        let seeded = layer.diff(base.path());
+        assert!(
+            seeded.iter().all(|c| c.kind == ChangeKind::Shadowed),
+            "a fresh layer must only shadow the state files it seeded: {seeded:?}"
+        );
+        assert!(
+            !seeded.iter().any(|c| c.path.ends_with("bin")),
+            "diff reported a mirrored directory: {seeded:?}"
+        );
+
+        std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
+        std::fs::write(layer.path().join("usr/bin/bash"), b"REPLACED").unwrap();
+
+        let changes = layer.diff(base.path());
+        let added = changes
+            .iter()
+            .find(|c| c.path == Path::new("/usr/bin/htop"))
+            .expect("added file missing from diff");
+        assert_eq!(added.kind, ChangeKind::Added);
+        assert_eq!(added.bytes, 4);
+
+        let shadowed = changes
+            .iter()
+            .find(|c| c.path == Path::new("/usr/bin/bash"))
+            .expect("shadowed file missing from diff");
+        assert_eq!(
+            shadowed.kind,
+            ChangeKind::Shadowed,
+            "a path that exists in the base is shadowed, not added"
+        );
+    }
+
+    #[test]
+    fn burn_destroys_the_layer() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+        std::fs::write(layer.path().join("usr/bin/htop"), b"HTOP").unwrap();
+        assert!(layer.exists());
+
+        layer.burn().unwrap();
+        assert!(!layer.exists());
+        assert!(!layer.path().exists());
+    }
+
+    /// `burn` is `rm -rf` on a path. The marker is the only thing standing
+    /// between a mistyped store root and someone's home directory.
+    #[test]
+    fn burn_refuses_a_directory_that_is_not_a_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let precious = dir.path().join("Documents");
+        std::fs::create_dir_all(&precious).unwrap();
+        std::fs::write(precious.join("thesis.md"), b"years of work").unwrap();
+
+        let layer = Layer::new(&precious, LayerKind::Persistent);
+        let err = layer.burn().unwrap_err();
+        assert!(matches!(err, LayerError::NotALayer(_)), "{err:?}");
+        assert!(
+            precious.join("thesis.md").is_file(),
+            "burn deleted a directory it did not create"
+        );
+    }
+
+    #[test]
+    fn size_counts_layer_content_only() {
+        let base = fake_base();
+        let store = tempfile::tempdir().unwrap();
+        let layer = Layer::new(store.path().join("persistent"), LayerKind::Persistent);
+        layer.create(base.path()).unwrap();
+        let seeded = layer.size_bytes(base.path());
+        std::fs::write(layer.path().join("usr/bin/htop"), vec![0u8; 1024]).unwrap();
+        assert_eq!(layer.size_bytes(base.path()), seeded + 1024);
+    }
+}
