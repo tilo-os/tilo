@@ -68,6 +68,33 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
     (w.max(0) as u32, h.max(0) as u32)
 }
 
+/// A touchpad gesture, in the shape `zwp_pointer_gestures_v1` carries.
+///
+/// Backend-neutral rather than a `winit::WindowEvent`, because winit has
+/// no event that carries a finger count — and the finger count is what
+/// decides whether a gesture is the shell's or the focused client's.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum GestureEvent {
+    SwipeBegin { fingers: u32 },
+    SwipeUpdate { dx: f64, dy: f64 },
+    SwipeEnd { cancelled: bool },
+    PinchBegin { fingers: u32 },
+    PinchUpdate { dx: f64, dy: f64, scale: f64, rotation: f64 },
+    PinchEnd { cancelled: bool },
+    HoldBegin { fingers: u32 },
+    HoldEnd { cancelled: bool },
+}
+
+/// One touch point's movement, in combined-output coordinates.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum TouchEvent {
+    Down { slot: u32, x: f64, y: f64 },
+    Motion { slot: u32, x: f64, y: f64 },
+    Up { slot: u32 },
+    Cancel,
+    Frame,
+}
+
 #[derive(Debug)]
 pub enum BackendEvent {
     CloseRequested,
@@ -76,6 +103,12 @@ pub enum BackendEvent {
         size: (u32, u32),
         scale: f32,
     },
+    /// The set of outputs changed — a display was plugged in, unplugged,
+    /// or re-moded. Distinct from [`Self::OutputResized`], which is one
+    /// output changing size: this one means the compositor has to re-read
+    /// [`Backend::outputs`] wholesale and re-sync its `wl_output` globals,
+    /// because an output may have appeared or vanished rather than moved.
+    OutputsChanged,
     /// A pointer / keyboard / wheel event. The full `winit::WindowEvent`
     /// is carried so `compositor::native::run` can hand it to
     /// `FrameBuilder::dispatch_event` — the same dispatch path the
@@ -91,6 +124,17 @@ pub enum BackendEvent {
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
     /// the loop needs to retain across subsequent events.
     ModifiersChanged(Modifiers),
+    /// A gesture the shell did **not** claim, for forwarding to the
+    /// focused client over `zwp_pointer_gestures_v1`.
+    Gesture(GestureEvent),
+    /// A gesture the shell *did* claim, already resolved into the
+    /// navigation it means. Never also delivered as [`Self::Gesture`].
+    ShellGesture(crate::compositor::backend::drm::gestures::GestureAction),
+    /// A touch point, for forwarding to the focused client over
+    /// `wl_touch`. The same touch is *also* delivered as pointer
+    /// [`Self::Input`] events so the shell chrome — which has no touch
+    /// path — responds to a finger.
+    Touch(TouchEvent),
     Redraw,
     Focus(bool),
 }
@@ -139,6 +183,27 @@ pub trait Backend {
     /// state. Idempotent: redundant calls (off-while-off, on-while-on)
     /// are harmless.
     fn set_dpms(&mut self, _on: bool) {}
+
+    /// Re-establish the display after the system came back from suspend.
+    ///
+    /// Default no-op: a hosted backend's display is the host's problem,
+    /// and a headless one has none. Only [`DrmBackend`] overrides it,
+    /// where the DRM device comes back from a suspend with no mode set,
+    /// no framebuffer bound and a cursor plane that has been cleared — so
+    /// "the screen is black after closing and opening the lid" is not a
+    /// bug in the panel, it is the compositor never having asked for any
+    /// of that back.
+    ///
+    /// Separate from the VT-switch path because a suspend does not pause
+    /// the seat: no session event arrives, so nothing else would trigger.
+    fn reset_display(&mut self) {}
+
+    /// Re-read the persisted input preferences and apply them.
+    ///
+    /// Default no-op — only the DRM backend owns input devices. Called
+    /// when the Settings app writes a change, so pointer speed and
+    /// tap-to-click take effect without restarting the session.
+    fn reload_input_settings(&mut self) {}
 }
 
 #[cfg(test)]
