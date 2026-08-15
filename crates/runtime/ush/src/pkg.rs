@@ -162,6 +162,19 @@ pub fn releasever() -> String {
         .unwrap_or_else(|| "rawhide".into())
 }
 
+/// Is this package already part of what the guest can see?
+///
+/// The guest's rpm database is the base's plus whatever the layer added, so
+/// this answers "would installing it do anything", not "did this layer install
+/// it". [`Manifest`] answers the second question.
+pub fn is_installed(name: &str) -> bool {
+    Command::new("rpm")
+        .args(["-q", name])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 /// `name-version-release.arch` for an installed package, or the bare name.
 pub fn nevra(name: &str) -> String {
     Command::new("rpm")
@@ -380,6 +393,20 @@ mod tests {
             "the manifest has to be under a shadowed subtree, or it lands on \
              the host instead of in the layer"
         );
+    }
+
+    /// The check that stops a `--one-time` install of something the base
+    /// already ships from whiting the base's copy out at the end of the
+    /// session. `rpm` is on every machine this runs on, and `bash` is on every
+    /// machine that has rpm.
+    #[test]
+    fn is_installed_distinguishes_the_base_from_a_name_nothing_provides() {
+        assert!(
+            is_installed("bash"),
+            "rpm does not know about bash; the guard against removing a base \
+             package at session end cannot work"
+        );
+        assert!(!is_installed("no-such-package-fbb27a1c"));
     }
 
     #[test]

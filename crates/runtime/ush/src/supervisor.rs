@@ -175,6 +175,16 @@ impl Session {
         })
     }
 
+    /// May a restart request rebuild this session, or is it a one-shot?
+    ///
+    /// Only an interactive session restarts. `ush -c "…"` has a command with
+    /// side effects, and rebuilding would run it again: `pkg burn` asks for a
+    /// restart, so `ush -c 'pkg burn'` would burn, rebuild, burn, forever. It
+    /// did, and the audit log is where that showed up.
+    pub fn restarts_in_place(&self) -> bool {
+        self.opts.command.is_empty()
+    }
+
     /// Run the session to completion, restarting in place as many times as the
     /// guest asks. Returns the guest's exit code.
     pub fn run(&mut self) -> anyhow::Result<i32> {
@@ -182,7 +192,7 @@ impl Session {
         let code;
         loop {
             let (exit, again) = self.run_once()?;
-            if !again {
+            if !again || !self.restarts_in_place() {
                 code = exit;
                 break;
             }
@@ -272,7 +282,7 @@ impl Session {
         if burn {
             layer.burn()?;
         }
-        let _ = std::fs::remove_dir_all(&session_dir);
+        crate::guest::remove_dir_all_forced(&session_dir);
         if self.opts.ephemeral && !restart {
             layer.burn()?;
         }
@@ -673,6 +683,30 @@ mod tests {
             "an ephemeral session must still see what you installed for good"
         );
         assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
+    }
+
+    /// `pkg burn` asks for a restart so the guest comes back on a fresh layer.
+    /// Under `ush -c` that would re-run the command that asked, which burns
+    /// again — an unbounded loop, and one that really happened.
+    #[test]
+    fn a_one_shot_command_never_restarts_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+
+        let interactive = Session::new(store.clone(), SessionOptions::default());
+        assert!(interactive.restarts_in_place());
+
+        let one_shot = Session::new(
+            store,
+            SessionOptions {
+                command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
+                ..SessionOptions::default()
+            },
+        );
+        assert!(
+            !one_shot.restarts_in_place(),
+            "restarting a session that was given a command re-runs the command"
+        );
     }
 
     #[test]
