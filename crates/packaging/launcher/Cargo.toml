@@ -45,6 +45,11 @@ pkg = { path = "../pkg" }
 # the compositor and the filesystem use — a launcher-local permission
 # type would be a second vocabulary to drift out of sync.
 collab-types = { path = "../../collab/collab-types" }
+# Host applications: the `.desktop` entries already installed on the
+# machine. Kept in its own crate because nothing about it is qOS
+# packaging — it is the freedesktop format, and the compositor's search
+# providers read it directly too.
+desktop-entry = { package = "qos-desktop-entry", path = "../../system/desktop-entry" }
 
 [dev-dependencies]
 tempfile.workspace = true
