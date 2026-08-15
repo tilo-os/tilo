@@ -27,6 +27,10 @@
 //!   socket the launcher holds, so the named host is the only one
 //!   reachable.
 //! - [`run`]          — top-level `run` orchestration glue.
+//! - [`host`]         — the one launch path that builds *no* sandbox:
+//!   applications qOS did not package, whose `.desktop` file carries no
+//!   manifest to derive one from. Read its module docs before touching
+//!   it; the absence of a sandbox there is a decision, not an omission.
 //!
 //! When `qos-pkg` lands, the public surface of `manifest` is the only
 //! piece that needs to change; the rest are consumers of plain data
@@ -37,6 +41,7 @@ pub mod capabilities;
 pub mod dbus_proxy;
 pub mod gpu;
 pub mod hardening;
+pub mod host;
 pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;

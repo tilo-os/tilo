@@ -149,6 +149,11 @@ pub enum LaunchError {
     NoWorkspace,
     /// The registry file exists but could not be read or parsed.
     RegistryUnreadable { detail: String },
+    /// No `.desktop` entry on this system has that id. Distinct from
+    /// [`LaunchError::NotInstalled`] because it is a different
+    /// namespace with a different fix: nothing qOS packaged is
+    /// missing, the host does not have that application.
+    HostAppNotFound { desktop_id: String },
 }
 
 impl LaunchError {
@@ -171,6 +176,9 @@ impl LaunchError {
             LaunchError::NoWorkspace => "there is no active workspace to open it in".to_string(),
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
+            }
+            LaunchError::HostAppNotFound { desktop_id } => {
+                format!("no application on this system has the id {desktop_id}")
             }
         }
     }
@@ -208,6 +216,15 @@ pub enum LaunchEventKind {
     Exited,
 }
 
+/// Who a running launch is, for the event stream.
+///
+/// Both kinds of launch report under a `(id, display name)` pair: a
+/// package id for a `.qpkg`, a desktop-file id for a host app.
+struct LaunchIdentity {
+    package_id: String,
+    display_name: String,
+}
+
 /// A fully-resolved launch, ready to hand to `Command`.
 ///
 /// Split out from [`launch`] so the exact argv and environment a launch
@@ -237,7 +254,7 @@ static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None)
 /// `package_id` -> display name for everything this session has
 /// launched. Consulted when a foreign toplevel is adopted so the tab
 /// shows the app's name instead of a raw wayland app-id.
-static LAUNCHED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+static LAUNCHED: Mutex<Vec<(String, Vec<String>, String)>> = Mutex::new(Vec::new());
 /// The capability list of the workspace apps are being launched into.
 ///
 /// Published by [`set_workspace_capabilities`] (or by
@@ -268,10 +285,49 @@ static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
 
 struct PendingPlacement {
-    package_id: String,
+    /// The launch this note belongs to — a package id, or a
+    /// desktop-file id for a host app. Identities can overlap between
+    /// entries, so replacement is keyed on this rather than on them.
+    key: String,
+    /// Every string the window might announce itself as.
+    ///
+    /// A qOS package contributes its id and that id's trailing
+    /// component. A host app contributes what its `.desktop` entry
+    /// says: `StartupWMClass`, the desktop-file id, the Flatpak
+    /// application id. Either way the note is matched by *any* of them,
+    /// because the toolkit picks which one it reports and the desktop
+    /// does not get a say.
+    identities: Vec<String>,
     placement: crate::compositor::tab_binding::Placement,
     /// The surface that claimed this note, once one has.
     claimed_by: Option<u64>,
+}
+
+impl PendingPlacement {
+    fn matches(&self, app_id: &str) -> bool {
+        identities_match(&self.identities, app_id)
+    }
+}
+
+/// Whether `app_id` is one of `identities`, case-insensitively.
+fn identities_match(identities: &[String], app_id: &str) -> bool {
+    let needle = app_id.trim();
+    !needle.is_empty() && identities.iter().any(|i| i.eq_ignore_ascii_case(needle))
+}
+
+/// The window identities a qOS package id implies.
+///
+/// Textual and deterministic: the id itself, and its trailing component
+/// (`dev.qos.hello` ↔ `hello`) — the reverse-DNS convention the package
+/// ids follow. Nothing here guesses by timing.
+fn identities_for_package(package_id: &str) -> Vec<String> {
+    let mut out = vec![package_id.to_string()];
+    if let Some(last) = package_id.rsplit('.').next() {
+        if !last.is_empty() && last != package_id {
+            out.push(last.to_string());
+        }
+    }
+    out
 }
 
 /// Publish the compositor's Wayland socket. Called once by the
@@ -404,7 +460,7 @@ fn write_capabilities_file(
 }
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
-fn runtime_dir() -> PathBuf {
+pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
@@ -790,6 +846,23 @@ pub fn launch_document_in_workspace(
 /// Everything here — the fork, the wait, the output relay — happens off
 /// the compositor thread. The thread lives for as long as the app does.
 fn spawn_detached(app: InstalledApp, command: LaunchCommand) {
+    spawn_launch(app.package_id, app.display_name, command);
+}
+
+/// Run `command` on a worker thread under the identity
+/// `(package_id, display_name)`, reporting through [`EVENTS`].
+///
+/// The shared spawn path for both kinds of launch: a `.qpkg` going
+/// through `qos-launcher run`, and a host application going through
+/// `qos-launcher run-host`. They differ entirely in what the launcher
+/// then does — one builds a sandbox, one deliberately does not — and
+/// not at all in how the compositor supervises the process, so this is
+/// one function rather than two that drift.
+pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCommand) {
+    let app = LaunchIdentity {
+        package_id,
+        display_name,
+    };
     let builder = std::thread::Builder::new().name("qos-app-launch".to_string());
     // Kept for the "couldn't even start a thread" report below, since
     // the closure takes `app` by move.
@@ -896,11 +969,30 @@ pub fn drain_events() -> Vec<LaunchEvent> {
 // ---------------------------------------------------------------------
 
 pub(crate) fn remember_launch(app: &InstalledApp) {
+    remember_launch_named(
+        &app.package_id,
+        &identities_for_package(&app.package_id),
+        &app.display_name,
+    );
+}
+
+/// Record that `key` was launched and its window may announce itself as
+/// any of `identities`, so a toplevel that arrives later can be given
+/// the app's real name.
+///
+/// The host-app path calls this with the identities its `.desktop`
+/// entry declared; see [`set_pending_placement_for_identities`] for why
+/// they cannot be derived.
+pub fn remember_launch_named(key: &str, identities: &[String], display_name: &str) {
     let mut launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
-    if launched.iter().any(|(id, _)| id == &app.package_id) {
+    if launched.iter().any(|(k, _, _)| k == key) {
         return;
     }
-    launched.push((app.package_id.clone(), app.display_name.clone()));
+    launched.push((
+        key.to_string(),
+        identities.to_vec(),
+        display_name.to_string(),
+    ));
 }
 
 /// Display name for a Wayland `app_id`, if this session launched the
@@ -917,11 +1009,20 @@ pub(crate) fn remember_launch(app: &InstalledApp) {
 /// spawned (`SO_PEERCRED` at `insert_client` time), which is a change to
 /// the compositor's client bookkeeping rather than to this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
-    let launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
-    launched
-        .iter()
-        .find(|(package_id, _)| app_id_matches_package(app_id, package_id))
-        .map(|(_, display_name)| display_name.clone())
+    {
+        let launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
+        if let Some((_, _, display_name)) = launched
+            .iter()
+            .find(|(_, identities, _)| identities_match(identities, app_id))
+        {
+            return Some(display_name.clone());
+        }
+    }
+    // Not something this session launched. It may still be a host
+    // application the user started another way — the entry is on disk
+    // either way, and a tab reading "Spotify" beats one reading
+    // "spotify".
+    crate::shell::host_apps::app_for_window_id(app_id).map(|app| app.name)
 }
 
 /// Whether a client's wayland app-id belongs to `package_id`.
@@ -944,12 +1045,34 @@ pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
 ) {
+    set_pending_placement_for_identities(
+        package_id,
+        &identities_for_package(package_id),
+        placement,
+    );
+}
+
+/// [`set_pending_placement`] for a launch whose window identities are
+/// not derivable from its id.
+///
+/// A `.qpkg`'s app-id follows the package id by convention, so the qOS
+/// path can derive both. A host application's cannot be derived from
+/// anything: the `.desktop` entry states it (`StartupWMClass`), or the
+/// toolkit picks the desktop-file id, or a Flatpak reports its
+/// application id. The entry is the only source, so the caller that
+/// read the entry supplies them.
+pub fn set_pending_placement_for_identities(
+    key: &str,
+    identities: &[String],
+    placement: crate::compositor::tab_binding::Placement,
+) {
     let mut pending = PENDING_PLACEMENT
         .lock()
         .expect("PENDING_PLACEMENT poisoned");
-    pending.retain(|p| p.package_id != package_id);
+    pending.retain(|p| p.key != key);
     pending.push(PendingPlacement {
-        package_id: package_id.to_string(),
+        key: key.to_string(),
+        identities: identities.to_vec(),
         placement,
         claimed_by: None,
     });
@@ -973,9 +1096,7 @@ pub fn placement_for_toplevel(
     let mut pending = PENDING_PLACEMENT
         .lock()
         .expect("PENDING_PLACEMENT poisoned");
-    let idx = pending
-        .iter()
-        .position(|p| app_id_matches_package(app_id, &p.package_id))?;
+    let idx = pending.iter().position(|p| p.matches(app_id))?;
     match pending[idx].claimed_by {
         None => {
             pending[idx].claimed_by = Some(surface_id);

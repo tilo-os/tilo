@@ -20,6 +20,7 @@ default-members = [
     "crates/system/app-state",
     "crates/system/settings-store",
     "crates/system/atomic-file",
+    "crates/system/desktop-entry",
     "crates/system/power",
     "crates/system/qos-rollback",
     "crates/doc/qdoc",
@@ -227,6 +228,7 @@ members = [
     "crates/runtime/runtime-dylib",
     "crates/system/settings-store",
     "crates/system/atomic-file",
+    "crates/system/desktop-entry",
 ]
 resolver = "2"
 
