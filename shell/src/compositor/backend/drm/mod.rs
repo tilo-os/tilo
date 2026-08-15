@@ -348,6 +348,14 @@ fn apply_scanout_command(
             // Dropping a scanout closes its dup of the card fd and
             // releases the CRTC, which is the whole teardown an unplugged
             // display needs.
+            //
+            // There is no per-device page-flip source to register or
+            // withdraw alongside it: every scanout on a card dups one
+            // open file description, so *all* crtcs' flip completions
+            // arrive on a single event stream that `render` drains once
+            // and routes by crtc. A newly-modeset output is therefore
+            // already being drained the moment it lands here, and a
+            // removed one takes its pending completion with it.
             scanouts.retain(|e| !remove.contains(&e.id));
             scanouts.extend(add);
             // Positions come from the loop thread's re-layout: the
