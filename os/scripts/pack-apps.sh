@@ -75,6 +75,14 @@ msg "signing as ed25519:$PUBKEY"
 # shim binary to copy. Without it a CLI package installs but its commands
 # do not resolve, so point at it when it was built.
 [ ! -x "$SHIM_BIN" ] || export QOS_CLI_SHIM_PATH="$SHIM_BIN"
+
+# Each shim records the launcher to exec. Left to resolve on its own it
+# would find the sibling of the `qos-install` running here — a build-time
+# path like /out/qos-launcher that does not exist on the booted system, so
+# every shimmed command would fail with "no such file". Name where the
+# launcher will actually be.
+export QOS_LAUNCHER_PATH="${QOS_LAUNCHER_PATH:-/usr/bin/qos-launcher}"
+
 export QOS_APPS_DATA_DIR="$STORE"
 
 # --- pack + install every manifest -----------------------------------------
