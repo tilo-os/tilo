@@ -29,6 +29,19 @@ import time
 
 DEFAULT_TIMEOUT = 120.0
 
+# systemd colours its console output, so the bytes on the wire for a status line
+# are `Reached target \x1b[0;1;39mqos-repair.target\x1b[0m - …`. A pattern written
+# the way the line reads on screen never matches that, and the failure looks like
+# the guest never got there. The log keeps the raw bytes; matching happens against
+# a stripped copy.
+_CSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_CR = re.compile(rb"\r+\n?")
+
+
+def visible(buf: bytes) -> bytes:
+    """What the line would look like on a terminal, for matching against."""
+    return _CR.sub(b"\n", _CSI.sub(b"", buf))
+
 
 class Console:
     def __init__(self, path, log):
@@ -58,15 +71,18 @@ class Console:
         # Match against everything received since the last match, so a pattern
         # that already arrived while we were doing something else still counts.
         while True:
-            m = rx.search(self.buf)
+            m = rx.search(visible(self.buf))
             if m:
                 # Consume up to the match so a later `expect` for the same
                 # string waits for a NEW occurrence rather than re-matching.
+                # Stripping can only shorten, so the visible offset is at or
+                # before the raw one — dropping that many raw bytes never
+                # discards anything the match had not already covered.
                 self.buf = self.buf[m.end():]
                 print(f"[ok]   matched /{pattern}/", file=sys.stderr)
                 return
             if time.monotonic() > deadline:
-                tail = self.buf[-4000:].decode("utf-8", "replace")
+                tail = visible(self.buf)[-4000:].decode("utf-8", "replace")
                 print(
                     f"[FAIL] never saw /{pattern}/ in {self.timeout:.0f}s.\n"
                     f"       Last of what the console said:\n{tail}",

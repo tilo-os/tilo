@@ -60,9 +60,9 @@ proof_entry() {
   fi
 
   # And the artefacts themselves, so the transcript stands on its own.
-  guest "sudo bootctl list; echo; sudo ls -l /boot/loader/entries /boot/EFI/qos" \
+  guest "sudo bootctl list; echo; sudo ls -l /boot/loader/entries /boot/EFI/Linux; echo; sudo bootc status" \
     > "$OUT/01-bootctl.txt" 2>&1
-  guest "sudo /usr/libexec/qos-uki-cmdline show /boot/EFI/qos/repair.efi" \
+  guest "sudo /usr/libexec/qos-uki-cmdline show /boot/EFI/Linux/qos-repair.efi" \
     > "$OUT/01-repair-cmdline.txt" 2>&1
   if grep -q 'qos\.mode=repair' "$OUT/01-repair-cmdline.txt"; then
     ok "the repair UKI's sealed command line says qos.mode=repair"
@@ -74,9 +74,9 @@ proof_entry() {
 # --- 2. repair mode boots, authenticates, and can act ------------------------
 proof_repair() {
   step "boot INTO repair mode and drive its console"
-  "$VM" ssh "sudo bootctl set-oneshot qos-repair.conf" > "$OUT/02-oneshot.txt" 2>&1 \
+  "$VM" ssh "sudo bootctl set-oneshot qos-repair.efi" > "$OUT/02-oneshot.txt" 2>&1 \
     || { bad "could not set the one-shot boot entry"; return 1; }
-  ok "next boot pinned to qos-repair.conf"
+  ok "next boot pinned to qos-repair.efi"
   "$VM" ssh "sudo systemctl poweroff" >/dev/null 2>&1
   sleep 8
   "$VM" stop >/dev/null 2>&1 || true
@@ -91,15 +91,17 @@ proof_repair() {
   # The console is the evidence. Each `expect` fails the run if it never
   # arrives, so a pass means these words were actually on the wire.
   python3 "$CONSOLE_DRIVER" "$sock" --log "$OUT/02-repair-console.log" \
-    timeout:180 \
+    timeout:400 \
+    expect:"qos\\.mode=repair" \
+    expect:"Reached target qos-repair.target" \
     expect:"qOS repair mode" \
-    expect:"booted *: generation 1, mode repair" \
+    expect:"mode repair" \
     expect:"What would you like to do" \
     send:"6" \
     expect:"Boot loader entries" \
-    send:"2" \
-    expect:"entry to boot once" \
-    send:"" \
+    expect:"What would you like to do" \
+    send:"4" \
+    expect:"remounted read-write|already read-write" \
     expect:"What would you like to do"
   local rc=$?
   if [ "$rc" = 0 ]; then
