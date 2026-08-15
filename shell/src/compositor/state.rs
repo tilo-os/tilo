@@ -1712,6 +1712,93 @@ mod tick_hook_tests {
         }
     }
 
+    fn out(id: u32, position: (i32, i32), size: (u32, u32), scale: f32) -> crate::compositor::backend::Output {
+        crate::compositor::backend::Output {
+            id: crate::compositor::backend::OutputId(id),
+            position,
+            size,
+            scale,
+        }
+    }
+
+    /// Before any output table arrives — a hosted or headless run — the
+    /// session-wide scale is the only answer there is.
+    #[test]
+    fn without_an_output_table_the_scale_is_the_session_wide_one() {
+        let mut state = make_state();
+        state.scale = 1.75;
+        assert_eq!(state.scale_for_origin((0.0, 0.0)), 1.75);
+        assert_eq!(state.surface_scale(7), 1.75);
+    }
+
+    /// The docked-laptop case: a dense built-in panel beside a sparse
+    /// external monitor. One session-wide number is wrong for one of them.
+    #[test]
+    fn a_surface_is_told_the_scale_of_the_output_it_sits_on() {
+        let mut state = make_state();
+        state.scale = 1.0;
+        state.set_output_layout(&[
+            out(0, (0, 0), (1920, 1080), 1.5),
+            out(1, (1920, 0), (2560, 1440), 1.0),
+        ]);
+        assert_eq!(state.scale_for_origin((100.0, 100.0)), 1.5);
+        assert_eq!(state.scale_for_origin((2000.0, 100.0)), 1.0);
+    }
+
+    /// A window dragged from the laptop panel to the external monitor has
+    /// to be told to re-render at the other one's density. The cache is
+    /// what makes that observable to the commit hook.
+    #[test]
+    fn moving_a_window_between_outputs_changes_its_recorded_scale() {
+        let mut state = make_state();
+        state.set_output_layout(&[
+            out(0, (0, 0), (1920, 1080), 2.0),
+            out(1, (1920, 0), (1920, 1080), 1.0),
+        ]);
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(state.surface_scale(42), 2.0);
+        state.update_surface_scales(&[(42, (2500.0, 10.0))]);
+        assert_eq!(state.surface_scale(42), 1.0);
+    }
+
+    /// A surface that is no longer placed must not keep a stale scale: it
+    /// would be handed back on re-placement without being recomputed.
+    #[test]
+    fn an_unplaced_surface_loses_its_cached_scale() {
+        let mut state = make_state();
+        state.scale = 1.25;
+        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(state.surface_scale(42), 2.0);
+        state.update_surface_scales(&[]);
+        assert_eq!(
+            state.surface_scale(42),
+            1.25,
+            "an unplaced surface falls back rather than keeping a stale value"
+        );
+    }
+
+    /// A hotplug invalidates every cached scale, because the layout the
+    /// values were derived from is the thing that moved.
+    #[test]
+    fn a_new_output_layout_drops_the_cached_scales() {
+        let mut state = make_state();
+        state.scale = 1.0;
+        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 2.0)]);
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(state.surface_scale(42), 2.0);
+        // The external monitor is unplugged and the laptop panel is now
+        // the only display, at a different scale.
+        state.set_output_layout(&[out(0, (0, 0), (1920, 1080), 1.5)]);
+        assert_eq!(
+            state.surface_scale(42),
+            1.0,
+            "a stale per-surface scale must not survive the layout it came from"
+        );
+        state.update_surface_scales(&[(42, (10.0, 10.0))]);
+        assert_eq!(state.surface_scale(42), 1.5);
+    }
+
     fn gradient(w: u32, h: u32) -> Vec<u8> {
         let mut v = Vec::with_capacity((w * h * 4) as usize);
         for y in 0..h {
