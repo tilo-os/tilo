@@ -100,10 +100,28 @@ if [ -n "$REPAIR_UKI" ] && [ -x "$UKI_CMDLINE" ]; then
         indistinguishable from the system it exists to repair." ;;
   esac
   if [ -n "$sk" ] && [ "$sk" \> "bootc-zzzzzzzz-9" ]; then
-    ok "its sort key ($sk) puts it below every deployment entry"
+    ok "its .osrel sort key ($sk) sorts after every deployment entry"
   else
-    bad "the repair image's sort key is '${sk:-<none>}', which does not sort after
-        bootc's. sd-boot could offer repair mode ahead of a working system."
+    bad "the repair image's .osrel sort key is '${sk:-<none>}', which does not sort
+        after bootc's."
+  fi
+  # And what the BOOT LOADER thinks, which is the only thing that decides. The
+  # two halves of systemd disagree: bootctl (bootspec.c) orders a Type #2 entry
+  # by IMAGE_ID ?: ID and ignores SORT_KEY. An assertion about .osrel alone can
+  # be satisfied by a file the loader sorts somewhere else entirely.
+  reported="$(bootctl list 2>/dev/null | awk '
+    /^[[:space:]]*id:[[:space:]]*qos-repair\.efi/ { want = 1; next }
+    want && /^[[:space:]]*sort-key:/ { sub(/^[[:space:]]*sort-key:[[:space:]]*/, ""); print; exit }
+  ')"
+  if [ -z "$reported" ]; then
+    bad "bootctl reports no sort key for qos-repair.efi, so where the boot loader
+        would place it cannot be established from here."
+  elif [ "$reported" \> "bootc-zzzzzzzz-9" ]; then
+    ok "and the boot loader agrees: it reports sort key '$reported'"
+  else
+    bad "the boot loader sorts the repair entry as '$reported', which is ahead of
+        a deployment whose stateroot sorts after it. Setting SORT_KEY in .osrel is
+        not enough — bootctl uses IMAGE_ID ?: ID."
   fi
 fi
 
@@ -191,9 +209,14 @@ if [ "$total" = 0 ]; then
   bad "no bootc loader entries at all — this machine was not installed by bootc,
       so the boot-assessment half of this check has no subject."
 elif [ "$total" = 1 ]; then
-  ok "one deployment, and it is the one booted — nothing to count down yet"
-  info "(a counter is added when a second deployment is staged; the fallback"
-  info " ladder has nowhere to fall until then)"
+  if [ "$counted" = 1 ]; then
+    ok "the one deployment still carries a try counter: $(basename "$(echo "$ESP"/loader/entries/bootc*+*.conf)")"
+    info "(it has not been blessed yet, so this boot is still on trial)"
+  else
+    ok "one deployment, blessed — nothing to count down"
+    info "(a counter is added when a second deployment is staged; the fallback"
+    info " ladder has nowhere to fall until then)"
+  fi
 else
   if [ "$counted" -ge 1 ]; then
     ok "$counted of $total deployment entries carry a try counter"
