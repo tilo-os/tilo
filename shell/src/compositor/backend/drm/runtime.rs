@@ -722,6 +722,21 @@ fn keysym_to_winit_key(raw: u32) -> Option<Key> {
         keysyms::KEY_Page_Up | keysyms::KEY_KP_Page_Up => Some(NamedKey::PageUp),
         keysyms::KEY_Page_Down | keysyms::KEY_KP_Page_Down => Some(NamedKey::PageDown),
         keysyms::KEY_space => Some(NamedKey::Space),
+        // The function row. Without these the media and brightness keys
+        // reach `key_char()`, which has no character for them, and the
+        // press is dropped before any handler sees it — which is why
+        // pressing volume-up on a real machine did nothing at all.
+        keysyms::KEY_XF86AudioRaiseVolume => Some(NamedKey::AudioVolumeUp),
+        keysyms::KEY_XF86AudioLowerVolume => Some(NamedKey::AudioVolumeDown),
+        keysyms::KEY_XF86AudioMute => Some(NamedKey::AudioVolumeMute),
+        keysyms::KEY_XF86AudioMicMute => Some(NamedKey::MicrophoneVolumeMute),
+        keysyms::KEY_XF86MonBrightnessUp => Some(NamedKey::BrightnessUp),
+        keysyms::KEY_XF86MonBrightnessDown => Some(NamedKey::BrightnessDown),
+        keysyms::KEY_XF86AudioPlay => Some(NamedKey::MediaPlayPause),
+        keysyms::KEY_XF86AudioPause => Some(NamedKey::MediaPause),
+        keysyms::KEY_XF86AudioNext => Some(NamedKey::MediaTrackNext),
+        keysyms::KEY_XF86AudioPrev => Some(NamedKey::MediaTrackPrevious),
+        keysyms::KEY_XF86PowerOff => Some(NamedKey::Power),
         _ => None,
     };
     if let Some(n) = named {
@@ -1111,6 +1126,31 @@ mod tests {
         // on the separate `ModifiersChanged` event instead.
         assert!(keysym_to_winit_key(ks::KEY_Control_L).is_none());
         assert!(keysym_to_winit_key(ks::KEY_Shift_L).is_none());
+    }
+
+    /// The function row has to survive the keysym translation. These
+    /// keysyms have no character, so anything this table does not name
+    /// falls through `key_char()` and is dropped before a handler runs.
+    #[test]
+    fn media_and_brightness_keysyms_reach_a_named_key() {
+        use smithay::input::keyboard::keysyms as ks;
+        for (raw, want) in [
+            (ks::KEY_XF86AudioRaiseVolume, NamedKey::AudioVolumeUp),
+            (ks::KEY_XF86AudioLowerVolume, NamedKey::AudioVolumeDown),
+            (ks::KEY_XF86AudioMute, NamedKey::AudioVolumeMute),
+            (ks::KEY_XF86AudioMicMute, NamedKey::MicrophoneVolumeMute),
+            (ks::KEY_XF86MonBrightnessUp, NamedKey::BrightnessUp),
+            (ks::KEY_XF86MonBrightnessDown, NamedKey::BrightnessDown),
+            (ks::KEY_XF86AudioPlay, NamedKey::MediaPlayPause),
+            (ks::KEY_XF86AudioNext, NamedKey::MediaTrackNext),
+            (ks::KEY_XF86AudioPrev, NamedKey::MediaTrackPrevious),
+        ] {
+            assert_eq!(
+                keysym_to_winit_key(raw),
+                Some(Key::Named(want)),
+                "keysym {raw:#x} must map to {want:?}"
+            );
+        }
     }
 
     /// Text is produced for plain printable keys, suppressed under Ctrl

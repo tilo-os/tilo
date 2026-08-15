@@ -41,7 +41,10 @@ pub mod power;
 mod process;
 pub mod time;
 
-pub use audio::{get_volume, get_volume_state, set_mute, set_volume, toggle_mute, VolumeState};
+pub use audio::{
+    get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
+    toggle_source_mute, VolumeState,
+};
 pub use bluetooth::{
     bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth, BtDeviceInfo,
 };
@@ -76,6 +79,13 @@ pub trait Dispatcher {
     /// in the shell crate continue to compile.
     fn toggle_mute(&self) -> Result<(), String> {
         audio::toggle_mute()
+    }
+    /// Set the sink mute state explicitly. Distinct from
+    /// [`Self::toggle_mute`] because the volume-up key needs to *clear*
+    /// mute whatever it was, and toggling would silence a sink that was
+    /// already audible. Default body, same reason as above.
+    fn set_mute(&self, muted: bool) -> Result<(), String> {
+        audio::set_mute(muted)
     }
 }
 
