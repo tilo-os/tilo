@@ -50,8 +50,21 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
-    /// An installed application. Enter launches it.
+    /// An installed qOS application. Enter launches it, sandboxed, into
+    /// the workspace you are looking at.
     Application,
+    /// An application qOS did not package — a Flatpak or a
+    /// distribution binary, found by reading its `.desktop` entry.
+    ///
+    /// A **separate kind** rather than more rows under `Application`,
+    /// because the two are not the same thing and the difference is one
+    /// the user has to be able to see. A qOS app runs in a bubblewrap
+    /// sandbox, in a collaboration room, with one writable directory
+    /// the launcher chose. A host app runs unconfined, with the user's
+    /// own files and network, in no room. Its own chip and its own
+    /// group header is how that shows at a glance instead of hiding in
+    /// a subtitle.
+    HostApplication,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A record an app made, collected or imported — a book, a playlist, a
@@ -82,6 +95,7 @@ impl ResourceKind {
         match self {
             ResourceKind::Action => "Actions",
             ResourceKind::Application => "Applications",
+            ResourceKind::HostApplication => "Host Apps",
             ResourceKind::Note => "Notes",
             ResourceKind::Record => "Records",
             ResourceKind::File => "Files",
@@ -94,10 +108,16 @@ impl ResourceKind {
     }
 
     /// Stable sort key that pins the well-known kinds to a fixed order in
-    /// the palette (Actions → Applications → Notes → Records → Files →
-    /// Folders → Creator → Video → Playlist → Custom(alphabetical)). Two
-    /// providers registering the same kind still group together because
-    /// they share this key.
+    /// the palette (Actions → Applications → Host Apps → Notes → Records
+    /// → Files → Folders → Creator → Video → Playlist →
+    /// Custom(alphabetical)). Two providers registering the same kind
+    /// still group together because they share this key.
+    ///
+    /// Host apps rank directly below qOS applications and above every
+    /// content kind, for the same reason applications do — Enter
+    /// activates the top row, and a typed app name should launch the
+    /// app. They stay *below* qOS applications so that when both
+    /// provide something plausible, the confined one is the default.
     ///
     /// Records sit above files because a record is the thing the user
     /// worked on and a file is where some of them happen to be stored: a
@@ -115,14 +135,15 @@ impl ResourceKind {
         match self {
             ResourceKind::Action => (0, String::new()),
             ResourceKind::Application => (1, String::new()),
-            ResourceKind::Note => (2, String::new()),
-            ResourceKind::Record => (3, String::new()),
-            ResourceKind::File => (4, String::new()),
-            ResourceKind::Folder => (5, String::new()),
-            ResourceKind::Creator => (6, String::new()),
-            ResourceKind::Video => (7, String::new()),
-            ResourceKind::Playlist => (8, String::new()),
-            ResourceKind::Custom(s) => (9, s.clone()),
+            ResourceKind::HostApplication => (2, String::new()),
+            ResourceKind::Note => (3, String::new()),
+            ResourceKind::Record => (4, String::new()),
+            ResourceKind::File => (5, String::new()),
+            ResourceKind::Folder => (6, String::new()),
+            ResourceKind::Creator => (7, String::new()),
+            ResourceKind::Video => (8, String::new()),
+            ResourceKind::Playlist => (9, String::new()),
+            ResourceKind::Custom(s) => (10, s.clone()),
         }
     }
 }

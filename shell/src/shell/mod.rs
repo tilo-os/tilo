@@ -34,6 +34,7 @@ pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
 pub mod identity_provisioning;
+pub mod host_apps;
 pub mod launcher;
 pub mod network;
 pub mod notes_app;
