@@ -13160,6 +13160,7 @@ dependencies = [
  "postcard",
  "qdoc",
  "qos-callstream",
+ "qos-desktop-entry",
  "qos-power-mgmt",
  "qos-startup-metrics",
  "qos-user-identity",

@@ -37,7 +37,11 @@ impl ApplicationsProvider {
         launcher::gui_apps()
     }
 
-    fn results_for(&self, needle: &str, apps: Vec<InstalledApp>) -> Vec<SearchResult> {
+    /// Score `apps` against `needle`. `pub(crate)` so the host-app
+    /// provider can assert its own scale ranks below this one — the
+    /// two scales only mean anything relative to each other, and a
+    /// test that reimplemented either would not notice them drifting.
+    pub(crate) fn results_for(&self, needle: &str, apps: Vec<InstalledApp>) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let kind = ResourceKind::Application;
         let mut out = Vec::new();
