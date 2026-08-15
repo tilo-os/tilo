@@ -1,0 +1,173 @@
+# Repair Mode
+
+A boot menu entry that brings the machine up without the desktop, so a machine
+whose session is broken can still be told what to do. What it offers, and how to
+use it, is in [../recovery.md](../recovery.md). This document is about how it is
+built and what it is allowed to do.
+
+## The shape, and the three that were rejected
+
+Repair mode is **the same rootfs, booted to a different systemd target, selected
+by a second UKI whose sealed command line differs by one token.**
+
+That token is `qos.mode=`. `04-mode.toml` puts `qos.mode=normal` on every image's
+kernel command line; the repair entry carries `qos.mode=repair`;
+`qos-boot-mode-generator` reads `/proc/cmdline` and, for `repair`, points
+`default.target` at `qos-repair.target` and masks the desktop's units.
+
+Three other shapes were considered and each fails on something specific to this
+image's constraints:
+
+**A separate deployment.** A second rootfs on disk, updated separately. It costs
+the disk and the update path of a whole second OS, and `bootc install reset` is
+[not implemented for composefs](https://github.com/bootc-dev/bootc/issues/1886)
+so there is no supported way to manage one. The thing it buys — surviving a
+corrupt primary rootfs — it does not actually buy either, because a second
+deployment on the same disk fails the same way.
+
+**A UKI addon.** systemd-stub does load separately signed PE addons that append
+kernel arguments, and `qos.mode=repair` is exactly the kind of argument they carry.
+But addons are picked up for *every* boot of the UKI they sit beside; there is no
+way to select one from the boot menu. An addon that makes repair mode selectable
+would have to make it unavoidable.
+
+**An initramfs target.** Break in the initramfs and give a shell there. It is
+generation-independent, which is genuinely attractive — but every verb repair
+mode actually needs (`bootc`, `qos-rollback`, `journalctl -b -1`, a package
+manager's worth of diagnosis) lives in the rootfs, and putting them in the
+initramfs means a second copy of them inside every UKI on the ESP. The initramfs
+is already ~120 MB of the 134 MB UKI.
+
+### Why the repair UKI is derived on the machine and not built in the image
+
+This is the part that decides the design.
+
+A sealed UKI's command line carries `composefs=<digest>`, and that digest is the
+digest of the rootfs the UKI is sealing. A second UKI *shipped inside* that rootfs
+would change the digest it has to name — circular by construction. `/boot` is the
+one tree excluded from the digest, so a second UKI could live there, but then
+`bootc install` has two `*.efi` under `/boot/EFI/Linux` and has to be trusted to
+pick the right one, and the two-pass digest reseal `bootc#2334` forces would have
+to rewrite both.
+
+Deriving instead sidesteps all of it. `/usr/libexec/qos-deployment repair-entry`
+takes whichever UKI `bootc install` actually wrote, copies it, and rewrites
+`qos.mode=normal` to `qos.mode=repair` **in place**. Both values are 15 bytes, so
+the `.cmdline` section keeps its size, every following PE section keeps its file
+offset, and the image still loads — the same length-preserving edit
+`os/dev/uki-cmdline.py` already performs to close the composefs seal.
+`qos-uki-cmdline` refuses a length-changing replacement, so a future rename of
+either value fails loudly here instead of producing a UKI that will not boot.
+
+The result is always sealed against the deployment that is really on the disk,
+including after a reseal, and costs one extra UKI on the ESP rather than one per
+generation.
+
+The entry is a Type #1 loader entry with `sort-key zz-qos-repair` and **no boot
+counter**, which puts it below every healthy deployment and above every exhausted
+one. See [../recovery.md](../recovery.md#automatic-rollback) for the ladder.
+
+## Threat model
+
+### What repair mode is allowed to assume
+
+Repair mode is reachable by anyone who can reach the boot menu — that is, anyone
+with physical access to the machine, or with access to its virtual console. It
+must therefore grant **no authority that physical access does not already grant**.
+
+### The gate
+
+Every action in the repair console — rollback, boot-once, re-pull, remounting
+`/var`, reading the previous boot's log, the root shell, and even reboot — is
+behind `authenticate()`, which runs
+
+```
+cryptsetup open --test-passphrase --key-file - <the root's LUKS device>
+```
+
+Only a passphrase actually enrolled in the LUKS header satisfies it. The recovery
+key qualifies; so does the user's own passphrase. Nothing is cached to disk and
+the passphrase never reaches `argv`.
+
+The **status report** is available without authenticating. It shows the booted
+generation, the composefs digest, whether the disk is encrypted, and the boot menu
+— all of which are already visible to someone standing at the boot menu, and all
+of which someone diagnosing the machine needs before they can decide what to try.
+
+### Why a gate at all, when the disk is already open
+
+Because it is. The TPM keyslot `qos-disk-encrypt` enrols is sealed to **PCR 7**,
+the Secure Boot policy register, which repair mode does not change — a different
+kernel command line moves PCR 11, not PCR 7. So a repair-mode boot unlocks the
+disk exactly the way a normal boot does, and *the disk being open is not evidence
+about who is at the keyboard*. Without the gate, repair mode would be a
+physical-access root shell on an encrypted machine: strictly worse than the
+status quo, where the same person faces a login prompt.
+
+With the gate, repair mode grants exactly what knowing a disk secret already
+grants. The gate is not defeated by the disk being open, because it does not ask
+the disk whether it is open — it asks the LUKS header whether this is a key.
+
+### Why not simply refuse to auto-unlock in repair mode
+
+That would be better, and it is what the bounded-rollback design gets to:
+`qos-rollback` seals against **PCR 7 and 11** with a signed prediction, and a
+repair-mode command line produces a different PCR 11, so its keyslot would not
+open and the recovery key would be the only way in. That path is not live —
+`docs/security/rollback.md` records that the initramfs `qos-rollback unlock` hook
+is still unwritten and no signed predictions ship.
+
+When it is live, repair mode gets the stronger property for free, because the
+mechanism that gives it is the same one that makes the mode selectable at all: the
+command line is inside the measurement. Until then the gate above is what holds,
+and it holds on its own.
+
+### What is NOT in repair mode, and why
+
+| Absent | Reason |
+|---|---|
+| `sshd` | repair mode is a physical-presence console. A remotely reachable root console on a machine in an unknown state is a larger hole than the one it closes. |
+| `greetd`, the compositor | starting the thing that is broken is not repairing it. |
+| the collaborative filesystem | it joins a peer network from a machine whose state is by definition not trusted yet. |
+| the update timer | a machine in repair mode must not have its deployments changed under it. |
+
+The generator masks each of these with a `/dev/null` symlink in the early
+generator directory, rather than relying on them not being wanted — that closes
+the path where something else pulls one in through a socket unit, a D-Bus
+activation, or a `Wants=` in a unit nobody thought about.
+
+### Where the mode comes from, and why it cannot come from anywhere else
+
+`/proc/cmdline`, and nothing else. On a sealed image that string is the UKI's
+signed `.cmdline` section, measured into PCR 11 by systemd-stub, so it is exactly
+as trustworthy as the kernel that is running.
+
+A marker file under `/boot` or `/etc` would be writable by anyone who can mount
+the ESP — which, on a machine with an encrypted root, is anyone at all, since the
+ESP is not encrypted and cannot be. That would turn "I can touch this laptop's
+disk" into "I can make its next boot a root shell", and the sealed command line is
+the specific thing that stops it.
+
+The same reasoning is why the *derivation* of the repair UKI runs as root on a
+booted system and signs its output when the machine has enrolled its own Secure
+Boot key. An unsigned repair image on a Secure Boot machine is a menu entry the
+firmware refuses, so `qos-deployment repair-entry` declines to install one at all
+rather than leaving a decoy.
+
+## What it does not defend against
+
+Stated plainly, because the gate above is easy to over-read:
+
+- **Secure Boot not enrolled.** Owner enrolment is a deliberate act
+  (`qos-secureboot enroll`), and until it happens anyone can boot their own kernel
+  on this machine. Since the TPM keyslot is bound to PCR 7 and PCR 7 reflects "Secure
+  Boot off" in that state, a foreign kernel unlocks the disk. Repair mode neither
+  causes nor worsens this; it is the reason enrolment is worth doing.
+- **A disk removed from the machine.** The LUKS passphrase is the boundary there,
+  as it always was.
+- **Someone who knows the recovery key.** They are the owner as far as the disk is
+  concerned. Repair mode gives them a shell; they could equally have unlocked the
+  disk anywhere.
+- **A rootfs that will not mount.** Repair mode runs from the rootfs. Verity
+  refuses a corrupt one rather than using it, which is correct and also means this
+  case needs external media.
