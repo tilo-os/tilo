@@ -1179,6 +1179,52 @@ fn write_and_close(fd: OwnedFd, text: &str) {
 // Tests
 // =============================================================================
 
+/// A real toolkit must find every global it treats as mandatory.
+///
+/// GTK checks for `wl_data_device_manager` alongside `wl_compositor` and
+/// `wl_shm` while opening the display, and refuses the display outright when
+/// any of them is missing — it does not degrade to a session without a
+/// clipboard, it falls back to an X11 that does not exist here and the
+/// application fails to start at all. So the absence of this one global did
+/// not merely break copy and paste: it stopped every GTK program on the
+/// machine from opening a window, with only
+/// `Gdk-WARNING: The Wayland compositor does not provide one or more of the
+/// required interfaces` to say so.
+///
+/// Nothing in-tree noticed because qOS's own toolkit never asked for it. This
+/// asserts the whole set a foreign toolkit needs, on the socket a sandboxed
+/// app is given, so that class of failure cannot come back silently.
+#[test]
+fn compositor_advertises_the_globals_a_toolkit_requires() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.qos.test.toolkit");
+    client.assert_is_qos_compositor();
+
+    // A registry that came back empty would satisfy any "is X absent" check,
+    // so establish first that we actually read one.
+    assert!(
+        client.global_names().len() > 5,
+        "the registry looks empty ({:?}) — this test would pass vacuously",
+        client.global_names(),
+    );
+
+    for required in [
+        "wl_compositor",
+        "wl_shm",
+        "wl_seat",
+        "wl_data_device_manager",
+        "xdg_wm_base",
+    ] {
+        assert!(
+            client.has_global(required),
+            "{required} is not advertised. A toolkit that treats it as mandatory \
+             refuses the display and the application never opens a window. \
+             Globals seen: {:?}",
+            client.global_names(),
+        );
+    }
+}
+
 /// The headline case: copy in one process, paste in another.
 ///
 /// Before the compositor advertised `wl_data_device_manager` this was simply
