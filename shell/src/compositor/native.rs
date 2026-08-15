@@ -132,6 +132,33 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
     }
 }
 
+/// Env var naming the compositor's privileged Wayland socket, exported into
+/// the environment of anything the session itself starts outside a sandbox.
+///
+/// A client that wants the clipboard-manager protocols connects to this
+/// instead of `WAYLAND_DISPLAY`; everything else keeps using the public
+/// socket and never notices the difference.
+pub const PRIVILEGED_SOCKET_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
+
+/// Bind the privileged Wayland socket and publish its name.
+///
+/// The name carries the compositor's pid so two sessions on one machine (or a
+/// test compositor next to a live one) cannot collide, and so a stale file
+/// from a killed compositor never shadows a live socket. Returns the listener
+/// and the socket name.
+fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString), String> {
+    let name = format!("qos-privileged-{}", std::process::id());
+    let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
+    let socket_name = socket.socket_name().to_os_string();
+    // Published for privileged children (clipboard managers, session
+    // services). Sandboxed apps are launched with an explicit environment by
+    // `qos-launcher` and never inherit this.
+    // SAFETY: single-threaded compositor startup, before any thread that
+    // reads the environment has been spawned.
+    unsafe { std::env::set_var(PRIVILEGED_SOCKET_ENV, &socket_name) };
+    Ok((socket, socket_name))
+}
+
 /// Per-connection state for the test-control protocol. Holds a buffered
 /// reader over a non-blocking `UnixStream` so partial lines accumulate
 /// across iterations of the main loop.
@@ -1203,6 +1230,12 @@ pub fn run() -> ! {
     let display_handle = display.handle();
 
     let mut state = State::new(event_loop.handle(), display_handle.clone());
+    // Point `ui`'s clipboard at the compositor's selection mirror. Everything
+    // hosted in this process — the chrome, the terminal, the file explorer,
+    // notes and the editor — copies and pastes through `ui`, and none of them
+    // is a Wayland client. Without this they would share a buffer that no
+    // other process can see.
+    crate::compositor::selection::install_host_clipboard(state.selection_store());
 
     // Phase 3: construct the winit backend so the compositor has a host
     // window to render into. Phase 4 routes per-frame scenes through
@@ -1359,6 +1392,40 @@ pub fn run() -> ! {
             }
         })
         .expect("insert listening socket source into event loop");
+
+    // A second Wayland socket, for clients the session trusts with the
+    // clipboard-manager protocols. It carries the identical protocol set
+    // except that `zwlr_data_control_manager_v1` / `ext_data_control_manager_v1`
+    // are visible on it — see `compositor::selection` for why those two are
+    // not on the public socket.
+    //
+    // The privilege is the socket, not a request a client can make. The
+    // sandbox launcher bind-mounts exactly one Wayland socket into a workspace
+    // sandbox (`crates/packaging/launcher/src/sandbox.rs`), the public one, so
+    // a sandboxed app has no filesystem path to this one regardless of what it
+    // knows. A bind failure is logged and the session continues: the effect is
+    // that clipboard managers cannot connect, not that the desktop is down.
+    match bind_privileged_socket() {
+        Ok((privileged_socket, path)) => {
+            eprintln!("nirios compositor privileged socket on {path:?}");
+            if let Err(err) = event_loop.handle().insert_source(
+                privileged_socket,
+                move |client_stream, _, state| {
+                    if let Err(err) = state
+                        .display_handle
+                        .insert_client(client_stream, ClientState::privileged_arc())
+                    {
+                        eprintln!("nirios compositor: failed to insert privileged client: {err}");
+                    }
+                },
+            ) {
+                eprintln!("nirios compositor: privileged socket source rejected: {err}");
+            }
+        }
+        Err(e) => {
+            eprintln!("nirios compositor: no privileged wayland socket ({e}); clipboard managers will not be able to connect");
+        }
+    }
 
     // Phase 7 test introspection: when `NIRIOS_TEST_STATE_DUMP` is set, the
     // compositor serializes its `WorkspaceTree` to that path on every frame
@@ -2382,6 +2449,13 @@ pub fn run() -> ! {
             eprintln!("nirios compositor: dispatch_clients error: {err}");
             break;
         }
+        // Selection bookkeeping, after the dispatch that may have produced it.
+        // Publishes anything in-process chrome copied since the last tick, and
+        // pulls anything a client copied into the compositor's mirror. Both
+        // halves have to run here rather than inside the protocol handler:
+        // smithay raises `new_selection` *before* it installs the new source,
+        // so an inline pull would read the previous owner.
+        state.pump_selection();
         if let Err(err) = display.flush_clients() {
             eprintln!("nirios compositor: flush_clients error: {err}");
             break;

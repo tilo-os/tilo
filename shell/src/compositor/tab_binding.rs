@@ -10,8 +10,11 @@
 //!
 //! The two public entry points,
 //! [`adopt_toplevel`] and [`close_tab_for_destroyed_surface`], take a
-//! `surface_id: u64` (the wayland-server `WlSurface::id().protocol_id()`
-//! widened) rather than an `&WlSurface`. That's a deliberate testability
+//! `surface_id: u64` (from [`crate::compositor::state::surface_id`], which
+//! composes the client's connection index with the object's protocol id —
+//! a bare protocol id is only unique within one client and would make two
+//! clients' first windows the same tab) rather than an `&WlSurface`. That's a
+//! deliberate testability
 //! refactor: smithay's `WlSurface` cannot be constructed without a running
 //! `Display` + client, so unit tests would otherwise need a full server
 //! runtime. The compositor's `XdgShellHandler` impl performs the
