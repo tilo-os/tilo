@@ -18,6 +18,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Brush, ColorStop, Extend, Fill, Gradient};
 use winit::event::WindowEvent;
 
+use ui::color_compat::ColorCompat;
 use ui::presence::{PresenceCtx, parse_hex_color, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -134,6 +135,28 @@ struct CacheFingerprint {
     /// Time bucket — see struct doc. `0` means "no time dependency"
     /// (static center widget like Calendar).
     time_bucket: u64,
+    /// Quantised status reading. Not the [`SystemStatus`] itself: it
+    /// carries an `f32` volume level, and comparing floats frame to
+    /// frame would either never match (denying the cache) or need an
+    /// epsilon nobody would remember to keep in step with the number of
+    /// pixels the indicator actually moves. This is the reading *as
+    /// drawn* — the volume rounded to the percent the glyph switches on,
+    /// the battery percent, the signal bucket — so the cache is
+    /// invalidated exactly when the painted pixels would differ.
+    status_key: StatusKey,
+}
+
+/// The status reading reduced to what the tray paints. See
+/// [`CacheFingerprint::status_key`].
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct StatusKey {
+    battery_percent: Option<u8>,
+    battery_charging: bool,
+    battery_low: bool,
+    battery_critical: bool,
+    link: Option<(u8, u8)>,
+    volume_pct: Option<u8>,
+    muted: bool,
 }
 
 /// `WorkspaceTree` lets `build_nirios_root` stay a pure function of the
@@ -169,6 +192,11 @@ pub struct TopBarChrome {
     /// nonzero the top bar paints a "+N" chip after the stack; concept
     /// keeps the chip's visual weight lighter than a real avatar.
     collaborator_overflow: usize,
+    /// Latest battery / network / volume reading, copied off the chrome
+    /// on each revision bump. Empty until something polls (see
+    /// [`crate::shell::status`]), and an empty reading paints no
+    /// indicator rather than a plausible-looking default.
+    status: crate::shell::status::SystemStatus,
     /// Shared chrome state; used to toggle overlays and switch workspaces
     /// in response to clicks on the top bar's left/right clusters.
     chrome: Option<Chrome>,
@@ -216,6 +244,7 @@ impl TopBarChrome {
             collaborator_initials: Vec::new(),
             collaborator_colors: Vec::new(),
             collaborator_overflow: 0,
+            status: crate::shell::status::SystemStatus::default(),
             chrome: None,
             synced_revision: 0,
             overview_btn_rect: Rect::ZERO,
@@ -273,6 +302,30 @@ impl TopBarChrome {
             collaborator_overflow: self.collaborator_overflow,
             center_widget: self.center_widget,
             time_bucket,
+            status_key: self.status_key(),
+        }
+    }
+
+    /// The status reading quantised to what the tray paints.
+    fn status_key(&self) -> StatusKey {
+        StatusKey {
+            battery_percent: self.status.battery_percent(),
+            battery_charging: self.status.battery_is_charging(),
+            battery_low: self.status.battery_is_low(),
+            battery_critical: self.status.battery_is_critical(),
+            link: self.status.link.as_ref().map(|l| {
+                let kind = match l.kind {
+                    os_actions::LinkKind::Offline => 0,
+                    os_actions::LinkKind::Wired => 1,
+                    os_actions::LinkKind::Wifi => 2,
+                };
+                (kind, crate::shell::status::link_bars(l))
+            }),
+            volume_pct: self
+                .status
+                .volume
+                .map(|v| (v.level * 100.0).round().clamp(0.0, 100.0) as u8),
+            muted: self.status.audio_is_silent(),
         }
     }
 
@@ -494,6 +547,100 @@ impl TopBarChrome {
     pub fn tray_pill_rect(&self) -> Rect {
         self.tray_pill_rect
     }
+
+    /// Paint the battery as a gauge, not a glyph.
+    ///
+    /// `ui::icons::Icon::Battery` is a fixed outline — it looks the same
+    /// at 4% as at 94%, which is exactly the thing the old tray got
+    /// wrong. A gauge whose fill tracks the charge is readable without
+    /// reading the number, which is the whole job of a tray indicator;
+    /// the percentage beside it is the confirmation, not the signal.
+    ///
+    /// Drawn as a rounded body + terminal nub + inset fill, in the same
+    /// proportions as lucide's battery so it sits in the icon row rather
+    /// than beside it.
+    fn draw_battery_gauge(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        percent: u8,
+        charging: bool,
+        hue: Color,
+        colors: &ui::tokens::colors::Colors,
+    ) {
+        // lucide's battery is a 16×12 body at x=2,y=6 in a 24 box, with
+        // the nub from x=22. Keep those ratios so the gauge lines up
+        // optically with the neighbouring stroked glyphs.
+        let s = rect.width().min(rect.height()) / 24.0;
+        let ox = rect.x0 + (rect.width() - 24.0 * s) / 2.0;
+        let oy = rect.y0 + (rect.height() - 24.0 * s) / 2.0;
+        let px = |x: f64| ox + x * s;
+        let py = |y: f64| oy + y * s;
+        let stroke_w = (ui::icons::LUCIDE_DEFAULT_STROKE_PX).max(1.0);
+
+        let body = RoundedRect::new(px(2.0), py(6.0), px(18.0), py(18.0), 2.0 * s);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(stroke_w),
+            transform,
+            colors.text_dim,
+            None,
+            &body,
+        );
+        // Terminal nub.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(stroke_w).with_caps(vello::kurbo::Cap::Round),
+            transform,
+            colors.text_dim,
+            None,
+            &vello::kurbo::Line::new(
+                vello::kurbo::Point::new(px(21.0), py(10.0)),
+                vello::kurbo::Point::new(px(21.0), py(14.0)),
+            ),
+        );
+
+        // Charge fill, inset one stroke inside the body so the outline
+        // stays legible at every level.
+        let inset = stroke_w + 0.5;
+        let x0 = px(2.0) + inset;
+        let x1 = px(18.0) - inset;
+        let frac = (percent as f64 / 100.0).clamp(0.0, 1.0);
+        if frac > 0.0 {
+            // A hairline at 1% would disappear; give any nonzero charge
+            // at least a visible sliver so "nearly empty" and "empty"
+            // do not render identically.
+            let w = ((x1 - x0) * frac).max(1.5);
+            let fill = RoundedRect::new(
+                x0,
+                py(6.0) + inset,
+                (x0 + w).min(x1),
+                py(18.0) - inset,
+                1.0 * s,
+            );
+            scene.fill(Fill::NonZero, transform, hue, None, &fill);
+        }
+
+        if charging {
+            // A bolt over the fill. Drawn in the surface colour with a
+            // faint outline rather than in an accent, so it reads on top
+            // of whatever the fill level happens to be underneath it.
+            let mut bolt = vello::kurbo::BezPath::new();
+            bolt.move_to((px(11.5), py(7.5)));
+            bolt.line_to((px(8.0), py(12.6)));
+            bolt.line_to((px(11.0), py(12.6)));
+            bolt.line_to((px(9.5), py(16.5)));
+            bolt.line_to((px(13.5), py(11.0)));
+            bolt.line_to((px(10.5), py(11.0)));
+            bolt.close_path();
+            scene.fill(Fill::NonZero, transform, colors.text_primary, None, &bolt);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(0.75),
+                transform,
+                colors.surfaces.raised,
+                None,
+                &bolt,
+            );
+        }
+    }
 }
 
 impl Widget for TopBarChrome {
@@ -510,6 +657,9 @@ impl Widget for TopBarChrome {
                 // `sync_from_tree` (which borrows &self mut).
                 let tree_snap = chrome.borrow().tree().clone();
                 self.sync_from_tree(&tree_snap);
+                // The status poller bumps the same revision, so it rides
+                // in on the same edge as everything else.
+                self.status = chrome.borrow().status.clone();
                 self.synced_revision = rev;
                 return true;
             }
@@ -1074,22 +1224,67 @@ impl Widget for TopBarChrome {
         // --- Right cluster: avatar stack + tray pill ---
         let mut rx = self.rect.x1 - pad_x;
 
-        // Tray pill (rounded-full) with three dots for wifi / monitor / battery.
-        let tray_w = 52.0_f64;
+        // Tray pill — the machine's live state: audio, link, battery.
+        //
+        // These used to be three fixed lucide glyphs in dim text with no
+        // data behind them. Now the pill sizes itself to whatever is
+        // actually knowable: a reading that has not arrived (or a
+        // machine that has no battery) contributes nothing rather than a
+        // plausible-looking default, so the pill is narrower on a
+        // desktop than on a laptop and empty until the first poll.
         let tray_h = 22.0_f64;
+        let tray_slot = 18.0_f64;
+        let tray_pad = 9.0_f64;
+        let tray_gap = 4.0_f64;
+        let icon_px = 14.0_f64;
+        let pct_size = tokens.typography.scale.xs;
+
+        // Measure first: the pill's width is the sum of what it will
+        // actually paint.
+        let has_volume = self.status.volume.is_some();
+        let has_link = self.status.link.is_some();
+        let battery_pct = self.status.battery_percent();
+        let pct_label = battery_pct.map(|p| format!("{p}%"));
+        let pct_w = pct_label
+            .as_ref()
+            .map(|s| {
+                text_renderer
+                    .measure_weighted(s, pct_size, None, TextWeight::Semibold)
+                    .0 as f64
+            })
+            .unwrap_or(0.0);
+        let mut slots = 0usize;
+        if has_volume {
+            slots += 1;
+        }
+        if has_link {
+            slots += 1;
+        }
+        if battery_pct.is_some() {
+            slots += 1;
+        }
+        let mut tray_w = if slots == 0 {
+            // Nothing read yet. The pill still has to exist — it is the
+            // quick-settings trigger — so it keeps a single slot with the
+            // settings glyph, which is honest about what it opens rather
+            // than pretending to report hardware.
+            tray_pad * 2.0 + tray_slot
+        } else {
+            tray_pad * 2.0
+                + slots as f64 * tray_slot
+                + (slots.saturating_sub(1)) as f64 * tray_gap
+        };
+        if pct_w > 0.0 {
+            tray_w += 3.0 + pct_w;
+        }
+
         self.tray_pill_rect = Rect::new(
             rx - tray_w,
             center_y - tray_h / 2.0,
             rx,
             center_y + tray_h / 2.0,
         );
-        let tray = RoundedRect::new(
-            rx - tray_w,
-            center_y - tray_h / 2.0,
-            rx,
-            center_y + tray_h / 2.0,
-            tray_h / 2.0,
-        );
+        let tray = RoundedRect::from_rect(self.tray_pill_rect, tray_h / 2.0);
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1097,33 +1292,158 @@ impl Widget for TopBarChrome {
             None,
             &tray,
         );
-        // Tray glyphs: lucide Wifi / Monitor / Battery (gap #5). The
-        // earlier three-filled-dots lockup was generic ornament; the
-        // real lucide trio tells the user what the pill is for at a
-        // glance, matching the concept's right-cluster icon row.
-        let tray_icon_size = 14.0_f64;
-        let tray_icons = [
-            ui::icons::Icon::Wifi,
-            ui::icons::Icon::Monitor,
-            ui::icons::Icon::Battery,
-        ];
-        for (i, icon) in tray_icons.iter().enumerate() {
-            let dx = rx - tray_w + 12.0 + i as f64 * 14.0;
-            let icon_rect = Rect::new(
-                dx - tray_icon_size / 2.0,
-                center_y - tray_icon_size / 2.0,
-                dx + tray_icon_size / 2.0,
-                center_y + tray_icon_size / 2.0,
+        // A critical battery tints the whole pill rather than just its
+        // glyph: at 3% the user needs to notice the tray, not read it.
+        if self.status.battery_is_critical() {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.semantic.danger.with_alpha_factor(0.18),
+                None,
+                &tray,
             );
+        }
+
+        let dim = colors.text_dim;
+        let bright = colors.text_primary;
+        let mut sx = self.tray_pill_rect.x0 + tray_pad;
+        let slot_rect = |x: f64| {
+            Rect::new(
+                x + (tray_slot - icon_px) / 2.0,
+                center_y - icon_px / 2.0,
+                x + (tray_slot + icon_px) / 2.0,
+                center_y + icon_px / 2.0,
+            )
+        };
+
+        if slots == 0 {
             ui::icons::draw_icon(
                 scene,
                 transform,
-                icon_rect,
-                *icon,
-                colors.text_dim,
+                slot_rect(sx),
+                ui::icons::Icon::Settings2,
+                dim,
                 ui::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
+
+        // --- Volume ---------------------------------------------------
+        if let Some(vol) = self.status.volume {
+            let silent = self.status.audio_is_silent();
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                slot_rect(sx),
+                if silent {
+                    ui::icons::Icon::VolumeX
+                } else {
+                    ui::icons::Icon::Volume2
+                },
+                // Silence is a state the user chose and may want undone,
+                // so it reads at full strength; a normal level is
+                // ambient and stays dim.
+                if silent { bright } else { dim },
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+            let _ = vol;
+            sx += tray_slot + tray_gap;
+        }
+
+        // --- Network --------------------------------------------------
+        if let Some(link) = self.status.link.clone() {
+            let r = slot_rect(sx);
+            match link.kind {
+                os_actions::LinkKind::Wired => {
+                    ui::icons::draw_icon(
+                        scene,
+                        transform,
+                        r,
+                        ui::icons::Icon::EthernetPort,
+                        dim,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                os_actions::LinkKind::Offline => {
+                    // Offline is a fault, not an ambient state — it gets
+                    // the warning hue so "why is nothing loading" is
+                    // answerable at a glance.
+                    ui::icons::draw_icon(
+                        scene,
+                        transform,
+                        r,
+                        ui::icons::Icon::WifiOff,
+                        colors.semantic.warning,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                os_actions::LinkKind::Wifi => {
+                    // The arcs are a scale. `icon_subpaths(Wifi)` yields
+                    // [base dot, outer arc, middle arc, inner arc], so a
+                    // weak signal lights the dot and the inner arc and
+                    // leaves the outer ones at a fraction of the alpha —
+                    // the same glyph, read as a meter.
+                    let bars = crate::shell::status::link_bars(&link);
+                    let faint = dim.with_alpha_factor(0.25);
+                    ui::icons::draw_icon_layered(
+                        scene,
+                        transform,
+                        r,
+                        ui::icons::Icon::Wifi,
+                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        |i| {
+                            // Subpath 0 is the base dot (always lit);
+                            // 1 = outer (needs 4 bars), 2 = middle (3),
+                            // 3 = inner (2).
+                            let needed = match i {
+                                0 => 1,
+                                1 => 4,
+                                2 => 3,
+                                _ => 2,
+                            };
+                            if bars >= needed { dim } else { faint }
+                        },
+                    );
+                }
+            }
+            sx += tray_slot + tray_gap;
+        }
+
+        // --- Battery --------------------------------------------------
+        if let Some(pct) = battery_pct {
+            let charging = self.status.battery_is_charging();
+            let hue = if self.status.battery_is_critical() {
+                colors.semantic.danger
+            } else if self.status.battery_is_low() {
+                colors.semantic.warning
+            } else if charging {
+                colors.semantic.success
+            } else {
+                dim
+            };
+            Self::draw_battery_gauge(scene, transform, slot_rect(sx), pct, charging, hue, colors);
+            sx += tray_slot;
+            if let Some(label) = pct_label.as_ref() {
+                // The number sits next to the gauge rather than replacing
+                // it: the gauge is the at-a-glance read, the number is
+                // the one you look at when the gauge worries you.
+                let (_, lh) =
+                    text_renderer.measure_weighted(label, pct_size, None, TextWeight::Semibold);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    label,
+                    pct_size,
+                    if self.status.battery_is_low() {
+                        hue
+                    } else {
+                        bright
+                    },
+                    transform * Affine::translate((sx + 3.0, center_y - lh as f64 / 2.0)),
+                    None,
+                    TextWeight::Semibold,
+                );
+            }
+        }
+
         rx -= tray_w + tokens.spacing.s4 as f64; // s4 = 16, ≥ 8 px after avatar radius
 
         // Snapshot the rightmost x of the stack before drawing so we can

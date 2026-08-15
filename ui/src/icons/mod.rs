@@ -121,6 +121,22 @@ pub enum Icon {
     Sun,
     /// Volume. Lucide `volume-2`.
     Volume2,
+    /// Silenced audio — the speaker with an ✕ where the arcs were.
+    /// Lucide `volume-x`.
+    VolumeX,
+    /// Wi-Fi with a strike through it: the radio is off or associated
+    /// with nothing. Lucide `wifi-off`.
+    WifiOff,
+    /// A wired link. Lucide `ethernet-port` — the RJ45 socket outline,
+    /// which reads as "cable" at 14 px where a plug does not.
+    EthernetPort,
+    /// Microphone with a strike through it, for the mic-mute key's OSD.
+    /// Lucide `mic-off`.
+    MicOff,
+    /// Skip to the next track. Lucide `skip-forward`.
+    SkipForward,
+    /// Skip to the previous track. Lucide `skip-back`.
+    SkipBack,
     // --- On-screen-keyboard set (action keys) ---
     /// Block up-arrow — the Shift key. Rendered filled for a latched
     /// Caps-Lock (see [`Icon::draw_filled`]).
@@ -427,6 +443,57 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             ),
             path_from_d("M16 9a5 5 0 0 1 0 6"),
             path_from_d("M19.364 18.364a9 9 0 0 0 0-12.728"),
+        ],
+        // VolumeX: the same speaker cone, arcs replaced by a cross.
+        // From lucide's `volume-x.js`.
+        Icon::VolumeX => vec![
+            path_from_d(
+                "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z",
+            ),
+            line_path(22.0, 9.0, 16.0, 15.0),
+            line_path(16.0, 9.0, 22.0, 15.0),
+        ],
+        // WifiOff: the same arc stack as `Wifi`, broken and struck
+        // through. From lucide's `wifi-off.js`.
+        Icon::WifiOff => vec![
+            path_from_d("M12 20h.01"),
+            path_from_d("M8.5 16.429a5 5 0 0 1 7 0"),
+            path_from_d("M5 12.859a10 10 0 0 1 5.17-2.69"),
+            path_from_d("M19 12.859a10 10 0 0 0-2.007-1.523"),
+            path_from_d("M2 8.82a15 15 0 0 1 4.177-2.643"),
+            path_from_d("M22 8.82a15 15 0 0 0-11.288-3.764"),
+            path_from_d("m2 2 20 20"),
+        ],
+        // EthernetPort: RJ45 socket outline + the four pin nubs. From
+        // lucide's `ethernet-port.js`.
+        Icon::EthernetPort => vec![
+            path_from_d(
+                "m15 20 3-3h2a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2l3 3z",
+            ),
+            path_from_d("M6 8v1"),
+            path_from_d("M10 8v1"),
+            path_from_d("M14 8v1"),
+            path_from_d("M18 8v1"),
+        ],
+        // MicOff: mic capsule + stand, struck through. From lucide's
+        // `mic-off.js`.
+        Icon::MicOff => vec![
+            line_path(2.0, 2.0, 22.0, 22.0),
+            path_from_d("M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"),
+            path_from_d("M5 10v2a7 7 0 0 0 12 5"),
+            path_from_d("M15 9.34V5a3 3 0 0 0-5.68-1.33"),
+            path_from_d("M9 9v3a3 3 0 0 0 5.12 2.12"),
+            line_path(12.0, 19.0, 12.0, 22.0),
+        ],
+        // SkipForward / SkipBack: triangle + end bar. From lucide's
+        // `skip-forward.js` / `skip-back.js`.
+        Icon::SkipForward => vec![
+            path_from_d("M21 4a1 1 0 0 0-1.555-.832L10 9.5v5l9.445 6.332A1 1 0 0 0 21 20z"),
+            line_path(3.0, 4.0, 3.0, 20.0),
+        ],
+        Icon::SkipBack => vec![
+            path_from_d("M3 4a1 1 0 0 1 1.555-.832L14 9.5v5l-9.445 6.332A1 1 0 0 1 3 20z"),
+            line_path(21.0, 4.0, 21.0, 20.0),
         ],
         // Bell: dome body + the clapper arc at the base. Transcribed
         // from lucide's `bell.js` (v0.546.0).
@@ -763,6 +830,43 @@ pub fn draw_icon(
     }
 }
 
+/// [`draw_icon`] with a per-subpath colour.
+///
+/// Exists for glyphs whose subpaths mean different things — the Wi-Fi
+/// arcs are a *scale*, not a picture, so a two-bar signal should paint
+/// two arcs lit and two dim rather than the whole glyph at one alpha.
+/// Drawing four separate icons at four nested sizes would not line up;
+/// they have to come from the same path table.
+///
+/// `color_for` receives the subpath index in the order
+/// [`icon_subpaths`] returns them (for [`Icon::Wifi`]: base dot, outer
+/// arc, middle arc, inner arc).
+pub fn draw_icon_layered(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    icon: Icon,
+    stroke_px: f64,
+    mut color_for: impl FnMut(usize) -> Color,
+) {
+    let size = rect.size();
+    let min = size.width.min(size.height);
+    if min <= 0.0 {
+        return;
+    }
+    let scale = min / LUCIDE_VIEWBOX;
+    let glyph = LUCIDE_VIEWBOX * scale;
+    let tx = rect.x0 + (size.width - glyph) / 2.0;
+    let ty = rect.y0 + (size.height - glyph) / 2.0;
+    let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
+    let stroke = Stroke::new(stroke_px / scale)
+        .with_caps(Cap::Round)
+        .with_join(Join::Round);
+    for (i, sub) in icon_subpaths(icon).into_iter().enumerate() {
+        scene.stroke(&stroke, local, color_for(i), None, &sub);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,6 +923,63 @@ mod tests {
     fn icon_plus_has_two_strokes() {
         let sub = icon_subpaths(Icon::Plus);
         assert_eq!(sub.len(), 2, "plus = horizontal + vertical stroke");
+    }
+
+    /// The status-tray glyph set. Subpath counts are pinned because the
+    /// Wi-Fi arcs are addressed *by index* — the tray paints arcs 1..=3
+    /// at different alphas to show signal strength (see
+    /// [`draw_icon_layered`]), so a reordering upstream would silently
+    /// light the wrong bars rather than fail to compile.
+    #[test]
+    fn status_tray_icons_have_their_expected_subpaths() {
+        assert_eq!(
+            icon_subpaths(Icon::Wifi).len(),
+            4,
+            "wifi = base dot + 3 arcs, outermost first — the tray indexes these"
+        );
+        assert_eq!(icon_subpaths(Icon::WifiOff).len(), 7);
+        assert_eq!(icon_subpaths(Icon::VolumeX).len(), 3, "cone + 2 cross lines");
+        assert_eq!(
+            icon_subpaths(Icon::EthernetPort).len(),
+            5,
+            "socket outline + 4 pin nubs"
+        );
+        assert_eq!(icon_subpaths(Icon::MicOff).len(), 6);
+        assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "triangle + bar");
+        assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "triangle + bar");
+        for icon in [
+            Icon::WifiOff,
+            Icon::VolumeX,
+            Icon::EthernetPort,
+            Icon::MicOff,
+            Icon::SkipForward,
+            Icon::SkipBack,
+        ] {
+            for p in icon_subpaths(icon) {
+                assert!(element_count(&p) > 0, "{icon:?} subpath must emit elements");
+            }
+        }
+    }
+
+    #[test]
+    fn draw_icon_layered_paints_every_subpath() {
+        // A layered draw must not silently skip subpaths — the Wi-Fi
+        // signal ramp depends on all four being emitted, just in
+        // different colours.
+        let mut scene = Scene::new();
+        let mut seen = Vec::new();
+        draw_icon_layered(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 16.0, 16.0),
+            Icon::Wifi,
+            1.5,
+            |i| {
+                seen.push(i);
+                Color::WHITE
+            },
+        );
+        assert_eq!(seen, vec![0, 1, 2, 3]);
     }
 
     #[test]
