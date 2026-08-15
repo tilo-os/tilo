@@ -22,6 +22,7 @@ default-members = [
     "crates/system/atomic-file",
     "crates/system/power",
     "crates/system/qos-rollback",
+    "crates/system/qos-cli",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
     "crates/doc/qdoc-pdf",
@@ -121,6 +122,7 @@ default-members = [
 ]
 members = [
     "crates/system/qos-rollback",
+    "crates/system/qos-cli",
     "crates/system/tinker",
     "crates/system/swipe",
     "crates/system/tts",
