@@ -191,14 +191,24 @@ pub fn build_argv(
         a.push(PathBuf::from("/").join(subtree).into_os_string());
     }
 
-    // usrmerge. The overlay destinations are `/usr` and `/etc`, so the new root
-    // has no `/bin` at all until these exist — and `execvp("/bin/sh")`, which
-    // is what half the world's scripts start with, would fail.
+    // The symlinks a Fedora root has and a hand-built one does not.
+    //
+    // usrmerge first: the overlay destinations are `/usr` and `/etc`, so the
+    // new root has no `/bin` at all until these exist — and `execvp("/bin/sh")`,
+    // which is what half the world's scripts start with, would fail.
+    //
+    // `/var/run` and `/var/lock` matter for the same reason one level up. They
+    // are symlinks into `/run` on every modern distribution, and a program that
+    // opens a path under one gets `ENOENT` rather than a permission error when
+    // they are missing — which reads as the program being broken. `podman` is
+    // the case that found this.
     for (target, link) in [
         ("usr/bin", "/bin"),
         ("usr/sbin", "/sbin"),
         ("usr/lib", "/lib"),
         ("usr/lib64", "/lib64"),
+        ("../run", "/var/run"),
+        ("../run/lock", "/var/lock"),
     ] {
         a.push("--symlink".into());
         a.push(target.into());
@@ -640,7 +650,7 @@ mod tests {
     }
 
     #[test]
-    fn the_usrmerge_symlinks_exist_so_bin_sh_resolves() {
+    fn the_root_has_the_symlinks_a_fedora_root_has() {
         let argv = build_argv(&plan(), Some(9), None);
         let w3 = window(&argv, 3);
         for (target, link) in [
@@ -648,11 +658,15 @@ mod tests {
             ("usr/sbin", "/sbin"),
             ("usr/lib", "/lib"),
             ("usr/lib64", "/lib64"),
+            // Without these, anything that opens a path under /var/run gets
+            // ENOENT and reads as broken rather than as confined.
+            ("../run", "/var/run"),
+            ("../run/lock", "/var/lock"),
         ] {
             assert!(
                 w3.iter()
                     .any(|w| w[0] == "--symlink" && w[1] == target && w[2] == link),
-                "{link} -> {target} missing; /bin/sh would not exist in the guest"
+                "{link} -> {target} missing from the guest root"
             );
         }
     }
