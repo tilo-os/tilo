@@ -181,6 +181,49 @@ pub enum Command {
         #[serde(default)]
         destructive: bool,
     },
+    /// Record that the next window announcing `app_id` should open in its own
+    /// window group rather than as a tab in the focused one.
+    ///
+    /// Goes through `shell::launcher::set_pending_placement`, the same note
+    /// the launcher leaves when it opens an app beside another — so this is
+    /// the production placement path, not a test-only branch in the tree.
+    /// A harness needs it because two client windows can only be visible at
+    /// once when they are in separate groups, and side-by-side windows are the
+    /// precondition for dragging anything between them.
+    PlaceNextWindow { app_id: String },
+    /// Move the pointer to `(x, y)` without pressing anything.
+    ///
+    /// [`Command::ClickAt`] and [`Command::Drag`] bundle press and release
+    /// together, which cannot express a drag-and-drop: the source client has
+    /// to be *holding* the button when it calls `start_drag`, and the drop
+    /// only happens on a release that arrives after the pointer has moved
+    /// over another client. These two ops decompose that.
+    PointerMove { x: f64, y: f64 },
+    /// Press or release the left pointer button at the current position.
+    PointerButton { pressed: bool },
+    /// Copy `text` from **in-process chrome**, through the same
+    /// `ui::text_selection::clipboard_copy` every hosted widget calls.
+    ///
+    /// This is how a harness drives the compositor's own side of a
+    /// cross-process copy. It is not a shortcut around the production path:
+    /// the call lands on whatever clipboard backend the process resolved,
+    /// which in the compositor is the selection mirror, and the mirror is
+    /// published as a real Wayland selection on the next tick.
+    ClipboardCopy {
+        text: String,
+        /// `true` targets the primary selection instead of the clipboard.
+        #[serde(default)]
+        primary: bool,
+    },
+    /// Paste from in-process chrome, through
+    /// `ui::text_selection::clipboard_paste`. Returns
+    /// [`Response::Clipboard`] with the text the hosted widgets would
+    /// receive, or `null` when the selection is empty.
+    ClipboardPaste {
+        /// `true` reads the primary selection instead of the clipboard.
+        #[serde(default)]
+        primary: bool,
+    },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -221,6 +264,10 @@ pub enum Response {
     /// (`grant`, `revoke`, `check_action`). Opaque JSON so the shape
     /// can grow without a wire break.
     Answer(serde_json::Value),
+    /// `clipboard_paste` response — what in-process chrome reads off the
+    /// selection right now. `None` when nothing has been copied, which is
+    /// distinct from `Some("")`: a client may own an empty selection.
+    Clipboard { text: Option<String> },
 }
 
 /// One entry in a `list_targets` response. `rect` is `(x, y, w, h)` in
@@ -689,6 +736,42 @@ pub fn dispatch_command<S: ControlState>(
             ),
             Vec::new(),
         ),
+        Command::PlaceNextWindow { app_id } => {
+            crate::shell::launcher::set_pending_placement(
+                app_id,
+                crate::compositor::tab_binding::Placement::NewGroup,
+            );
+            (Response::Ok { frame: 0 }, Vec::new())
+        }
+        Command::PointerMove { x, y } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::CursorMoved { x: *x, y: *y }],
+        ),
+        Command::PointerButton { pressed } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::MouseLeftButton { pressed: *pressed }],
+        ),
+        // Both clipboard ops call straight into `ui`, exactly as a hosted
+        // widget does, rather than reaching into the compositor's mirror
+        // directly. Going through `ui` is the point: it exercises the backend
+        // resolution in `ui::clipboard` and the bridge the compositor
+        // installed into it, which is the pair that was broken.
+        Command::ClipboardCopy { text, primary } => {
+            if *primary {
+                ui::text_selection::clipboard_copy_primary(text);
+            } else {
+                ui::text_selection::clipboard_copy(text);
+            }
+            (Response::Ok { frame: 0 }, Vec::new())
+        }
+        Command::ClipboardPaste { primary } => {
+            let text = if *primary {
+                ui::text_selection::clipboard_paste_primary()
+            } else {
+                ui::text_selection::clipboard_paste()
+            };
+            (Response::Clipboard { text }, Vec::new())
+        }
     }
 }
 

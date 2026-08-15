@@ -108,6 +108,30 @@ echo '{"op":"snapshot","path":"/tmp/state.png"}' | nc -U $QOS_TEST_CONTROL
 
 # Get the live workspace tree + chrome state as JSON:
 echo '{"op":"state_dump"}' | nc -U $QOS_TEST_CONTROL
+
+# Copy and paste as the compositor's own in-process widgets do. Both call
+# straight into `ui::text_selection`, the same functions the terminal, the
+# file explorer, notes, the editor and every piece of chrome call, so this
+# drives the compositor's side of a cross-process transfer through the
+# production path rather than around it. `primary` targets the middle-click
+# selection instead of the clipboard.
+echo '{"op":"clipboard_copy","text":"hello","primary":false}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"clipboard_paste","primary":false}' | nc -U $QOS_TEST_CONTROL
+# → {"clipboard":{"text":"hello"}}   (text is null when nothing is copied)
+
+# Pointer press and release as separate events. `click_at` bundles them,
+# which cannot express a drag-and-drop: the source client has to be *holding*
+# the button when it calls start_drag, and the drop happens on a release that
+# arrives after the pointer has travelled to another window.
+echo '{"op":"pointer_move","x":260,"y":140}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"pointer_button","pressed":true}' | nc -U $QOS_TEST_CONTROL
+echo '{"op":"pointer_button","pressed":false}' | nc -U $QOS_TEST_CONTROL
+
+# Open the next window of an app in its own window group rather than as a tab
+# in the focused one, via the launcher's normal pending-placement note. Two
+# client windows are only on screen at the same time when they are in
+# separate groups — the precondition for dragging anything between them.
+echo '{"op":"place_next_window","app_id":"org.example.App"}' | nc -U $QOS_TEST_CONTROL
 ```
 
 Full command reference: `shell/src/compositor/test_control.rs` (the `Command` enum is the source of truth; comments document each variant).
@@ -118,8 +142,13 @@ Full command reference: `shell/src/compositor/test_control.rs` (the `Command` en
 Successful query (list_targets):
   {"targets":[{"name":"add_workspace","rect":[1234,56,32,32]}, ...]}
 
-Successful action (click_*, drag, key, type, modifiers, snapshot):
+Successful action (click_*, drag, key, type, modifiers, snapshot,
+                   pointer_move, pointer_button, clipboard_copy,
+                   place_next_window):
   {"ok":{"frame":0}}
+
+Clipboard read (clipboard_paste):
+  {"clipboard":{"text":"hello"}}      // null text = nothing is copied
 
 Error:
   {"err":{"code":"unknown_target","message":"no addressable widget named ..."}}
