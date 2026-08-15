@@ -61,8 +61,13 @@ use crate::compositor::backend::{BackendEvent, Output, OutputId};
 /// `eprintln!`s + exits 1 instead of panicking.
 #[derive(Debug, thiserror::Error)]
 pub enum DrmBackendError {
-    #[error("failed to open libseat session: {0}")]
-    Seat(String),
+    /// Seat acquisition failed. The payload is the *diagnosis*, not the
+    /// raw errno: libseat collapses "you are not in a session", "your
+    /// session owns no seat" and "no seat backend is running" into one
+    /// `ENOSYS`, which tells the operator nothing. See
+    /// [`super::seat_diag`].
+    #[error("failed to open libseat session\n{0}")]
+    Seat(super::seat_diag::SeatFailure),
 
     #[error("failed to enumerate DRM devices via udev: {0}")]
     Udev(String),
@@ -205,8 +210,9 @@ impl DrmRuntime {
         // 1. Session via libseat. `new()` blocks until the seat hands
         //    us an `Enable` event, so by the time it returns we either
         //    own the seat or we've already failed.
-        let (session, session_notifier) =
-            LibSeatSession::new().map_err(|e| DrmBackendError::Seat(format!("{e:?}")))?;
+        let (session, session_notifier) = LibSeatSession::new().map_err(|e| {
+            DrmBackendError::Seat(super::seat_diag::diagnose_live(format!("{e:?}")))
+        })?;
         let seat_name = session.seat();
         tracing::info!(seat = %seat_name, "DRM backend: libseat session acquired");
 
