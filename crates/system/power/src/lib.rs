@@ -17,6 +17,9 @@
 //!   Settings pane writes.
 //! * [`logind`] / [`upower`] — the real `zbus` proxies (suspend, inhibit
 //!   locks, battery + lid reads, sleep signals).
+//! * [`sysfs`] — a synchronous, bus-free battery read for callers (the
+//!   compositor's status indicator) that need a number on a plain
+//!   thread rather than a subscription on a runtime.
 //! * [`bridge`] — the `Send + Sync` mailbox between the async service and the
 //!   synchronous compositor loop.
 //! * [`service`] — the [`PowerService`] async orchestrator the compositor
@@ -38,6 +41,7 @@ pub mod inhibit;
 pub mod logind;
 pub mod policy;
 pub mod service;
+pub mod sysfs;
 pub mod upower;
 
 pub use battery::{BatteryEvent, BatteryMonitor, BatterySnapshot, BatteryState};
@@ -47,4 +51,5 @@ pub use inhibit::{InhibitRegistry, InhibitToken};
 pub use logind::{LogindInhibitor, LogindManager};
 pub use policy::{PowerAction, PowerPolicy};
 pub use service::PowerService;
+pub use sysfs::{battery_snapshot as sysfs_battery_snapshot, on_battery as sysfs_on_battery};
 pub use upower::UPowerMonitor;
