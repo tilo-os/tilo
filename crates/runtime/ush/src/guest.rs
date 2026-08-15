@@ -108,7 +108,7 @@ impl GuestPlan {
             // half-finished copy-ups. Reusing it makes the next mount fail with
             // a message about the workdir being in use, which reads as a bug in
             // the runtime rather than as leftover state.
-            let _ = std::fs::remove_dir_all(&work);
+            remove_dir_all_forced(&work);
             std::fs::create_dir_all(&work)?;
         }
         std::fs::create_dir_all(&self.guest_home)?;
@@ -359,6 +359,30 @@ pub fn build_argv(
         }
     }
     a
+}
+
+/// `remove_dir_all`, but restoring traversal permission as it descends.
+///
+/// overlayfs creates `<workdir>/work` with mode `000`, so an ordinary recursive
+/// delete stops there with "permission denied" and leaves the session directory
+/// behind — the user owns it and simply cannot walk into it. Nothing here is
+/// forced past an owner: it is the caller's own directory either way.
+pub fn remove_dir_all_forced(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = path.symlink_metadata() else {
+        return;
+    };
+    if meta.is_dir() {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                remove_dir_all_forced(&entry.path());
+            }
+        }
+        let _ = std::fs::remove_dir(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// The symlinks the base's root directory has, recreated in the guest's.
