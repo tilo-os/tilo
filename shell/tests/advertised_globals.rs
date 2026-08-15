@@ -71,32 +71,56 @@ fn advertised_globals() -> Vec<String> {
     let mut seen = Seen::default();
     let sink = seen.0.clone();
 
-    // Pump both sides until the registry has been drained. Three rounds
-    // is ample for a bind-and-advertise exchange and bounds the test if
-    // something goes wrong.
+    // One blocking round to get the registry burst, then non-blocking
+    // drains for anything that trails it.
+    //
+    // Deliberately *one* blocking dispatch: the globals all arrive in
+    // response to `get_registry`, and once they have there is nothing
+    // further for the server to send — a second blocking read would
+    // wait forever rather than finish the test.
+    let _ = queue.flush();
+    display.dispatch_clients(&mut state).expect("server dispatch");
+    display.flush_clients().expect("flush");
+    queue
+        .blocking_dispatch(&mut seen)
+        .expect("client dispatch of the registry burst");
     for _ in 0..3 {
         let _ = queue.flush();
-        display.dispatch_clients(&mut state).expect("server dispatch");
-        display.flush_clients().expect("flush");
-        let _ = queue.blocking_dispatch(&mut seen);
+        let _ = display.dispatch_clients(&mut state);
+        let _ = display.flush_clients();
+        let _ = queue.dispatch_pending(&mut seen);
     }
 
     let out = sink.lock().expect("globals").clone();
     out
 }
 
-/// The set GTK's `gdk_wayland_display_open` checks for before it will
-/// use a Wayland display at all. Missing any one of them and it warns
-/// "the Wayland compositor does not provide one or more of the required
-/// interfaces" and falls back to X11.
-const GTK_REQUIRED: &[&str] = &[
+/// The globals a toolkit needs that the compositor advertises from
+/// construction.
+///
+/// `wl_compositor`, `wl_shm` and `wl_data_device_manager` are the three
+/// GTK's `gdk_wayland_display_open` checks together before it will use a
+/// Wayland display at all; miss one and it warns "the Wayland
+/// compositor does not provide one or more of the required interfaces"
+/// and falls back to X11. The rest are what a client needs to actually
+/// get a window on screen and drive it.
+///
+/// **`wl_output` is deliberately not here.** It is not a global the
+/// compositor constructs — one is created per attached monitor by the
+/// backend, so a `State` with no backend has none, and asserting on it
+/// would fail for a reason that has nothing to do with what this test
+/// is about. What *is* constructed is the xdg-output manager, checked
+/// separately below. Covering `wl_output` needs a harness that attaches
+/// an output; this one does not have one, and says so rather than
+/// implying the coverage.
+const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "wl_compositor",
     "wl_shm",
     "wl_data_device_manager",
     "wl_subcompositor",
     "xdg_wm_base",
     "wl_seat",
-    "wl_output",
+    "zxdg_output_manager_v1",
 ];
 
 #[test]
@@ -108,7 +132,7 @@ fn every_interface_a_toolkit_requires_is_advertised() {
          the compositor, so this test proved nothing. Fix the harness \
          rather than the assertion."
     );
-    let missing: Vec<&str> = GTK_REQUIRED
+    let missing: Vec<&str> = REQUIRED_AT_CONSTRUCTION
         .iter()
         .copied()
         .filter(|want| !globals.iter().any(|g| g == want))
