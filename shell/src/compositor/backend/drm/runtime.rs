@@ -13,13 +13,17 @@
 //! cleanly when there's no seat — the dev machine's failure path is a
 //! clean `Err`, not a panic.
 //!
-//! **Approach (b)**: vello renders via wgpu; smithay's DRM path is
-//! historically GLES/glow. Bridging the two via DMA-BUF import is a
-//! follow-up. For this PR the page-flip cadence is wired and a
-//! `tracing::warn!` flags every submit that "vello scene was discarded;
-//! DRM blit path is a follow-up". The boot smoke (session +
-//! page-flip + libinput) is what this PR proves; pixel-on-screen is
-//! Phase 5.2.
+//! # What lives here and what does not
+//!
+//! Only the calls that need hardware: opening the seat, probing
+//! connectors, modesetting, ioctls on a libinput device. Every decision
+//! those calls carry out is made in a pure module beside this one —
+//! [`super::hotplug`] for what a udev edge implies, [`super::session`]
+//! for the pause/resume sequence, [`super::scale`] for a panel's factor,
+//! [`super::input_config`] for a device's configuration,
+//! [`super::gestures`] for who owns a gesture. None of those can be
+//! exercised on a machine that is already running a compositor, so
+//! keeping them out of here is what makes them testable at all.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
