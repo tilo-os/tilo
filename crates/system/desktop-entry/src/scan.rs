@@ -1,0 +1,460 @@
+//! Finding every application entry installed on the host.
+//!
+//! The search path is the XDG one: `$XDG_DATA_HOME/applications` first,
+//! then each `$XDG_DATA_DIRS` entry's `applications` in order. Flatpak's
+//! two export roots are appended when the environment did not already
+//! name them — on a desktop session Flatpak puts them in `XDG_DATA_DIRS`
+//! itself, but a compositor started from a bare service manager may not
+//! have inherited that, and the apps are installed either way.
+//!
+//! ## Precedence
+//!
+//! Entries are keyed by desktop-file ID — the path relative to the
+//! `applications` directory with `/` folded to `-`. The **first**
+//! directory in the search order that provides an ID wins, and a later
+//! one is discarded: that is what makes a user's
+//! `~/.local/share/applications/foo.desktop` override the system's. A
+//! `Hidden=true` entry is the spec's tombstone; it wins the same way and
+//! then removes the ID from the result entirely.
+
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+
+use crate::entry::{DesktopEntry, EntryType, parse};
+use crate::locale::locale_candidates;
+
+/// `XDG_CURRENT_DESKTOP` this desktop announces, and the name
+/// `OnlyShowIn` / `NotShowIn` are matched against.
+pub const CURRENT_DESKTOP: &str = "nirios";
+
+/// What a scan turned up, plus what it declined and why.
+///
+/// The counters are not decoration. "The app I installed is not in the
+/// palette" has half a dozen legitimate causes — `NoDisplay`, a
+/// `TryExec` that does not resolve, a desktop filter, a tombstone — and
+/// an answer that reports only the survivors cannot distinguish any of
+/// them from a scanner bug.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScanStats {
+    /// `.desktop` files read.
+    pub files_seen: usize,
+    /// Files that did not parse as a desktop entry at all.
+    pub unparseable: usize,
+    /// Dropped because a higher-precedence directory already provided
+    /// the same ID.
+    pub shadowed: usize,
+    /// Removed by a `Hidden=true` tombstone.
+    pub tombstoned: usize,
+    /// `Type=` was not `Application`.
+    pub not_an_application: usize,
+    /// `NoDisplay=true`.
+    pub no_display: usize,
+    /// Excluded by `OnlyShowIn` / `NotShowIn`.
+    pub other_desktop: usize,
+    /// `TryExec=` named a program that is not on this system.
+    pub try_exec_missing: usize,
+    /// `Type=Application` with no `Exec=`, so nothing to run.
+    pub no_exec: usize,
+}
+
+/// The result of one scan: the launchable entries, sorted by name, plus
+/// the accounting.
+#[derive(Debug, Clone, Default)]
+pub struct Scan {
+    pub entries: Vec<DesktopEntry>,
+    pub stats: ScanStats,
+    /// The directories that were searched, in precedence order. Kept so
+    /// a cache can stat them for changes and a diagnostic can print
+    /// them.
+    pub dirs: Vec<PathBuf>,
+}
+
+impl Scan {
+    pub fn find(&self, id: &str) -> Option<&DesktopEntry> {
+        self.entries.iter().find(|e| e.id == id)
+    }
+}
+
+/// The `applications` directories to search, in precedence order.
+///
+/// Reads the environment, so it reflects the session the compositor
+/// actually started in rather than a compiled-in guess.
+pub fn application_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut push = |dir: PathBuf| {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    };
+
+    if let Some(home) = data_home() {
+        push(home.join("applications"));
+    }
+    for base in data_dirs() {
+        push(base.join("applications"));
+    }
+    // Flatpak's exports. Appended, not prepended: if the session already
+    // put them in XDG_DATA_DIRS the dedup above keeps their real
+    // precedence, and if it did not, the apps are still found — at the
+    // bottom, which is correct, because anything a user or the system
+    // installed by hand should override an export.
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        push(home.join(".local/share/flatpak/exports/share/applications"));
+    }
+    push(PathBuf::from(
+        "/var/lib/flatpak/exports/share/applications",
+    ));
+    dirs
+}
+
+fn data_home() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(Path::new(&home).join(".local/share"))
+}
+
+fn data_dirs() -> Vec<PathBuf> {
+    let raw = std::env::var_os("XDG_DATA_DIRS")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| OsStr::new("/usr/local/share:/usr/share").to_os_string());
+    raw.to_string_lossy()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Scan the XDG application directories of the current environment.
+pub fn scan() -> Scan {
+    scan_dirs(&application_dirs(), &[CURRENT_DESKTOP.to_string()])
+}
+
+/// Scan an explicit list of `applications` directories, in precedence
+/// order, filtering for `desktop`.
+///
+/// Split out from [`scan`] so tests drive real directories they built,
+/// rather than whatever the machine running them happens to have
+/// installed.
+pub fn scan_dirs(dirs: &[PathBuf], desktop: &[String]) -> Scan {
+    let locales = locale_candidates();
+    let mut stats = ScanStats::default();
+    // id -> entry, first writer wins.
+    let mut claimed: BTreeMap<String, DesktopEntry> = BTreeMap::new();
+    // IDs a tombstone has removed. Recorded separately so a later
+    // directory's file for the same ID stays suppressed.
+    let mut tombstoned: Vec<String> = Vec::new();
+
+    for dir in dirs {
+        for (id, path) in entry_files(dir) {
+            stats.files_seen += 1;
+            if claimed.contains_key(&id) || tombstoned.contains(&id) {
+                stats.shadowed += 1;
+                continue;
+            }
+            let Ok(contents) = std::fs::read_to_string(&path) else {
+                stats.unparseable += 1;
+                continue;
+            };
+            let Some(entry) = parse(&contents, &id, &path, &locales) else {
+                stats.unparseable += 1;
+                continue;
+            };
+            if entry.hidden {
+                stats.tombstoned += 1;
+                tombstoned.push(id);
+                continue;
+            }
+            claimed.insert(id, entry);
+        }
+    }
+
+    let mut entries: Vec<DesktopEntry> = Vec::with_capacity(claimed.len());
+    for entry in claimed.into_values() {
+        if entry.entry_type != EntryType::Application {
+            stats.not_an_application += 1;
+            continue;
+        }
+        if entry.exec.is_none() {
+            stats.no_exec += 1;
+            continue;
+        }
+        if entry.no_display {
+            stats.no_display += 1;
+            continue;
+        }
+        if !entry.shows_in(desktop) {
+            stats.other_desktop += 1;
+            continue;
+        }
+        if let Some(try_exec) = entry.try_exec.as_deref() {
+            if !program_exists(try_exec) {
+                stats.try_exec_missing += 1;
+                continue;
+            }
+        }
+        entries.push(entry);
+    }
+    entries.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    Scan {
+        entries,
+        stats,
+        dirs: dirs.to_vec(),
+    }
+}
+
+/// Every `.desktop` file under `dir`, with its desktop-file ID.
+///
+/// The spec makes subdirectories part of the ID
+/// (`kde4/konsole.desktop` → `kde4-konsole`), so this walks rather than
+/// listing. Depth is capped because the ID is the only thing depth buys
+/// and a symlink loop is not worth the risk.
+fn entry_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    walk(dir, dir, 0, &mut out);
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+const MAX_DEPTH: usize = 6;
+
+fn walk(root: &Path, dir: &Path, depth: usize, out: &mut Vec<(String, PathBuf)>) {
+    if depth > MAX_DEPTH {
+        return;
+    }
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // `metadata()` follows symlinks, which is what we want: Flatpak
+        // and distribution packaging both export entries as symlinks.
+        let is_dir = if file_type.is_symlink() {
+            std::fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+        } else {
+            file_type.is_dir()
+        };
+        if is_dir {
+            walk(root, &path, depth + 1, out);
+            continue;
+        }
+        if path.extension().and_then(OsStr::to_str) != Some("desktop") {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let id = relative
+            .to_string_lossy()
+            .trim_end_matches(".desktop")
+            .replace('/', "-");
+        if id.is_empty() {
+            continue;
+        }
+        out.push((id, path));
+    }
+}
+
+/// Whether `TryExec` names something runnable. An absolute path is
+/// checked directly; a bare name is looked up on `PATH`.
+pub fn program_exists(program: &str) -> bool {
+    let program = program.trim();
+    if program.is_empty() {
+        return false;
+    }
+    let candidate = Path::new(program);
+    if candidate.is_absolute() || program.contains('/') {
+        return is_executable(candidate);
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    path.to_string_lossy()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .any(|dir| is_executable(&Path::new(dir).join(program)))
+}
+
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entry::EntrySource;
+
+    fn write(dir: &Path, name: &str, body: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, body).unwrap();
+    }
+
+    fn app(name: &str) -> String {
+        format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n")
+    }
+
+    fn nirios() -> Vec<String> {
+        vec![CURRENT_DESKTOP.to_string()]
+    }
+
+    #[test]
+    fn a_subdirectory_becomes_part_of_the_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "kde4/konsole.desktop", &app("Konsole"));
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].id, "kde4-konsole");
+    }
+
+    /// The whole point of the precedence order: a user's file replaces
+    /// the system's, and the system's copy is not offered twice.
+    #[test]
+    fn the_first_directory_to_provide_an_id_wins() {
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        write(user.path(), "x.desktop", &app("Mine"));
+        write(system.path(), "x.desktop", &app("Theirs"));
+        let scan = scan_dirs(
+            &[user.path().to_path_buf(), system.path().to_path_buf()],
+            &nirios(),
+        );
+        assert_eq!(scan.entries.len(), 1, "one id, one entry: {:?}", scan.entries);
+        assert_eq!(scan.entries[0].name, "Mine");
+        assert_eq!(scan.stats.shadowed, 1);
+    }
+
+    #[test]
+    fn a_hidden_tombstone_removes_the_id_from_every_directory() {
+        let user = tempfile::tempdir().unwrap();
+        let system = tempfile::tempdir().unwrap();
+        write(
+            user.path(),
+            "x.desktop",
+            "[Desktop Entry]\nType=Application\nName=X\nExec=/bin/true\nHidden=true\n",
+        );
+        write(system.path(), "x.desktop", &app("X"));
+        let scan = scan_dirs(
+            &[user.path().to_path_buf(), system.path().to_path_buf()],
+            &nirios(),
+        );
+        assert!(scan.entries.is_empty(), "{:?}", scan.entries);
+        assert_eq!(scan.stats.tombstoned, 1);
+    }
+
+    #[test]
+    fn nodisplay_and_wrong_type_and_missing_exec_are_each_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "a.desktop",
+            "[Desktop Entry]\nType=Application\nName=A\nExec=/bin/true\nNoDisplay=true\n",
+        );
+        write(
+            tmp.path(),
+            "b.desktop",
+            "[Desktop Entry]\nType=Link\nName=B\nURL=https://x\n",
+        );
+        write(
+            tmp.path(),
+            "c.desktop",
+            "[Desktop Entry]\nType=Application\nName=C\n",
+        );
+        write(tmp.path(), "d.desktop", &app("D"));
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].name, "D");
+        assert_eq!(scan.stats.no_display, 1);
+        assert_eq!(scan.stats.not_an_application, 1);
+        assert_eq!(scan.stats.no_exec, 1);
+        assert_eq!(scan.stats.files_seen, 4);
+    }
+
+    #[test]
+    fn try_exec_that_does_not_resolve_drops_the_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "gone.desktop",
+            "[Desktop Entry]\nType=Application\nName=Gone\nExec=/bin/true\n\
+             TryExec=/nonexistent/definitely-not-here\n",
+        );
+        write(
+            tmp.path(),
+            "here.desktop",
+            "[Desktop Entry]\nType=Application\nName=Here\nExec=/bin/true\nTryExec=/bin/true\n",
+        );
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].name, "Here");
+        assert_eq!(scan.stats.try_exec_missing, 1);
+    }
+
+    #[test]
+    fn entries_come_back_sorted_by_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "z.desktop", &app("alpha"));
+        write(tmp.path(), "a.desktop", &app("Zulu"));
+        write(tmp.path(), "m.desktop", &app("Mike"));
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        let names: Vec<&str> = scan.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "Mike", "Zulu"]);
+    }
+
+    #[test]
+    fn a_flatpak_export_is_labelled_as_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "com.x.App.desktop",
+            "[Desktop Entry]\nType=Application\nName=App\n\
+             Exec=/usr/bin/flatpak run com.x.App\nX-Flatpak=com.x.App\n",
+        );
+        let scan = scan_dirs(&[tmp.path().to_path_buf()], &nirios());
+        assert_eq!(
+            scan.entries[0].source,
+            EntrySource::Flatpak {
+                app_id: "com.x.App".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_directory_is_not_an_error() {
+        let scan = scan_dirs(&[PathBuf::from("/nonexistent/qos/applications")], &nirios());
+        assert!(scan.entries.is_empty());
+        assert_eq!(scan.stats.files_seen, 0);
+    }
+
+    #[test]
+    fn application_dirs_always_include_the_flatpak_exports() {
+        let dirs = application_dirs();
+        assert!(
+            dirs.iter()
+                .any(|d| d.ends_with("var/lib/flatpak/exports/share/applications")),
+            "system Flatpak exports must be searched even when \
+             XDG_DATA_DIRS does not name them: {dirs:?}"
+        );
+    }
+}

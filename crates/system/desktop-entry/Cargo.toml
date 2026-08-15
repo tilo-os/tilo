@@ -1,0 +1,21 @@
+[package]
+name = "qos-desktop-entry"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "freedesktop.org desktop-entry parser and application scanner"
+
+[lib]
+name = "desktop_entry"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-desktop-scan"
+path = "src/bin/qos-desktop-scan.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
