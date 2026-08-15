@@ -424,6 +424,11 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
     match kind {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
+        // Deliberately *not* the applications glyph. A host app is not
+        // one of qOS's — it runs unconfined, outside everything the
+        // grid stands for — and the row has to look different at a
+        // glance, not only read differently.
+        K::HostApplication => Icon::ExternalLink,
         K::Note => Icon::FileText,
         // A record is one document several rooms can reach — the stacked
         // plates say "this is the same thing in more than one place",
@@ -843,6 +848,12 @@ impl ShellOverlayHost {
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
+        ));
+        // Applications qOS did not package. Separate provider and
+        // separate chip from the one above: these run unconfined, and
+        // the palette is where the user chooses between them.
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::HostApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
