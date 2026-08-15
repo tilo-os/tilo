@@ -202,17 +202,10 @@ pub fn build_argv(
     // opens a path under one gets `ENOENT` rather than a permission error when
     // they are missing — which reads as the program being broken. `podman` is
     // the case that found this.
-    for (target, link) in [
-        ("usr/bin", "/bin"),
-        ("usr/sbin", "/sbin"),
-        ("usr/lib", "/lib"),
-        ("usr/lib64", "/lib64"),
-        ("../run", "/var/run"),
-        ("../run/lock", "/var/lock"),
-    ] {
+    for (target, link) in root_symlinks(&plan.base) {
         a.push("--symlink".into());
-        a.push(target.into());
-        a.push(link.into());
+        a.push(target.into_os_string());
+        a.push(link.into_os_string());
     }
 
     for dir in LAYER_VAR_DIRS {
@@ -270,11 +263,21 @@ pub fn build_argv(
     // because the guest is uid 0 and `/etc/passwd` says that is where root
     // lives; a shell that disagreed with `getpwuid` about `$HOME` is a shell
     // that writes its history somewhere surprising.
-    for dest in [plan.home_mountpoint.clone(), PathBuf::from("/root")] {
-        a.push("--bind".into());
-        a.push(plan.guest_home.clone().into_os_string());
-        a.push(dest.into_os_string());
-    }
+    // `bwrap` will not create a mount point that does not exist at the top of a
+    // fresh root, and the home path is produced by none of the mounts above.
+    a.push("--dir".into());
+    a.push(plan.home_mountpoint.clone().into_os_string());
+    a.push("--bind".into());
+    a.push(plan.guest_home.clone().into_os_string());
+    a.push(plan.home_mountpoint.clone().into_os_string());
+    // The guest is uid 0, so `getpwuid` says its home is `/root`. A symlink
+    // rather than a second bind of the same directory: two mounts of one source
+    // is two things to keep in step, and a program that resolves `~` through
+    // the password database should land on the same inode as one that reads
+    // `$HOME`, not merely on the same contents.
+    a.push("--symlink".into());
+    a.push(plan.home_mountpoint.clone().into_os_string());
+    a.push("/root".into());
 
     // ---- what the user granted ---------------------------------------
     for dir in &plan.readable_dirs {
@@ -356,6 +359,61 @@ pub fn build_argv(
         }
     }
     a
+}
+
+/// The symlinks the base's root directory has, recreated in the guest's.
+///
+/// A root built out of overlays and binds starts with only the directories
+/// those produced. Every symlink the real root carries is therefore missing,
+/// and each one that is missing turns some path into `ENOENT`:
+///
+/// - `/bin`, `/sbin`, `/lib`, `/lib64` → `usr/…`. Without them
+///   `execvp("/bin/sh")` fails, which is how half the world's scripts start.
+/// - `/home` → `var/home` on an ostree system. Without it every path the user
+///   types under `/home` misses the directory the runtime bound their home at.
+/// - `/var/run`, `/var/lock` → `/run`. Nested one level down, so they are added
+///   explicitly rather than read from the root listing.
+///
+/// Read from the base rather than hard-coded, because which of these a machine
+/// has is a property of the distribution's layout, and a guest that disagrees
+/// with its own base about where `/bin` points is a guest where paths mean two
+/// different things. The usrmerge set is the floor for a base that lists none —
+/// a base with no `/bin` at all cannot host a shell.
+pub fn root_symlinks(base: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let mut out: Vec<(PathBuf, PathBuf)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(base) {
+        let mut found: Vec<(PathBuf, PathBuf)> = entries
+            .flatten()
+            .filter_map(|e| {
+                let path = e.path();
+                if !path.symlink_metadata().ok()?.file_type().is_symlink() {
+                    return None;
+                }
+                let name = path.file_name()?;
+                // `/root` is the runtime's to place: the guest is uid 0, so
+                // that is where `getpwuid` sends it, and it must land on the
+                // guest's home rather than wherever the base keeps root's.
+                // (`/root -> var/roothome` on an ostree system.)
+                if name == "root" {
+                    return None;
+                }
+                let target = std::fs::read_link(&path).ok()?;
+                Some((target, PathBuf::from("/").join(name)))
+            })
+            .collect();
+        found.sort();
+        out.extend(found);
+    }
+    for (target, link) in [("usr/bin", "/bin"), ("usr/sbin", "/sbin"), ("usr/lib", "/lib"), ("usr/lib64", "/lib64")] {
+        let link = PathBuf::from(link);
+        if !out.iter().any(|(_, l)| *l == link) {
+            out.push((PathBuf::from(target), link));
+        }
+    }
+    // One level down, so not in the root listing.
+    out.push((PathBuf::from("../run"), PathBuf::from("/var/run")));
+    out.push((PathBuf::from("../run/lock"), PathBuf::from("/var/lock")));
+    out
 }
 
 /// Where to bind the host's resolver so `/etc/resolv.conf` resolves in the
@@ -689,9 +747,9 @@ mod tests {
     }
 
     #[test]
-    fn the_root_has_the_symlinks_a_fedora_root_has() {
-        let argv = build_argv(&plan(), Some(9), None);
-        let w3 = window(&argv, 3);
+    fn the_root_carries_the_usrmerge_links_even_for_a_base_that_lists_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let links = root_symlinks(dir.path());
         for (target, link) in [
             ("usr/bin", "/bin"),
             ("usr/sbin", "/sbin"),
@@ -703,11 +761,60 @@ mod tests {
             ("../run/lock", "/var/lock"),
         ] {
             assert!(
-                w3.iter()
-                    .any(|w| w[0] == "--symlink" && w[1] == target && w[2] == link),
-                "{link} -> {target} missing from the guest root"
+                links
+                    .iter()
+                    .any(|(t, l)| t == Path::new(target) && l == Path::new(link)),
+                "{link} -> {target} missing; a guest without it cannot run /bin/sh \
+                 or reach /var/run: {links:?}"
             );
         }
+    }
+
+    /// The one that made `perm trust-dir` look broken: `/home` is a symlink to
+    /// `var/home` on an ostree system, and without it every path the user types
+    /// under `/home` misses the directory the runtime bound their home at.
+    #[test]
+    fn the_root_mirrors_the_bases_own_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("var/home")).unwrap();
+        std::os::unix::fs::symlink("var/home", base.join("home")).unwrap();
+        std::os::unix::fs::symlink("usr/bin", base.join("bin")).unwrap();
+
+        // A base that keeps root's home elsewhere, as an ostree system does.
+        std::os::unix::fs::symlink("var/roothome", base.join("root")).unwrap();
+
+        let links = root_symlinks(base);
+        assert!(
+            links
+                .iter()
+                .any(|(t, l)| t == Path::new("var/home") && l == Path::new("/home")),
+            "the base's /home -> var/home was not mirrored: {links:?}"
+        );
+        assert!(
+            !links.iter().any(|(_, l)| l == Path::new("/root")),
+            "/root belongs to the runtime — the guest is uid 0, so getpwuid \
+             sends it there and it must reach the guest's home, not the base's \
+             root account: {links:?}"
+        );
+        assert_eq!(
+            links
+                .iter()
+                .filter(|(_, l)| l == Path::new("/bin"))
+                .count(),
+            1,
+            "a link the base already declares must not be added twice: {links:?}"
+        );
+
+        let mut p = plan();
+        p.base = base.to_path_buf();
+        let argv = build_argv(&p, Some(9), None);
+        assert!(
+            window(&argv, 3)
+                .iter()
+                .any(|w| w[0] == "--symlink" && w[1] == "var/home" && w[2] == "/home"),
+            "the mirrored link never reached the argv"
+        );
     }
 
     #[test]
@@ -719,6 +826,12 @@ mod tests {
                 && w[1] == "/store/home"
                 && w[2] == "/var/home/you"),
             "the store's home must be bound over the real home path"
+        );
+        assert!(
+            w3.iter().any(|w| w[0] == "--symlink"
+                && w[1] == "/var/home/you"
+                && w[2] == "/root"),
+            "the guest is uid 0, so getpwuid points at /root; it has to reach              the same directory as $HOME"
         );
         assert!(
             !strings(&argv)
