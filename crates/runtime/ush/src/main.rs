@@ -318,6 +318,26 @@ mod guest {
             .collect();
         anyhow::ensure!(!packages.is_empty(), "pkg install needs a package name");
 
+        // What the base already provides is not something this layer installed,
+        // and recording it as one would be actively harmful: undoing a one-time
+        // install runs `dnf remove`, and removing a package that came from the
+        // image writes a whiteout into the layer — so a `--one-time` install of
+        // something already present would *delete* it from the guest's view at
+        // the end of the session. Ask rpm first.
+        let (already, wanted): (Vec<String>, Vec<String>) = packages
+            .into_iter()
+            .partition(|p| ush::pkg::is_installed(p));
+        for name in &already {
+            println!(
+                "pkg: {name} is already part of the base image; nothing to install \
+                 and nothing for this layer to own."
+            );
+        }
+        if wanted.is_empty() {
+            return Ok(0);
+        }
+        let packages = wanted;
+
         let argv = ush::pkg::install_argv(&packages, &ush::pkg::releasever());
         let status = std::process::Command::new(&argv[0])
             .args(&argv[1..])
@@ -590,22 +610,24 @@ mod guest {
         }
     }
 
-    /// Read the guest's own Landlock state back out of the kernel rather than
-    /// repeating what was asked for. `/proc/self/status` carries it since 6.x;
-    /// where it does not, say so instead of claiming enforcement.
+    /// Report Landlock by testing it, not by repeating what was asked for.
+    ///
+    /// `guard status` exists to answer "is this actually confined". A line that
+    /// said "installed" because the install code ran would pass in exactly the
+    /// case where it should fail, so the answer comes from an operation the
+    /// ruleset forbids. `/proc/self/status` is reported alongside when the
+    /// kernel offers it, and its absence is not treated as an answer.
     fn landlock_now() -> String {
-        match std::fs::read_to_string("/proc/self/status") {
-            Ok(text) => {
-                for line in text.lines() {
-                    if let Some(v) = line.strip_prefix("Landlock:") {
-                        return format!("{} (from /proc/self/status)", v.trim());
-                    }
-                }
-                "installed at startup; this kernel does not report it in \
-                 /proc/self/status"
-                    .into()
-            }
-            Err(e) => format!("unknown ({e})"),
+        let probed = ush::guard::landlock_probe().describe();
+        let reported = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .find_map(|l| l.strip_prefix("Landlock:").map(|v| v.trim().to_string()))
+            });
+        match reported {
+            Some(v) => format!("{probed} [/proc/self/status: {v}]"),
+            None => format!("{probed} [this kernel does not report it in /proc/self/status]"),
         }
     }
 
