@@ -1433,8 +1433,37 @@ impl Default for Workspace {
     }
 }
 
+/// The shape of `state.json` this build writes and understands.
+///
+/// Bump it when a change makes a file **unreadable to an older build in a way
+/// that loses meaning** — a field removed, a field's meaning changed, an id space
+/// renumbered. Adding a `#[serde(default)]` field does not qualify: an older
+/// build ignores it, which is degradation, not loss.
+///
+/// The number exists for one direction only. Newer reading older is handled by
+/// serde defaults and always has been. Older reading newer is the case with no
+/// safe default answer, and until this existed the answer was to hand the person
+/// a freshly bootstrapped demo tree — see [`crate::shell::persist::load_or_default`].
+pub const STATE_SCHEMA_VERSION: u32 = 1;
+
+/// What a file with no `schema_version` key is.
+///
+/// Every state file written before the key existed describes version 1: the key
+/// was added alongside the check, not alongside a format change. Defaulting to 0
+/// and treating that as "unknown" would condemn every existing user's session on
+/// the upgrade that introduced the check.
+fn state_schema_version_of_a_file_without_one() -> u32 {
+    1
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
+    /// Which version of this struct's on-disk shape the file describes.
+    ///
+    /// Always written as [`STATE_SCHEMA_VERSION`]; read back to decide whether
+    /// this build is allowed to touch the file at all.
+    #[serde(default = "state_schema_version_of_a_file_without_one")]
+    pub schema_version: u32,
     pub workspaces: Vec<Workspace>,
     #[serde(default)]
     pub active: WorkspaceId,
@@ -1535,6 +1564,7 @@ pub struct WorkspaceTree {
 impl Default for WorkspaceTree {
     fn default() -> Self {
         Self {
+            schema_version: STATE_SCHEMA_VERSION,
             workspaces: Vec::new(),
             active: WorkspaceId::default(),
             active_strip: HashMap::new(),

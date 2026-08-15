@@ -26,21 +26,39 @@ mkdir -p "$QOS_CFS_RUN"
 # Everything the probe shares with the real image is copied in at build time, not
 # duplicated in this directory, so the probe cannot drift from what qOS ships.
 cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/01-hardening.toml" "$HERE/01-hardening.toml"
+# The mode karg is what makes repair mode selectable at all, and the probe is
+# where that gets booted. Copied rather than restated for the same reason as the
+# hardening set: a probe that carries its own copy proves nothing about the image.
+cp -f "$QOS_OS_DIR/usr/lib/bootc/kargs.d/04-mode.toml" "$HERE/04-mode.toml"
 
 # Assembled at the paths they occupy in the image, so the Containerfile needs one
 # COPY rather than one per file: a layer commit over this rootfs takes minutes.
 TREE="$HERE/stage/tree"
 rm -rf "$TREE"
-mkdir -p "$TREE/usr/bin" "$TREE/usr/libexec" "$TREE/usr/lib/systemd/system"
+mkdir -p "$TREE/usr/bin" "$TREE/usr/libexec" "$TREE/usr/lib/systemd/system" \
+         "$TREE/usr/lib/systemd/system-generators"
 for f in usr/libexec/qos-rollback-common \
          usr/libexec/qos-rollback-confirm \
          usr/libexec/qos-rollback-harden \
+         usr/libexec/qos-deployment \
+         usr/libexec/qos-boot-health \
+         usr/libexec/qos-repair \
          usr/lib/systemd/system/qos-rollback-confirm.service \
          usr/lib/systemd/system/qos-rollback-confirm.timer \
-         usr/lib/systemd/system/qos-rollback-harden.service; do
+         usr/lib/systemd/system/qos-rollback-harden.service \
+         usr/lib/systemd/system/qos-boot-entries.service \
+         usr/lib/systemd/system/qos-boot-health.service \
+         usr/lib/systemd/system/qos-repair.target \
+         usr/lib/systemd/system/qos-repair@.service \
+         usr/lib/systemd/system/qos-deployment-rollback.service \
+         usr/lib/systemd/system-generators/qos-boot-mode-generator; do
   cp -f "$QOS_OS_DIR/$f" "$TREE/$f"
 done
 cp -f "$QOS_OS_DIR/tests/rollback-boot-check.sh" "$TREE/usr/libexec/qos-rollback-boot-check"
+cp -f "$QOS_OS_DIR/tests/recovery-boot-check.sh" "$TREE/usr/libexec/qos-recovery-boot-check"
+# The repair entry is derived from the installed UKI by rewriting its sealed
+# command line in place, so the tool that does that has to be on the machine.
+cp -f "$QOS_OS_DIR/dev/uki-cmdline.py" "$TREE/usr/libexec/qos-uki-cmdline"
 
 # The rollback binary. Built here rather than shipped, because the boot-side check
 # asserts the tool the image carries — a stale copy would pass a check about a
@@ -65,6 +83,7 @@ podman build \
   --build-arg "RPMS_REF=$QOS_CFS_RPMS_REF" \
   --build-arg "GENERATION=$GEN" \
   --build-arg "SEAL_GENERATION=${QOS_CFS_SEAL_GENERATION:-1}" \
+  --build-arg "SESSION_OK=${QOS_CFS_SESSION_OK:-1}" \
   --build-arg "SIGN=$QOS_CFS_SIGN" \
   --build-arg "CFS_DIGEST=${QOS_CFS_DIGEST:-}" \
   --secret "id=secureboot_key,src=$sb_key" \
