@@ -80,6 +80,12 @@ export SOURCE_DATE_EPOCH
 # blocked every image build on main until someone tried to build one.
 bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
   || { bash "$QOS_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
+# Pre-flight: the preinstalled app store can be built and will resolve at run
+# time. Same reasoning — a runtime version the apps don't declare, or an app
+# directory cargo can't name, costs a full build to discover and then shows up
+# as an empty launcher rather than as a build error.
+bash "$QOS_OS_DIR/tests/app_store.sh" >/dev/null \
+  || { bash "$QOS_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
 
 # Where the build unpacks layers. Two failure modes converge here, and neither
 # names its cause:
