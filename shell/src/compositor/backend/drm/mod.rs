@@ -1,39 +1,61 @@
 //! DRM/KMS + libseat + udev + libinput backend for running on a TTY
-//! without a parent Wayland/X11 compositor. Phase 5 + Phase 5.2 of
-//! `docs/superpowers/plans/2026-05-02-real-wayland-compositor.md`.
+//! without a parent Wayland/X11 compositor.
 //!
 //! # Structure
 //!
-//! * [`devices`] — pure-logic helpers: KMS node filtering, preferred-mode
-//!   selection. Fully unit-tested without hardware.
-//! * [`session`] — atomic state machine for libseat enable/disable. Pure
-//!   data; integration with the real `LibSeatSession` lives in [`runtime`].
-//! * [`outputs`] — `OutputId` allocation + `OutputRegistry::populate`
-//!   that walks a connector list into public [`Output`]s.
-//! * [`runtime`] — hardware-touching glue: opens the seat, enumerates
-//!   udev + DRM connectors, wires libinput. Builds the inner calloop
-//!   loop.
+//! The hardware-touching code is deliberately thin, and everything that
+//! decides anything lives in a pure module beside it — a compositor
+//! backend cannot be exercised on the machine it is developed on, so the
+//! only parts that can be proven are the ones that do not need a GPU.
+//!
+//! * [`devices`] — KMS node filtering, preferred-mode selection.
+//! * [`seat_diag`] — turning a libseat failure into an actionable
+//!   diagnosis. libseat reports one `ENOSYS` for three different causes.
+//! * [`session`] — the pause/resume state machine, and the *ordered*
+//!   sequence a VT switch or a suspend needs on the way out and back.
+//! * [`hotplug`] — diffing live outputs against what is connected now,
+//!   re-packing the layout, and clamping the pointer into it.
+//! * [`scale`] — per-output scale from the panel's physical size.
+//! * [`input_config`] — libinput device policy from the persisted
+//!   preferences, and the watch that notices them changing.
+//! * [`gestures`] — which gestures are the shell's and which are the
+//!   focused client's, and what the shell's ones mean.
+//! * [`outputs`] — `OutputId` allocation, stable per `(device, connector)`
+//!   so an output survives re-enumeration with its identity intact.
+//! * [`runtime`] — hardware glue: opens the seat, enumerates udev + DRM
+//!   connectors, wires libinput, and performs what the modules above
+//!   decide. Builds the inner calloop loop.
+//! * [`scanout`] — modeset, page flip, hardware cursor, and the card
+//!   handle the loop thread keeps open for hotplug and DRM master.
 //! * [`paint`] — CPU-fallback vello → RGBA bridge for the page-flip
 //!   path. See its module docs for the DMA-BUF follow-up plan.
 //!
-//! # Approach chosen for vello-on-DRM (Phase 5.2 v1)
+//! # Approach chosen for vello-on-DRM
 //!
 //! **CPU fallback.** Vello renders into a wgpu offscreen texture; we
 //! copy the bytes back into a CPU buffer (`VelloDrmBridge::paint`)
 //! and hand them to the page-flip side. Zero-copy DMA-BUF interop
 //! (`wgpu::hal::vulkan` external memory → smithay
-//! `GlesRenderer::import_dmabuf`) is the Phase 5.3 follow-up.
+//! `GlesRenderer::import_dmabuf`) remains the follow-up.
 //!
-//! `submit_frame` logs a one-shot `tracing::warn!` so the operator
-//! knows the slow path is engaged.
+//! # Threading
+//!
+//! The scanouts move to the render thread at startup
+//! ([`Backend::take_presenter`]), which is where presentation belongs.
+//! Everything that reconfigures them — hotplug, VT switches, resume —
+//! originates on the loop thread and reaches across through one channel
+//! of [`runtime::ScanoutCommand`]s, drained at the top of each frame. That
+//! keeps the scanouts single-owner and orders every reconfiguration
+//! against the frames around it, so a flip can never be issued into a
+//! scanout that is being torn down.
 //!
 //! # Why `DrmBackend::new` can still fail on a dev machine
 //!
 //! Acquiring a libseat session needs a free seat the caller owns. A
-//! desktop already running a Wayland/X11 compositor holds that seat,
-//! so `LibSeatSession::new()` will return `Err`. We surface the error
-//! verbatim so the operator can tell whether they need to switch VTs,
-//! enable `polkit`'s seat-managed mode, or run as root.
+//! desktop already running a Wayland/X11 compositor holds that seat, and
+//! a shell inside a container is not in a logind session at all. Both
+//! surface as the same `ENOSYS`; [`seat_diag`] tells them apart and says
+//! which one happened.
 //!
 //! # Hardware verification status
 //!
