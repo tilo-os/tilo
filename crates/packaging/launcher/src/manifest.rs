@@ -69,6 +69,17 @@ pub struct MinimalManifest {
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
     pub version: String,
+    /// `[package].kind` — what the package *is*, as distinct from how it
+    /// starts. `app` is something a user opens; `service`, `plugin`,
+    /// `format-provider` and `runtime` are things the system uses.
+    ///
+    /// This is separate from [`Entrypoint::entry_type`] on purpose. A
+    /// package can draw and still not belong in a launcher: the
+    /// on-screen keyboard is a real GUI surface the shell places itself,
+    /// and offering "Open On-Screen Keyboard" as a tiled window is not
+    /// what anyone meant by it. Defaults to `app` so a manifest that
+    /// omits the field keeps its current behaviour.
+    pub kind: String,
     /// Optional `[package].runtime` reference from the manifest, of
     /// the form `qos-runtime/<version>`. When present, the launcher
     /// looks up the corresponding bundle and mounts it (see
@@ -151,8 +162,14 @@ struct PackageBlock {
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
     runtime: Option<String>,
 }
+
+/// `[package].kind` for something a user opens. Everything else is a
+/// system component, however it starts.
+pub const KIND_APP: &str = "app";
 
 impl From<RawManifest> for MinimalManifest {
     fn from(raw: RawManifest) -> Self {
@@ -164,6 +181,13 @@ impl From<RawManifest> for MinimalManifest {
             .version
             .or_else(|| raw.package.as_ref().and_then(|p| p.version.clone()))
             .unwrap_or_default();
+        let kind = raw
+            .package
+            .as_ref()
+            .and_then(|p| p.kind.clone())
+            .map(|k| k.trim().to_ascii_lowercase())
+            .filter(|k| !k.is_empty())
+            .unwrap_or_else(|| KIND_APP.to_string());
         let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
         // Normalised on decode so every consumer compares the same
         // shape: lowercase, no leading dot, no blanks. A manifest that
@@ -185,6 +209,7 @@ impl From<RawManifest> for MinimalManifest {
             name,
             category,
             version,
+            kind,
             runtime,
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
@@ -651,6 +676,75 @@ commands = ["notes"]
         assert_eq!(m.entrypoint.gui_bin(), Some("bin/notes-gui"));
         assert_eq!(m.entrypoint.cli_bin(), Some("bin/notes"));
         assert_eq!(m.cli_commands, vec!["notes".to_string()]);
+    }
+
+    #[test]
+    fn package_kind_decodes_and_defaults_to_app() {
+        // A GUI entrypoint on a `service` is legal and meaningful: the
+        // on-screen keyboard draws, but the shell decides when to show
+        // it. Callers distinguish the two by `kind`, so it has to
+        // survive decoding rather than being inferred from the
+        // entrypoint.
+        let service = r#"
+[package]
+id      = "dev.qos.osk"
+version = "0.1.0"
+kind    = "service"
+
+[entrypoint]
+bin  = "bin/osk"
+type = "gui"
+"#;
+        let m: MinimalManifest = toml::from_str(service).expect("parse");
+        assert_eq!(m.kind, "service");
+        assert_eq!(
+            m.entrypoint.gui_bin(),
+            Some("bin/osk"),
+            "a service can still have a GUI entrypoint",
+        );
+
+        // Omitted, blank, and oddly-cased all mean the ordinary case.
+        for (src, why) in [
+            ("", "a manifest with no kind is an app"),
+            ("kind = \"\"\n", "a blank kind is an app"),
+            ("kind = \"App\"\n", "kind is compared case-insensitively"),
+            ("kind = \" app \"\n", "surrounding space is not part of the kind"),
+        ] {
+            let toml_text = format!(
+                "[package]\nid = \"dev.qos.x\"\nversion = \"0.1.0\"\n{src}\n\
+                 [entrypoint]\nbin = \"bin/x\"\n"
+            );
+            let m: MinimalManifest = toml::from_str(&toml_text).expect("parse");
+            assert_eq!(m.kind, KIND_APP, "{why}");
+        }
+    }
+
+    #[test]
+    fn every_shipped_manifest_declares_a_kind_the_launcher_understands() {
+        // A typo'd kind is not a parse error — it just silently stops
+        // being an app, which shows up as an icon missing from the
+        // launcher and nowhere else.
+        let known = ["app", "service", "plugin", "format-provider", "runtime"];
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&root).expect("apps/ readable") {
+            let path = entry.expect("dir entry").path().join("qos-app.toml");
+            if !path.exists() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(&path).expect("read manifest");
+            let m: MinimalManifest = toml::from_str(&raw)
+                .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display()));
+            assert!(
+                known.contains(&m.kind.as_str()),
+                "{} declares kind = {:?}, which is not one of {known:?}",
+                path.display(),
+                m.kind,
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "found no manifests under {}", root.display());
     }
 
     #[test]
