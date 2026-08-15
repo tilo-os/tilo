@@ -171,7 +171,17 @@ next_boot_entry() {
   # sd-boot takes the first entry in its sort order and skips ones with no tries
   # left. bootctl's own listing applies exactly that logic, so read it rather than
   # reimplementing it: `(default)` is the entry the next boot will take.
-  best="$(bootctl list 2>/dev/null | sed -n 's/^ *title: .*(\([^()]*\.conf\)) (default).*/\1/p' | head -1)"
+  #
+  # Parsed as blocks, not with one regex over the title line. `bootctl` appends
+  # the entry id to a title only when two entries would otherwise read the same,
+  # so a pattern that expects `title: … (name.conf) (default)` finds nothing on
+  # the ordinary machine where every title is distinct — and "no default" is
+  # indistinguishable from "could not tell", which is the failure this whole
+  # file is careful about.
+  best="$(bootctl list 2>/dev/null | awk '
+    /^[[:space:]]*title:/ { want = ($0 ~ /\(default\)/) }
+    /^[[:space:]]*id:/    { if (want) { sub(/^[[:space:]]*id:[[:space:]]*/, ""); print; exit } }
+  ')"
   if [ -z "$best" ]; then
     # No EFI variables (a container, or a machine booted some other way). Fall
     # back to the file order, and say that is what happened.
