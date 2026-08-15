@@ -487,13 +487,21 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         // SkipForward / SkipBack: triangle + end bar. From lucide's
         // `skip-forward.js` / `skip-back.js`.
+        //
+        // The two paths are mirror images and the bar sits on the side
+        // the triangle points at, so swapping them yields two glyphs
+        // that both look plausible and both mean the wrong thing —
+        // which is exactly what shipped until an OSD capture showed
+        // "Next track" over a leftward arrow. Read the path: forward's
+        // triangle starts its sweep at x=3 and reaches its apex at
+        // x=14, so it points right, and its bar is at x=21.
         Icon::SkipForward => vec![
-            path_from_d("M21 4a1 1 0 0 0-1.555-.832L10 9.5v5l9.445 6.332A1 1 0 0 0 21 20z"),
-            line_path(3.0, 4.0, 3.0, 20.0),
-        ],
-        Icon::SkipBack => vec![
             path_from_d("M3 4a1 1 0 0 1 1.555-.832L14 9.5v5l-9.445 6.332A1 1 0 0 1 3 20z"),
             line_path(21.0, 4.0, 21.0, 20.0),
+        ],
+        Icon::SkipBack => vec![
+            path_from_d("M21 4a1 1 0 0 0-1.555-.832L10 9.5v5l9.445 6.332A1 1 0 0 0 21 20z"),
+            line_path(3.0, 4.0, 3.0, 20.0),
         ],
         // Bell: dome body + the clapper arc at the base. Transcribed
         // from lucide's `bell.js` (v0.546.0).
@@ -947,6 +955,32 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::MicOff).len(), 6);
         assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "triangle + bar");
         assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "triangle + bar");
+    }
+
+    /// The two skip glyphs are mirror images, so a swap produces two
+    /// icons that each look fine alone and both point the wrong way.
+    /// Pin the direction geometrically: the end bar sits on the side
+    /// the triangle points at, so its x-position identifies the glyph.
+    #[test]
+    fn the_skip_glyphs_point_the_way_they_are_named() {
+        let bar_x = |icon: Icon| {
+            let bar = &icon_subpaths(icon)[1];
+            let mut xs: Vec<f64> = Vec::new();
+            for el in bar.elements() {
+                if let vello::kurbo::PathEl::MoveTo(p) | vello::kurbo::PathEl::LineTo(p) = el {
+                    xs.push(p.x);
+                }
+            }
+            xs.into_iter().fold(f64::MIN, f64::max)
+        };
+        assert!(
+            bar_x(Icon::SkipForward) > 12.0,
+            "skip-forward's bar is on the right, the side it points at"
+        );
+        assert!(
+            bar_x(Icon::SkipBack) < 12.0,
+            "skip-back's bar is on the left"
+        );
         for icon in [
             Icon::WifiOff,
             Icon::VolumeX,
