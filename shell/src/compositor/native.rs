@@ -47,6 +47,7 @@ use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::metrics;
+use crate::compositor::output_globals;
 use crate::compositor::pacing;
 use crate::compositor::present;
 
@@ -1541,6 +1542,24 @@ pub fn run() -> ! {
     // *after* `poll_events` returns — the input arm needs `&mut backend`
     // (for `set_dpms`) which can't be borrowed inside the poll closure.
     let mut pending_events: Vec<BackendEvent> = Vec::new();
+
+    // `wl_output` globals. The compositor advertised the manager but never
+    // an output, so no client could learn there was a display at all. The
+    // registry is synced here at startup and again on every hotplug.
+    let mut output_globals = output_globals::OutputGlobals::new();
+    let display_handle_for_outputs = display_handle.clone();
+    {
+        let outs = backend.outputs().to_vec();
+        state.set_output_layout(&outs);
+        output_globals.sync::<State>(
+            &display_handle_for_outputs,
+            &outs,
+            refresh_mhz_of(&*backend),
+        );
+    }
+    // Set when the output set changed this tick, so everything derived
+    // from it is re-derived once per batch rather than once per udev edge.
+    let mut outputs_dirty = false;
     // Redraw gating. The loop used to `paint()` + `submit_frame()` on
     // every tick regardless of whether anything changed, pinning a CPU
     // core at 100% (and driving needless GPU work) even on a completely
@@ -1729,9 +1748,95 @@ pub fn run() -> ! {
                     // Ctrl/Shift/Alt/Super state.
                     test_control_ctx.modifiers = modifiers;
                 }
+                BackendEvent::OutputsChanged => {
+                    // A display was plugged in, unplugged or re-moded.
+                    // Everything derived from the output set has to be
+                    // re-derived at once — the scene extent, the per-
+                    // display widths strips size against, the size a
+                    // fullscreen client is configured to, the cadence, and
+                    // the `wl_output` globals clients see.
+                    outputs_dirty = true;
+                    session_changed = true;
+                }
+                BackendEvent::ShellGesture(action) => {
+                    // A three- or four-finger touchpad gesture, already
+                    // resolved into the navigation it means. Never also
+                    // delivered to a client, so there is no double-handling
+                    // to guard against here.
+                    if !session.is_locked() {
+                        for t in session.note_activity(Instant::now()) {
+                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
+                        }
+                        apply_shell_gesture(&mut frame_builder, action);
+                        session_changed = true;
+                    }
+                }
+                BackendEvent::Gesture(gesture) => {
+                    // A one- or two-finger gesture: the focused client's.
+                    if !session.is_locked() {
+                        state.forward_client_gesture(gesture);
+                    }
+                }
+                BackendEvent::Touch(touch) => {
+                    // The same finger also arrives as pointer events (the
+                    // backend emits both), which is what drives the shell
+                    // chrome. This half is the `wl_touch` protocol for
+                    // clients that want real multi-touch.
+                    if !session.is_locked() {
+                        let target = client_input::touch_target(&state, &frame_builder, &touch);
+                        state.forward_client_touch(touch, target);
+                    }
+                }
                 BackendEvent::Redraw | BackendEvent::Focus(_) => {
                     // Redraw is implicit because we re-paint every tick;
                     // Focus changes don't gate input dispatch here.
+                }
+            }
+        }
+
+        // Re-derive everything that depends on the output set, once, after
+        // the whole event batch — a dock being plugged in raises several
+        // udev edges in a row, and doing this per edge would re-advertise
+        // globals the next edge immediately supersedes.
+        if std::mem::take(&mut outputs_dirty) {
+            let outs = backend.outputs().to_vec();
+            let combined = combined_geometry(&outs);
+            tracing::info!(
+                outputs = outs.len(),
+                combined = ?combined,
+                "compositor: display configuration changed"
+            );
+            if combined.0 > 0 && combined.1 > 0 {
+                frame_builder.set_viewport(combined);
+                state.output_size = (combined.0 as i32, combined.1 as i32);
+                if let Some(pipe) = present_pipe.as_ref() {
+                    pipe.resize(combined);
+                }
+            }
+            // Windows are not pinned to an output: the shell places groups
+            // across whatever displays it is told about, so re-pushing the
+            // geometry is what re-homes everything that was on the display
+            // that went away. Nothing is left at a coordinate with no panel
+            // behind it.
+            frame_builder.set_output_geometry(output_geometry(&outs));
+            // Per-output scale: a surface's preferred `wp_fractional_scale`
+            // is the scale of the output it is on, so a changed layout
+            // changes what each client should be rendering at.
+            state.set_output_layout(&outs);
+            output_globals.sync::<State>(
+                &display_handle_for_outputs,
+                &outs,
+                refresh_mhz_of(&*backend),
+            );
+            if refresh_override.is_none() {
+                if let Some(interval) = backend.refresh_interval() {
+                    if frame_clock.set_interval(interval) {
+                        eprintln!(
+                            "nirios compositor: display configuration changed; now pacing to {:.3} Hz",
+                            1.0 / interval.as_secs_f64()
+                        );
+                        metrics.set_target_period(interval);
+                    }
                 }
             }
         }
@@ -1783,6 +1888,17 @@ pub fn run() -> ! {
                     for t in session.note_activity(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
+                    // Put the display back. A suspend does not pause the
+                    // seat, so no session event fires on the way out of it
+                    // — and the DRM device comes back with no mode set, no
+                    // framebuffer bound and a cleared cursor plane. Without
+                    // this, closing and opening the lid returns to a black
+                    // screen that no amount of input recovers.
+                    backend.reset_display();
+                    // A resumed panel is scanning out whatever was left in
+                    // its buffers, so the next frame has to be a full one.
+                    outputs_dirty = false;
+                    session_changed = true;
                 }
                 qos_power_mgmt::PowerSignal::Notify(n) => {
                     let inc = power_notification_to_incoming(&notif_bridge, n);
@@ -1882,6 +1998,23 @@ pub fn run() -> ! {
         // opening, or a window closing all move the keyboard immediately —
         // not only on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
+
+        // Per-output HiDPI: tell each client the scale of the display its
+        // tile is currently on. Runs every tick because a window dragged
+        // from the laptop panel to an external monitor has to be told to
+        // re-render at the other one's density, and nothing else observes
+        // that move.
+        {
+            let placements: Vec<(u64, (f64, f64))> = state
+                .client_input
+                .placements()
+                .filter_map(|(surface_id, group)| {
+                    let rect = frame_builder.host().active_tile_rect(group)?;
+                    Some((surface_id, (rect.x0, rect.y0)))
+                })
+                .collect();
+            state.update_surface_scales(&placements);
+        }
 
         // Decide whether this frame needs repainting *before* doing the
         // expensive layout pass. Both queries below are cheap and don't
@@ -2817,6 +2950,51 @@ mod tests {
         // Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
     }
+}
+
+/// The refresh rate to advertise on `wl_output`, in millihertz.
+///
+/// Derived from the cadence the compositor is actually pacing to, so a
+/// client's own frame timing agrees with when frames are really produced.
+/// `None` when the backend has no display to report one for; the globals
+/// then advertise the conventional 60 Hz rather than zero, which some
+/// toolkits divide by.
+fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u32> {
+    backend
+        .refresh_interval()
+        .map(|d| (1000.0 / d.as_secs_f64() * 1000.0).round() as u32)
+}
+
+/// Perform the navigation a claimed touchpad gesture resolved to.
+///
+/// Each arm is the same chrome operation its keyboard chord runs — a
+/// gesture is a second way to ask for something the shell already does,
+/// not a parallel interaction model.
+fn apply_shell_gesture(
+    frame_builder: &mut FrameBuilder,
+    action: crate::compositor::backend::drm::gestures::GestureAction,
+) {
+    use crate::compositor::backend::drm::gestures::GestureAction;
+    frame_builder.with_chrome(|st| match action {
+        GestureAction::SwitchWorkspace(dir) => {
+            st.switch_workspace(dir);
+        }
+        GestureAction::CycleTab(dir) => {
+            st.cycle_active_tab(dir);
+        }
+        GestureAction::ShowOverview => {
+            if !st.overlays.overview {
+                st.overlays.overview = true;
+                st.bump();
+            }
+        }
+        GestureAction::HideOverview => {
+            if st.overlays.overview {
+                st.overlays.overview = false;
+                st.bump();
+            }
+        }
+    });
 }
 
 /// Translate the backend's output list into the geometry the shell's strips
