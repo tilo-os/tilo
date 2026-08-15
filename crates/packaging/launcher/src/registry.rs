@@ -6,6 +6,27 @@
 //! decode a strict subset of the shape here rather than pulling
 //! in the whole `install` crate.
 //!
+//! There are **two** such registries, read in the same shape:
+//!
+//! * the system store at [`SYSTEM_DATA_DIR`], written at image-build
+//!   time by running the ordinary `qos-install install` against a
+//!   `QOS_APPS_DATA_DIR` pointed there. It ships read-only inside the
+//!   image, which is what gives a fresh boot a populated launcher
+//!   without the user having to install anything.
+//! * the per-user store, unchanged.
+//!
+//! Both are produced by the same installer and describe packages the
+//! same way; being preinstalled is a matter of *where the payload
+//! lives*, not of what the package is allowed to do. The launcher
+//! grants a system entry exactly what it grants a user entry — the
+//! sandbox is built from the manifest either way, the payload is
+//! ro-bound either way, and the one writable directory comes from
+//! [`crate::appdir`] either way.
+//!
+//! A user entry shadows a system entry with the same id, so installing
+//! your own build of a preinstalled app replaces it rather than
+//! producing a duplicate row in the palette.
+//!
 //! Kept intentionally thin — a future `app-host` socket
 //! (`docs/app-host.md`) will replace this file-based lookup.
 //! When it lands, the `run-installed` subcommand should try the
@@ -34,20 +55,38 @@ pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, Registry
     Ok(list_installed()?.into_iter().find(|e| e.id == pkg_id))
 }
 
-/// Every package the registry knows about, in file order.
+/// Every package either registry knows about: the system store first,
+/// then the per-user one, with a user entry shadowing a system entry of
+/// the same id.
 ///
 /// A missing `registry.toml` is "nothing installed", not an error — a
-/// fresh machine has no registry until the first `qos-install install`.
+/// machine with no preinstalled set has no system registry, and a fresh
+/// user has no user registry until the first `qos-install install`.
 /// A registry that exists but doesn't parse *is* an error: silently
 /// reporting "no apps" for a corrupt file would hide the breakage from
 /// whoever is looking at an empty launcher.
 pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
-    let path = default_registry_path()?;
+    let mut out = read_registry(&system_registry_path())?;
+    for entry in read_registry(&default_registry_path()?)? {
+        match out.iter().position(|e| e.id == entry.id) {
+            // Same id in both stores: the user's install is the one that
+            // runs. Replacing in place keeps the system store's ordering
+            // stable rather than moving the row to the end of the list.
+            Some(at) => out[at] = entry,
+            None => out.push(entry),
+        }
+    }
+    Ok(out)
+}
+
+/// Parse one `registry.toml`. A path that does not exist yields no
+/// entries; anything else that goes wrong is reported.
+fn read_registry(path: &Path) -> Result<Vec<InstalledPackage>, RegistryError> {
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = fs::read_to_string(&path).map_err(|e| RegistryError::Read {
-        path: path.clone(),
+    let raw = fs::read_to_string(path).map_err(|e| RegistryError::Read {
+        path: path.to_path_buf(),
         source: e,
     })?;
     let reg: Registry = toml::from_str(&raw)
@@ -66,6 +105,28 @@ struct Registry {
 /// dir via `QOS_APPS_DATA_DIR`.
 pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
     Ok(default_data_dir()?.join("registry.toml"))
+}
+
+/// The image-wide app store. Read-only at runtime: it is populated
+/// during the image build and ships inside the immutable rootfs, so a
+/// first boot already has a registry to list.
+pub const SYSTEM_DATA_DIR: &str = "/usr/share/qos-apps";
+
+/// Root of the system store, with a `QOS_APPS_SYSTEM_DIR` override so
+/// tests — and a build that stages the store somewhere else before
+/// copying it into the image — can point it elsewhere.
+pub fn system_data_dir() -> PathBuf {
+    match std::env::var_os("QOS_APPS_SYSTEM_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => PathBuf::from(SYSTEM_DATA_DIR),
+    }
+}
+
+/// `registry.toml` of the system store. Unlike the per-user path this
+/// cannot fail: it needs no `HOME`, which is the point — it resolves
+/// identically for every user and for a launch with no home at all.
+pub fn system_registry_path() -> PathBuf {
+    system_data_dir().join("registry.toml")
 }
 
 /// Root install directory. Honours the `QOS_APPS_DATA_DIR`
@@ -105,6 +166,102 @@ mod tests {
     // run in parallel they clobber each other's override (and the last
     // one to finish removes the var out from under the others). Same
     // `process_env` serial group as the tests in `run` that shim `HOME`.
+    //
+    // They also pin `QOS_APPS_SYSTEM_DIR` at an empty directory. Without
+    // it the reader would fall back to the real `/usr/share/qos-apps`,
+    // so the same test would pass on a dev box and see the whole
+    // preinstalled fleet on an actual qOS install.
+
+    /// Write a `registry.toml` naming `ids`, with a payload dir and
+    /// manifest on disk for each, and return the directory.
+    fn store_with(ids: &[&str]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut toml_src = String::new();
+        for id in ids {
+            let payload = tmp.path().join("payloads").join(id);
+            std::fs::create_dir_all(&payload).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::write(&manifest, "").unwrap();
+            toml_src.push_str(&format!(
+                "[[entry]]\nid = '{id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest.display().to_string()
+            ));
+        }
+        std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
+        tmp
+    }
+
+    /// Run `f` with both store roots pointed at the given directories.
+    fn with_stores<T>(system: &Path, user: &Path, f: impl FnOnce() -> T) -> T {
+        // SAFETY: callers are all in the `process_env` serial group.
+        unsafe {
+            std::env::set_var("QOS_APPS_SYSTEM_DIR", system);
+            std::env::set_var("QOS_APPS_DATA_DIR", user);
+        }
+        let out = f();
+        unsafe {
+            std::env::remove_var("QOS_APPS_SYSTEM_DIR");
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+        }
+        out
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn system_store_entries_are_listed_without_any_user_install() {
+        // The preinstalled case: an image ships a system registry and the
+        // user has never run `qos-install`. The palette must still have
+        // something to list.
+        let system = store_with(&["dev.qos.notes", "dev.qos.calculator"]);
+        let user = tempfile::tempdir().expect("tempdir");
+        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["dev.qos.notes", "dev.qos.calculator"]);
+        // And a lookup by id resolves to the system payload.
+        let found = with_stores(system.path(), user.path(), || {
+            find_installed("dev.qos.notes")
+        })
+        .expect("read")
+        .expect("preinstalled notes is installed");
+        assert!(found.payload_root.starts_with(system.path()));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn both_stores_merge_and_a_user_install_shadows_the_system_one() {
+        let system = store_with(&["dev.qos.notes", "dev.qos.calculator"]);
+        let user = store_with(&["dev.qos.notes", "dev.qos.mine"]);
+        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["dev.qos.notes", "dev.qos.calculator", "dev.qos.mine"],
+            "one row per id: the shadowed system entry must not appear twice",
+        );
+        let notes = all.iter().find(|e| e.id == "dev.qos.notes").unwrap();
+        assert!(
+            notes.payload_root.starts_with(user.path()),
+            "a user install of a preinstalled id is the one that runs, got {:?}",
+            notes.payload_root,
+        );
+        // The system-only entry is untouched by the shadowing.
+        let calc = all.iter().find(|e| e.id == "dev.qos.calculator").unwrap();
+        assert!(calc.payload_root.starts_with(system.path()));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_missing_system_store_is_not_an_error() {
+        // A plain dev machine has no /usr/share/qos-apps. That has to
+        // read as "nothing preinstalled", not as a failure that hides
+        // the user's own installs.
+        let system = tempfile::tempdir().expect("tempdir");
+        let user = store_with(&["dev.qos.mine"]);
+        let all = with_stores(system.path(), user.path(), || list_installed()).expect("read");
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["dev.qos.mine"]);
+    }
 
     #[test]
     #[serial_test::serial(process_env)]
@@ -121,10 +278,11 @@ mod tests {
         );
         std::fs::write(tmp.path().join("registry.toml"), registry_toml).unwrap();
 
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
-        let found = find_installed("dev.qos.notes-cli").expect("read");
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        let empty_system = tempfile::tempdir().expect("tempdir");
+        let found = with_stores(empty_system.path(), tmp.path(), || {
+            find_installed("dev.qos.notes-cli")
+        })
+        .expect("read");
         let entry = found.expect("dev.qos.notes-cli present in registry");
         assert_eq!(entry.id, "dev.qos.notes-cli");
         assert_eq!(entry.payload_root, payload);
