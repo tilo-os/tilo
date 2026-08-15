@@ -1125,6 +1125,22 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
         // A grab owned by the chrome keeps the client out of the loop even
         // when the cursor wanders across a tile mid-drag.
         Some(PointerOwner::Chrome) => None,
+        // A drag-and-drop is the one held-button gesture that is *supposed*
+        // to leave the surface it started on: the drop target only learns
+        // about the drag when the pointer is reported over it. Pinning focus
+        // to the source, which is right for every other implicit grab, means
+        // no `wl_data_device.enter` ever reaches another client and nothing
+        // can be dropped anywhere. So while a client drag is in flight the
+        // pointer hit-tests normally.
+        Some(PointerOwner::Client(_)) if state.selection.dnd_active => {
+            if captured {
+                return None;
+            }
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+                .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
+        }
         Some(PointerOwner::Client(surface_id)) => {
             let (strip, group) = *state.client_input.placements.get(&surface_id)?;
             let rect = fb.host().active_tile_rect(group)?;
@@ -1152,6 +1168,14 @@ fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> O
 fn deliver_pointer(state: &mut State, hit: Option<TileHit>) {
     let global = state.client_input.cursor;
     let target = hit.map(|h| (h.surface_id, (h.rect.x0, h.rect.y0)));
+    if state.selection.dnd_active {
+        tracing::debug!(
+            target: "shell::selection",
+            cursor = ?global,
+            over_surface = ?target.map(|(id, _)| id),
+            "routing pointer during a drag"
+        );
+    }
     state.forward_client_pointer_motion(global, target);
 }
 

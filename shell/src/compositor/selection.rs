@@ -297,6 +297,16 @@ pub struct SelectionState {
     /// the drag. See [`ClientDndGrabHandler::started`] for why it is kept but
     /// not composited.
     pub dnd_icon: Option<WlSurface>,
+    /// Whether a client-initiated drag-and-drop is in flight.
+    ///
+    /// Read by the pointer router: while a button is held the compositor
+    /// normally pins pointer focus to the surface that owns the implicit
+    /// grab, so a client cannot lose its own drag by sliding off its window.
+    /// A drag-and-drop is the one case where that is exactly wrong — the
+    /// whole point is to travel to a *different* surface, and pinning focus
+    /// to the source means the drop target never receives
+    /// `wl_data_device.enter` and nothing can ever be dropped anywhere.
+    pub dnd_active: bool,
 }
 
 impl std::fmt::Debug for SelectionState {
@@ -337,6 +347,7 @@ impl SelectionState {
             pending_pulls: Vec::new(),
             focused_client: None,
             dnd_icon: None,
+            dnd_active: false,
         }
     }
 }
@@ -759,11 +770,24 @@ impl ClientDndGrabHandler for State {
         // outside the strip layout the whole spatial model depends on.
         // Recording it keeps the role assignment honest for the client, which
         // is what the protocol requires.
+        tracing::debug!(
+            target: "shell::selection",
+            has_icon = icon.is_some(),
+            "client started a drag"
+        );
         self.selection.dnd_icon = icon;
+        self.selection.dnd_active = true;
     }
 
-    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+    fn dropped(&mut self, target: Option<WlSurface>, validated: bool, _seat: Seat<Self>) {
+        tracing::debug!(
+            target: "shell::selection",
+            dropped_on_a_surface = target.is_some(),
+            validated,
+            "drag finished"
+        );
         self.selection.dnd_icon = None;
+        self.selection.dnd_active = false;
     }
 }
 
