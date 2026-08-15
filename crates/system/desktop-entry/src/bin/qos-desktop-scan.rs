@@ -1,0 +1,137 @@
+//! `qos-desktop-scan` — what the desktop sees when it looks for host
+//! applications.
+//!
+//! Prints the directories searched, the entries found, and — the part
+//! that makes it a diagnostic rather than a listing — the count of
+//! everything that was *declined*, with the reason. "My app is not in
+//! the palette" has half a dozen legitimate causes, and a tool that
+//! reports only the survivors cannot tell any of them apart.
+
+use std::process::ExitCode;
+
+use desktop_entry::launch::{LaunchEnv, plan};
+use desktop_entry::scan::{CURRENT_DESKTOP, application_dirs, scan_dirs};
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut show_exec = false;
+    let mut filter: Option<String> = None;
+    let mut plan_id: Option<String> = None;
+
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--exec" => show_exec = true,
+            "--plan" => match it.next() {
+                Some(id) => plan_id = Some(id.clone()),
+                None => {
+                    eprintln!("--plan needs a desktop-file id");
+                    return ExitCode::from(2);
+                }
+            },
+            "-h" | "--help" => {
+                print_help();
+                return ExitCode::SUCCESS;
+            }
+            other if other.starts_with('-') => {
+                eprintln!("unknown flag {other}");
+                print_help();
+                return ExitCode::from(2);
+            }
+            other => filter = Some(other.to_lowercase()),
+        }
+    }
+
+    let dirs = application_dirs();
+    let scan = scan_dirs(&dirs, &[CURRENT_DESKTOP.to_string()]);
+
+    if let Some(id) = plan_id {
+        let Some(entry) = scan.find(&id) else {
+            eprintln!("no entry with desktop-file id {id}");
+            return ExitCode::from(1);
+        };
+        match plan(entry, &LaunchEnv::default()) {
+            Ok(launch) => {
+                println!("id        : {}", launch.desktop_id);
+                println!("name      : {}", launch.display_name);
+                println!("source    : {}", launch.source.label());
+                println!("confined  : {}", launch.is_confined());
+                println!("program   : {}", launch.program.display());
+                println!("args      : {:?}", launch.args);
+                println!("windows   : {:?}", launch.window_identities);
+                println!("env       :");
+                for (k, v) in &launch.env {
+                    println!("  {k}={v}");
+                }
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("cannot launch {id}: {e}");
+                return ExitCode::from(1);
+            }
+        }
+    }
+
+    println!("search path (precedence order):");
+    for dir in &scan.dirs {
+        let exists = if dir.is_dir() { "" } else { "   (absent)" };
+        println!("  {}{exists}", dir.display());
+    }
+    println!();
+
+    let shown: Vec<_> = scan
+        .entries
+        .iter()
+        .filter(|e| match &filter {
+            None => true,
+            Some(needle) => {
+                e.name.to_lowercase().contains(needle) || e.id.to_lowercase().contains(needle)
+            }
+        })
+        .collect();
+
+    for entry in &shown {
+        println!("{:<10}  {:<44}  {}", entry.source.label(), entry.id, entry.name);
+        if show_exec {
+            println!("{:<10}  {:<44}  Exec={}", "", "", entry.exec.as_deref().unwrap_or(""));
+        }
+    }
+
+    println!();
+    match &filter {
+        Some(needle) => println!(
+            "{} launchable application(s) matching {needle:?}, out of {}",
+            shown.len(),
+            scan.entries.len()
+        ),
+        None => println!("{} launchable application(s)", scan.entries.len()),
+    }
+    let s = &scan.stats;
+    println!(
+        "declined: {} shadowed, {} tombstoned, {} not-an-application, {} no-exec, \
+         {} no-display, {} other-desktop, {} try-exec-missing, {} unparseable \
+         (out of {} files seen)",
+        s.shadowed,
+        s.tombstoned,
+        s.not_an_application,
+        s.no_exec,
+        s.no_display,
+        s.other_desktop,
+        s.try_exec_missing,
+        s.unparseable,
+        s.files_seen,
+    );
+    ExitCode::SUCCESS
+}
+
+fn print_help() {
+    println!(
+        "qos-desktop-scan [--exec] [--plan <desktop-id>] [name-or-id-substring]\n\
+         \n\
+         Lists the host applications qOS can launch, and accounts for every\n\
+         .desktop file it declined.\n\
+         \n\
+         --exec            also print each entry's raw Exec= line\n\
+         --plan <id>       print the exact argv and environment a launch would use"
+    );
+}
