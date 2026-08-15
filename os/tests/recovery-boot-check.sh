@@ -139,7 +139,14 @@ else
 fi
 
 # The default has to be a deployment, not repair mode, on a healthy machine.
-DEFAULT="$(bootctl list 2>/dev/null | sed -n 's/^ *title: .*(\([^()]*\.conf\)) (default).*/\1/p' | head -1)"
+# Parsed as blocks: `bootctl` only appends the entry id to a title when two
+# would otherwise read the same, so a single regex over the title line finds
+# nothing on a machine whose titles are distinct — and reports "no default",
+# which is not the same statement at all.
+DEFAULT="$(bootctl list 2>/dev/null | awk '
+  /^[[:space:]]*title:/ { want = ($0 ~ /\(default\)/) }
+  /^[[:space:]]*id:/    { if (want) { sub(/^[[:space:]]*id:[[:space:]]*/, ""); print; exit } }
+')"
 if [ -z "$DEFAULT" ]; then
   bad "bootctl list named no default entry, so what the next boot would pick is
       unknown and the fallback order cannot be checked."
