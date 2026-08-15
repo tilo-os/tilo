@@ -2339,6 +2339,27 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Drop a passphrase buffer the user walked away from.
+    ///
+    /// Closing the popover — by Esc, by clicking outside, by any of the
+    /// paths that clear the flag — has to take the typed passphrase with
+    /// it. Reconciling once per frame against the one fact that matters
+    /// (is the popover open) cannot miss a path, and a password is
+    /// exactly the kind of buffer that must not outlive its window.
+    fn clear_stale_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let open = chrome.borrow().overlays.quick_settings;
+        if open {
+            return;
+        }
+        let mut st = chrome.borrow_mut();
+        if st.quick_settings.wifi_password.take().is_some() {
+            st.bump();
+        }
+    }
+
     /// Per-tick wire-up that keeps the focused window group scrolled into
     /// view. Edge-triggered on a change to the persisted `active_group`
     /// pointer for a strip: when the focused group differs from the one we
@@ -4192,6 +4213,7 @@ impl Widget for ShellOverlayHost {
         // and retire that aim once the palette is gone.
         self.harvest_pending_new_tab();
         self.clear_stale_open_target();
+        self.clear_stale_wifi_password();
         // Publish the poller's latest battery / network / volume reading
         // onto the chrome the top bar draws from.
         self.sync_status_from_bridge();
@@ -5294,6 +5316,14 @@ impl Widget for ShellOverlayHost {
             let ctrl_down = mstate.control_key();
             let alt_down = mstate.alt_key();
             let is_mod = super_down || ctrl_down;
+            // A passphrase field takes the keyboard whole while it is up.
+            // Ahead of every chord below, including the palette ones: a
+            // password can contain any character, and a `k` in one must
+            // not open search instead of being typed.
+            if self.handle_wifi_password_key(logical_key, modifiers) {
+                *handled = true;
+                return;
+            }
             // Space chord routes global-search: `Super+Space` matches the
             // Super+K convention; `Alt+Space` covers the nested case.
             // Both are captured here before the modifier-only branch so a
@@ -5776,6 +5806,34 @@ impl Widget for ShellOverlayHost {
                         // `nmcli device wifi connect <ssid>` via the
                         // QS dispatcher. Everything else is swallowed.
                         let back = self.qs_back_chevron_rect();
+                        // A passphrase prompt owns the Wi-Fi pane while
+                        // it is up, so its controls are tested before the
+                        // list's — including the back chevron, which
+                        // backs out of the prompt rather than out of
+                        // Wi-Fi altogether.
+                        let prompt_up = self
+                            .chrome
+                            .as_ref()
+                            .map(|c| c.borrow().quick_settings.wifi_password.is_some())
+                            .unwrap_or(false);
+                        if prompt_up {
+                            let (cancel, connect) = self.qs_password_button_rects();
+                            if back.contains(p) || cancel.contains(p) {
+                                self.cancel_wifi_password();
+                                *handled = true;
+                                return;
+                            }
+                            if connect.contains(p) {
+                                self.submit_wifi_password();
+                                *handled = true;
+                                return;
+                            }
+                            // Everything else on the pane is inert: the
+                            // field is always focused, so there is
+                            // nothing a click inside it could focus.
+                            *handled = true;
+                            return;
+                        }
                         if back.contains(p) {
                             if let Some(chrome) = self.chrome.clone() {
                                 let mut st = chrome.borrow_mut();
@@ -5807,10 +5865,25 @@ impl Widget for ShellOverlayHost {
                                 );
                                 if row_rect.contains(p) {
                                     let ssid = net.ssid.clone();
-                                    crate::shell::qs_actions::log_qs_result(
-                                        "connect_wifi",
-                                        self.qs_actions.connect_wifi(&ssid, None),
-                                    );
+                                    // An open network, or one already
+                                    // joined, needs no passphrase — and
+                                    // asking for one the user does not
+                                    // have would be a dead end. A
+                                    // protected network we are not on
+                                    // gets the prompt: NetworkManager
+                                    // may already hold a profile, but it
+                                    // will not tell us that without
+                                    // trying, and a prompt the user can
+                                    // dismiss is cheaper than a silent
+                                    // failure.
+                                    if net.secure && !net.connected {
+                                        self.begin_wifi_password(&ssid);
+                                    } else {
+                                        crate::shell::qs_actions::log_qs_result(
+                                            "connect_wifi",
+                                            self.qs_actions.connect_wifi(&ssid, None),
+                                        );
+                                    }
                                     *handled = true;
                                     return;
                                 }
@@ -9184,6 +9257,15 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let rect = self.quick_settings_rect();
 
+        // A passphrase prompt takes over the pane. It is not a separate
+        // nav level: the user is still "in Wi-Fi", and pushing a level
+        // would put a second back-chevron in the stack that means
+        // something different from the first.
+        if let Some(prompt) = qs.wifi_password.as_ref() {
+            self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
+            return;
+        }
+
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
 
         if qs.wifi_networks.is_empty() {
@@ -9280,6 +9362,382 @@ impl ShellOverlayHost {
                 scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
             }
         }
+    }
+
+    /// Raise the passphrase prompt for `ssid`.
+    pub fn begin_wifi_password(&mut self, ssid: &str) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi_password =
+            Some(crate::shell::quick_settings::WifiPasswordPrompt::new(ssid));
+        st.bump();
+    }
+
+    /// Drop the prompt, clearing the passphrase with it. The buffer only
+    /// exists while it is being typed; nothing keeps it afterwards.
+    pub fn cancel_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.quick_settings.wifi_password.take().is_some() {
+            st.bump();
+        }
+    }
+
+    /// Attempt the join.
+    ///
+    /// `nmcli device wifi connect` blocks until association succeeds or
+    /// fails, which on a busy band is seconds — but this is a deliberate
+    /// button press with a modal-ish prompt in front of it, the same
+    /// contract every other quick-settings action has, and the
+    /// alternative (a background join whose result arrives with no
+    /// prompt left to report it into) is worse. The prompt stays up on
+    /// failure carrying the reason.
+    pub fn submit_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some((ssid, password)) = ({
+            let st = chrome.borrow();
+            st.quick_settings
+                .wifi_password
+                .as_ref()
+                .filter(|p| p.can_submit())
+                .map(|p| (p.ssid.clone(), p.password.clone()))
+        }) else {
+            return;
+        };
+        {
+            let mut st = chrome.borrow_mut();
+            if let Some(p) = st.quick_settings.wifi_password.as_mut() {
+                p.connecting = true;
+                p.error = None;
+            }
+            st.bump();
+        }
+        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let mut st = chrome.borrow_mut();
+        match result {
+            Ok(()) => {
+                st.quick_settings.wifi_password = None;
+                // The list's `connected` flags are now stale, and the
+                // next poll of the popover is on its next open. Mark the
+                // row we just joined so the pane the user lands back on
+                // is not still telling them they are not connected.
+                for n in st.quick_settings.wifi_networks.iter_mut() {
+                    n.connected = n.ssid == ssid;
+                }
+                st.quick_settings.wifi = true;
+                st.push_notification(
+                    format!("Connected to {ssid}"),
+                    "This network is saved; the machine will rejoin it automatically.",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
+                if let Some(p) = st.quick_settings.wifi_password.as_mut() {
+                    p.connecting = false;
+                    // The passphrase is kept so a typo is a correction
+                    // rather than a retype, and selected so the first
+                    // keystroke replaces it if it was simply wrong.
+                    p.selection.anchor = 0;
+                    p.selection.cursor = p.password.len();
+                    p.error = Some("Couldn't join. Check the password.".to_string());
+                }
+            }
+        }
+        st.bump();
+    }
+
+    /// Route a key press into the passphrase field, if one is up.
+    /// Returns `true` when the key was consumed.
+    fn handle_wifi_password_key(
+        &mut self,
+        logical_key: &Key,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mods = crate::shell::text_entry::Mods::from_state(modifiers.state());
+        let outcome = {
+            let mut st = chrome.borrow_mut();
+            let Some(prompt) = st.quick_settings.wifi_password.as_mut() else {
+                return false;
+            };
+            let mut sel = prompt.selection;
+            let out = crate::shell::text_entry::apply(
+                logical_key,
+                mods,
+                &mut prompt.password,
+                &mut sel,
+            );
+            prompt.selection = sel;
+            // Typing after a rejection clears the rejection: the message
+            // was about the old value.
+            if matches!(out, crate::shell::text_entry::Edit::Changed) {
+                prompt.error = None;
+            }
+            out
+        };
+        match outcome {
+            crate::shell::text_entry::Edit::Ignored => false,
+            crate::shell::text_entry::Edit::ConsumedQuiet => true,
+            crate::shell::text_entry::Edit::Changed => {
+                chrome.borrow_mut().bump();
+                true
+            }
+            crate::shell::text_entry::Edit::Submit => {
+                self.submit_wifi_password();
+                true
+            }
+            crate::shell::text_entry::Edit::Cancel => {
+                self.cancel_wifi_password();
+                true
+            }
+        }
+    }
+
+    /// Geometry of the passphrase prompt's controls. Derived rather than
+    /// stored so the hit tests and the paint cannot drift apart — the
+    /// same contract [`Self::qs_back_chevron_rect`] follows.
+    fn qs_password_field_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        let y = r.y0 + 118.0;
+        Rect::new(r.x0 + 16.0, y, r.x1 - 16.0, y + 40.0)
+    }
+
+    fn qs_password_button_rects(&self) -> (Rect, Rect) {
+        let r = self.quick_settings_rect();
+        let field = self.qs_password_field_rect();
+        let y = field.y1 + 34.0;
+        let h = 36.0_f64;
+        let gap = 10.0_f64;
+        let w = (r.width() - 32.0 - gap) / 2.0;
+        let cancel = Rect::new(r.x0 + 16.0, y, r.x0 + 16.0 + w, y + h);
+        let connect = Rect::new(r.x1 - 16.0 - w, y, r.x1 - 16.0, y + h);
+        (cancel, connect)
+    }
+
+    /// The "join this protected network" prompt.
+    fn draw_qs_wifi_password(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+
+        // The header names the network, because by the time the keyboard
+        // has focus the list that named it is gone.
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, &prompt.ssid);
+
+        // Sub-line: what is being asked for, and why.
+        let sub_y = rect.y0 + 66.0;
+        let lock_box = Rect::new(rect.x0 + 16.0, sub_y, rect.x0 + 32.0, sub_y + 16.0);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            lock_box,
+            ui::icons::Icon::Shield,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "This network is protected",
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((lock_box.x1 + 8.0, sub_y + 1.0)),
+            None,
+            TextWeight::Medium,
+        );
+
+        // The field. Focused for as long as it is on screen — it is the
+        // only thing on the pane that takes typing, so a focus ring that
+        // could be off would only ever be a bug.
+        let field = self.qs_password_field_rect();
+        let field_shape = RoundedRect::from_rect(field, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &field_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            if prompt.error.is_some() {
+                colors.semantic.danger
+            } else {
+                colors.border_focus
+            },
+            None,
+            &field_shape,
+        );
+
+        let text_size = tokens.typography.scale.sm;
+        let masked = crate::shell::text_entry::masked(&prompt.password);
+        let text_x = field.x0 + 12.0;
+        let (mask_w, mask_h) = text_renderer.measure_weighted(
+            &masked,
+            text_size,
+            None,
+            TextWeight::Medium,
+        );
+        let text_y = field.y0 + (field.height() - mask_h as f64) / 2.0;
+        if masked.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Password",
+                text_size,
+                colors.text_dim.with_alpha_factor(0.6),
+                transform * Affine::translate((text_x, text_y)),
+                None,
+                TextWeight::Medium,
+            );
+        } else {
+            text_renderer.draw_text_weighted(
+                scene,
+                &masked,
+                text_size,
+                colors.text_primary,
+                transform * Affine::translate((text_x, text_y)),
+                None,
+                TextWeight::Medium,
+            );
+        }
+        // Caret. Masked text is uniform-width bullets, so the caret's x
+        // is proportional to how many characters precede it — which is
+        // the only thing a masked field can honestly show.
+        let chars = prompt.password.chars().count();
+        let caret_chars = prompt.password[..prompt.selection.cursor.min(prompt.password.len())]
+            .chars()
+            .count();
+        let caret_x = if chars == 0 {
+            text_x
+        } else {
+            text_x + mask_w as f64 * (caret_chars as f64 / chars as f64)
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.text_primary,
+            None,
+            &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
+        );
+
+        // A failed attempt says so where the eye already is, rather than
+        // as a toast that would outlive the prompt.
+        if let Some(err) = prompt.error.as_ref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                err,
+                tokens.typography.scale.xs,
+                colors.semantic.danger,
+                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+        } else if prompt.connecting {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Connecting…",
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+        }
+
+        // Buttons.
+        let (cancel, connect) = self.qs_password_button_rects();
+        let cancel_shape = RoundedRect::from_rect(cancel, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &cancel_shape,
+        );
+        Self::draw_centred_label(
+            scene,
+            transform,
+            text_renderer,
+            cancel,
+            "Cancel",
+            text_size,
+            colors.text_dim,
+        );
+
+        let live = prompt.can_submit();
+        let connect_shape = RoundedRect::from_rect(connect, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if live {
+                colors.accent[5]
+            } else {
+                // Not merely dim: a disabled primary button that still
+                // looks primary invites the click it will ignore.
+                colors.accent[5].with_alpha_factor(0.28)
+            },
+            None,
+            &connect_shape,
+        );
+        Self::draw_centred_label(
+            scene,
+            transform,
+            text_renderer,
+            connect,
+            if prompt.connecting {
+                "Connecting…"
+            } else {
+                "Connect"
+            },
+            text_size,
+            if live {
+                colors.text_primary
+            } else {
+                colors.text_primary.with_alpha_factor(0.5)
+            },
+        );
+    }
+
+    /// Centre a label inside `rect`. Small enough to inline, used often
+    /// enough in the popover that three copies had already drifted.
+    fn draw_centred_label(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        rect: Rect,
+        label: &str,
+        size: f32,
+        color: vello::peniko::Color,
+    ) {
+        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            size,
+            color,
+            transform
+                * Affine::translate((
+                    rect.center().x - w as f64 / 2.0,
+                    rect.center().y - h as f64 / 2.0,
+                )),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// Render the Bluetooth drill-in pane: header + list of `bt_devices`
@@ -9770,6 +10228,265 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod wifi_password_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::quick_settings::{QsLevel, WifiNetwork};
+    use crate::shell::state::WorkspaceTree;
+    use std::cell::RefCell;
+    use ui::widget::Container;
+
+    /// Records the join attempts and can be told to reject them, so the
+    /// failure branch is exercised without a radio.
+    #[derive(Default)]
+    struct JoinRecorder {
+        attempts: RefCell<Vec<(String, Option<String>)>>,
+        reject: bool,
+    }
+
+    impl crate::shell::qs_actions::QsActions for JoinRecorder {
+        fn set_brightness(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_volume(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_bluetooth(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.attempts
+                .borrow_mut()
+                .push((ssid.to_string(), password.map(str::to_string)));
+            if self.reject {
+                Err("Secrets were required, but not provided".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A host sitting on the Wi-Fi drill-in with one protected network
+    /// and one open one visible.
+    fn host_on_wifi_pane(
+        reject: bool,
+    ) -> (
+        ShellOverlayHost,
+        crate::shell::chrome_state::Chrome,
+        std::rc::Rc<JoinRecorder>,
+    ) {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let rec = std::rc::Rc::new(JoinRecorder {
+            attempts: RefCell::new(Vec::new()),
+            reject,
+        });
+        struct Shim(std::rc::Rc<JoinRecorder>);
+        impl crate::shell::qs_actions::QsActions for Shim {
+            fn set_brightness(&self, v: f32) -> Result<(), String> {
+                self.0.set_brightness(v)
+            }
+            fn set_volume(&self, v: f32) -> Result<(), String> {
+                self.0.set_volume(v)
+            }
+            fn set_wifi(&self, v: bool) -> Result<(), String> {
+                self.0.set_wifi(v)
+            }
+            fn set_bluetooth(&self, v: bool) -> Result<(), String> {
+                self.0.set_bluetooth(v)
+            }
+            fn connect_wifi(&self, s: &str, p: Option<&str>) -> Result<(), String> {
+                self.0.connect_wifi(s, p)
+            }
+            fn set_power_profile(&self, p: os_actions::PowerProfile) -> Result<(), String> {
+                self.0.set_power_profile(p)
+            }
+        }
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.nav_stack = vec![QsLevel::Root, QsLevel::Wifi];
+            st.quick_settings.wifi_networks = vec![
+                WifiNetwork {
+                    ssid: "Cafe WiFi".into(),
+                    signal: 3,
+                    secure: true,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "Airport Free".into(),
+                    signal: 2,
+                    secure: false,
+                    connected: false,
+                },
+            ];
+        }
+        let host = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone())
+            .with_qs_actions(Box::new(Shim(rec.clone())));
+        (host, chrome, rec)
+    }
+
+    fn press(h: &mut ShellOverlayHost, key: Key) {
+        let mods = winit::event::Modifiers::default();
+        h.handle_wifi_password_key(&key, &mods);
+    }
+
+    fn ch(s: &str) -> Key {
+        Key::Character(s.into())
+    }
+
+    #[test]
+    fn a_protected_network_asks_for_a_password_instead_of_failing_silently() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        let prompt = chrome.borrow().quick_settings.wifi_password.clone();
+        let prompt = prompt.expect("a prompt is up");
+        assert_eq!(prompt.ssid, "Cafe WiFi");
+        assert!(prompt.password.is_empty());
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "nothing is attempted until there is a password to attempt with"
+        );
+        assert!(
+            !prompt.can_submit(),
+            "Connect stays inert until something is typed"
+        );
+    }
+
+    #[test]
+    fn typing_reaches_the_buffer_and_never_the_palette() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["h", "u", "n", "k"] {
+            press(&mut h, ch(c));
+        }
+        assert_eq!(
+            chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().password,
+            "hunk"
+        );
+        assert!(
+            !h.palette_visible,
+            "a 'k' in a password must be a character, not the search chord"
+        );
+    }
+
+    #[test]
+    fn enter_submits_the_typed_password_to_the_join() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["p", "w", "1"] {
+            press(&mut h, ch(c));
+        }
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert_eq!(
+            rec.attempts.borrow().as_slice(),
+            [("Cafe WiFi".to_string(), Some("pw1".to_string()))],
+            "the passphrase reaches nmcli — this is the whole point of the field"
+        );
+        let st = chrome.borrow();
+        assert!(
+            st.quick_settings.wifi_password.is_none(),
+            "a successful join closes the prompt"
+        );
+        assert!(
+            st.quick_settings
+                .wifi_networks
+                .iter()
+                .any(|n| n.ssid == "Cafe WiFi" && n.connected),
+            "the list the user lands back on shows the network they just joined"
+        );
+    }
+
+    #[test]
+    fn a_rejected_password_keeps_the_prompt_up_and_says_why() {
+        let (mut h, chrome, _) = host_on_wifi_pane(true);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["b", "a", "d"] {
+            press(&mut h, ch(c));
+        }
+        press(&mut h, Key::Named(NamedKey::Enter));
+        let st = chrome.borrow();
+        let p = st
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .expect("the prompt survives a rejection");
+        assert!(!p.connecting, "the attempt is over");
+        assert!(p.error.is_some(), "and the reason is on screen");
+        assert_eq!(p.password, "bad", "a typo is a correction, not a retype");
+        assert_eq!(
+            (p.selection.anchor, p.selection.cursor),
+            (0, 3),
+            "and it is selected, so the next keystroke replaces it"
+        );
+    }
+
+    #[test]
+    fn typing_after_a_rejection_clears_the_stale_error() {
+        let (mut h, chrome, _) = host_on_wifi_pane(true);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("x"));
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert!(chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().error.is_some());
+        press(&mut h, ch("y"));
+        assert!(
+            chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().error.is_none(),
+            "the message was about the old value"
+        );
+    }
+
+    #[test]
+    fn escape_backs_out_and_takes_the_password_with_it() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("s"));
+        press(&mut h, Key::Named(NamedKey::Escape));
+        assert!(chrome.borrow().quick_settings.wifi_password.is_none());
+        assert!(rec.attempts.borrow().is_empty());
+    }
+
+    #[test]
+    fn closing_the_popover_discards_a_half_typed_password() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("s"));
+        chrome.borrow_mut().overlays.quick_settings = false;
+        h.clear_stale_wifi_password();
+        assert!(
+            chrome.borrow().quick_settings.wifi_password.is_none(),
+            "a password buffer must not outlive the window it was typed into"
+        );
+    }
+
+    #[test]
+    fn an_empty_password_is_never_submitted() {
+        let (mut h, _chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "every WPA network rejects an empty passphrase; asking wastes a round trip"
+        );
+    }
+
+    #[test]
+    fn no_prompt_means_keys_fall_through_to_the_shell() {
+        let (mut h, _chrome, _) = host_on_wifi_pane(false);
+        let mods = winit::event::Modifiers::default();
+        assert!(
+            !h.handle_wifi_password_key(&ch("k"), &mods),
+            "with no field up, the shell's own chords must still work"
+        );
     }
 }
 

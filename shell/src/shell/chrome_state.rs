@@ -169,6 +169,10 @@ pub struct QuickSettingsState {
     /// Demo Bluetooth devices rendered in the BT drill-in list. Mock data
     /// until real pairing lands; concept ref: `QuickSettings.tsx:140-160`.
     pub bt_devices: Vec<BtDevice>,
+    /// The passphrase prompt for a protected network, while one is up.
+    /// `None` the rest of the time — the buffer only exists for as long
+    /// as the user is typing into it.
+    pub wifi_password: Option<crate::shell::quick_settings::WifiPasswordPrompt>,
     /// Active power profile, mirrored from `powerprofilesctl` when the
     /// panel opens and pushed back via `set_power_profile` when the
     /// user cycles the chip. Defaults to `Balanced` so a host without
@@ -190,6 +194,7 @@ impl Default for QuickSettingsState {
             // a fresh boot never shows a network it isn't actually seeing.
             wifi_networks: Vec::new(),
             bt_devices: Vec::new(),
+            wifi_password: None,
             power_profile: PowerProfile::Balanced,
         }
     }
