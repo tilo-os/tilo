@@ -32,6 +32,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wayland_client::protocol::{
+    wl_buffer::WlBuffer,
     wl_compositor::WlCompositor,
     wl_data_device::{self, WlDataDevice},
     wl_data_device_manager::{DndAction, WlDataDeviceManager},
@@ -41,6 +42,8 @@ use wayland_client::protocol::{
     wl_pointer::{self, WlPointer},
     wl_registry::{self, WlRegistry},
     wl_seat::{self, WlSeat},
+    wl_shm::{Format, WlShm},
+    wl_shm_pool::WlShmPool,
     wl_surface::WlSurface,
 };
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
@@ -334,6 +337,7 @@ struct ClientState {
     seat_name: Option<String>,
     data_manager: Option<WlDataDeviceManager>,
     primary_manager: Option<ZwpPrimarySelectionDeviceManagerV1>,
+    shm: Option<WlShm>,
 
     /// Set once `xdg_surface.configure` has been acked — the surface is mapped.
     configured: bool,
@@ -365,9 +369,11 @@ struct ClientState {
     dnd_entered: bool,
     dnd_dropped: bool,
 
-    /// Text this client will serve when a peer asks for its selection, and
-    /// the mime types it was asked for.
-    served_text: String,
+    /// Mime types this client was asked to serve. The *text* is not stored
+    /// here: it rides along as each source's user data, so a client that owns
+    /// the clipboard and the primary selection at once serves each from its
+    /// own string instead of both from one field that the second `set_*` call
+    /// would have overwritten.
     send_requests: Vec<String>,
     /// Set when the compositor told our source it was superseded.
     source_cancelled: bool,
@@ -476,6 +482,16 @@ impl TestClient {
             self.primary_device = Some(mgr.get_device(&seat, &self.qh, ()));
         }
 
+        // Paint something. A toplevel with no buffer has no size, so the
+        // compositor lays its tile out at zero area and the window is not
+        // addressable — a drag could not be aimed at it. Attaching a real
+        // `wl_shm` buffer is also just what an app does.
+        self.wait_until(
+            |s| s.configured,
+            "the compositor never sent an xdg_surface.configure",
+        );
+        self.attach_buffer(320, 240);
+
         let started = Instant::now();
         while started.elapsed() < DEADLINE {
             if self.state.keyboard_focused {
@@ -492,6 +508,41 @@ impl TestClient {
             self.app_id,
             compositor.debug_state(),
         );
+    }
+
+    /// Attach an opaque `wl_shm` buffer of `width * height` and commit it, so
+    /// the compositor has real content to size and composite the tile from.
+    fn attach_buffer(&mut self, width: i32, height: i32) {
+        let shm = self.state.shm.clone().expect("compositor advertises wl_shm");
+        let stride = width * 4;
+        let len = (stride * height) as usize;
+
+        // An anonymous in-memory file is the standard backing for a shm pool.
+        // SAFETY: a null-terminated name and a valid flag word are the whole
+        // contract of `memfd_create`.
+        let raw = unsafe { libc::memfd_create(c"qos-clipboard-e2e".as_ptr(), 0) };
+        assert!(raw >= 0, "memfd_create: {}", std::io::Error::last_os_error());
+        // SAFETY: `memfd_create` just handed us this descriptor and nothing
+        // else owns it.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let file = std::fs::File::from(fd);
+        file.set_len(len as u64).expect("size the shm pool");
+        // Opaque mid-grey, so a rendered frame is visibly the client's own.
+        let pixels = vec![0x80u8; len];
+        {
+            use std::os::unix::fs::FileExt;
+            file.write_at(&pixels, 0).expect("fill the shm pool");
+        }
+
+        use std::os::unix::io::AsFd;
+        let pool = shm.create_pool(file.as_fd(), len as i32, &self.qh, ());
+        let buffer = pool.create_buffer(0, width, height, stride, Format::Argb8888, &self.qh, ());
+        let surface = self.surface.clone().expect("surface exists once mapped");
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage(0, 0, width, height);
+        surface.commit();
+        self.roundtrip();
+        self.step(&format!("attached a {width}x{height} buffer"));
     }
 
     /// Note a milestone. Visible under `--nocapture`, so a run that stalls
@@ -542,9 +593,8 @@ impl TestClient {
             .data_device
             .clone()
             .expect("data device bound in map_window");
-        let source = mgr.create_data_source(&self.qh, ());
+        let source = mgr.create_data_source(&self.qh, text.to_string());
         source.offer(TEXT_MIME.to_string());
-        self.state.served_text = text.to_string();
         device.set_selection(Some(&source), self.state.last_serial);
         self.roundtrip();
     }
@@ -560,9 +610,8 @@ impl TestClient {
             .primary_device
             .clone()
             .expect("primary device bound in map_window");
-        let source = mgr.create_source(&self.qh, ());
+        let source = mgr.create_source(&self.qh, text.to_string());
         source.offer(TEXT_MIME.to_string());
-        self.state.served_text = text.to_string();
         device.set_selection(Some(&source), self.state.last_serial);
         self.roundtrip();
     }
@@ -725,6 +774,9 @@ impl Dispatch<WlRegistry, ()> for ClientState {
             }
             "zwp_primary_selection_device_manager_v1" => {
                 state.primary_manager = Some(registry.bind(name, 1, qh, ()));
+            }
+            "wl_shm" => {
+                state.shm = Some(registry.bind(name, 1, qh, ()));
             }
             _ => {}
         }
@@ -930,19 +982,19 @@ impl Dispatch<WlDataOffer, ()> for ClientState {
     }
 }
 
-impl Dispatch<WlDataSource, ()> for ClientState {
+impl Dispatch<WlDataSource, String> for ClientState {
     fn event(
         state: &mut Self,
         _: &WlDataSource,
         event: wl_data_source::Event,
-        _: &(),
+        served_text: &String,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
             wl_data_source::Event::Send { mime_type, fd } => {
                 state.send_requests.push(mime_type);
-                write_and_close(fd, &state.served_text);
+                write_and_close(fd, served_text);
             }
             wl_data_source::Event::Cancelled => state.source_cancelled = true,
             _ => {}
@@ -998,19 +1050,19 @@ impl Dispatch<ZwpPrimarySelectionOfferV1, ()> for ClientState {
     }
 }
 
-impl Dispatch<ZwpPrimarySelectionSourceV1, ()> for ClientState {
+impl Dispatch<ZwpPrimarySelectionSourceV1, String> for ClientState {
     fn event(
         state: &mut Self,
         _: &ZwpPrimarySelectionSourceV1,
         event: zwp_primary_selection_source_v1::Event,
-        _: &(),
+        served_text: &String,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
             zwp_primary_selection_source_v1::Event::Send { mime_type, fd } => {
                 state.send_requests.push(mime_type);
-                write_and_close(fd, &state.served_text);
+                write_and_close(fd, served_text);
             }
             zwp_primary_selection_source_v1::Event::Cancelled => state.source_cancelled = true,
             _ => {}
@@ -1022,6 +1074,9 @@ delegate_noop!(ClientState: ignore WlCompositor);
 delegate_noop!(ClientState: ignore WlSurface);
 delegate_noop!(ClientState: ignore WlDataDeviceManager);
 delegate_noop!(ClientState: ignore ZwpPrimarySelectionDeviceManagerV1);
+delegate_noop!(ClientState: ignore WlShm);
+delegate_noop!(ClientState: ignore WlShmPool);
+delegate_noop!(ClientState: ignore WlBuffer);
 
 /// Answer a `send` request: write the served text and close, since closing is
 /// what signals EOF to the reader.
@@ -1314,10 +1369,9 @@ fn drag_and_drop_carries_data_between_two_clients() {
         .clone()
         .expect("wl_data_device_manager");
     let device = source.data_device.clone().expect("data device");
-    let drag_source = mgr.create_data_source(&source.qh, ());
+    let drag_source = mgr.create_data_source(&source.qh, payload.to_string());
     drag_source.offer(TEXT_MIME.to_string());
     drag_source.set_actions(DndAction::Copy);
-    source.state.served_text = payload.to_string();
     let grab_serial = source.state.pointer_button_serial.expect("grab serial");
     device.start_drag(
         Some(&drag_source),
