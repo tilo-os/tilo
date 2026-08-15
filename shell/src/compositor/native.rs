@@ -1560,6 +1560,13 @@ pub fn run() -> ! {
     // Set when the output set changed this tick, so everything derived
     // from it is re-derived once per batch rather than once per udev edge.
     let mut outputs_dirty = false;
+
+    // Pointer / keyboard preferences are read once at startup; this
+    // notices when the Settings app writes a new value so pointer speed,
+    // natural scroll and tap-to-click take effect in the session the user
+    // changed them in rather than the next one.
+    let mut settings_watch =
+        crate::compositor::backend::drm::input_config::SettingsWatch::new();
     // Redraw gating. The loop used to `paint()` + `submit_frame()` on
     // every tick regardless of whether anything changed, pinning a CPU
     // core at 100% (and driving needless GPU work) even on a completely
@@ -1792,6 +1799,15 @@ pub fn run() -> ! {
                     // Focus changes don't gate input dispatch here.
                 }
             }
+        }
+
+        // The Settings app writes to a file; nothing tells the compositor.
+        // Poll it (cheaply, once a second) so a preference the user just
+        // changed reaches the input devices and the display scale.
+        if settings_watch.changed(Instant::now()) {
+            tracing::info!("compositor: settings changed on disk; re-applying");
+            backend.reload_input_settings();
+            outputs_dirty = true;
         }
 
         // Re-derive everything that depends on the output set, once, after

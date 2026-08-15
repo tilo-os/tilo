@@ -24,7 +24,8 @@
 //! on alongside it to buy back what libinput was being cautious about, and
 //! the setting remains the user's to flip.
 
-use std::time::Duration;
+use std::path::PathBuf;
+use std::time::{Duration, Instant, SystemTime};
 
 /// Settings section these values live in.
 pub const SECTION: &str = "input";
@@ -129,6 +130,85 @@ impl InputSettings {
             Duration::from_millis(delay.round() as u64),
             rate.round() as u32,
         )
+    }
+}
+
+/// How often the settings file is stat'ed for changes.
+///
+/// A poll rather than an inotify watch: the compositor already has a loop
+/// running at the display's cadence, and one `stat` a second on a file in
+/// the page cache is far less machinery than a filesystem watcher plus its
+/// event source, for a change a human makes at most a few times a session.
+pub const SETTINGS_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Notices when the settings file changes, so a preference the user just
+/// flipped in Settings takes effect without restarting the session.
+pub struct SettingsWatch {
+    path: Option<PathBuf>,
+    /// Modification time as of the last check. `None` before the first
+    /// check, and while the file does not exist.
+    last: Option<SystemTime>,
+    /// Whether a check has happened at all. Distinguishes "no file yet"
+    /// from "not looked yet", so the file appearing for the first time
+    /// counts as a change rather than as the baseline.
+    primed: bool,
+    next_check: Option<Instant>,
+    interval: Duration,
+}
+
+impl Default for SettingsWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SettingsWatch {
+    /// Watch the real settings file.
+    pub fn new() -> Self {
+        Self::at(settings_store::settings_path())
+    }
+
+    /// Watch an explicit path — how the tests drive it without touching
+    /// the user's real configuration.
+    pub fn at(path: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            last: None,
+            primed: false,
+            next_check: None,
+            interval: SETTINGS_POLL_INTERVAL,
+        }
+    }
+
+    /// Use a different poll interval. Tests set it to zero so they do not
+    /// have to wait out a real second.
+    pub fn with_interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
+        self
+    }
+
+    /// Whether the settings file has changed since the last time this
+    /// returned `true`. Rate-limited to [`Self::with_interval`]; calls in
+    /// between are free.
+    pub fn changed(&mut self, now: Instant) -> bool {
+        if let Some(next) = self.next_check {
+            if now < next {
+                return false;
+            }
+        }
+        self.next_check = Some(now + self.interval);
+        let Some(path) = self.path.as_ref() else {
+            return false;
+        };
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let first_look = !self.primed;
+        self.primed = true;
+        let moved = mtime != self.last;
+        self.last = mtime;
+        // The first look establishes the baseline rather than reporting a
+        // change — otherwise every session start would re-apply settings
+        // that were already applied at construction.
+        moved && !first_look
     }
 }
 
@@ -451,5 +531,96 @@ mod tests {
         assert!(touchpad().is_touchpad());
         assert!(!mouse().is_touchpad());
         assert!(!keyboard().is_touchpad());
+    }
+
+    // ---------------- settings watch ----------------
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("qos-input-watch-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir.join("settings.json")
+    }
+
+    fn watch(path: &PathBuf) -> SettingsWatch {
+        SettingsWatch::at(Some(path.clone())).with_interval(Duration::ZERO)
+    }
+
+    #[test]
+    fn the_first_look_is_a_baseline_not_a_change() {
+        // Otherwise every session start re-applies settings that were
+        // already applied while constructing the backend.
+        let path = scratch("baseline");
+        std::fs::write(&path, "{}").expect("write");
+        let mut w = watch(&path);
+        assert!(!w.changed(Instant::now()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_write_is_noticed_once() {
+        let path = scratch("write");
+        std::fs::write(&path, r#"{"input":{"tap_to_click":true}}"#).expect("write");
+        let mut w = watch(&path);
+        assert!(!w.changed(Instant::now()), "baseline");
+
+        // A same-second rewrite can land on the same mtime on filesystems
+        // with coarse timestamps, so move it explicitly rather than racing
+        // the clock — the watch's contract is "the mtime moved", and this
+        // is the honest way to make it move in a test.
+        std::fs::write(&path, r#"{"input":{"tap_to_click":false}}"#).expect("rewrite");
+        let moved = std::time::SystemTime::now() + Duration::from_secs(2);
+        let f = std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open for times");
+        f.set_modified(moved).expect("set mtime");
+        drop(f);
+
+        assert!(w.changed(Instant::now()), "the rewrite must be noticed");
+        assert!(
+            !w.changed(Instant::now()),
+            "and only once — re-applying every tick would fight the user"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_file_appearing_for_the_first_time_counts_as_a_change() {
+        // A fresh install has no settings.json until the user opens
+        // Settings; the first write is exactly when the compositor has to
+        // start honouring it.
+        let path = scratch("appear");
+        let _ = std::fs::remove_file(&path);
+        let mut w = watch(&path);
+        assert!(!w.changed(Instant::now()), "baseline: no file");
+        std::fs::write(&path, "{}").expect("write");
+        assert!(w.changed(Instant::now()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn checks_are_rate_limited() {
+        // The loop runs at the display's cadence; stat'ing 144 times a
+        // second for a file a human edits occasionally is waste.
+        let path = scratch("ratelimit");
+        std::fs::write(&path, "{}").expect("write");
+        let mut w =
+            SettingsWatch::at(Some(path.clone())).with_interval(Duration::from_secs(3600));
+        let now = Instant::now();
+        assert!(!w.changed(now), "baseline");
+        std::fs::remove_file(&path).expect("remove");
+        assert!(
+            !w.changed(now),
+            "a second call inside the interval must not even look"
+        );
+    }
+
+    #[test]
+    fn a_watch_with_no_settings_path_never_reports_a_change() {
+        // No config directory at all — a container with no HOME. The
+        // compositor must not spin on it.
+        let mut w = SettingsWatch::at(None).with_interval(Duration::ZERO);
+        assert!(!w.changed(Instant::now()));
+        assert!(!w.changed(Instant::now()));
     }
 }
