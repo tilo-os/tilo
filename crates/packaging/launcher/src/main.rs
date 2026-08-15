@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registry;
 use launcher::run::{LaunchMode, RunError, RunOptions, run};
@@ -132,14 +133,67 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
     },
-    /// Resolve an installed package by id and launch it. Not yet
-    /// implemented — the package store / index lives in `qos-pkg`.
+    /// Resolve an installed package by id and launch its GUI
+    /// entrypoint under the sandbox.
+    ///
+    /// The counterpart to `run`, which takes a manifest path and a
+    /// payload root: this takes the reverse-DNS id and looks both up in
+    /// the registry `qos-install` writes.
     Exec {
         /// Reverse-DNS package identifier.
         #[arg(long)]
         package: String,
         #[arg(long)]
         no_services: bool,
+        /// Host path of the Wayland socket the app should connect to.
+        /// Omit for a package with no GUI entrypoint.
+        #[arg(long)]
+        wayland_socket: Option<PathBuf>,
+        /// Collaboration room to launch into. See `run --workspace-id`.
+        #[arg(long)]
+        workspace_id: Option<String>,
+        /// A document for the app to open, as an absolute host path.
+        /// An argument, not a permission — see `run --open`.
+        #[arg(long)]
+        open: Option<PathBuf>,
+        /// Fall back to `--minimal-libs` when the manifest declares a
+        /// runtime bundle that is not installed.
+        #[arg(long)]
+        allow_missing_runtime: bool,
+        /// Accept an unsigned runtime bundle. Bring-up / debugging only.
+        #[arg(long)]
+        allow_unsigned_runtime: bool,
+    },
+    /// Launch an application qOS did **not** package: a `.desktop`
+    /// entry already installed on the host, Flatpak or otherwise.
+    ///
+    /// This runs the entry's own command line UNCONFINED — no qOS
+    /// sandbox, no collaboration room, no per-room state directory. A
+    /// Flatpak brings its own sandbox and cannot start inside qOS's; a
+    /// distribution binary has no manifest to build one from. See the
+    /// `launcher::host` module docs.
+    RunHost {
+        /// Desktop-file id, as printed by `qos-desktop-scan`
+        /// (`com.spotify.Client`, `org.gnome.TextEditor`).
+        #[arg(long)]
+        desktop_id: String,
+        /// Host path of the compositor's Wayland socket, e.g.
+        /// `/run/user/1000/wayland-1`. `WAYLAND_DISPLAY` and
+        /// `XDG_RUNTIME_DIR` are both derived from it, so the app
+        /// connects to the compositor that launched it.
+        #[arg(long)]
+        wayland_socket: Option<PathBuf>,
+        /// A file for the application to open. Expands the entry's
+        /// `%f`/`%F` field codes (and `%u`/`%U` as a `file://` URL).
+        #[arg(long)]
+        open: Option<PathBuf>,
+        /// A URL for the application to open. Expands `%u`/`%U`.
+        #[arg(long)]
+        open_url: Option<String>,
+        /// Print the resolved argv and environment and exit without
+        /// running anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -217,11 +271,141 @@ fn main() -> ExitCode {
             minimal_libs,
             rest,
         } => run_installed(&package, &command, no_services, minimal_libs, rest),
-        Cmd::Exec { package, .. } => {
+        Cmd::Exec {
+            package,
+            no_services,
+            wayland_socket,
+            workspace_id,
+            open,
+            allow_missing_runtime,
+            allow_unsigned_runtime,
+        } => exec_installed(
+            &package,
+            no_services,
+            wayland_socket,
+            workspace_id,
+            open,
+            allow_missing_runtime,
+            allow_unsigned_runtime,
+        ),
+        Cmd::RunHost {
+            desktop_id,
+            wayland_socket,
+            open,
+            open_url,
+            dry_run,
+        } => run_host(desktop_id, wayland_socket, open, open_url, dry_run),
+    }
+}
+
+/// Resolve `package` in the registry and launch its GUI entrypoint.
+///
+/// The registry lookup is the whole difference from `run`: everything
+/// after it is the same sandboxed launch, built from the same manifest
+/// by the same code. In particular the app still gets exactly one
+/// writable directory, chosen by the launcher, and no flag here can
+/// change that.
+fn exec_installed(
+    package: &str,
+    no_services: bool,
+    wayland_socket: Option<PathBuf>,
+    workspace_id: Option<String>,
+    open: Option<PathBuf>,
+    allow_missing_runtime: bool,
+    allow_unsigned_runtime: bool,
+) -> ExitCode {
+    let entry = match registry::find_installed(package) {
+        Ok(Some(e)) => e,
+        Ok(None) => {
             eprintln!(
-                "qos-launcher exec --package {package}: not yet implemented (requires qos-pkg package-store integration)"
+                "qos-launcher: package {package} is not installed. \
+                 Run `qos-install list` to see what is."
             );
-            ExitCode::from(2)
+            return ExitCode::from(2);
+        }
+        Err(e) => {
+            eprintln!("qos-launcher: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let manifest = match launcher::manifest::read_manifest(&entry.manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("qos-launcher: manifest read: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    if manifest.entrypoint.gui_bin().is_none() {
+        eprintln!(
+            "qos-launcher: {package} declares no GUI entrypoint. \
+             Use `qos-launcher run-installed --package {package} --command <name>` \
+             for a CLI package."
+        );
+        return ExitCode::from(2);
+    }
+    let opts = RunOptions {
+        no_services,
+        mode: LaunchMode::Gui,
+        landlock_enforce: true,
+        allow_missing_runtime,
+        allow_unsigned_runtime,
+        wayland_socket,
+        workspace_id,
+        app_id: Some(package.to_string()),
+        open_document: open,
+        ..Default::default()
+    };
+    match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("qos-launcher: {e}");
+            ExitCode::from(e.to_exit_code() as u8)
+        }
+    }
+}
+
+/// Launch a host application. Unconfined — see [`launcher::host`].
+fn run_host(
+    desktop_id: String,
+    wayland_socket: Option<PathBuf>,
+    open: Option<PathBuf>,
+    open_url: Option<String>,
+    dry_run: bool,
+) -> ExitCode {
+    let env = LaunchEnv {
+        wayland_socket,
+        files: open
+            .as_ref()
+            .map(|p| vec![p.display().to_string()])
+            .unwrap_or_default(),
+        urls: open_url.into_iter().collect(),
+    };
+    if dry_run {
+        return match launcher::host::plan_host(&desktop_id, &env) {
+            Ok(plan) => {
+                println!("desktop-id : {}", plan.desktop_id);
+                println!("name       : {}", plan.display_name);
+                println!("source     : {}", plan.source.label());
+                println!("confined   : {}", plan.is_confined());
+                println!("program    : {}", plan.program.display());
+                println!("args       : {:?}", plan.args);
+                println!("windows    : {:?}", plan.window_identities);
+                for (k, v) in &plan.env {
+                    println!("env        : {k}={v}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("qos-launcher: {e}");
+                ExitCode::from(2)
+            }
+        };
+    }
+    match launcher::host::run_host(&desktop_id, &env) {
+        Ok(status) => ExitCode::from(status.code().unwrap_or(1) as u8),
+        Err(e) => {
+            eprintln!("qos-launcher: {e}");
+            ExitCode::from(e.to_exit_code() as u8)
         }
     }
 }
