@@ -1553,7 +1553,10 @@ impl Widget for TabBar {
                     &shape,
                 );
             }
-            let glyph = 14.0_f64;
+            // Deliberately smaller than the per-tab action glyphs: at
+            // 14 px the plus's arms nearly touched the ring and the chip
+            // read as crowded rather than as an empty slot.
+            let glyph = 11.0_f64;
             let c = r.center();
             let glyph_rect = Rect::new(
                 c.x - glyph / 2.0,
