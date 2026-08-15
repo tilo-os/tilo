@@ -58,35 +58,49 @@ CUR="$(bootctl 2>/dev/null | sed -n 's/^ *Current Entry: *//p' | head -1)"
 [ -n "$CUR" ] && ok "current entry: $CUR" || bad "bootctl could not name the current entry"
 
 # --- the repair entry ---------------------------------------------------------
-CONF="$ESP/loader/entries/qos-repair.conf"
-if [ -r "$CONF" ]; then
-  ok "the repair loader entry is on the ESP"
+# A Type #2 entry: a bare .efi at the top of EFI/Linux, discovered by sd-boot,
+# with no .conf. bootc parses every .conf in loader/entries as one of its own and
+# `bootc status` fails outright on a foreign one, so the absence of a .conf here
+# is an assertion, not an omission.
+REPAIR_UKI="$ESP/EFI/Linux/qos-repair.efi"
+if [ -f "$REPAIR_UKI" ]; then
+  ok "the repair image is on the ESP: EFI/Linux/qos-repair.efi ($(stat -c %s "$REPAIR_UKI") bytes)"
 else
-  bad "no $CONF. qos-boot-entries.service is what makes it; its journal says why
-      it did not:  journalctl -u qos-boot-entries"
+  bad "no $REPAIR_UKI. qos-boot-entries.service is what makes it; its journal says
+      why it did not:  journalctl -u qos-boot-entries"
+  REPAIR_UKI=""
+fi
+if [ -e "$ESP/loader/entries/qos-repair.conf" ]; then
+  bad "a qos-repair.conf is in loader/entries. bootc parses every file there as one
+      of its own and fails with 'efi does not start with custom prefix', which
+      takes bootc status and bootc upgrade with it."
+else
+  ok "and no loader entry beside it, which is what keeps bootc able to read its own"
+fi
+if bootc status --format json >/dev/null 2>&1; then
+  ok "bootc can still read its own state with the repair image present"
+else
+  bad "bootc status FAILS on this machine. The repair image must not be able to do
+      that; whatever is in loader/entries is the first place to look.
+      $(bootc status 2>&1 | tail -2)"
 fi
 
-REPAIR_UKI=""
-if [ -r "$CONF" ]; then
-  rel="$(sed -n 's/^uki *//p' "$CONF" | head -1)"
-  REPAIR_UKI="$ESP/${rel#/}"
-  if [ -f "$REPAIR_UKI" ]; then
-    ok "it names a UKI that exists: $rel ($(stat -c %s "$REPAIR_UKI") bytes)"
-  else
-    bad "the repair entry names $rel, which is not on the ESP. sd-boot would offer
-        a menu entry that cannot boot."
-  fi
-  sk="$(sed -n 's/^sort-key *//p' "$CONF" | head -1)"
+# Title and ordering come from the image's own .osrel on a Type #2 entry.
+if [ -n "$REPAIR_UKI" ] && command -v /usr/libexec/qos-uki-cmdline >/dev/null 2>&1; then
+  osrel="$(/usr/libexec/qos-uki-cmdline osrel "$REPAIR_UKI" 2>/dev/null)"
+  title="$(printf '%s' "$osrel" | sed -n 's/^PRETTY_NAME=//p' | head -1)"
+  sk="$(printf '%s' "$osrel" | sed -n 's/^SORT_KEY=//p' | head -1)"
+  case "$title" in
+    *[Rr]epair*) ok "its menu title is '$title'" ;;
+    *) bad "the repair image would appear in the boot menu as '${title:-<none>}' —
+        indistinguishable from the system it exists to repair." ;;
+  esac
   if [ -n "$sk" ] && [ "$sk" \> "bootc-zzzzzzzz-9" ]; then
     ok "its sort key ($sk) puts it below every deployment entry"
   else
-    bad "the repair entry's sort key is '${sk:-<none>}', which does not sort after
-        bootc's. sd-boot would offer repair mode ahead of a working system."
+    bad "the repair image's sort key is '${sk:-<none>}', which does not sort after
+        bootc's. sd-boot could offer repair mode ahead of a working system."
   fi
-  case "$(basename "$CONF")" in
-    *+*) bad "the repair entry carries a boot counter — a fallback that expires" ;;
-    *)   ok "it carries no boot counter, so it never expires" ;;
-  esac
 fi
 
 # --- the sealed command line of the repair UKI, read out of the PE ------------
@@ -130,11 +144,12 @@ if [ -n "$REPAIR_UKI" ] && [ -f "$REPAIR_UKI" ]; then
 fi
 
 # --- sd-boot actually offers it ----------------------------------------------
-if bootctl list 2>/dev/null | grep -q 'id: *qos-repair.conf'; then
+if bootctl list 2>/dev/null | grep -q 'id: *qos-repair.efi'; then
   ok "sd-boot lists the repair entry"
 else
-  bad "bootctl list does not show qos-repair.conf. The file may be there and
-      unparseable — bootctl list output was:"
+  bad "bootctl list does not show qos-repair.efi. The image may be on the ESP and
+      not discovered — sd-boot only scans the TOP level of EFI/Linux, so an image
+      one directory deeper is invisible. bootctl list output was:"
   bootctl list 2>&1 | sed 's/^/      /' >&2
 fi
 
@@ -150,7 +165,7 @@ DEFAULT="$(bootctl list 2>/dev/null | awk '
 if [ -z "$DEFAULT" ]; then
   bad "bootctl list named no default entry, so what the next boot would pick is
       unknown and the fallback order cannot be checked."
-elif [ "$DEFAULT" = "qos-repair.conf" ]; then
+elif [ "$DEFAULT" = "qos-repair.efi" ]; then
   if bootctl list 2>/dev/null | grep -q 'id: *bootc'; then
     bad "repair mode is the DEFAULT entry while deployment entries exist. Every
         boot would come up in repair mode."
