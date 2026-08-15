@@ -117,6 +117,11 @@ pub struct DrmBackend {
     /// Reconfiguration channel, held only while this backend still owns
     /// its scanouts inline. Handed to the presenter along with them.
     commands: Option<Receiver<ScanoutCommand>>,
+    /// True between a session pause and the matching resume, for the
+    /// inline path. Distinct from `blanked`: blanked is "the screen
+    /// should be off", paused is "these CRTCs belong to another session
+    /// right now". Presenting under either is wrong.
+    paused: bool,
 }
 
 impl DrmBackend {
@@ -151,6 +156,7 @@ impl DrmBackend {
             blanked: false,
             refresh,
             commands,
+            paused: false,
         })
     }
 
@@ -400,8 +406,10 @@ impl Backend for DrmBackend {
         // Track D2: while blanked the CRTCs are disabled — painting +
         // presenting would either be wasted work or re-light the panels
         // out from under the idle/lock logic. Skip entirely until
-        // `set_dpms(true)` restores scanout.
-        if self.blanked {
+        // `set_dpms(true)` restores scanout. `paused` is the other
+        // reason not to present: the CRTCs belong to another session
+        // until it switches back.
+        if self.blanked || self.paused {
             return;
         }
         // No live outputs (modeset failed at construction): nothing to
@@ -532,13 +540,12 @@ impl Backend for DrmBackend {
                 .as_ref()
                 .map(|rx| rx.try_iter().collect())
                 .unwrap_or_default();
-            let mut paused = false;
             for cmd in pending {
                 apply_scanout_command(
                     cmd,
                     &mut self.inner.scanouts,
                     &mut self.outputs,
-                    &mut paused,
+                    &mut self.paused,
                     &mut self.blanked,
                 );
             }
@@ -597,7 +604,7 @@ impl Backend for DrmBackend {
             pointer: self.inner.dispatch.pointer,
             paint: self.paint.take(),
             blanked: self.blanked,
-            paused: false,
+            paused: self.paused,
             // The scanouts and the commands addressed to them travel
             // together: whoever owns one owns the other.
             commands: self.commands.take(),
