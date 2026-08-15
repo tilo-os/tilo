@@ -98,6 +98,17 @@ pub enum ActionKind {
     Unmark,
     /// Flatpak, not installed → **Install** (spawns `flatpak install`).
     FlatpakInstall,
+    /// Flatpak, installed → **Open**.
+    ///
+    /// Installing an app and then having no way to start it is not a
+    /// store. An installed Flatpak's primary action is the same as
+    /// every other installed app's — open it — and removal moves to the
+    /// secondary slot where the qOS side already keeps it.
+    ///
+    /// It opens **unconfined**: a Flatpak brings its own sandbox and
+    /// cannot run inside qOS's, so the launch goes through
+    /// `qos-launcher run-host`, which says so. See `launcher::host`.
+    FlatpakOpen,
     /// Flatpak, installed → **Remove** (spawns `flatpak uninstall`).
     FlatpakRemove,
     /// Flatpak but the host has no `flatpak` binary — offer a link to
@@ -115,6 +126,7 @@ impl ActionKind {
             ActionKind::MarkInstalled => "Mark installed",
             ActionKind::Unmark => "Installed",
             ActionKind::FlatpakInstall => "Install",
+            ActionKind::FlatpakOpen => "Open",
             ActionKind::FlatpakRemove => "Remove",
             ActionKind::NeedsFlatpakHost => "Install flatpak first",
         }
@@ -199,7 +211,7 @@ impl StoreItem {
             (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
             (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
             (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
-                ActionKind::FlatpakRemove
+                ActionKind::FlatpakOpen
             }
         }
     }
@@ -220,12 +232,27 @@ impl StoreItem {
         }
     }
 
-    /// Whether a qOS card should offer a secondary **Remove**.
+    /// The secondary **Remove** an installed card offers, if any.
+    ///
+    /// One function rather than a `bool` plus a guess at the caller,
+    /// because the two sources remove differently — `qos-install
+    /// uninstall` versus `flatpak uninstall` — and a caller that has to
+    /// re-derive which is which is a caller that can get it wrong.
+    pub fn remove_action(&self) -> Option<ActionKind> {
+        match (&self.source, &self.installed) {
+            (StoreSource::Qos { .. }, InstalledState::Installed { .. }) => {
+                Some(ActionKind::Remove)
+            }
+            (StoreSource::Flathub, InstalledState::Installed { .. }) => {
+                Some(ActionKind::FlatpakRemove)
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a card should offer a secondary **Remove**.
     pub fn offers_remove(&self) -> bool {
-        matches!(
-            (&self.source, &self.installed),
-            (StoreSource::Qos { .. }, InstalledState::Installed { .. })
-        )
+        self.remove_action().is_some()
     }
 
     /// Ranking rank: pinned first, then merely-cached, then the
@@ -401,7 +428,33 @@ mod tests {
         assert!(d.pin_action().is_none());
 
         let e = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
-        assert_eq!(e.action_kind(true), ActionKind::FlatpakRemove);
+        assert_eq!(
+            e.action_kind(true),
+            ActionKind::FlatpakOpen,
+            "an installed app's primary action is to open it — a store \
+             that can install a Flatpak and then not start it is not \
+             finished"
+        );
+        assert_eq!(
+            e.remove_action(),
+            Some(ActionKind::FlatpakRemove),
+            "removal moves to the secondary slot, and is Flatpak's own \
+             removal rather than qos-install's"
+        );
+    }
+
+    /// The two sources remove differently, and the item is what knows
+    /// which. Routing a Flatpak through `qos-install uninstall` would
+    /// report "no such package installed" and leave it there.
+    #[test]
+    fn each_source_names_its_own_removal() {
+        let q = qos_item("Notes", qinstalled("1", "1", false), "1");
+        assert_eq!(q.remove_action(), Some(ActionKind::Remove));
+        let f = flatpak_item("Chess", qinstalled("1", "1", false));
+        assert_eq!(f.remove_action(), Some(ActionKind::FlatpakRemove));
+        // Nothing to remove until something is installed.
+        assert_eq!(qos_item("Notes", InstalledState::Not, "1").remove_action(), None);
+        assert_eq!(flatpak_item("Chess", InstalledState::Not).remove_action(), None);
     }
 
     #[test]

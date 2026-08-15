@@ -209,6 +209,9 @@ runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../crates/packaging/launcher" }
+# The host's own applications: `.desktop` entries the compositor reads
+# so a Flatpak or a distribution binary is launchable and searchable.
+desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/desktop-entry" }
 # User root identity + device cert + revocation. See
 # `network::identity` for the peer-side wiring: on connect we
 # expect the remote to present its device pubkey + cert; we validate
