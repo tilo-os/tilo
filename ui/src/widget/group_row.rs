@@ -2363,6 +2363,33 @@ impl Widget for GroupRow {
         self.rect
     }
 
+    /// Per-group affordances the harness can click by name.
+    ///
+    /// The row is the deepest node the widget-registry walk reaches —
+    /// neither it nor [`WindowGroup`] exposes `children()`, because the
+    /// strip lays its groups out itself rather than through taffy. So a
+    /// rect that lives on a group's tab bar has to be republished here
+    /// or it is unaddressable, which is what "could not resolve named
+    /// target" meant for the new-tab chip.
+    ///
+    /// Each group's chip is keyed by its id, and the leftmost visible
+    /// one also takes the bare name, so a scenario with one group can
+    /// say `tabbar_new_tab` and a scenario with several can be explicit.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        let mut out = Vec::new();
+        for g in &self.groups {
+            let r = g.new_tab_rect();
+            if r.area() <= 0.0 {
+                continue;
+            }
+            if out.is_empty() {
+                out.push(("tabbar_new_tab".to_string(), r));
+            }
+            out.push((format!("tabbar_new_tab[{}]", g.id), r));
+        }
+        out
+    }
+
     fn needs_redraw(&self) -> bool {
         // The parent Column / Stack caches its subtree scene via
         // `draw_with_presence` and only rebuilds when at least one
