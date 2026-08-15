@@ -259,6 +259,12 @@ pub struct ChromeState {
     /// `None` until a poller publishes one, and the tray draws an unread
     /// field as absent rather than as a plausible default.
     pub status: crate::shell::status::SystemStatus,
+    /// The transient on-screen readout raised by a hardware key, if one
+    /// is currently up. At most one: an OSD is a readout of a value
+    /// being changed, not a message, so eight volume presses show one
+    /// slab counting up rather than eight stacked banners. See
+    /// [`crate::shell::osd`].
+    pub osd: Option<crate::shell::osd::Osd>,
     /// Currently-active tab inside the Workspace Settings modal.
     /// Independent of [`Self::editing_workspace_name`] (which is only
     /// the name-input edit buffer). `Default::default()` is
@@ -435,6 +441,7 @@ impl ChromeState {
             search_scope: SearchScope::default(),
             open_target: OpenTarget::default(),
             status: crate::shell::status::SystemStatus::default(),
+            osd: None,
             ws_settings_tab: WsTab::default(),
             ws_grant_draft: Default::default(),
             revision: 0,
@@ -930,6 +937,24 @@ impl ChromeState {
 
     /// Read-only view of the currently active notifications, ordered
     /// oldest first.
+    /// Put a transient readout on screen, replacing whatever was there.
+    /// Bumps the revision so the frame that raised it also repaints.
+    pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
+        crate::shell::osd::raise(&mut self.osd, osd);
+        self.bump();
+    }
+
+    /// Drop the readout once its hold has elapsed. Returns `true` when
+    /// something was cleared, so the caller can bump once rather than
+    /// every frame.
+    pub fn expire_osd(&mut self, now: std::time::Instant) -> bool {
+        if crate::shell::osd::expire(&mut self.osd, now) {
+            self.bump();
+            return true;
+        }
+        false
+    }
+
     pub fn notifications(&self) -> &[Notification] {
         &self.notifications
     }

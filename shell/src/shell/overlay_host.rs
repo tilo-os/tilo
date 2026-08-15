@@ -945,12 +945,217 @@ impl ShellOverlayHost {
         self
     }
 
+    /// The QS action dispatcher, for callers that actuate hardware
+    /// outside the popover — the media keys, which drive the same
+    /// volume and brightness the sliders do and must go through the same
+    /// dispatcher so a test can record them.
+    pub fn qs_actions(&self) -> &dyn crate::shell::qs_actions::QsActions {
+        self.qs_actions.as_ref()
+    }
+
     /// Handle on the status bridge, for the paths that publish a reading
     /// rather than consume one (the volume keys, which must move the
     /// indicator in the frame they were pressed rather than up to a poll
     /// interval later).
     pub fn status_bridge(&self) -> Option<&crate::shell::status::StatusBridge> {
         self.status_bridge.as_ref()
+    }
+
+    /// Where the on-screen readout sits: horizontally centred, one
+    /// eighth of the viewport up from the bottom.
+    ///
+    /// Low, because it must not cover what the user is working on, and
+    /// centred because it is not attached to anything — unlike a
+    /// notification, which belongs to an app and lives in that app's
+    /// corner. This is the machine answering a key.
+    pub fn osd_rect(&self) -> Rect {
+        let w = 260.0_f64.min(self.rect.width() * 0.6);
+        let h = 96.0_f64;
+        let cx = self.rect.center().x;
+        let y1 = self.rect.y1 - (self.rect.height() * 0.12).max(56.0);
+        Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1)
+    }
+
+    /// Paint the transient hardware-key readout, if one is up.
+    fn draw_osd(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        // Expiring here rather than on a timer keeps the slab's lifetime
+        // tied to the frames that actually paint it: a compositor that is
+        // idle is not painting, and a readout that expired while nothing
+        // was on screen has nothing to clean up.
+        {
+            let mut st = chrome.borrow_mut();
+            st.expire_osd(now);
+        }
+        let Some(osd) = chrome.borrow().osd else {
+            return;
+        };
+        let alpha = osd.alpha_at(now);
+        if alpha <= 0.0 {
+            return;
+        }
+
+        let rect = self.osd_rect();
+        let colors = &theme.tokens.colors;
+        let tokens = &theme.tokens;
+        let radius = 18.0_f64;
+
+        let faded = alpha < 0.999;
+        if faded {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &self.rect,
+            );
+        }
+
+        // Lift it off whatever it covers — without a shadow a translucent
+        // slab over a busy tile reads as a rendering artefact.
+        ui::surface::soft_shadow(
+            scene,
+            transform,
+            rect,
+            colors.neutral[0],
+            36.0,
+            14.0,
+            0.5,
+        );
+        let body = RoundedRect::from_rect(rect, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &body,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_white_10,
+            None,
+            &body,
+        );
+
+        // Glyph, centred in the upper half.
+        let glyph_px = 28.0_f64;
+        let gx = rect.center().x;
+        let gy = rect.y0 + 26.0;
+        let glyph_rect = Rect::new(
+            gx - glyph_px / 2.0,
+            gy - glyph_px / 2.0,
+            gx + glyph_px / 2.0,
+            gy + glyph_px / 2.0,
+        );
+        let (icon, tint) = match osd.kind {
+            crate::shell::osd::OsdKind::Volume { muted: true } => {
+                (ui::icons::Icon::VolumeX, colors.text_primary)
+            }
+            crate::shell::osd::OsdKind::Volume { muted: false } => {
+                (ui::icons::Icon::Volume2, colors.text_primary)
+            }
+            crate::shell::osd::OsdKind::Brightness => (ui::icons::Icon::Sun, colors.text_primary),
+            crate::shell::osd::OsdKind::MicMute { muted } => (
+                ui::icons::Icon::MicOff,
+                if muted {
+                    colors.semantic.warning
+                } else {
+                    colors.text_primary
+                },
+            ),
+            crate::shell::osd::OsdKind::Transport(t) => (
+                match t {
+                    crate::shell::osd::Transport::Play => ui::icons::Icon::Play,
+                    crate::shell::osd::Transport::Pause => ui::icons::Icon::Pause,
+                    crate::shell::osd::Transport::Next => ui::icons::Icon::SkipForward,
+                    crate::shell::osd::Transport::Previous => ui::icons::Icon::SkipBack,
+                },
+                colors.text_primary,
+            ),
+        };
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            glyph_rect,
+            icon,
+            tint,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
+        );
+
+        // Level bar. The track is always drawn at full width so the
+        // number and the bar occupy the same place whatever the value —
+        // a bar that shrinks its own track reads as a progress spinner.
+        if osd.has_level() {
+            let bar_h = 6.0_f64;
+            let inset = 24.0_f64;
+            let bar = Rect::new(
+                rect.x0 + inset,
+                rect.y0 + 50.0,
+                rect.x1 - inset,
+                rect.y0 + 50.0 + bar_h,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.surface_white_10,
+                None,
+                &RoundedRect::from_rect(bar, bar_h / 2.0),
+            );
+            // A muted sink draws an empty track: the level it will return
+            // to is still true, but reporting it as a filled bar would
+            // contradict the crossed-out glyph directly above it.
+            let filled = if matches!(
+                osd.kind,
+                crate::shell::osd::OsdKind::Volume { muted: true }
+            ) {
+                0.0
+            } else {
+                osd.level.clamp(0.0, 1.0) as f64
+            };
+            if filled > 0.0 {
+                let w = (bar.width() * filled).max(bar_h);
+                let fill_rect = Rect::new(bar.x0, bar.y0, bar.x0 + w, bar.y1);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
+                );
+            }
+        }
+
+        // Caption.
+        let caption = osd.caption();
+        let size = tokens.typography.scale.sm;
+        let (cw, ch) = text_renderer.measure_weighted(&caption, size, None, TextWeight::Medium);
+        text_renderer.draw_text_weighted(
+            scene,
+            &caption,
+            size,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.center().x - cw as f64 / 2.0,
+                    rect.y1 - 12.0 - ch as f64,
+                )),
+            None,
+            TextWeight::Medium,
+        );
+
+        if faded {
+            scene.pop_layer();
+        }
     }
 
     /// Copy the poller's latest reading onto the chrome, bumping the
@@ -4741,6 +4946,13 @@ impl Widget for ShellOverlayHost {
         // Peer-sync card last: while it is up it owns the keyboard, so
         // it has to sit above the palette that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
+
+        // The hardware-key readout sits above absolutely everything,
+        // including the modals. It reports a change the user just made
+        // with a physical key, and that key works while a modal is up —
+        // so hiding the answer behind the modal would make the key look
+        // broken exactly when the user is least able to check.
+        self.draw_osd(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(

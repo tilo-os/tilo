@@ -1685,6 +1685,20 @@ pub fn run() -> ! {
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
+                    } else if let Some(mk) = crate::shell::media_keys::classify(&wev) {
+                        // The hardware media / brightness row belongs to
+                        // the machine, not to whichever client happens to
+                        // hold focus — a speaker glyph means "make this
+                        // machine louder" wherever you press it. Handled
+                        // before client routing for that reason.
+                        if let Some(osd) = crate::shell::media_keys::apply(
+                            mk,
+                            frame_builder.host().qs_actions(),
+                            frame_builder.host().status_bridge(),
+                        ) {
+                            frame_builder.with_chrome(|st| st.show_osd(osd));
+                            session_changed = true;
+                        }
                     } else {
                         // Backends that don't pair a `ModifiersChanged`
                         // with every modifier keystroke would otherwise

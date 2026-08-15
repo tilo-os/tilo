@@ -31,6 +31,27 @@ pub fn set_mute(muted: bool) -> Result<(), String> {
     run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SINK@", arg])
 }
 
+/// Toggle the default *source* (microphone) mute, returning the state it
+/// ended up in.
+///
+/// The mic-mute key is a different device from the volume keys — muting
+/// the sink silences what you hear, muting the source silences what
+/// others hear, and a key with a crossed-out microphone on it means the
+/// second. `wpctl set-mute toggle` prints nothing useful, so the new
+/// state is read back; unlike the sink path this is not on an
+/// autorepeating key, so the extra call costs one press, not a burst.
+pub fn toggle_source_mute() -> Result<bool, String> {
+    run("wpctl", &["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])?;
+    let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
+    Ok(parse_wpctl_volume_state(&out)?.muted)
+}
+
+/// Read the default source's level and mute flag.
+pub fn get_source_state() -> Result<VolumeState, String> {
+    let out = run_capture("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"])?;
+    parse_wpctl_volume_state(&out)
+}
+
 /// Volume *and* mute together.
 ///
 /// `wpctl` reports both on one line, and a volume indicator needs both
