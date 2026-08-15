@@ -63,9 +63,49 @@ The result is always sealed against the deployment that is really on the disk,
 including after a reseal, and costs one extra UKI on the ESP rather than one per
 generation.
 
-The entry is a Type #1 loader entry with `sort-key zz-qos-repair` and **no boot
-counter**, which puts it below every healthy deployment and above every exhausted
-one. See [../recovery.md](../recovery.md#automatic-rollback) for the ladder.
+### Why it is a Type #2 entry, and not a loader entry
+
+The obvious shape is a Type #1 loader entry — a small text file in
+`/boot/loader/entries` carrying a title, a sort key and a path. It does not work,
+and this was established by putting one on a booted machine rather than by
+reading:
+
+- With the image at `EFI/qos/repair.efi`, `bootc status` fails outright with
+  `Getting composefs deployment status: Listing bootloader entries: efi does not
+  start with custom prefix`, and everything that reads it — `bootc upgrade`, the
+  Settings pane, `qos status` — goes with it.
+- Moving the image under bootc's own prefix does not help. It then fails with
+  `Could not determine boot type`, and bootc rewrites the ESP around the entry it
+  cannot understand, renaming the deployment's own entry in the process.
+
+bootc's composefs backend parses **every** file in that directory as one of its
+own. So the repair image goes where there is no file to parse: a bare `.efi` at
+the top level of `EFI/Linux`, which systemd-boot discovers by itself as a Type #2
+entry. bootc's own UKIs live one directory deeper, in `EFI/Linux/bootc/`, and
+sd-boot does not scan subdirectories — so the two do not see each other in either
+direction. Verified on a booted machine: `bootc status` is fine with the repair
+image present, and `bootctl list` shows it.
+
+The cost is that a Type #2 entry has no text file to carry its title or its
+ordering; both come from the image's own `.osrel` section. Left alone, the repair
+image appears in the boot menu as *Fedora Linux 44 (Forty Four)* —
+indistinguishable from the thing it exists to repair. `qos-uki-cmdline set-osrel`
+writes `PRETTY_NAME=qOS Repair Mode` and `SORT_KEY=zz-qos-repair` into it. That
+edit cannot be length-preserving, so it uses the other room the PE allows:
+`.osrel` is a small text section with raw slack after it (629 bytes of content in
+a 1024-byte raw section), the new text is written into that slack, and the
+section's `VirtualSize` header field is updated. No file offset moves, so every
+following section is untouched — the same property the `.cmdline` edit has,
+bought a different way.
+
+`zz-qos-repair` sorts after everything bootc emits (`bootc-<stateroot>-<n>`), and
+the image carries **no boot counter**, which puts it below every healthy
+deployment and above every exhausted one. See
+[../recovery.md](../recovery.md#automatic-rollback) for the ladder.
+
+A machine installed before this shape existed may still carry the Type #1 entry.
+`qos-deployment repair-entry` deletes it on sight, which is the upgrade path
+rather than tidiness: left in place, it breaks `bootc` on every subsequent boot.
 
 ## Threat model
 

@@ -88,12 +88,41 @@ else
       sd-boot would make repair mode the default on a perfectly good machine."
 fi
 
-if grep -q 'REPAIR_ENTRY_ID' "$OS/usr/libexec/qos-deployment" \
-   && grep -q 'case "\$id" in bootc\*)' "$OS/usr/libexec/qos-deployment"; then
-  ok "only bootc's own entries get a boot counter — the repair entry never expires"
+if grep -q 'case "\$id" in bootc\*)' "$OS/usr/libexec/qos-deployment"; then
+  ok "only bootc's own entries get a boot counter"
 else
   bad "qos-deployment no longer restricts boot counters to bootc entries. A counted
       repair entry is a fallback that runs out, which is not one."
+fi
+
+# The repair image is a Type #2 entry: a bare .efi at the top of EFI/Linux, no
+# .conf. bootc parses every .conf in loader/entries as one of its own and fails
+# outright on a foreign one, taking `bootc status` and `bootc upgrade` with it.
+if grep -q 'REPAIR_EFI_NAME="qos-repair.efi"' "$OS/usr/libexec/qos-deployment" \
+   && grep -q 'dest_dir="\$esp/EFI/Linux"' "$OS/usr/libexec/qos-deployment"; then
+  ok "the repair image goes at the top of EFI/Linux, where sd-boot discovers it"
+else
+  bad "the repair image is no longer installed as a Type #2 entry at the top of
+      EFI/Linux. See docs/security/repair-mode.md — a .conf in loader/entries
+      breaks bootc, and a .efi one directory deeper is never discovered."
+fi
+if grep -q 'cat > "\$conf"' "$OS/usr/libexec/qos-deployment"; then
+  bad "qos-deployment writes a loader entry again. bootc fails to parse a foreign
+      one: 'efi does not start with custom prefix'."
+else
+  ok "and no loader entry is written, which is what keeps bootc able to read its own"
+fi
+if grep -q 'set-osrel' "$OS/usr/libexec/qos-deployment"; then
+  ok "the image is renamed in its own .osrel, which is where a Type #2 title comes from"
+else
+  bad "nothing sets the repair image's PRETTY_NAME. A Type #2 entry takes its menu
+      title from .osrel, so it would appear under the deployment's own name."
+fi
+if grep -q 'remove_stale_repair_entry' "$OS/usr/libexec/qos-deployment"; then
+  ok "and an entry left by the earlier shape is cleared away on upgrade"
+else
+  bad "nothing removes a qos-repair.conf left by an older version of this script.
+      On a machine that has one, every later boot has a broken bootc."
 fi
 
 # --- the health gate is wired the way systemd expects -------------------------
