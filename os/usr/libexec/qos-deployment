@@ -464,9 +464,17 @@ cmd_repair_entry() {
   # .osrel, so without this the repair image appears in the boot menu under the
   # deployment's name — indistinguishable from the thing it exists to repair —
   # and sorts wherever the deployment sorts.
+  #
+  # Both SORT_KEY and IMAGE_ID, because the two halves of systemd do not agree
+  # about which one orders a Type #2 entry. `bootctl list` (bootspec.c) uses
+  # `IMAGE_ID ?: ID` and ignores SORT_KEY entirely — checked on a booted machine,
+  # where SORT_KEY was set and bootctl still reported `fedora`. Setting both means
+  # the entry sorts last under either reading, rather than depending on which one
+  # this systemd happens to be.
   if ! "$UKI_CMDLINE" set-osrel \
         "PRETTY_NAME=$REPAIR_TITLE" \
         "SORT_KEY=$REPAIR_SORT_KEY" \
+        "IMAGE_ID=$REPAIR_SORT_KEY" \
         "VERSION_ID=repair" \
         "$tmp" >/dev/null; then
     rm -f "$tmp"
