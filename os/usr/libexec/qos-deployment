@@ -49,8 +49,25 @@ BOOT_TRIES="${QOS_BOOT_TRIES:-3}"
 # with nothing bootable left lands here instead of at a boot loader prompt. sd-boot
 # sorts by sort-key ascending, puts entries with no tries left at the very end, and
 # takes the first as the default — verified on a booted guest, not assumed.
+# bootc emits `bootc-<stateroot>-<n>`, so anything past `bootc-z…` will do.
 REPAIR_SORT_KEY="zz-qos-repair"
-REPAIR_ENTRY_ID="qos-repair"
+REPAIR_TITLE="qOS Repair Mode"
+
+# The repair image is a **Type #2** boot entry: a bare `.efi` at the top level of
+# EFI/Linux, which systemd-boot discovers on its own, with no `.conf` anywhere.
+#
+# That is not a preference. bootc's composefs backend parses every file in
+# /boot/loader/entries as one of its own, and a foreign entry makes `bootc status`
+# fail outright — "efi does not start with custom prefix" — taking `bootc upgrade`
+# and everything that reads it down with it. Moving the image under bootc's own
+# prefix does not help either; it then fails with "Could not determine boot type"
+# and bootc rewrites the ESP around the entry it cannot understand. Both were
+# established on a booted machine.
+#
+# Type #2 costs one thing: the menu title and sort order come from the image's own
+# .osrel rather than from a text file, so they have to be written into the PE. See
+# qos-uki-cmdline set-osrel.
+REPAIR_EFI_NAME="qos-repair.efi"
 
 # --- the ESP -----------------------------------------------------------------
 # Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
@@ -248,7 +265,10 @@ cmd_rollback() {
     [ -e "$f" ] || continue
     id="$(entry_id_of "$f")"
     [ "$id" = "$cur" ] && continue
-    [ "$id" = "$REPAIR_ENTRY_ID.conf" ] && continue
+    # The repair image is not a .conf at all (it is a Type #2 entry), so it
+    # cannot appear here — but an old install may still carry the .conf this
+    # once wrote, and rolling back onto it is not what was asked for.
+    [ "$id" = "qos-repair.conf" ] && continue
     pick="$id"
   done
   [ -n "$pick" ] || die "no other deployment has a boot loader entry, so there is
@@ -381,15 +401,18 @@ cmd_repair_entry() {
   uki_abs="$esp/${uki_rel#/}"
   [ -f "$uki_abs" ] || { warn "the entry names a UKI that is not on the ESP: $uki_abs"; return 0; }
 
-  local dest_dir="$esp/EFI/qos"
-  local dest="$dest_dir/repair.efi"
-  local stamp="$dest_dir/repair.source"
+  # Top level of EFI/Linux, beside (not inside) bootc's own directory.
+  local dest_dir="$esp/EFI/Linux"
+  local dest="$dest_dir/$REPAIR_EFI_NAME"
+  # The provenance stamp does NOT live in EFI/Linux: anything ending in .efi there
+  # becomes a boot menu entry, and a stray file in that directory is a stray entry.
+  local stamp="$esp/EFI/qos/repair.source"
 
   # Already derived from this exact UKI? Then there is nothing to do, and doing it
   # anyway would rewrite ~134 MB of an SD card on every boot.
   if [ -f "$dest" ] && [ -f "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$uki_rel" ]; then
     log "repair entry is current (derived from $uki_rel)"
-    write_repair_conf "$entries" || return 1
+    remove_stale_repair_entry "$entries" "$esp"
     return 0
   fi
 
@@ -405,8 +428,11 @@ cmd_repair_entry() {
     return 0
   fi
 
-  mkdir -p "$dest_dir" || { warn "could not create $dest_dir"; return 0; }
-  local tmp="$dest_dir/.repair.efi.new"
+  mkdir -p "$dest_dir" "$(dirname "$stamp")" || { warn "could not create $dest_dir"; return 0; }
+  # The scratch copy is built OUTSIDE EFI/Linux. A half-written *.efi in there is
+  # a boot menu entry that does not boot, and it would be offered the moment the
+  # machine restarted mid-write.
+  local tmp; tmp="$(dirname "$stamp")/.repair.efi.new"
   rm -f "$tmp"
   cp -f "$uki_abs" "$tmp" || { warn "could not copy $uki_abs"; rm -f "$tmp"; return 0; }
 
@@ -429,6 +455,26 @@ cmd_repair_entry() {
     return 0
   }
 
+  # A Type #2 entry takes its menu title and its ordering from the image's own
+  # .osrel, so without this the repair image appears in the boot menu under the
+  # deployment's name — indistinguishable from the thing it exists to repair —
+  # and sorts wherever the deployment sorts.
+  if ! /usr/libexec/qos-uki-cmdline set-osrel \
+        "PRETTY_NAME=$REPAIR_TITLE" \
+        "SORT_KEY=$REPAIR_SORT_KEY" \
+        "VERSION_ID=repair" \
+        "$tmp" >/dev/null; then
+    rm -f "$tmp"
+    warn "could not name the repair image in its .osrel. An entry the person
+  cannot tell apart from their system is not one, so none was installed."
+    return 0
+  fi
+  /usr/libexec/qos-uki-cmdline osrel "$tmp" | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$" || {
+    rm -f "$tmp"
+    warn "the repair image's .osrel does not read back with the expected title"
+    return 0
+  }
+
   # Sign it if this machine has enrolled its own Secure Boot key. Unsigned is fine
   # on a machine that has not — and on one that has, an unsigned repair image is a
   # menu entry the firmware refuses, which is worse than none.
@@ -446,26 +492,31 @@ cmd_repair_entry() {
     fi
   fi
 
+  # The rename into EFI/Linux is the moment the entry exists. Everything before
+  # it happened somewhere the boot loader does not look.
   mv -f "$tmp" "$dest" || { warn "could not install $dest"; rm -f "$tmp"; return 0; }
   printf '%s\n' "$uki_rel" > "$stamp"
   sync
   log "repair image: $dest (from $uki_rel)"
-  write_repair_conf "$entries"
+  remove_stale_repair_entry "$entries" "$esp"
 }
 
-write_repair_conf() {
-  local entries="$1"
-  local conf="$entries/$REPAIR_ENTRY_ID.conf"
-  # No boot counter, ever. The repair entry is the floor of the fallback ladder;
-  # an expiring floor is not one.
-  cat > "$conf" <<EOT
-title      qOS Repair Mode
-version    repair
-sort-key   $REPAIR_SORT_KEY
-uki        /EFI/qos/repair.efi
-EOT
+# Clear away anything an older version of this script left behind.
+#
+# The first shape of this was a Type #1 `.conf` plus an image under EFI/qos.
+# Left in place after an update, the `.conf` breaks `bootc status` on every
+# subsequent boot — so removing it is not tidiness, it is the upgrade path.
+remove_stale_repair_entry() {
+  local entries="$1" esp="$2"
+  local old_conf="$entries/qos-repair.conf"
+  local old_efi="$esp/EFI/qos/repair.efi"
+  if [ -e "$old_conf" ]; then
+    rm -f "$old_conf"
+    log "removed the old repair loader entry (bootc cannot parse a foreign one)"
+  fi
+  [ -e "$old_efi" ] && rm -f "$old_efi"
   sync
-  log "loader entry: $conf"
+  return 0
 }
 
 case "${1:-}" in
