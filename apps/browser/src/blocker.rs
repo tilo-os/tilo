@@ -70,15 +70,15 @@ const LISTS: &[(&str, &str)] = &[
         "ublock-resource-abuse.txt",
         "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt",
     ),
-    (
-        "ublock-quick-fixes.txt",
-        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt",
-    ),
-    (
-        "adguard-base.txt",
-        "https://filters.adtidy.org/extension/ublock/filters/2.txt",
-    ),
 ];
+
+/// Lists that must stay out of [`LISTS`], by cache-file name.
+///
+/// Adding either one back reintroduces the blank-page-on-load regression
+/// described above; `apps/browser/examples/adblock_blank_repro.rs`
+/// reproduces it. Named here so the invariant is testable rather than
+/// only stated in prose.
+const EXCLUDED_LISTS: &[&str] = &["ublock-quick-fixes.txt", "adguard-base.txt"];
 
 /// Re-download a cached list after this age.
 const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
@@ -393,14 +393,28 @@ mod tests {
             "ublock-privacy.txt",
             "ublock-badware.txt",
             "ublock-resource-abuse.txt",
-            "ublock-quick-fixes.txt",
-            "adguard-base.txt",
         ] {
             assert!(names.contains(&expected), "missing filter list {expected}");
         }
         // Every entry points at an https raw source.
         for (_, url) in LISTS {
             assert!(url.starts_with("https://"), "non-https list URL: {url}");
+        }
+    }
+
+    #[test]
+    fn page_blanking_filter_lists_stay_excluded() {
+        // uBO quick-fixes and AdGuard Base convert to over-broad WebKit
+        // `block` rules that catch a page's own first-party document, so a
+        // reload or fresh navigation goes permanently blank. They were
+        // removed once and silently reinstated; assert their absence so the
+        // next reinstatement fails here instead of in the browser.
+        let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
+        for banned in EXCLUDED_LISTS {
+            assert!(
+                !names.contains(banned),
+                "{banned} blanks pages under WebKit content blocking — it must stay out of LISTS",
+            );
         }
     }
 }
