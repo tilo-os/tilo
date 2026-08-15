@@ -63,14 +63,16 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
-    delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
-    delegate_pointer_gestures, delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
+    delegate_ext_data_control, delegate_fractional_scale, delegate_output,
+    delegate_pointer_gestures, delegate_primary_selection, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
+use crate::compositor::selection::SelectionState;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
@@ -224,6 +226,13 @@ pub struct State {
     pub dmabuf_device: Result<RenderNode, ProbeError>,
     /// `wl_seat` collection. Phase 2 doesn't add a seat yet; phase 4 will.
     pub seat_state: SeatState<Self>,
+    /// Clipboard, primary selection and drag-and-drop.
+    ///
+    /// Owns the four selection globals plus the compositor's clipboard
+    /// mirror, which is what lets in-process chrome paste without a Wayland
+    /// round trip. See [`crate::compositor::selection`] — in particular for
+    /// why the two data-control globals are gated to privileged clients.
+    pub selection: SelectionState,
     /// `wl_output` + xdg-output manager. Phase 2 advertises the manager
     /// global so xdg-output-aware clients (e.g. Mutter's wl-roots tools) can
     /// bind without erroring; concrete outputs are added in phase 4.
@@ -517,6 +526,12 @@ impl State {
         // the protocol. Constructed before the struct literal because
         // `display_handle` is moved into the struct.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
+        // Clipboard + primary selection + drag-and-drop. Advertised before the
+        // struct literal because `display_handle` is moved into it. Selection
+        // *focus* is pushed alongside keyboard focus every tick — see
+        // `client_input::sync_keyboard_focus` — because smithay gates
+        // `set_selection` on keyboard focus.
+        let selection = SelectionState::new(&display_handle);
 
         Self {
             loop_handle,
@@ -528,6 +543,7 @@ impl State {
             dmabuf_global,
             dmabuf_device,
             seat_state,
+            selection,
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
             share_registry: ShareRegistry::new(),
@@ -1059,6 +1075,18 @@ impl RemoteInputSink for State {
 pub struct ClientState {
     /// Smithay's per-client compositor bookkeeping (transaction queue, scale).
     pub compositor_state: CompositorClientState,
+    /// Whether this connection arrived on the compositor's **privileged**
+    /// socket rather than the public one.
+    ///
+    /// The only thing it currently gates is the clipboard-manager protocol
+    /// pair (`zwlr_data_control_manager_v1` / `ext_data_control_manager_v1`),
+    /// which hands its holder every selection on the seat with no focus
+    /// requirement — see [`crate::compositor::selection`] for the full
+    /// argument. It is a *socket* privilege rather than a flag a client can
+    /// ask for: the sandbox launcher bind-mounts exactly one Wayland socket
+    /// into the sandbox, the public one, so a sandboxed app has no path to a
+    /// privileged connection.
+    pub privileged: bool,
 }
 
 impl ClientData for ClientState {
@@ -1071,6 +1099,14 @@ impl ClientState {
     /// `DisplayHandle::insert_client` directly.
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self::default())
+    }
+
+    /// Per-client data for a connection accepted on the privileged socket.
+    pub fn privileged_arc() -> Arc<Self> {
+        Arc::new(Self {
+            compositor_state: CompositorClientState::default(),
+            privileged: true,
+        })
     }
 }
 
@@ -1524,6 +1560,14 @@ delegate_pointer_gestures!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
+
+// Selection: clipboard, primary selection and drag-and-drop. The handler
+// impls live in `compositor::selection` next to the mirror they read and
+// write; only the dispatch wiring belongs here with the other globals.
+delegate_data_device!(State);
+delegate_primary_selection!(State);
+delegate_data_control!(State);
+delegate_ext_data_control!(State);
 
 // `ext_session_lock_v1`: a client can lock the session; while locked the
 // compositor hides all normal client surfaces + routes input only to the lock
