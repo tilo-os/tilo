@@ -41,13 +41,14 @@ pub mod power;
 mod process;
 pub mod time;
 
-pub use audio::{get_volume, set_mute, set_volume, toggle_mute};
+pub use audio::{get_volume, get_volume_state, set_mute, set_volume, toggle_mute, VolumeState};
 pub use bluetooth::{
     bt_connect, bt_disconnect, get_bluetooth, list_bt_devices, set_bluetooth, BtDeviceInfo,
 };
 pub use display::{get_brightness, set_brightness};
 pub use network::{
-    connect_wifi, get_wifi, get_wired, list_wifi_networks, set_wifi, WifiNetworkInfo, WiredInfo,
+    connect_wifi, get_link_status, get_wifi, get_wired, list_wifi_networks, set_wifi, LinkKind,
+    LinkStatus, WifiNetworkInfo, WiredInfo,
 };
 pub use power::{get_power_profile, set_power_profile, PowerProfile};
 pub use time::{get_ntp, now_clock, now_date, set_ntp};
