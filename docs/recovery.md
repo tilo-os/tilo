@@ -151,6 +151,35 @@ On real hardware: boot Repair Mode and use option 5, which runs `journalctl -b -
 persistent the console says so instead of showing you this boot's log and letting
 you read it as the failure.
 
+## Proving it
+
+None of this is established by reading it. What can be checked, and where:
+
+```bash
+# Host-side, no VM: the invariants the mechanism rests on — that the two
+# qos.mode values are the same length, that the repair entry sorts below every
+# deployment and carries no counter, that the health gate is wired the way
+# systemd expects, that every repair verb is behind the passphrase gate.
+./os/tests/repair_mode.sh
+
+# And that the ESP is sized for the retention window plus the repair image.
+./os/tests/esp_capacity.sh
+
+# In a booted guest: the facts only a real machine has. Fails rather than skips
+# when it cannot observe its subject.
+sudo /usr/libexec/qos-recovery-boot-check
+
+# End to end, in a VM: the repair entry, a repair-mode boot driven over the
+# serial console, and a deliberately broken generation left behind.
+./os/dev/composefs/build.sh 1 && ./os/dev/composefs/install.sh 1
+QOS_CFS_SESSION_OK=0 ./os/dev/composefs/build.sh 2
+./os/dev/composefs/recovery-series.sh
+
+# The state-version refusal, against the real compositor binary:
+cargo build -p shell --bin shell
+./scripts/headless-examples/older-binary-meets-newer-state.py
+```
+
 ## The state a rollback cannot help with
 
 An older binary can meet state a newer one wrote. That is not a hypothetical after
