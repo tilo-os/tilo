@@ -90,6 +90,26 @@ pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
 
 fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {
     let mut doc = store.load_or_new();
+    // A document written by a newer build is not opened, and the empty one
+    // standing in for it must never reach the disk. Switching the writer off is
+    // the difference between "this app came up empty" and "this app deleted
+    // your work": with autosave on, the first edit — or the flush on exit —
+    // would save the stand-in over the real document.
+    //
+    // The store refuses the write too. Both, because they fail differently: the
+    // store's refusal is the guarantee, and a disabled writer is what stops the
+    // app logging an error on every keystroke to earn it.
+    if let Some(reason) = store.refusal() {
+        let reason = reason.to_string();
+        tracing::error!(
+            reason = %reason,
+            "app state was written by a newer version of this app; running \
+             without persistence so the file on disk is left intact"
+        );
+        eprintln!("qos: {reason}");
+        eprintln!("qos: this session starts empty and will NOT be saved.");
+        return Ok((State::from_doc(doc), Autosave::disabled(reason)));
+    }
     let mut autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
     autosave.seed(&mut doc);
     Ok((State::from_doc(doc), autosave))

@@ -80,7 +80,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
-    let mut tree = persist::load_or_default(&path);
+    // The notice is carried all the way to the chrome rather than logged here:
+    // "your workspaces are gone" and "your workspaces are on the disk and this
+    // build declined to open them" look identical from the desk, and the journal
+    // is not where the person is looking.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
 
     // C-1: under `--enable-peer-sync`, derive a deterministic 16-bit
     // peer salt from the libp2p keypair and stamp it into every id
@@ -213,6 +217,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
         enable_peer_sync,
         crate::shell::session_record_store(),
     );
+    if let Some(notice) = &state_notice {
+        crate::shell::notification::announce_state_notice(&_chrome, notice);
+    }
     // Which records each room holds outlives the session too, and the
     // records apps have written are found by looking. Both are switched
     // on here, beside the rest of the session's durable state, so
