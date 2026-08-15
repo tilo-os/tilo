@@ -204,6 +204,15 @@ pub trait Backend {
     /// when the Settings app writes a change, so pointer speed and
     /// tap-to-click take effect without restarting the session.
     fn reload_input_settings(&mut self) {}
+
+    /// Switch to another virtual terminal.
+    ///
+    /// Default no-op: a hosted backend has no VT of its own to leave.
+    /// [`DrmBackend`] performs it through libseat, and has to — the
+    /// compositor holds the keyboard in a raw mode, so the kernel never
+    /// sees `Ctrl+Alt+Fn` and would otherwise leave the user with no way
+    /// off this terminal for the life of the session.
+    fn switch_vt(&mut self, _vt: i32) {}
 }
 
 #[cfg(test)]
