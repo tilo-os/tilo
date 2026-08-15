@@ -1083,11 +1083,18 @@ const INVITE_EXPIRY_SECONDS: u64 = 3600;
 /// one row.
 fn load_session_tree(
     enable_peer_sync: bool,
-) -> (crate::shell::state::WorkspaceTreeHandle, bool) {
+) -> (
+    crate::shell::state::WorkspaceTreeHandle,
+    bool,
+    Option<crate::shell::persist::StateNotice>,
+) {
     use crate::shell::persist;
 
     let path = persist::state_json_path();
-    let mut tree = persist::load_or_default(&path);
+    // Carried out to `run`, which has the chrome to put it on the screen with.
+    // A session that quietly hands someone a bootstrapped demo tree is
+    // indistinguishable from one that lost their work.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
 
     // Two peers minting ids from the same counter produce colliding
     // ids, and CRDT sync then folds two distinct workspaces into one
@@ -1133,7 +1140,7 @@ fn load_session_tree(
             adopted.len()
         );
     }
-    (tree.shared(), peer_sync_possible)
+    (tree.shared(), peer_sync_possible, state_notice)
 }
 
 pub fn run() -> ! {
@@ -1230,13 +1237,16 @@ pub fn run() -> ! {
     // entry point had none of it: `FrameBuilder::new` handed the
     // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
-    let (tree_handle, enable_peer_sync) = load_session_tree(enable_peer_sync);
+    let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
     let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
         initial_size,
         crate::shell::session_record_store(),
     );
+    if let Some(notice) = &state_notice {
+        crate::shell::notification::announce_state_notice(&frame_builder.chrome_handle(), notice);
+    }
     // The scene spans every output, but a window's width is a fraction of
     // the monitor it is on — so hand the strips the real per-display
     // geometry rather than letting them size against the bounding box.
