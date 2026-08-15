@@ -2978,7 +2978,8 @@ mod tests {
 fn refresh_mhz_of(backend: &dyn crate::compositor::backend::Backend) -> Option<u32> {
     backend
         .refresh_interval()
-        .map(|d| (1000.0 / d.as_secs_f64() * 1000.0).round() as u32)
+        .filter(|d| !d.is_zero())
+        .map(|d| (1000.0 / d.as_secs_f64()).round() as u32)
 }
 
 /// Perform the navigation a claimed touchpad gesture resolved to.
@@ -3031,6 +3032,95 @@ fn output_geometry(
             height: o.size.1 as f64,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod gesture_wireup_tests {
+    use super::{apply_shell_gesture, refresh_mhz_of};
+    use crate::compositor::backend::drm::gestures::GestureAction;
+    use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
+    use crate::compositor::frame::FrameBuilder;
+
+    /// A shell gesture has to reach the *chrome*, not a parallel handler.
+    /// These drive `apply_shell_gesture` — the run loop's own arm — against
+    /// a real `FrameBuilder`, so a refactor that leaves the gesture
+    /// resolved but unapplied fails here.
+    fn builder() -> FrameBuilder {
+        FrameBuilder::new((1600, 900))
+    }
+
+    #[test]
+    fn a_swipe_up_switches_the_workspace_the_chrome_is_on() {
+        let mut fb = builder();
+        // A second workspace to switch to; a one-workspace tree has
+        // nowhere to go and the assertion would pass vacuously. Creating
+        // one makes it active and appends it last, so "up" is where the
+        // one we came from is.
+        fb.with_chrome(|st| {
+            st.add_workspace("second");
+        });
+        let before = fb.chrome().tree().active;
+        // What a three-finger swipe up resolves to — the same value
+        // `gestures::swipe_action` produces for an upward delta.
+        apply_shell_gesture(&mut fb, GestureAction::SwitchWorkspace(-1));
+        let after = fb.chrome().tree().active;
+        assert_ne!(
+            before, after,
+            "a three-finger swipe must move the active workspace, not just resolve to an intent"
+        );
+    }
+
+    #[test]
+    fn a_four_finger_swipe_opens_and_closes_the_overview() {
+        let mut fb = builder();
+        assert!(!fb.chrome().overlays.overview);
+        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+        assert!(fb.chrome().overlays.overview);
+        apply_shell_gesture(&mut fb, GestureAction::HideOverview);
+        assert!(!fb.chrome().overlays.overview);
+    }
+
+    #[test]
+    fn showing_an_already_open_overview_is_a_no_op() {
+        // The gesture fires once per swipe, but a second swipe in the same
+        // direction must not bump the chrome revision for nothing — that
+        // is a repaint the user did not ask for.
+        let mut fb = builder();
+        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+        let revision = fb.chrome().revision;
+        apply_shell_gesture(&mut fb, GestureAction::ShowOverview);
+        assert_eq!(fb.chrome().revision, revision);
+    }
+
+    #[test]
+    fn a_backend_with_no_display_advertises_no_refresh_rate() {
+        // The headless backend has no display, so `wl_output` falls back
+        // to the conventional rate rather than advertising zero, which
+        // some toolkits divide by.
+        let backend = HeadlessBackend::new(800, 600).expect("headless backend");
+        assert_eq!(refresh_mhz_of(&backend as &dyn Backend), None);
+    }
+
+    #[test]
+    fn a_refresh_interval_becomes_millihertz() {
+        struct Paced(std::time::Duration);
+        impl Backend for Paced {
+            fn submit_frame(&mut self, _s: &vello::Scene, _o: OutputId) {}
+            fn poll_events(&mut self, _cb: &mut dyn FnMut(BackendEvent)) {}
+            fn outputs(&self) -> &[Output] {
+                &[]
+            }
+            fn refresh_interval(&self) -> Option<std::time::Duration> {
+                Some(self.0)
+            }
+        }
+        let sixty = Paced(std::time::Duration::from_nanos(16_666_667));
+        assert_eq!(refresh_mhz_of(&sixty as &dyn Backend), Some(60_000));
+        // 59.94 Hz must not round to 60 000 — the whole reason the DRM
+        // backend derives its interval from raw mode timing.
+        let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
+        assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
+    }
 }
 
 #[cfg(test)]
