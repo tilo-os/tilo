@@ -44,10 +44,12 @@ budget="$(sed -n 's/^RETAIN=.*UKI_BUDGET=\([0-9]\+\)M$/\1/p' "$DISK_IMAGE" | hea
 script_retain="$(sed -n 's/^RETAIN="\${QOS_RETAINED_GENERATIONS:-\([0-9]\+\)}".*$/\1/p' "$DISK_IMAGE" | head -1)"
 slack="$(sed -n 's/^KERNEL_FS_SLACK_MIB=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
 script_newer="$(sed -n 's/^RETAINED_NEWER=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
+repair="$(sed -n 's/^REPAIR_UKI=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
 
 for pair in "retained_generations:$retain" "RETAINED_NEWER_GENERATIONS:$newer" \
             "ESP_SIZE:$esp" "UKI_BUDGET:$budget" "RETAIN:$script_retain" \
-            "KERNEL_FS_SLACK_MIB:$slack" "RETAINED_NEWER:$script_newer"; do
+            "KERNEL_FS_SLACK_MIB:$slack" "RETAINED_NEWER:$script_newer" \
+            "REPAIR_UKI:$repair"; do
   [ -n "${pair#*:}" ] || bad "could not read ${pair%%:*} — the declaration it is parsed out of moved"
 done
 [ "$fail" = 0 ] || exit 1
@@ -64,16 +66,29 @@ else
   bad "disk-image.sh RETAINED_NEWER is $script_newer but retention.rs says $newer"
 fi
 
+# --- the repair image is on the same partition and has to be counted ---------
+# It is derived on the machine from the running deployment's UKI rather than
+# shipped, so there is exactly one at a time — but it is the same ~134 MB, it
+# lands on the ESP, and it is created at UPDATE time on a machine in the field.
+# An ESP sized without it overflows there, which is the worst possible moment.
+if [ "$repair" -ge 1 ]; then
+  ok "disk-image.sh budgets $repair repair image on the ESP"
+else
+  bad "disk-image.sh REPAIR_UKI is $repair — the repair-mode entry
+      (docs/security/repair-mode.md) puts a UKI-sized file on the ESP, so a budget
+      of zero would overflow it the first time a repair entry is made."
+fi
+
 # --- and the ESP has to hold that many kernels -------------------------------
 esp_mib=$(( esp * 1024 ))
-need=$(( (retain + newer) * budget + slack ))
+need=$(( (retain + newer + repair) * budget + slack ))
 if [ "$esp_mib" -ge "$need" ]; then
-  ok "ESP ${esp}G (${esp_mib} MiB) holds $(( retain + newer )) x ${budget} MiB + ${slack} MiB = ${need} MiB"
+  ok "ESP ${esp}G (${esp_mib} MiB) holds $(( retain + newer + repair )) x ${budget} MiB + ${slack} MiB = ${need} MiB"
 else
-  bad "ESP ${esp}G (${esp_mib} MiB) cannot hold $(( retain + newer )) x ${budget} MiB + ${slack} MiB = ${need} MiB
+  bad "ESP ${esp}G (${esp_mib} MiB) cannot hold $(( retain + newer + repair )) x ${budget} MiB + ${slack} MiB = ${need} MiB
       Raise ESP_SIZE in os/dev/disk-image.sh, or lower retained_generations in
       crates/system/qos-rollback/src/lib.rs. Highest window this ESP supports:
-      $(( (esp_mib - slack) / budget - newer ))."
+      $(( (esp_mib - slack) / budget - newer - repair ))."
 fi
 
 # --- and the check must actually be wired into the script --------------------

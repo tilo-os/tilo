@@ -670,6 +670,10 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # applied. 03-boot.toml carries the arguments the install step used to inject.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
 COPY os/usr/lib/bootc/kargs.d/03-boot.toml /usr/lib/bootc/kargs.d/03-boot.toml
+# Which mode the sealed command line boots into. `qos.mode=repair` is what the
+# repair entry carries, and it can only come from inside the signature — see the
+# file's own header for why the two values have to stay the same length.
+COPY os/usr/lib/bootc/kargs.d/04-mode.toml /usr/lib/bootc/kargs.d/04-mode.toml
 
 # Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
 # Used by the installer (os/Containerfile.installer layers qos-install on top of
@@ -791,6 +795,52 @@ RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confir
         /usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-boot-check \
  && install -d -m 0755 /usr/share/qos/pcr-predictions
 
+# ---------------------------------------------------------------------------
+# Getting back from a bad update: boot assessment, rollback, repair mode
+# ---------------------------------------------------------------------------
+# The rollback machinery above narrows which generations may unseal the disk. This
+# is the other half — the part that notices a generation is bad and gets the
+# machine off it.
+#
+#   qos-boot-entries.service   gives every not-yet-proven deployment a systemd-boot
+#                              try counter, and derives the repair entry.
+#   qos-boot-health.service    ordered before boot-complete.target, so a boot that
+#                              never reaches a login is never blessed and the
+#                              counter it spent stays spent.
+#   qos-boot-mode-generator    turns `qos.mode=repair` on the SEALED command line
+#                              into a boot that comes up at the repair console
+#                              instead of the desktop.
+#
+# `bootc rollback` is the command that should do this and it is not dependable on
+# the composefs backend (bootc#2208), so /usr/libexec/qos-deployment verifies what
+# it did and falls back to the boot loader's own default entry.
+#
+# uki-cmdline.py ships as qos-uki-cmdline because the repair entry is DERIVED from
+# the installed UKI rather than built: a second UKI inside the rootfs would change
+# the composefs digest it has to name. It rewrites `qos.mode=normal` to
+# `qos.mode=repair` in place, same length, so every following PE section keeps its
+# offset and the image still loads.
+COPY os/usr/libexec/qos-deployment /usr/libexec/qos-deployment
+COPY os/usr/libexec/qos-boot-health /usr/libexec/qos-boot-health
+COPY os/usr/libexec/qos-repair /usr/libexec/qos-repair
+COPY os/dev/uki-cmdline.py /usr/libexec/qos-uki-cmdline
+COPY os/usr/lib/systemd/system-generators/qos-boot-mode-generator /usr/lib/systemd/system-generators/qos-boot-mode-generator
+COPY os/usr/lib/systemd/system/qos-boot-entries.service /usr/lib/systemd/system/qos-boot-entries.service
+COPY os/usr/lib/systemd/system/qos-boot-health.service /usr/lib/systemd/system/qos-boot-health.service
+COPY os/usr/lib/systemd/system/qos-repair.target /usr/lib/systemd/system/qos-repair.target
+COPY os/usr/lib/systemd/system/qos-repair@.service /usr/lib/systemd/system/qos-repair@.service
+COPY os/usr/lib/systemd/system/qos-deployment-rollback.service /usr/lib/systemd/system/qos-deployment-rollback.service
+COPY os/usr/lib/systemd/system/qos-deployment-update.service /usr/lib/systemd/system/qos-deployment-update.service
+COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/10-qos-boot-entries.conf
+# The narrow polkit grant that makes Settings' rollback control and its automatic
+# -updates switch able to do what they say. See the rule for how narrow.
+COPY os/etc/polkit-1/rules.d/49-qos-updates.rules /etc/polkit-1/rules.d/49-qos-updates.rules
+COPY docs/recovery.md /usr/share/doc/qos/recovery.md
+COPY docs/security/repair-mode.md /usr/share/doc/qos/repair-mode.md
+RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
+        /usr/libexec/qos-repair /usr/libexec/qos-uki-cmdline \
+        /usr/lib/systemd/system-generators/qos-boot-mode-generator
+
 # The signed PCR predictions this image was built with go in
 # /usr/share/qos/pcr-predictions/generation-<N>*.json, produced by
 # `qos-rollback sign-prediction` on the build host — the private half of
@@ -878,6 +928,12 @@ RUN systemctl enable qos-hidepid.service && \
     systemctl enable qos-security-audit.service && \
     systemctl enable qos-rollback-harden.service && \
     systemctl enable qos-rollback-confirm.timer
+
+# Boot assessment. qos-boot-health.service installs itself RequiredBy
+# boot-complete.target, which systemd only starts when the boot loader passed a
+# try counter — so on an entry that has already been blessed neither unit runs.
+RUN systemctl enable qos-boot-entries.service && \
+    systemctl enable qos-boot-health.service
 
 # A3: automatic bootc updates. The timer pulls + applies the image at
 # QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
