@@ -62,6 +62,7 @@ pub mod state;
 pub mod system_monitor;
 pub mod tab_documents;
 pub mod test_support;
+pub mod text_entry;
 pub mod tile;
 pub mod topbar;
 pub mod topbar_chrome;
