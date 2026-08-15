@@ -347,6 +347,18 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             "search_scope": format!("{:?}", chrome.search_scope),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
+            // What is actually on the screen. Without this a harness can only
+            // observe that *a* frame was painted, so "the session told the
+            // person their state file was not opened" could not be checked at
+            // all — and an assertion that cannot see its subject is the thing
+            // this project keeps getting caught by. The dump claims to be a
+            // structured view of the chrome; notifications are part of it.
+            "notifications": chrome.notifications().iter().map(|n| serde_json::json!({
+                "title": n.title,
+                "body": n.body,
+                "severity": format!("{:?}", n.severity),
+                "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
+            })).collect::<Vec<_>>(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
             // Mirrored from the compositor's SessionManager each tick; lets a
@@ -1122,7 +1134,17 @@ fn load_session_tree(
         }
     }
 
-    tree.persist_path = Some(path);
+    // Nothing writes back over a file this session refused to read. Declining
+    // to open a state file and then saving a bootstrapped tree onto it is worse
+    // than never having checked — the check would announce that the person's
+    // workspaces are safe while destroying them. A refused session runs without
+    // persistence, the same way `ui::persist` switches an app's writer off over
+    // a document it would not open.
+    tree.persist_path = if state_notice.is_none() {
+        Some(path)
+    } else {
+        None
+    };
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
     let roomless = tree.adopt_roomless_workspaces();

@@ -32,7 +32,29 @@ impl StateNotice {
         }
     }
 
+    /// What goes on the screen.
+    ///
+    /// Deliberately one short line. A toast is 320x48 and does not grow, so a
+    /// paragraph in here is a paragraph spilling off the card and over the
+    /// desktop — which is what the first version of this did. The claim that
+    /// has to survive the trim is "your work is still there", because that is
+    /// the one a person cannot infer from an empty desktop. Everything else —
+    /// the path, the two version numbers, what to do next — is in
+    /// [`StateNotice::detail`], which goes to the log and to the file left
+    /// beside the state file.
     pub fn body(&self) -> String {
+        match self {
+            Self::NewerSchema { .. } => {
+                "Saved by a newer version of qOS. Nothing was changed.".into()
+            }
+            Self::Unreadable { .. } => {
+                "The file could not be read. Nothing was changed.".into()
+            }
+        }
+    }
+
+    /// The whole story, for a log, a console, or the file left on disk.
+    pub fn detail(&self) -> String {
         match self {
             Self::NewerSchema {
                 path,
@@ -41,14 +63,15 @@ impl StateNotice {
             } => format!(
                 "{} was written by a newer version of qOS (layout {found}; this \
                  one understands {understood}). It has not been changed, and \
-                 nothing has been written over it. This session is a fresh \
-                 start; update again, or roll forward, to get back to your own \
-                 workspaces.",
+                 nothing has been written over it — this session runs without \
+                 saving, so it cannot be. Update again, or roll forward, to get \
+                 back to your own workspaces.",
                 path.display()
             ),
             Self::Unreadable { path, error } => format!(
                 "{} exists but could not be read ({error}). It has not been \
-                 changed. This session is a fresh start.",
+                 changed, and this session runs without saving, so it cannot \
+                 be.",
                 path.display()
             ),
         }
@@ -56,7 +79,7 @@ impl StateNotice {
 
     /// The whole message on one line, for a log or a console.
     pub fn one_line(&self) -> String {
-        format!("{}: {}", self.title(), self.body())
+        format!("{}: {}", self.title(), self.detail())
     }
 }
 
@@ -78,7 +101,7 @@ fn leave_notice_beside_the_file(state: &Path, notice: &StateNotice) {
          this one. Delete this file once the situation is resolved; nothing \
          reads it.\n",
         notice.title(),
-        notice.body()
+        notice.detail()
     );
     if let Err(e) = std::fs::write(&path, body) {
         tracing::warn!(path = %path.display(), error = %e, "could not leave the explanation beside the state file");
@@ -439,8 +462,22 @@ mod tests {
             ),
         }
         assert!(
-            notice.body().contains(&path.display().to_string()),
-            "the message must name the file, or there is nothing to act on"
+            notice.detail().contains(&path.display().to_string()),
+            "the detail must name the file, or there is nothing to act on"
+        );
+        // The on-screen line is short on purpose — a toast does not grow — but
+        // it still has to carry the claim a person cannot infer from an empty
+        // desktop.
+        assert!(
+            notice.body().len() < 80,
+            "the on-screen body must fit a 320x48 toast; it was {} chars: {:?}",
+            notice.body().len(),
+            notice.body()
+        );
+        assert!(
+            notice.body().to_lowercase().contains("nothing was changed"),
+            "the screen has to say the file is intact, got: {:?}",
+            notice.body()
         );
 
         // Preserved, byte for byte.
