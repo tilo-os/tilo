@@ -8,9 +8,11 @@
 //!   [`word_boundaries`] / [`line_boundaries`] / `prev_char_boundary` /
 //!   `next_char_boundary`. All return byte indices and stay on UTF-8
 //!   char boundaries by construction.
-//! * Clipboard helpers — [`clipboard_copy`] / [`clipboard_paste`] backed
-//!   by a process-wide cached `arboard::Clipboard` handle (arboard is
-//!   slow to construct on Wayland; we pay that cost once).
+//! * Clipboard helpers — [`clipboard_copy`] / [`clipboard_paste`] and the
+//!   primary-selection pair, resolved against whichever backend this process
+//!   has (see [`crate::clipboard`]): the compositor's mirror for in-process
+//!   chrome, `wl_data_device` for a Wayland app, arboard on X11, and an
+//!   in-process buffer of last resort that announces itself in the log.
 //!
 //! The boundary predicate (`is_word_char`) mirrors POSIX `\w` and Vim's
 //! `iskeyword`: letters, digits, underscore are word characters; whitespace
@@ -18,6 +20,8 @@
 
 use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
+
+use crate::clipboard::{ClipboardTarget, clipboard_backend, warn_fallback_once};
 
 /// Anchor + cursor pair. `anchor == cursor` means "no live selection".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -280,55 +284,143 @@ pub fn extend_span_drag<T: Ord + Copy>(
     }
 }
 
-/// Lazy global clipboard handle. `arboard::Clipboard::new()` can be
-/// slow on Wayland the first time (sets up the data-control device),
-/// so we cache one handle process-wide and lock it per access. Kept
-/// behind a `Mutex` because arboard's handle isn't `Sync`.
-fn clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
+/// Lazy global `arboard` handle, used **only on X11** and other non-Wayland
+/// platforms.
+///
+/// On Wayland `arboard` talks `zwlr_data_control_manager_v1`, the
+/// clipboard-manager protocol, which qOS does not offer to sandboxed apps for
+/// the reasons in `shell/src/compositor/selection.rs`. A `ui` app on Wayland
+/// goes through [`crate::clipboard::WaylandClipboard`] and `wl_data_device`
+/// instead, so constructing arboard there would only produce a handle that
+/// fails on every call. Construction is skipped rather than attempted, because
+/// arboard's Wayland probe is slow and its failure is the exact thing that
+/// used to be mistaken for "no clipboard support".
+fn arboard_clipboard() -> Option<&'static Mutex<arboard::Clipboard>> {
     static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new))
-        .as_ref()
+    CB.get_or_init(|| {
+        if running_on_wayland() {
+            return None;
+        }
+        arboard::Clipboard::new().ok().map(Mutex::new)
+    })
+    .as_ref()
 }
 
-/// In-process clipboard fallback used only when the system clipboard is
-/// unavailable (a headless test env, a locked-down session, or a Wayland
-/// compositor without a clipboard). It keeps copy → paste round-tripping
-/// **within the process** so the shared caret/clipboard core (and every
-/// widget that uses it) stays testable headlessly — the exact case a
-/// `--headless-drive` scenario or a unit test exercises. When a real system
-/// clipboard IS available this buffer is never touched, so live behaviour is
-/// unchanged.
-fn clipboard_fallback() -> &'static Mutex<Option<String>> {
-    static FB: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-    FB.get_or_init(|| Mutex::new(None))
+/// Whether this process is a Wayland client.
+fn running_on_wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
 }
 
-/// Push `text` onto the system clipboard. Falls back to an in-process buffer
-/// when arboard couldn't open (headless test env, locked-down session, ...) so
-/// a subsequent [`clipboard_paste`] in the same process still returns it.
-pub fn clipboard_copy(text: &str) {
-    if let Some(cb) = clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            let _ = handle.set_text(text.to_string());
+/// In-process clipboard fallback, used only when neither an installed backend
+/// nor arboard can serve the request — a unit test, a headless scenario run,
+/// or a session with no clipboard owner at all.
+///
+/// It keeps copy → paste round-tripping **within the process** so the shared
+/// caret/clipboard core stays testable headlessly. That convenience is also
+/// how a completely dead clipboard went unnoticed for so long, so every fall
+/// through to this buffer now logs once via
+/// [`crate::clipboard::warn_fallback_once`].
+fn clipboard_fallback() -> &'static Mutex<(Option<String>, Option<String>)> {
+    static FB: OnceLock<Mutex<(Option<String>, Option<String>)>> = OnceLock::new();
+    FB.get_or_init(|| Mutex::new((None, None)))
+}
+
+/// Write `text` to `target`, trying each backend in priority order.
+fn write_selection(target: ClipboardTarget, text: &str) {
+    if let Some(backend) = clipboard_backend() {
+        if backend.set_text(target, text) {
             return;
         }
     }
-    if let Ok(mut fb) = clipboard_fallback().lock() {
-        *fb = Some(text.to_string());
+    if let Some(cb) = arboard_clipboard() {
+        if let Ok(mut handle) = cb.lock() {
+            let wrote = match target {
+                ClipboardTarget::Clipboard => handle.set_text(text.to_string()).is_ok(),
+                #[cfg(target_os = "linux")]
+                ClipboardTarget::Primary => {
+                    use arboard::{LinuxClipboardKind, SetExtLinux};
+                    handle
+                        .set()
+                        .clipboard(LinuxClipboardKind::Primary)
+                        .text(text.to_string())
+                        .is_ok()
+                }
+                // No primary selection outside Linux; the regular clipboard is
+                // the closest honest equivalent.
+                #[cfg(not(target_os = "linux"))]
+                ClipboardTarget::Primary => handle.set_text(text.to_string()).is_ok(),
+            };
+            if wrote {
+                return;
+            }
+        }
     }
+    warn_fallback_once("copy");
+    if let Ok(mut fb) = clipboard_fallback().lock() {
+        match target {
+            ClipboardTarget::Clipboard => fb.0 = Some(text.to_string()),
+            ClipboardTarget::Primary => fb.1 = Some(text.to_string()),
+        }
+    }
+}
+
+/// Read `target`, trying each backend in priority order.
+fn read_selection(target: ClipboardTarget) -> Option<String> {
+    if let Some(backend) = clipboard_backend() {
+        return backend.text(target);
+    }
+    if let Some(cb) = arboard_clipboard() {
+        if let Ok(mut handle) = cb.lock() {
+            return match target {
+                ClipboardTarget::Clipboard => handle.get_text().ok(),
+                #[cfg(target_os = "linux")]
+                ClipboardTarget::Primary => {
+                    use arboard::{GetExtLinux, LinuxClipboardKind};
+                    handle
+                        .get()
+                        .clipboard(LinuxClipboardKind::Primary)
+                        .text()
+                        .ok()
+                }
+                #[cfg(not(target_os = "linux"))]
+                ClipboardTarget::Primary => handle.get_text().ok(),
+            };
+        }
+    }
+    warn_fallback_once("paste");
+    let fb = clipboard_fallback().lock().ok()?;
+    match target {
+        ClipboardTarget::Clipboard => fb.0.clone(),
+        ClipboardTarget::Primary => fb.1.clone(),
+    }
+}
+
+/// Push `text` onto the system clipboard — the Ctrl+C buffer.
+///
+/// Routes to whichever backend this process resolved to; see
+/// [`crate::clipboard`] for the order. Falls back to an in-process buffer only
+/// when there is no clipboard at all, and says so in the log when it does.
+pub fn clipboard_copy(text: &str) {
+    write_selection(ClipboardTarget::Clipboard, text);
 }
 
 /// Push an RGBA8 image (`width * height * 4` bytes, row-major, no padding) onto
 /// the system clipboard as image data, so it can be pasted into an image editor
-/// or chat. Returns true on success; a silent `false` when arboard couldn't
-/// open (headless test env) or the buffer size is wrong. Used by the PDF reader
-/// to copy a selected page region.
+/// or chat. Returns `false` when the buffer size is wrong or no backend can
+/// carry an image. Used by the PDF reader to copy a selected page region.
 pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
     if width == 0 || height == 0 || rgba.len() != width * height * 4 {
         return false;
     }
-    let Some(cb) = clipboard() else { return false };
-    let Ok(mut handle) = cb.lock() else { return false };
+    if let Some(backend) = clipboard_backend() {
+        return backend.set_image(width, height, rgba);
+    }
+    let Some(cb) = arboard_clipboard() else {
+        return false;
+    };
+    let Ok(mut handle) = cb.lock() else {
+        return false;
+    };
     let img = arboard::ImageData {
         width,
         height,
@@ -340,54 +432,27 @@ pub fn clipboard_copy_image(width: usize, height: usize, rgba: &[u8]) -> bool {
 /// Pull the current clipboard contents as a UTF-8 string. Returns
 /// `None` when the clipboard is empty / unavailable / non-text.
 pub fn clipboard_paste() -> Option<String> {
-    if let Some(cb) = clipboard() {
-        if let Ok(mut handle) = cb.lock() {
-            return handle.get_text().ok();
-        }
-    }
-    // No system clipboard: return whatever the in-process fallback holds.
-    clipboard_fallback().lock().ok().and_then(|fb| fb.clone())
+    read_selection(ClipboardTarget::Clipboard)
 }
 
-/// Push `text` onto the X11/Wayland **primary selection** — the mouse-driven
-/// "select then middle-click paste" buffer, distinct from the Ctrl+C
-/// clipboard. Terminals and editors set this whenever a range is selected so
-/// a middle-click paste in any app receives it. Silent no-op when the backend
-/// can't serve it (headless test env, or a Wayland compositor without
-/// primary-selection support). On non-Linux it falls back to the regular
-/// clipboard so callers stay portable.
+/// Push `text` onto the **primary selection** — the mouse-driven "select then
+/// middle-click paste" buffer, distinct from the Ctrl+C clipboard. Terminals
+/// and editors set this whenever a range is selected so a middle-click paste
+/// in any app receives it.
+///
+/// This used to be a silent no-op on qOS: the only implementation went through
+/// arboard, which could not open at all against a compositor that advertised
+/// no selection protocol, so the terminal's "middle-click paste works" promise
+/// was dead code. It now goes through the same backend chain as the clipboard,
+/// including the in-process fallback, so it is never silently nothing.
 pub fn clipboard_copy_primary(text: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        use arboard::{LinuxClipboardKind, SetExtLinux};
-        if let Some(cb) = clipboard() {
-            if let Ok(mut handle) = cb.lock() {
-                let _ = handle
-                    .set()
-                    .clipboard(LinuxClipboardKind::Primary)
-                    .text(text.to_string());
-            }
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    clipboard_copy(text);
+    write_selection(ClipboardTarget::Primary, text);
 }
 
-/// Read the X11/Wayland **primary selection** as a UTF-8 string — what a
-/// middle-click paste should insert. `None` when empty / unavailable. On
-/// non-Linux it falls back to the regular clipboard.
+/// Read the **primary selection** as a UTF-8 string — what a middle-click
+/// paste should insert. `None` when empty or unavailable.
 pub fn clipboard_paste_primary() -> Option<String> {
-    #[cfg(target_os = "linux")]
-    {
-        use arboard::{GetExtLinux, LinuxClipboardKind};
-        let cb = clipboard()?;
-        let mut handle = cb.lock().ok()?;
-        handle.get().clipboard(LinuxClipboardKind::Primary).text().ok()
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        clipboard_paste()
-    }
+    read_selection(ClipboardTarget::Primary)
 }
 
 #[cfg(test)]
