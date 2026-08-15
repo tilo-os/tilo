@@ -118,6 +118,35 @@ pub fn restrict_self(rw: &[PathBuf], ro: &[PathBuf]) -> LandlockOutcome {
     }
 }
 
+/// Ask the kernel whether the Landlock ruleset is really in force, by trying
+/// something it forbids.
+///
+/// [`restrict_self`] gives the guest's root read-only access and read-write
+/// access to the trees below it, so creating an entry directly at `/` is
+/// refused when the ruleset applied and succeeds when it did not — the root is
+/// a tmpfs and the guest is uid 0 in its own namespace. Nothing survives either
+/// way: on the success path the probe removes what it made.
+///
+/// This is deliberately a probe and not a reading of `/proc/self/status`. Not
+/// every kernel reports Landlock there, and a status line that says "installed"
+/// because the code path ran is exactly the kind of check that passes when it
+/// cannot see.
+pub fn landlock_probe() -> LandlockOutcome {
+    let probe = Path::new("/").join(format!(".ush-landlock-probe-{}", std::process::id()));
+    match std::fs::create_dir(&probe) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir(&probe);
+            LandlockOutcome::NotEnforced
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            LandlockOutcome::FullyEnforced
+        }
+        // A read-only or otherwise unusual root cannot tell the two apart, and
+        // saying so is better than picking the flattering answer.
+        Err(_) => LandlockOutcome::Errored,
+    }
+}
+
 /// What `scan` found. Every field is something the runtime established, and
 /// there is deliberately no "verdict".
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -410,6 +439,31 @@ mod tests {
         assert!(
             QUARANTINE_DIR.starts_with("/usr/"),
             "quarantining must land in the layer, not on the host"
+        );
+    }
+
+    /// Outside a guest nothing has restricted this process, and creating an
+    /// entry at `/` is refused by ordinary permissions rather than by Landlock.
+    /// The probe must not read that as enforcement — a status line that says
+    /// "enforcing" on an unconfined process is worse than none.
+    #[test]
+    fn the_landlock_probe_does_not_mistake_a_read_only_root_for_enforcement() {
+        // Running as an unprivileged user on a normal machine, `/` is not
+        // writable, so this exercises the third arm.
+        let outcome = landlock_probe();
+        assert!(
+            matches!(
+                outcome,
+                LandlockOutcome::FullyEnforced | LandlockOutcome::Errored
+            ),
+            "the probe must never report NotEnforced by creating a directory it \
+             could not clean up: {outcome:?}"
+        );
+        assert!(
+            !std::path::Path::new("/")
+                .join(format!(".ush-landlock-probe-{}", std::process::id()))
+                .exists(),
+            "the probe left something behind at /"
         );
     }
 

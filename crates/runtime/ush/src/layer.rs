@@ -195,7 +195,11 @@ impl Layer {
         if !self.exists() {
             return Err(LayerError::NotALayer(self.path.clone()));
         }
-        std::fs::remove_dir_all(&self.path).map_err(|e| io(&self.path, e))
+        crate::guest::remove_dir_all_forced(&self.path);
+        if self.path.exists() {
+            return Err(io(&self.path, std::io::Error::other("the layer directory survived removal")));
+        }
+        Ok(())
     }
 
     /// What this layer changed relative to the base.
