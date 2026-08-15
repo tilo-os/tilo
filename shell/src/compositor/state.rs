@@ -59,13 +59,17 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+};
+use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
-    delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
-    delegate_pointer_gestures, delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_compositor, delegate_data_device, delegate_dmabuf, delegate_fractional_scale,
+    delegate_output, delegate_pointer_gestures, delegate_seat, delegate_session_lock,
+    delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -185,6 +189,24 @@ pub struct State {
     /// `wl_shm` global state — software buffer support. Empty extra-format
     /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
     pub shm_state: ShmState,
+    /// `wl_data_device_manager` global state — the clipboard and
+    /// drag-and-drop channel.
+    ///
+    /// Not optional in practice, whatever a compositor's own apps need.
+    /// GTK refuses to use a Wayland display at all when this global is
+    /// absent — `gdk_wayland_display_open` checks for `wl_compositor`,
+    /// `wl_shm` and `wl_data_device_manager` together and bails with
+    /// "the Wayland compositor does not provide one or more of the
+    /// required interfaces" if any is missing. So without it every GTK
+    /// application on the machine — which is most Flatpaks — connects,
+    /// is refused, and falls back to an X11 display that does not exist
+    /// either. It never reaches the point of mapping a window, and the
+    /// failure looks like the app being broken rather than the
+    /// compositor being incomplete.
+    ///
+    /// qOS's own toolkit does not use it, which is why it was missing:
+    /// nothing that shipped in-tree ever asked for it.
+    pub data_device_state: DataDeviceState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
     /// GPU-allocated (usually GBM) buffers to their surfaces.
     ///
@@ -388,6 +410,7 @@ impl State {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
@@ -524,6 +547,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             shm_state,
+            data_device_state,
             dmabuf_state,
             dmabuf_global,
             dmabuf_device,
@@ -1514,9 +1538,50 @@ impl FractionalScaleHandler for State {
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
 // -----------------------------------------------------------------------------
 
+// Clipboard and drag-and-drop between clients.
+//
+// The hooks below are deliberately empty and that is not a stub: smithay
+// routes a `wl_data_device.set_selection` from one client to another
+// client's offer itself, so client-to-client copy/paste works with no
+// code here. `new_selection` / `send_selection` exist for a *server*
+// that also owns a second selection channel to bridge — an X11 clipboard
+// bridge, or a remote peer in a shared session. qOS has neither on this
+// path, so there is nothing to forward.
+impl DataDeviceHandler for State {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
+impl SelectionHandler for State {
+    type SelectionUserData = ();
+
+    fn new_selection(
+        &mut self,
+        _target: SelectionTarget,
+        _source: Option<smithay::wayland::selection::SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+    }
+
+    fn send_selection(
+        &mut self,
+        _target: SelectionTarget,
+        _mime_type: String,
+        _fd: std::os::unix::io::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &Self::SelectionUserData,
+    ) {
+    }
+}
+
+impl ClientDndGrabHandler for State {}
+impl ServerDndGrabHandler for State {}
+
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
 delegate_shm!(State);
+delegate_data_device!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
