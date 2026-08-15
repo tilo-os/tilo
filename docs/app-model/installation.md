@@ -66,6 +66,40 @@ Override `$XDG_DATA_HOME` per-app for tests, or set `QOS_APPS_DATA_DIR`
 to override just the qos-apps subtree (`qos-launcher::registry` reads
 the same var).
 
+### The system store
+
+An OS image ships a second store, in the same shape, at
+`/usr/share/qos-apps/`:
+
+```
+/usr/share/qos-apps/
+  registry.toml
+  payloads/<pkg-id>/…
+  bin/…
+```
+
+It is written during the image build by `os/scripts/pack-apps.sh`, which
+runs the ordinary `qos-pkg pack` + `qos-install install` against a
+`QOS_APPS_DATA_DIR` pointed there — so every preinstalled package went
+through the same packing, signing and install path a user's own package
+goes through, and is described by the same `RegistryEntry` fields. It
+exists so a fresh install has apps to list before anyone has run
+`qos-install`.
+
+`qos-launcher::registry::list_installed` reads both stores, system first,
+and a user entry **shadows** a system entry with the same id — installing
+your own build of a preinstalled app replaces it in the launcher rather
+than producing a duplicate row. `QOS_APPS_SYSTEM_DIR` overrides the
+system path the same way `QOS_APPS_DATA_DIR` overrides the user one.
+
+Being preinstalled grants a package nothing. The sandbox is still built
+from its manifest, the payload is still bound read-only, and the one
+writable directory still comes from `qos-rooms/` — there is no
+first-party branch anywhere in the launcher. The store is read-only only
+because it lives inside an immutable image; `qos-install` writes to the
+user store, so removing or replacing a preinstalled app is a normal
+per-user install and needs no write access to `/usr`.
+
 `qos-rooms/` is the app-data side and belongs to the launcher: it creates
 `<room>/<pkg-id>` on first launch and binds it at `/run/qos/app`. Two rooms
 are two directories, and no manifest field selects either. See

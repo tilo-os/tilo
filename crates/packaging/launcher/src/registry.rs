@@ -66,7 +66,10 @@ pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, Registry
 /// reporting "no apps" for a corrupt file would hide the breakage from
 /// whoever is looking at an empty launcher.
 pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
-    let mut out = read_registry(&system_registry_path())?;
+    let mut out = match system_registry_path() {
+        Some(path) => read_registry(&path)?,
+        None => Vec::new(),
+    };
     for entry in read_registry(&default_registry_path()?)? {
         match out.iter().position(|e| e.id == entry.id) {
             // Same id in both stores: the user's install is the one that
@@ -112,21 +115,36 @@ pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
 /// first boot already has a registry to list.
 pub const SYSTEM_DATA_DIR: &str = "/usr/share/qos-apps";
 
-/// Root of the system store, with a `QOS_APPS_SYSTEM_DIR` override so
-/// tests — and a build that stages the store somewhere else before
-/// copying it into the image — can point it elsewhere.
-pub fn system_data_dir() -> PathBuf {
-    match std::env::var_os("QOS_APPS_SYSTEM_DIR") {
-        Some(dir) => PathBuf::from(dir),
-        None => PathBuf::from(SYSTEM_DATA_DIR),
+/// Root of the system store, or `None` when there is no system store to
+/// read.
+///
+/// `QOS_APPS_SYSTEM_DIR` names it explicitly. Otherwise it is
+/// [`SYSTEM_DATA_DIR`] — *unless* `QOS_APPS_DATA_DIR` is set, which
+/// suppresses it entirely.
+///
+/// That last rule is what makes the override usable for its documented
+/// purpose. `QOS_APPS_DATA_DIR` means "the store is here", and a test
+/// that says so and then asserts on how many packages exist has to get
+/// the answer it set up — otherwise the same test passes on a dev box
+/// with no `/usr/share/qos-apps` and fails inside a qOS image, where
+/// every preinstalled package would be counted alongside its fixtures.
+/// Production sets neither variable and reads both stores; a test that
+/// genuinely wants both sets `QOS_APPS_SYSTEM_DIR` too.
+pub fn system_data_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("QOS_APPS_SYSTEM_DIR") {
+        return Some(PathBuf::from(dir));
     }
+    if std::env::var_os("QOS_APPS_DATA_DIR").is_some() {
+        return None;
+    }
+    Some(PathBuf::from(SYSTEM_DATA_DIR))
 }
 
-/// `registry.toml` of the system store. Unlike the per-user path this
-/// cannot fail: it needs no `HOME`, which is the point — it resolves
-/// identically for every user and for a launch with no home at all.
-pub fn system_registry_path() -> PathBuf {
-    system_data_dir().join("registry.toml")
+/// `registry.toml` of the system store, when there is one. Unlike the
+/// per-user path this needs no `HOME` — it resolves identically for
+/// every user and for a launch with no home at all.
+pub fn system_registry_path() -> Option<PathBuf> {
+    Some(system_data_dir()?.join("registry.toml"))
 }
 
 /// Root install directory. Honours the `QOS_APPS_DATA_DIR`
@@ -248,6 +266,36 @@ mod tests {
         // The system-only entry is untouched by the shadowing.
         let calc = all.iter().find(|e| e.id == "dev.qos.calculator").unwrap();
         assert!(calc.payload_root.starts_with(system.path()));
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn qos_apps_data_dir_alone_suppresses_the_system_store() {
+        // The isolation rule the shell's fixture tests depend on: setting
+        // only QOS_APPS_DATA_DIR means "the store is exactly here". Without
+        // this, every test that points at a temp dir and asserts a package
+        // count would pass on a dev box and fail inside a qOS image, where
+        // /usr/share/qos-apps is populated.
+        let user = store_with(&["dev.qos.mine"]);
+        // SAFETY: this test is in the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", user.path()) };
+        let resolved = system_data_dir();
+        let all = list_installed().expect("read");
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        assert!(
+            resolved.is_none(),
+            "QOS_APPS_DATA_DIR without QOS_APPS_SYSTEM_DIR must suppress the \
+             system store, got {resolved:?}",
+        );
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["dev.qos.mine"]);
+
+        // With neither set, the real system path is what gets read.
+        assert_eq!(
+            system_data_dir(),
+            Some(PathBuf::from(SYSTEM_DATA_DIR)),
+            "production reads the image's store",
+        );
     }
 
     #[test]
