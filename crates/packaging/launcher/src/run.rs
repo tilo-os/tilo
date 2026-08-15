@@ -76,6 +76,12 @@ pub enum RunError {
     )]
     RuntimeBundleSignature { path: PathBuf, reason: String },
     #[error(
+        "`{desktop_id}` is a host application, not a qOS package: it has no manifest, so \
+         there is no sandbox to build for it. Launch it with `qos-launcher run-host \
+         --desktop-id {desktop_id}`, which runs it unconfined and says so."
+    )]
+    HostAppNotAPackage { desktop_id: String },
+    #[error(
         "refusing to launch: this app was granted access to {hosts:?} and that can only be \
          enforced by brokering its traffic, but the egress gate could not start ({source}). \
          Launching anyway would mean giving it unrestricted outbound access, which is not \
@@ -582,6 +588,26 @@ pub enum LaunchMode {
         command: String,
         passthrough_argv: Vec<String>,
     },
+    /// An application qOS did not package: a `.desktop` entry already
+    /// installed on the host, Flatpak or otherwise.
+    ///
+    /// **This mode never reaches the sandbox.** `run_with` refuses it
+    /// with [`RunError::HostAppNotAPackage`]; the launch is carried out
+    /// by [`crate::host`], which spawns the entry's own command line
+    /// with a controlled environment and no bubblewrap at all.
+    ///
+    /// The refusal is the point. A Flatpak cannot start inside qOS's
+    /// sandbox — the baseline seccomp filter denies the `unshare`,
+    /// `mount` and `pivot_root` it needs to build its own — and a plain
+    /// distribution binary has no manifest to derive a sandbox from. A
+    /// future refactor that routed one of these into `build_bwrap_argv`
+    /// would produce an app that fails to start, so the disagreement is
+    /// made a hard error at the seam rather than left to be discovered
+    /// as a launch failure.
+    Host {
+        /// Desktop-file id of the entry, e.g. `com.spotify.Client`.
+        desktop_id: String,
+    },
 }
 
 /// `run` variant taking a pre-parsed manifest. Useful for tests that
@@ -673,6 +699,15 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    // 0a. A host application has no manifest and no sandbox. Refusing
+    // here — before a socket, a directory or a bwrap argv exists — is
+    // what keeps the two kinds of launch from quietly converging.
+    if let LaunchMode::Host { desktop_id } = &opts.mode {
+        return Err(RunError::HostAppNotAPackage {
+            desktop_id: desktop_id.clone(),
+        });
+    }
+
     // 0. Policy. A manifest that names a filesystem path is refused
     // before anything else happens — before a socket is opened, before
     // a directory is created, before bwrap is spawned. Refused rather
@@ -797,6 +832,12 @@ pub fn run_with(
                 passthrough_argv.clone(),
             )
         }
+        // Refused at the top of this function, before any of the setup
+        // above ran. Reaching here would mean that guard was removed.
+        LaunchMode::Host { desktop_id } => unreachable!(
+            "host application {desktop_id} reached the sandbox builder; \
+             the LaunchMode::Host guard at the top of run_with is gone"
+        ),
     };
     // Splice in the QOS_CLI_COMMAND setenv before the trailing
     // entrypoint token so bwrap still parses it as a flag.
@@ -1160,9 +1201,14 @@ pub fn run_with_captured(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<(ExitStatus, Vec<u8>), RunError> {
-    // Same refusal as `run_with`, and for the same reason: this is a
+    // Same refusals as `run_with`, and for the same reason: this is a
     // second entry into the sandbox builder, and a policy with one
     // enforced door is a policy with a door beside it.
+    if let LaunchMode::Host { desktop_id } = &opts.mode {
+        return Err(RunError::HostAppNotAPackage {
+            desktop_id: desktop_id.clone(),
+        });
+    }
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
@@ -1221,6 +1267,11 @@ pub fn run_with_captured(
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string(),
             passthrough_argv.clone(),
+        ),
+        // Refused at the top of this function. See `run_with`.
+        LaunchMode::Host { desktop_id } => unreachable!(
+            "host application {desktop_id} reached the sandbox builder; \
+             the LaunchMode::Host guard at the top of run_with_captured is gone"
         ),
     };
     let mut argv = crate::sandbox::build_bwrap_argv_for_entry(
