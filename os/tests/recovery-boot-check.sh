@@ -25,6 +25,10 @@ info() { printf '      %s\n' "$*"; }
 
 [ "$(id -u)" = 0 ] || { printf 'FAIL  needs root: the ESP is mode 0700 and EFI variables are root-only.\n' >&2; exit 1; }
 
+# Overridable for the same reason qos-deployment's is: /usr is read-only, so
+# trying a change on a running machine means running the tool from elsewhere.
+UKI_CMDLINE="${QOS_UKI_CMDLINE:-/usr/libexec/qos-uki-cmdline}"
+
 MODE="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^qos\.mode=//p' | head -1)"
 GEN="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^qos\.generation=//p' | head -1)"
 CFS="$(tr ' \t' '\n\n' < /proc/cmdline | sed -n 's/^composefs=//p' | head -1)"
@@ -86,8 +90,8 @@ else
 fi
 
 # Title and ordering come from the image's own .osrel on a Type #2 entry.
-if [ -n "$REPAIR_UKI" ] && command -v /usr/libexec/qos-uki-cmdline >/dev/null 2>&1; then
-  osrel="$(/usr/libexec/qos-uki-cmdline osrel "$REPAIR_UKI" 2>/dev/null)"
+if [ -n "$REPAIR_UKI" ] && [ -x "$UKI_CMDLINE" ]; then
+  osrel="$("$UKI_CMDLINE" osrel "$REPAIR_UKI" 2>/dev/null)"
   title="$(printf '%s' "$osrel" | sed -n 's/^PRETTY_NAME=//p' | head -1)"
   sk="$(printf '%s' "$osrel" | sed -n 's/^SORT_KEY=//p' | head -1)"
   case "$title" in
@@ -107,11 +111,11 @@ fi
 # This is the assertion the whole design rests on, and it is read from the bytes
 # rather than inferred from the fact that a file was written.
 if [ -n "$REPAIR_UKI" ] && [ -f "$REPAIR_UKI" ]; then
-  if ! command -v /usr/libexec/qos-uki-cmdline >/dev/null 2>&1; then
+  if ! [ -x "$UKI_CMDLINE" ]; then
     bad "qos-uki-cmdline is not on this machine, so the repair UKI's sealed command
         line cannot be read and nothing below it can be established."
   else
-    rc="$(/usr/libexec/qos-uki-cmdline show "$REPAIR_UKI" 2>/dev/null)"
+    rc="$("$UKI_CMDLINE" show "$REPAIR_UKI" 2>/dev/null)"
     if [ -z "$rc" ]; then
       bad "could not read a .cmdline section out of $REPAIR_UKI"
     else
