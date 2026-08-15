@@ -103,13 +103,66 @@ enum Cmd {
         force: bool,
         #[command(flatten)]
         trust: TrustFlags,
+        #[command(flatten)]
+        runtime: RuntimeFlags,
+        /// Print exactly what would change and exit, touching nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Fetch a newer version of an installed package and swap it in,
+    /// keeping the user's per-room state.
+    Update {
+        /// Package id (as printed by `qos-install list`). Omit to
+        /// update every installed package.
+        pkg_id: Option<String>,
+        /// Update from a local .qpkg instead of a configured registry.
+        /// Only meaningful with an explicit package id.
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// A semver requirement to resolve against, e.g. `^2`. Default
+        /// is "the newest version this host can run".
+        #[arg(long)]
+        version: Option<String>,
+        /// Permit replacing an installed version with an older one.
+        /// Refused by default: a downgrade is almost always a
+        /// mis-resolved registry rather than an intent.
+        #[arg(long)]
+        allow_downgrade: bool,
+        /// Print exactly what would change and exit, touching nothing.
+        #[arg(long)]
+        dry_run: bool,
+        #[command(flatten)]
+        trust: TrustFlags,
+        #[command(flatten)]
+        runtime: RuntimeFlags,
     },
     /// List installed packages.
     List,
-    /// Remove an installed package by id.
-    Remove {
+    /// Uninstall a package: its payload, its registry entry, its PATH
+    /// shims, and — only when you say so — the state it saved.
+    #[command(alias = "remove")]
+    Uninstall {
         /// Package id (as printed by `qos-install list`).
         pkg_id: String,
+        /// Also delete every room's saved state for this app. This is
+        /// the user's data, not the publisher's files: it does not come
+        /// back with a reinstall.
+        #[arg(long, conflicts_with = "keep_state")]
+        purge: bool,
+        /// Keep the saved state without being asked. The default when
+        /// there is no terminal to ask on.
+        #[arg(long)]
+        keep_state: bool,
+        /// Print exactly what would be removed and exit, deleting
+        /// nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Re-verify an installed package's payload against the signature
+    /// chain recorded at install time.
+    Verify {
+        /// Package id. Omit to verify every installed package.
+        pkg_id: Option<String>,
     },
     /// Pin an installed package so it's kept + ranked first and never
     /// evicted under store-side size pressure.
@@ -146,6 +199,7 @@ enum Cmd {
         trust: TrustFlags,
     },
     /// Print manifest + install info for an installed package.
+    #[command(alias = "info")]
     Inspect {
         /// Package id.
         pkg_id: String,
@@ -178,6 +232,32 @@ enum Cmd {
         #[command(subcommand)]
         cmd: RuntimeCmd,
     },
+}
+
+/// What to do about a package whose manifest declares a runtime
+/// bundle that is not installed.
+///
+/// A package that pins `runtime = "qos-runtime/<v>"` will not launch
+/// without it — the launcher refuses with `RuntimeBundleMissing` rather
+/// than starting an app whose loader is absent. Installing the package
+/// and finding that out at first launch is the failure this exists to
+/// remove: the dependency is checked while the user is still looking at
+/// the install.
+#[derive(Debug, Args, Clone, Default)]
+struct RuntimeFlags {
+    /// Build and install the runtime bundle the manifest declares, from
+    /// the current host root, if it is not already present.
+    #[arg(long)]
+    with_runtime: bool,
+    /// Sign the runtime bundle built by `--with-runtime` with this
+    /// identity. Without it the bundle is unsigned, and the launcher
+    /// refuses unsigned bundles unless told otherwise.
+    #[arg(long, requires = "with_runtime")]
+    runtime_identity: Option<PathBuf>,
+    /// Install the package even though its runtime bundle is missing.
+    /// The package will not launch until the bundle is installed.
+    #[arg(long)]
+    ignore_missing_runtime: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -299,6 +379,42 @@ enum Error {
     RuntimeBundleExists(String),
     #[error("runtime bundle qos-runtime/{0} is not installed")]
     RuntimeBundleNotInstalled(String),
+    #[error(
+        "{package} declares runtime `{runtime}`, and no bundle for it is installed. \
+         That package will not launch: the launcher refuses to start an app whose \
+         declared runtime is absent.\n  \
+         Install it and retry:  qos-install runtime install --version {version} --from-host --identity <key.json>\n  \
+         Or build it as part of this install:  add --with-runtime\n  \
+         Or install anyway, knowing it cannot launch yet:  add --ignore-missing-runtime"
+    )]
+    RuntimeDependencyMissing {
+        package: String,
+        runtime: String,
+        version: String,
+    },
+    #[error("manifest declares runtime `{0}`, which is not in `<name>/<version>` form")]
+    RuntimeReferenceMalformed(String),
+    #[error("integrity: {0}")]
+    Integrity(#[from] install::integrity::IntegrityError),
+    #[error("{package} is installed at {installed}; {candidate} is not newer (use --allow-downgrade to install it anyway)")]
+    NotNewer {
+        package: String,
+        installed: String,
+        candidate: String,
+    },
+    #[error("the .qpkg is for {found}, but {wanted} was asked for")]
+    WrongPackage { wanted: String, found: String },
+    #[error("fetching {app_id} from the configured registries: {detail}")]
+    Fetch { app_id: String, detail: String },
+    #[error("starting the async runtime for a registry fetch: {0}")]
+    Runtime(#[source] std::io::Error),
+    #[error("payload swap for {package}: {detail}")]
+    Swap { package: String, detail: String },
+    #[error(
+        "{failed} of {checked} installed package(s) no longer match what was installed. \
+         Reinstall them, or investigate — the payload has changed since it was verified."
+    )]
+    VerificationFailed { failed: usize, checked: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,6 +444,18 @@ struct RegistryEntry {
     /// the manifest. Empty when the package has no `[cli]` block.
     #[serde(default)]
     cli_commands: Vec<String>,
+    /// The manifest's `runtime = "qos-runtime/<v>"`, when it declares
+    /// one. Recorded so `list` can show which packages depend on a
+    /// bundle and `verify` can say whether that bundle is still there,
+    /// without re-reading every manifest.
+    #[serde(default)]
+    runtime: String,
+    /// Where the bytes came from: the path of a local `.qpkg`, or the
+    /// name of the registry that served it. Not a trust input — the
+    /// signature is — but the answer to "where did this come from?"
+    /// after the fact.
+    #[serde(default)]
+    source: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -352,6 +480,22 @@ fn registry_path() -> Result<PathBuf, Error> {
 
 fn payloads_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("payloads"))
+}
+
+/// The user's data home — the parent of `qos-rooms/`, where apps keep
+/// what they saved.
+///
+/// Deliberately *not* [`data_root`]: that is the installer's own
+/// directory and moves with `QOS_APPS_DATA_DIR`, whereas app state is
+/// written by the launcher and follows `XDG_DATA_HOME`. Reading the
+/// wrong one would make "remove this app's data" quietly find nothing.
+fn data_home_root() -> Result<PathBuf, Error> {
+    if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    dirs::data_dir().ok_or(Error::NoDataDir)
 }
 
 fn trusted_attestors_path() -> Result<PathBuf, Error> {
@@ -469,41 +613,90 @@ fn verify_and_gate(
     }
 }
 
-fn install(qpkg: &Path, pinned: bool, force: bool, trust: TrustFlags) -> Result<(), Error> {
-    // 1. Read + ingest the .qpkg tar into an in-memory blob store.
-    let (pkg_id, store) = read_qpkg(qpkg)?;
+/// Everything a verified `.qpkg` yields, before anything is written
+/// to the install directory.
+///
+/// Reading and verifying is deliberately separated from placing files:
+/// it is what makes `--dry-run` truthful (the package really was
+/// fetched and its signature really was checked, so the plan it prints
+/// is the plan that would run) and what lets `update` decide whether a
+/// swap is worth doing before it disturbs a working install.
+struct Ingested {
+    pkg_id: PackageId,
+    store: MemoryBlobStore,
+    manifest: pkg::Manifest,
+    publisher_key_hex: String,
+    attested_by: String,
+    /// The three blobs the publisher's signature covers, kept for the
+    /// integrity record. Taken from the store that was just verified,
+    /// so what gets recorded is exactly what was checked.
+    signed_root: Vec<u8>,
+    manifest_bytes: Vec<u8>,
+    collection_bytes: Vec<u8>,
+}
 
-    // 2. Verify + apply trust policy.
-    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, &trust)?;
+impl Ingested {
+    fn id(&self) -> &str {
+        &self.manifest.package.id
+    }
+    fn version(&self) -> &str {
+        &self.manifest.package.version
+    }
+    /// `qos-runtime/<v>`, when the manifest pins one.
+    fn runtime_ref(&self) -> Option<&str> {
+        self.manifest.package.runtime.as_deref()
+    }
+}
 
-    // 2b. Schema + sandbox policy. A signature says who wrote the
-    // manifest; it does not say that what the manifest asks for is
-    // reasonable. A package that names its own filesystem paths is
-    // refused here, signed or not — otherwise the only thing standing
-    // between "a valid signature" and "read-write on the user's home"
-    // is that nobody in the fleet had tried it.
+/// Read, verify and gate a `.qpkg`'s bytes — everything up to the
+/// point where a file would be written.
+///
+/// Signature verification is not optional and no flag turns it off.
+/// `--allow-self-signed` decides *whose* signature is acceptable; it
+/// never decides whether one is required.
+fn ingest(bytes: &[u8], trust: &TrustFlags) -> Result<Ingested, Error> {
+    let (pkg_id, store) = read_qpkg_bytes(bytes)?;
+    let (manifest, publisher_key_hex, attested_by) = verify_and_gate(pkg_id, &store, trust)?;
+
+    // A signature says who wrote the manifest; it does not say that
+    // what the manifest asks for is reasonable. A package that names
+    // its own filesystem paths is refused here, signed or not.
     pkg::validate_manifest(&manifest).map_err(|e| Error::Policy(e.to_string()))?;
 
-    // 3. Registry check.
-    let id_field = manifest.package.id.clone();
-    let version_field = manifest.package.version.clone();
-    let mut reg = load_registry()?;
-    if reg.entry.iter().any(|e| e.id == id_field) && !force {
-        return Err(Error::AlreadyInstalled(id_field));
-    }
-    reg.entry.retain(|e| e.id != id_field);
+    let blob = |hash: &pkg::BlobHash, what: &str| -> Result<Vec<u8>, Error> {
+        store
+            .get(hash)
+            .map_err(|e| Error::Parse(e.to_string()))?
+            .ok_or_else(|| Error::Parse(format!(".qpkg is missing its {what}")))
+    };
+    let signed_root = blob(&pkg::BlobHash(*pkg_id.as_bytes()), "signed root")?;
+    let root = pkg::SignedRoot::decode(&signed_root)
+        .map_err(|e| Error::Parse(format!("signed root: {e}")))?;
+    let manifest_bytes = blob(&root.manifest_hash, "manifest")?;
+    let collection_bytes = blob(&root.payload_root_hash, "payload collection")?;
 
-    // 4. Unpack into payloads/<id_field>/. Using the reverse-DNS id
-    // (not the content hash) means updates overwrite the same directory
-    // — the installer treats the package name as the install slot.
-    let dest = payloads_root()?.join(&id_field);
+    Ok(Ingested {
+        pkg_id,
+        store,
+        manifest,
+        publisher_key_hex,
+        attested_by,
+        signed_root,
+        manifest_bytes,
+        collection_bytes,
+    })
+}
+
+/// Unpack a verified package into `dest`, replacing whatever was there,
+/// and write its manifest alongside so the launcher can read it without
+/// re-opening the `.qpkg`.
+fn place_payload(ingested: &Ingested, dest: &Path) -> Result<PathBuf, Error> {
     if dest.exists() {
-        fs::remove_dir_all(&dest)?;
+        fs::remove_dir_all(dest)?;
     }
-    fs::create_dir_all(&dest)?;
-    let manifest = unpack(pkg_id, &store, &dest).map_err(|e| Error::Unpack(e.to_string()))?;
-    // Write the manifest into the install dir explicitly so the launcher
-    // can find it without re-reading the .qpkg.
+    fs::create_dir_all(dest)?;
+    let manifest = unpack(ingested.pkg_id, &ingested.store, dest)
+        .map_err(|e| Error::Unpack(e.to_string()))?;
     let manifest_path = dest.join("manifest.toml");
     fs::write(
         &manifest_path,
@@ -511,70 +704,532 @@ fn install(qpkg: &Path, pinned: bool, force: bool, trust: TrustFlags) -> Result<
             .to_toml_string()
             .map_err(|e| Error::Unpack(e.to_string()))?,
     )?;
+    Ok(manifest_path)
+}
 
-    let installed_at = now();
-    let package_id_hex = hex_of(pkg_id.as_bytes());
+/// Where the manifest's declared runtime bundle would be found, and
+/// whether it is there.
+///
+/// `Ok(None)` means the package declares no runtime, which is the
+/// common case for anything statically linked.
+fn runtime_status(ingested: &Ingested) -> Result<Option<(String, bool)>, Error> {
+    let Some(raw) = ingested.runtime_ref() else {
+        return Ok(None);
+    };
+    let (_, version) = raw
+        .split_once('/')
+        .ok_or_else(|| Error::RuntimeReferenceMalformed(raw.to_string()))?;
+    let per_user = runtime_bundle::default_bundle_path(version).ok();
+    let system = runtime_bundle::system_bundle_path(version);
+    let present = per_user
+        .iter()
+        .cloned()
+        .chain([system])
+        .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists());
+    Ok(Some((version.to_string(), present)))
+}
 
-    // If the manifest has a [cli] block, drop a shim into
-    // ~/.local/share/qos-apps/bin/ per declared command. The
-    // launcher override picks up an env var so integration
-    // tests can point the shim at a target/debug/qos-launcher.
+/// Make the declared runtime available, or refuse the install.
+///
+/// The refusal is the point. A package pinning `qos-runtime/<v>` will
+/// not launch without that bundle — the launcher returns
+/// `RuntimeBundleMissing` rather than starting an app whose loader is
+/// absent — so installing it and discovering that at first launch turns
+/// a dependency problem into a mysterious one. Checked here, the
+/// message names the exact command that fixes it.
+fn satisfy_runtime(ingested: &Ingested, flags: &RuntimeFlags) -> Result<(), Error> {
+    let Some((version, present)) = runtime_status(ingested)? else {
+        return Ok(());
+    };
+    if present {
+        return Ok(());
+    }
+    if flags.with_runtime {
+        println!(
+            "  runtime  : qos-runtime/{version} is missing; building it from the host root"
+        );
+        return runtime_install(
+            &version,
+            true,
+            None,
+            None,
+            flags.runtime_identity.as_deref(),
+            false,
+        );
+    }
+    if flags.ignore_missing_runtime {
+        eprintln!(
+            "qos-install: WARN — {} declares runtime `qos-runtime/{version}`, which is \
+             not installed. The package will not launch until it is.",
+            ingested.id()
+        );
+        return Ok(());
+    }
+    Err(Error::RuntimeDependencyMissing {
+        package: ingested.id().to_string(),
+        runtime: ingested
+            .runtime_ref()
+            .unwrap_or("qos-runtime")
+            .to_string(),
+        version,
+    })
+}
+
+/// Write the PATH shims a `[cli]` package publishes, returning the
+/// command names recorded on the registry entry.
+fn write_cli_shims(manifest: &pkg::Manifest, id_field: &str) -> Result<Vec<String>, Error> {
     let cli_commands: Vec<String> = manifest
         .cli
         .as_ref()
         .map(|c| c.commands.clone())
         .unwrap_or_default();
-    if !cli_commands.is_empty() {
-        let bin_dir = bin_root()?;
-        let shim_source = shim::locate_shim_source();
-        if !shim_source.exists() {
-            eprintln!(
-                "qos-install: WARNING — cannot find qos-cli-shim at {}. \
-                 Skipping shim install. Set QOS_CLI_SHIM_PATH or install the qOS runtime first.",
-                shim_source.display()
-            );
-        } else {
-            let launcher_override_owned = std::env::var_os("QOS_LAUNCHER_PATH")
-                .map(PathBuf::from);
-            let launcher_override = launcher_override_owned.as_deref();
-            let spec = shim::ShimInstall {
-                package_id: &id_field,
-                commands: &cli_commands,
-                shim_source: &shim_source,
-                bin_dir: &bin_dir,
-                launcher_override,
-            };
-            shim::write_shims(&spec).map_err(|e| Error::Shim(e.to_string()))?;
-            println!("  shims    : wrote {} shim(s) into {}", cli_commands.len(), bin_dir.display());
-            println!(
-                "  PATH     : prepend {} to your shell's PATH to pick them up (see `qos-install path`).",
-                bin_dir.display()
-            );
-        }
+    if cli_commands.is_empty() {
+        return Ok(cli_commands);
     }
+    let bin_dir = bin_root()?;
+    let shim_source = shim::locate_shim_source();
+    if !shim_source.exists() {
+        eprintln!(
+            "qos-install: WARNING — cannot find qos-cli-shim at {}. \
+             Skipping shim install. Set QOS_CLI_SHIM_PATH or install the qOS runtime first.",
+            shim_source.display()
+        );
+        return Ok(cli_commands);
+    }
+    let launcher_override_owned = std::env::var_os("QOS_LAUNCHER_PATH").map(PathBuf::from);
+    let launcher_override = launcher_override_owned.as_deref();
+    let spec = shim::ShimInstall {
+        package_id: id_field,
+        commands: &cli_commands,
+        shim_source: &shim_source,
+        bin_dir: &bin_dir,
+        launcher_override,
+    };
+    shim::write_shims(&spec).map_err(|e| Error::Shim(e.to_string()))?;
+    println!(
+        "  shims    : wrote {} shim(s) into {}",
+        cli_commands.len(),
+        bin_dir.display()
+    );
+    println!(
+        "  PATH     : prepend {} to your shell's PATH to pick them up (see `qos-install path`).",
+        bin_dir.display()
+    );
+    Ok(cli_commands)
+}
+
+fn install(
+    qpkg: &Path,
+    pinned: bool,
+    force: bool,
+    trust: TrustFlags,
+    runtime: RuntimeFlags,
+    dry_run: bool,
+) -> Result<(), Error> {
+    // 1. Read + verify. Happens before the registry check so a
+    //    `--dry-run` plan is a plan about a package we have actually
+    //    seen and checked, not about a filename.
+    let bytes = fs::read(qpkg)?;
+    let ingested = ingest(&bytes, &trust)?;
+    let id_field = ingested.id().to_string();
+    let version_field = ingested.version().to_string();
+
+    // 2. Registry check.
+    let mut reg = load_registry()?;
+    let existing = reg.entry.iter().find(|e| e.id == id_field).cloned();
+    if existing.is_some() && !force {
+        return Err(Error::AlreadyInstalled(id_field));
+    }
+
+    let dest = payloads_root()?.join(&id_field);
+    if dry_run {
+        print_install_plan(&ingested, existing.as_ref(), &dest, pinned, qpkg)?;
+        return Ok(());
+    }
+
+    // 3. Dependencies, before any file is written: an install that
+    //    half-succeeds and then refuses is worse than one that refuses.
+    satisfy_runtime(&ingested, &runtime)?;
+
+    reg.entry.retain(|e| e.id != id_field);
+
+    // 4. Unpack into payloads/<id>. Using the reverse-DNS id (not the
+    //    content hash) means the package name is the install slot.
+    place_payload(&ingested, &dest)?;
+    let manifest_path = dest.join("manifest.toml");
+
+    // 5. The evidence a later `qos-install verify` replays.
+    let data_root = data_root()?;
+    install::integrity::record(
+        &data_root,
+        &id_field,
+        &ingested.signed_root,
+        &ingested.manifest_bytes,
+        &ingested.collection_bytes,
+    )?;
+
+    let cli_commands = write_cli_shims(&ingested.manifest, &id_field)?;
 
     reg.entry.push(RegistryEntry {
         id: id_field.clone(),
         version: version_field.clone(),
-        package_id_hex,
+        package_id_hex: hex_of(ingested.pkg_id.as_bytes()),
         payload_root: dest.clone(),
         manifest_path,
-        publisher_key_hex,
+        publisher_key_hex: ingested.publisher_key_hex.clone(),
         pinned,
-        installed_at,
-        attested_by: attested_by.clone(),
+        installed_at: now(),
+        attested_by: ingested.attested_by.clone(),
         cli_commands,
+        runtime: ingested.runtime_ref().unwrap_or_default().to_string(),
+        source: qpkg.display().to_string(),
     });
     save_registry(&reg)?;
 
     println!("installed: {id_field} {version_field}");
     println!("  payload  : {}", dest.display());
     println!("  pinned   : {pinned}");
-    if !attested_by.is_empty() {
-        println!("  attested : {attested_by}");
+    if !ingested.attested_by.is_empty() {
+        println!("  attested : {}", ingested.attested_by);
+    }
+    if let Some(rt) = ingested.runtime_ref() {
+        println!("  runtime  : {rt}");
     }
     println!("run with:  qos-install run {id_field}");
     Ok(())
+}
+
+/// What an install would change, printed instead of doing it.
+fn print_install_plan(
+    ingested: &Ingested,
+    existing: Option<&RegistryEntry>,
+    dest: &Path,
+    pinned: bool,
+    from: &Path,
+) -> Result<(), Error> {
+    println!("plan: install {} {}", ingested.id(), ingested.version());
+    println!("  from      : {}", from.display());
+    println!("  signature : verified ({})", describe_trust(ingested));
+    match existing {
+        Some(e) => println!(
+            "  replaces  : {} {} at {}",
+            e.id,
+            e.version,
+            e.payload_root.display()
+        ),
+        None => println!("  replaces  : nothing (not currently installed)"),
+    }
+    println!("  payload   : write {}", dest.display());
+    println!("  pinned    : {pinned}");
+    match runtime_status(ingested)? {
+        None => println!("  runtime   : none declared"),
+        Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
+        Some((v, false)) => println!(
+            "  runtime   : qos-runtime/{v} MISSING — install would refuse without \
+             --with-runtime or --ignore-missing-runtime"
+        ),
+    }
+    let commands: Vec<String> = ingested
+        .manifest
+        .cli
+        .as_ref()
+        .map(|c| c.commands.clone())
+        .unwrap_or_default();
+    if commands.is_empty() {
+        println!("  shims     : none");
+    } else {
+        println!("  shims     : {} in {}", commands.join(", "), bin_root()?.display());
+    }
+    println!("  state     : untouched (a package's files are not its user's data)");
+    println!("(nothing was written)");
+    Ok(())
+}
+
+fn describe_trust(ingested: &Ingested) -> String {
+    if ingested.attested_by.is_empty() {
+        format!("self-signed by ed25519:{}", ingested.publisher_key_hex)
+    } else {
+        format!("attested by {}", ingested.attested_by)
+    }
+}
+
+/// Fetch a newer version and swap it in, keeping the user's state.
+fn update(
+    pkg_id: Option<&str>,
+    from: Option<&Path>,
+    version_req: Option<&str>,
+    allow_downgrade: bool,
+    dry_run: bool,
+    trust: TrustFlags,
+    runtime: RuntimeFlags,
+) -> Result<(), Error> {
+    let reg = load_registry()?;
+    let targets: Vec<RegistryEntry> = match pkg_id {
+        Some(id) => vec![
+            reg.entry
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+                .ok_or_else(|| Error::NotInstalled(id.into()))?,
+        ],
+        None => {
+            if from.is_some() {
+                return Err(Error::Policy(
+                    "--from names one .qpkg, so it needs one package id".into(),
+                ));
+            }
+            reg.entry.clone()
+        }
+    };
+    if targets.is_empty() {
+        println!("(no packages installed)");
+        return Ok(());
+    }
+
+    let mut updated = 0;
+    let mut current = 0;
+    for entry in &targets {
+        match update_one(
+            entry,
+            from,
+            version_req,
+            allow_downgrade,
+            dry_run,
+            &trust,
+            &runtime,
+        )? {
+            UpdateOutcome::Swapped => updated += 1,
+            UpdateOutcome::AlreadyCurrent => current += 1,
+            UpdateOutcome::Planned => {}
+        }
+    }
+    if targets.len() > 1 {
+        println!("{updated} updated, {current} already current");
+    }
+    Ok(())
+}
+
+enum UpdateOutcome {
+    Swapped,
+    AlreadyCurrent,
+    Planned,
+}
+
+fn update_one(
+    entry: &RegistryEntry,
+    from: Option<&Path>,
+    version_req: Option<&str>,
+    allow_downgrade: bool,
+    dry_run: bool,
+    trust: &TrustFlags,
+    runtime: &RuntimeFlags,
+) -> Result<UpdateOutcome, Error> {
+    // 1. Get candidate bytes: a local file, or the configured
+    //    registries. Either way they are verified by `ingest` before
+    //    anything on disk moves.
+    let (bytes, source) = match from {
+        Some(path) => (fs::read(path)?, path.display().to_string()),
+        None => fetch_from_registries(&entry.id, version_req)?,
+    };
+    let ingested = ingest(&bytes, trust)?;
+    if ingested.id() != entry.id {
+        return Err(Error::WrongPackage {
+            wanted: entry.id.clone(),
+            found: ingested.id().to_string(),
+        });
+    }
+
+    // 2. Is it actually newer? Versions that do not parse as semver
+    //    are compared as strings for equality only — an unparseable
+    //    version is not evidence of an upgrade.
+    let ordering = compare_versions(&entry.version, ingested.version());
+    match ordering {
+        Some(std::cmp::Ordering::Equal) | None if entry.version == ingested.version() => {
+            println!("{} {} is already current", entry.id, entry.version);
+            return Ok(UpdateOutcome::AlreadyCurrent);
+        }
+        Some(std::cmp::Ordering::Greater) if !allow_downgrade => {
+            return Err(Error::NotNewer {
+                package: entry.id.clone(),
+                installed: entry.version.clone(),
+                candidate: ingested.version().to_string(),
+            });
+        }
+        _ => {}
+    }
+
+    let data_home = data_home_root()?;
+    let rooms = install::state::find(&data_home, &entry.id);
+    if dry_run {
+        println!(
+            "plan: update {} {} -> {}",
+            entry.id,
+            entry.version,
+            ingested.version()
+        );
+        println!("  from      : {source}");
+        println!("  signature : verified ({})", describe_trust(&ingested));
+        println!("  payload   : swap {}", entry.payload_root.display());
+        match runtime_status(&ingested)? {
+            None => println!("  runtime   : none declared"),
+            Some((v, true)) => println!("  runtime   : qos-runtime/{v} (installed)"),
+            Some((v, false)) => println!("  runtime   : qos-runtime/{v} MISSING"),
+        }
+        println!(
+            "  state     : KEPT — {} room(s), {}",
+            rooms.len(),
+            install::state::human_bytes(install::state::total_bytes(&rooms))
+        );
+        println!("(nothing was written)");
+        return Ok(UpdateOutcome::Planned);
+    }
+
+    satisfy_runtime(&ingested, runtime)?;
+
+    // 3. Swap. The new payload is built beside the old one and moved
+    //    into place, so a failure part-way through leaves the installed
+    //    version working rather than half-replaced. The one window is
+    //    between the two renames; the old tree is kept until the new
+    //    one is in place, so it is recoverable rather than lost.
+    swap_payload(&ingested, &entry.payload_root)?;
+
+    // 4. Records. Integrity first: a registry that claims a version
+    //    whose evidence has not been written yet would fail its own
+    //    `verify`.
+    let data_root = data_root()?;
+    install::integrity::record(
+        &data_root,
+        &entry.id,
+        &ingested.signed_root,
+        &ingested.manifest_bytes,
+        &ingested.collection_bytes,
+    )?;
+
+    // The new version may publish a different set of commands, so the
+    // old shims go before the new ones are written.
+    if !entry.cli_commands.is_empty() {
+        let bin_dir = bin_root()?;
+        let _ = shim::remove_shims(&bin_dir, &entry.cli_commands);
+    }
+    let cli_commands = write_cli_shims(&ingested.manifest, &entry.id)?;
+
+    let mut reg = load_registry()?;
+    if let Some(slot) = reg.entry.iter_mut().find(|e| e.id == entry.id) {
+        slot.version = ingested.version().to_string();
+        slot.package_id_hex = hex_of(ingested.pkg_id.as_bytes());
+        slot.publisher_key_hex = ingested.publisher_key_hex.clone();
+        slot.attested_by = ingested.attested_by.clone();
+        slot.installed_at = now();
+        slot.cli_commands = cli_commands;
+        slot.runtime = ingested.runtime_ref().unwrap_or_default().to_string();
+        slot.source = source.clone();
+    }
+    save_registry(&reg)?;
+
+    println!(
+        "updated: {} {} -> {}",
+        entry.id,
+        entry.version,
+        ingested.version()
+    );
+    println!("  from     : {source}");
+    println!("  payload  : {}", entry.payload_root.display());
+    println!(
+        "  state    : kept ({} room(s), {})",
+        rooms.len(),
+        install::state::human_bytes(install::state::total_bytes(&rooms))
+    );
+    Ok(UpdateOutcome::Swapped)
+}
+
+/// Build the new payload beside the live one and move it into place.
+///
+/// Two renames rather than one, because `rename(2)` will not replace a
+/// non-empty directory. The old tree is moved aside first and removed
+/// only once the new one is live, so the failure modes are "old still
+/// installed" or "new installed" — never "neither".
+fn swap_payload(ingested: &Ingested, live: &Path) -> Result<(), Error> {
+    let parent = live
+        .parent()
+        .ok_or_else(|| Error::Swap {
+            package: ingested.id().to_string(),
+            detail: format!("{} has no parent directory", live.display()),
+        })?
+        .to_path_buf();
+    fs::create_dir_all(&parent)?;
+    let pid = std::process::id();
+    let staging = parent.join(format!(".staging-{}-{pid}", ingested.id()));
+    let retired = parent.join(format!(".retiring-{}-{pid}", ingested.id()));
+
+    place_payload(ingested, &staging)?;
+
+    if live.exists() {
+        fs::rename(live, &retired).map_err(|e| Error::Swap {
+            package: ingested.id().to_string(),
+            detail: format!("moving the installed payload aside: {e}"),
+        })?;
+    }
+    if let Err(e) = fs::rename(&staging, live) {
+        // Put the working install back before reporting. Leaving the
+        // user with no payload at all because an update failed is the
+        // one outcome this whole dance exists to prevent.
+        if retired.exists() {
+            let _ = fs::rename(&retired, live);
+        }
+        let _ = fs::remove_dir_all(&staging);
+        return Err(Error::Swap {
+            package: ingested.id().to_string(),
+            detail: format!("moving the new payload into place: {e}"),
+        });
+    }
+    let _ = fs::remove_dir_all(&retired);
+    Ok(())
+}
+
+/// Compare two version strings as semver. `None` when either side is
+/// not semver, which is a real possibility for a hand-written manifest.
+fn compare_versions(installed: &str, candidate: &str) -> Option<std::cmp::Ordering> {
+    let a = semver::Version::parse(installed).ok()?;
+    let b = semver::Version::parse(candidate).ok()?;
+    Some(a.cmp(&b))
+}
+
+/// Resolve `app_id` through the configured registries and return the
+/// verified `.qpkg` bytes plus the registry that served them.
+///
+/// The verification here is the registry protocol's — signed index,
+/// publisher-signed entry, blake3 of the downloaded blob — and it is
+/// deliberately *not* the end of it: the bytes still go through
+/// `ingest`, which checks the publisher signature embedded in the
+/// package against this machine's trust config. Two independent
+/// checks, because they answer different questions.
+fn fetch_from_registries(
+    app_id: &str,
+    version_req: Option<&str>,
+) -> Result<(Vec<u8>, String), Error> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(Error::Runtime)?;
+    let host = app_registry::HostProfile::detect();
+    let outcome = runtime
+        .block_on(app_registry::resolve::resolve_and_fetch(
+            None,
+            &host,
+            app_id,
+            version_req,
+        ))
+        .map_err(|e| Error::Fetch {
+            app_id: app_id.to_string(),
+            // `{e:#}` renders anyhow's whole context chain, which is
+            // where the useful half of a fetch failure lives — "no
+            // configured registry offers X" vs "index signature not
+            // trusted" are the same error type and very different
+            // problems.
+            detail: format!("{e:#}"),
+        })?;
+    let source = format!("{} (registry {})", outcome.version, outcome.registry);
+    Ok((outcome.bytes, source))
 }
 
 fn list() -> Result<(), Error> {
@@ -584,8 +1239,8 @@ fn list() -> Result<(), Error> {
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {}",
-        "id", "version", "pinned", "attested-by", "installed"
+        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
+        "id", "version", "pinned", "attested-by", "runtime", "installed"
     );
     for e in &reg.entry {
         let ago = age(e.installed_at);
@@ -594,39 +1249,282 @@ fn list() -> Result<(), Error> {
         } else {
             &e.attested_by
         };
+        // A package whose declared runtime bundle has gone missing
+        // still lists, but says so — it is installed and unlaunchable,
+        // which is exactly the state a bare list would hide.
+        let runtime = match e.runtime.as_str() {
+            "" => "-".to_string(),
+            r => {
+                let version = r.split_once('/').map(|(_, v)| v).unwrap_or("");
+                if runtime_bundle_present(version) {
+                    r.to_string()
+                } else {
+                    format!("{r} (MISSING)")
+                }
+            }
+        };
         println!(
-            "{:<32}  {:<8}  {:<6}  {:<18}  {}",
+            "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
             e.id,
             e.version,
             if e.pinned { "yes" } else { "no" },
             attested,
+            runtime,
             ago
         );
     }
     Ok(())
 }
 
-fn remove(pkg_id: &str) -> Result<(), Error> {
+/// Whether a runtime bundle of this version is installed, per-user or
+/// system-wide. Same lookup order the launcher uses.
+fn runtime_bundle_present(version: &str) -> bool {
+    if version.is_empty() {
+        return false;
+    }
+    runtime_bundle::default_bundle_path(version)
+        .ok()
+        .into_iter()
+        .chain([runtime_bundle::system_bundle_path(version)])
+        .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists())
+}
+
+/// Uninstall a package, and decide about its user data separately.
+///
+/// The payload is the publisher's: signed bytes, exactly reproducible
+/// by reinstalling. The per-room state is the user's: it does not come
+/// back. Conflating the two is how a package manager deletes someone's
+/// notes on their behalf, so the two are separate decisions here and
+/// the state one is never made silently.
+fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
     let mut reg = load_registry()?;
     let idx = reg
         .entry
         .iter()
         .position(|e| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
+
+    let data_home = data_home_root()?;
+    let rooms = install::state::find(&data_home, pkg_id);
+    let data_root = data_root()?;
+
+    if dry_run {
+        let entry = &reg.entry[idx];
+        println!("plan: uninstall {} {}", entry.id, entry.version);
+        println!("  payload   : remove {}", entry.payload_root.display());
+        println!("  registry  : drop the entry");
+        if entry.cli_commands.is_empty() {
+            println!("  shims     : none");
+        } else {
+            println!(
+                "  shims     : remove {} from {}",
+                entry.cli_commands.join(", "),
+                bin_root()?.display()
+            );
+        }
+        if install::integrity::has_record(&data_root, pkg_id) {
+            println!(
+                "  integrity : remove {}",
+                install::integrity::record_dir(&data_root, pkg_id).display()
+            );
+        }
+        print_state_summary(&rooms);
+        println!(
+            "  state     : {}",
+            if purge {
+                "DELETE (--purge)"
+            } else if keep_state {
+                "keep (--keep-state)"
+            } else {
+                "you would be asked"
+            }
+        );
+        println!("(nothing was removed)");
+        return Ok(());
+    }
+
+    // Ask about the user's data *before* removing the package, so a
+    // "no" leaves everything as it was rather than half-done.
+    let delete_state = decide_state(&rooms, purge, keep_state);
+
     let entry = reg.entry.remove(idx);
     if entry.payload_root.exists() {
         fs::remove_dir_all(&entry.payload_root)?;
     }
-    // Undo the PATH shims. Best-effort — a missing bin_dir means
-    // the shims weren't installed in the first place.
+    // Undo the PATH shims. Best-effort — a missing bin_dir means the
+    // shims were not installed in the first place.
     if !entry.cli_commands.is_empty() {
         let bin_dir = bin_root()?;
         shim::remove_shims(&bin_dir, &entry.cli_commands)
             .map_err(|e| Error::Shim(e.to_string()))?;
-        println!("  removed {} PATH shim(s) from {}", entry.cli_commands.len(), bin_dir.display());
+        println!(
+            "  removed {} PATH shim(s) from {}",
+            entry.cli_commands.len(),
+            bin_dir.display()
+        );
     }
+    install::integrity::forget(&data_root, pkg_id);
     save_registry(&reg)?;
-    println!("removed: {pkg_id}");
+    println!("uninstalled: {pkg_id} {}", entry.version);
+
+    if delete_state {
+        let (removed, failures) = install::state::remove(&rooms);
+        println!("  state    : deleted in {removed} room(s)");
+        for (path, e) in failures {
+            eprintln!("qos-install: could not remove {}: {e}", path.display());
+        }
+    } else if !rooms.is_empty() {
+        println!(
+            "  state    : kept — {} room(s), {} under {}",
+            rooms.len(),
+            install::state::human_bytes(install::state::total_bytes(&rooms)),
+            data_home.join(install::state::ROOMS_DIR).display()
+        );
+        println!("             reinstalling picks it back up; `--purge` deletes it.");
+    }
+    Ok(())
+}
+
+fn print_state_summary(rooms: &[install::state::RoomState]) {
+    if rooms.is_empty() {
+        println!("  saved data: none");
+        return;
+    }
+    println!(
+        "  saved data: {} room(s), {} total",
+        rooms.len(),
+        install::state::human_bytes(install::state::total_bytes(rooms))
+    );
+    for room in rooms {
+        println!(
+            "              {:<24} {:>10}  {} file(s)",
+            room.room,
+            install::state::human_bytes(room.bytes),
+            room.files
+        );
+    }
+}
+
+/// Whether to delete the app's saved state.
+///
+/// The flags win. Otherwise the user is asked — and if there is no
+/// terminal to ask on, the answer is *keep*, because a non-interactive
+/// uninstall silently deleting user data is the failure mode that
+/// cannot be undone.
+fn decide_state(rooms: &[install::state::RoomState], purge: bool, keep_state: bool) -> bool {
+    if rooms.is_empty() {
+        return false;
+    }
+    if purge {
+        return true;
+    }
+    if keep_state {
+        return false;
+    }
+    print_state_summary(rooms);
+    if !stdin_is_a_terminal() {
+        println!(
+            "  (no terminal to ask on — keeping it. Re-run with --purge to delete, \
+             or --keep-state to silence this.)"
+        );
+        return false;
+    }
+    print!("Delete this app's saved data too? [y/N] ");
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+    let mut answer = String::new();
+    if std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn stdin_is_a_terminal() -> bool {
+    // SAFETY: isatty(3) takes a file descriptor and returns a flag; it
+    // cannot fail in a way that matters here.
+    unsafe { libc_isatty(0) == 1 }
+}
+
+unsafe extern "C" {
+    #[link_name = "isatty"]
+    fn libc_isatty(fd: i32) -> i32;
+}
+
+/// Replay the signature chain for one installed package, or all of
+/// them.
+fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
+    let reg = load_registry()?;
+    let targets: Vec<&RegistryEntry> = match pkg_id {
+        Some(id) => vec![
+            reg.entry
+                .iter()
+                .find(|e| e.id == id)
+                .ok_or_else(|| Error::NotInstalled(id.into()))?,
+        ],
+        None => reg.entry.iter().collect(),
+    };
+    if targets.is_empty() {
+        println!("(no packages installed)");
+        return Ok(());
+    }
+    let data_root = data_root()?;
+    let checked = targets.len();
+    let mut bad = 0;
+    for entry in targets {
+        match install::integrity::verify(
+            &data_root,
+            &entry.id,
+            &entry.package_id_hex,
+            &entry.payload_root,
+        ) {
+            Ok(report) if report.is_intact() => {
+                println!(
+                    "ok       {} {}  ({} file(s) checked)",
+                    entry.id, entry.version, report.files_checked
+                );
+                for extra in &report.unexpected {
+                    println!("         note: not part of the package: {extra}");
+                }
+            }
+            Ok(report) => {
+                bad += 1;
+                println!(
+                    "FAILED   {} {}  ({} of {} file(s) do not match)",
+                    entry.id,
+                    entry.version,
+                    report.faults.len(),
+                    report.files_checked
+                );
+                for fault in &report.faults {
+                    println!("         {fault}");
+                }
+            }
+            Err(e) => {
+                bad += 1;
+                println!("FAILED   {} {}  {e}", entry.id, entry.version);
+            }
+        }
+        if !entry.runtime.is_empty() {
+            let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+            let present = runtime_bundle::default_bundle_path(version)
+                .ok()
+                .into_iter()
+                .chain([runtime_bundle::system_bundle_path(version)])
+                .any(|p| p.join(runtime_bundle::BUNDLE_MANIFEST_FILENAME).exists());
+            if !present {
+                println!(
+                    "         note: declared runtime {} is not installed, so this \
+                     package cannot launch",
+                    entry.runtime
+                );
+            }
+        }
+    }
+    if bad > 0 {
+        return Err(Error::VerificationFailed {
+            failed: bad,
+            checked,
+        });
+    }
     Ok(())
 }
 
@@ -763,6 +1661,45 @@ fn inspect(pkg_id: &str) -> Result<(), Error> {
         }
     );
     println!("installed     : {} seconds ago", now() - entry.installed_at);
+    if entry.runtime.is_empty() {
+        println!("runtime       : (none declared)");
+    } else {
+        let version = entry.runtime.split_once('/').map(|(_, v)| v).unwrap_or("");
+        println!(
+            "runtime       : {} ({})",
+            entry.runtime,
+            if runtime_bundle_present(version) {
+                "installed"
+            } else {
+                "MISSING — this package cannot launch"
+            }
+        );
+    }
+    if !entry.source.is_empty() {
+        println!("source        : {}", entry.source);
+    }
+    let data_root = data_root()?;
+    println!(
+        "integrity     : {}",
+        if install::integrity::has_record(&data_root, pkg_id) {
+            "recorded (run `qos-install verify` to replay it)"
+        } else {
+            "no record — installed before integrity records, or the record was deleted"
+        }
+    );
+    let rooms = install::state::find(&data_home_root()?, pkg_id);
+    if rooms.is_empty() {
+        println!("saved data    : none");
+    } else {
+        println!(
+            "saved data    : {} room(s), {}",
+            rooms.len(),
+            install::state::human_bytes(install::state::total_bytes(&rooms))
+        );
+        for room in &rooms {
+            println!("                {}  {}", room.room, room.path.display());
+        }
+    }
     Ok(())
 }
 
@@ -959,9 +1896,39 @@ fn runtime_verify(version: &str) -> Result<(), Error> {
 fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        Cmd::Install { qpkg, pinned, force, trust } => install(&qpkg, pinned, force, trust),
+        Cmd::Install {
+            qpkg,
+            pinned,
+            force,
+            trust,
+            runtime,
+            dry_run,
+        } => install(&qpkg, pinned, force, trust, runtime, dry_run),
+        Cmd::Update {
+            pkg_id,
+            from,
+            version,
+            allow_downgrade,
+            dry_run,
+            trust,
+            runtime,
+        } => update(
+            pkg_id.as_deref(),
+            from.as_deref(),
+            version.as_deref(),
+            allow_downgrade,
+            dry_run,
+            trust,
+            runtime,
+        ),
         Cmd::List => list(),
-        Cmd::Remove { pkg_id } => remove(&pkg_id),
+        Cmd::Uninstall {
+            pkg_id,
+            purge,
+            keep_state,
+            dry_run,
+        } => uninstall(&pkg_id, purge, keep_state, dry_run),
+        Cmd::Verify { pkg_id } => verify_installed(pkg_id.as_deref()),
         Cmd::Pin { pkg_id } => set_pinned(&pkg_id, true),
         Cmd::Unpin { pkg_id } => set_pinned(&pkg_id, false),
         Cmd::Run {
@@ -1024,9 +1991,15 @@ fn main() {
 ///
 /// Mirrors `qos-pkg-cli::read_qpkg` (deliberately duplicated so this
 /// crate stays independent of qos-pkg-cli).
+#[allow(dead_code)]
 fn read_qpkg(path: &Path) -> Result<(PackageId, MemoryBlobStore), Error> {
-    let file = fs::File::open(path)?;
-    let mut ar = tar::Archive::new(file);
+    read_qpkg_bytes(&fs::read(path)?)
+}
+
+/// Same, from bytes already in memory — what a registry fetch hands
+/// back, and what makes verification-before-writing possible.
+fn read_qpkg_bytes(bytes: &[u8]) -> Result<(PackageId, MemoryBlobStore), Error> {
+    let mut ar = tar::Archive::new(std::io::Cursor::new(bytes));
     let mut header: Option<QpkgHeader> = None;
     let mut store = MemoryBlobStore::new();
     for entry in ar.entries().map_err(|e| Error::Parse(e.to_string()))? {
