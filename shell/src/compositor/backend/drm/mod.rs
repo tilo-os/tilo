@@ -54,6 +54,8 @@ pub mod scanout;
 pub mod seat_diag;
 pub mod session;
 
+use std::sync::mpsc::Receiver;
+
 use vello::Scene;
 
 use paint::swizzle_subrect_rgba_to_xrgb8888;
@@ -61,6 +63,7 @@ use paint::swizzle_subrect_rgba_to_xrgb8888;
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 use crate::compositor::present::Presenter;
 pub use runtime::DrmBackendError;
+use runtime::{ScanoutCommand, ScanoutEntry};
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] which owns the
 /// libseat session + udev + libinput, plus a [`paint::VelloDrmBridge`]
@@ -89,6 +92,9 @@ pub struct DrmBackend {
     /// `None` the moment the split happened, silently dropping the
     /// compositor back to the 60 Hz fallback on a 144 Hz panel.
     refresh: Option<std::time::Duration>,
+    /// Reconfiguration channel, held only while this backend still owns
+    /// its scanouts inline. Handed to the presenter along with them.
+    commands: Option<Receiver<ScanoutCommand>>,
 }
 
 impl DrmBackend {
@@ -98,17 +104,14 @@ impl DrmBackend {
     /// point catches it and `eprintln!`s a friendly message rather
     /// than panicking, matching the existing skeleton's contract.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let inner = runtime::DrmRuntime::new()?;
+        let mut inner = runtime::DrmRuntime::new()?;
+        let commands = inner.commands.take();
         let outputs = Self::refresh_outputs(&inner);
         // Pace to the *fastest* connected mode: the compositor paints one
         // scene across the combined geometry, so there is a single cadence
         // to pick, and a slower output showing every Nth frame beats
         // throttling the fast panel to the slow one's rate.
-        let refresh = inner
-            .scanouts
-            .iter()
-            .filter_map(|e| e.scanout.refresh_interval())
-            .min();
+        let refresh = Self::refresh_from(&inner);
         match refresh {
             Some(d) => tracing::info!(
                 hz = 1.0 / d.as_secs_f64(),
@@ -125,6 +128,7 @@ impl DrmBackend {
             paint: None,
             blanked: false,
             refresh,
+            commands,
         })
     }
 
@@ -135,6 +139,20 @@ impl DrmBackend {
         let mut outs: Vec<Output> = inner.dispatch.output_meta.values().cloned().collect();
         outs.sort_by_key(|o| o.id.0);
         outs
+    }
+
+    /// The cadence to pace to: the fastest connected mode.
+    ///
+    /// Read from the loop thread's record of the live outputs rather than
+    /// from the scanouts, because the scanouts move to the render thread —
+    /// asking them would start returning `None` the moment they did, and
+    /// silently drop a 144 Hz panel to the 60 Hz fallback.
+    fn refresh_from(inner: &runtime::DrmRuntime) -> Option<std::time::Duration> {
+        inner.dispatch.live.iter().filter_map(|l| l.refresh).min()
+    }
+
+    fn recompute_refresh(&self) -> Option<std::time::Duration> {
+        Self::refresh_from(&self.inner)
     }
 }
 
@@ -159,7 +177,7 @@ impl DrmBackend {
 /// thread; page-flip completions are read here and nowhere else, so no
 /// other thread can steal them.
 pub struct DrmPresenter {
-    scanouts: Vec<runtime::ScanoutEntry>,
+    scanouts: Vec<ScanoutEntry>,
     outputs: Vec<Output>,
     /// Pointer position in combined coordinates, for the software-cursor
     /// fallback only. Updated from the loop thread through
@@ -168,12 +186,23 @@ pub struct DrmPresenter {
     pointer: (f64, f64),
     paint: Option<paint::VelloDrmBridge>,
     blanked: bool,
+    /// True between a session pause and the matching resume. Distinct
+    /// from `blanked`: blanked is "the user's screen should be off",
+    /// paused is "these CRTCs are not ours right now". Presenting under
+    /// either is wrong, but only the second one means the hardware has to
+    /// be rebuilt before presenting can start again.
+    paused: bool,
+    /// Reconfiguration commands from the loop thread — hotplug, VT
+    /// switches, resume. Drained at the top of every frame so a change
+    /// lands between frames rather than during one.
+    commands: Option<Receiver<ScanoutCommand>>,
 }
 
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
-        if self.blanked || self.scanouts.is_empty() {
+        self.drain_commands();
+        if self.blanked || self.paused || self.scanouts.is_empty() {
             return;
         }
         let target_size = combined_geometry(&self.outputs);
@@ -248,6 +277,82 @@ impl DrmPresenter {
                     rgba, cw, ch, sx, sy, dst, pitch, ow as usize, oh as usize,
                 );
             });
+        }
+    }
+
+    /// Apply every reconfiguration the loop thread has queued.
+    fn drain_commands(&mut self) {
+        let Some(rx) = self.commands.as_ref() else {
+            return;
+        };
+        let pending: Vec<ScanoutCommand> = rx.try_iter().collect();
+        for cmd in pending {
+            apply_scanout_command(
+                cmd,
+                &mut self.scanouts,
+                &mut self.outputs,
+                &mut self.paused,
+                &mut self.blanked,
+            );
+        }
+    }
+}
+
+/// Apply one reconfiguration to a scanout set.
+///
+/// Shared by the presenter (the normal case, running on the render
+/// thread) and by [`DrmBackend`] itself for the inline path a backend
+/// takes before its presenter is split off — one implementation, so
+/// hotplug behaves the same whichever side owns the scanouts.
+fn apply_scanout_command(
+    cmd: ScanoutCommand,
+    scanouts: &mut Vec<ScanoutEntry>,
+    outputs: &mut Vec<Output>,
+    paused: &mut bool,
+    blanked: &mut bool,
+) {
+    match cmd {
+        ScanoutCommand::Reconfigure {
+            remove,
+            add,
+            outputs: table,
+        } => {
+            // Dropping a scanout closes its dup of the card fd and
+            // releases the CRTC, which is the whole teardown an unplugged
+            // display needs.
+            scanouts.retain(|e| !remove.contains(&e.id));
+            scanouts.extend(add);
+            // Positions come from the loop thread's re-layout: the
+            // survivors have to move too, because the set was re-packed
+            // to close the hole an unplugged display left.
+            for entry in scanouts.iter_mut() {
+                if let Some(o) = table.iter().find(|o| o.id == entry.id) {
+                    entry.position = o.position;
+                }
+            }
+            scanouts.sort_by_key(|e| e.id.0);
+            *outputs = table;
+            tracing::info!(
+                outputs = scanouts.len(),
+                "DRM present: adopted the new output set"
+            );
+        }
+        ScanoutCommand::Pause => {
+            *paused = true;
+            tracing::info!("DRM present: paused (the session no longer owns the CRTCs)");
+        }
+        ScanoutCommand::Resume { dpms_on } => {
+            for e in scanouts.iter_mut() {
+                e.scanout.restore();
+                e.scanout.set_dpms(dpms_on);
+            }
+            *blanked = !dpms_on;
+            *paused = false;
+            tracing::info!(
+                outputs = scanouts.len(),
+                dpms_on,
+                "DRM present: resumed after re-modesetting every output"
+            );
         }
     }
 }
@@ -395,6 +500,38 @@ impl Backend for DrmBackend {
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
         self.inner.dispatch_pending();
+        // Before the presenter is split off the scanouts are still here,
+        // so the reconfigurations addressed to "whoever owns them" have to
+        // be applied here too. After the split this receiver is gone and
+        // the presenter drains the same channel instead.
+        if self.commands.is_some() {
+            let pending: Vec<ScanoutCommand> = self
+                .commands
+                .as_ref()
+                .map(|rx| rx.try_iter().collect())
+                .unwrap_or_default();
+            let mut paused = false;
+            for cmd in pending {
+                apply_scanout_command(
+                    cmd,
+                    &mut self.inner.scanouts,
+                    &mut self.outputs,
+                    &mut paused,
+                    &mut self.blanked,
+                );
+            }
+        }
+        // A hotplug rewrote the output table on the loop thread; publish
+        // it so `outputs()` — which the compositor reads to size its scene
+        // and to advertise `wl_output` globals — reflects the change.
+        if std::mem::take(&mut self.inner.dispatch.outputs_changed) {
+            self.outputs = Self::refresh_outputs(&self.inner);
+            // The cadence is the fastest connected mode, and "connected"
+            // just changed. Unplugging the 144 Hz panel of a pair must not
+            // leave the compositor pacing to a rate the remaining display
+            // cannot present at.
+            self.refresh = self.recompute_refresh();
+        }
         for ev in self.inner.dispatch.events.drain(..) {
             callback(ev);
         }
@@ -424,6 +561,11 @@ impl Backend for DrmBackend {
             // present into and the compositor runs headless-on-DRM. Keep
             // it on the inline path rather than spawning a thread that
             // would only ever early-return.
+            //
+            // The command channel stays here so a display plugged in later
+            // still reconfigures something — the backend adopts the new
+            // scanouts inline, and the compositor's next `take_presenter`
+            // (there isn't one) is not what makes the display work.
             return None;
         }
         let scanouts = std::mem::take(&mut self.inner.scanouts);
@@ -433,6 +575,10 @@ impl Backend for DrmBackend {
             pointer: self.inner.dispatch.pointer,
             paint: self.paint.take(),
             blanked: self.blanked,
+            paused: false,
+            // The scanouts and the commands addressed to them travel
+            // together: whoever owns one owns the other.
+            commands: self.commands.take(),
         }))
     }
 
@@ -444,9 +590,24 @@ impl Backend for DrmBackend {
     /// state without a panel.
     fn set_dpms(&mut self, on: bool) {
         self.blanked = !on;
+        // Remember it on the session so a VT switch back restores the
+        // state the session was in rather than unconditionally lighting
+        // the panel — a machine that switched VTs while idle-blanked must
+        // not come back awake.
+        if let Some(s) = self.inner.dispatch.session.as_ref() {
+            s.set_dpms(on);
+        }
         for e in self.inner.scanouts.iter_mut() {
             e.scanout.set_dpms(on);
         }
+    }
+
+    fn reset_display(&mut self) {
+        self.inner.resume_from_sleep();
+    }
+
+    fn reload_input_settings(&mut self) {
+        self.inner.reload_input_settings();
     }
 }
 

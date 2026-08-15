@@ -338,6 +338,21 @@ pub struct State {
     /// control writes drives what the compositor advertises. Defaults to
     /// `1.0` when unset or the file is absent.
     pub scale: f64,
+    /// Every output as `(position, size, scale)` in the compositor's
+    /// combined coordinate space, mirrored from the backend.
+    ///
+    /// [`Self::scale`] is one number for the whole session, which is only
+    /// right on a machine with one display: a laptop docked to an external
+    /// monitor has a dense panel and a sparse one, and a client told the
+    /// wrong factor renders soft on one of them. This is what lets the
+    /// preferred `wp_fractional_scale` be per-surface — the scale of the
+    /// output the surface is actually on.
+    pub output_layout: Vec<((i32, i32), (u32, u32), f64)>,
+    /// Preferred scale per client surface id, derived from
+    /// [`Self::output_layout`] and where the surface's tile sits. Refreshed
+    /// by the run loop, which is the only place that has both the output
+    /// table and the laid-out tile rects.
+    pub surface_scales: HashMap<u64, f64>,
     /// **Transient fullscreen surface** — the window group id of the toplevel
     /// that currently holds the output fullscreen via
     /// `xdg_toplevel.set_fullscreen`, or `None` in the normal tiled state.
@@ -485,9 +500,24 @@ impl State {
         // `input-method`/`text-input` IME) to deliver keys to the focused
         // surface. Default xkb config; 200ms repeat delay, 25/s rate. Guarded
         // so a keymap-load failure degrades gracefully instead of panicking.
-        if let Err(e) = seat.add_keyboard(Default::default(), 200, 25) {
+        // Keyboard auto-repeat comes from the persisted `input.key_repeat`
+        // preference rather than a hard-coded pair, so the Settings
+        // control the compositor never read now reaches the seat.
+        let (repeat_delay, repeat_rate) =
+            crate::compositor::backend::drm::input_config::InputSettings::load()
+                .key_repeat_params();
+        if let Err(e) = seat.add_keyboard(
+            Default::default(),
+            repeat_delay.as_millis() as i32,
+            repeat_rate as i32,
+        ) {
             tracing::warn!("seat: failed to add keyboard (text injection disabled): {e}");
         }
+        // A touchscreen has no way to reach a client without this: the
+        // compositor's own chrome is driven by the synthesised pointer
+        // stream, but a client that wants real multi-touch needs the seat
+        // to advertise `wl_touch`.
+        seat.add_touch();
         // W7: advertise the virtual-keyboard manager global so the OSK can
         // inject text. Keys flow through the seat keyboard above to the
         // focused surface; the global self-registers in the display.
@@ -543,6 +573,8 @@ impl State {
             fractional_scale_manager,
             viewporter,
             scale,
+            output_layout: Vec::new(),
+            surface_scales: HashMap::new(),
             fullscreen_group: None,
             output_size: (0, 0),
             session_lock_state,
@@ -550,6 +582,76 @@ impl State {
             pointer_gestures_state,
             client_input: Default::default(),
         }
+    }
+
+    /// Mirror the backend's output table.
+    ///
+    /// Called at startup and on every hotplug. Dropping the per-surface
+    /// scale cache alongside it is deliberate: the layout is what the
+    /// cached values were derived from, so keeping them would hand
+    /// clients the scale of a monitor that has moved or gone.
+    pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
+        self.output_layout = outputs
+            .iter()
+            .map(|o| (o.position, o.size, o.scale as f64))
+            .collect();
+        self.surface_scales.clear();
+    }
+
+    /// The scale a surface whose tile sits at `origin` should render at.
+    ///
+    /// Falls back to the session-wide [`Self::scale`] when no output table
+    /// has arrived yet — a hosted or headless run has one display and no
+    /// per-output answer to give.
+    pub fn scale_for_origin(&self, origin: (f64, f64)) -> f64 {
+        if self.output_layout.is_empty() {
+            return self.scale;
+        }
+        crate::compositor::backend::drm::scale::preferred_scale_at(
+            &self.output_layout,
+            origin.0,
+            origin.1,
+        )
+    }
+
+    /// The preferred scale for one client surface: the scale of the output
+    /// it is on, or the session-wide value when it has not been placed.
+    pub fn surface_scale(&self, surface_id: u64) -> f64 {
+        self.surface_scales
+            .get(&surface_id)
+            .copied()
+            .unwrap_or(self.scale)
+    }
+
+    /// Record where each client surface's tile sits and push the resulting
+    /// preferred `wp_fractional_scale` to any that changed.
+    ///
+    /// `placements` is `(surface id, tile origin)`. Only surfaces whose
+    /// value actually moved generate wire traffic — `set_preferred_scale`
+    /// is idempotent, but recomputing the whole table every frame and
+    /// calling it unconditionally would still walk every surface's state
+    /// lock for nothing.
+    pub fn update_surface_scales(&mut self, placements: &[(u64, (f64, f64))]) {
+        for (surface_id, origin) in placements {
+            let scale = self.scale_for_origin(*origin);
+            let previous = self.surface_scales.insert(*surface_id, scale);
+            if previous == Some(scale) {
+                continue;
+            }
+            let Some(surface) = self.client_input.surface(*surface_id).cloned() else {
+                continue;
+            };
+            wl_compositor::with_states(&surface, |states| {
+                fractional_scale::with_fractional_scale(states, |fs| {
+                    fs.set_preferred_scale(scale);
+                });
+            });
+        }
+        // Surfaces that are no longer placed lose their cached scale, so a
+        // re-placed one is recomputed rather than resurrected at whatever
+        // it happened to be last time.
+        let live: Vec<u64> = placements.iter().map(|(id, _)| *id).collect();
+        self.surface_scales.retain(|id, _| live.contains(id));
     }
 
     /// Register a share session so the [`CompositorHandler::commit`]
@@ -1098,15 +1200,17 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
-        // HiDPI: push the compositor's current display scale to the
-        // surface as its preferred `wp_fractional_scale`. This runs for
-        // every surface (not just shared ones) so any HiDPI-aware client
-        // that created a `wp_fractional_scale_v1` object learns the scale
-        // it should render at. `set_preferred_scale` is idempotent — it
-        // only emits a wire event when the value actually changes, and it
-        // stores the value even before the client has created the object
-        // (smithay replays it on `get_fractional_scale`).
-        let scale = self.scale;
+        // HiDPI: push this surface's preferred `wp_fractional_scale` — the
+        // scale of the *output it is on*, not one session-wide number,
+        // because a laptop docked to an external monitor has two different
+        // right answers. Runs for every surface (not just shared ones) so
+        // any HiDPI-aware client that created a `wp_fractional_scale_v1`
+        // object learns the scale it should render at.
+        // `set_preferred_scale` is idempotent — it only emits a wire event
+        // when the value actually changes, and it stores the value even
+        // before the client has created the object (smithay replays it on
+        // `get_fractional_scale`).
+        let scale = self.surface_scale(surface.id().protocol_id() as u64);
         wl_compositor::with_states(surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);
@@ -1497,11 +1601,12 @@ impl OutputHandler for State {}
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
         // A client just created a `wp_fractional_scale_v1` for this
-        // surface. Seed it with the current display scale immediately so
+        // surface. Seed it with the scale of the output it is on (or the
+        // session-wide one if it has not been placed yet) immediately so
         // the client doesn't have to wait for its first commit to learn
         // the preferred scale. `set_preferred_scale` is idempotent and
         // safe to call before any buffer is attached.
-        let scale = self.scale;
+        let scale = self.surface_scale(surface.id().protocol_id() as u64);
         wl_compositor::with_states(&surface, |states| {
             fractional_scale::with_fractional_scale(states, |fs| {
                 fs.set_preferred_scale(scale);

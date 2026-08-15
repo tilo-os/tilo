@@ -63,6 +63,8 @@ use drm_re::control::{
     framebuffer,
 };
 
+use crate::compositor::backend::OutputId;
+
 /// Cursor plane dimensions. 64×64 is the universally-supported legacy
 /// cursor size (virtio-gpu, i915, amdgpu all advertise it); querying
 /// `DriverCapability::CursorWidth/Height` is a refinement left for HW
@@ -91,7 +93,7 @@ impl Card {
     /// [`DrmScanout::poll_flip_completions`]). Used to give each
     /// per-connector [`DrmScanout`] its own ioctl handle without a second
     /// `session.open` (which libseat refuses for an already-open node).
-    fn try_clone(&self) -> Result<Card, String> {
+    pub(crate) fn try_clone(&self) -> Result<Card, String> {
         self.0
             .try_clone()
             .map(Card)
@@ -110,6 +112,169 @@ impl Card {
                 0
             }
         }
+    }
+}
+
+/// The loop thread's own handle on the primary card.
+///
+/// Three jobs, all of which have to happen on the thread that owns the
+/// session rather than on the render thread that owns the scanouts:
+///
+/// 1. **DRM master.** A VT switch has to give master up before the
+///    incoming session can take it, and take it back on the way in. Every
+///    dup of this fd shares one open file description, so releasing it
+///    here releases it for the scanouts too.
+/// 2. **Re-enumeration.** Hotplug asks the card what is connected now.
+/// 3. **Building scanouts for newly-connected connectors** — libseat
+///    refuses a second `open` of a node that is already open, so a card
+///    opened once at startup is the only handle there will ever be, and it
+///    has to outlive the scanouts that dup from it.
+pub struct CardHandle {
+    card: Card,
+    device_id: u64,
+}
+
+/// One connected connector as the hotplug path sees it: enough to decide
+/// whether it is new, gone, or re-moded, and to modeset it if it is new.
+pub struct ConnectorSnapshot {
+    pub connector_id: u32,
+    pub handle: connector::Handle,
+    pub mode: Mode,
+    /// Physical panel size in millimetres, when the connector reports one.
+    /// `None` for virtual connectors, which report 0×0.
+    pub physical_mm: Option<(u32, u32)>,
+}
+
+impl CardHandle {
+    /// Open `card_path` through the session and become DRM master.
+    pub fn open<S: Session>(session: &mut S, card_path: &Path) -> Result<Self, String> {
+        let card = DrmScanout::open_card(session, card_path)?;
+        let device_id = card.dev_id();
+        Ok(Self { card, device_id })
+    }
+
+    /// `dev_t` of the underlying node — the device half of an output's
+    /// stable identity.
+    pub fn device_id(&self) -> u64 {
+        self.device_id
+    }
+
+    /// Give up DRM master. Called before a VT switch completes: the
+    /// incoming session cannot modeset until we have.
+    pub fn drop_master(&self) {
+        match self.card.release_master_lock() {
+            Ok(()) => tracing::info!("DRM scanout: released DRM master"),
+            // Not fatal — libseat may already have taken it away on our
+            // behalf, in which case the release is redundant, not wrong.
+            Err(e) => tracing::debug!("DRM scanout: release_master_lock: {e}"),
+        }
+    }
+
+    /// Take DRM master back. Every `set_crtc` after a resume needs it, so
+    /// this runs before the modeset, not after.
+    pub fn acquire_master(&self) -> bool {
+        match self.card.acquire_master_lock() {
+            Ok(()) => {
+                tracing::info!("DRM scanout: re-acquired DRM master");
+                true
+            }
+            Err(e) => {
+                tracing::warn!("DRM scanout: acquire_master_lock on resume failed: {e}");
+                false
+            }
+        }
+    }
+
+    /// Ask the hardware what is connected right now.
+    ///
+    /// `force_probe` is on: a hotplug event is precisely the moment the
+    /// cached connector state is stale, and a probe that reuses the cache
+    /// reports the monitor that was just plugged in as still absent.
+    pub fn connected(&self) -> Vec<ConnectorSnapshot> {
+        let res = match self.card.resource_handles() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("DRM scanout: resource_handles during re-enumeration: {e}");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for &ch in res.connectors() {
+            let info = match self.card.get_connector(ch, true) {
+                Ok(i) => i,
+                Err(e) => {
+                    tracing::warn!(?ch, "DRM scanout: get_connector during re-enumeration: {e}");
+                    continue;
+                }
+            };
+            if info.state() != connector::State::Connected {
+                continue;
+            }
+            let Some(mode) = pick_mode(info.modes()) else {
+                continue;
+            };
+            out.push(ConnectorSnapshot {
+                connector_id: u32::from(ch),
+                handle: ch,
+                mode,
+                physical_mm: info.size().filter(|&(w, h)| w > 0 && h > 0),
+            });
+        }
+        out
+    }
+
+    /// Modeset one connector onto a crtc not in `used`, returning the
+    /// live scanout. `None` when the connector has no free crtc or the
+    /// modeset failed — both logged, neither fatal: the other outputs keep
+    /// working and the operator has a line saying which one did not.
+    pub fn bring_up(&self, snapshot: &ConnectorSnapshot, used: &[crtc::Handle]) -> Option<ScanoutBuild> {
+        let res = self.card.resource_handles().ok()?;
+        let info = self.card.get_connector(snapshot.handle, false).ok()?;
+        let Some(crtc) = pick_crtc(&self.card, &res, &info, used) else {
+            tracing::warn!(
+                connector = snapshot.connector_id,
+                "DRM scanout: no free crtc for hot-plugged connector; skipping"
+            );
+            return None;
+        };
+        let card_dup = match self.card.try_clone() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("DRM scanout: {e}; cannot bring up connector");
+                return None;
+            }
+        };
+        match DrmScanout::from_card(card_dup, snapshot.handle, crtc, snapshot.mode) {
+            Ok(scanout) => Some(ScanoutBuild {
+                device_id: self.device_id,
+                connector_id: snapshot.connector_id,
+                physical_mm: snapshot.physical_mm,
+                crtc,
+                scanout,
+            }),
+            Err(e) => {
+                tracing::warn!(
+                    connector = snapshot.connector_id,
+                    "DRM scanout: modeset failed for connector: {e}; skipping"
+                );
+                None
+            }
+        }
+    }
+
+    /// Bring up every connected connector. The startup path; hotplug uses
+    /// [`Self::bring_up`] per connector so the displays that were already
+    /// live are not re-modeset (a re-modeset is a visible flash).
+    pub fn bring_up_all(&self) -> Vec<ScanoutBuild> {
+        let mut used: Vec<crtc::Handle> = Vec::new();
+        let mut builds = Vec::new();
+        for snapshot in self.connected() {
+            if let Some(b) = self.bring_up(&snapshot, &used) {
+                used.push(b.crtc);
+                builds.push(b);
+            }
+        }
+        builds
     }
 }
 
@@ -149,6 +314,10 @@ impl HwCursor {
 /// One output's hardware-cursor plane plus that output's rectangle in the
 /// compositor's combined (global) coordinate space.
 pub struct OutputCursor {
+    /// Which output this plane belongs to, so hotplug can add and drop
+    /// planes by identity rather than by index — an index into a list that
+    /// a hotplug reorders is a cursor moving on the wrong monitor.
+    id: OutputId,
     /// `(x, y, w, h)` of the output in global coords.
     rect: (i32, i32, u32, u32),
     mover: HwCursor,
@@ -164,16 +333,18 @@ pub struct OutputCursor {
 /// A single-output system collapses to one entry whose rect starts at
 /// `(0, 0)`, so `move_to(gx, gy)` forwards `(gx, gy)` unchanged — the
 /// single-output cursor path is identical to before B3.
+#[derive(Default)]
 pub struct CursorPlanes {
     outputs: Vec<OutputCursor>,
-    /// Index of the output currently showing the cursor, if any.
-    active: Option<usize>,
+    /// The output currently showing the cursor, if any. By id rather than
+    /// by index, because a hotplug reorders the list.
+    active: Option<OutputId>,
 }
 
 impl CursorPlanes {
-    /// Build from `(rect, mover)` pairs — one per output whose hardware
-    /// cursor plane is active. Outputs without a hardware cursor fall back
-    /// to the per-output software cursor drawn in
+    /// Build from one `OutputCursor` per output whose hardware cursor
+    /// plane is active. Outputs without a hardware cursor fall back to the
+    /// per-output software cursor drawn in
     /// [`DrmScanout::present_no_drain`], so they're simply absent here.
     pub fn new(outputs: Vec<OutputCursor>) -> Self {
         Self {
@@ -184,8 +355,42 @@ impl CursorPlanes {
 
     /// Construct one `OutputCursor`. Kept as a constructor so the rect
     /// field stays private to this module.
-    pub fn output_cursor(rect: (i32, i32, u32, u32), mover: HwCursor) -> OutputCursor {
-        OutputCursor { rect, mover }
+    pub fn output_cursor(id: OutputId, rect: (i32, i32, u32, u32), mover: HwCursor) -> OutputCursor {
+        OutputCursor { id, rect, mover }
+    }
+
+    /// Whether any output has a hardware cursor plane at all.
+    pub fn is_empty(&self) -> bool {
+        self.outputs.is_empty()
+    }
+
+    /// Adopt a newly-modeset output's cursor plane. Replaces any plane
+    /// already registered for that id, which is what a re-moded connector
+    /// (torn down and rebuilt) produces.
+    pub fn insert(&mut self, cursor: OutputCursor) {
+        self.outputs.retain(|o| o.id != cursor.id);
+        self.outputs.push(cursor);
+        self.active = None;
+    }
+
+    /// Drop every plane whose output is no longer live. The dropped
+    /// `HwCursor` closes its dup of the card fd with it.
+    pub fn retain_outputs(&mut self, live: &[OutputId]) {
+        let before = self.outputs.len();
+        self.outputs.retain(|o| live.contains(&o.id));
+        if self.outputs.len() != before {
+            // The plane the cursor was on may be the one that went away.
+            self.active = None;
+        }
+    }
+
+    /// Move an output's rectangle after a re-layout. A plane whose rect is
+    /// stale routes the pointer to the wrong monitor for every position
+    /// past the point where the layout shifted.
+    pub fn set_rect(&mut self, id: OutputId, rect: (i32, i32, u32, u32)) {
+        if let Some(o) = self.outputs.iter_mut().find(|o| o.id == id) {
+            o.rect = rect;
+        }
     }
 
     /// Move the cursor to global `(gx, gy)`: pick the output whose rect
@@ -199,11 +404,14 @@ impl CursorPlanes {
         let Some(i) = output_index_at(&rects, xi, yi) else {
             return;
         };
-        if self.active != Some(i) {
+        let id = self.outputs[i].id;
+        if self.active != Some(id) {
             if let Some(prev) = self.active {
-                self.outputs[prev].mover.hide();
+                if let Some(o) = self.outputs.iter().find(|o| o.id == prev) {
+                    o.mover.hide();
+                }
             }
-            self.active = Some(i);
+            self.active = Some(id);
         }
         let (ox, oy, _, _) = self.outputs[i].rect;
         self.outputs[i].mover.move_to(xi - ox, yi - oy);
@@ -245,9 +453,11 @@ pub struct DrmScanout {
     /// Set once `dirty_framebuffer` is known to be unsupported, so we
     /// stop retrying it and use `set_crtc` to force a flush instead.
     dirtyfb_unsupported: bool,
-    /// Cursor bitmap buffer; kept alive so its GEM handle stays valid
-    /// for `set_cursor2`. `None` when the hardware cursor isn't active.
-    _cursor_buffer: Option<DumbBuffer>,
+    /// Cursor bitmap buffer; kept alive so its GEM handle stays valid for
+    /// `set_cursor2`, and re-bound from here by [`Self::restore`] after a
+    /// VT switch or a resume clears the cursor plane. `None` when the
+    /// hardware cursor isn't active.
+    cursor_buffer: Option<DumbBuffer>,
     /// True when the KMS cursor plane is driving the pointer; when
     /// false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
@@ -400,7 +610,7 @@ impl DrmScanout {
             width,
             height,
             dirtyfb_unsupported: false,
-            _cursor_buffer: cursor_buffer,
+            cursor_buffer,
             hw_cursor_active,
         })
     }
@@ -455,6 +665,64 @@ impl DrmScanout {
 
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
+    }
+
+    /// The crtc this scanout drives. Needed so a hotplug can pick a crtc
+    /// that is still free.
+    pub fn crtc(&self) -> crtc::Handle {
+        self.crtc
+    }
+
+    /// Re-establish everything about this output after the session got the
+    /// hardware back — a VT switch away and back, or a system suspend.
+    ///
+    /// Nothing survives either event. The CRTC has no mode (the other
+    /// session set its own, or the device was powered down), the
+    /// framebuffer is not bound, the cursor plane has been reset, and any
+    /// page flip we had queued was thrown away with the master lock — so
+    /// `flip_pending` is left latched forever, and *that* is the failure
+    /// that shows up as "the screen never updates again after Alt+F2".
+    ///
+    /// Best-effort throughout: a driver that refuses one step must not
+    /// take the compositor down with it, so every failure is logged and
+    /// the rest of the sequence still runs.
+    pub fn restore(&mut self) {
+        // The flip we had in flight died with the master lock. Clearing
+        // this first is what lets the next frame be presented at all.
+        self.flip_pending = false;
+        // A device that has been through a suspend may have lost the
+        // framebuffer objects' backing; re-adding them is not possible
+        // without reallocating, but re-binding the mode is, and that is
+        // what the kernel needs to start scanning out again.
+        if let Err(e) = self.card.set_crtc(
+            self.crtc,
+            Some(self.fbs[self.front]),
+            (0, 0),
+            &[self.connector],
+            Some(self.mode),
+        ) {
+            tracing::warn!("DRM scanout: modeset on resume failed: {e}");
+        } else {
+            tracing::info!(
+                width = self.width,
+                height = self.height,
+                "DRM scanout: re-modeset after session resume"
+            );
+        }
+        // The cursor plane is per-CRTC state and is gone with the rest.
+        // Without this the pointer is invisible after every VT switch.
+        if self.hw_cursor_active {
+            if let Some(buf) = self.cursor_buffer.as_ref() {
+                #[allow(deprecated)]
+                if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
+                    tracing::warn!(
+                        "DRM scanout: re-binding the cursor plane on resume failed ({e}); \
+                         falling back to the software cursor"
+                    );
+                    self.hw_cursor_active = false;
+                }
+            }
+        }
     }
 
     /// Build a [`HwCursor`] mover for the runtime's input handler, or
@@ -760,6 +1028,13 @@ pub struct ScanoutBuild {
     pub device_id: u64,
     /// DRM connector handle (raw u32) for this output.
     pub connector_id: u32,
+    /// Physical panel size in millimetres, when the connector reports one.
+    /// The only input to the per-output scale derivation that resolution
+    /// alone cannot supply — see [`super::scale`].
+    pub physical_mm: Option<(u32, u32)>,
+    /// The crtc this output was modeset onto. Tracked so a later hotplug
+    /// can pick a crtc that is still free.
+    pub crtc: crtc::Handle,
     /// Live, modeset scanout bound to this connector's crtc.
     pub scanout: DrmScanout,
 }
@@ -786,76 +1061,23 @@ pub struct ScanoutBuild {
 ///
 /// **Scope:** drives every connector on the *primary* card. Connectors on
 /// *secondary* GPUs need their own card fd + GPU-to-GPU buffer handling
-/// and remain a documented follow-up; hot-plug after startup is likewise a
-/// follow-up (we enumerate everything connected at startup).
+/// and remain a documented follow-up.
+///
+/// The returned [`CardHandle`] is what makes hotplug possible at all: it
+/// stays open on the loop thread, so a monitor plugged in later can be
+/// enumerated and modeset without a second `session.open` that libseat
+/// would refuse.
 pub fn open_all_scanouts<S: Session>(
     session: &mut S,
     card_path: &Path,
-) -> Result<Vec<ScanoutBuild>, String> {
-    let card = DrmScanout::open_card(session, card_path)?;
-    let device_id = card.dev_id();
-    let res = card
-        .resource_handles()
-        .map_err(|e| format!("resource_handles: {e}"))?;
-
-    let mut used_crtcs: Vec<crtc::Handle> = Vec::new();
-    let mut builds: Vec<ScanoutBuild> = Vec::new();
-
-    for &ch in res.connectors() {
-        let info = match card.get_connector(ch, true) {
-            Ok(i) => i,
-            Err(e) => {
-                tracing::warn!(?ch, "DRM scanout: get_connector failed: {e}");
-                continue;
-            }
-        };
-        if info.state() != connector::State::Connected {
-            continue;
-        }
-        let Some(mode) = pick_mode(info.modes()) else {
-            tracing::warn!(
-                ?ch,
-                "DRM scanout: connected connector advertises no usable mode; skipping"
-            );
-            continue;
-        };
-        let Some(crtc) = pick_crtc(&card, &res, &info, &used_crtcs) else {
-            tracing::warn!(?ch, "DRM scanout: no free crtc for connector; skipping");
-            continue;
-        };
-        // Each scanout owns its own dup of the shared card fd.
-        let card_dup = match card.try_clone() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(?ch, "DRM scanout: {e}; skipping connector");
-                continue;
-            }
-        };
-        match DrmScanout::from_card(card_dup, info.handle(), crtc, mode) {
-            Ok(scanout) => {
-                used_crtcs.push(crtc);
-                builds.push(ScanoutBuild {
-                    device_id,
-                    connector_id: u32::from(ch),
-                    scanout,
-                });
-            }
-            Err(e) => {
-                tracing::warn!(
-                    ?ch,
-                    "DRM scanout: modeset failed for connector: {e}; skipping"
-                );
-            }
-        }
-    }
-
-    // The local `card` is dropped here; the per-scanout dups keep the open
-    // file description (and DRM master) alive.
+) -> Result<(CardHandle, Vec<ScanoutBuild>), String> {
+    let card = CardHandle::open(session, card_path)?;
+    let builds = card.bring_up_all();
     if builds.is_empty() {
         return Err("no connected connector could be brought up for scanout".into());
     }
     tracing::info!(count = builds.len(), "DRM scanout: brought up outputs");
-    Ok(builds)
+    Ok((card, builds))
 }
 
 /// Pick a crtc for `conn_info` that isn't already in `used`.
