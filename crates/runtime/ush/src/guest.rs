@@ -233,6 +233,22 @@ pub fn build_argv(
         a.push(dest.into());
     }
 
+    // ---- the resolver -------------------------------------------------
+    // `/etc/resolv.conf` is a symlink into `/run` on a systemd-resolved host,
+    // and `/run` is a fresh tmpfs in here, so the link dangles and every name
+    // lookup fails. Binding the file the link *points at*, at that path, makes
+    // the link the base already has resolve — no write into `/etc`, and no
+    // guessing about which resolver manages the machine.
+    //
+    // Ordered after the tmpfs deliberately: `bwrap` applies these in sequence,
+    // so a bind under `/run` placed before `--tmpfs /run` is mounted and then
+    // covered over, and the symptom is every mirror being unreachable.
+    if let Some((src, dst)) = resolv_bind(&plan.base) {
+        a.push("--ro-bind-try".into());
+        a.push(src.into_os_string());
+        a.push(dst.into_os_string());
+    }
+
     // ---- the runtime's own commands ----------------------------------
     a.push("--dir".into());
     a.push(crate::GUEST_BIN_DIR.into());
@@ -340,6 +356,29 @@ pub fn build_argv(
         }
     }
     a
+}
+
+/// Where to bind the host's resolver so `/etc/resolv.conf` resolves in the
+/// guest: `(source on the host, destination in the guest)`.
+///
+/// The destination is the *link target* when the base's `/etc/resolv.conf` is a
+/// symlink — usually somewhere under `/run`, which the guest replaces with a
+/// tmpfs — and `/etc/resolv.conf` itself when it is a regular file. Returns
+/// `None` when the base has no resolver at all, which is a machine with no
+/// network rather than an error.
+pub fn resolv_bind(base: &Path) -> Option<(PathBuf, PathBuf)> {
+    let link = base.join("etc/resolv.conf");
+    let meta = link.symlink_metadata().ok()?;
+    let resolved = std::fs::canonicalize(&link).ok()?;
+    if !meta.file_type().is_symlink() {
+        return Some((resolved, PathBuf::from("/etc/resolv.conf")));
+    }
+    // The guest-visible path is the resolved one with the base stripped off.
+    let inside = resolved
+        .strip_prefix(base)
+        .map(|p| PathBuf::from("/").join(p))
+        .unwrap_or_else(|_| resolved.clone());
+    Some((resolved, inside))
 }
 
 /// The subordinate id range the real user owns, from `/etc/subuid`.
@@ -704,26 +743,49 @@ mod tests {
             && w[2] == "/var/home/you/notes"));
     }
 
-    /// A guest with no grants must see no host directory beyond the base. This
+    /// A guest with no grants must see no host *content* beyond the base. This
     /// is "an app sees your files only where you said it may", asserted on the
     /// argv rather than on the prose.
+    ///
+    /// Three things are bound and each has to justify itself: the store (the
+    /// guest's own layer and home), the runtime binary (read-only, so the guest
+    /// cannot rewrite the next session's confinement), and the machine's
+    /// resolver. The resolver is the same judgement `launcher::profile` makes
+    /// about `/etc/resolv.conf` — it describes the network the machine is on,
+    /// carries no user content, and is read-only.
     #[test]
-    fn a_guest_with_no_grants_binds_no_host_directory() {
-        let argv = strings(&build_argv(&plan(), Some(9), None));
-        let mut host_binds = Vec::new();
+    fn a_guest_with_no_grants_binds_no_user_content() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        std::fs::write(dir.path().join("etc/resolv.conf"), b"nameserver 1.1.1.1\n").unwrap();
+        let mut p = plan();
+        p.base = dir.path().to_path_buf();
+
+        let argv = strings(&build_argv(&p, Some(9), None));
+        let resolver = dir
+            .path()
+            .join("etc/resolv.conf")
+            .canonicalize()
+            .unwrap()
+            .display()
+            .to_string();
+
         for (i, arg) in argv.iter().enumerate() {
-            if arg.starts_with("--bind") || arg.starts_with("--ro-bind") {
-                host_binds.push(argv[i + 1].clone());
+            if !(arg.starts_with("--bind") || arg.starts_with("--ro-bind")) {
+                continue;
             }
-        }
-        for src in &host_binds {
-            let allowed = src.starts_with("/store/")
-                || src.starts_with("/usr/libexec/")
-                || src.starts_with("/var/home/you/../"); // never taken; kept explicit
+            let src = &argv[i + 1];
+            if src == &resolver {
+                assert!(
+                    arg.starts_with("--ro-bind"),
+                    "the resolver must be read-only: {arg} {src}"
+                );
+                continue;
+            }
             assert!(
-                allowed,
-                "a guest with no grants binds {src}, which is neither the store \
-                 nor the runtime binary"
+                src.starts_with("/store/") || src.starts_with("/usr/libexec/"),
+                "a guest with no grants binds {src}, which is neither the store, \
+                 the runtime binary, nor the resolver"
             );
         }
     }
@@ -880,6 +942,83 @@ mod tests {
         );
         let i = with.iter().position(|a| a == "--userns").unwrap();
         assert_eq!(with[i + 1], "11");
+    }
+
+    /// A dangling `/etc/resolv.conf` is the difference between a shell that can
+    /// install a package and one that reports every mirror as unreachable.
+    #[test]
+    fn the_resolver_is_bound_at_the_path_the_symlink_points_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("etc")).unwrap();
+        std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
+        let real = base.join("run/systemd/resolve/stub-resolv.conf");
+        std::fs::write(&real, b"nameserver 127.0.0.53\n").unwrap();
+        std::os::unix::fs::symlink("../run/systemd/resolve/stub-resolv.conf", base.join("etc/resolv.conf"))
+            .unwrap();
+
+        let (src, dst) = resolv_bind(base).expect("no resolver bind");
+        assert_eq!(src, real.canonicalize().unwrap());
+        assert_eq!(
+            dst,
+            PathBuf::from("/run/systemd/resolve/stub-resolv.conf"),
+            "binding it at /etc/resolv.conf would try to write through a \
+             dangling symlink; the link target is the destination"
+        );
+    }
+
+    /// `bwrap` applies its arguments in order, so a bind under `/run` placed
+    /// before `--tmpfs /run` is mounted and then covered over. The symptom is
+    /// every name lookup failing, which reads as "no network" rather than as an
+    /// argv ordering bug.
+    #[test]
+    fn the_resolver_bind_comes_after_the_run_tmpfs() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("etc")).unwrap();
+        std::fs::create_dir_all(base.join("run/systemd/resolve")).unwrap();
+        std::fs::write(base.join("run/systemd/resolve/stub-resolv.conf"), b"nameserver 1.1.1.1\n")
+            .unwrap();
+        std::os::unix::fs::symlink(
+            "../run/systemd/resolve/stub-resolv.conf",
+            base.join("etc/resolv.conf"),
+        )
+        .unwrap();
+
+        let mut p = plan();
+        p.base = base.to_path_buf();
+        let argv = strings(&build_argv(&p, Some(9), None));
+
+        let tmpfs_run = argv
+            .windows(2)
+            .position(|w| w[0] == "--tmpfs" && w[1] == "/run")
+            .expect("no tmpfs on /run");
+        let resolver = argv
+            .iter()
+            .position(|a| a == "/run/systemd/resolve/stub-resolv.conf")
+            .expect("the resolver is not bound");
+        assert!(
+            resolver > tmpfs_run,
+            "the resolver bind at {resolver} precedes the /run tmpfs at \
+             {tmpfs_run} and would be covered over"
+        );
+    }
+
+    #[test]
+    fn a_plain_resolver_file_is_bound_where_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir_all(base.join("etc")).unwrap();
+        std::fs::write(base.join("etc/resolv.conf"), b"nameserver 1.1.1.1\n").unwrap();
+        let (_, dst) = resolv_bind(base).expect("no resolver bind");
+        assert_eq!(dst, PathBuf::from("/etc/resolv.conf"));
+    }
+
+    #[test]
+    fn a_base_with_no_resolver_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("etc")).unwrap();
+        assert_eq!(resolv_bind(dir.path()), None);
     }
 
     #[test]
