@@ -58,6 +58,10 @@ fn qos_install_bin() -> String {
     std::env::var("QOS_INSTALL_BIN").unwrap_or_else(|_| "qos-install".to_string())
 }
 
+fn qos_launcher_bin() -> String {
+    std::env::var("QOS_LAUNCHER_BIN").unwrap_or_else(|_| "qos-launcher".to_string())
+}
+
 fn registry_label(item: &StoreItem) -> String {
     match &item.source {
         StoreSource::Qos { registry_name } => registry_name.clone(),
@@ -121,6 +125,34 @@ pub fn pin_plan(item: &StoreItem, pin: bool) -> SpawnPlan {
         } else {
             format!("Unmarking {}…", item.name)
         },
+    }
+}
+
+/// Open an installed Flatpak.
+///
+/// Goes through `qos-launcher run-host` rather than `flatpak run`
+/// directly, for the same reason every other launch in qOS goes through
+/// the launcher: one place decides what environment an application
+/// starts in. The launcher resolves the app's exported `.desktop` entry
+/// — a Flathub app id *is* its desktop-file id, because that is how
+/// Flatpak names its exports — expands the entry's own `Exec` line, and
+/// hands over the compositor's Wayland socket with qOS's internal
+/// variables stripped.
+///
+/// It is deliberately not wrapped in qOS's sandbox. A Flatpak builds
+/// its own, which needs syscalls the baseline seccomp filter denies, so
+/// nesting the two yields an app that fails to start rather than one
+/// confined twice. `run-host` prints an UNCONFINED notice naming the
+/// app; see `launcher::host`.
+pub fn flatpak_open_plan(item: &StoreItem) -> SpawnPlan {
+    SpawnPlan {
+        program: qos_launcher_bin(),
+        args: vec![
+            "run-host".into(),
+            "--desktop-id".into(),
+            item.id.clone(),
+        ],
+        status_line: format!("Opening {}…", item.name),
     }
 }
 
@@ -227,6 +259,7 @@ pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> Acti
         (ActionKind::MarkInstalled, StoreSource::Qos { .. }) => run_step(&pin_plan(item, true)),
         (ActionKind::Unmark, StoreSource::Qos { .. }) => run_step(&pin_plan(item, false)),
         (ActionKind::FlatpakInstall, StoreSource::Flathub) => run_step(&flatpak_plan(item, true)),
+        (ActionKind::FlatpakOpen, StoreSource::Flathub) => run_step(&flatpak_open_plan(item)),
         (ActionKind::FlatpakRemove, StoreSource::Flathub) => run_step(&flatpak_plan(item, false)),
         (ActionKind::NeedsFlatpakHost, _) => {
             ActionOutcome::fail("Install flatpak on the host to use this action.")
@@ -410,6 +443,25 @@ mod tests {
         assert!(ins.args.contains(&"org.example.Chess".to_string()));
         let rm = flatpak_plan(&item, false);
         assert_eq!(rm.args[0], "uninstall");
+    }
+
+    /// The gap this closes: an installed Flatpak had no action that
+    /// started it. Opening one goes through the launcher, unconfined,
+    /// by the desktop-file id Flatpak exported it under.
+    #[test]
+    fn flatpak_open_goes_through_the_launchers_host_path() {
+        let item = flatpak_item("Chess", InstalledState::Not);
+        let plan = flatpak_open_plan(&item);
+        assert_eq!(plan.program, "qos-launcher");
+        assert_eq!(
+            plan.args,
+            vec![
+                "run-host".to_string(),
+                "--desktop-id".to_string(),
+                "org.example.Chess".to_string(),
+            ]
+        );
+        assert!(plan.status_line.contains("Opening Chess"));
     }
 
     #[test]
