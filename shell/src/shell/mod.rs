@@ -54,6 +54,7 @@ pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
 pub mod sidebar_wheel_disc;
 pub mod split_row;
+pub mod status;
 pub mod state;
 pub mod system_monitor;
 pub mod tab_documents;
@@ -61,6 +62,7 @@ pub mod test_support;
 pub mod tile;
 pub mod topbar;
 pub mod topbar_chrome;
+pub mod window_actions;
 pub mod workspace_drop;
 pub mod workspace_settings;
 

@@ -328,6 +328,11 @@ pub struct ShellOverlayHost {
     /// assert that clicks routed through the popover translate into
     /// the expected shell-outs without actually invoking `nmcli` etc.
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Live battery / network / volume readings, or `None` when nothing
+    /// is polling — a `--shots` render and a headless test deliberately
+    /// have no poller so their pixels do not depend on the host's
+    /// hardware. See [`crate::shell::status`].
+    status_bridge: Option<crate::shell::status::StatusBridge>,
     /// Room-activity sheet — the workspace's own change history. Held rather
     /// than drawn immediate-mode because the timeline it wraps is a real
     /// `Widget` with its own hover, scroll and filter state; it is placed by
@@ -910,6 +915,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            status_bridge: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
@@ -928,6 +934,42 @@ impl ShellOverlayHost {
     ) -> Self {
         self.qs_actions = actions;
         self
+    }
+
+    /// Install the live-status bridge. Only the compositor's real-session
+    /// constructors do this; without it the tray's readings stay `None`
+    /// and it draws no indicators, which is what keeps golden renders
+    /// identical across machines.
+    pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
+        self.status_bridge = Some(bridge);
+        self
+    }
+
+    /// Handle on the status bridge, for the paths that publish a reading
+    /// rather than consume one (the volume keys, which must move the
+    /// indicator in the frame they were pressed rather than up to a poll
+    /// interval later).
+    pub fn status_bridge(&self) -> Option<&crate::shell::status::StatusBridge> {
+        self.status_bridge.as_ref()
+    }
+
+    /// Copy the poller's latest reading onto the chrome, bumping the
+    /// revision only when something actually changed — the revision is
+    /// the repaint trigger, and a status that re-publishes an identical
+    /// battery percentage every five seconds must not wake the renderer.
+    fn sync_status_from_bridge(&mut self) {
+        let Some(bridge) = self.status_bridge.as_ref() else {
+            return;
+        };
+        let next = bridge.snapshot();
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.status != next {
+            st.status = next;
+            st.bump();
+        }
     }
 
     /// Return the slide translation to apply to the content widget this
@@ -2014,6 +2056,84 @@ impl ShellOverlayHost {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
     }
 
+    /// Sibling of [`Self::harvest_pending_search_open`] for the tab
+    /// strip's "+" chip: drains each group's
+    /// [`UiWindowGroup::take_pending_new_tab`] and opens the palette
+    /// aimed at that group.
+    ///
+    /// The "+" deliberately opens the palette rather than immediately
+    /// minting a tab of some assumed type. A new tab is a *choice* — a
+    /// terminal, a browser, a note — and the palette is where choosing
+    /// already happens. What the "+" adds on top is the destination:
+    /// [`OpenTarget::Here`] pins the result to this group even when the
+    /// placement rule would have opened beside it, which is exactly the
+    /// distinction a user clicking a specific group's strip is making.
+    fn harvest_pending_new_tab(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let mut requested: Option<u64> = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if let Some(id) = g.take_pending_new_tab() {
+                    requested = Some(id);
+                }
+            }
+        }
+        let Some(group) = requested else {
+            return;
+        };
+        // Make the tree's focus match the strip that was clicked before
+        // anything reads it — the palette's own scope resolution and the
+        // launch path both walk from the active pointers.
+        self.harvest_active_tab_writeback();
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
+            // `All` rather than `ActiveApp`: the question a "+" asks is
+            // "what do you want to open", and only the widest scope
+            // offers to launch something that isn't already running.
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        // Force-open rather than routing through `open_palette_with_scope`:
+        // that helper toggles closed on a same-scope repeat, which is the
+        // right behaviour for a chord and the wrong one for a button the
+        // user pointed at. Clicking "+" always means "show me the picker".
+        if !self.palette_visible {
+            self.palette_visible = true;
+            self.palette.set_focus(true);
+            self.palette.set_query("");
+        }
+        // Re-run the query even when the palette was already up: the rows
+        // carry a placement hint that just changed.
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+    }
+
+    /// Drop a stale [`OpenTarget::Here`] once the palette is gone.
+    ///
+    /// The target is one-shot by contract — it aims exactly one launch at
+    /// exactly one group. Anything that dismisses the palette (Esc, an
+    /// outside click, activating a result) ends that window of intent, and
+    /// there are enough such paths that clearing at each of them would
+    /// rot. Reconciling here, once per frame against the single fact that
+    /// matters, cannot miss one.
+    fn clear_stale_open_target(&mut self) {
+        if self.palette_visible {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.open_target != crate::shell::chrome_state::OpenTarget::Beside {
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.bump();
+        }
+    }
+
     /// Per-tick wire-up that keeps the focused window group scrolled into
     /// view. Edge-triggered on a change to the persisted `active_group`
     /// pointer for a strip: when the focused group differs from the one we
@@ -2456,6 +2576,12 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_search_open_for_tests(&mut self) {
         self.harvest_pending_search_open();
+    }
+
+    /// Test-only one-shot harvest for the tab strip's "+" chip.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_new_tab_for_tests(&mut self) {
+        self.harvest_pending_new_tab();
     }
 
     /// Test-only one-shot: run the focus-follow scroll reconcile from
@@ -3857,6 +3983,13 @@ impl Widget for ShellOverlayHost {
         // Open the search bar scoped to the app whose decoration magnifier the
         // user just clicked.
         self.harvest_pending_search_open();
+        // Open the palette aimed at the group whose "+" chip was clicked,
+        // and retire that aim once the palette is gone.
+        self.harvest_pending_new_tab();
+        self.clear_stale_open_target();
+        // Publish the poller's latest battery / network / volume reading
+        // onto the chrome the top bar draws from.
+        self.sync_status_from_bridge();
         // Mirror the widget-side `TabBar::active_id` into the persisted
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
@@ -5004,6 +5137,96 @@ impl Widget for ShellOverlayHost {
                         st.bump();
                         *handled = true;
                         return;
+                    }
+                }
+                // Window-creation chords. All four are Super-only, which
+                // `is_shell_chord` already grabs wholesale, so none of
+                // them takes a key away from a focused client — the
+                // reason not to reach for the Ctrl+Shift+letter chords
+                // that browsers and terminals already define.
+                //
+                // `Super+Return` is the direct one: a terminal, now, no
+                // picker. It is the recovery path when the last shell is
+                // gone, so it must not depend on search working.
+                if super_down && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        crate::shell::window_actions::open_terminal(
+                            &mut st,
+                            crate::shell::window_actions::Destination::Beside,
+                        );
+                        *handled = true;
+                        return;
+                    }
+                }
+                if super_down {
+                    if let Key::Character(s) = logical_key {
+                        match s.as_str() {
+                            // Super+T — a new tab *here*: the chord form
+                            // of the tab strip's "+".
+                            "t" | "T" => {
+                                let group = self
+                                    .chrome
+                                    .as_ref()
+                                    .and_then(|c| {
+                                        crate::shell::window_actions::focused_group(&c.borrow())
+                                    });
+                                if let (Some(chrome), Some(group)) = (self.chrome.clone(), group) {
+                                    let mut st = chrome.borrow_mut();
+                                    st.open_target =
+                                        crate::shell::chrome_state::OpenTarget::Here(group);
+                                    st.search_scope =
+                                        crate::shell::chrome_state::SearchScope::All;
+                                    st.bump();
+                                    drop(st);
+                                    self.palette_visible = true;
+                                    self.palette.set_focus(true);
+                                    self.palette.set_query("");
+                                    self.last_search_query =
+                                        "\u{0}not-yet-refreshed\u{0}".to_string();
+                                    self.refresh_search_results(state, path);
+                                    *handled = true;
+                                    return;
+                                }
+                            }
+                            // Super+N — a new window, placed by the rule.
+                            "n" | "N" => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    st.open_target =
+                                        crate::shell::chrome_state::OpenTarget::Beside;
+                                    st.search_scope =
+                                        crate::shell::chrome_state::SearchScope::All;
+                                    st.bump();
+                                }
+                                self.palette_visible = true;
+                                self.palette.set_focus(true);
+                                self.palette.set_query("");
+                                self.last_search_query =
+                                    "\u{0}not-yet-refreshed\u{0}".to_string();
+                                self.refresh_search_results(state, path);
+                                *handled = true;
+                                return;
+                            }
+                            // Super+D — a second instance of what you are
+                            // already looking at.
+                            "d" | "D" => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    if let Err(err) =
+                                        crate::shell::window_actions::duplicate_active_tab(&mut st)
+                                    {
+                                        st.push_warning_notification(
+                                            "Can't duplicate this tab",
+                                            err.user_message(),
+                                        );
+                                    }
+                                    *handled = true;
+                                    return;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
