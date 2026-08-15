@@ -36,7 +36,14 @@ use std::collections::{HashMap, HashSet};
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::FilterResult;
-use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
+    GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+    GestureSwipeUpdateEvent, MotionEvent,
+};
+use smithay::input::touch::{
+    DownEvent as TouchDownEvent, MotionEvent as TouchMotionEvent, UpEvent as TouchUpEvent,
+};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point as SmithayPoint, Serial};
 use vello::kurbo::{Point as KurboPoint, Rect};
@@ -44,6 +51,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
+use crate::compositor::backend::{
+    GestureEvent as BackendGestureEvent, TouchEvent as BackendTouchEvent,
+};
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
 use crate::shell::overlay_host::ShellOverlayHost;
@@ -202,6 +212,17 @@ impl ClientInput {
     /// route input to.
     pub fn is_known(&self, surface_id: u64) -> bool {
         self.surfaces.contains_key(&surface_id)
+    }
+
+    /// The protocol object for a surface id, if it is still live.
+    pub fn surface(&self, surface_id: u64) -> Option<&WlSurface> {
+        self.surfaces.get(&surface_id)
+    }
+
+    /// Every mirrored surface and the group it is in, so the run loop can
+    /// resolve each one's tile rect and derive its preferred scale.
+    pub fn placements(&self) -> impl Iterator<Item = (u64, GroupId)> + '_ {
+        self.placements.iter().map(|(id, (_, group))| (*id, *group))
     }
 
     /// Number of live foreign toplevels.
@@ -782,6 +803,177 @@ impl State {
         pointer.frame(self);
         true
     }
+
+    /// Forward one touchpad gesture to the focused client over
+    /// `zwp_pointer_gestures_v1`.
+    ///
+    /// The compositor has advertised that global since the protocol
+    /// plumbing landed and never emitted a single event into it, so a
+    /// client that bound it and waited for a pinch waited forever. Only
+    /// gestures the shell did *not* claim reach here — the finger-count
+    /// split is made in [`crate::compositor::backend::drm::gestures`], one
+    /// place, so a gesture can never be handled twice.
+    pub fn forward_client_gesture(&mut self, gesture: BackendGestureEvent) {
+        if self.client_input.pointer_focus.is_none() {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let serial = mint_serial(self);
+        let time = event_time(self);
+        match gesture {
+            BackendGestureEvent::SwipeBegin { fingers } => pointer.gesture_swipe_begin(
+                self,
+                &GestureSwipeBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            BackendGestureEvent::SwipeUpdate { dx, dy } => pointer.gesture_swipe_update(
+                self,
+                &GestureSwipeUpdateEvent {
+                    time,
+                    delta: SmithayPoint::from((dx, dy)),
+                },
+            ),
+            BackendGestureEvent::SwipeEnd { cancelled } => pointer.gesture_swipe_end(
+                self,
+                &GestureSwipeEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
+            BackendGestureEvent::PinchBegin { fingers } => pointer.gesture_pinch_begin(
+                self,
+                &GesturePinchBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            BackendGestureEvent::PinchUpdate {
+                dx,
+                dy,
+                scale,
+                rotation,
+            } => pointer.gesture_pinch_update(
+                self,
+                &GesturePinchUpdateEvent {
+                    time,
+                    delta: SmithayPoint::from((dx, dy)),
+                    scale,
+                    rotation,
+                },
+            ),
+            BackendGestureEvent::PinchEnd { cancelled } => pointer.gesture_pinch_end(
+                self,
+                &GesturePinchEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
+            BackendGestureEvent::HoldBegin { fingers } => pointer.gesture_hold_begin(
+                self,
+                &GestureHoldBeginEvent {
+                    serial,
+                    time,
+                    fingers,
+                },
+            ),
+            BackendGestureEvent::HoldEnd { cancelled } => pointer.gesture_hold_end(
+                self,
+                &GestureHoldEndEvent {
+                    serial,
+                    time,
+                    cancelled,
+                },
+            ),
+        }
+    }
+
+    /// Forward one touch point to the focused client over `wl_touch`.
+    ///
+    /// `target` is `(surface id, tile origin)` for a `Down` that landed
+    /// inside a client tile — smithay subtracts the origin to produce
+    /// surface-local coordinates, exactly as for the pointer. Touch focus
+    /// is set on `down` only (the protocol says so), so `Motion` carries
+    /// the target purely for drag-target resolution.
+    pub fn forward_client_touch(
+        &mut self,
+        touch: BackendTouchEvent,
+        target: Option<(u64, (f64, f64))>,
+    ) {
+        let Some(handle) = self.seat.get_touch() else {
+            return;
+        };
+        let focus: Option<(WlSurface, SmithayPoint<f64, Logical>)> =
+            target.and_then(|(id, origin)| {
+                self.client_input
+                    .surfaces
+                    .get(&id)
+                    .cloned()
+                    .map(|s| (s, SmithayPoint::from(origin)))
+            });
+        let serial = mint_serial(self);
+        let time = event_time(self);
+        match touch {
+            BackendTouchEvent::Down { slot, x, y } => handle.down(
+                self,
+                focus,
+                &TouchDownEvent {
+                    slot: Some(slot).into(),
+                    location: SmithayPoint::from((x, y)),
+                    serial,
+                    time,
+                },
+            ),
+            BackendTouchEvent::Motion { slot, x, y } => handle.motion(
+                self,
+                focus,
+                &TouchMotionEvent {
+                    slot: Some(slot).into(),
+                    location: SmithayPoint::from((x, y)),
+                    time,
+                },
+            ),
+            BackendTouchEvent::Up { slot } => handle.up(
+                self,
+                &TouchUpEvent {
+                    slot: Some(slot).into(),
+                    serial,
+                    time,
+                },
+            ),
+            BackendTouchEvent::Cancel => handle.cancel(self),
+            BackendTouchEvent::Frame => handle.frame(self),
+        }
+    }
+}
+
+/// Which client (if any) a touch point should be delivered to.
+///
+/// Only a `Down` establishes touch focus, so only a `Down` resolves a
+/// target; the rest of the sequence belongs to whatever the down landed
+/// on and smithay tracks that itself.
+pub fn touch_target(
+    state: &State,
+    fb: &FrameBuilder,
+    touch: &BackendTouchEvent,
+) -> Option<(u64, (f64, f64))> {
+    let BackendTouchEvent::Down { x, y, .. } = touch else {
+        return None;
+    };
+    let chrome = fb.chrome();
+    let tree = chrome.tree();
+    let hit = foreign_tile_at(&tree, fb.host(), (*x, *y))?;
+    if !state.client_input.surfaces.contains_key(&hit.surface_id) {
+        return None;
+    }
+    Some((hit.surface_id, (hit.rect.x0, hit.rect.y0)))
 }
 
 // ---------------------------------------------------------------------
