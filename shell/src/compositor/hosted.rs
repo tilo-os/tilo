@@ -131,7 +131,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // the tree is what turns an `Always` grant into a durable one:
     // every capability mutation flushes here, so a grant survives both
     // a clean exit and a crash.
-    tree.persist_path = Some(path.clone());
+    //
+    // NOT when the file was refused. Declining to *read* a state file and
+    // then writing a bootstrapped tree over it is worse than never having
+    // checked: the check would announce that the person's workspaces are
+    // safe on disk while destroying them. So a refused session runs without
+    // persistence, the same way `ui::persist` switches an app's writer off
+    // over a document it would not open.
+    tree.persist_path = if state_notice.is_none() {
+        Some(path.clone())
+    } else {
+        None
+    };
     // The FUSE mount runs in another process and enforces the list it
     // reads from this path (`qos-fs --acl`). Exporting here is what
     // stops the filesystem from enforcing an empty list forever.
