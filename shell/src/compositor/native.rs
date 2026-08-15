@@ -1009,6 +1009,49 @@ fn power_notification_to_incoming(
 /// The modifier mask comes from the loop's running `Modifiers` snapshot
 /// (the same one `dispatch_event` uses), not the key event, because
 /// winit reports modifiers via a separate `ModifiersChanged` event.
+/// The virtual terminal `Ctrl+Alt+F1..F12` asks for, or `None`.
+///
+/// On a bare TTY the compositor holds the keyboard in a raw mode, so the
+/// kernel's own VT-switch handling never sees the chord. If the
+/// compositor does not act on it the user cannot leave this terminal for
+/// the life of the session — not to another VT, not back to a text
+/// console.
+///
+/// Pure so the chord table is checked without a seat: it is the one part
+/// of VT switching that can be.
+fn vt_switch_chord(event: &WindowEvent, modifiers: &Modifiers) -> Option<i32> {
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return None;
+    };
+    if event.state != ElementState::Pressed {
+        return None;
+    }
+    let mods = modifiers.state();
+    if !(mods.control_key() && mods.alt_key()) {
+        return None;
+    }
+    let Key::Named(named) = &event.logical_key else {
+        return None;
+    };
+    // VTs are numbered from 1, function keys from F1 — they line up.
+    let n = match named {
+        NamedKey::F1 => 1,
+        NamedKey::F2 => 2,
+        NamedKey::F3 => 3,
+        NamedKey::F4 => 4,
+        NamedKey::F5 => 5,
+        NamedKey::F6 => 6,
+        NamedKey::F7 => 7,
+        NamedKey::F8 => 8,
+        NamedKey::F9 => 9,
+        NamedKey::F10 => 10,
+        NamedKey::F11 => 11,
+        NamedKey::F12 => 12,
+        _ => return None,
+    };
+    Some(n)
+}
+
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event {
         if event.state == ElementState::Pressed && modifiers.state().super_key() {
@@ -1706,6 +1749,12 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
                         }
+                    } else if let Some(vt) = vt_switch_chord(&wev, &test_control_ctx.modifiers) {
+                        // Ahead of every other chord and never offered to a
+                        // client: leaving the terminal has to work even when
+                        // an app has grabbed the keyboard, or a misbehaving
+                        // client can strand the user on this VT.
+                        backend.switch_vt(vt);
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -3032,6 +3081,102 @@ fn output_geometry(
             height: o.size.1 as f64,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod vt_chord_tests {
+    use super::vt_switch_chord;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
+
+    fn key(named: NamedKey, state: ElementState) -> WindowEvent {
+        // Same zero-init workaround the two other `KeyEvent` builders in
+        // this crate use: winit's `platform_specific` field is pub(crate)
+        // and tolerates the all-zero bit pattern.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.state = state;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn mods(state: ModifiersState) -> Modifiers {
+        Modifiers::from(state)
+    }
+
+    #[test]
+    fn ctrl_alt_f_maps_to_the_matching_vt() {
+        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::F1, ElementState::Pressed), &m),
+            Some(1)
+        );
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::F3, ElementState::Pressed), &m),
+            Some(3),
+            "Ctrl+Alt+F3 is the one the seat diagnosis tells people to use"
+        );
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::F12, ElementState::Pressed), &m),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn either_modifier_alone_is_not_the_chord() {
+        // Alt+F4 closes a window on every desktop; claiming it as a VT
+        // switch would be a spectacular regression.
+        assert_eq!(
+            vt_switch_chord(
+                &key(NamedKey::F4, ElementState::Pressed),
+                &mods(ModifiersState::ALT)
+            ),
+            None
+        );
+        assert_eq!(
+            vt_switch_chord(
+                &key(NamedKey::F4, ElementState::Pressed),
+                &mods(ModifiersState::CONTROL)
+            ),
+            None
+        );
+        assert_eq!(
+            vt_switch_chord(
+                &key(NamedKey::F4, ElementState::Pressed),
+                &mods(ModifiersState::empty())
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_the_press_switches() {
+        // Acting on the release too would switch twice per chord.
+        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::F2, ElementState::Released), &m),
+            None
+        );
+    }
+
+    #[test]
+    fn other_keys_with_the_modifiers_held_are_not_vt_switches() {
+        let m = mods(ModifiersState::CONTROL | ModifiersState::ALT);
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::Delete, ElementState::Pressed), &m),
+            None
+        );
+        assert_eq!(
+            vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), &m),
+            None
+        );
+    }
 }
 
 #[cfg(test)]

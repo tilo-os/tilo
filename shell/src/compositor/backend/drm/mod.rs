@@ -609,6 +609,10 @@ impl Backend for DrmBackend {
     fn reload_input_settings(&mut self) {
         self.inner.reload_input_settings();
     }
+
+    fn switch_vt(&mut self, vt: i32) {
+        self.inner.change_vt(vt);
+    }
 }
 
 #[cfg(test)]
