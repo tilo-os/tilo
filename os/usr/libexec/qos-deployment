@@ -69,6 +69,11 @@ REPAIR_TITLE="qOS Repair Mode"
 # qos-uki-cmdline set-osrel.
 REPAIR_EFI_NAME="qos-repair.efi"
 
+# The PE-editing tool. Overridable because /usr is read-only on this system, so
+# trying a change to either of these on a running machine means running them from
+# somewhere else — and a hard-coded path makes that impossible without a rebuild.
+UKI_CMDLINE="${QOS_UKI_CMDLINE:-/usr/libexec/qos-uki-cmdline}"
+
 # --- the ESP -----------------------------------------------------------------
 # Two layouts, both real. On the sealed composefs layout /boot IS the ESP and the
 # UKIs live beside the loader entries; on the ostree layout the ESP hangs off
@@ -439,7 +444,7 @@ cmd_repair_entry() {
   # The one edit: qos.mode=normal -> qos.mode=repair, in place, same length. It
   # refuses a length-changing replacement, so a future rename of either value
   # fails here instead of producing a UKI that will not load.
-  if ! /usr/libexec/qos-uki-cmdline set qos.mode=repair "$tmp" >/dev/null; then
+  if ! "$UKI_CMDLINE" set qos.mode=repair "$tmp" >/dev/null; then
     rm -f "$tmp"
     warn "could not set qos.mode=repair on a copy of $uki_rel.
   Either this image predates the qos.mode karg, or the two values are no longer
@@ -448,7 +453,7 @@ cmd_repair_entry() {
   fi
   # Read it back out of the PE rather than trusting the writer's exit code: the
   # bytes are what boots.
-  /usr/libexec/qos-uki-cmdline show "$tmp" | grep -q 'qos\.mode=repair' || {
+  "$UKI_CMDLINE" show "$tmp" | grep -q 'qos\.mode=repair' || {
     rm -f "$tmp"
     warn "the rewritten command line does not carry qos.mode=repair; refusing to
   install a repair entry that would boot the desktop instead."
@@ -459,7 +464,7 @@ cmd_repair_entry() {
   # .osrel, so without this the repair image appears in the boot menu under the
   # deployment's name — indistinguishable from the thing it exists to repair —
   # and sorts wherever the deployment sorts.
-  if ! /usr/libexec/qos-uki-cmdline set-osrel \
+  if ! "$UKI_CMDLINE" set-osrel \
         "PRETTY_NAME=$REPAIR_TITLE" \
         "SORT_KEY=$REPAIR_SORT_KEY" \
         "VERSION_ID=repair" \
@@ -469,7 +474,7 @@ cmd_repair_entry() {
   cannot tell apart from their system is not one, so none was installed."
     return 0
   fi
-  /usr/libexec/qos-uki-cmdline osrel "$tmp" | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$" || {
+  "$UKI_CMDLINE" osrel "$tmp" | grep -q "^PRETTY_NAME=$REPAIR_TITLE\$" || {
     rm -f "$tmp"
     warn "the repair image's .osrel does not read back with the expected title"
     return 0
