@@ -37,6 +37,7 @@ use std::collections::{HashMap, HashSet};
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::FilterResult;
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
+use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point as SmithayPoint, Serial};
 use vello::kurbo::{Point as KurboPoint, Rect};
@@ -628,6 +629,15 @@ impl State {
         };
         let serial = mint_serial(self);
         self.client_input.keyboard_focus = target.as_ref().map(|(id, _)| *id);
+        // Clipboard and primary selection follow the keyboard, in that order:
+        // smithay refuses `set_selection` from a client that does not hold
+        // keyboard focus, and only offers the current selection to the focused
+        // client. Moving one without the other would leave a focused window
+        // able to type but unable to paste.
+        let selection_client = target
+            .as_ref()
+            .and_then(|(_, surface)| surface.client());
+        self.set_selection_focus(selection_client);
         keyboard.set_focus(self, target.map(|(_, s)| s), serial);
     }
 
