@@ -160,6 +160,16 @@ pub fn wayland_bind_for(host_socket: &Path, uid: u32) -> WaylandBind {
 ///
 /// Callers must splice this in *before* the trailing entrypoint token —
 /// bwrap treats everything after it as the child's argv.
+///
+/// Exactly **one** Wayland socket is bound: the session's public one. The
+/// compositor also listens on a privileged socket that carries the
+/// clipboard-manager protocols (`zwlr_data_control_manager_v1` and
+/// `ext_data_control_manager_v1`), which hand their holder every selection on
+/// the seat with no focus requirement — see
+/// `shell/src/compositor/selection.rs`. That socket is deliberately not bound
+/// here, so a sandboxed app has no path to it. The name is also unset from
+/// the environment: not because knowing it would help without the mount, but
+/// because an app should not be told about a door it is not allowed through.
 pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     push_bind(argv, "--ro-bind", &bind.host_socket, &bind.sandbox_socket);
     argv.push("--setenv".to_string());
@@ -168,7 +178,17 @@ pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     argv.push("--setenv".to_string());
     argv.push("XDG_RUNTIME_DIR".to_string());
     argv.push(bind.sandbox_runtime_dir.display().to_string());
+    argv.push("--unsetenv".to_string());
+    argv.push(PRIVILEGED_WAYLAND_ENV.to_string());
 }
+
+/// Env var the compositor uses to publish its privileged Wayland socket.
+///
+/// Mirrors `shell::compositor::native::PRIVILEGED_SOCKET_ENV`. Duplicated
+/// rather than imported because the launcher does not depend on the
+/// compositor crate; the pair is held together by
+/// [`tests::sandbox_binds_only_the_public_wayland_socket`].
+pub const PRIVILEGED_WAYLAND_ENV: &str = "QOS_WAYLAND_PRIVILEGED";
 
 /// Env var naming the workspace an app was launched into.
 ///
@@ -907,6 +927,45 @@ mod tests {
         assert_eq!(bind.sandbox_socket, Path::new("/run/user/1000/wayland-0"));
         assert_eq!(bind.sandbox_runtime_dir, Path::new("/run/user/1000"));
         assert_eq!(bind.host_socket, Path::new("/run/user/1000/wayland-4"));
+    }
+
+    /// The sandbox must bind exactly one Wayland socket — the public one —
+    /// and must not hand the app the privileged socket in any form.
+    ///
+    /// This is the enforcement behind the clipboard-manager gate in
+    /// `shell/src/compositor/selection.rs`. `zwlr_data_control_manager_v1`
+    /// exposes every selection on the seat with no focus check and no user
+    /// interaction, and the apps in this repo copy TOTP codes, scanned Wi-Fi
+    /// passwords and identity recovery phrases. The global is refused to
+    /// clients on the public socket, and the reason that refusal cannot be
+    /// worked around is right here: a sandboxed app has no filesystem path to
+    /// the socket where the global exists.
+    #[test]
+    fn sandbox_binds_only_the_public_wayland_socket() {
+        let mut argv = Vec::new();
+        let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
+        push_wayland_bind(&mut argv, &bind);
+
+        let bound: Vec<&String> = argv
+            .windows(3)
+            .filter(|w| w[0] == "--ro-bind" || w[0] == "--bind")
+            .map(|w| &w[1])
+            .collect();
+        assert_eq!(
+            bound,
+            vec!["/run/user/1000/wayland-4"],
+            "exactly one Wayland socket may be bound into a sandbox, and it must \
+             be the public one: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("qos-privileged")),
+            "the privileged Wayland socket must never appear in a sandbox argv: {argv:?}"
+        );
+        assert!(
+            argv.windows(2)
+                .any(|w| w[0] == "--unsetenv" && w[1] == PRIVILEGED_WAYLAND_ENV),
+            "the privileged socket's env var must be cleared inside the sandbox: {argv:?}"
+        );
     }
 
     #[test]

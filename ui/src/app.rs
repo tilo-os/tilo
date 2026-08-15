@@ -2914,6 +2914,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if self.window.is_some() {
             return;
         }
+        // Attach the clipboard to this app's own Wayland connection, before
+        // any window exists — a copy has to work from the first frame, and the
+        // backend only needs the display, not a surface. Sharing the app's
+        // connection is required, not incidental: the compositor only accepts
+        // `set_selection` from the connection that owns the focused surface.
+        // No-ops off Wayland, and no-ops when a host (the compositor, for its
+        // in-process widgets) already installed one.
+        #[cfg(target_os = "linux")]
+        {
+            crate::clipboard::install_wayland_backend_from_display(event_loop);
+        }
         // The AccessKit adapter must be created while the window is still
         // hidden (it asserts this), so build the window invisible, create the
         // adapter, then show it.
