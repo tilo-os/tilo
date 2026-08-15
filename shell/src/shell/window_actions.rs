@@ -1,0 +1,333 @@
+//! Creating windows and tabs from the chrome.
+//!
+//! Until this module existed, a tab could only come into being two ways:
+//! `WorkspaceTree::bootstrap_default` at boot, or a foreign Wayland
+//! client mapping a toplevel. There was no affordance — no button, no
+//! chord, no palette row — that made one. Closing your last terminal left
+//! searching for the app again as the only way back to a shell.
+//!
+//! These are the primitives behind the three surfaces that now can: the
+//! "+" chip on a group's tab strip, the `Super`-chords, and the palette's
+//! action rows. They all funnel here so "new terminal" means the same
+//! thing however it was asked for, and so placement stays a single
+//! decision made by [`crate::shell::placement`].
+
+use crate::compositor::tab_binding::{self, Placement};
+use crate::shell::chrome_state::ChromeState;
+use crate::shell::state::{AppKind, GroupId, TabId, TileContent};
+
+/// Where a newly-created window should go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    /// Follow [`crate::shell::placement::placement_for_new_window`] — to
+    /// the right of the active window, or into its group when that group
+    /// is already tabbed.
+    Beside,
+    /// Join the focused group as a tab, whatever the rule would say.
+    /// Falls back to `Beside` when nothing is focused.
+    Here,
+}
+
+/// The group the user is looking at, or `None` when the active workspace
+/// has no groups (a fresh empty workspace).
+pub fn focused_group(st: &ChromeState) -> Option<GroupId> {
+    let tree = st.tree();
+    let ws = tree.active_workspace()?;
+    let strip = tree
+        .active_strip
+        .get(&ws.id)
+        .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+        .or_else(|| ws.strips.first())?;
+    tree.active_group
+        .get(&strip.id)
+        .copied()
+        .filter(|g| strip.window_groups.iter().any(|w| w.id == *g))
+        .or_else(|| strip.window_groups.first().map(|g| g.id))
+}
+
+/// Resolve a [`Destination`] into the placement the splice will use.
+fn placement_for(st: &ChromeState, dest: Destination) -> Placement {
+    match dest {
+        Destination::Here => match focused_group(st) {
+            Some(g) => Placement::TabIn(g),
+            None => rule_placement(st),
+        },
+        Destination::Beside => rule_placement(st),
+    }
+}
+
+/// The ordinary placement rule, evaluated against the layout the user is
+/// currently looking at.
+fn rule_placement(st: &ChromeState) -> Placement {
+    let tree = st.tree();
+    crate::shell::placement::placement_for_new_window(&tree, st.strip_viewport())
+}
+
+/// Open a terminal. The compositor hosts the terminal in-process (see
+/// `shell::to_ui_tile`), so this is a tree splice rather than a launch —
+/// which is what makes it a sane recovery path when the last terminal is
+/// gone.
+pub fn open_terminal(st: &mut ChromeState, dest: Destination) -> TabId {
+    open_hosted(st, AppKind::Terminal, "Terminal", dest)
+}
+
+/// Open any hosted app kind at `dest` and focus it.
+pub fn open_hosted(
+    st: &mut ChromeState,
+    kind: AppKind,
+    title: impl Into<String>,
+    dest: Destination,
+) -> TabId {
+    let placement = placement_for(st, dest);
+    let id = {
+        let mut tree = st.tree_mut();
+        tab_binding::open_hosted_app(&mut tree, kind, title, placement)
+    };
+    st.bump();
+    id
+}
+
+/// Why a duplicate could not be made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DuplicateError {
+    /// No tab is focused — nothing to copy.
+    NoActiveTab,
+    /// The focused tab hosts a foreign Wayland client. Its window belongs
+    /// to another process; the compositor cannot clone one, and guessing
+    /// which package to relaunch from an `app_id` would as often start
+    /// the wrong thing as the right one.
+    ForeignWindow,
+}
+
+impl DuplicateError {
+    pub fn user_message(self) -> &'static str {
+        match self {
+            DuplicateError::NoActiveTab => "There is no tab to duplicate.",
+            DuplicateError::ForeignWindow => {
+                "This window belongs to an app the compositor doesn't host, so it can't be copied. \
+                 Open a second one from search instead."
+            }
+        }
+    }
+}
+
+/// Open a second instance of the focused tab's app, as a tab beside it in
+/// the same group.
+///
+/// A duplicate is a fresh instance, not a copy of state: the new tab gets
+/// the same app kind and title, and starts however that app starts. That
+/// is what "duplicate" means for a terminal (a second shell in the same
+/// place), which is the case this exists for.
+pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateError> {
+    let (kind, title, group) = {
+        let tree = st.tree();
+        let ws = tree
+            .active_workspace()
+            .ok_or(DuplicateError::NoActiveTab)?;
+        let strip = tree
+            .active_strip
+            .get(&ws.id)
+            .and_then(|id| ws.strips.iter().find(|s| s.id == *id))
+            .or_else(|| ws.strips.first())
+            .ok_or(DuplicateError::NoActiveTab)?;
+        let group = tree
+            .active_group
+            .get(&strip.id)
+            .and_then(|g| strip.window_groups.iter().find(|w| w.id == *g))
+            .or_else(|| strip.window_groups.first())
+            .ok_or(DuplicateError::NoActiveTab)?;
+        let tab = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first())
+            .ok_or(DuplicateError::NoActiveTab)?;
+        match &tab.tile {
+            TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
+                (kind.clone(), label.clone(), group.id)
+            }
+            TileContent::Foreign { .. } => return Err(DuplicateError::ForeignWindow),
+        }
+    };
+    let placement = Placement::TabIn(group);
+    let id = {
+        let mut tree = st.tree_mut();
+        tab_binding::open_hosted_app(&mut tree, kind, title, placement)
+    };
+    st.bump();
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::state::{Tab, WorkspaceTree, next_id};
+    use std::cell::RefMut;
+
+    fn chrome_with_default_tree() -> crate::shell::chrome_state::Chrome {
+        ChromeState::new(WorkspaceTree::bootstrap_default())
+    }
+
+    /// The group the user is looking at, and the number of tabs in it.
+    fn focused_group_tab_count(st: &ChromeState) -> usize {
+        let g = focused_group(st).expect("a focused group");
+        let tree = st.tree();
+        tree.active_workspace()
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .find(|w| w.id == g)
+            .map(|w| w.tabs.len())
+            .unwrap()
+    }
+
+    #[test]
+    fn open_terminal_here_adds_a_tab_to_the_focused_group() {
+        let chrome = chrome_with_default_tree();
+        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+        let before = focused_group_tab_count(&st);
+        let group = focused_group(&st).unwrap();
+        let id = open_terminal(&mut st, Destination::Here);
+        assert_eq!(
+            focused_group_tab_count(&st),
+            before + 1,
+            "the terminal joined the group the user was looking at"
+        );
+        let tree = st.tree();
+        let g = tree
+            .active_workspace()
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .find(|w| w.id == group)
+            .unwrap();
+        assert_eq!(g.active_tab, id, "the new tab is focused");
+        let tab = g.tabs.iter().find(|t| t.id == id).unwrap();
+        assert!(
+            matches!(
+                &tab.tile,
+                TileContent::AppPlaceholder {
+                    kind: AppKind::Terminal,
+                    ..
+                }
+            ),
+            "a real terminal placeholder, not a stub: {:?}",
+            tab.tile
+        );
+    }
+
+    #[test]
+    fn open_terminal_beside_leaves_the_focused_group_alone_when_it_holds_one_tab() {
+        let chrome = chrome_with_default_tree();
+        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+        // Collapse the seeded group down to a single tab so the placement
+        // rule's "open beside" branch is the one under test.
+        {
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().unwrap();
+            let g = &mut ws.strips[0].window_groups[0];
+            g.tabs.truncate(1);
+            g.active_tab = g.tabs[0].id;
+        }
+        let group = focused_group(&st).unwrap();
+        let groups_before = {
+            let tree = st.tree();
+            tree.active_workspace().unwrap().strips[0].window_groups.len()
+        };
+        open_terminal(&mut st, Destination::Beside);
+        let tree = st.tree();
+        let strip = &tree.active_workspace().unwrap().strips[0];
+        assert_eq!(
+            strip.window_groups.len(),
+            groups_before + 1,
+            "a single-window group gains a neighbour, not a tab"
+        );
+        let original = strip.window_groups.iter().find(|g| g.id == group).unwrap();
+        assert_eq!(original.tabs.len(), 1, "the original group is untouched");
+    }
+
+    #[test]
+    fn duplicate_active_tab_copies_the_focused_app_into_the_same_group() {
+        let chrome = chrome_with_default_tree();
+        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+        let group = focused_group(&st).unwrap();
+        // Focus the Terminal tab explicitly so the duplicate has a known
+        // kind to copy.
+        let terminal_tab = {
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().unwrap();
+            let g = ws.strips[0]
+                .window_groups
+                .iter_mut()
+                .find(|g| g.id == group)
+                .unwrap();
+            let id = g
+                .tabs
+                .iter()
+                .find(|t| {
+                    matches!(
+                        &t.tile,
+                        TileContent::AppPlaceholder {
+                            kind: AppKind::Terminal,
+                            ..
+                        }
+                    )
+                })
+                .map(|t| t.id)
+                .expect("the default tree seeds a terminal");
+            g.active_tab = id;
+            id
+        };
+        let before = focused_group_tab_count(&st);
+        let new_id = duplicate_active_tab(&mut st).expect("a hosted tab duplicates");
+        assert_ne!(new_id, terminal_tab, "a duplicate is a new tab");
+        assert_eq!(focused_group_tab_count(&st), before + 1);
+        let tree = st.tree();
+        let g = tree.active_workspace().unwrap().strips[0]
+            .window_groups
+            .iter()
+            .find(|g| g.id == group)
+            .unwrap();
+        let dup = g.tabs.iter().find(|t| t.id == new_id).unwrap();
+        assert!(
+            matches!(
+                &dup.tile,
+                TileContent::AppPlaceholder {
+                    kind: AppKind::Terminal,
+                    ..
+                }
+            ),
+            "the duplicate is the same app kind: {:?}",
+            dup.tile
+        );
+        assert_eq!(g.active_tab, new_id, "the duplicate takes focus");
+    }
+
+    #[test]
+    fn duplicating_a_foreign_window_reports_why_it_cannot() {
+        let chrome = chrome_with_default_tree();
+        let mut st: RefMut<'_, ChromeState> = chrome.borrow_mut();
+        {
+            let mut tree = st.tree_mut();
+            let ws = tree.active_workspace_mut().unwrap();
+            let g = &mut ws.strips[0].window_groups[0];
+            let id = next_id();
+            g.tabs.push(Tab {
+                id,
+                title: "Foreign".into(),
+                tile: TileContent::Foreign {
+                    app_id: "org.example.thing".into(),
+                    surface_id: 7,
+                },
+            });
+            g.active_tab = id;
+        }
+        assert_eq!(
+            duplicate_active_tab(&mut st),
+            Err(DuplicateError::ForeignWindow),
+            "a client-owned window cannot be cloned by the compositor"
+        );
+    }
+}
