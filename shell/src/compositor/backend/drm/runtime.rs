@@ -116,6 +116,14 @@ pub struct DrmDispatchState {
     /// The persisted pointer / keyboard preferences, applied to every
     /// libinput device as it appears.
     pub input: InputSettings,
+    /// Every libinput device currently attached.
+    ///
+    /// libinput has no "list your devices" call — a caller only learns
+    /// about a device from its `DEVICE_ADDED` event — so keeping the
+    /// handles is the only way to re-apply a changed setting to hardware
+    /// that is already plugged in. `Device` is refcounted, so these are
+    /// cheap clones of the same objects libinput holds.
+    pub devices: Vec<smithay::reexports::input::Device>,
     /// `display.scale` from the settings store, when the user has set one.
     /// Overrides the per-output derivation.
     pub scale_override: Option<f64>,
@@ -796,9 +804,11 @@ impl DrmRuntime {
                 // reach the hardware at all.
                 InputEvent::DeviceAdded { mut device } => {
                     state.configure_device(&mut device);
+                    state.devices.push(device);
                 }
                 InputEvent::DeviceRemoved { device } => {
                     tracing::info!(device = device.name(), "DRM input: device removed");
+                    state.devices.retain(|d| *d != device);
                 }
                 // Absolute motion (usb-tablet / touch): map normalized
                 // coords through the output size to a pixel position.
@@ -999,6 +1009,7 @@ impl DrmRuntime {
             live: Vec::new(),
             commands: Some(tx),
             input,
+            devices: Vec::new(),
             scale_override,
             gestures: GestureTracker::new(GestureConfig {
                 natural_scroll: input.natural_scroll,
@@ -1045,14 +1056,18 @@ impl DrmRuntime {
         })
     }
 
-    /// Switch the session to another virtual terminal. Exposed so a
-    /// compositor-level chord can offer what `Ctrl+Alt+Fn` does on a
-    /// console — the seat is the only thing that can perform it, and the
-    /// seat lives here.
+    /// Switch the session to another virtual terminal.
+    ///
+    /// Not optional on a bare TTY: the compositor puts the keyboard into a
+    /// raw mode, so the kernel's own `Ctrl+Alt+Fn` handling never sees the
+    /// chord. Without the compositor performing the switch itself the user
+    /// is locked onto this VT for the life of the session — and the whole
+    /// pause/resume path below can never be reached.
     pub fn change_vt(&mut self, vt: i32) {
         use smithay::backend::session::Session as _;
-        if let Err(e) = self.session.change_vt(vt) {
-            tracing::warn!("DRM backend: change_vt({vt}) failed: {e:?}");
+        match self.session.change_vt(vt) {
+            Ok(()) => tracing::info!(vt, "DRM backend: switching virtual terminal"),
+            Err(e) => tracing::warn!("DRM backend: change_vt({vt}) failed: {e:?}"),
         }
     }
 
@@ -1076,12 +1091,11 @@ impl DrmRuntime {
     /// Re-read the persisted input settings and push them at every
     /// libinput device again.
     ///
-    /// libinput has no "re-emit your devices" call, so the re-apply rides
-    /// on the next `DeviceAdded` for devices that appear later; for the
-    /// ones already present, the settings the tracker reads (gesture
-    /// direction) take effect immediately and the per-device config takes
-    /// effect on the next re-plug. Recording the new settings here is what
-    /// makes both true.
+    /// Devices that appear later pick the new settings up from their
+    /// `DeviceAdded`; the ones already attached are re-configured here
+    /// from the handles the dispatch state kept, so a pointer-speed
+    /// change is felt on the touchpad the user is holding rather than on
+    /// the next one they plug in.
     pub fn reload_input_settings(&mut self) {
         let input = InputSettings::load();
         self.dispatch.input = input;
@@ -1089,6 +1103,11 @@ impl DrmRuntime {
             natural_scroll: input.natural_scroll,
             ..GestureConfig::default()
         });
+        let mut devices = std::mem::take(&mut self.dispatch.devices);
+        for device in devices.iter_mut() {
+            self.dispatch.configure_device(device);
+        }
+        self.dispatch.devices = devices;
         let scale_override = load_display_scale_override();
         if scale_override != self.dispatch.scale_override {
             self.dispatch.scale_override = scale_override;
