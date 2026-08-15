@@ -11117,6 +11117,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "qos-power"
 version = "0.1.0"
 dependencies = [
