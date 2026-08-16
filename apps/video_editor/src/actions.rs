@@ -265,7 +265,13 @@ pub enum VideoEditorAction {
     DeleteTrack { id: String, clips: Vec<String> },
     /// Bring a bin media reference into the document (its source path + probed
     /// metadata). The bytes are external — decoded / hydrated outside the doc.
+    /// Also covers a bin rename (a whole-media write with a new `name`).
     UpsertMedia(MediaData),
+    /// Remove a bin media reference and every clip that placed it on the
+    /// timeline (`clips` are the affected clip ids, resolved at authoring), so
+    /// deleting a source can't leave dangling clips. One action, one undo
+    /// boundary.
+    RemoveMedia { id: String, clips: Vec<String> },
     /// Replace the project settings (name / fps / resolution).
     SetProjectMeta(ProjectMeta),
 }
@@ -319,6 +325,16 @@ impl Action for VideoEditorAction {
             VideoEditorAction::UpsertMedia(data) => {
                 if let Some(m) = data.to_media() {
                     VideoDoc::upsert_media(doc, &m);
+                }
+            }
+            VideoEditorAction::RemoveMedia { id, clips } => {
+                if let Ok(uuid) = id.parse::<Uuid>() {
+                    VideoDoc::remove_media(doc, uuid);
+                }
+                for c in clips {
+                    if let Ok(uuid) = c.parse::<Uuid>() {
+                        VideoDoc::remove_clip(doc, uuid);
+                    }
                 }
             }
             VideoEditorAction::SetProjectMeta(meta) => {
@@ -386,6 +402,13 @@ pub fn delete_track_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
 
 pub fn upsert_media_action(m: &MediaItem) -> VideoEditorAction {
     VideoEditorAction::UpsertMedia(MediaData::from_media(m))
+}
+
+pub fn remove_media_action(id: &Uuid, clips: &[Uuid]) -> VideoEditorAction {
+    VideoEditorAction::RemoveMedia {
+        id: id.to_string(),
+        clips: clips.iter().map(|c| c.to_string()).collect(),
+    }
 }
 
 pub fn set_project_meta_action(p: &Project) -> VideoEditorAction {
@@ -589,6 +612,37 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(tr);
     }
 
+    // Media bin: each source exports rename + delete-from-bin (delete carries
+    // the clips that placed it, so the palette path matches the on-screen
+    // context menu). Appended after the tracks so track ordering is stable.
+    let mut bin_media: Vec<&MediaItem> = p.media.iter().collect();
+    bin_media.sort_by(|a, b| a.name.cmp(&b.name));
+    for m in bin_media {
+        let mid = m.id;
+        let mut mr = Resource::new(format!("video.media:{mid}"), "video.media", m.name.clone());
+        let rename_snap = m.clone();
+        mr = mr.with_action(ActionSpec::prompted(
+            "rename-media",
+            "Rename media",
+            "Name",
+            "clip name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let mut next = rename_snap.clone();
+                next.name = name.trim().to_string();
+                encode(&upsert_media_action(&next))
+            },
+        ));
+        let clip_ids: Vec<Uuid> =
+            p.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        mr = mr.with_action(immediate(
+            "delete-media",
+            "Delete from bin",
+            &remove_media_action(&mid, &clip_ids),
+        ));
+        root = root.with_child(mr);
+    }
+
     vec![root]
 }
 
@@ -671,8 +725,15 @@ mod tests {
         let proj_actions: Vec<&str> = project.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(proj_actions.contains(&"rename-project"), "{proj_actions:?}");
 
-        assert_eq!(project.children.len(), 4, "four sample tracks");
-        let track = &project.children[0];
+        let tracks: Vec<_> = project.children.iter().filter(|c| c.kind == "video.track").collect();
+        assert_eq!(tracks.len(), 4, "four sample tracks");
+        // The bin's media are also published, each with rename + delete.
+        let media: Vec<_> = project.children.iter().filter(|c| c.kind == "video.media").collect();
+        assert_eq!(media.len(), 7, "seven sample media items");
+        let media_actions: Vec<&str> = media[0].actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(media_actions.contains(&"rename-media"), "{media_actions:?}");
+        assert!(media_actions.contains(&"delete-media"), "{media_actions:?}");
+        let track = tracks[0];
         assert_eq!(track.kind, "video.track");
         let track_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(track_actions.contains(&"rename-track"), "{track_actions:?}");
@@ -756,6 +817,36 @@ mod tests {
             after.clip(next_id).unwrap().start < next_start,
             "the later clip shifted left to close the gap",
         );
+    }
+
+    /// Deleting a bin media removes the source *and* every clip that placed it,
+    /// in one action, so no dangling clip is left referencing a gone source.
+    #[test]
+    fn remove_media_action_also_deletes_its_clips() {
+        let (_app, mut doc) = seeded();
+        let project = VideoDoc::load_project(&doc);
+        // Pick a media that is placed on the timeline at least once.
+        let mid = project
+            .media
+            .iter()
+            .find(|m| project.clips.iter().any(|c| c.media == m.id))
+            .map(|m| m.id)
+            .expect("a placed media");
+        let clip_ids: Vec<Uuid> =
+            project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        assert!(!clip_ids.is_empty());
+
+        let action = remove_media_action(&mid, &clip_ids);
+        let encoded = encode(&action);
+        let decoded = registry().decode(&encoded).unwrap();
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+        let after = VideoDoc::load_project(&doc);
+        assert!(after.media(mid).is_none(), "the source is gone from the bin");
+        for cid in &clip_ids {
+            assert!(after.clip(*cid).is_none(), "a clip of the removed media is gone");
+        }
     }
 
     /// The collaboration guarantee: replaying the same encoded action on a
