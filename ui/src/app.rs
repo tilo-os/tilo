@@ -482,6 +482,14 @@ pub struct App {
     /// render-loop hooks read no clock and allocate nothing — see the
     /// `RedrawRequested` handler.
     profiler: Option<crate::profiling::FrameProfiler>,
+
+    /// An explicit window title set by the app via
+    /// [`App::with_window_title`] / [`App::set_window_title`]. When set it
+    /// wins over the automatic resolution (env / package id / binary
+    /// name). `None` — the common case — leaves the toolkit to derive the
+    /// title, so an app names its window only when it wants something
+    /// other than its package name.
+    window_title: Option<String>,
 }
 
 impl App {
@@ -551,6 +559,7 @@ impl App {
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
             profiler: crate::profiling::FrameProfiler::from_env(),
+            window_title: None,
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -2562,6 +2571,33 @@ impl App {
         self
     }
 
+    /// Set the window title explicitly, overriding the automatic
+    /// resolution (env / package id / binary name). Builder form, for an
+    /// app that wants a title other than its package name — most don't,
+    /// and get their real name for free. Takes effect when the window is
+    /// created, so set it before [`App::run`].
+    pub fn with_window_title(mut self, title: impl Into<String>) -> Self {
+        self.window_title = Some(title.into());
+        self
+    }
+
+    /// Set the window title explicitly at runtime. Same precedence as
+    /// [`App::with_window_title`]; applied when the window is next
+    /// created. `None` clears the override and restores automatic
+    /// resolution.
+    pub fn set_window_title(&mut self, title: Option<String>) {
+        self.window_title = title;
+    }
+
+    /// The title this App would give its window right now, resolved
+    /// through the same precedence the window uses (explicit override →
+    /// `QOS_APP_NAME` → package id → binary name → generic default).
+    /// Exposed so the resolution is observable in tests and by a host
+    /// that mirrors the title elsewhere.
+    pub fn resolved_window_title(&self) -> String {
+        resolve_window_title(self.window_title.as_deref())
+    }
+
     /// Make this App's live document a **record's** document.
     ///
     /// `records` owns the per-record documents and their persistence;
@@ -2722,6 +2758,87 @@ impl App {
         };
         event_loop.run_app(&mut handler).unwrap();
     }
+}
+
+/// Resolve the human-readable window title from the process environment,
+/// given any explicit override the app set. Reads `QOS_APP_NAME` (the
+/// launcher exports the manifest `[package].name`), `QOS_PACKAGE_ID`
+/// (the app_id — `dev.qos.notes`), and the running binary's file name.
+/// See [`resolve_title_from`] for the precedence.
+fn resolve_window_title(explicit: Option<&str>) -> String {
+    let app_name = std::env::var("QOS_APP_NAME").ok();
+    let package_id = std::env::var("QOS_PACKAGE_ID").ok();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_title_from(
+        explicit,
+        app_name.as_deref(),
+        package_id.as_deref(),
+        binary.as_deref(),
+    )
+}
+
+/// Pure title resolution, so the precedence is unit-testable without
+/// touching the process environment. In order, the first non-blank
+/// candidate wins:
+///
+/// 1. `explicit` — a title the app set via [`App::with_window_title`].
+/// 2. `app_name` — `QOS_APP_NAME`, the manifest's `[package].name`.
+/// 3. the last dot-segment of `package_id` (`QOS_PACKAGE_ID`),
+///    humanized: `dev.qos.notes` → `Notes`.
+/// 4. `binary`, humanized: a dev run with no launcher env gets
+///    `file-explorer` → `File Explorer`.
+/// 5. a generic `qOS App` — never the old `QuickUI App` placeholder.
+fn resolve_title_from(
+    explicit: Option<&str>,
+    app_name: Option<&str>,
+    package_id: Option<&str>,
+    binary: Option<&str>,
+) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(t) = explicit.and_then(non_blank) {
+        return t;
+    }
+    if let Some(t) = app_name.and_then(non_blank) {
+        return t;
+    }
+    if let Some(id) = package_id.and_then(non_blank) {
+        let seg = id.rsplit('.').next().unwrap_or(id.as_str());
+        let human = humanize_ident(seg);
+        if !human.is_empty() {
+            return human;
+        }
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        let human = humanize_ident(&bin);
+        if !human.is_empty() {
+            return human;
+        }
+    }
+    "qOS App".to_string()
+}
+
+/// Turn a machine identifier into a human title: split on `-`, `_`, `.`,
+/// and whitespace, drop the empties, upper-case each word's first
+/// character, and join with a single space. `file-explorer` →
+/// `File Explorer`, `notes` → `Notes`.
+fn humanize_ident(ident: &str) -> String {
+    ident
+        .split(|c: char| c == '-' || c == '_' || c == '.' || c.is_whitespace())
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Winit 0.30 `ApplicationHandler` driver for [`App`]. The previous
@@ -2936,8 +3053,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // The AccessKit adapter must be created while the window is still
         // hidden (it asserts this), so build the window invisible, create the
         // adapter, then show it.
+        // The human-readable window title. Resolved through the app's
+        // real name (an explicit override, then `QOS_APP_NAME` from the
+        // manifest, then the package id, then the binary name) rather
+        // than a toolkit placeholder — so every window's titlebar / task
+        // entry reads as the app, not "QuickUI App".
+        let title = resolve_window_title(self.app.window_title.as_deref());
+        // The window icon: the app's own art when it ships some (via
+        // `QOS_APP_ICON`), otherwise a generated qOS default. Resolved
+        // once and used both as a creation attribute and via
+        // `set_window_icon`, so whichever the backend honours takes it.
+        let icon = crate::window_icon::resolve();
         let mut window_attributes = Window::default_attributes()
-            .with_title("QuickUI App")
+            .with_title(title)
+            .with_window_icon(icon.clone())
             // Draw a normal, draggable title bar (winit's sctk-adwaita CSD)
             // on compositors that don't provide server-side decorations —
             // e.g. GNOME/mutter. Explicit even though it's the winit
@@ -2977,6 +3106,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window_attributes = window_attributes.with_name(app_id, "");
         }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
+        // Also set the icon post-creation: some backends only honour it
+        // this way, not as a creation attribute. A no-op on Wayland
+        // compositors that source the icon from the app_id instead.
+        window.set_window_icon(icon);
 
         // Accessibility: wire the AccessKit winit adapter so the exported
         // tree reaches AT-SPI2 (Orca, braille). Events (initial-tree request,
@@ -4338,6 +4471,130 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 /// this helper so that denied interactions short-circuit cleanly without the
 /// widget ever observing the event. Callers can additionally consult
 /// `ctx.check_with_denied_feedback(&scope)` to surface a toast/flash on denial.
+#[cfg(test)]
+mod window_title_tests {
+    use super::*;
+
+    #[test]
+    fn humanize_ident_titlecases_and_splits() {
+        assert_eq!(humanize_ident("notes"), "Notes");
+        assert_eq!(humanize_ident("file-explorer"), "File Explorer");
+        assert_eq!(humanize_ident("word-processor"), "Word Processor");
+        assert_eq!(humanize_ident("db_client"), "Db Client");
+        // The last dot-segment case a package id feeds in.
+        assert_eq!(humanize_ident("notes"), "Notes");
+        assert_eq!(humanize_ident(""), "");
+    }
+
+    #[test]
+    fn explicit_title_wins_over_everything() {
+        let t = resolve_title_from(
+            Some("My Doc — Notes"),
+            Some("Notes"),
+            Some("dev.qos.notes"),
+            Some("notes"),
+        );
+        assert_eq!(t, "My Doc — Notes");
+    }
+
+    #[test]
+    fn app_name_env_resolves_to_the_manifest_name() {
+        // `QOS_APP_NAME` carries the manifest `[package].name`; it is the
+        // primary source once no explicit override is set.
+        let t = resolve_title_from(None, Some("Notes"), Some("dev.qos.notes"), Some("notes"));
+        assert_eq!(t, "Notes");
+        assert_ne!(t, "QuickUI App");
+    }
+
+    #[test]
+    fn package_id_falls_back_to_humanized_last_segment() {
+        // No manifest name: the app_id's last segment, humanized.
+        let t = resolve_title_from(None, None, Some("dev.qos.file-explorer"), Some("file-explorer"));
+        assert_eq!(t, "File Explorer");
+        assert_ne!(t, "QuickUI App");
+    }
+
+    #[test]
+    fn binary_name_is_the_dev_run_fallback() {
+        // A dev run outside the launcher: no env at all, so the binary
+        // name stands in — never the old placeholder.
+        let t = resolve_title_from(None, None, None, Some("terminal"));
+        assert_eq!(t, "Terminal");
+        assert_ne!(t, "QuickUI App");
+    }
+
+    #[test]
+    fn blank_candidates_are_skipped_not_used() {
+        // Empty / whitespace env values must not win — they fall through
+        // to the next source, and never to "QuickUI App" while a real
+        // one exists.
+        let t = resolve_title_from(Some("  "), Some(""), Some("dev.qos.notes"), Some("notes"));
+        assert_eq!(t, "Notes");
+    }
+
+    #[test]
+    fn generic_default_is_qos_app_never_quickui_app() {
+        // The last resort, when literally nothing identifies the app, is
+        // the qOS default — the string the whole change exists to kill is
+        // never produced.
+        let t = resolve_title_from(None, None, None, None);
+        assert_eq!(t, "qOS App");
+        assert_ne!(t, "QuickUI App");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn env_path_end_to_end_prefers_app_name() {
+        // Prove the real env-reading entry point, not just the pure core:
+        // with `QOS_APP_NAME` set the window title is the manifest name.
+        let prev_name = std::env::var_os("QOS_APP_NAME");
+        let prev_id = std::env::var_os("QOS_PACKAGE_ID");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe {
+            std::env::set_var("QOS_APP_NAME", "Weather");
+            std::env::set_var("QOS_PACKAGE_ID", "dev.qos.weather");
+        }
+        let resolved = resolve_window_title(None);
+        // Restore before asserting so a failure doesn't leak env.
+        unsafe {
+            match prev_name {
+                Some(v) => std::env::set_var("QOS_APP_NAME", v),
+                None => std::env::remove_var("QOS_APP_NAME"),
+            }
+            match prev_id {
+                Some(v) => std::env::set_var("QOS_PACKAGE_ID", v),
+                None => std::env::remove_var("QOS_PACKAGE_ID"),
+            }
+        }
+        assert_eq!(resolved, "Weather");
+        assert_ne!(resolved, "QuickUI App");
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn env_path_falls_back_to_package_id_without_app_name() {
+        let prev_name = std::env::var_os("QOS_APP_NAME");
+        let prev_id = std::env::var_os("QOS_PACKAGE_ID");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe {
+            std::env::remove_var("QOS_APP_NAME");
+            std::env::set_var("QOS_PACKAGE_ID", "dev.qos.calculator");
+        }
+        let resolved = resolve_window_title(None);
+        unsafe {
+            match prev_name {
+                Some(v) => std::env::set_var("QOS_APP_NAME", v),
+                None => std::env::remove_var("QOS_APP_NAME"),
+            }
+            match prev_id {
+                Some(v) => std::env::set_var("QOS_PACKAGE_ID", v),
+                None => std::env::remove_var("QOS_PACKAGE_ID"),
+            }
+        }
+        assert_eq!(resolved, "Calculator");
+    }
+}
+
 #[cfg(test)]
 mod pointer_broadcast_tests {
     use super::*;
