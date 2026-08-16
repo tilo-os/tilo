@@ -68,11 +68,6 @@ fn truncate_to_width(tr: &mut TextRenderer, text: &str, size: f32, max: f32) -> 
 impl PdfApp {
     // ---- pure layout ------------------------------------------------
 
-    /// Whether the toolbar is wide enough to show the "PDF" wordmark + title.
-    fn tb_show_wordmark(&self) -> bool {
-        self.toolbar_rect.width() >= 980.0
-    }
-
     fn toolbar_layout(&self) -> ToolbarLayout {
         let tb = self.toolbar_rect;
         let cy = (tb.y0 + tb.y1) / 2.0;
@@ -102,11 +97,12 @@ impl PdfApp {
         let zoom_out = place(28.0, &mut rx);
         let right_start = zoom_out.x0;
 
-        // ---- left cluster: page-rail toggle (LEFT-MOST) + wordmark + Open + Save ----
+        // ---- left cluster: page-rail toggle (LEFT-MOST) + Open + Save ----
+        // The compositor owns window chrome (the document name lives in the real
+        // titlebar), so the app draws no wordmark/app-name here — Open sits
+        // directly after the rail toggle.
         let toggle_rail = row(tb.x0 + 12.0, bw);
-        let wordmark_x = toggle_rail.x1 + 10.0;
-        let left_w = if self.tb_show_wordmark() { 150.0 } else { 20.0 };
-        let open = row(wordmark_x + left_w + 8.0, bw);
+        let open = row(toggle_rail.x1 + 10.0, bw);
         let save = row(open.x1 + gap, bw);
         let left_end = save.x1;
 
@@ -966,43 +962,10 @@ impl PdfApp {
         let hair = Rect::new(tb.x0, tb.y1 - 1.0, tb.x1, tb.y1);
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
-        // Wordmark: the document name + page count. (No decorative glyph — it
-        // read as a redundant, meaningless icon next to the filename.) It starts
-        // just right of the left-most page-rail toggle button.
-        let gx = tb.x0 + 12.0 + 34.0 + 10.0;
-        if self.tb_show_wordmark() {
-            let max = 148.0;
-            let name = if self.doc_name.is_empty() { "PDF".to_string() } else { self.doc_name.clone() };
-            let name = truncate_to_width(tr, &name, 13.0, max);
-            tr.draw_text_weighted(
-                scene,
-                &name,
-                13.0,
-                theme.text_primary,
-                base * Affine::translate((gx, vcenter(tb, 13.0) - 6.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            let subtitle = if self.has_document {
-                format!("{} pages", self.doc.page_count())
-            } else {
-                "PDF reader".to_string()
-            };
-            let subtitle = truncate_to_width(tr, &subtitle, 10.0, max);
-            tr.draw_text(
-                scene,
-                &subtitle,
-                10.0,
-                theme.text_dim,
-                base * Affine::translate((gx, vcenter(tb, 10.0) + 7.0)),
-                None,
-            );
-        }
-
         let lay = self.toolbar_layout();
         let annotate = matches!(self.tool, Tool::Highlight | Tool::Ink | Tool::Note);
 
-        // Open a document (folder button), just right of the wordmark.
+        // Open a document (folder button), left-most after the page-rail toggle.
         self.icon_button_bg(scene, base, theme, lay.open, false, lay.open.contains(self.last_mouse));
         draw_folder_glyph(scene, base, icon_inset(lay.open), theme.text_primary);
 
