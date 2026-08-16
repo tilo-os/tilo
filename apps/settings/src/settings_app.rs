@@ -51,10 +51,12 @@ pub struct SettingsApp {
     /// happened and the host must re-run `build_layout`. Drained by
     /// `take_structure_dirty`.
     structure_dirty: bool,
-    /// In `--shots` / headless rendering the live `ui::App` event loop that
-    /// would normally drive a category pick is absent, so a narrow shot can
-    /// start directly on the content screen. Applied when the shell is created.
-    start_on_content: bool,
+    /// Which narrow screen a `--shots` / headless capture pins the shell to —
+    /// the live `ui::App` event loop that would otherwise drive the navigation
+    /// is absent. `None` (the runtime default) collapses to the CONTENT screen,
+    /// matching the shared shell's behaviour; a capture can force the list or
+    /// content screen explicitly. Applied when the shell is created.
+    narrow_shot_screen: Option<NarrowScreen>,
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
@@ -80,7 +82,7 @@ impl SettingsApp {
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
-            start_on_content: false,
+            narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
             rect: vello::kurbo::Rect::ZERO,
@@ -104,12 +106,21 @@ impl SettingsApp {
         self
     }
 
-    /// Start a narrow `--shots` still on the content screen (with the back
-    /// arrow) instead of the default list screen. Without the live event loop
-    /// nothing drives a category pick, so this seeds the drilled-in state. Has
+    /// Pin a narrow `--shots` capture to the content screen (with the back
+    /// arrow). The narrow layout already collapses to the content by default,
+    /// so this only matters for a capture that overrides an earlier seed. Has
     /// no visible effect when the layout resolves to wide.
     pub fn with_narrow_content_shot(mut self) -> Self {
-        self.start_on_content = true;
+        self.narrow_shot_screen = Some(NarrowScreen::Content);
+        self
+    }
+
+    /// Pin a narrow `--shots` capture to the full-screen category list — the
+    /// back-tap-away screen a collapse no longer defaults to. Without the live
+    /// event loop nothing drives the navigation, so this seeds the list screen
+    /// for its own snapshot. Has no visible effect when the layout is wide.
+    pub fn with_narrow_list_shot(mut self) -> Self {
+        self.narrow_shot_screen = Some(NarrowScreen::List);
         self
     }
 
@@ -231,11 +242,11 @@ impl SettingsApp {
     fn build_shell(&self) -> AppShell {
         let nav = sidebar::build(self.selected, &self.search_query);
         let content = self.build_content();
-        let narrow_screen = if self.start_on_content {
-            NarrowScreen::Content
-        } else {
-            NarrowScreen::List
-        };
+        // A narrow (phone) layout keeps the selected category's CONTENT on
+        // screen — the category list is one back-tap away, never the default a
+        // collapse lands on. A `--shots` capture can pin a specific narrow
+        // screen; otherwise the shell collapses to the content.
+        let narrow_screen = self.narrow_shot_screen.unwrap_or(NarrowScreen::Content);
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
             .with_breakpoint(NAV_BREAKPOINT)
@@ -605,13 +616,34 @@ mod tests {
     }
 
     #[test]
-    fn narrow_layout_starts_on_the_standalone_list_screen() {
+    fn narrow_layout_collapses_to_the_content_screen() {
+        // A collapse to the narrow (phone) layout keeps the selected category's
+        // CONTENT on screen — it never defaults to the category list. The list
+        // is a back-tap away (see the back arrow), not the surface a collapse
+        // lands on.
         let mut app = SettingsApp::new().with_width_hint(440.0);
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
+            !app.sidebar_open(),
+            "a collapse keeps the content — it must not default to the category list"
+        );
+        assert!(
+            app.back_button_rect().width() > 0.0,
+            "the content screen carries a back arrow to reach the category list"
+        );
+    }
+
+    #[test]
+    fn narrow_list_shot_shows_the_standalone_list_screen() {
+        // The category list remains reachable (and capturable) as its own
+        // full-screen screen — it is simply no longer the collapse default.
+        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
+        layout_at(&mut app, 440.0, 820.0);
+        assert!(app.is_narrow(), "440px should resolve to the narrow layout");
+        assert!(
             app.sidebar_open(),
-            "narrow starts on the list screen (a standalone full-screen category list)"
+            "the list screen shows the standalone full-screen category list"
         );
         assert_eq!(
             app.back_button_rect(),
@@ -639,7 +671,8 @@ mod tests {
 
     #[test]
     fn narrow_pick_navigates_list_to_content_and_back() {
-        let mut app = SettingsApp::new().with_width_hint(440.0);
+        // Start on the list screen — the reachable back-tap state.
+        let mut app = SettingsApp::new().with_width_hint(440.0).with_narrow_list_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.sidebar_open(), "starts on the list screen");
         // Picking a category drills into its content screen.
