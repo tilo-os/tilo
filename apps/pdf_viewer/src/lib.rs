@@ -64,6 +64,15 @@ pub fn app_root_selection_hud() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: the sample document with the floating page-info bubble
+/// pinned open, so a still frame shows the transient page overlay (not a bottom
+/// strip).
+pub fn app_root_page_bubble() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_page_bubble();
+    Box::new(app)
+}
+
 /// Screenshot-only: open `path` (a real PDF) with a live page-rail reorder drag
 /// staged, so a still frame shows the left sidebar mid-reorder.
 pub fn app_root_reorder_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {

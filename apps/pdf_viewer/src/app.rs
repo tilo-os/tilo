@@ -43,7 +43,6 @@ use crate::text_layer::{PageText, TextMatch};
 use std::sync::Arc;
 
 const TOOLBAR_H: f64 = 56.0;
-const STATUS_H: f64 = 28.0;
 /// Default width of the thumbnail rail; the user can drag-resize it within
 /// [`RAIL_W_MIN`, `RAIL_W_MAX`] and fully collapse it.
 const RAIL_W: f64 = 144.0;
@@ -318,6 +317,9 @@ pub struct PdfApp {
     /// Screenshot-only: arm a live page-rail reorder drag each frame so a still
     /// frame captures the drag ghost + reflow gap. Never set at runtime.
     shots_rail_drag: bool,
+    /// Screenshot-only: pin the floating page bubble open so a still frame shows
+    /// the transient page-info overlay. Never set at runtime.
+    shots_page_bubble: bool,
 
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -478,7 +480,19 @@ pub struct PdfApp {
     rail_rect: Rect,
     canvas_rect: Rect,
     sidebar_rect: Rect,
-    status_rect: Rect,
+
+    /// The floating page-info bubble — a transient overlay (the shared
+    /// [`ui::StatusBubble`]) that appears on a page change or while the pointer
+    /// hovers the bottom-centre of the canvas, then fades. It replaces the old
+    /// always-on bottom status strip so the canvas keeps that vertical space.
+    page_bubble: ui::StatusBubble,
+    /// The page the bubble last announced, so a page change re-pokes it.
+    bubble_shown_page: usize,
+    /// The bubble's pill + chevron rects, captured during draw for hover
+    /// detection and click hit-testing.
+    bubble_rect: Rect,
+    bubble_prev: Rect,
+    bubble_next: Rect,
 
     // Sidebar + search content hit-targets, captured during draw.
     sidebar_hits: Vec<(SidebarHit, Rect)>,
@@ -562,6 +576,13 @@ impl PdfApp {
         self.show_rail = true;
     }
 
+    /// Screenshot-only: pin the floating page bubble open so a still frame shows
+    /// the transient page-info overlay (instead of the old bottom strip).
+    pub fn arm_shots_page_bubble(&mut self) {
+        self.shots_page_bubble = true;
+        self.page_bubble.poke(std::time::Instant::now());
+    }
+
     /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
     /// glyph layer so it needs no native pdfium) so a still frame shows the
     /// shared selection HUD — highlight swatches + Copy + Note — over the page.
@@ -623,6 +644,7 @@ impl PdfApp {
             seed_sample,
             shots_edit_first_comment: false,
             shots_rail_drag: false,
+            shots_page_bubble: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
@@ -690,7 +712,11 @@ impl PdfApp {
             rail_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
-            status_rect: Rect::ZERO,
+            page_bubble: ui::StatusBubble::new(),
+            bubble_shown_page: 0,
+            bubble_rect: Rect::ZERO,
+            bubble_prev: Rect::ZERO,
+            bubble_next: Rect::ZERO,
             sidebar_hits: Vec::new(),
             search_hits: Vec::new(),
             edit_rect: Rect::ZERO,
@@ -896,7 +922,6 @@ impl PdfApp {
     fn recompute_regions(&mut self) {
         let r = self.rect;
         self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        self.status_rect = Rect::new(r.x0, r.y1 - STATUS_H, r.x1, r.y1);
         let mut mid_top = r.y0 + TOOLBAR_H;
         if self.search_active {
             self.search_rect = Rect::new(r.x0, mid_top, r.x1, mid_top + SEARCH_H);
@@ -904,7 +929,9 @@ impl PdfApp {
         } else {
             self.search_rect = Rect::ZERO;
         }
-        let mid_bottom = r.y1 - STATUS_H;
+        // No reserved bottom strip: the page-info bubble floats over the canvas
+        // (see `draw_page_bubble`), so the content spans to the window bottom.
+        let mid_bottom = r.y1;
         let rail_w = self.rail_width();
         let sidebar_w = self.sidebar_width();
         self.rail_rect = Rect::new(r.x0, mid_top, r.x0 + rail_w, mid_bottom);
@@ -2381,7 +2408,11 @@ impl Widget for PdfApp {
         // budget (`pending_raster`): the framework's animation pump re-draws at
         // ~60 Hz so the remaining visible pages fill in over the next frame(s),
         // then `pending_raster` clears and the window settles back to idle.
-        self.tooltip_pending || self.pending_raster
+        // Also keep frames coming while the floating page bubble is lingering /
+        // fading, so it hides itself without needing a stray pointer event.
+        self.tooltip_pending
+            || self.pending_raster
+            || self.page_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -2947,6 +2978,43 @@ mod tests {
         // Very narrow: the toggles still fit and nothing overlaps.
         app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
         check(&app, &mut tr, 380.0);
+    }
+
+    /// The floating page bubble draws (and captures its nav hit-rects) only
+    /// while visible, and clears them once it fades — proving it is a transient
+    /// overlay, not a permanent strip. Drives the real `draw_page_bubble`.
+    #[test]
+    fn page_bubble_overlay_shows_then_hides() {
+        let (mut app, _st) = app_with_state();
+        app.has_document = true;
+        app.canvas_rect = Rect::new(0.0, 100.0, 800.0, 700.0);
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+
+        // Hidden by default (no page change, pointer away from the bottom): the
+        // overlay draws nothing and captures no clickable rect.
+        app.last_mouse = Point::new(10.0, 110.0);
+        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_eq!(app.bubble_rect, Rect::ZERO, "a hidden bubble captures no hit-rect");
+
+        // A page change pokes it → it draws and captures its chevron rects.
+        app.page_bubble.poke(std::time::Instant::now());
+        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_ne!(app.bubble_rect, Rect::ZERO, "a visible bubble captures its rect");
+        assert!(app.bubble_rect.y1 <= app.canvas_rect.y1 + 0.01, "it floats within the canvas");
+        assert!(app.bubble_rect.y0 > app.canvas_rect.y0, "it sits near the bottom, not filling the canvas");
+        // The right chevron steps the page (a click is consumed).
+        let before = app.current_page;
+        assert!(app.apply_page_bubble(app.bubble_next.center()), "a click on the bubble is consumed");
+        assert!(app.current_page >= before, "the next chevron does not go backwards");
+
+        // After its linger, with the pointer away, it hides again.
+        app.page_bubble = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+        app.page_bubble.poke(std::time::Instant::now() - std::time::Duration::from_millis(10));
+        app.last_mouse = Point::new(10.0, 110.0);
+        app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_eq!(app.bubble_rect, Rect::ZERO, "the bubble hides after its linger");
     }
 
     #[test]

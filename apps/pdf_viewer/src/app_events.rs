@@ -280,16 +280,21 @@ impl PdfApp {
         true
     }
 
-    fn apply_status(&mut self, p: Point) -> bool {
-        if !self.status_rect.contains(p) {
+    /// A click on the floating page bubble: its chevrons step pages. Hit-tests
+    /// the rects the bubble captured this frame, so a click only lands when the
+    /// bubble is actually visible.
+    fn apply_page_bubble(&mut self, p: Point) -> bool {
+        if self.bubble_rect == Rect::ZERO || !self.bubble_rect.contains(p) {
             return false;
         }
-        let (prev, _label, next) = self.status_layout();
-        if prev.contains(p) {
+        if self.bubble_prev.contains(p) {
             self.prev_page();
-        } else if next.contains(p) {
+        } else if self.bubble_next.contains(p) {
             self.next_page();
         }
+        // Keep the indicator up right after a nav click.
+        self.page_bubble.poke(std::time::Instant::now());
+        self.dirty = true;
         true
     }
 
@@ -546,7 +551,7 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
-                if self.apply_status(p) {
+                if self.apply_page_bubble(p) {
                     *handled = true;
                     return;
                 }
