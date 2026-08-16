@@ -29,6 +29,16 @@ pub struct StatusState {
     pub indent: String,
     pub problems: usize,
     pub project: String,
+    /// What the language server is doing — "rust-analyzer: indexing 42%".
+    /// Empty when there is no server.
+    pub lsp: String,
+    /// True while the server is starting or busy, which draws the activity dot.
+    pub lsp_working: bool,
+    /// The last file-operation message ("Saved main.rs", "Could not save …").
+    pub notice: String,
+    pub notice_is_error: bool,
+    /// True when the active buffer has unsaved edits.
+    pub dirty: bool,
 }
 
 pub struct StatusBar {
@@ -134,9 +144,65 @@ impl Widget for StatusBar {
             transform * Affine::translate((x, y)),
             None,
         );
+        let (pw, _) = text_renderer.measure(&problems, 12.0, None);
+        x += pw as f64 + 18.0;
+
+        // Language-server state. This is the difference between "the editor is
+        // thinking" and "the editor is broken" during a multi-minute index, so
+        // it sits in the left cluster where it is read, not tucked away.
+        if !self.state.lsp.is_empty() {
+            if self.state.lsp_working {
+                // A small filled dot as the activity mark. The bar redraws only
+                // while the server reports progress, so this does not spin the
+                // frame loop when nothing is happening.
+                let dot = Rect::from_center_size(
+                    Point::new(x + 4.0, self.rect.center().y),
+                    (6.0, 6.0),
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    fg.multiply_alpha(0.85),
+                    None,
+                    &vello::kurbo::Circle::new(dot.center(), 3.0),
+                );
+                x += 14.0;
+            }
+            text_renderer.draw_text(
+                scene,
+                &self.state.lsp,
+                12.0,
+                fg.multiply_alpha(0.9),
+                transform * Affine::translate((x, y)),
+                None,
+            );
+            let (w, _) = text_renderer.measure(&self.state.lsp, 12.0, None);
+            x += w as f64 + 18.0;
+        }
+
+        // The last file-operation message, so a save is visibly a save and a
+        // failed one is visibly a failure.
+        if !self.state.notice.is_empty() {
+            let color = if self.state.notice_is_error {
+                c.semantic.danger
+            } else {
+                fg.multiply_alpha(0.9)
+            };
+            text_renderer.draw_text(
+                scene,
+                &self.state.notice,
+                12.0,
+                color,
+                transform * Affine::translate((x, y)),
+                Some((self.rect.width() * 0.4) as f32),
+            );
+        }
 
         // Right cluster: assembled and right-aligned.
         let mut right: Vec<String> = Vec::new();
+        if self.state.dirty {
+            right.push("\u{25CF} Unsaved".to_string());
+        }
         if self.state.selection > 0 {
             right.push(format!("{} selected", self.state.selection));
         }

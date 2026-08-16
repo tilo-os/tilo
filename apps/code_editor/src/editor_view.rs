@@ -170,6 +170,13 @@ pub struct EditorView {
     /// A pending language-server request the app should perform (set by a
     /// keybind, drained by the app).
     lsp_ask: Option<LspAsk>,
+
+    // ---- find ----
+    /// Every match of the find bar's query, so all of them are tinted at once
+    /// and the user can see where the hits are without stepping through them.
+    find_matches: Vec<crate::find::Match>,
+    /// Which of them is current, drawn more strongly than the rest.
+    find_current: Option<usize>,
 }
 
 impl EditorView {
@@ -198,7 +205,34 @@ impl EditorView {
             completion_anchor: (0, 0),
             hover_text: None,
             lsp_ask: None,
+            find_matches: Vec::new(),
+            find_current: None,
         }
+    }
+
+    /// Set the find bar's matches so they are tinted in the buffer.
+    ///
+    /// Showing *all* matches rather than only the one you are standing on is
+    /// what makes a find useful for reading — you can see at a glance whether a
+    /// symbol appears twice on screen or thirty times.
+    pub fn set_find_matches(&mut self, matches: &[crate::find::Match], current: Option<usize>) {
+        if self.find_matches != matches || self.find_current != current {
+            self.find_matches = matches.to_vec();
+            self.find_current = current;
+            self.dirty = true;
+        }
+        if let Some(m) = current.and_then(|i| self.find_matches.get(i)).copied() {
+            // Keep the current match on screen as the user steps through.
+            self.carets.truncate(1);
+            self.carets[0] = Caret::at(m.line, m.col);
+            self.scroll_to_caret();
+        }
+    }
+
+    /// The editor's current selection as text, if any. The find bar seeds its
+    /// query with this, so Ctrl+F on a selected word searches for that word.
+    pub fn selected_text_public(&self) -> Option<String> {
+        self.selected_text()
     }
 
     /// Bind this view to a buffer's Text object and language. Resets carets to
@@ -988,6 +1022,52 @@ impl Widget for EditorView {
                     y + LINE_HEIGHT,
                 );
                 scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
+            }
+
+            // Find-bar matches on this line, under the selection so a selected
+            // current match still reads as selected.
+            for (mi, m) in self.find_matches.iter().enumerate() {
+                if m.line != line_idx {
+                    continue;
+                }
+                let mx0 = code_x0 + m.col as f64 * self.cell_w - self.scroll_x;
+                let mx1 = code_x0 + (m.col + m.len) as f64 * self.cell_w - self.scroll_x;
+                let band = Rect::new(
+                    mx0.max(self.rect.x0 + gutter_w),
+                    y + 1.0,
+                    mx1,
+                    y + LINE_HEIGHT - 1.0,
+                );
+                if band.width() <= 0.0 {
+                    continue;
+                }
+                let is_current = self.find_current == Some(mi);
+                // The current match is filled; the rest are outlined, so the
+                // one you are on is unmistakable among thirty others.
+                if is_current {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.semantic.warning.multiply_alpha(0.45),
+                        None,
+                        &band,
+                    );
+                } else {
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        c.semantic.warning.multiply_alpha(0.16),
+                        None,
+                        &band,
+                    );
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        c.semantic.warning.multiply_alpha(0.5),
+                        None,
+                        &band,
+                    );
+                }
             }
 
             // Selection rectangles for any caret touching this line.
