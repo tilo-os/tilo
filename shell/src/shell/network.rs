@@ -1010,7 +1010,9 @@ mod tests {
     /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
     fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
         NetEvent::Msg {
-            ws: crate::shell::state::WorkspaceId::new(),
+            // The shared gossipsub topic every machine subscribes to,
+            // which is exactly how such a frame reaches us today.
+            ws: DEFAULT_WS_TOPIC,
             peer: libp2p::PeerId::random(),
             msg: NeighbourMsg::AppCrdtIncremental {
                 peer: from_peer_hash,
