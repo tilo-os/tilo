@@ -1415,6 +1415,78 @@ mod production_path {
         assert_eq!(verdict, Err(Denial::RateLimited));
     }
 
+    /// Rate limit, burst half: a click storm trips a block, and the
+    /// block covers everything the peer sends, not only further clicks.
+    #[test]
+    fn a_click_storm_is_blocked_before_the_eleventh_click_reaches_the_seat() {
+        let mut state = staged();
+        establish_cursor(&mut state);
+        let started = std::time::Instant::now();
+
+        for i in 0..CLICK_BURST_LIMIT {
+            state
+                .review_remote_input(
+                    PEER,
+                    SHARED,
+                    InputEvent::PointerButton {
+                        button: 272,
+                        pressed: true,
+                    },
+                )
+                .unwrap_or_else(|d| panic!("click {i} refused as {d:?}, inside the allowance"));
+        }
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::PointerButton {
+                button: 272,
+                pressed: true,
+            },
+        );
+
+        // The burst window is wall-clock. A machine slow enough to spread
+        // eleven clicks over more than 100 ms never asked the question.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < CLICK_BURST_WINDOW,
+            "the burst took {elapsed:?}, longer than the {CLICK_BURST_WINDOW:?} window, \
+             so the click limit was never exercised",
+        );
+        assert_eq!(verdict, Err(Denial::ClickBurst));
+
+        // Motion is not a click, and it is refused too: the block is on
+        // the peer, not on the button.
+        assert_eq!(
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
+            Err(Denial::ClickBurst),
+        );
+    }
+
+    /// Scrubber: `Super` opens the shell's own launcher and is the first
+    /// half of every compositor chord. A guest never gets to press it.
+    #[test]
+    fn the_super_key_from_a_guest_never_reaches_a_client() {
+        let mut state = staged();
+        const LEFT_META: u32 = 125;
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::Key {
+                keysym: LEFT_META,
+                pressed: true,
+                modifiers: 0,
+            },
+        );
+
+        assert_eq!(verdict, Err(Denial::SystemChord));
+        assert!(
+            !key_is_down(&state, LEFT_META),
+            "the compositor modifier reached the seat",
+        );
+    }
+
     /// Physical priority: the host's own input blocks the remote side.
     #[test]
     fn remote_input_within_the_physical_priority_window_is_dropped() {
