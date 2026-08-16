@@ -12,7 +12,14 @@ name = "chat"
 path = "src/main.rs"
 
 [features]
-default = []
+# The real-time media engine ships on by default so a normally-built `chat` can
+# actually place voice/camera/screen-share calls. The live-vs-simulated engine
+# is a genuine RUNTIME choice: `ChatApp::new()` (the live binary) uses
+# `MediaEngine::new()`, while `--shots`, tests and any headless render go through
+# `new_ephemeral()` → `MediaEngine::simulated()`, so no iroh endpoint, tokio
+# runtime or ScreenCast portal is touched during a shot. The feature only
+# compiles the live engine in.
+default = ["live-media"]
 # The real-time media engine: voice + camera + screen-share over iroh QUIC,
 # GStreamer for microphone/opus capture + playback and camera capture, openh264
 # (bundled source, no system lib) for the H.264 camera/screen codec, and the
@@ -76,7 +83,12 @@ gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
 openh264 = { workspace = true, optional = true }
-ashpd = { workspace = true, optional = true, default-features = true }
+# Inherit the workspace pin (`default-features = false, features = ["tokio"]`):
+# ashpd's defaults include `async-std`, and enabling it alongside the tokio
+# backend is a hard compile error ("can't enable both async-std & tokio"). Every
+# other ashpd user in the tree inherits the tokio-only workspace config; chat
+# must too, otherwise moving `live-media` into the default build fails to compile.
+ashpd = { workspace = true, optional = true }
 qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
 
 [dev-dependencies]
