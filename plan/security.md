@@ -190,7 +190,7 @@ If the gate cannot start, the launch is **refused** rather than downgraded — s
 
 When a peer publishes `RemoteInput { peer, surface, event }`, the owner's compositor runs it through `State::review_remote_input` (`shell/src/compositor/state.rs`) — the single door between the network and the seat. The order below is the order that function reads in:
 
-0. **Host overrides** — the kill switch latch, then physical-input priority. Both are absolute and neither looks at the event, so a flooding peer cannot delay either.
+0. **Host overrides** — the kill-switch latch, the session lock, then physical-input priority. All three are absolute and none looks at the event, so a flooding peer cannot delay any of them. The lock is checked here rather than falling out of the z-order test because the lock surface is not part of the tiled tree: the tiles under it stay laid out and stay topmost as far as the tree knows.
 1. The per-peer `read_only` flag. If set, drop.
 2. Surface ownership — there must be a share record for this `(peer, surface)` pair. A peer inventing a surface id it was never given is refused here.
 3. **Region check** — is the event coordinate inside the shared surface's content rect? A peer sees only the surface it was shared, so it sends *surface-local* coordinates; an accepted one is translated into the owner's output space by adding the tile origin, which is what confines a guest's pointer to the rectangle it was actually given.
@@ -203,6 +203,7 @@ Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **
 
 ## Host overrides
 
+- **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
 - **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control. Stamped at the backend event funnel in `compositor/native.rs`, so branches that never reach the client router (the lock screen, the VT chord, the power key) still count as the host taking over.
 - **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall latches (nothing but the host clears it) and every share is flipped read-only, so the stop survives anything that rebuilds the input path. Recognised at the same funnel, ahead of the client router and ahead of the shell's own `Escape` handling — a panic key an overlay or a focused client can swallow is not a panic key — and confirmed to the user with a notification naming how many windows went view-only.
 
