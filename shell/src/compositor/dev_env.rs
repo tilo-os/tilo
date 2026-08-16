@@ -39,6 +39,31 @@
 /// harness, `scripts/headless-examples/`), `false` in release builds.
 pub const DEV_ENV_OVERRIDES: bool = cfg!(debug_assertions);
 
+/// Byte string stamped into a compositor built with `--features dev-session`.
+///
+/// The host session package's *developer* entry
+/// (`/usr/libexec/qos-session-dev`, from `dist/`) will log you into a
+/// compositor of your choosing instead of the installed one. That is a real
+/// capability — "run this program as my login session" — so before it execs
+/// anything it checks the target carries this marker. A build the developer
+/// did not deliberately ask for cannot be logged into, and the entry is not a
+/// generic run-anything-at-login primitive that some other program could
+/// repurpose for persistence.
+///
+/// Deliberately searched for with a plain substring match over the file, so
+/// the check needs no parsing and no execution of the untrusted binary.
+pub const DEV_SESSION_MARKER: &str = "qos-dev-session-build-marker-v1";
+
+/// The marker itself, present only when the non-default `dev-session`
+/// feature is on **and** this is a debug build. Both conditions, so that
+/// `--release --features dev-session` still produces a binary the developer
+/// session entry refuses — a shipped artefact never carries it.
+///
+/// `#[used]` keeps the linker from discarding a static nothing reads.
+#[cfg(all(feature = "dev-session", debug_assertions))]
+#[used]
+pub static DEV_SESSION_BUILD_MARKER: [u8; 31] = *b"qos-dev-session-build-marker-v1";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,6 +78,19 @@ mod tests {
         // honest if someone ever runs `cargo test --release`: the constant
         // has to follow the profile, not a hard-coded expectation.
         assert_eq!(DEV_ENV_OVERRIDES, cfg!(debug_assertions));
+    }
+
+    #[test]
+    fn the_marker_static_matches_the_string_the_packaging_greps_for() {
+        // The dev session entry searches the binary for DEV_SESSION_MARKER.
+        // If the static and the constant ever drift, the entry silently
+        // refuses every build — so tie them together here.
+        assert_eq!(DEV_SESSION_MARKER.len(), 31);
+        #[cfg(all(feature = "dev-session", debug_assertions))]
+        assert_eq!(
+            DEV_SESSION_BUILD_MARKER.as_slice(),
+            DEV_SESSION_MARKER.as_bytes()
+        );
     }
 
     #[test]
