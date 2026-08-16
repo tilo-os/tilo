@@ -14391,6 +14391,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "thumbnail"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "hex",
+ "image",
+ "media",
+ "moka",
+ "pdfium-render",
+ "roxmltree",
+ "serde",
+ "tempfile",
+ "zip 4.6.1",
+]
+
+[[package]]
 name = "tiff"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
