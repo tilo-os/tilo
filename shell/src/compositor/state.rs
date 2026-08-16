@@ -59,10 +59,7 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
-use smithay::wayland::selection::data_device::{
-    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-};
-use smithay::wayland::selection::{SelectionHandler, SelectionTarget};
+use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
