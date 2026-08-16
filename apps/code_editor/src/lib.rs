@@ -20,8 +20,11 @@ mod file_tree;
 mod find;
 mod highlight;
 mod lint;
-mod lsp;
-mod model;
+/// The Language Server Protocol client. Public so the end-to-end test in
+/// `tests/language_server.rs` can drive a real `rust-analyzer` through the same
+/// entry points the app uses, rather than a copy of them.
+pub mod lsp;
+pub mod model;
 mod sample_project;
 mod search;
 mod status_bar;
