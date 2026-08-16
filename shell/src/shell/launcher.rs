@@ -611,17 +611,38 @@ pub fn display_name_for_package_id(package_id: &str) -> String {
 /// launch) can point the shell at a specific build; then next to the
 /// running compositor, which is both how the OS image installs them and
 /// how a `cargo build` dev tree lays them out; then the system paths.
+///
+/// The environment entry is a **developer-build** seam
+/// ([`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]). `qos-launcher` is
+/// what builds every app's sandbox, so letting the environment name it means
+/// letting the environment decide that apps run unsandboxed. A dev tree does
+/// not need it — the compositor's own directory is already the second
+/// candidate — so a shipped build simply does not read it.
 fn launcher_bin_candidates() -> Vec<PathBuf> {
+    launcher_bin_candidates_from(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os("QOS_LAUNCHER_BIN"),
+        std::env::current_exe().ok(),
+    )
+}
+
+/// [`launcher_bin_candidates`] as a pure function of its inputs, so the
+/// shipped ordering is assertable from a debug test run.
+fn launcher_bin_candidates_from(
+    dev_overrides: bool,
+    explicit: Option<std::ffi::OsString>,
+    current_exe: Option<PathBuf>,
+) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(explicit) = std::env::var_os("QOS_LAUNCHER_BIN") {
-        if !explicit.is_empty() {
-            out.push(PathBuf::from(explicit));
+    if dev_overrides {
+        if let Some(explicit) = explicit {
+            if !explicit.is_empty() {
+                out.push(PathBuf::from(explicit));
+            }
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            out.push(dir.join("qos-launcher"));
-        }
+    if let Some(dir) = current_exe.as_ref().and_then(|exe| exe.parent()) {
+        out.push(dir.join("qos-launcher"));
     }
     out.push(PathBuf::from("/usr/libexec/qos-launcher"));
     out.push(PathBuf::from("/usr/bin/qos-launcher"));
@@ -1146,6 +1167,52 @@ pub fn wayland_socket_display() -> OsString {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn dev_build_lets_the_environment_name_the_launcher() {
+        let got = launcher_bin_candidates_from(
+            true,
+            Some(std::ffi::OsString::from("/tmp/my/qos-launcher")),
+            Some(PathBuf::from("/home/dev/target/debug/shell")),
+        );
+        assert_eq!(got[0], PathBuf::from("/tmp/my/qos-launcher"));
+        assert_eq!(got[1], PathBuf::from("/home/dev/target/debug/qos-launcher"));
+    }
+
+    #[test]
+    fn shipped_build_ignores_a_launcher_named_by_the_environment() {
+        // The launcher is what builds an app's sandbox; a shipped session
+        // must not take that binary's identity from its environment.
+        let got = launcher_bin_candidates_from(
+            false,
+            Some(std::ffi::OsString::from("/tmp/evil/qos-launcher")),
+            Some(PathBuf::from("/usr/bin/qos-shell")),
+        );
+        assert!(
+            !got.iter().any(|p| p.starts_with("/tmp")),
+            "release build accepted an environment-named launcher: {got:?}"
+        );
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/usr/bin/qos-launcher"),
+                PathBuf::from("/usr/libexec/qos-launcher"),
+                PathBuf::from("/usr/bin/qos-launcher"),
+            ],
+        );
+    }
+
+    #[test]
+    fn the_install_paths_are_always_searched() {
+        let got = launcher_bin_candidates_from(false, None, None);
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/usr/libexec/qos-launcher"),
+                PathBuf::from("/usr/bin/qos-launcher"),
+            ],
+        );
+    }
 
     // The tests that repoint `QOS_APPS_DATA_DIR` / `QOS_LAUNCHER_BIN` /
     // the published wayland socket are serialised on `process_env` — the
