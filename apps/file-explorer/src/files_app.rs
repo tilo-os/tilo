@@ -1358,6 +1358,58 @@ impl FileExplorerWidget {
         }
     }
 
+    /// Draw a centred empty-state in the file area when the current directory
+    /// has no entries (and isn't showing an error) — so an empty folder, and
+    /// especially an empty Trash, reads as intentionally empty rather than
+    /// broken. A muted icon over a short, context-aware line.
+    fn draw_empty_state(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+    ) {
+        if !self.entries.is_empty() || self.error.is_some() {
+            return;
+        }
+        let rect = self.nav.overview_rect();
+        if rect.width() <= 1.0 || rect.height() <= 1.0 {
+            return;
+        }
+        let (icon, msg) = if self.is_trash_view() {
+            (ui::icons::Icon::Trash2, "Trash is empty")
+        } else {
+            (ui::icons::Icon::Folder, "This folder is empty")
+        };
+        let tokens = &theme.tokens;
+        let dim = tokens.colors.text_dim;
+        let icon_px = 40.0_f64;
+        let size = tokens.typography.scale.base;
+        let (tw, _) = text_renderer.measure(msg, size, None);
+        let cx = rect.x0 + rect.width() / 2.0;
+        let cy = rect.y0 + rect.height() / 2.0;
+        // Icon centred above the line.
+        let ix = cx - icon_px / 2.0;
+        let iy = cy - icon_px - 10.0;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            vello::kurbo::Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+            icon,
+            dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let ty = crate::text_layout::centered_text_y(cy, size as f64, size);
+        text_renderer.draw_text(
+            scene,
+            msg,
+            size,
+            dim,
+            transform * vello::kurbo::Affine::translate((cx - tw as f64 / 2.0, ty)),
+            None,
+        );
+    }
+
     /// Draw the in-place rename editor over the row/cell being renamed. The
     /// file view publishes the target rect (in on-screen coords) during its own
     /// paint and omits that row's label, so the field slots exactly where the
@@ -2043,6 +2095,21 @@ impl FileExplorerWidget {
                 self.selection.move_to(next, shift);
                 true
             }
+            Key::Named(NamedKey::Home) if len > 0 => {
+                self.selection.move_to(0, shift);
+                true
+            }
+            Key::Named(NamedKey::End) if len > 0 => {
+                self.selection.move_to(len - 1, shift);
+                true
+            }
+            // Escape clears the selection (when there is one); otherwise it is
+            // left for the host so it never swallows a no-op.
+            Key::Named(NamedKey::Escape) if !self.selection.is_empty() => {
+                self.selection.clear();
+                self.last_click = None;
+                true
+            }
             Key::Named(NamedKey::Enter) => {
                 if let Some(p) = self.primary_path() {
                     self.open_path(p);
@@ -2230,6 +2297,7 @@ impl Widget for FileExplorerWidget {
         if let Some(c) = &mut self.chrome_below {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
@@ -2255,6 +2323,7 @@ impl Widget for FileExplorerWidget {
         if let Some(c) = &mut self.chrome_below {
             c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
+        self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
