@@ -444,7 +444,9 @@ impl FileView {
             if let Some(state) = entry.sync_state {
                 draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
             }
-            let text_y = row.y0 + (row.height() - size as f64) / 2.0;
+            // Optically center the row text so it lines up with the icon, which is
+            // centered by its box (see `crate::text_layout`).
+            let text_y = crate::text_layout::centered_text_y(row.y0, row.height(), size);
             let name_x = icon_x + icon_px + 10.0;
             if self.renaming == Some(i) {
                 // Publish the name field's rect and omit the label; the host
