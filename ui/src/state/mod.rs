@@ -76,13 +76,18 @@ impl UndoLog {
     }
 
     /// Commit `doc`'s open transaction and push an entry bracketing it.
+    /// Returns `true` iff this actually committed a change (there were pending
+    /// ops). `false` means the transaction was empty — the caller can then skip
+    /// any persistence / broadcast work, since the document is byte-identical to
+    /// before. This is what lets an ephemeral, non-document interaction (a text
+    /// selection drag, a focus move) avoid a full `doc.save()` on every event.
     pub fn commit_action_authored(
         &mut self,
         doc: &mut AutoCommit,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
-    ) {
+    ) -> bool {
         let before = self.last_heads.clone();
         // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
         // automerge's advisory timestamp at zero, which is why a history pane
@@ -99,6 +104,9 @@ impl UndoLog {
             });
             self.redo_stack.clear();
             self.last_heads = doc.get_heads();
+            true
+        } else {
+            false
         }
     }
 
@@ -338,19 +346,20 @@ impl State {
     }
 
     /// Commit the current transaction and push a change-based undo entry,
-    /// attributing it to `author` so multi-user undo can isolate users.
+    /// attributing it to `author` so multi-user undo can isolate users. Returns
+    /// `true` iff a change was actually committed (see the [`UndoLog`] method).
     pub fn commit_action_authored(
         &mut self,
         focused_node_idx: Option<usize>,
         metadata: Option<String>,
         author: Option<UserId>,
-    ) {
+    ) -> bool {
         self.undo.commit_action_authored(
             &mut self.doc,
             focused_node_idx,
             metadata,
             author,
-        );
+        )
     }
 
     /// Inspect the most recently pushed undo entry without popping it.
