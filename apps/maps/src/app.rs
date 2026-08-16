@@ -25,6 +25,7 @@ use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::widget::{Autocomplete, AutocompleteOutcome, ContextMenu, MenuItem, Suggestion};
 
 use crate::actions::{MapsAction, MAPS_ACTION_TYPE};
 use crate::canvas::{self, MapPalette};
@@ -35,9 +36,9 @@ use crate::location::{self, LocationChannel, LocationOutcome};
 use crate::model::{
     Category, LatLon, MapModel, Panel, TransitMode, TransitTimeMode, TravelMode,
 };
-use crate::net::{self, NetMsg};
+use crate::net::{self, NetMsg, RegionHit};
 use crate::sample::{self, Basemap};
-use crate::tiles::{GeoBounds, TileId, TileLayer};
+use crate::tiles::{GeoBounds, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
 use ui::widget::TextInput;
 
@@ -70,6 +71,15 @@ enum EndField {
     Dest,
 }
 
+/// Which map-data info sheet is open (reached from the ⋯ overflow menu). The
+/// attribution + licences the OSM/CARTO data require live here, one tap away,
+/// rather than pasted permanently over the map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapInfo {
+    Attribution,
+    Licenses,
+}
+
 // --- Layout metrics (logical px) -------------------------------------------
 const MARGIN: f64 = 16.0;
 const SEARCH_H: f64 = 48.0;
@@ -98,6 +108,14 @@ const POI_MIN_ZOOM: f64 = 14.0;
 const POI_MAX: usize = 140;
 /// How many nearby POIs the Explore panel lists (the closest to the anchor).
 const NEARBY_MAX: usize = 10;
+/// Quiet period after the last view change (pan / zoom / in-progress typing)
+/// before the whole model is re-serialised into the CRDT. A continuous gesture
+/// touches `center`/`zoom` every frame; without this, `sync` would
+/// `serde_json::to_string` the entire model (route + transit geometry, places,
+/// regions) 60×/second — the measured hot pass. Coalescing collapses that to one
+/// write once the gesture settles; the view still converges for peers and
+/// survives a restart, just not per-frame.
+const PERSIST_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(120);
 
 /// A clickable hot-region recorded during draw and hit-tested on click.
 #[derive(Clone, Debug)]
@@ -153,6 +171,10 @@ enum Hit {
     Journey(usize),
     /// Toggle the real-time traffic overlay on/off.
     ToggleTraffic,
+    /// Toggle the bottom-right ⋯ overflow menu (attribution / offline / licenses).
+    ToggleOverflow,
+    /// Dismiss the open map-data info sheet.
+    CloseMapInfo,
     /// Open the offline-download / manage-cache overlay.
     OfflineOpen,
     /// Close the overlay.
@@ -225,6 +247,11 @@ pub struct MapsApp {
     // CRDT bridge
     loaded: bool,
     dirty: bool,
+    /// When the coalesced view-persist should flush. Armed by [`mark_dirty`] and
+    /// pushed forward on every subsequent change, so a continuous pan/zoom writes
+    /// the model to the CRDT once — after [`PERSIST_DEBOUNCE`] of quiet — rather
+    /// than serialising the whole model every frame.
+    persist_deadline: Option<Instant>,
 
     // networking
     net_tx: Sender<NetMsg>,
@@ -257,10 +284,32 @@ pub struct MapsApp {
     /// is discarded rather than drawn over the current one.
     poi_generation: u64,
 
+    // bottom-right ⋯ overflow menu (attribution / offline maps / licenses) — a
+    // shared ContextMenu so it is themed, keyboard-navigable and a11y-correct.
+    overflow: ContextMenu,
+    /// The open map-data info sheet (attribution or licenses), if any.
+    map_info: Option<MapInfo>,
+
     // offline-download / cache-management overlay
     offline_open: bool,
     offline_zoom_extra: u8,
     cache_bytes: u64,
+    /// City/place search field inside the offline dialog — the shared
+    /// [`Autocomplete`], so downloads target a searched *place* (its real
+    /// bounding box) rather than the visible screen rectangle.
+    download_input: Autocomplete,
+    /// Geocoded region candidates for the download field (render cache).
+    download_results: Vec<RegionHit>,
+    /// The download field's last-seen text, to detect edits and (re)arm the
+    /// live geocode debounce.
+    download_query: String,
+    /// Debounce deadline for the download-field geocode (armed on each edit).
+    download_debounce: Option<Instant>,
+    /// The place chosen to download (its bounding box is the download footprint).
+    download_pick: Option<RegionHit>,
+    /// Screen rect of the last-drawn download search field, so a click can
+    /// (re)focus it (render cache).
+    download_field_rect: Option<Rect>,
 
     /// Whether the side panel drawer is open. Only consulted in the narrow
     /// overlay layout; when docked the panel is always shown. Re-evaluated
@@ -353,6 +402,7 @@ impl MapsApp {
             content_view_h: 0.0,
             loaded: false,
             dirty: true,
+            persist_deadline: None,
             net_tx,
             net_rx,
             pending: 0,
@@ -360,9 +410,27 @@ impl MapsApp {
             location_rx: None,
             locating: false,
             tiles,
+            overflow: {
+                let mut m = ContextMenu::new();
+                // Indices are mapped in `dispatch` via `take_selection`.
+                m.push(MenuItem::action("Attribution", || {}));
+                m.push(MenuItem::action("Offline maps", || {}));
+                m.push(MenuItem::action("Licenses", || {}));
+                m
+            },
+            map_info: None,
             offline_open: false,
             offline_zoom_extra: 2,
             cache_bytes,
+            download_input: Autocomplete::new()
+                .with_id("maps_download_search")
+                .with_placeholder("Search a city or place to download")
+                .with_font_size(14.0),
+            download_results: Vec::new(),
+            download_query: String::new(),
+            download_debounce: None,
+            download_pick: None,
+            download_field_rect: None,
             nav_open,
             pois: Vec::new(),
             selected_poi: None,
@@ -431,6 +499,27 @@ impl MapsApp {
         self.offline_zoom_extra = 2;
         self.model.regions = sample::regions();
         self.cache_bytes = 47_542_000;
+        // Demonstrate the download-by-place search: a typed city with candidate
+        // results in the shared dropdown (offline sample data — no network).
+        self.download_input.set_text("Mün");
+        self.download_input.begin_edit();
+        self.download_query = "Mün".to_string();
+        self.download_results = sample::download_regions();
+        self.download_input
+            .set_suggestions_open(Self::region_suggestions(&self.download_results));
+    }
+
+    /// Screenshot-only hook: open the ⋯ overflow menu so its Attribution /
+    /// Offline maps / Licenses options render expanded over the map. Seeds the
+    /// rect (the shot renders at the default viewport) so the menu anchors above
+    /// its bottom-right button before layout runs.
+    pub fn set_demo_overflow(&mut self) {
+        self.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let b = self.overflow_rect();
+        self.overflow.open_at([b.x1 as f32, b.y0 as f32]);
+        let mr = self.overflow.get_rect();
+        self.overflow
+            .open_at([(b.x1 - mr.width()) as f32, (b.y0 - mr.height() - 6.0) as f32]);
     }
 
     /// Screenshot-only hook: open the floating search-results overlay populated
@@ -488,7 +577,9 @@ impl MapsApp {
         Self::build(
             MapModel::default(),
             Basemap::default(),
-            TileLayer::with_cache_dir(cache_dir),
+            // Style-scoped like the real `new()` — the cache is rooted here and
+            // the active theme's style subdir is chosen on the first draw.
+            TileLayer::live_with_root(cache_dir),
             false,
             true,
         )
@@ -535,6 +626,25 @@ impl MapsApp {
     /// Live-verify read-back of the current camera zoom.
     pub fn zoom_for_verify(&self) -> f64 {
         self.model.zoom
+    }
+
+    /// Test-only: seed the resident tile store with solid tiles covering the
+    /// current viewport across a few zoom levels, so a perf scenario measures
+    /// the *loaded* raster path (exact tiles + ancestor/descendant reuse under
+    /// zoom) instead of the empty first-frame substrate. No worker, no network.
+    #[cfg(test)]
+    pub(crate) fn seed_perf_tiles(&mut self, w: f64, h: f64) {
+        self.rect = Rect::new(0.0, 0.0, w, h);
+        let vc = self.view_center();
+        let base_z = TileLayer::tile_zoom(self.model.zoom);
+        // Seed one level below through one level above so both zoom-in
+        // (ancestors) and zoom-out (descendants) reuse resident imagery.
+        for z in base_z.saturating_sub(1)..=(base_z + 1).min(19) {
+            let zoom = z as f64;
+            for (id, _) in TileLayer::visible_tiles(self.model.center, zoom, vc, self.rect) {
+                self.tiles.insert_solid_tile(id);
+            }
+        }
     }
 
     // --- geometry helpers --------------------------------------------------
@@ -622,13 +732,17 @@ impl MapsApp {
         let r = self.zoom_out_rect();
         Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
     }
-    fn download_rect(&self) -> Rect {
+    fn traffic_rect(&self) -> Rect {
         let r = self.locate_rect();
         Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
     }
-    fn traffic_rect(&self) -> Rect {
-        let r = self.download_rect();
-        Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
+
+    /// The bottom-right ⋯ overflow button (attribution / offline maps / licenses).
+    /// Downloads and the credit line moved off the map into this menu.
+    fn overflow_rect(&self) -> Rect {
+        let x1 = self.rect.x1 - MARGIN;
+        let y1 = self.rect.y1 - MARGIN;
+        Rect::new(x1 - 40.0, y1 - 30.0, x1, y1)
     }
 
     /// The geographic bounds currently visible in the map viewport.
@@ -663,14 +777,44 @@ impl MapsApp {
         format!("{lat:.3}, {lon:.3}")
     }
 
+    /// The integer slippy zoom at which a place's bounding box first fits the
+    /// current viewport — the natural base zoom for downloading that place, so a
+    /// city downloads at city scale and a street at street scale.
+    fn region_base_zoom(&self, sw: LatLon, ne: LatLon) -> u8 {
+        let corners = [
+            sw,
+            ne,
+            LatLon::new(sw.lat, ne.lon),
+            LatLon::new(ne.lat, sw.lon),
+        ];
+        let z = geo::fit_bounds(
+            &corners,
+            self.rect.width().max(400.0),
+            self.rect.height().max(300.0),
+            40.0,
+        )
+        .map(|(_, z)| z)
+        .unwrap_or(12.0);
+        TileLayer::tile_zoom(z)
+    }
+
     /// Save (or refresh) the just-requested download as a manageable region.
     /// The region **row** is a collaborative doc mutation dispatched through the
     /// action host (its dedupe of the same footprint lives in the action's
     /// `apply`); the tiles themselves were fetched externally by the caller.
-    fn record_region(&mut self, doc: &mut AutoCommit, bounds: GeoBounds, z0: u8, z1: u8, tiles: u32) {
+    /// `name` overrides the derived label (the searched place's name).
+    fn record_region(
+        &mut self,
+        doc: &mut AutoCommit,
+        bounds: GeoBounds,
+        z0: u8,
+        z1: u8,
+        tiles: u32,
+        name: Option<String>,
+    ) {
         // Id + name + tile count are resolved here, at authoring time, and carried
         // in the action so `apply` stays free of the RNG / wall-clock.
-        let name = self.region_name(bounds);
+        let name = name.unwrap_or_else(|| self.region_name(bounds));
         let id = format!(
             "region-{}",
             std::time::SystemTime::now()
@@ -715,9 +859,143 @@ impl MapsApp {
         self.mark_dirty();
     }
 
+    // --- download-by-place search -----------------------------------------
+
+    /// Turn geocoded region candidates into dropdown suggestions (name + a dim
+    /// locality subtitle). The accepted value is the place name.
+    fn region_suggestions(hits: &[RegionHit]) -> Vec<Suggestion> {
+        hits.iter()
+            .map(|h| {
+                let s = Suggestion::new(h.name.clone());
+                if h.context.is_empty() { s } else { s.with_detail(h.context.clone()) }
+            })
+            .collect()
+    }
+
+    /// Reconcile the download field after an event: if the text changed, drop any
+    /// stale pick and (re)arm the live geocode debounce; if a row was accepted,
+    /// adopt it as the place to download.
+    fn reconcile_download_field(&mut self) {
+        let text = self.download_input.text().to_string();
+        if text != self.download_query {
+            self.download_query = text.clone();
+            self.download_pick = None; // editing invalidates a prior pick
+            if text.trim().is_empty() {
+                self.download_debounce = None;
+                self.download_results.clear();
+                self.download_input.set_suggestions_open(Vec::new());
+            } else {
+                self.download_debounce = Some(Instant::now() + SEARCH_DEBOUNCE);
+            }
+            self.mark_dirty();
+        }
+        match self.download_input.take_outcome() {
+            AutocompleteOutcome::Accepted(value) => {
+                if let Some(hit) = self.download_results.iter().find(|h| h.name == value).cloned() {
+                    self.download_input.set_text(&hit.name);
+                    self.download_query = hit.name.clone();
+                    self.download_pick = Some(hit);
+                }
+                self.download_input.close();
+                self.download_debounce = None;
+                self.mark_dirty();
+            }
+            AutocompleteOutcome::Cancelled => {
+                self.download_input.close();
+            }
+            AutocompleteOutcome::None => {}
+        }
+    }
+
+    /// Route an event to the offline dialog's city field while the dialog is
+    /// open. Returns whether the field consumed it (so the caller skips the
+    /// map/button hit-test). A press outside the field + dropdown is not
+    /// consumed, so the dialog's own buttons still receive it.
+    fn route_offline_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        // Re-focus the field when it is clicked after a blur (so the user can
+        // search again without reopening the dialog).
+        if let (
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. },
+            Some(fr),
+        ) = (event, self.download_field_rect)
+        {
+            if fr.contains(self.last_mouse) && !self.download_input.is_editing() {
+                self.download_input.begin_edit();
+            }
+        }
+        let mut doc = AutoCommit::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target: Option<NodeId> = None;
+        self.download_input.handle_event(
+            event, scale, modifiers, &mut doc, &automerge::ROOT, &mut handled, &mut focus_target,
+            node, &taffy,
+        );
+        self.reconcile_download_field();
+        handled
+    }
+
+    /// Fire the debounced live region geocode once the download field settles.
+    /// Called once per frame from `sync` while the dialog is open.
+    fn tick_download_debounce(&mut self, now: Instant) {
+        let Some(deadline) = self.download_debounce else { return };
+        if now < deadline {
+            return;
+        }
+        self.download_debounce = None;
+        let q = self.download_query.trim().to_string();
+        if q.is_empty() {
+            return;
+        }
+        self.pending += 1;
+        if self.online {
+            let tx = self.net_tx.clone();
+            std::thread::spawn(move || {
+                let results = net::geocode_regions(&q);
+                let _ = tx.send(NetMsg::RegionSearch { query: q, results });
+            });
+        }
+    }
+
+    /// Reset the download-by-place search (on dialog open/close), so it never
+    /// carries a stale query, pick or dropdown between sessions.
+    fn reset_download_search(&mut self) {
+        self.download_input.set_text("");
+        self.download_input.close();
+        self.download_input.set_suggestions(Vec::new());
+        self.download_query.clear();
+        self.download_results.clear();
+        self.download_debounce = None;
+        self.download_pick = None;
+    }
+
+    /// Open the offline-maps dialog: refresh the cache readout, clear any stale
+    /// search, and focus the city field so the user can search a place at once.
+    fn open_offline(&mut self) {
+        self.offline_open = true;
+        self.cache_bytes = self.tiles.cache_bytes();
+        self.reset_download_search();
+        self.download_input.begin_edit();
+    }
+
+    /// Close the offline-maps dialog and drop its search state.
+    fn close_offline(&mut self) {
+        self.offline_open = false;
+        self.reset_download_search();
+    }
+
     // --- actions -----------------------------------------------------------
     fn mark_dirty(&mut self) {
         self.dirty = true;
+        // Push the persist deadline forward so a continuous gesture coalesces
+        // into a single serialise once it settles (see `PERSIST_DEBOUNCE`).
+        self.persist_deadline = Some(Instant::now() + PERSIST_DEBOUNCE);
     }
 
     /// Dispatch one collaborative [`MapsAction`] against the shared document.
@@ -1719,6 +1997,23 @@ impl MapsApp {
                         }
                     }
                 }
+                NetMsg::RegionSearch { query, results } => {
+                    // Only adopt a reply that still matches the current query and
+                    // while the download dialog is open.
+                    if self.offline_open && query.trim() == self.download_query.trim() {
+                        match results {
+                            Ok(hits) => {
+                                self.download_results = hits.clone();
+                                self.download_input
+                                    .set_suggestions_open(Self::region_suggestions(&hits));
+                            }
+                            Err(_) => {
+                                self.download_results.clear();
+                                self.download_input.set_suggestions_open(Vec::new());
+                            }
+                        }
+                    }
+                }
             }
             if self.pending == 0 && self.model.status.contains('…') {
                 self.model.status.clear();
@@ -1867,25 +2162,50 @@ impl MapsApp {
                 self.fit_current();
                 self.mark_dirty();
             }
-            Hit::OfflineOpen => {
-                self.offline_open = true;
-                self.cache_bytes = self.tiles.cache_bytes();
+            Hit::ToggleOverflow => {
+                if self.overflow.is_open() {
+                    self.overflow.close();
+                } else {
+                    let b = self.overflow_rect();
+                    // Open provisionally to measure the menu, then re-anchor it
+                    // above-left of the button so it expands up from the corner.
+                    self.overflow.open_at([b.x1 as f32, b.y0 as f32]);
+                    let mr = self.overflow.get_rect();
+                    self.overflow
+                        .open_at([(b.x1 - mr.width()) as f32, (b.y0 - mr.height() - 6.0) as f32]);
+                }
             }
-            Hit::OfflineClose => self.offline_open = false,
+            Hit::CloseMapInfo => {
+                self.map_info = None;
+            }
+            Hit::OfflineOpen => self.open_offline(),
+            Hit::OfflineClose => self.close_offline(),
             Hit::OfflineZoomDelta(d) => {
                 let v = self.offline_zoom_extra as i16 + *d as i16;
                 self.offline_zoom_extra = v.clamp(0, 6) as u8;
             }
             Hit::OfflineDownload => {
-                let base_z = TileLayer::tile_zoom(self.model.zoom);
-                let z1 = (base_z + self.offline_zoom_extra).min(19);
-                let bounds = self.viewport_bounds();
-                let n = self.tiles.start_download(bounds, base_z, z1);
-                // Record the area as a manageable offline region so it appears
-                // in the list and can be removed again. The tile fetch above is
+                // Download the searched place's real bounding box when one is
+                // picked; otherwise fall back to the current view.
+                let (bounds, z0, z1, name) = if let Some(pick) = self.download_pick.clone() {
+                    let bounds = GeoBounds::new(pick.sw, pick.ne);
+                    let z0 = self.region_base_zoom(pick.sw, pick.ne);
+                    let z1 = (z0 + self.offline_zoom_extra).min(19);
+                    (bounds, z0, z1, Some(pick.name))
+                } else {
+                    let z0 = TileLayer::tile_zoom(self.model.zoom);
+                    let z1 = (z0 + self.offline_zoom_extra).min(19);
+                    (self.viewport_bounds(), z0, z1, None)
+                };
+                let n = self.tiles.start_download(bounds, z0, z1);
+                // Record the area as a manageable offline region so it appears in
+                // the list and can be removed again. The tile fetch above is
                 // external; the region row is the collaborative action.
-                self.record_region(doc, bounds, base_z, z1, n);
-                self.model.status = format!("Downloading {n} tiles for offline use…");
+                self.record_region(doc, bounds, z0, z1, n, name.clone());
+                self.model.status = match name {
+                    Some(n_) => format!("Downloading {n} tiles for {n_}…"),
+                    None => format!("Downloading {n} tiles for offline use…"),
+                };
                 self.mark_dirty();
             }
             Hit::OfflineDeleteRegion(id) => self.delete_region(doc, id),
@@ -1965,6 +2285,11 @@ impl MapsApp {
         theme: &Theme,
     ) {
         self.click_targets.clear();
+        // Point the raster layer at the basemap style for the active theme (dark
+        // tiles under a dark theme, light under light) before any tile is drawn,
+        // so imagery and the drawn cartography never mix tones. A no-op on the
+        // steady state; on a theme change it re-points the worker + cache.
+        self.tiles.set_style(TileStyle::from_theme(theme));
         let pal = MapPalette::from_theme(theme);
         let proj = self.projection();
         let clip = self.rect;
@@ -2040,10 +2365,9 @@ impl MapsApp {
             self.draw_panel(scene, t, tr, theme);
         }
 
-        // Scale bar + OSM attribution on top of the drawer scrim so the credit
-        // stays fully legible and is never dimmed or clipped by an open drawer
-        // (in docked layouts it sits at the far right, clear of the panel).
-        canvas::draw_scale_and_attribution(scene, t, tr, clip, &self.model, theme);
+        // Scale bar, bottom-right, ending just left of the ⋯ overflow button.
+        // Attribution/licenses moved into that menu, so nothing overlaps it.
+        canvas::draw_scale_bar(scene, t, tr, clip, self.overflow_rect().x0 - GAP, &self.model, theme);
 
         // Loading / offline affordance while the substrate grid is showing —
         // above the map but below the chrome, and skipped once real imagery or
@@ -2069,6 +2393,88 @@ impl MapsApp {
         self.draw_endpoint_overlay(scene, t, tr, theme);
         if self.offline_open {
             self.draw_offline_overlay(scene, t, tr, theme);
+        }
+        // The ⋯ overflow button (attribution / offline / licenses) sits bottom-
+        // right; its menu and the info sheet draw last, on top of everything.
+        self.draw_overflow(scene, t, tr, theme);
+        if let Some(info) = self.map_info {
+            self.draw_map_info_sheet(scene, t, tr, theme, info);
+        }
+        if self.overflow.is_open() {
+            self.overflow.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        }
+    }
+
+    /// The bottom-right ⋯ button. When the overflow menu is open (or a download
+    /// is running) it wears an accent border, so an in-progress offline download
+    /// stays visible even with the dialog closed.
+    fn draw_overflow(&mut self, scene: &mut Scene, t: Affine, _tr: &mut TextRenderer, theme: &Theme) {
+        let r = self.overflow_rect();
+        let c = &theme.tokens.colors;
+        let active = self.overflow.is_open() || self.tiles.progress().is_active();
+        let border = if active { theme.accent_primary } else { c.border_standard };
+        draw::card(scene, t, r, 10.0, c.surfaces.raised, border);
+        let ctr = r.center();
+        let col = if self.overflow.is_open() { theme.accent_primary } else { theme.text_primary };
+        for dx in [-6.0, 0.0, 6.0] {
+            draw::fill_circle(scene, t, Point::new(ctr.x + dx, ctr.y), 1.9, col);
+        }
+        self.click_targets.push((r, Hit::ToggleOverflow));
+    }
+
+    /// A small centred sheet with the map-data attribution or licenses, reached
+    /// from the ⋯ menu. Honest, one line per credit/term — the OSM/CARTO
+    /// requirement met by being reachable rather than pasted over the map.
+    fn draw_map_info_sheet(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        info: MapInfo,
+    ) {
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
+        self.click_targets.push((self.rect, Hit::CloseMapInfo));
+
+        let (title, lines): (&str, &[&str]) = match info {
+            MapInfo::Attribution => (
+                "Attribution",
+                &[
+                    "Map data © OpenStreetMap contributors",
+                    "Basemap tiles © CARTO",
+                ],
+            ),
+            MapInfo::Licenses => (
+                "Licenses",
+                &[
+                    "OpenStreetMap data — Open Database License (ODbL)",
+                    "CARTO basemaps — under CARTO's basemap terms",
+                    "© OpenStreetMap contributors · © CARTO",
+                ],
+            ),
+        };
+
+        let w = 440.0_f64.min(self.rect.width() - 40.0);
+        let row_h = 26.0;
+        let h = 64.0 + lines.len() as f64 * row_h + 16.0;
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
+        draw::card(scene, t, card, 16.0, c.surfaces.raised, c.border_standard);
+        self.click_targets.push((card, Hit::Consume));
+
+        let x = card.x0 + 22.0;
+        let right = card.x1 - 22.0;
+        let mut y = card.y0 + 20.0;
+        draw::text_w(scene, tr, t, title, x, y, 17.0, theme.text_primary, TextWeight::Bold);
+        let close = Rect::new(right - 26.0, card.y0 + 16.0, right, card.y0 + 42.0);
+        draw::text_center(scene, tr, t, "✕", close.x0, close.x1, vmid(close.y0, 26.0, 14.0), 14.0, theme.text_dim);
+        self.click_targets.push((close, Hit::CloseMapInfo));
+        y += 36.0;
+        for line in lines {
+            draw::text_clip(scene, tr, t, line, x, y, 12.5, theme.text_primary, right - x);
+            y += row_h;
         }
     }
 
@@ -2371,22 +2777,6 @@ impl MapsApp {
         }
         self.click_targets.push((lc, Hit::Locate));
 
-        // Offline-download button: a downward arrow into a tray.
-        let dl = self.download_rect();
-        let dl_active = self.tiles.progress().is_active();
-        let dl_border = if dl_active { theme.accent_primary } else { c.border_standard };
-        draw::card(scene, t, dl, 10.0, c.surfaces.raised, dl_border);
-        let dc = dl.center();
-        draw::line(scene, t, Point::new(dc.x, dc.y - 8.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
-        draw::line(scene, t, Point::new(dc.x - 4.0, dc.y - 1.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
-        draw::line(scene, t, Point::new(dc.x + 4.0, dc.y - 1.0), Point::new(dc.x, dc.y + 3.0), 2.0, theme.text_primary);
-        draw::line(scene, t, Point::new(dc.x - 6.0, dc.y + 7.0), Point::new(dc.x + 6.0, dc.y + 7.0), 2.0, theme.text_primary);
-        if dl_active {
-            // A small accent ring tick as a busy hint.
-            draw::stroke_circle(scene, t, Point::new(dl.x1 - 7.0, dl.y0 + 7.0), 4.0, 2.0, theme.accent_primary);
-        }
-        self.click_targets.push((dl, Hit::OfflineOpen));
-
         // Traffic overlay toggle: a traffic-light glyph (three stacked signal
         // dots). Accent border + full-colour dots when on; dimmed when off, so
         // the button's state is visible at a glance.
@@ -2496,9 +2886,10 @@ impl MapsApp {
         } else {
             shown as f64 * region_row_h + if overflow { 18.0 } else { 0.0 }
         };
-        // 282 = fixed top section (title → cache line) + list header + gap +
-        // action buttons + bottom padding; the list body is what varies.
-        let content_h = 282.0 + list_body_h;
+        // Fixed top section (title → search field → summary → stepper → readout
+        // → cache line) + list header + gap + action buttons + bottom padding;
+        // the saved-areas list body is what varies.
+        let content_h = 350.0 + list_body_h;
         let h = content_h.min(self.rect.height() - 24.0);
         let w = 440.0_f64.min(self.rect.width() - 40.0);
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
@@ -2518,13 +2909,41 @@ impl MapsApp {
         self.click_targets.push((close, Hit::OfflineClose));
         y += 30.0;
 
-        draw::text(scene, tr, t, "Download the current map area for navigation without a connection.", x, y, 12.0, theme.text_dim);
-        y += 28.0;
+        // City / place search — the shared Autocomplete. A download targets the
+        // searched place's real area (its bounding box), not the screen rect.
+        draw::text_w(scene, tr, t, "Area to download", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
+        y += 22.0;
+        let field = Rect::new(x, y, right, y + 36.0);
+        self.download_field_rect = Some(field);
+        self.download_input.apply_layout_external(field);
+        self.download_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        y += 44.0;
+
+        // Resolve the footprint: the picked place's bounds (at a base zoom that
+        // fits it), or the current view as a fallback when nothing is picked.
+        let (bounds, z0) = if let Some(pick) = &self.download_pick {
+            (GeoBounds::new(pick.sw, pick.ne), self.region_base_zoom(pick.sw, pick.ne))
+        } else {
+            (self.viewport_bounds(), TileLayer::tile_zoom(self.model.zoom))
+        };
+        let z1 = (z0 + self.offline_zoom_extra).min(19);
+
+        // Picked-place summary, or a hint to search one.
+        match self.download_pick.clone() {
+            Some(pick) => {
+                draw::text_w(scene, tr, t, &pick.name, x, y, 13.0, theme.accent_primary, TextWeight::Semibold);
+                if !pick.context.is_empty() {
+                    let nw = draw::measure_w(tr, &pick.name, 13.0) + 10.0;
+                    draw::text_clip(scene, tr, t, &pick.context, x + nw, y, 11.5, theme.text_dim, (right - x - nw).max(20.0));
+                }
+            }
+            None => {
+                draw::text(scene, tr, t, "Search a city or place above, or download the current view.", x, y, 11.5, theme.text_dim);
+            }
+        }
+        y += 24.0;
 
         // Zoom-depth stepper.
-        let base_z = TileLayer::tile_zoom(self.model.zoom);
-        let z0 = base_z;
-        let z1 = (base_z + self.offline_zoom_extra).min(19);
         draw::text_w(scene, tr, t, "Detail (zoom levels)", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
         let minus = Rect::new(right - 84.0, y - 4.0, right - 58.0, y + 22.0);
         let plus = Rect::new(right - 26.0, y - 4.0, right, y + 22.0);
@@ -2537,8 +2956,7 @@ impl MapsApp {
         self.click_targets.push((plus, Hit::OfflineZoomDelta(1)));
         y += 34.0;
 
-        // Estimate / progress readout.
-        let bounds = self.viewport_bounds();
+        // Estimate / progress readout (over the resolved footprint above).
         let est = TileLayer::estimate_download(bounds, z0, z1);
         let prog = self.tiles.progress();
         let readout = if prog.is_active() {
@@ -2571,7 +2989,7 @@ impl MapsApp {
         draw::text_w(scene, tr, t, "Downloaded areas", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
         y += 24.0;
         if regions.is_empty() {
-            draw::text(scene, tr, t, "No saved areas yet — download the current view to use it offline.", x, y, 11.5, theme.text_dim);
+            draw::text(scene, tr, t, "No saved areas yet — search a place above to download it.", x, y, 11.5, theme.text_dim);
             y += 22.0;
         } else {
             for region in regions.iter().take(shown) {
@@ -2610,12 +3028,20 @@ impl MapsApp {
         let dl = Rect::new(x, y, x + bw, y + bh);
         let clr = Rect::new(x + bw + gap, y, right, y + bh);
         draw::fill_rrect(scene, t, dl, 9.0, theme.accent_primary);
-        draw::text_center(scene, tr, t, "Download this area", dl.x0, dl.x1, vmid(dl.y0, bh, 13.0), 13.0, Color::WHITE);
+        let dl_label = match &self.download_pick {
+            Some(pick) => format!("Download {}", pick.name),
+            None => "Download current view".to_string(),
+        };
+        let dl_label = draw::ellipsize(tr, &dl_label, 13.0, bw - 20.0);
+        draw::text_center(scene, tr, t, &dl_label, dl.x0, dl.x1, vmid(dl.y0, bh, 13.0), 13.0, Color::WHITE);
         self.click_targets.push((dl, Hit::OfflineDownload));
         draw::fill_rrect(scene, t, clr, 9.0, c.surfaces.base);
         draw::stroke_rrect(scene, t, clr, 9.0, 1.0, c.border_standard);
         draw::text_center(scene, tr, t, "Clear all", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
         self.click_targets.push((clr, Hit::OfflineClearCache));
+
+        // The city-search dropdown draws last so it composites above the dialog.
+        self.download_input.draw_overlay(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
     fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -3385,6 +3811,8 @@ impl Widget for MapsApp {
         self.tick_endpoint_debounce(Instant::now());
         // Refetch viewport POIs once a pan/zoom settles.
         self.tick_poi_debounce(Instant::now());
+        // Fire the offline dialog's live city geocode once its field settles.
+        self.tick_download_debounce(Instant::now());
         // Fold in any tiles / download progress the worker finished. This is a
         // non-blocking try_recv drain — it never waits on the network.
         let before = self.tiles.progress();
@@ -3408,9 +3836,18 @@ impl Widget for MapsApp {
             }
             self.loaded = true;
             self.dirty = false;
-        } else if self.dirty {
+            self.persist_deadline = None;
+        } else if self.dirty
+            && self
+                .persist_deadline
+                .map(|d| Instant::now() >= d)
+                .unwrap_or(true)
+        {
+            // The view has settled (or a non-gesture change had no deadline):
+            // flush the whole model once. Coalescing lives in `mark_dirty`.
             MapsDoc::save(state, &self.model);
             self.dirty = false;
+            self.persist_deadline = None;
         }
     }
 
@@ -3483,6 +3920,13 @@ impl Widget for MapsApp {
                 // Keep the field inputs' hover state current so a click lands a
                 // caret and a press-drag extends a selection.
                 self.forward_move_to_field_inputs(event, scale_factor, modifiers);
+                // Track hover in the open overflow menu / offline city dropdown.
+                if self.overflow.is_open() {
+                    self.drive_overflow(event, scale_factor, modifiers);
+                }
+                if self.offline_open {
+                    self.route_offline_event(event, scale_factor, modifiers);
+                }
                 if self.dragging && self.left_down {
                     let dx = p.x - self.drag_last.x;
                     let dy = p.y - self.drag_last.y;
@@ -3505,6 +3949,23 @@ impl Widget for MapsApp {
                 let p = self.last_mouse;
                 self.left_down = true;
                 self.drag_moved = false;
+                // The open ⋯ overflow menu owns the pointer: a row press selects,
+                // an outside press dismisses. Route to it before the map/chrome.
+                if self.overflow.is_open() {
+                    self.drive_overflow(event, scale_factor, modifiers);
+                    if let Some(idx) = self.overflow.take_selection() {
+                        self.overflow_select(idx);
+                    }
+                    *handled = true;
+                    return;
+                }
+                // The offline dialog's city field / dropdown takes its own clicks
+                // first; a click elsewhere in the dialog falls through to the
+                // buttons below (download / clear / delete / close / scrim).
+                if self.offline_open && self.route_offline_event(event, scale_factor, modifiers) {
+                    *handled = true;
+                    return;
+                }
                 // Hit-test recorded UI targets (topmost = last drawn).
                 let mut consumed = false;
                 if let Some(hit) = self
@@ -3583,6 +4044,27 @@ impl Widget for MapsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
+                // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
+                // Esc) via its own handling before the map shortcuts.
+                if self.overflow.is_open() {
+                    self.drive_overflow(event, scale_factor, modifiers);
+                    if let Some(idx) = self.overflow.take_selection() {
+                        self.overflow_select(idx);
+                    }
+                    *handled = true;
+                    return;
+                }
+                // While the offline dialog is open, Escape closes it and every
+                // other key types into its city search field.
+                if self.offline_open {
+                    if matches!(key_event.logical_key, Key::Named(NamedKey::Escape)) {
+                        self.close_offline();
+                    } else {
+                        self.route_offline_event(event, scale_factor, modifiers);
+                    }
+                    *handled = true;
+                    return;
+                }
                 // A focused text field (search or an endpoint) owns the
                 // keystroke via the shared TextInput; otherwise the map-level
                 // shortcuts apply.
@@ -3637,6 +4119,10 @@ impl Widget for MapsApp {
         // false and the loop settles instead of re-requesting every frame.
         self.pending > 0
             || !self.loaded
+            // A coalesced view-persist is still pending — keep idling until it
+            // flushes, so a settled pan/zoom always reaches the CRDT even if
+            // nothing else is in flight.
+            || self.dirty
             || self.locating
             || self.location_rx.is_some()
             || self.poi_debounce.is_some()
@@ -3746,6 +4232,34 @@ impl MapsApp {
         false
     }
 
+    /// Drive one raw event into the ⋯ overflow [`ContextMenu`] (hand-laid, so a
+    /// throwaway leaf + doc satisfy `Widget::handle_event`; the menu hit-tests
+    /// against its own `open_at` rect). Poll `take_selection` afterwards.
+    fn drive_overflow(&mut self, event: &WindowEvent, scale: f64, modifiers: &winit::event::Modifiers) {
+        let mut doc = AutoCommit::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target: Option<NodeId> = None;
+        self.overflow.handle_event(
+            event, scale, modifiers, &mut doc, &automerge::ROOT, &mut handled, &mut focus_target,
+            node, &taffy,
+        );
+    }
+
+    /// Map an overflow-menu row selection to app state: attribution / licenses
+    /// sheets, or the offline-maps dialog. Indices match the push order in
+    /// [`build`].
+    fn overflow_select(&mut self, idx: usize) {
+        match idx {
+            0 => self.map_info = Some(MapInfo::Attribution),
+            1 => self.open_offline(),
+            2 => self.map_info = Some(MapInfo::Licenses),
+            _ => {}
+        }
+        self.mark_dirty();
+    }
+
     /// Forward a `CursorMoved` to all field inputs so their hover state tracks
     /// (a click then lands a caret; a press-drag extends a selection).
     fn forward_move_to_field_inputs(
@@ -3841,7 +4355,11 @@ impl MapsApp {
                 true
             }
             Key::Named(NamedKey::Escape) => {
-                if self.offline_open {
+                if self.overflow.is_open() {
+                    self.overflow.close();
+                } else if self.map_info.is_some() {
+                    self.map_info = None;
+                } else if self.offline_open {
                     self.offline_open = false;
                 } else if self.selected_poi.is_some() {
                     self.selected_poi = None;
@@ -3854,9 +4372,11 @@ impl MapsApp {
                 true
             }
             Key::Character(s) if s.eq_ignore_ascii_case("m") => {
-                self.offline_open = !self.offline_open;
-                if self.offline_open {
-                    self.cache_bytes = self.tiles.cache_bytes();
+                // Only reachable while the dialog is closed (once open, its city
+                // field owns the keyboard), so this opens it — focusing the
+                // search field. Escape / ✕ / the scrim close it.
+                if !self.offline_open {
+                    self.open_offline();
                 }
                 true
             }
@@ -3894,6 +4414,171 @@ mod tests {
         let before = a.model.center;
         a.pan_by(120.0, 0.0);
         assert!((a.model.center.lon - before.lon).abs() > 1e-6);
+    }
+
+    /// Profiling-driven perf guard for the zoom/scroll path — the interaction
+    /// the user flagged as stuttery. Drives the real five passes headless over a
+    /// *loaded* raster viewport (seeded tiles + live POI markers) and asserts the
+    /// p95 frame stays inside the 60 fps budget. Prints the full per-pass table
+    /// with `--nocapture` so a regression is diagnosable, not just red.
+    #[test]
+    fn perf_zoom_scroll_stays_under_budget() {
+        use ui::profiling::{run_scenario_on, PerfScenario, PerfStep};
+        let mut app = MapsApp::offline();
+        app.set_demo_pois();
+        app.seed_perf_tiles(1280.0, 800.0);
+        let scenario = PerfScenario {
+            name: "maps-zoom-scroll".into(),
+            viewport: (1280, 800),
+            warmup: 8,
+            // Gentle zoom-out sweep (dy·0.35 per notch) across several z levels,
+            // the way a touchpad pinch traverses the tile pyramid.
+            steps: vec![PerfStep::Scroll { dy: -0.4, count: 70 }],
+        };
+        let report = run_scenario_on(ui::State::new(), Box::new(app), &scenario);
+        eprintln!("{report}");
+        // Frame cost is only meaningful for the optimised build (unoptimised
+        // vello/text shaping inflates a debug frame far past budget), so the
+        // hard guard runs in release; debug still prints the table.
+        if !cfg!(debug_assertions) {
+            assert!(
+                report.total.p95_us < ui::profiling::FRAME_BUDGET_US,
+                "zoom p95 {}us over the {}us budget",
+                report.total.p95_us,
+                ui::profiling::FRAME_BUDGET_US
+            );
+        }
+    }
+
+    /// The coalesced view-persist must not write every frame during a gesture,
+    /// yet must reliably flush once the view settles — the correctness half of
+    /// the perf fix (the perf guards above prove the cost half).
+    #[test]
+    fn view_persist_is_coalesced_then_flushes() {
+        use crate::doc::MapsDoc;
+        let mut a = app_at(1280.0, 800.0);
+        let mut state = ui::State::new();
+        // First sync seeds the CRDT from the model.
+        a.sync(&mut state.doc, &state.root);
+        assert!(!a.dirty, "loaded model is clean after the seeding sync");
+
+        // A zoom marks the model dirty and arms the debounce in the future.
+        a.zoom_by(1.0, a.view_center());
+        assert!(a.dirty && a.persist_deadline.is_some(), "a view change arms a deferred flush");
+
+        // Immediately after, sync must NOT serialise+write — this is the
+        // per-frame churn we removed. The doc still holds the pre-zoom view.
+        a.sync(&mut state.doc, &state.root);
+        assert!(a.dirty, "a fresh gesture is not persisted on the very next frame");
+        let mid = MapsDoc::load(&state.doc).expect("doc seeded");
+        assert_ne!(mid.zoom, a.model.zoom, "the in-flight view has not yet reached the doc");
+
+        // Once the quiet period elapses, the next sync flushes exactly once.
+        a.persist_deadline = Some(Instant::now() - std::time::Duration::from_millis(1));
+        a.sync(&mut state.doc, &state.root);
+        assert!(!a.dirty && a.persist_deadline.is_none(), "the settled view flushed and disarmed");
+        let after = MapsDoc::load(&state.doc).expect("doc seeded");
+        assert!((after.zoom - a.model.zoom).abs() < 1e-9, "the settled zoom reached the doc");
+    }
+
+    /// The ⋯ overflow menu carries exactly the attribution / offline-maps /
+    /// licenses options, opens from the bottom-right button, and each row routes
+    /// to its surface — the permanent copyright line no longer sits over the map.
+    #[test]
+    fn overflow_menu_opens_and_routes_to_its_options() {
+        let mut a = app_at(1280.0, 800.0);
+        let labels: Vec<&str> = a.overflow.items().iter().filter_map(|i| i.label()).collect();
+        assert_eq!(labels, vec!["Attribution", "Offline maps", "Licenses"]);
+
+        assert!(!a.overflow.is_open());
+        tap(&mut a, Hit::ToggleOverflow);
+        assert!(a.overflow.is_open(), "the ⋯ button opens the overflow menu");
+        // It expands upward from the bottom-right button (never off the bottom).
+        assert!(
+            a.overflow.get_rect().y1 <= a.overflow_rect().y0 + 1.0,
+            "the menu sits above its button"
+        );
+
+        // Row 0 -> attribution sheet; row 1 -> offline dialog; row 2 -> licenses.
+        a.overflow_select(0);
+        assert_eq!(a.map_info, Some(MapInfo::Attribution));
+        a.map_info = None;
+        a.overflow_select(1);
+        assert!(a.offline_open, "‘Offline maps’ opens the download dialog");
+        a.offline_open = false;
+        a.overflow_select(2);
+        assert_eq!(a.map_info, Some(MapInfo::Licenses));
+
+        // Toggling again closes it.
+        tap(&mut a, Hit::ToggleOverflow);
+        assert!(!a.overflow.is_open(), "the ⋯ button toggles the menu closed");
+    }
+
+    /// Downloading offline maps targets the *searched place's real bounding box*
+    /// (from the shared city-search), not the visible screen rectangle — the
+    /// core of the offline-UX redesign — and records a region named after it.
+    #[test]
+    fn download_by_city_targets_the_picked_place_bounds() {
+        let mut a = app_at(1280.0, 800.0);
+        let dir = region_test_cache("citydl");
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+
+        // Open the dialog and pick "Munich" from the (sample) geocoded results.
+        a.open_offline();
+        assert!(a.offline_open && a.download_input.is_editing(), "the city field is focused on open");
+        a.download_results = sample::download_regions();
+        let munich = a.download_results[0].clone();
+        a.download_pick = Some(munich.clone());
+
+        let before = a.model.regions.len();
+        tap(&mut a, Hit::OfflineDownload);
+
+        // The picked city's footprint was queued (offline layer marks it done)…
+        assert!(a.tiles.progress().total > 0, "the picked city's tiles were queued");
+        // …and recorded as a region named after the place, with the place's
+        // bounding box — NOT the viewport.
+        assert_eq!(a.model.regions.len(), before + 1);
+        let region = a.model.regions.last().unwrap();
+        assert_eq!(region.name, "Munich", "the region is named after the searched place");
+        assert!(
+            (region.min.lat - munich.sw.lat).abs() < 1e-6
+                && (region.max.lon - munich.ne.lon).abs() < 1e-6,
+            "the download footprint is the place's bounding box, not the screen rect"
+        );
+        // A bigger place downloads at a coarser base zoom than a tiny one.
+        let city_z = a.region_base_zoom(munich.sw, munich.ne);
+        let plaza = &a.download_results[2]; // Marienplatz, a small square
+        let plaza_z = a.region_base_zoom(plaza.sw, plaza.ne);
+        assert!(plaza_z > city_z, "a small place fits at a deeper zoom than a whole city");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Perf guard for typing into the shared search field — the other
+    /// interaction flagged as stuttery. Focuses search, then types a query and
+    /// asserts the per-keystroke p95 frame stays inside budget.
+    #[test]
+    fn perf_search_typing_stays_under_budget() {
+        use ui::profiling::{run_scenario_on, PerfScenario, PerfStep};
+        let mut app = MapsApp::offline();
+        app.seed_perf_tiles(1280.0, 800.0);
+        app.search_focused = true;
+        let scenario = PerfScenario {
+            name: "maps-search-typing".into(),
+            viewport: (1280, 800),
+            warmup: 8,
+            steps: vec![PerfStep::Type("Marienplatz coffee".into())],
+        };
+        let report = run_scenario_on(ui::State::new(), Box::new(app), &scenario);
+        eprintln!("{report}");
+        if !cfg!(debug_assertions) {
+            assert!(
+                report.total.p95_us < ui::profiling::FRAME_BUDGET_US,
+                "typing p95 {}us over the {}us budget",
+                report.total.p95_us,
+                ui::profiling::FRAME_BUDGET_US
+            );
+        }
     }
 
     #[test]
@@ -5295,8 +5980,9 @@ mod tests {
         );
     }
 
-    /// `1`/`2` switch the panel view (list / directions); `m` toggles the
-    /// offline overlay; Escape deselects.
+    /// `1`/`2` switch the panel view (list / directions); `m` opens the offline
+    /// overlay (whose focused city field then owns the keyboard); Escape closes
+    /// the overlay and, once closed, deselects the place.
     #[test]
     fn panel_offline_escape_keys_via_key_event() {
         let mut a = app_at(1280.0, 720.0);
@@ -5308,8 +5994,10 @@ mod tests {
         assert!(!a.offline_open);
         key_char(&mut a, "m");
         assert!(a.offline_open, "'m' opens the offline overlay");
-        key_char(&mut a, "m");
-        assert!(!a.offline_open, "'m' again closes it");
+        assert!(a.download_input.is_editing(), "the city search field takes focus on open");
+        // The dialog's field owns keys now, so Escape (not another 'm') closes it.
+        key_named(&mut a, NamedKey::Escape);
+        assert!(!a.offline_open, "Escape closes the offline overlay");
 
         a.select_place("hofgarten");
         assert!(a.model.selected.is_some());
