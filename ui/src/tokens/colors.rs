@@ -201,9 +201,11 @@ impl Colors {
             surfaces: Surfaces {
                 base: p.base,
                 raised: p.raised,
-                // Near-opaque so it reads as a solid deep surface while still
-                // letting a hair of blur bleed through behind it.
-                overlay: with_a(p.popover, 235),
+                // Fully opaque: popovers, context menus, dropdowns and toast
+                // surfaces must read as a solid deep surface with no page
+                // content bleeding through. The translucent, blurred tier is
+                // `glass` (below); the overlay tier is deliberately solid.
+                overlay: p.popover,
                 scrim,
                 glass: with_a(mix8(p.base, p.raised, 0.4), 214),
                 glass_blur_px: 24.0,
@@ -317,7 +319,7 @@ impl Colors {
             surfaces: Surfaces {
                 base:   Color::from_rgb8(15, 23, 42),       // slate-900
                 raised: Color::from_rgb8(30, 41, 59),       // slate-800
-                overlay: Color::from_rgba8(0, 0, 0, 204),   // black/80
+                overlay: Color::from_rgba8(0, 0, 0, 255),   // opaque deep menu surface
                 scrim: Color::from_rgb8(2, 6, 23),          // slate-950
                 glass:   Color::from_rgba8(15, 23, 42, 204),// slate-900/80
                 glass_blur_px: 24.0,
@@ -420,6 +422,19 @@ mod tests {
         assert!(lum(over) < lum(base), "popover surface is deeper than the ground");
     }
 
+    #[test]
+    fn overlay_surface_is_fully_opaque_in_every_theme() {
+        // Context menus, popovers, dropdowns and toasts paint on the overlay
+        // tier; it must be solid so page content never bleeds through.
+        for (name, c) in [
+            ("dark", Colors::dark()),
+            ("light", Colors::light()),
+            ("qos_blue", Colors::qos_blue()),
+        ] {
+            assert_eq!(c.surfaces.overlay.a(), 255, "{name} overlay must be opaque");
+        }
+    }
+
     // --- the preserved concept palette (qOS Blue) -------------------------
 
     #[test]
@@ -468,7 +483,9 @@ mod tests {
         let s = &Colors::qos_blue().surfaces;
         assert_eq!(rgb(s.base),   [ 15,  23,  42], "slate-900 #0f172a");
         assert_eq!(rgb(s.raised), [ 30,  41,  59], "slate-800 #1e293b");
-        assert_eq!(rgba(s.overlay), [0, 0, 0, 204], "black/80");
+        // Menus/popovers read as solid: the overlay tier is fully opaque in
+        // every theme (no page content bleeding through).
+        assert_eq!(rgba(s.overlay), [0, 0, 0, 255], "opaque deep menu surface");
         assert_eq!(rgba(s.glass), [ 15,  23,  42, 204], "slate-900/80");
         assert_eq!(rgba(s.window_card), [255, 255, 255, 255], "white");
         assert_eq!(rgba(s.window_card_border), [255, 255, 255, 51], "white/20");
