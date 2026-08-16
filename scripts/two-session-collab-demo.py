@@ -89,28 +89,47 @@ class Session:
     """One running compositor, addressed by its control socket."""
 
     def __init__(self, name: str, user: str, run_dir: str, sock: str, binary: str,
-                 size: str):
+                 size: str, runtime_dir: str):
         self.name = name
         self.user = user
         self.dir = run_dir
         self.sock = sock
         self.binary = binary
         self.size = size
+        # Each session needs its own XDG_RUNTIME_DIR: the compositor
+        # binds its collab broker at <runtime>/qos/services/collab.sock,
+        # and two sessions sharing one runtime dir are two sessions
+        # contending for one socket. On a real machine that is a
+        # per-user directory and the question does not arise; here it
+        # has to be arranged. Keep it short — sun_path is ~108 bytes.
+        self.runtime_dir = runtime_dir
         self.proc: subprocess.Popen | None = None
         self.log_path = os.path.join(run_dir, "compositor.log")
         self._log = None
+
+    @property
+    def collab_sock(self) -> str:
+        """Where this session's broker should be listening."""
+        return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
 
     # -- lifecycle ---------------------------------------------------
 
     def start(self) -> None:
         os.makedirs(os.path.join(self.dir, "config"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "keys"), exist_ok=True)
+        os.makedirs(self.runtime_dir, mode=0o700, exist_ok=True)
         env = dict(os.environ)
         # No display, and nothing inherited that would make the two
         # sessions share state.
         env.pop("DISPLAY", None)
         env.pop("WAYLAND_DISPLAY", None)
+        # Nothing may point the toolkit at a broker other than this
+        # session's own — the point of the exercise is that a session
+        # provides one without being told where it is.
+        env.pop("QUICK_COLLAB_SOCK", None)
+        env.pop("QUICK_COLLAB_CAPNP_SOCK", None)
         env.update(
+            XDG_RUNTIME_DIR=self.runtime_dir,
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
             XDG_DATA_HOME=os.path.join(self.dir, "data"),
             XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
@@ -337,7 +356,46 @@ def wait_for(fn, timeout: float = SYNC_TIMEOUT_S, interval: float = 0.5):
 # --------------------------------------------------------------------
 
 
+def broker_answers(path: str) -> bool:
+    """Is a broker actually listening at `path`?
+
+    Existence is not the claim worth making — a stale socket file from
+    a session that died survives on disk and connects to nothing. What
+    an app needs is a listener that accepts, which is exactly what the
+    launcher does on its behalf, so do the same thing here.
+    """
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5.0)
+    try:
+        s.connect(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def run(host: Session, peer: Session, shots: str) -> None:
+    step("0.", "each session runs a collaboration broker of its own")
+    # This is what a real login was missing: the broker only ever
+    # started in the hosted entry point, behind an environment variable
+    # the OS image never set, so apps asked for the collab service,
+    # found nothing, and ran alone without saying so.
+    for s in (host, peer):
+        chrome = s.chrome()
+        claim(f"{s.name} session reports collaboration available",
+              chrome["collab"]["available"], True)
+        claim(f"{s.name} session reports no reason it would be unavailable",
+              chrome["collab"]["unavailable_reason"], None)
+        # The compositor says where it bound; check it is the path the
+        # launcher computes, and that something answers there.
+        claim(f"{s.name} broker bound the launcher's service path",
+              chrome["collab"]["socket"], s.collab_sock)
+        claim(f"{s.name} broker accepts a connection",
+              broker_answers(s.collab_sock), True)
+    claim("the two sessions have separate brokers",
+          host.collab_sock != peer.collab_sock, True)
+
     step("1.", "two sessions, each with its own identity and state")
     host_chrome, peer_chrome = host.chrome(), peer.chrome()
     claim("host session's user", host_chrome["local_user_id"], host.user)
@@ -613,11 +671,15 @@ def main() -> int:
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     host_sock = os.path.join(runtime, f"qos-demo-host-{os.getpid()}.sock")
     peer_sock = os.path.join(runtime, f"qos-demo-peer-{os.getpid()}.sock")
+    # A private runtime dir per session, standing in for the per-user
+    # one logind would give each of two real logins.
+    host_runtime = os.path.join(runtime, f"qd-h{os.getpid()}")
+    peer_runtime = os.path.join(runtime, f"qd-p{os.getpid()}")
 
     host = Session("host", "alice", os.path.join(args.out, "host"), host_sock,
-                   args.shell, args.size)
+                   args.shell, args.size, host_runtime)
     peer = Session("peer", "bob", os.path.join(args.out, "peer"), peer_sock,
-                   args.shell, args.size)
+                   args.shell, args.size, peer_runtime)
 
     print(f"run directory: {args.out}")
     print(f"screenshots:   {shots}")
