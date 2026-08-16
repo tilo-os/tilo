@@ -258,6 +258,15 @@ pub fn run_with_full_options(opts: HostedOptions) {
         }
         None => host,
     };
+    // The portal's two queues. Made here, before the host is boxed into
+    // the app, because attaching them needs the concrete type — and made
+    // unconditionally because they are two cheap handles, and a queue
+    // nobody fills costs nothing to hold.
+    let portal_prompts =
+        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
+    let portal_pickers = crate::portal::FilePickerQueue::new();
+    let mut host = host;
+    host.set_portal_queues(portal_prompts.clone(), portal_pickers.clone());
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);
@@ -379,12 +388,29 @@ pub fn run_with_full_options(opts: HostedOptions) {
         // `doc_insert_grant` mirrors the change into the automerge doc
         // so peer-sync ships it on the next tick.
         let grants = crate::portal::GrantStoreHandle::new(tree_handle.clone());
-        let prompts = crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
-        let ctx = crate::portal::PortalContext::new_with_null_spawners(
+        // The same queues the host is already draining. Building fresh
+        // ones here is the bug this replaces: the portal would fill a
+        // queue nobody was watching.
+        let prompts = portal_prompts.clone();
+        let pickers = portal_pickers.clone();
+        let ctx = crate::portal::PortalContext {
             grants,
-            prompts,
-            crate::portal::CallerMap::new(),
-        );
+            prompts: prompts.clone(),
+            caller_map: crate::portal::CallerMap::new(),
+            // The real dialog, not the null spawner. Hosted mode has a
+            // chrome to render it in, so there is no reason for it to
+            // cancel every request the way the null one does.
+            file_picker: crate::portal::FilePickerSpawnerHandle::new(std::sync::Arc::new(
+                pickers.clone(),
+            )),
+            screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(
+                std::sync::Arc::new(crate::portal::MockScreenCastProvisioner::new_with_node(
+                    1, "default",
+                )),
+            ),
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::documents_for_session(),
+        };
         let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
             rt_handle.block_on(async move {
                 let conn = zbus::ConnectionBuilder::session()?.build().await?;
