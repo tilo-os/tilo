@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use ui::color_compat::ColorCompat;
 use ui::text_render::FontChoice;
 use ui::theme::Theme;
-use ui::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
+use ui::tokens::{Colors, PaletteSpec};
 use vello::peniko::Color;
 
 /// An sRGB colour as three 8-bit channels. Chosen over `peniko::Color`
@@ -276,28 +276,56 @@ impl ThemeSpec {
         mix(self.surface_raised, self.text_primary, 0.18)
     }
 
-    /// Materialise into a live `ui` theme: start from the matching base
-    /// token set, then overwrite every field this app exposes so both
-    /// the token tree and the legacy shortcut fields stay consistent.
+    /// Materialise into a live `ui` theme.
+    ///
+    /// A **built-in preset** is the matching [`ui::Theme`] constructor
+    /// verbatim — the single source of truth for the *whole* token set
+    /// (popover / scrim / glass surfaces, the neutral + accent ramps, the
+    /// tertiary text tier), so the applied look is identical whether the
+    /// theme is resolved here or through the Settings appearance path. Only
+    /// the user-editable font rides on top.
+    ///
+    /// A **custom theme** (authored by Duplicate) is expanded from its reduced
+    /// token set into a coherent full theme by [`ui::tokens::Colors::themed`],
+    /// so a hand-picked palette gets matching popovers / ramps / scrim for
+    /// free instead of inheriting the default's.
     pub fn to_theme(&self) -> Theme {
+        if let Some(mut t) = builtin_theme(&self.id) {
+            t.name = self.name.clone();
+            t.tokens.typography.sans_family = self.font.clone();
+            return t;
+        }
+
         let mut t = if self.dark_base { Theme::dark() } else { Theme::light() };
         t.name = self.name.clone();
 
-        {
-            let c = &mut t.tokens.colors;
-            c.accent.stops[ACCENT_PRIMARY_IDX] = color(self.accent);
-            c.accent.stops[ACCENT_HOVER_IDX] = color(self.accent_hover);
-            c.surfaces.base = color(self.surface_base);
-            c.surfaces.raised = color(self.surface_raised);
-            c.text_primary = color(self.text_primary);
-            c.text_dim = color(self.text_dim);
-            c.border_standard = color(self.border);
-            c.border_focus = color(self.accent);
-            c.semantic.success = color(self.success);
-            c.semantic.warning = color(self.warning);
-            c.semantic.danger = color(self.danger);
-            c.semantic.info = color(self.info);
-        }
+        // Derive the tokens the reduced spec doesn't carry so a custom palette
+        // reads coherently: a deep popover surface, a quieter tertiary text
+        // tier, and matching ramps / scrim / glass.
+        let popover = if self.dark_base {
+            mix(self.surface_base, [0, 0, 0], 0.40)
+        } else {
+            [255, 255, 255]
+        };
+        let text_tertiary = mix(self.text_dim, self.surface_base, 0.40);
+        t.tokens.colors = Colors::themed(PaletteSpec {
+            dark: self.dark_base,
+            base: color(self.surface_base),
+            raised: color(self.surface_raised),
+            popover: color(popover),
+            text: color(self.text_primary),
+            text_dim: color(self.text_dim),
+            text_tertiary: color(text_tertiary),
+            border: color(self.border),
+            focus: color(self.accent),
+            accent: color(self.accent),
+            accent_hover: color(self.accent_hover),
+            success: color(self.success),
+            warning: color(self.warning),
+            danger: color(self.danger),
+            info: color(self.info),
+            window_card: None,
+        });
 
         let radius = self.radius_px();
         t.tokens.radii.sm = (radius * 0.5).max(0.0);
@@ -321,6 +349,7 @@ impl ThemeSpec {
         t.border_focus = color(self.accent);
         t.text_primary = color(self.text_primary);
         t.text_dim = color(self.text_dim);
+        t.text_tertiary = color(text_tertiary);
         t.accent_primary = color(self.accent);
         t.accent_hover = color(self.accent_hover);
         t.status_success = color(self.success);
@@ -361,121 +390,48 @@ impl ThemeSpec {
     }
 }
 
-/// A hand-authored preset palette. Tuple = (id, name, dark, accent,
-/// accent_hover, base, raised, text, dim, border, success, warning,
-/// danger, info, radius_norm, spacing_norm, font).
-type Preset = (
-    &'static str,
-    &'static str,
-    bool,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    Rgb,
-    f32,
-    f32,
-    &'static str,
-);
+/// The built-in preset catalog, in display order. Each entry is
+/// `(id, display name, ui constructor, dark base, specimen font)`. The ids
+/// are stable so a persisted selection keeps resolving across releases.
+type PresetEntry = (&'static str, &'static str, fn() -> Theme, bool, &'static str);
 
-const PRESETS: &[Preset] = &[
-    // Midnight — qOS indigo on slate.
-    (
-        "midnight", "Midnight", true,
-        [99, 102, 241], [79, 70, 229], [15, 23, 42], [30, 41, 59],
-        [248, 250, 252], [148, 163, 184], [51, 65, 85],
-        [16, 185, 129], [245, 158, 11], [239, 68, 68], [96, 165, 250],
-        0.36, 0.45, "Inter",
-    ),
-    // Daylight — clean blue on near-white.
-    (
-        "daylight", "Daylight", false,
-        [0, 120, 215], [0, 100, 200], [240, 242, 247], [255, 255, 255],
-        [17, 24, 39], [100, 110, 125], [205, 210, 220],
-        [0, 150, 90], [200, 130, 0], [210, 55, 55], [0, 120, 200],
-        0.45, 0.5, "Inter",
-    ),
-    // Solarized Dark — teal on deep cyan-grey.
-    (
-        "solarized", "Solarized", true,
-        [42, 161, 152], [38, 139, 210], [0, 43, 54], [7, 54, 66],
-        [147, 161, 161], [88, 110, 117], [37, 70, 80],
-        [133, 153, 0], [181, 137, 0], [220, 50, 47], [38, 139, 210],
-        0.1, 0.5, "Source Serif",
-    ),
-    // Dracula — pink/purple on charcoal violet.
-    (
-        "dracula", "Dracula", true,
-        [255, 121, 198], [189, 147, 249], [40, 42, 54], [68, 71, 90],
-        [248, 248, 242], [148, 150, 170], [68, 71, 90],
-        [80, 250, 123], [241, 250, 140], [255, 85, 85], [139, 233, 253],
-        0.5, 0.5, "JetBrains Mono",
-    ),
-    // Nord — frost blue on polar night.
-    (
-        "nord", "Nord", true,
-        [136, 192, 208], [129, 161, 193], [46, 52, 64], [59, 66, 82],
-        [216, 222, 233], [143, 153, 173], [67, 76, 94],
-        [163, 190, 140], [235, 203, 139], [191, 97, 106], [129, 161, 193],
-        0.4, 0.5, "Inter",
-    ),
-    // Gruvbox — amber/green on warm dark, near-square corners.
-    (
-        "gruvbox", "Gruvbox", true,
-        [215, 153, 33], [204, 36, 29], [40, 40, 40], [60, 56, 54],
-        [235, 219, 178], [168, 153, 132], [80, 73, 69],
-        [152, 151, 26], [215, 153, 33], [204, 36, 29], [69, 133, 136],
-        0.05, 0.55, "JetBrains Mono",
-    ),
-    // Rosé Pine — rose on iris-tinted night.
-    (
-        "rosepine", "Rosé Pine", true,
-        [235, 188, 186], [196, 167, 231], [25, 23, 36], [38, 35, 58],
-        [224, 222, 244], [144, 140, 170], [64, 61, 82],
-        [49, 116, 143], [246, 193, 119], [235, 111, 146], [156, 207, 216],
-        0.45, 0.5, "Inter",
-    ),
-    // High Contrast — accessibility: pure black/white, vivid yellow accent.
-    (
-        "contrast", "High Contrast", true,
-        [255, 214, 0], [255, 184, 0], [0, 0, 0], [20, 20, 20],
-        [255, 255, 255], [200, 200, 200], [255, 255, 255],
-        [0, 230, 118], [255, 196, 0], [255, 70, 70], [80, 200, 255],
-        0.2, 0.6, "Inter",
-    ),
+const PRESET_ENTRIES: &[PresetEntry] = &[
+    ("qos-dark",          "qOS Dark",          Theme::dark,             true,  "Inter"),
+    ("qos-blue",          "qOS Blue",          Theme::qos_blue,         true,  "Inter"),
+    ("catppuccin-mocha",  "Catppuccin Mocha",  Theme::catppuccin_mocha, true,  "Inter"),
+    ("catppuccin-latte",  "Catppuccin Latte",  Theme::catppuccin_latte, false, "Inter"),
+    ("dracula",           "Dracula",           Theme::dracula,          true,  "JetBrains Mono"),
+    ("nord",              "Nord",              Theme::nord,             true,  "Inter"),
+    ("gruvbox",           "Gruvbox",           Theme::gruvbox,          true,  "JetBrains Mono"),
+    ("gruvbox-light",     "Gruvbox Light",     Theme::gruvbox_light,    false, "JetBrains Mono"),
+    ("rosepine",          "Rosé Pine",         Theme::rose_pine,        true,  "Inter"),
+    ("solarized",         "Solarized",         Theme::solarized,        true,  "Source Serif"),
+    ("oled",              "OLED",              Theme::oled,             true,  "Inter"),
+    ("beige",             "Beige",             Theme::warm_light,       false, "Inter"),
+    ("contrast",          "High Contrast",     Theme::high_contrast,    true,  "Inter"),
 ];
 
-/// The built-in presets, in display order.
+/// Map a built-in preset id to its canonical [`ui::Theme`] constructor — the
+/// single source of truth for that palette's full token set. `None` for a
+/// custom (user-authored) theme.
+pub fn builtin_theme(id: &str) -> Option<Theme> {
+    PRESET_ENTRIES
+        .iter()
+        .find(|(pid, ..)| *pid == id)
+        .map(|(_, _, ctor, ..)| ctor())
+}
+
+/// The built-in presets, in display order — captured from the shared
+/// [`ui::Theme`] constructors so the picker swatches, the customizer, and the
+/// applied look all agree by construction (no duplicated hex tables).
 pub fn presets() -> Vec<ThemeSpec> {
-    PRESETS
+    PRESET_ENTRIES
         .iter()
         .enumerate()
-        .map(|(i, p)| ThemeSpec {
-            id: p.0.to_string(),
-            name: p.1.to_string(),
-            builtin: true,
-            dark_base: p.2,
-            accent: p.3,
-            accent_hover: p.4,
-            surface_base: p.5,
-            surface_raised: p.6,
-            text_primary: p.7,
-            text_dim: p.8,
-            border: p.9,
-            success: p.10,
-            warning: p.11,
-            danger: p.12,
-            info: p.13,
-            radius_norm: p.14,
-            spacing_norm: p.15,
-            font: p.16.to_string(),
-            order: i as u32,
+        .map(|(i, (id, name, ctor, dark, font))| {
+            let mut spec = ThemeSpec::from_theme(id, name, &ctor(), *dark, true, i as u32);
+            spec.font = font.to_string();
+            spec
         })
         .collect()
 }
@@ -529,6 +485,7 @@ pub fn demo_catalog() -> Vec<ThemeSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tokens::colors::ACCENT_PRIMARY_IDX;
 
     #[test]
     fn hex_round_trips() {
@@ -602,5 +559,63 @@ mod tests {
         assert_eq!(font_choice("Source Serif"), FontChoice::Serif);
         assert_eq!(font_choice("Inter"), FontChoice::Named("Inter".to_string()));
         assert_eq!(font_choice("Roboto"), FontChoice::Named("Roboto".to_string()));
+    }
+
+    #[test]
+    fn catalog_ships_the_expected_named_palettes() {
+        // The redesign's shipped set: the new neutral default, the preserved
+        // blue, and the canonical presets the picker offers.
+        let cat = default_catalog();
+        for id in [
+            "qos-dark", "qos-blue", "catppuccin-mocha", "catppuccin-latte",
+            "dracula", "nord", "gruvbox", "gruvbox-light", "solarized", "oled", "beige",
+        ] {
+            assert!(cat.iter().any(|s| s.id == id), "catalog ships {id:?}");
+        }
+    }
+
+    #[test]
+    fn builtin_preset_applies_as_its_real_canonical_palette() {
+        // The production apply path: a persisted preset spec → to_theme must
+        // reproduce the ui constructor's *whole* palette (not just the reduced
+        // swatch tokens), so a preset reads as its real self — deep popover,
+        // right accent, three text tiers.
+        let dracula = presets().into_iter().find(|s| s.id == "dracula").unwrap();
+        let t = dracula.to_theme();
+        let want = Theme::dracula();
+        assert_eq!(rgb_of(t.bg_app), rgb_of(want.bg_app), "ground");
+        assert_eq!(rgb_of(t.accent_primary), [0xFF, 0x79, 0xC6], "canonical Dracula pink");
+        assert_eq!(rgb_of(t.text_tertiary), rgb_of(want.text_tertiary), "tertiary tier survives");
+        // The rich near-black popover comes from the constructor, not the default.
+        assert_eq!(
+            rgb_of(t.tokens.colors.surfaces.overlay),
+            rgb_of(want.tokens.colors.surfaces.overlay),
+            "popover surface is Dracula's, not the graphite default's",
+        );
+        assert_ne!(
+            rgb_of(t.tokens.colors.surfaces.overlay),
+            rgb_of(Theme::dark().tokens.colors.surfaces.overlay),
+        );
+    }
+
+    #[test]
+    fn oled_preset_applies_true_black() {
+        let oled = presets().into_iter().find(|s| s.id == "oled").unwrap();
+        assert_eq!(rgb_of(oled.to_theme().bg_app), [0, 0, 0]);
+    }
+
+    #[test]
+    fn custom_theme_gets_a_coherent_derived_full_palette() {
+        // A user-authored (non-builtin) theme still gets a matching deep
+        // popover + tertiary tier derived from its own palette, rather than
+        // inheriting the default's.
+        let custom = seed_custom();
+        assert!(!custom.builtin);
+        let t = custom.to_theme();
+        // Popover is deeper than the theme's own ground…
+        let lum = |c: Color| 0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32;
+        assert!(lum(t.tokens.colors.surfaces.overlay) < lum(t.bg_app), "popover deeper than ground");
+        // …and the derived tertiary tier is quieter than the secondary.
+        assert_ne!(rgb_of(t.text_dim), rgb_of(t.text_tertiary));
     }
 }
