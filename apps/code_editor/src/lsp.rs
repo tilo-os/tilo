@@ -25,6 +25,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
@@ -149,6 +150,44 @@ pub fn parse_publish_diagnostics(msg: &Value) -> Option<(String, Vec<LspDiagnost
         })
         .unwrap_or_default();
     Some((uri, diags))
+}
+
+/// Parse a `$/progress` notification into a [`Progress`].
+///
+/// The shape is a token plus a `value` that is one of `begin` / `report` /
+/// `end`. `begin` carries the title, `report` carries updates without repeating
+/// it, and `end` may carry only a closing message — so a caller that wants a
+/// stable label has to remember the title from `begin`. That is the client's
+/// job (see [`LspClient`]), not the parser's; this returns exactly what the
+/// notification said.
+pub fn parse_progress(msg: &Value) -> Option<Progress> {
+    let params = msg.get("params").unwrap_or(msg);
+    // The token may be a string or an integer; normalise to a string so it can
+    // key a map either way.
+    let token = match params.get("token")? {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    let value = params.get("value")?;
+    let kind = value.get("kind").and_then(Value::as_str).unwrap_or("");
+    Some(Progress {
+        token,
+        title: value
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        message: value
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        percentage: value
+            .get("percentage")
+            .and_then(Value::as_u64)
+            .map(|p| p.min(100) as u32),
+        done: kind == "end",
+    })
 }
 
 /// Parse a `textDocument/completion` result. Handles both shapes the spec
@@ -332,6 +371,27 @@ enum Pending {
     Definition,
 }
 
+/// A long-running server task the user should be able to see, parsed from
+/// `$/progress`.
+///
+/// rust-analyzer takes minutes to index a workspace this size, and it answers
+/// completion and go-to-definition with nothing until it has. Without this the
+/// editor is indistinguishable from broken for those minutes, so the indexing
+/// state is a first-class event rather than something buried in a log.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Progress {
+    /// The server's token for this task; `end` arrives against the same one.
+    pub token: String,
+    /// e.g. "Indexing" / "Roots Scanned".
+    pub title: String,
+    /// The current step, e.g. the crate being indexed.
+    pub message: Option<String>,
+    /// 0–100 when the server reports one.
+    pub percentage: Option<u32>,
+    /// Whether this is the task's `end` notification.
+    pub done: bool,
+}
+
 /// An event surfaced by the background reader thread for the editor to fold in.
 #[derive(Clone, Debug)]
 pub enum LspEvent {
@@ -341,6 +401,8 @@ pub enum LspEvent {
     Completion(Vec<CompletionItem>),
     Hover(Option<String>),
     Definition(Vec<Location>),
+    /// A `$/progress` update — the server is busy with something named.
+    Progress(Progress),
     /// The server process exited or the stream errored.
     Exited,
 }
@@ -353,6 +415,26 @@ pub struct LspClient {
     pending: Arc<Mutex<HashMap<i64, Pending>>>,
     next_id: i64,
     server_name: String,
+    /// The directory the server was rooted at.
+    root: PathBuf,
+    /// Live `$/progress` tasks, keyed by the server's token.
+    progress: HashMap<String, Progress>,
+}
+
+/// A `file://` URI for a local path, percent-encoding what has to be encoded.
+///
+/// This is the inverse of `ui::portal::to_local_path`, and it has to be exact:
+/// a server told `file:///home/me/my project` (unencoded space) resolves a
+/// different directory than the one we opened, and then reports diagnostics for
+/// files we never show.
+pub fn path_to_uri(path: &Path) -> String {
+    match url::Url::from_file_path(path) {
+        Ok(u) => u.to_string(),
+        // `from_file_path` only fails on a non-absolute path, which cannot
+        // reach here from a canonicalised project root — but a lossy fallback
+        // beats a panic in an editor.
+        Err(()) => format!("file://{}", path.display()),
+    }
 }
 
 impl LspClient {
@@ -376,16 +458,34 @@ impl LspClient {
         ))
     }
 
-    /// Spawn the server for `lang` rooted at `root_uri` and run the
-    /// `initialize`/`initialized` handshake. Returns a descriptive error when
-    /// there is no server mapping or the binary can't be launched — the caller
-    /// turns that into a graceful in-editor note.
-    pub fn start(lang: Language, root_uri: &str) -> Result<LspClient, String> {
+    /// Spawn the server for `lang` rooted at the real directory `root` and run
+    /// the `initialize`/`initialized` handshake. Returns a descriptive error
+    /// when there is no server mapping or the binary can't be launched — the
+    /// caller turns that into a graceful in-editor note.
+    ///
+    /// `root` must be a directory that actually exists. rust-analyzer resolves
+    /// the workspace by looking for a `Cargo.toml` at or above it; pointed at a
+    /// path that is not on the filesystem it starts, answers the handshake, and
+    /// then reports nothing at all — which looks exactly like a working editor
+    /// with a clean file.
+    pub fn start(lang: Language, root: &Path) -> Result<LspClient, String> {
         let (prog, args) = Self::server_command(lang)
             .ok_or_else(|| format!("no language server configured for {}", lang.label()))?;
 
+        if !root.is_dir() {
+            return Err(format!(
+                "{} is not a directory — open a project folder for live diagnostics",
+                root.display()
+            ));
+        }
+        let root_uri = path_to_uri(root);
+
         let mut child = Command::new(&prog)
             .args(&args)
+            // Run the server *in* the project, so anything it resolves
+            // relatively (rustfmt.toml, .cargo/config.toml) resolves the way
+            // the same command would from a shell in that directory.
+            .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -405,24 +505,39 @@ impl LspClient {
 
         let (tx, rx) = mpsc::channel();
         let reader_pending = pending.clone();
-        std::thread::spawn(move || {
-            let mut reader = MessageReader::new(BufReader::new(stdout));
-            loop {
-                match reader.next_message() {
-                    Ok(Some(msg)) => {
-                        if let Some(ev) = route_message(&msg, &reader_pending) {
-                            if tx.send(ev).is_err() {
-                                break;
+        // The reader answers the server's own requests itself, so it needs the
+        // write half too. Both ends are behind the same mutex, so a reply can
+        // never interleave with a half-written request from the UI thread.
+        let reader_stdin = stdin.clone();
+        std::thread::Builder::new()
+            .name("code-editor-lsp".into())
+            .spawn(move || {
+                let mut reader = MessageReader::new(BufReader::new(stdout));
+                loop {
+                    match reader.next_message() {
+                        Ok(Some(msg)) => {
+                            let routed = route_message(&msg, &reader_pending);
+                            if let Some(reply) = routed.reply {
+                                let bytes = encode(&reply);
+                                if let Ok(mut w) = reader_stdin.lock() {
+                                    let _ = w.write_all(&bytes);
+                                    let _ = w.flush();
+                                }
+                            }
+                            if let Some(ev) = routed.event {
+                                if tx.send(ev).is_err() {
+                                    break;
+                                }
                             }
                         }
-                    }
-                    Ok(None) | Err(_) => {
-                        let _ = tx.send(LspEvent::Exited);
-                        break;
+                        Ok(None) | Err(_) => {
+                            let _ = tx.send(LspEvent::Exited);
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            })
+            .map_err(|e| format!("failed to start the {prog} reader thread: {e}"))?;
 
         let mut client = LspClient {
             child,
@@ -431,19 +546,38 @@ impl LspClient {
             pending,
             next_id: 1,
             server_name: prog,
+            root: root.to_path_buf(),
+            progress: HashMap::new(),
         };
 
         // Kick the handshake. `initialize` is a request; once its response
         // lands (surfaced as `Initialized` by the router) we send `initialized`
         // — but rust-analyzer tolerates an eager `initialized`, and buffering
         // the notification here keeps the client simple.
+        //
+        // `window.workDoneProgress` is the capability that makes indexing
+        // visible: without it the server never sends `$/progress`, and a
+        // multi-minute index is silent.
+        let folder_name = root
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| root.display().to_string());
         client.send_request_raw(
             "initialize",
             json!({
                 "processId": std::process::id(),
                 "rootUri": root_uri,
+                "rootPath": root.display().to_string(),
+                "workspaceFolders": [ { "uri": root_uri, "name": folder_name } ],
                 "capabilities": {
+                    "window": { "workDoneProgress": true },
+                    "workspace": {
+                        "configuration": true,
+                        "workspaceFolders": true,
+                        "didChangeConfiguration": { "dynamicRegistration": true }
+                    },
                     "textDocument": {
+                        "synchronization": { "didSave": true },
                         "hover": { "contentFormat": ["plaintext", "markdown"] },
                         "completion": { "completionItem": { "snippetSupport": false } },
                         "publishDiagnostics": {},
@@ -456,6 +590,45 @@ impl LspClient {
         client.send_notification("initialized", json!({}));
 
         Ok(client)
+    }
+
+    /// The directory this server was rooted at.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Fold a `$/progress` update into the client's running-task table and
+    /// return the state the UI should show.
+    ///
+    /// This is where a `report` without a title gets the title its `begin`
+    /// carried — the server sends the label once and then updates against the
+    /// token, so a UI reading the raw notifications would show "Indexing 12%"
+    /// and then a blank label at 13%.
+    pub fn note_progress(&mut self, p: Progress) -> Option<Progress> {
+        if p.done {
+            self.progress.remove(&p.token);
+            return None;
+        }
+        let entry = self.progress.entry(p.token.clone()).or_insert_with(|| p.clone());
+        if !p.title.is_empty() {
+            entry.title = p.title.clone();
+        }
+        entry.message = p.message.clone();
+        entry.percentage = p.percentage;
+        Some(entry.clone())
+    }
+
+    /// Whether the server is currently busy with a reported task.
+    pub fn is_busy(&self) -> bool {
+        !self.progress.is_empty()
+    }
+
+    /// The task to show, when the server is busy. Picks the one furthest from
+    /// finishing so a long index is not hidden behind a quick sub-task.
+    pub fn busy_task(&self) -> Option<&Progress> {
+        self.progress
+            .values()
+            .min_by_key(|p| p.percentage.unwrap_or(0))
     }
 
     pub fn server_name(&self) -> &str {
@@ -581,31 +754,87 @@ impl Drop for LspClient {
     }
 }
 
-/// Turn an incoming server message into an editor event, consulting the pending
-/// map to resolve response ids to their originating request kind.
-fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Option<LspEvent> {
-    // Notifications carry a `method` but no `id`.
-    if let Some(method) = msg.get("method").and_then(Value::as_str) {
-        return match method {
+/// What the reader thread should do with one incoming message: surface an event
+/// to the editor, write a reply back to the server, or both.
+#[derive(Default)]
+struct Routed {
+    event: Option<LspEvent>,
+    reply: Option<Value>,
+}
+
+/// Turn an incoming server message into an editor event and/or a reply,
+/// consulting the pending map to resolve response ids to their request kind.
+///
+/// Replies matter more than they look. A server→client **request** carries an
+/// `id`, and the protocol says every request gets a response. rust-analyzer
+/// asks `workspace/configuration` and `client/registerCapability` during
+/// startup; leaving those unanswered leaves it waiting on us rather than
+/// indexing. Answering with a null/empty result means "no per-workspace
+/// configuration, defaults are fine", which is exactly true here.
+fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Routed {
+    let method = msg.get("method").and_then(Value::as_str);
+    let id = msg.get("id");
+
+    if let Some(method) = method {
+        // A `method` *with* an `id` is a request from the server: it needs an
+        // answer, not just handling.
+        if let Some(id) = id {
+            let result = match method {
+                // One config object per requested scope; `null` = use defaults.
+                "workspace/configuration" => {
+                    let n = msg
+                        .get("params")
+                        .and_then(|p| p.get("items"))
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(1);
+                    Value::Array(vec![Value::Null; n])
+                }
+                // Accepting a dynamic registration, a progress token, or an
+                // apply-edit we do not implement: an empty/negative result is a
+                // valid answer and lets the server proceed.
+                "workspace/applyEdit" => json!({ "applied": false }),
+                _ => Value::Null,
+            };
+            return Routed {
+                event: None,
+                reply: Some(json!({
+                    "jsonrpc": "2.0",
+                    "id": id.clone(),
+                    "result": result,
+                })),
+            };
+        }
+
+        // No id: a plain notification.
+        let event = match method {
             "textDocument/publishDiagnostics" => {
-                let (uri, diagnostics) = parse_publish_diagnostics(msg)?;
-                Some(LspEvent::Diagnostics { uri, diagnostics })
+                parse_publish_diagnostics(msg).map(|(uri, diagnostics)| LspEvent::Diagnostics {
+                    uri,
+                    diagnostics,
+                })
             }
-            // Server→client requests (config, registration) we don't fulfil are
-            // ignored; the servers we target tolerate that.
+            "$/progress" => parse_progress(msg).map(LspEvent::Progress),
             _ => None,
         };
+        return Routed { event, reply: None };
     }
 
     // Responses carry an `id` (and a `result` or `error`).
-    let id = msg.get("id").and_then(Value::as_i64)?;
+    let Some(id) = id.and_then(Value::as_i64) else {
+        return Routed::default();
+    };
     let kind = pending.lock().unwrap().remove(&id);
-    match kind {
-        Some(Pending::Completion) => Some(LspEvent::Completion(parse_completion(msg))),
-        Some(Pending::Hover) => Some(LspEvent::Hover(parse_hover(msg))),
-        Some(Pending::Definition) => Some(LspEvent::Definition(parse_definition(msg))),
+    let event = match kind {
+        Some(Pending::Completion) => LspEvent::Completion(parse_completion(msg)),
+        Some(Pending::Hover) => LspEvent::Hover(parse_hover(msg)),
+        Some(Pending::Definition) => LspEvent::Definition(parse_definition(msg)),
         // The `initialize` response (or any unmatched id) reports readiness.
-        None => Some(LspEvent::Initialized),
+        None => LspEvent::Initialized,
+    };
+    Routed {
+        event: Some(event),
+        reply: None,
     }
 }
 
@@ -613,6 +842,199 @@ fn route_message(msg: &Value, pending: &Arc<Mutex<HashMap<i64, Pending>>>) -> Op
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    fn no_pending() -> Arc<Mutex<HashMap<i64, Pending>>> {
+        Arc::new(Mutex::new(HashMap::new()))
+    }
+
+    #[test]
+    fn a_workspace_configuration_request_is_answered_per_item() {
+        // rust-analyzer asks this during startup and waits for the answer. One
+        // result per requested item, `null` meaning "defaults are fine".
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "workspace/configuration",
+            "params": { "items": [ { "section": "rust-analyzer" }, { "section": "rust" } ] }
+        });
+        let routed = route_message(&msg, &no_pending());
+        let reply = routed.reply.expect("a server request must be answered");
+        assert_eq!(reply["id"], json!(4), "the reply carries the request's id");
+        assert_eq!(reply["result"], json!([null, null]));
+        assert!(
+            routed.event.is_none(),
+            "answering config is not an editor-visible event"
+        );
+    }
+
+    #[test]
+    fn every_server_request_gets_some_reply() {
+        // The rule is protocol-level: a message with both `method` and `id` is a
+        // request, and leaving any of them unanswered blocks the server.
+        for method in [
+            "client/registerCapability",
+            "client/unregisterCapability",
+            "window/workDoneProgress/create",
+            "workspace/applyEdit",
+            "some/method/we/have/never/heard/of",
+        ] {
+            let msg = json!({ "jsonrpc": "2.0", "id": 9, "method": method, "params": {} });
+            let routed = route_message(&msg, &no_pending());
+            let reply = routed
+                .reply
+                .unwrap_or_else(|| panic!("{method} was left unanswered"));
+            assert_eq!(reply["id"], json!(9));
+            assert!(reply.get("result").is_some(), "{method} needs a result");
+        }
+    }
+
+    #[test]
+    fn a_notification_is_not_answered() {
+        // Notifications carry no id and must NOT get a response — replying to
+        // one is a protocol error.
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": { "uri": "file:///p/a.rs", "diagnostics": [] }
+        });
+        let routed = route_message(&msg, &no_pending());
+        assert!(routed.reply.is_none());
+        assert!(matches!(routed.event, Some(LspEvent::Diagnostics { .. })));
+    }
+
+    #[test]
+    fn progress_notifications_parse_into_an_indexing_state() {
+        let begin = json!({
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": "rustAnalyzer/Indexing",
+                "value": { "kind": "begin", "title": "Indexing", "percentage": 0 }
+            }
+        });
+        let p = parse_progress(&begin).expect("a begin notification is progress");
+        assert_eq!(p.token, "rustAnalyzer/Indexing");
+        assert_eq!(p.title, "Indexing");
+        assert_eq!(p.percentage, Some(0));
+        assert!(!p.done);
+
+        // And it reaches the editor as an event, not just a parse.
+        assert!(matches!(
+            route_message(&begin, &no_pending()).event,
+            Some(LspEvent::Progress(_))
+        ));
+    }
+
+    #[test]
+    fn a_report_without_a_title_inherits_the_one_begin_carried() {
+        // The server names the task once and then updates against the token, so
+        // a UI reading raw notifications would blank the label at the first
+        // report. The client's table is what keeps it stable.
+        let mut client = fake_client();
+        let begin = Progress {
+            token: "t1".into(),
+            title: "Indexing".into(),
+            message: Some("qos-shell".into()),
+            percentage: Some(10),
+            done: false,
+        };
+        assert_eq!(client.note_progress(begin).unwrap().title, "Indexing");
+
+        let report = Progress {
+            token: "t1".into(),
+            title: String::new(), // no title, as a real `report` sends
+            message: Some("qos-ui".into()),
+            percentage: Some(55),
+            done: false,
+        };
+        let shown = client.note_progress(report).expect("still busy");
+        assert_eq!(shown.title, "Indexing", "the title survives the report");
+        assert_eq!(shown.percentage, Some(55));
+        assert_eq!(shown.message.as_deref(), Some("qos-ui"));
+        assert!(client.is_busy());
+
+        // `end` clears it, and the editor stops showing an indexing state.
+        let end = Progress {
+            token: "t1".into(),
+            title: String::new(),
+            message: None,
+            percentage: None,
+            done: true,
+        };
+        assert!(client.note_progress(end).is_none());
+        assert!(!client.is_busy());
+        assert!(client.busy_task().is_none());
+    }
+
+    #[test]
+    fn the_busiest_task_is_the_one_shown() {
+        // A quick sub-task at 90% must not hide the index at 5%.
+        let mut client = fake_client();
+        for (token, title, pct) in [("a", "Indexing", 5u32), ("b", "Fetching", 90)] {
+            client.note_progress(Progress {
+                token: token.into(),
+                title: title.into(),
+                message: None,
+                percentage: Some(pct),
+                done: false,
+            });
+        }
+        assert_eq!(client.busy_task().unwrap().title, "Indexing");
+    }
+
+    #[test]
+    fn a_project_path_becomes_a_correctly_encoded_uri() {
+        // A space in a directory name must be encoded, or the server resolves a
+        // different workspace than the one we opened.
+        assert_eq!(
+            path_to_uri(Path::new("/home/me/my project")),
+            "file:///home/me/my%20project"
+        );
+        assert_eq!(path_to_uri(Path::new("/a/b")), "file:///a/b");
+        // And it round-trips back through the portal's own parser.
+        let uri = path_to_uri(Path::new("/home/me/my project/src/main.rs"));
+        assert_eq!(
+            ui::portal::to_local_path(&url::Url::parse(&uri).unwrap()),
+            Some(PathBuf::from("/home/me/my project/src/main.rs"))
+        );
+    }
+
+    #[test]
+    fn a_server_cannot_be_rooted_at_a_path_that_is_not_a_directory() {
+        // The bug this replaced: a synthetic `file:///project-name` root meant
+        // rust-analyzer found no Cargo.toml and reported nothing, forever,
+        // while looking like a working editor.
+        let d = tempfile::tempdir().unwrap();
+        let missing = d.path().join("does-not-exist");
+        let err = LspClient::start(Language::Rust, &missing).unwrap_err();
+        assert!(
+            err.contains("not a directory"),
+            "a bogus root must be refused up front, got: {err}"
+        );
+    }
+
+    /// An `LspClient` with no child process, for exercising the pure
+    /// progress-table logic. Every field the tests touch is real.
+    fn fake_client() -> LspClient {
+        let child = Command::new("true")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("spawn /bin/true");
+        let mut child = child;
+        let stdin = child.stdin.take().expect("piped stdin");
+        let (_tx, rx) = mpsc::channel();
+        LspClient {
+            child,
+            stdin: Arc::new(Mutex::new(stdin)),
+            events: rx,
+            pending: no_pending(),
+            next_id: 1,
+            server_name: "test".into(),
+            root: PathBuf::from("/"),
+            progress: HashMap::new(),
+        }
+    }
 
     #[test]
     fn framing_round_trips() {
