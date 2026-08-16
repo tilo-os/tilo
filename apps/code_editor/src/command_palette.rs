@@ -188,6 +188,13 @@ impl CommandPalette {
         self.chosen.take()
     }
 
+    /// Seed the query text and re-filter. Used by `--shots` to stage a
+    /// populated palette without driving individual keystrokes.
+    pub fn seed_query(&mut self, q: &str) {
+        self.query = q.to_string();
+        self.refilter();
+    }
+
     /// Simple subsequence fuzzy match: every query char appears in order.
     fn fuzzy_match(query: &str, text: &str) -> Option<i32> {
         if query.is_empty() {
