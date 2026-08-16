@@ -8,7 +8,7 @@
 //!     qos-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)
 //!                          │   ↕ delayed/rate-limited
 //!                          ▼
-//!     collab-broker        /tmp/qos-collab.sock
+//!     shell (broker)       /tmp/qos-collab.sock
 //!                          ▲
 //!                          │   ↕ delayed/rate-limited
 //!     qos-collab-link ─────┤  (latency=80ms, throughput=2_000_000 bps)

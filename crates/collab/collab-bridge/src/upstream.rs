@@ -1,6 +1,6 @@
 //! Upstream connection to the legacy serde-JSON `CollabRequest` /
-//! `CollabEvent` broker (typically `shell::shell::collab_broker` in
-//! production, or `apps/collab-broker` for tests).
+//! `CollabEvent` broker — `shell::shell::collab_broker`, which the
+//! compositor runs for the session.
 //!
 //! One upstream connection is opened per SDK connection: the
 //! bridge owns a writer half (used by every ChannelHandle method

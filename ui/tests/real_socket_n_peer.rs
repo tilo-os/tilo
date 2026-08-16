@@ -1,6 +1,6 @@
 //! N-peer end-to-end test across a real Unix socket, exercising the
 //! production broker in `ui::collaboration::broker` (the binary
-//! `collab-broker` is a thin wrapper over `broker::serve`).
+//! this is `broker::serve` directly).
 //!
 //! Generalizes `real_socket_two_peer.rs` from a fixed two peers to
 //! three, and asserts the two properties that matter for N > 2:
