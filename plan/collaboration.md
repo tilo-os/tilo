@@ -136,6 +136,35 @@ UI surfaces: `/invite` palette command mints a token and copies it to the clipbo
 
 ## 8. Apps: how they collaborate
 
+### Where the broker runs
+
+`shell::shell::collab_broker` runs **inside the compositor process**, bound by
+the native entry point before the wayland socket is published — an app resolves
+its collab descriptor once at spawn, so a broker that arrives later is one that
+app never gets.
+
+It is not a systemd user unit, and the reason is not convenience. The broker's
+validation path reads the room's governance, the session's identity and the
+libp2p handle; §1 puts all three in the shell. A unit would re-export them
+across an IPC boundary to reach the same decisions, and would order the session
+from outside the only process that knows when the session is ready. (This OS
+also never starts `graphical-session.target`, so a unit ordered against it would
+simply not run.)
+
+The socket is `$XDG_RUNTIME_DIR/qos/services/collab.sock` —
+`launcher::services::collab_socket()`, the same function the launcher calls to
+open a descriptor and pass it into the sandbox as `QOS_SVC_COLLAB_FD`. The app
+never learns the path; it gets a connected fd. One owner for the name, because
+two spellings of it on opposite sides of the sandbox boundary is what let
+collaboration sit switched off without anyone noticing.
+
+A session that cannot bind it says so in the chrome (`ChromeState::
+set_collab_unavailable`), and refuses to unlink a socket another live session
+owns. `collab` stays `optional@1` in app manifests: a broker failure must not
+stop a calculator from opening, so the app degrades and the **OS** reports it —
+an app cannot tell "no collaborators" from "no collaboration", and the roster is
+chrome's to draw either way.
+
 ### Native `ui` apps
 
 The toolkit's collaboration plumbing (`ui/src/collaboration.rs`) connects to the shell over a Unix-socket protocol. `CollabRequest::Sync { changes }` flows from app to shell; `CollabEvent::{RemoteCursorMoved, SyncIncremental, …}` flows back. The shell forwards `SyncIncremental` to the network actor, which publishes it.
