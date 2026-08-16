@@ -13,10 +13,9 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 ### Phase 3 — Signed-wire enforcement
 
 - Lives inside `shell::shell::collab_broker`.
-- The deployed daemon is `apps/collab-broker` which uses the simpler `ui::collaboration::broker::serve_path` and fans plaintext frames.
-- Apps still send `CollabRequest::SyncIncremental` not `CollabRequest::SignedSyncIncremental`.
-- The eight-step `validate_inbound_op` pipeline runs in tests; in deployment it never executes.
-- **Architectural fault line:** there are two collab-broker implementations and the wrong one is deployed.
+- ~~The deployed daemon is `apps/collab-broker`~~ — **fixed.** The standalone plaintext relay is gone, and the native compositor binds `shell::shell::collab_broker` on the service socket the launcher dials, so a real login runs the validating broker.
+- Apps still send `CollabRequest::SyncIncremental` not `CollabRequest::SignedSyncIncremental`, so `validate_inbound_op` still does not gate a normal app's traffic. The pipeline is now *reachable* in deployment; nothing is routed through it yet.
+- **Remaining:** get apps onto the signed request, and register `authorised_signers` per channel — an artifact with an empty role table rejects every signed op, so the migration has to land both halves together.
 
 ### Phase 6 — Compaction + lazy scrollback
 
@@ -52,19 +51,21 @@ The 2026-06-29 spec's nine phases shipped as types + primitives + tests. In the 
 
 ---
 
-## 2. The architectural fault line
+## 2. The architectural fault line — resolved
 
-The deployed `apps/collab-broker` binary is a stripped 33-LOC wrapper around the legacy Plane-A relay in `ui::collaboration::broker`. The signed-wire / compaction / audit-log architecture I told you composes never composes in the running process because `shell::shell::collab_broker` is the production-shaped broker and it only runs inside the shell. Two paths exist; the wrong one is in production.
+Two brokers existed and the wrong one shipped: `apps/collab-broker`, a 33-LOC wrapper around the legacy relay in `ui::collaboration::broker`, which fans plaintext frames to every peer with no record scoping and no validation.
 
-**Fix:** either lift `shell::shell::collab_broker` out of the shell crate into a shared `qos-collab-broker-core` crate and have `apps/collab-broker` use that, or extend `ui::collaboration::broker` to embed the same validation pipeline. The first is cleaner.
+Lifting the real broker into a shared crate was the obvious fix and it is the wrong one. The broker's validation reads the room's governance, the session's identity and the libp2p handle, all of which live in the shell; a separate process would have to re-export all three across an IPC boundary to reach the same decisions. So the resolution went the other way: **the standalone daemon is deleted, and the native compositor runs `shell::shell::collab_broker` in-process** on `$XDG_RUNTIME_DIR/qos/services/collab.sock` — the path `launcher::services` dials to hand each sandboxed app a descriptor.
+
+The socket had two independently-written path expressions on opposite sides of the sandbox boundary, which is how it stayed broken silently. They now share one owner (`launcher::services::COLLAB_SERVICE`), pinned by `compositor_binds_the_socket_the_launcher_dials`, which binds through the compositor's spawn path and resolves through the launcher's resolver.
 
 ---
 
 ## 3. End-to-end gaps
 
-- **No two-machine test has ever run.** Everything tested on localhost. `qos-relay` works in unit tests; no LAN deploy verified.
-- **No systemd units for `collab-broker` or `qos-collab-link`.** They're foreground-only.
-- **No broker federation.** Each broker is an island. The libp2p code lives in `shell` and doesn't reach the standalone daemon.
+- **No two-machine test has ever run.** Everything tested on localhost — including `scripts/two-session-collab-demo.py`, which drives two real compositors but on one box. `qos-relay` works in unit tests; no LAN deploy verified.
+- **No systemd unit for `qos-collab-link`.** Still foreground-only. The broker no longer needs one: it is part of the session process.
+- **Broker federation is the session's, not a daemon's.** Each session's broker bridges to peers through the `ShellNetwork` handle it is given, so fan-out reaches other machines over gossipsub. What has never been exercised is two machines.
 - **No xdg-desktop-portal / system-keyring integration for the on-disk identity.** It's plaintext JSON with `0600` as the only mitigation, called out as TODO Phase 8.5.
 - **No cross-host invite flow.** The `qos://invite/...` URL parser works; nothing on the other side processes it into a `ChannelEvent::AttestationIssued`.
 
