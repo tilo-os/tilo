@@ -164,6 +164,17 @@ pub struct NavShell {
     /// Push easing: `0` = overview front, `1` = detail front. Closed
     /// (overview) by default.
     push: FlapState,
+    /// The content pane the user most recently engaged (a press landed in it,
+    /// or the host called [`NavShell::hint_active_pane`] / `show_detail` /
+    /// `show_overview`). Drives which content pane survives a collapse to the
+    /// narrow layout: the primary content stays put — never the sidebar. `None`
+    /// until something is known, whereupon the collapse falls back to the
+    /// right-most content pane (the detail).
+    active_pane_hint: Option<NavPane>,
+    /// The shell mode the previous layout resolved to, so `apply_layout` can
+    /// spot a wide→narrow collapse and seed the visible content pane from the
+    /// last-interacted one.
+    last_mode: Option<ShellMode>,
 
     // --- resolved geometry (recomputed each layout / animation frame) ---
     rect: Rect,
@@ -203,6 +214,8 @@ impl NavShell {
             sidebar_flap: FlapState::open_when_docked(),
             pane: NavPane::Overview,
             push: FlapState::closed_by_default(),
+            active_pane_hint: None,
+            last_mode: None,
             rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
             overview_rect: Rect::ZERO,
@@ -419,6 +432,7 @@ impl NavShell {
     /// this only sets the push target for when the layout is narrow.
     pub fn show_detail(&mut self) {
         self.pane = NavPane::Detail;
+        self.active_pane_hint = Some(NavPane::Detail);
         self.push.open();
         self.dirty = true;
     }
@@ -426,8 +440,39 @@ impl NavShell {
     /// Pop back to the overview (the Back button / Esc).
     pub fn show_overview(&mut self) {
         self.pane = NavPane::Overview;
+        self.active_pane_hint = Some(NavPane::Overview);
         self.push.close();
         self.dirty = true;
+    }
+
+    /// Hint which content pane the user is currently working in (the
+    /// "active / last-interacted" pane). Optional — the shell already records
+    /// this from pointer presses and from `show_detail`/`show_overview` — but a
+    /// host that drives selection through its own model can state it directly.
+    /// It only affects a collapse to the narrow layout: that pane is the one
+    /// kept on screen, so the content the user was reading survives the resize
+    /// instead of snapping back to a default. No effect while wide (both panes
+    /// are visible).
+    pub fn hint_active_pane(&mut self, pane: NavPane) {
+        self.active_pane_hint = Some(pane);
+    }
+
+    /// Which content pane a collapse of a genuine three-pane shell
+    /// (`sidebar | overview | detail`) keeps on screen. The rule the whole
+    /// fleet follows: a collapse **never** lands on the sidebar — it keeps the
+    /// *content* the user was at. Only called when a detail pane exists, so the
+    /// right-most fallback is always valid.
+    ///
+    /// * The last-interacted pane, when known — a press landed in it, or the
+    ///   host called [`Self::hint_active_pane`] / `show_detail` /
+    ///   `show_overview`. This is the "the panel the user is at" case, and it
+    ///   keeps a message the user had open open through the resize.
+    /// * Otherwise the **right-most content pane** (the detail) — the sensible
+    ///   default that needs no per-app responsive logic, matching the pane a
+    ///   wide shell already showed on the right. A host that wants the master
+    ///   up front can say so with [`Self::hint_active_pane`].
+    fn collapse_content_pane(&self) -> NavPane {
+        self.active_pane_hint.unwrap_or(NavPane::Detail)
     }
 
     /// Alias for [`Self::show_overview`] — master/detail vocabulary.
@@ -866,6 +911,28 @@ impl Widget for NavShell {
         // A window resize that crosses the breakpoint drops a stale sidebar
         // preference so the sidebar returns to its auto behaviour.
         self.sidebar_flap.reconcile(self.sidebar_split_layout());
+
+        // On a wide→narrow collapse of a genuine three-pane shell
+        // (`sidebar | overview | detail`) the content region can only show one
+        // pane. Keep the last-interacted content pane so the pane the user was
+        // reading survives the resize (a message they had open stays open),
+        // falling back to the right-most content pane (the detail) with no app
+        // change; the sidebar becomes a closed overlay drawer either way, so a
+        // collapse never lands on the navigation (see
+        // [`Self::collapse_content_pane`]).
+        let mode = self.mode();
+        if self.last_mode == Some(ShellMode::Wide)
+            && mode == ShellMode::Narrow
+            && self.has_sidebar()
+            && self.has_detail()
+        {
+            self.pane = self.collapse_content_pane();
+            // A collapse is a structural jump, not a user push — settle the
+            // slide to the resolved pane rather than animating across.
+            self.push.snap(self.pane == NavPane::Detail);
+        }
+        self.last_mode = Some(mode);
+
         self.recompute_rects();
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
@@ -1020,6 +1087,22 @@ impl Widget for NavShell {
                     self.close_sidebar();
                     *handled = true;
                     return;
+                }
+                // 3. Record which content pane the user engaged, so a later
+                //    collapse keeps the pane they were at. A press over the open
+                //    sidebar drawer is navigation, not content — ignore it.
+                if self.detail.is_some()
+                    && !(self.sidebar_visible() && self.sidebar_rect.contains(self.last_cursor))
+                {
+                    if self.detail_rect.width() > 0.0
+                        && self.detail_rect.contains(self.last_cursor)
+                    {
+                        self.active_pane_hint = Some(NavPane::Detail);
+                    } else if self.overview_rect.width() > 0.0
+                        && self.overview_rect.contains(self.last_cursor)
+                    {
+                        self.active_pane_hint = Some(NavPane::Overview);
+                    }
                 }
             }
             _ => {}
@@ -1686,6 +1769,113 @@ mod tests {
             .filter(|t| **t == DrawTag::COLOR)
             .count();
         assert!(fills >= 1, "the swapped children paint after the swap");
+    }
+
+    // --- three-pane collapse keeps content, never the sidebar -----------
+
+    /// A genuine three-pane shell (`sidebar | overview | detail`) collapsed to
+    /// narrow keeps a *content* pane on screen and pushes the sidebar into a
+    /// closed overlay drawer — the collapse never lands on the navigation.
+    /// With no prior interaction the collapse falls back to the right-most
+    /// content pane (the detail), the sensible default that needs no per-app
+    /// responsive logic and matches what the wide shell showed on the right.
+    #[test]
+    fn three_pane_cold_collapse_keeps_the_rightmost_content_and_overlays_the_sidebar() {
+        let mut ns = shell(1200.0, true); // wide, sidebar + overview + detail
+        assert_eq!(ns.mode(), ShellMode::Wide);
+        assert_eq!(ns.content_layout(), ContentLayout::SideBySide);
+
+        // Collapse to a narrow width (a window resize).
+        lay_out(&mut ns, 520.0, 640.0);
+        // Settle the reveal easing: the docked sidebar was open, so the first
+        // narrow frame is mid-way through easing the drawer shut. Assert the
+        // settled frame (what `--shots` / headless render deterministically).
+        ns.snap();
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(ns.content_layout(), ContentLayout::Push);
+
+        // A content pane fills the window (never the sidebar). Cold, that is the
+        // right-most content — the detail — with no app change.
+        assert_eq!(ns.pane(), NavPane::Detail, "a cold collapse keeps the right-most content, not the sidebar");
+        assert!(
+            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0
+                && (ns.detail_rect().width() - ns.get_rect().width()).abs() < 1.0,
+            "the content pane spans the whole narrow window",
+        );
+        assert!(
+            ns.overview_rect().x1 <= ns.get_rect().x0 + 1.0,
+            "the overview is pushed off-screen to the left",
+        );
+
+        // The sidebar is a closed overlay drawer — reachable, not shown.
+        assert_eq!(ns.sidebar_layout(), Some(SplitLayout::Overlay));
+        assert!(!ns.is_sidebar_open(), "the sidebar collapses to a closed drawer, not the shown pane");
+        assert_eq!(ns.scrim_rect(), Rect::ZERO, "a closed drawer lays no scrim");
+        // …and the drawer control is still there to summon it. (`Back` wins the
+        // top-left while a detail is pushed, so summon it from the toggle API.)
+        ns.toggle_sidebar();
+        ns.snap();
+        assert!(ns.is_sidebar_open(), "the collapsed sidebar is still summonable as a drawer");
+    }
+
+    /// A host hint overrides the right-most default: hinting the master keeps
+    /// the overview through the collapse — the "the panel the user is at" path,
+    /// steering away from the cold detail-first fallback.
+    #[test]
+    fn three_pane_collapse_hint_overview_overrides_the_rightmost_default() {
+        let mut ns = shell(1200.0, true);
+        ns.hint_active_pane(NavPane::Overview);
+        lay_out(&mut ns, 520.0, 640.0);
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(ns.pane(), NavPane::Overview, "the hinted master content overrides the right-most default");
+        assert!(
+            (ns.overview_rect().x0 - ns.get_rect().x0).abs() < 1.0
+                && (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+            "the overview spans the whole narrow window",
+        );
+        assert!(!ns.is_sidebar_open(), "the sidebar is still a closed overlay drawer");
+    }
+
+    /// The last-interacted content pane wins the collapse: after the user works
+    /// in the overview (a press lands there while wide, side-by-side), collapsing
+    /// keeps the overview — overriding the cold right-most (detail) default.
+    #[test]
+    fn three_pane_collapse_keeps_the_last_interacted_pane() {
+        let mut ns = shell(1200.0, true);
+        // A real press in the overview (left) column records it as active.
+        let ov = ns.overview_rect();
+        assert!(ov.width() > 1.0, "wide side-by-side shows an overview column");
+        let pt = Point::new((ov.x0 + ov.x1) / 2.0, (ov.y0 + ov.y1) / 2.0);
+        let mut handled = false;
+        dispatch(&mut ns, &cursor_at(pt), &mut handled);
+        dispatch(&mut ns, &left_press(), &mut handled);
+
+        lay_out(&mut ns, 520.0, 640.0);
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(
+            ns.pane(),
+            NavPane::Overview,
+            "the pane the user last engaged survives the collapse, overriding the right-most default",
+        );
+        assert!(
+            (ns.overview_rect().width() - ns.get_rect().width()).abs() < 1.0,
+            "the overview fills the narrow window",
+        );
+    }
+
+    /// A content-only master/detail shell (no genuine sidebar — weather / mail)
+    /// keeps its overview-first collapse: the master list there *is* content, so
+    /// the right-most default must NOT hijack it.
+    #[test]
+    fn content_only_collapse_keeps_the_overview_first_default() {
+        let mut ns = shell(1200.0, false); // no sidebar
+        lay_out(&mut ns, 520.0, 640.0);
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(
+            ns.pane(),
+            NavPane::Overview,
+            "a sidebar-less master/detail collapses to the overview, unchanged",
+        );
     }
 
     // --- scaffolding -----------------------------------------------------
