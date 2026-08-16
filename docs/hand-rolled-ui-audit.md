@@ -7,8 +7,7 @@ are the things that MUST be unified: a painted rect with a manual hit-test, or a
 clipboard (Ctrl+C/V/X), keyboard activation and caret nav, the focus ring, the
 a11y tree, and `Theme`-driven colors. The rule is codified in `ui/HIG.md` §8.
 
-**Scope.** All 45 UI apps under `apps/` (excludes `collab-broker`, which has no
-UI). Read-only audit — no refactors here. Method: for each category, the
+**Scope.** All 45 UI apps under `apps/`. Read-only audit — no refactors here. Method: for each category, the
 canonical widget lives in `ui/src/widget/`; app code was graded as hand-rolled
 only when it reimplements that widget rather than legitimately composing it.
 

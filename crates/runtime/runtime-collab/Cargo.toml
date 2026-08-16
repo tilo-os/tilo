@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 # qOS runtime — broker (collaboration) client. Talks to the in-tree
-# `apps/collab-broker` over a Unix-socket Cap'n Proto channel passed
+# the session's broker over a Unix-socket Cap'n Proto channel passed
 # in by the launcher as QOS_SVC_COLLAB_FD.
 
 [lib]

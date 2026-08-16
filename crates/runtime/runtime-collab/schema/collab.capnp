@@ -3,7 +3,7 @@
 # qOS collaboration broker — public Cap'n Proto contract.
 #
 # This is the wire surface app SDK clients talk to. The broker is
-# an in-tree app (`apps/collab-broker`); when an app is launched
+# the compositor's in-session broker; when an app is launched
 # under qOS, the launcher hands the app a connected Unix socket
 # whose other end speaks this protocol.
 #

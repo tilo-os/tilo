@@ -8,7 +8,7 @@ edition = "2024"
 # (i.e. `collaboration::broker` submodule + the `QUICK_COLLAB_SOCK`
 # code branch inside `CollaborationManager`). Runtime already
 # prefers the `runtime-collab` SDK path; this flag exists so the
-# in-tree test suites, the `collab-broker` binary, and the shell's
+# in-tree test suites and the shell's
 # 1400-LOC broker keep compiling / working while the wider fleet
 # migrates. Flip off (in a workspace `--no-default-features` build)
 # once every consumer is on the SDK dialect.
@@ -61,11 +61,11 @@ qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
-# runtime-collab is the qOS collab-broker Cap'n Proto SDK.
+# runtime-collab is the qOS collab broker Cap'n Proto SDK.
 # `CollaborationManager` now delegates to it via a shovel thread; the
 # legacy Unix-socket JSON dialect stays available behind the
-# `legacy-broker` feature so the in-tree tests, the `collab-broker`
-# binary, and the shell's broker keep compiling.
+# `legacy-broker` feature so the in-tree tests and the shell's broker
+# keep compiling.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # On `CollaborationManager` init, load the user's on-disk identity
