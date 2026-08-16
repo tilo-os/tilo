@@ -13,6 +13,7 @@ pub mod breadcrumb_bar;
 pub mod path_bar;
 pub mod sidebar;
 pub mod places_sidebar;
+pub mod text_layout;
 pub mod toolbar;
 pub mod views;
 pub mod files_app;
