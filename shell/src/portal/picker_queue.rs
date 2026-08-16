@@ -111,14 +111,14 @@ impl PickerScope {
         if workspace.is_dir() {
             roots.push(workspace);
         }
-        let initial_dir = roots
-            .first()
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from("/"));
+        let fallback = roots.first().cloned().unwrap_or_else(|| PathBuf::from("/"));
         if roots.is_empty() {
-            roots.push(initial_dir.clone());
+            roots.push(fallback.clone());
         }
-        Self { initial_dir, roots }
+        Self {
+            initial_dir: documents_dir(home.as_deref()).unwrap_or(fallback),
+            roots,
+        }
     }
 
     /// Widen the scope with the filesystem paths this workspace has
@@ -149,6 +149,58 @@ impl PickerScope {
         }
         self
     }
+}
+
+/// The user's documents directory, if there is one.
+///
+/// Where the dialog opens is the difference between a useful dialog and
+/// a useless one. Opening on `$HOME` means the first screen is whatever
+/// sorts first there — on a developer's machine that is eighteen rows
+/// of dotfiles and not one document, so the user's first action is
+/// always to navigate away. Opening on their documents means the first
+/// screen is usually the answer.
+///
+/// `$XDG_DOCUMENTS_DIR` first (the freedesktop variable), then the
+/// `user-dirs.dirs` file the XDG spec actually stores it in, then the
+/// conventional `~/Documents`. Nothing is created: a machine without a
+/// documents directory falls back to `$HOME` rather than growing one as
+/// a side effect of opening a dialog.
+fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("XDG_DOCUMENTS_DIR").map(PathBuf::from) {
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    let home = home?;
+    if let Some(dir) = documents_from_user_dirs(home) {
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    let conventional = home.join("Documents");
+    conventional.is_dir().then_some(conventional)
+}
+
+/// Parse `XDG_DOCUMENTS_DIR="$HOME/…"` out of `user-dirs.dirs`.
+///
+/// The file is shell-fragment syntax, but only one line matters and its
+/// shape is fixed by the spec, so this reads that line rather than
+/// pulling in a shell parser. Anything unexpected yields `None` and the
+/// caller falls back.
+fn documents_from_user_dirs(home: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(home.join(".config/user-dirs.dirs")).ok()?;
+    for line in text.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("XDG_DOCUMENTS_DIR=") else {
+            continue;
+        };
+        let value = rest.trim().trim_matches('"');
+        return Some(match value.strip_prefix("$HOME/") {
+            Some(tail) => home.join(tail),
+            None => PathBuf::from(value),
+        });
+    }
+    None
 }
 
 #[cfg(test)]
