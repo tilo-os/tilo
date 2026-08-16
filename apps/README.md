@@ -9,8 +9,7 @@ binary) for review and CI. Apps that reach the network or hardware keep that beh
 off-by-default feature (`live`, `audio`, …) and fall back to bundled sample data, so the
 default build and `--shots` stay hermetic.
 
-Toolkit exceptions: `browser` embeds Servo for page rendering; `collab-broker` is a
-headless server, not a `ui` app.
+Toolkit exception: `browser` embeds Servo for page rendering.
 
 ## Productivity & documents
 
@@ -85,12 +84,6 @@ headless server, not a `ui` app.
 |---|---|
 | `file-explorer` | Spatial file manager: walkdir / trash / infer / mime_guess; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
-
-## Not an app
-
-| Crate | What it is |
-|---|---|
-| `collab-broker` | Headless Unix-socket fan-out server for `QUICK_COLLAB_SOCK`; relays CRDT + presence frames so multiple `ui::App` instances on one machine collaborate (Plane A). Binary only; no `--shots`. |
 
 ## Building
 
