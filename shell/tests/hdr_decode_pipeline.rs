@@ -6,12 +6,34 @@
 //! luma sample should carry actual content (not the "always zero"
 //! pattern an 8-bit-in-16-bit downconvert would leave).
 //!
-//! The encoder step uses `libx265` via `libavcodec`. If libavcodec
-//! wasn't built with libx265 the test self-skips (matches the pattern
-//! in `flatpak_share_encoder_probe.rs`). Behind `hdr-decode` cargo
-//! feature — the whole HEVC decoder is feature-gated.
+//! # Why this file needs a feature of its own
+//!
+//! Every test here needs libavcodec to carry HEVC *and* libx265, and
+//! that is a property of the distro's ffmpeg, not of qOS. Fedora — what
+//! qOS is built from and ships — configures `libavcodec-free` with
+//! `--disable-decoder='h264,hevc,vc1,vvc'` and offers no libx265
+//! encoder, so on a stock image none of this is observable.
+//!
+//! It used to be compiled anyway: the round-trip printed "skipping" and
+//! returned green while proving nothing, and its two neighbours failed
+//! outright and were waved through as pre-existing. A test that cannot
+//! see its subject must not report success, so the gate is explicit
+//! instead. Run these against an HEVC-capable libavcodec
+//! (rpmfusion's `libavcodec-freeworld`, or a self-built ffmpeg) with:
+//!
+//! ```text
+//! cargo test -p shell --features hevc-codec-tests --test hdr_decode_pipeline
+//! ```
+//!
+//! Under that feature there are no self-skips left: a missing codec is a
+//! failure, because the feature is the caller asserting it is there.
+//!
+//! The dispatch contract that *is* observable everywhere — which decoder
+//! a wire label selects, and how an absent backend is reported — lives
+//! in `shell::network::decoder::tests` and
+//! `shell::shell::peer_view::tests`, and runs on every host.
 
-#![cfg(feature = "hdr-decode")]
+#![cfg(all(feature = "hdr-decode", feature = "hevc-codec-tests"))]
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg_next::ffi;
@@ -155,13 +177,13 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
     const W: u32 = 64;
     const H: u32 = 64;
 
-    let nalus = match encode_hevc_main10_frames(W, H, 5) {
-        Some(b) => b,
-        None => {
-            eprintln!("skipping: no libx265 in libavcodec build");
-            return;
-        }
-    };
+    // No self-skip: `hevc-codec-tests` is the caller stating this build
+    // has an HEVC-capable libavcodec, so a missing encoder is a failure,
+    // not a reason to pass quietly.
+    let nalus = encode_hevc_main10_frames(W, H, 5).expect(
+        "libx265 HEVC Main10 encoder missing — `hevc-codec-tests` asserts \
+         this libavcodec has one",
+    );
     assert!(
         !nalus.is_empty(),
         "libx265 produced empty bitstream — test setup wrong"
