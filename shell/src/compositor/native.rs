@@ -1236,6 +1236,125 @@ fn load_session_tree(
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
+/// Everything the portal backend needs kept alive for the session.
+///
+/// Dropping it releases the bus name and tears the object server down,
+/// so it is held for the lifetime of `run()`.
+struct PortalBackend {
+    #[allow(dead_code)]
+    runtime: tokio::runtime::Runtime,
+    #[allow(dead_code)]
+    server: crate::portal::ServerHandle,
+}
+
+/// Stand the portal backend up inside the compositor.
+///
+/// ## Why here and not in `--portal-server-only`
+///
+/// The portal's whole job is to answer questions about *this session*:
+/// which workspace the caller is in, what that workspace has already
+/// granted it, and what the person sitting here decides now. All three
+/// live in the `WorkspaceTree` this process owns.
+///
+/// The standalone daemon has none of them. It builds its context on
+/// `WorkspaceTree::default()` — an empty tree, so every grant lookup
+/// misses — and a `PromptResolver::Channel` queue that nothing drains,
+/// because draining means rendering a dialog and it has no output to
+/// render on. It could not answer correctly even if it never hung.
+///
+/// The alternative was to give that daemon IPC back to the compositor.
+/// That was rejected: it would put the grant store behind a wire, so
+/// two processes would each hold something called "the permissions",
+/// and `crates/packaging/launcher/src/capabilities.rs` already states
+/// the principle it would break — "a second vocabulary is how the
+/// recorded grant and the enforced grant drift apart". It also would
+/// not remove the need for the compositor to draw the dialog, so the
+/// daemon would end up a proxy that owns a bus name and forwards
+/// everything. A proxy for one process is that process.
+///
+/// So the compositor owns the name. `os/usr/lib/systemd/user/shell-portal.service`
+/// and its D-Bus activation file are removed with this change; a portal
+/// with no session behind it has nothing to serve.
+///
+/// Returns `None` when there is no session bus (a headless test rig
+/// without one, a VT with no user bus). That is a real configuration,
+/// and the compositor still runs — it just logs that file open/save
+/// will not work, rather than failing to boot.
+fn start_portal_backend(
+    frame_builder: &mut FrameBuilder,
+    tree_handle: crate::shell::state::WorkspaceTreeHandle,
+) -> Option<PortalBackend> {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .thread_name("qos-portal")
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::warn!("portal: no runtime ({e}); file open/save will not work");
+            return None;
+        }
+    };
+
+    let grants = crate::portal::GrantStoreHandle::new(tree_handle);
+    let prompts = crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
+    let pickers = crate::portal::FilePickerQueue::new();
+    let documents = crate::portal::documents_for_session();
+
+    let ctx = crate::portal::PortalContext {
+        grants,
+        prompts: prompts.clone(),
+        caller_map: crate::portal::CallerMap::new(),
+        file_picker: crate::portal::FilePickerSpawnerHandle::new(Arc::new(pickers.clone())),
+        screencast_provisioner: crate::portal::ScreenCastStreamProvisionerHandle::new(Arc::new(
+            crate::portal::MockScreenCastProvisioner::new_with_node(1, "default"),
+        )),
+        remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+        documents: documents.clone(),
+    };
+
+    let served = runtime.block_on(async {
+        let conn = zbus::ConnectionBuilder::session()?.build().await?;
+        crate::portal::serve(conn, ctx).await
+    });
+    let server = match served {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                "portal: could not serve {} ({e}); file open/save will not work",
+                crate::portal::BUS_NAME
+            );
+            return None;
+        }
+    };
+
+    // The queues are useless until something drains them. Attaching them
+    // to the overlay host is what makes the per-frame pumps run, and
+    // doing it here — rather than at host construction — is what keeps
+    // "the portal is up" and "its prompts reach a screen" the same fact.
+    frame_builder
+        .host_mut()
+        .set_portal_queues(prompts, pickers);
+
+    tracing::info!(
+        "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}; documents via {}",
+        crate::portal::BUS_NAME,
+        documents.describe()
+    );
+    if !documents.reaches_confined_apps() {
+        // Say it out loud. A sandboxed app that picks a file and then
+        // gets ENOENT is a bug report about the app, not about this, and
+        // the journal is the only place that connection can be made.
+        tracing::warn!(
+            "portal: the document store cannot reach sandboxed apps — a file \
+             picked by a bwrap'd app will not be readable by it. Unconfined \
+             apps are unaffected."
+        );
+    }
+    Some(PortalBackend { runtime, server })
+}
+
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
@@ -1355,6 +1474,11 @@ pub fn run() -> ! {
     // beside the rest of the session's durable state, so building a
     // compositor for a test or a screenshot reads and writes nobody's.
     frame_builder.host().room_records().borrow_mut().attach_store();
+
+    // The xdg-desktop-portal backend. Served from *this* process, on
+    // the session tree this process owns — see `start_portal_backend`
+    // for why it is not the separate `--portal-server-only` daemon.
+    let _portal = start_portal_backend(&mut frame_builder, tree_handle.clone());
 
     // Peer sync. Constructed here rather than only in the hosted entry
     // point because this is the compositor that boots as the qOS
