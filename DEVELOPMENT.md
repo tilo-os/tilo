@@ -146,7 +146,8 @@ nirios compositor listening on "wayland-1"
 So pointing anything at it is one step:
 
 ```bash
-WAYLAND_DISPLAY=$(cat "$XDG_RUNTIME_DIR/qos-session/wayland-display") cargo run -p terminal
+cargo build -p terminal
+WAYLAND_DISPLAY=$(cat "$XDG_RUNTIME_DIR/qos-session/wayland-display") ./target/debug/terminal
 ```
 
 The file is last-writer-wins — start a second compositor and it names the
