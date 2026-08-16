@@ -1091,6 +1091,21 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: &Modifiers) -> Option<i32> {
     Some(n)
 }
 
+/// Is `event` the remote-input kill switch, `Super+Esc`, on key *press*?
+///
+/// The panic key for a shared session: whatever a guest is doing with the
+/// host's seat, this stops it. Checked ahead of the client router and
+/// ahead of the shell's own Escape handling — an overlay being open, or a
+/// client having grabbed the keyboard, must not be able to swallow it.
+fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: &Modifiers) -> bool {
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return false;
+    };
+    event.state == ElementState::Pressed
+        && modifiers.state().super_key()
+        && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+}
+
 fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
     if let WindowEvent::KeyboardInput { event, .. } = event {
         if event.state == ElementState::Pressed && modifiers.state().super_key() {
@@ -1816,6 +1831,15 @@ pub fn run() -> ! {
                     for t in session.note_activity(Instant::now()) {
                         apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
+                    // Physical priority: the host reaching for their own
+                    // keyboard or mouse blocks every remote peer for the
+                    // next half second. Stamped at the funnel rather than
+                    // further in, so the branches below that never reach
+                    // the client router — the lock screen, the VT chord,
+                    // the power key — count as the host taking over too.
+                    state
+                        .remote_input_firewall
+                        .note_local_input(Instant::now());
 
                     if session.is_locked() {
                         // Locked: every input is captured by the lock
@@ -1854,6 +1878,24 @@ pub fn run() -> ! {
                         // an app has grabbed the keyboard, or a misbehaving
                         // client can strand the user on this VT.
                         backend.switch_vt(vt);
+                    } else if is_remote_input_kill_switch(&wev, &test_control_ctx.modifiers) {
+                        // Super+Esc: every peer's input stops now and
+                        // stays stopped. Ahead of the client router and
+                        // ahead of the shell's Escape handling, because a
+                        // panic key an overlay or a focused client can
+                        // swallow is not a panic key.
+                        let revoked = state.engage_remote_input_kill_switch();
+                        frame_builder.with_chrome(|st| {
+                            st.push_notification(
+                                "Remote input stopped",
+                                match revoked {
+                                    0 => "No peer was driving this session.".to_string(),
+                                    1 => "1 shared window is now view-only.".to_string(),
+                                    n => format!("{n} shared windows are now view-only."),
+                                },
+                            );
+                        });
+                        session_changed = true;
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -2176,6 +2218,14 @@ pub fn run() -> ! {
         // opening, or a window closing all move the keyboard immediately —
         // not only on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
+
+        // Hand the remote-input firewall this frame's screen: which
+        // foreign tiles are up and where, which one holds the keyboard,
+        // and whether chrome is drawn over the lot. Every coordinate and
+        // focus check a peer's input faces is answered from this, so it
+        // has to be refreshed after focus is reconciled and before any
+        // remote event is drained.
+        client_input::publish_remote_input_view(&mut state, &frame_builder);
 
         // Per-output HiDPI: tell each client the scale of the display its
         // tile is currently on. Runs every tick because a window dragged

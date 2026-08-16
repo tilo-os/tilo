@@ -64,7 +64,12 @@ pub use qos_callstream::throttle::StreamingThrottle;
 /// deterministic multi-typist behaviour should serialise upstream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum InputEvent {
-    /// Pointer moved to logical `(x, y)` inside the surface's content rect.
+    /// Pointer moved to logical `(x, y)`, **surface-local** to the shared
+    /// surface's content rect: a peer sees only the surface it was given
+    /// and has no way to know where on the owner's output that surface
+    /// sits. [`crate::network::input_firewall`] checks the coordinate
+    /// against that rect and translates it into the owner's output space
+    /// before it reaches the seat.
     PointerMotion { x: f64, y: f64 },
     /// Mouse button transitioned to `pressed`. `button` mirrors smithay's
     /// libinput-style button codes (e.g. 272 = BTN_LEFT).
@@ -223,15 +228,39 @@ impl ShareRegistry {
         }
     }
 
-    /// Decide whether an inbound `RemoteInput` should be applied. Returns
-    /// `true` to apply, `false` to drop. The drop path covers both
-    /// "share doesn't exist" (peer is making things up) and "share is
-    /// read-only" (owner revoked write access).
+    /// Decide whether an inbound `RemoteInput` clears the *share* gate:
+    /// there is a record for this `(peer, surface)` pair and the owner has
+    /// not marked it read-only. The drop path covers both "share doesn't
+    /// exist" (peer is making things up) and "share is read-only" (owner
+    /// revoked write access).
+    ///
+    /// This is the first two of the checks a remote event has to pass, not
+    /// all of them — where the event may land, which chords it may carry
+    /// and how fast it may arrive are
+    /// [`crate::network::input_firewall`]'s. The whole sequence is
+    /// [`crate::compositor::state::State::review_remote_input`].
     pub fn accept_remote_input(&self, peer: PeerId, surface: SurfaceId) -> bool {
         match self.shares.get(&(peer, surface)) {
             Some(share) => !share.read_only,
             None => false,
         }
+    }
+
+    /// Mark every share read-only. The registry side of the kill switch:
+    /// peers keep seeing what they were shown, and stop being able to
+    /// touch it.
+    ///
+    /// Returns how many shares actually lost write access, so the caller
+    /// can report what the panic key did.
+    pub fn revoke_all_input(&mut self) -> usize {
+        let mut revoked = 0;
+        for share in self.shares.values_mut() {
+            if !share.read_only {
+                share.read_only = true;
+                revoked += 1;
+            }
+        }
+        revoked
     }
 
     /// Convenience: route an inbound `InputEvent` to `sink` only if the
