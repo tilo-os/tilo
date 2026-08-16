@@ -2804,7 +2804,16 @@ impl ShellOverlayHost {
                 continue;
             }
             let scope = self.picker_scope_for(&req.caller);
-            self.file_picker = Some(Box::new(ActiveFilePicker::mount(req, scope)));
+            let active = ActiveFilePicker::mount(req, scope);
+            // Which app raised the dialog, and where it may browse. A
+            // file dialog appearing with no record of who asked for it
+            // is the one event here nobody can debug after the fact.
+            tracing::info!(
+                app = %active.app_id,
+                dir = %active.widget.current_dir().display(),
+                "portal: file dialog opened"
+            );
+            self.file_picker = Some(Box::new(active));
             dirty = true;
         }
         dirty
