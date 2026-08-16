@@ -826,7 +826,8 @@ impl State {
     /// only door between the network and the seat, and the whole input
     /// firewall reads top to bottom here:
     ///
-    /// 1. host overrides — the kill switch, and physical-input priority;
+    /// 1. host overrides — the kill switch, the session lock, and
+    ///    physical-input priority;
     /// 2. the per-share `read_only` flag;
     /// 3. surface ownership — is there a share for this pair at all;
     /// 4. region — is the coordinate inside the shared surface's rect;
@@ -861,7 +862,9 @@ impl State {
         let now = std::time::Instant::now();
 
         // The host's own machine wins, unconditionally and before
-        // anything about the share is consulted.
+        // anything about the share is consulted — including before the
+        // per-peer budget, so a peer flooding the queue is refused on
+        // the same rule as a quiet one and cannot delay a panic key.
         if let Some(denial) = self.remote_input_firewall.host_override(now) {
             return Err(self.refuse_remote_input(peer, surface, &event, denial));
         }
