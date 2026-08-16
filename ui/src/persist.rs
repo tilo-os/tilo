@@ -132,3 +132,79 @@ pub fn open_for(package_id: &str) -> Result<(State, Autosave), StoreError> {
 /// The debounce window [`open`] uses. Re-exported so an app that wants a
 /// different one can build its own [`Autosave`] from a [`DocStore`].
 pub const DEBOUNCE: Duration = DEFAULT_DEBOUNCE;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::transaction::Transactable;
+    use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+
+    fn note(state: &crate::state::State) -> Option<String> {
+        match state.doc.get(&ROOT, "note") {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                other => Some(other.to_string()),
+            },
+            _ => None,
+        }
+    }
+
+    /// Opening an app for the SECOND time must keep persistence ON.
+    ///
+    /// The per-package state directory already exists on every launch after the
+    /// first. If opening the store treated that as an error, [`try_open`] would
+    /// propagate it, [`open`] would swallow it and hand back
+    /// [`in_memory_fallback`] — a disabled autosave — and the app would come up
+    /// unable to save, silently, on every run but the very first. Fresh-XDG CI
+    /// never sees it because the directory is always absent there, so this test
+    /// creates the directory before the first open and drives two opens against
+    /// it, asserting persistence stays enabled and state round-trips.
+    #[test]
+    #[serial_test::serial(app_state_dir)]
+    fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let pkg = "dev.qos.persist-open-twice";
+
+        // The per-package directory is already present before the first open,
+        // exactly as on every launch after the app has run once.
+        let dir = tmp.path().join(pkg);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: serialised on `app_state_dir`; no other thread reads the var
+        // between the set here and the removal at the end.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+
+        // Run 1: open must enable persistence even though the dir already
+        // exists, then write and flush a value.
+        {
+            let (mut state, mut autosave) = open_for(pkg).expect("run 1 open");
+            assert!(autosave.is_enabled(), "run 1 must persist, not fall back");
+            state
+                .doc
+                .put(&ROOT, "note", ScalarValue::Str("survives".into()))
+                .unwrap();
+            autosave.request(&mut state.doc);
+            autosave.flush();
+            assert_eq!(autosave.last_error(), None, "no write may have failed");
+        }
+
+        // Run 2: the directory still exists. `open` must STILL enable
+        // persistence — the second-run bug is precisely this returning the
+        // disabled in-memory fallback — and run 1's value must load.
+        let (state, autosave) = open(pkg);
+        assert!(
+            autosave.is_enabled(),
+            "the SECOND open against an existing state dir must keep persistence \
+             enabled, not drop to the in-memory fallback"
+        );
+        assert_eq!(
+            note(&state).as_deref(),
+            Some("survives"),
+            "state written on the first run must load on the second open"
+        );
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+}
