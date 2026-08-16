@@ -1007,6 +1007,79 @@ mod tests {
     /// in one call. Both halves are checked on the real objects: the
     /// tree's room after the call, and the command the network actor was
     /// handed.
+    /// Build the inbound event a LAN peer's app-CRDT publish arrives as.
+    fn app_crdt_event(cluster_id: &str, from_peer_hash: u64) -> NetEvent {
+        NetEvent::Msg {
+            ws: crate::shell::state::WorkspaceId::new(),
+            peer: libp2p::PeerId::random(),
+            msg: NeighbourMsg::AppCrdtIncremental {
+                peer: from_peer_hash,
+                app_id: "dev.qos.notes".to_string(),
+                cluster_id: cluster_id.to_string(),
+                record_id: "note-1".to_string(),
+                data: vec![1, 2, 3, 4],
+            },
+        }
+    }
+
+    /// A peer's app document reaches local apps only for a room this
+    /// machine is in.
+    ///
+    /// Driven through the real receive path — an event pushed onto the
+    /// actor→shell channel and drained by `tick`, which is what the
+    /// live actor does — because the defect was that this path asked no
+    /// membership question at all. Calling the helper directly would
+    /// prove only that the helper exists.
+    ///
+    /// The accepted case is not decoration: without it an assertion
+    /// that the buffer is empty passes just as well when nothing is
+    /// ever delivered, and would keep passing if the filter were
+    /// tightened into a wall.
+    #[test]
+    fn app_crdt_from_a_room_we_are_not_in_never_reaches_the_broker() {
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Mine");
+        let our_room = tree.room_of(local).expect("a minted room");
+        let handle = tree.shared();
+        let (net, _cmd_rx) = shell_network_for_test(handle, 0xAAAAu64);
+
+        // A room this machine has never joined.
+        let stranger_room = crate::shell::state::RoomId::new();
+        assert_ne!(stranger_room, our_room);
+
+        net.event_tx
+            .try_send(app_crdt_event(&stranger_room.to_string(), 0xBBBBu64))
+            .expect("queue the stranger's publish");
+        net.tick();
+        assert!(
+            net.inbound_app_crdt_handle().lock().unwrap().is_empty(),
+            "a delta for a room this machine is not in must not reach the broker queue",
+        );
+
+        // Not a uuid at all — fail closed rather than fall through.
+        net.event_tx
+            .try_send(app_crdt_event("not-a-room", 0xBBBBu64))
+            .expect("queue the malformed publish");
+        net.tick();
+        assert!(
+            net.inbound_app_crdt_handle().lock().unwrap().is_empty(),
+            "a cluster id that is not a uuid names no room, so it must be refused",
+        );
+
+        // The positive control: the same peer, the same shape, a room
+        // we are in — this one must arrive, or the two refusals above
+        // prove nothing.
+        net.event_tx
+            .try_send(app_crdt_event(&our_room.to_string(), 0xBBBBu64))
+            .expect("queue the member's publish");
+        net.tick();
+        let delivered = net.inbound_app_crdt_handle().lock().unwrap().len();
+        assert_eq!(
+            delivered, 1,
+            "a delta for a room this machine is in must still reach the broker queue",
+        );
+    }
+
     #[test]
     fn accepting_an_invite_joins_the_room_and_asks_it_for_a_catch_up() {
         use crate::network::invite::make_invite_token;
