@@ -109,10 +109,22 @@ impl PlayerApp {
         match open {
             Some(path) => app.open_path(path),
             None => {
+                // The demo shot must stay hermetic: pin the deterministic
+                // synthesized-frame engine so no real GStreamer pipeline is
+                // built and the placeholder `demo.local` host is never
+                // contacted — even though `decode` compiles the real backend in
+                // by default. `--shots --open <file>` is the real-decode path.
+                app.player.set_engine(media::MediaEngine::new_synthesized());
                 app.player
                     .open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
                 app.title = "Demo clip".to_string();
-                app.player.play();
+                // Park at a fixed position and pause so the synthesized frame and
+                // the transport read-out are byte-deterministic across runs: a
+                // *playing* demo would capture a different synth frame each time
+                // depending on warm-up timing. `open` already seeded a frame, so
+                // the `--shots` warm-up still breaks immediately.
+                app.player.seek_to_ms(8_000);
+                app.player.pause();
             }
         }
         if matches!(scenario, Some("settings") | Some("fullscreen")) {
