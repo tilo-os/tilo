@@ -57,6 +57,9 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
+use crate::shell::notification::{
+    Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::{
     GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
@@ -1452,6 +1455,44 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder) {
     state.remote_input_firewall.publish_view(view);
 }
 
+/// Stop every peer from driving this seat, and say so on screen.
+///
+/// The action half of the `Super+Esc` kill switch; the backend loop
+/// recognises the chord and calls this. Split out from that loop so the
+/// behaviour can be driven from a test — the loop itself is a `-> !`
+/// function that cannot be.
+///
+/// The confirmation is not decoration. Someone reaches for this key
+/// because a pointer is moving on their screen and they did not move it;
+/// what they need next is to know it stopped. So the toast is pushed
+/// with [`Notification::bypassing_dnd`] — Do-Not-Disturb is a request
+/// for quiet, and silently swallowing the answer to a panic key makes a
+/// working kill switch indistinguishable from a broken one — and it is
+/// persistent, because the stop is: nothing lifts it but the host.
+///
+/// Returns how many shares lost write access, which is what the toast
+/// counts.
+pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
+    let revoked = state.engage_remote_input_kill_switch();
+    fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new(
+                "Remote input stopped",
+                match revoked {
+                    0 => "No peer was driving this session.".to_string(),
+                    1 => "1 shared window is now view-only.".to_string(),
+                    n => format!("{n} shared windows are now view-only."),
+                },
+            )
+            .with_severity(NotificationSeverity::Warning)
+            .with_icon_kind(NotificationIconKind::Network)
+            .with_dismiss_after(PERSISTENT_DISMISS)
+            .bypassing_dnd(),
+        );
+    });
+    revoked
+}
+
 /// Route one backend input event.
 ///
 /// Returns `true` when the event was consumed by a client surface and must
@@ -2138,27 +2179,185 @@ mod tests {
             false,
         );
 
-        // Sweep the output. Wherever local input would land on a client,
-        // the firewall must name that same client; wherever local input
-        // lands on chrome, the firewall must name nothing.
-        let mut hits = 0;
+        // Probe each tile's inside and the pixels just past each of its
+        // edges: a hit-test discrepancy shows up at a boundary long
+        // before it shows up in the middle. Derived from the rects the
+        // layout actually produced rather than from fixed screen
+        // coordinates, because a strip that scrolls a group out of the
+        // viewport would otherwise turn this into a sweep over empty
+        // space that agrees on `None` everywhere and proves nothing.
+        let mut probes: Vec<(f64, f64)> = Vec::new();
+        for hit in &tiles {
+            let r = hit.rect;
+            let c = r.center();
+            probes.extend([
+                (c.x, c.y),
+                (r.x0 + 0.5, r.y0 + 0.5),
+                (r.x1 - 0.5, r.y1 - 0.5),
+                (r.x0 - 0.5, c.y),
+                (r.x1 + 0.5, c.y),
+                (c.x, r.y0 - 0.5),
+                (c.x, r.y1 + 0.5),
+            ]);
+        }
+        // Plus a coarse sweep of the whole output, which is mostly
+        // chrome: every one of those has to resolve to nothing on both
+        // sides, or the firewall would clear a click on the top bar.
         for gx in 0..80 {
             for gy in 0..45 {
-                let p = (gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0);
-                let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
-                assert_eq!(
-                    view.topmost_at(p),
-                    local,
-                    "at {p:?} the firewall and the pointer router disagree",
-                );
-                if local.is_some() {
-                    hits += 1;
-                }
+                probes.push((gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0));
+            }
+        }
+
+        // Wherever local input would land on a client, the firewall must
+        // name that same client; wherever local input lands on chrome,
+        // the firewall must name nothing.
+        let mut inside = 0;
+        for p in probes {
+            let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
+            assert_eq!(
+                view.topmost_at(p),
+                local,
+                "at {p:?} the firewall and the pointer router disagree",
+            );
+            if local.is_some() {
+                inside += 1;
             }
         }
         assert!(
-            hits > 0,
-            "the sweep never crossed a client tile, so it proved nothing",
+            inside >= tiles.len() * 3,
+            "only {inside} probes landed inside a tile across {} tiles, so \
+             agreement on a hit was never actually tested",
+            tiles.len(),
+        );
+    }
+
+    /// A `State` with a live seat, one peer holding write access to
+    /// `surface`, and that surface on screen with the keyboard.
+    fn state_sharing(surface: u64) -> crate::compositor::state::State {
+        use crate::network::input_firewall::ShellView;
+        use crate::network::streaming::StreamingShare;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        let mut state =
+            crate::compositor::state::State::new(event_loop.handle(), display.handle());
+        state
+            .share_registry
+            .insert(KILL_PEER, surface, StreamingShare::new());
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(surface, Rect::new(0.0, 0.0, 400.0, 300.0))],
+            Some(surface),
+            false,
+            false,
+        ));
+        state
+    }
+
+    const KILL_PEER: u64 = 77;
+    const KILL_SURFACE: u64 = 808;
+
+    fn guest_motion(
+        state: &mut crate::compositor::state::State,
+    ) -> Result<(), crate::network::input_firewall::Denial> {
+        state.review_remote_input(
+            KILL_PEER,
+            KILL_SURFACE,
+            crate::network::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+        )
+    }
+
+    /// The panic key, end to end from the action the chord triggers: a
+    /// guest is driving the seat, the host presses it, the guest stops,
+    /// and the host is told so.
+    #[test]
+    fn stopping_remote_input_halts_the_guest_and_says_so_on_screen() {
+        use crate::network::input_firewall::Denial;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+
+        guest_motion(&mut state).expect("the guest is driving the seat to begin with");
+
+        let revoked = stop_remote_input(&mut state, &mut fb);
+        assert_eq!(revoked, 1, "the one writable share had to lose write access");
+
+        assert_eq!(
+            guest_motion(&mut state),
+            Err(Denial::KillSwitch),
+            "the guest still reached the seat after the kill switch",
+        );
+
+        let chrome = fb.chrome();
+        let toast = chrome
+            .notifications()
+            .iter()
+            .find(|n| n.title == "Remote input stopped")
+            .expect("the host got no confirmation that anything happened");
+        assert!(
+            toast.body.contains('1'),
+            "the confirmation has to say what it stopped; body was {:?}",
+            toast.body,
+        );
+        assert!(
+            toast.dismiss_after >= std::time::Duration::from_secs(60),
+            "a stop that lasts until the host lifts it cannot be confirmed by a \
+             toast that slides away in five seconds",
+        );
+    }
+
+    /// Do-Not-Disturb is a request for quiet, not a request to be kept
+    /// uninformed about the machine's own security state. A suppressed
+    /// confirmation makes a working kill switch look exactly like a
+    /// broken one.
+    #[test]
+    fn the_kill_switch_confirmation_is_shown_under_do_not_disturb() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        fb.with_chrome(|chrome| chrome.set_dnd(true));
+
+        stop_remote_input(&mut state, &mut fb);
+
+        let chrome = fb.chrome();
+        assert!(
+            chrome.dnd(),
+            "the test has to actually be under DND or it proves nothing",
+        );
+        assert!(
+            chrome
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped"),
+            "the confirmation was held back into history by Do-Not-Disturb",
+        );
+    }
+
+    /// The notification stack is capped, and a guest driving a client can
+    /// make that client post toasts. Filling the stack must not be a way
+    /// to keep the host from seeing that their panic key worked.
+    #[test]
+    fn a_flood_of_app_toasts_cannot_push_the_confirmation_off_the_screen() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        fb.with_chrome(|chrome| {
+            for i in 0..crate::shell::notification::MAX_NOTIFICATIONS * 3 {
+                chrome.push_notification(format!("App toast {i}"), "noise");
+            }
+        });
+
+        stop_remote_input(&mut state, &mut fb);
+
+        let chrome = fb.chrome();
+        assert!(
+            chrome
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped"),
+            "a flood of app toasts buried the kill-switch confirmation",
         );
     }
 
@@ -2214,7 +2413,10 @@ mod tests {
             );
             checked += 1;
         }
-        for c in "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ".chars() {
+        // Every character the forward table maps, including the space
+        // some layouts deliver as text rather than `NamedKey::Space`.
+        const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
+        for c in CHARS.chars() {
             let key = Key::Character(SmolStr::new(c.to_string()));
             let code = evdev_from_logical(&key)
                 .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
@@ -2227,7 +2429,7 @@ mod tests {
         }
         assert_eq!(
             checked,
-            named.len() + 47,
+            named.len() + CHARS.chars().count(),
             "the round-trip sweep skipped keys",
         );
     }
