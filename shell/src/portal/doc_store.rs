@@ -250,6 +250,7 @@ pub fn doc_file_name(path: &Path) -> String {
 mod tests {
     use super::*;
     use crate::shell::state::WorkspaceId;
+    use std::path::Component;
 
     fn caller() -> PortalCaller {
         PortalCaller::new(WorkspaceId(7), "dev.qos.notes")
@@ -295,14 +296,40 @@ mod tests {
 
     #[test]
     fn a_caller_slug_is_two_components_and_cannot_escape() {
-        let c = PortalCaller::new(WorkspaceId(3), "../../etc/passwd");
-        let slug = caller_slug(&c);
-        assert_eq!(
-            Path::new(&slug).components().count(),
-            2,
-            "an app id must not add path components: {slug}"
-        );
-        assert!(!slug.contains(".."), "slug must not contain a parent hop: {slug}");
+        for hostile in [
+            "../../etc/passwd",
+            "..",
+            ".",
+            "/etc/shadow",
+            "a/../../b",
+            "..\\..\\windows",
+        ] {
+            let c = PortalCaller::new(WorkspaceId(3), hostile);
+            let slug = caller_slug(&c);
+            let components: Vec<_> = Path::new(&slug).components().collect();
+            assert_eq!(
+                components.len(),
+                2,
+                "an app id must not add path components: {hostile:?} -> {slug}"
+            );
+            // The property that matters is that no *component* is a
+            // traversal, not that the string lacks the substring — a
+            // file legitimately named `.._.._etc_passwd` is one
+            // directory and escapes nothing.
+            assert!(
+                components.iter().all(|c| matches!(c, Component::Normal(_))),
+                "every component must be an ordinary name: {hostile:?} -> {slug} \
+                 ({components:?})"
+            );
+            // And the composed path must stay under the root it is
+            // joined to, which is the thing the components check is a
+            // proxy for.
+            let root = Path::new("/run/qos/documents");
+            assert!(
+                root.join(&slug).starts_with(root),
+                "{hostile:?} escaped the store root: {slug}"
+            );
+        }
     }
 
     #[test]
