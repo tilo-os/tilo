@@ -262,6 +262,8 @@ pub struct VideoEditorApp {
     /// Vertical scroll offset of the inspector body (px), so the effects stack
     /// can grow past the pane without clipping the actions.
     inspector_scroll: f64,
+    /// Representative (or, under decode, real) thumbnail frames per source.
+    thumbnails: crate::thumbnail::ThumbnailCache,
     /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
     /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
@@ -347,6 +349,7 @@ impl VideoEditorApp {
             bin_drag: None,
             file_hovering: false,
             inspector_scroll: 0.0,
+            thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
         }
@@ -1631,6 +1634,19 @@ impl Widget for VideoEditorApp {
                 self.waveforms.request(id, &src);
             }
         }
+        // Thumbnails for visual sources: a representative frame now (cached),
+        // and a real one off-thread under the decode feature.
+        self.thumbnails.drain();
+        let visual: Vec<(MediaId, u8, crate::media::MediaSource, f64)> = self
+            .project
+            .media
+            .iter()
+            .filter(|m| m.kind.is_visual())
+            .map(|m| (m.id, m.palette, m.source(), (m.duration * 0.3).clamp(0.2, 3.0)))
+            .collect();
+        for (id, palette, src, at) in visual {
+            self.thumbnails.ensure(id, palette, &src, at);
+        }
         // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_applied && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
@@ -1654,6 +1670,7 @@ impl Widget for VideoEditorApp {
             || self.import_rx.is_some()
             || !self.pending_imports.is_empty()
             || self.waveforms.has_pending() // keep syncing until peaks land
+            || self.thumbnails.has_pending() // …and until real frames land
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2678,12 +2695,17 @@ impl VideoEditorApp {
             let thumb = Rect::new(rect.x0 + 8.0, rect.y0 + 8.0, rect.x0 + 8.0 + 64.0, rect.y1 - 8.0);
             let base = clip_color(theme, m.palette);
             fill_rrect(scene, tf, darken(base, 0.25), thumb, 5.0);
-            // mini content: filmstrip for visual, bars for audio.
+            // Visual media: the cached thumbnail frame (representative, or real
+            // under decode). Audio: a real waveform.
             if m.kind.is_visual() {
-                for i in 0..3 {
-                    let bx = thumb.x0 + 6.0 + i as f64 * 18.0;
-                    let block = Rect::new(bx, thumb.y0 + 6.0, bx + 14.0, thumb.y1 - 6.0);
-                    fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
+                if let Some(t) = self.thumbnails.get(mid) {
+                    blit_thumb(scene, tf, t, thumb, 5.0);
+                } else {
+                    for i in 0..3 {
+                        let bx = thumb.x0 + 6.0 + i as f64 * 18.0;
+                        let block = Rect::new(bx, thumb.y0 + 6.0, bx + 14.0, thumb.y1 - 6.0);
+                        fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
+                    }
                 }
             } else {
                 let color = lighten(base, 0.25);
@@ -3224,11 +3246,19 @@ impl VideoEditorApp {
         let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
         if inner.height() > 4.0 && inner.width() > 4.0 {
             if kind == TrackKind::Video {
-                let n = (inner.width() / 28.0).floor().max(1.0) as i64;
+                // A filmstrip of the clip's thumbnail cells (representative frame,
+                // or the real decoded frame under the decode feature).
+                let cell_w = (inner.height() * 16.0 / 9.0).clamp(24.0, 56.0);
+                let thumb = self.thumbnails.get(clip.media);
+                let n = (inner.width() / (cell_w + 2.0)).floor().max(1.0) as i64;
                 for i in 0..n {
-                    let bx = inner.x0 + 4.0 + i as f64 * 28.0;
-                    if bx + 22.0 > inner.x1 { break; }
-                    fill_rrect(scene, tf, lighten(base, 0.16), Rect::new(bx, inner.y0 + 3.0, bx + 22.0, inner.y1 - 3.0), 2.0);
+                    let bx = inner.x0 + 4.0 + i as f64 * (cell_w + 2.0);
+                    if bx + cell_w > inner.x1 { break; }
+                    let cell = Rect::new(bx, inner.y0 + 3.0, bx + cell_w, inner.y1 - 3.0);
+                    match thumb {
+                        Some(t) => blit_thumb(scene, tf, t, cell, 2.0),
+                        None => fill_rrect(scene, tf, lighten(base, 0.16), cell, 2.0),
+                    }
                 }
             } else {
                 let color = lighten(base, 0.3);
@@ -3373,6 +3403,35 @@ fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas
     let brush_tf = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
     let brush = ImageBrush::new(img);
     scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &dest);
+}
+
+/// Blit a thumbnail into `dest`, cover-fitting (fill + crop) with rounded
+/// corners `radius`. Used for the bin swatch and timeline filmstrip cells; the
+/// same path shows the generated representative frame or (under decode) the real
+/// decoded frame.
+fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, dest: Rect, radius: f64) {
+    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    let iw = thumb.width as f64;
+    let ih = thumb.height as f64;
+    if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
+        return;
+    }
+    let img = ImageData {
+        data: Blob::new(std::sync::Arc::new(thumb.rgba.clone())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: thumb.width,
+        height: thumb.height,
+    };
+    // Cover: scale so the frame fills the dest, cropping the overflow.
+    let scale = (dest.width() / iw).max(dest.height() / ih);
+    let dw = iw * scale;
+    let dh = ih * scale;
+    let dx = dest.x0 + (dest.width() - dw) * 0.5;
+    let dy = dest.y0 + (dest.height() - dh) * 0.5;
+    let brush_tf = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+    let brush = ImageBrush::new(img);
+    scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &RoundedRect::from_rect(dest, radius));
 }
 
 fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
