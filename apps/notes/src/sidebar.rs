@@ -1430,6 +1430,13 @@ impl NoteTreeView {
         self.flat_rows.get(idx).map(|r| r.depth)
     }
 
+    /// Test hook: the title of visible row `idx`, so a test can prove a
+    /// rename propagated into the sidebar.
+    #[doc(hidden)]
+    pub fn row_title_for_test(&self, idx: usize) -> Option<&str> {
+        self.flat_rows.get(idx).map(|r| r.title.as_str())
+    }
+
     /// Test hook: whether visible row `idx` has children (draws a
     /// disclosure triangle).
     #[doc(hidden)]
