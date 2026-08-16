@@ -17,7 +17,7 @@
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::model::{SavedLocation, WeatherModel, WeatherSnapshot};
+use crate::model::{AirQuality, SavedLocation, WeatherModel, WeatherSnapshot};
 use crate::units::{TempUnit, Units, WindUnit};
 
 pub struct WeatherDoc;
@@ -82,6 +82,19 @@ impl WeatherDoc {
         for (id, snap) in &model.snapshots {
             if let Ok(json) = serde_json::to_string(snap) {
                 let _ = doc.put(&snaps, id.to_string().as_str(), json);
+            }
+        }
+
+        // air_quality — JSON blobs keyed by location id (same cache treatment).
+        let aq = match doc.get(&ROOT, "air_quality") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "air_quality", ObjType::Map)
+                .expect("put air_quality map"),
+        };
+        for (id, reading) in &model.air_quality {
+            if let Ok(json) = serde_json::to_string(reading) {
+                let _ = doc.put(&aq, id.to_string().as_str(), json);
             }
         }
     }
@@ -165,6 +178,15 @@ impl WeatherDoc {
                 let json = Self::str_field(doc, &snaps, &key);
                 if let Ok(snap) = serde_json::from_str::<WeatherSnapshot>(&json) {
                     model.snapshots.insert(snap.location_id, snap);
+                }
+            }
+        }
+
+        if let Ok(Some((Value::Object(ObjType::Map), aq))) = doc.get(&ROOT, "air_quality") {
+            for key in doc.keys(&aq) {
+                let json = Self::str_field(doc, &aq, &key);
+                if let Ok(reading) = serde_json::from_str::<AirQuality>(&json) {
+                    model.air_quality.insert(reading.location_id, reading);
                 }
             }
         }
