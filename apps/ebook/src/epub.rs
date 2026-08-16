@@ -33,8 +33,24 @@ const COVER_MAX_EDGE: u32 = 480;
 
 type Archive = ZipArchive<Cursor<Vec<u8>>>;
 
+/// A book's stable identity: the BLAKE3 content hash of its EPUB bytes, prefixed
+/// `book:`. Deriving identity from the *bytes* (not the file path or the
+/// publisher's optional `<identifier>`) is what lets reading progress, highlights
+/// and comments follow the book itself — the same `.epub` opened from a different
+/// folder, on another of the reader's devices, or hydrated from the collaborative
+/// workspace resolves to the same id and therefore the same shared resources.
+/// This is the same content-addressing the qOS filesystem uses (`blake3`), so a
+/// book shared over the workspace keeps one identity end to end.
+pub fn content_id(bytes: &[u8]) -> String {
+    // 128 bits of the digest is ample to avoid collision across a personal
+    // library while keeping the id short enough to read in a CRDT key.
+    let hex = blake3::hash(bytes).to_hex();
+    format!("book:{}", &hex[..32])
+}
+
 /// Parse an in-memory EPUB into a [`Book`]. `cover_tint`/`subject` are cosmetic
-/// shelf hints supplied by the caller.
+/// shelf hints supplied by the caller. The book's id is its content hash
+/// ([`content_id`]) so annotations and progress travel with the file.
 pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book> {
     let mut archive = ZipArchive::new(Cursor::new(bytes.to_vec()))
         .context("open epub zip")?;
@@ -68,11 +84,10 @@ pub fn parse_epub(bytes: &[u8], cover_tint: usize, subject: &str) -> Result<Book
         return Err(anyhow!("epub has no readable chapters"));
     }
 
-    let id = if pkg.identifier.is_empty() {
-        format!("book:{}", slug(&pkg.title))
-    } else {
-        pkg.identifier.clone()
-    };
+    // Identity is the content hash of the file, never the path or the
+    // publisher's optional `<identifier>`: the same bytes always resolve to the
+    // same book, so its resources are shared across paths, devices and peers.
+    let id = content_id(bytes);
 
     // Decode the embedded cover, if the manifest declared one. A missing or
     // undecodable cover is not an error — the shelf falls back to a spine.
@@ -152,7 +167,6 @@ struct OpfPackage {
     publisher: String,
     description: String,
     subject: String,
-    identifier: String,
     /// Spine hrefs in reading order (resolved relative to the OPF base).
     spine: Vec<String>,
     /// href of the EPUB3 nav document, if declared (properties="nav").
@@ -181,7 +195,6 @@ impl OpfPackage {
         let publisher = meta_text("publisher");
         let description = meta_text("description");
         let subject = meta_text("subject");
-        let identifier = meta_text("identifier");
 
         // The legacy cover pointer: `<meta name="cover" content="item-id"/>`.
         let cover_meta_id = doc
@@ -269,7 +282,6 @@ impl OpfPackage {
             publisher,
             description,
             subject,
-            identifier,
             spine,
             nav_href,
             ncx_href,
@@ -439,14 +451,6 @@ fn normalize(path: &str) -> String {
     stack.join("/")
 }
 
-fn slug(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +472,23 @@ mod tests {
     fn strip_fragment_works() {
         assert_eq!(strip_fragment("ch1.xhtml#sec2"), "ch1.xhtml");
         assert_eq!(strip_fragment("ch1.xhtml"), "ch1.xhtml");
+    }
+
+    #[test]
+    fn identity_is_the_content_hash_not_the_path() {
+        // The same bytes always produce the same id — that is what lets a book's
+        // highlights and reading progress follow it across folders, devices and
+        // peers. Two different files produce two different ids.
+        let bytes = include_bytes!("../assets/sample.epub");
+        let a = parse_epub(bytes, 0, "Fable").unwrap();
+        let b = parse_epub(bytes, 3, "Something else").unwrap();
+        assert_eq!(a.id, b.id, "identical bytes → identical id, regardless of caller hints");
+        assert!(a.id.starts_with("book:"), "ids are namespaced");
+        assert_eq!(a.id, content_id(bytes), "the book id is exactly the content hash");
+
+        let mut tweaked = bytes.to_vec();
+        *tweaked.last_mut().unwrap() ^= 0xFF; // one flipped byte = a different file
+        assert_ne!(content_id(&tweaked), a.id, "different bytes → a different book");
     }
 
     #[test]
