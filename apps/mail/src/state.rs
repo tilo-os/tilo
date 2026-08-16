@@ -512,7 +512,7 @@ mod tests {
     use crate::engine::EngineRequest;
 
     fn state() -> MailState {
-        MailState::new_sample(crate::app::avatar_store())
+        MailState::new_sample(crate::app::avatar_store_offline())
     }
 
     fn first_inbox_id(st: &MailState) -> MessageId {

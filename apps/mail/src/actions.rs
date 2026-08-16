@@ -406,7 +406,7 @@ impl ResourceProvider for crate::app::MailApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{avatar_store, MailApp};
+    use crate::app::{avatar_store_offline, MailApp};
     use crate::model::Folder;
     use crate::state::{CtxAction, MailState};
     use automerge::ROOT;
@@ -662,7 +662,7 @@ mod tests {
     /// the framework [`ui::ActionHost`].
     #[test]
     fn affordance_dispatches_the_palette_action() {
-        let mut st = MailState::new_sample(avatar_store());
+        let mut st = MailState::new_sample(avatar_store_offline());
         let mut doc = AutoCommit::new();
         let id = an_inbox_id(&st);
 
