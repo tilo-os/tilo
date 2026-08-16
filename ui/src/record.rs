@@ -1306,7 +1306,10 @@ mod tests {
     /// document (the "save as" / already-loaded case) is written out rather
     /// than being mistaken for something already on disk.
     #[test]
-    #[serial_test::serial(record_state_dir)]
+    // Shares one serial key with every other test that mutates the
+    // process-global `XDG_DATA_HOME` (see `persist::tests`), so they cannot
+    // stomp each other's data root when run in parallel.
+    #[serial_test::serial(state_dir_env)]
     fn each_record_persists_to_its_own_file_and_comes_back() {
         let tmp = tempfile::tempdir().expect("temp dir");
         // SAFETY: this test is serialised on `record_state_dir`; no other
