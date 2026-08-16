@@ -70,6 +70,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         name: None,
         category: None,
         version: "0.0.0".to_string(),
+        kind: "app".to_string(),
         runtime: None,
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
@@ -371,6 +372,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         name: None,
         category: None,
         version: "0.0.0".to_string(),
+        kind: "app".to_string(),
         runtime: Some("qos-runtime/smoke-1.0.0".to_string()),
         entrypoint: Entrypoint {
             bin: "bin/hello".to_string(),
@@ -500,6 +502,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         name: None,
         category: None,
         version: "0.1.0".to_string(),
+        kind: "app".to_string(),
         runtime: Some(format!("qos-runtime/{version}")),
         entrypoint: Entrypoint {
             bin: "bin/thin".to_string(),
