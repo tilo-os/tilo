@@ -25,8 +25,9 @@ use ui::text_selection::{
     clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
     word_boundaries_chars,
 };
+use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{EmptyState, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -177,6 +178,14 @@ pub struct EditorView {
     find_matches: Vec<crate::find::Match>,
     /// Which of them is current, drawn more strongly than the rest.
     find_current: Option<usize>,
+
+    // ---- empty state ----
+    /// The "Open File" action pill's rect in the no-buffer zero-state, recorded
+    /// each draw for hit-testing. Empty when a buffer is open.
+    empty_action_rect: Rect,
+    /// Rising-edge flag set when the zero-state's action pill is clicked; the
+    /// app drains it and opens the file picker.
+    empty_action: bool,
 }
 
 impl EditorView {
@@ -207,7 +216,14 @@ impl EditorView {
             lsp_ask: None,
             find_matches: Vec::new(),
             find_current: None,
+            empty_action_rect: Rect::ZERO,
+            empty_action: false,
         }
+    }
+
+    /// Drain the rising-edge "Open File" click from the zero-state, if any.
+    pub fn take_empty_action(&mut self) -> bool {
+        std::mem::take(&mut self.empty_action)
     }
 
     /// Set the find bar's matches so they are tinted in the buffer.
@@ -1209,15 +1225,22 @@ impl Widget for EditorView {
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
 
         if self.text_obj.is_none() {
-            // Empty state.
-            text_renderer.draw_text(
+            // A composed zero-state through the shared primitive: a hero icon,
+            // a title, a one-line invitation, and an actionable "Open File"
+            // pill that summons the portal picker.
+            self.empty_action_rect = EmptyState::paint(
                 scene,
-                "Open a file from the explorer to start editing",
-                FONT_SIZE,
-                c.text_dim,
-                transform * Affine::translate((self.rect.x0 + 24.0, self.rect.y0 + 24.0)),
-                Some(self.rect.width() as f32),
-            );
+                transform,
+                text_renderer,
+                theme,
+                self.rect,
+                Some(Icon::FileCode),
+                "No file open",
+                Some("Open a file from the tree, or pick one to start editing."),
+                Some("Open File"),
+                self.last_cursor,
+            )
+            .unwrap_or(Rect::ZERO);
             return;
         }
 
@@ -1604,6 +1627,32 @@ impl Widget for EditorView {
         _taffy: &TaffyTree<()>,
     ) {
         if self.text_obj.is_none() {
+            // Unbound: the only interactive thing is the zero-state's "Open
+            // File" pill. Track the cursor for its hover (redrawing only when
+            // the pointer crosses the pill so an idle screen stays still), and
+            // fire the action on a click inside it.
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let next = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let was = self.empty_action_rect.contains(self.last_cursor);
+                    let now = self.empty_action_rect.contains(next);
+                    self.last_cursor = next;
+                    if was != now {
+                        self.dirty = true;
+                    }
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    if self.empty_action_rect.contains(self.last_cursor) {
+                        self.empty_action = true;
+                        *handled = true;
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         let mods = modifiers.state();
