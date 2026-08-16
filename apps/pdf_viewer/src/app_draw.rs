@@ -508,27 +508,17 @@ impl PdfApp {
             return;
         }
         let label = self.tooltip.label().to_string();
-        let anchor = self.tooltip_anchor;
-        let size = theme.tokens.typography.scale.sm;
-        let (tw, _) = tr.measure(&label, size, None);
-        let pad_x = 10.0;
-        let w = tw as f64 + 2.0 * pad_x;
-        let h = 26.0;
-        // Below the button, clamped into the window.
-        let mut x = (anchor.x0 + anchor.x1) / 2.0 - w / 2.0;
-        x = x.clamp(self.rect.x0 + 4.0, self.rect.x1 - w - 4.0);
-        let y = (anchor.y1 + 6.0).min(self.rect.y1 - h - 4.0);
-        let r = Rect::new(x, y, x + w, y + h);
-        let shape = RoundedRect::from_rect(r, theme.tokens.radii.sm as f64);
-        scene.fill(Fill::NonZero, base, theme.tokens.colors.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), base, theme.tokens.colors.border_standard, None, &shape);
-        tr.draw_text(
+        // Render through the shared tooltip chip (opaque overlay surface, soft
+        // shadow, measured width, flip/clamp into the window) so the PDF
+        // viewer's tooltips match every other app's — no bespoke painter.
+        ui::widget::tooltip::draw_hover_tooltip(
             scene,
+            base,
+            tr,
+            theme,
+            self.tooltip_anchor,
             &label,
-            size,
-            theme.tokens.colors.text_primary,
-            base * Affine::translate((x + pad_x, vcenter(r, size))),
-            None,
+            self.rect,
         );
     }
 
