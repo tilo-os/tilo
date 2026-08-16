@@ -45,6 +45,7 @@ fn button_uses_token_radius() {
         border_focus: t.colors.border_focus,
         text_primary: t.colors.text_primary,
         text_dim: t.colors.text_dim,
+        text_tertiary: t.colors.text_tertiary,
         accent_primary: t.colors.accent[5],
         accent_hover: t.colors.accent[4],
         status_success: t.colors.semantic.success,
