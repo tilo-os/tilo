@@ -36,7 +36,9 @@ fn main() {
 
     let mut narrow_r = OffscreenRenderer::new(narrow.0, narrow.1);
     {
-        let app = SettingsApp::with_selected(Category::RegionFormats).with_width_hint(narrow.0 as f32);
+        let app = SettingsApp::with_selected(Category::RegionFormats)
+            .with_width_hint(narrow.0 as f32)
+            .with_narrow_list_shot();
         let scene = build_widget_scene(Box::new(app), narrow);
         let path = format!("{out}/settings-narrow-list.png");
         narrow_r.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(&path));

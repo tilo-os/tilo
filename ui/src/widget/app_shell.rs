@@ -136,6 +136,13 @@ pub struct AppShell {
     /// Which narrow screen is showing (narrow only). Preserved across a
     /// wide↔narrow resize so the user returns to where they were.
     narrow_screen: NarrowScreen,
+    /// The surface the user most recently engaged (a press landed in it, a
+    /// category was picked, or Back was taken). A wide→narrow collapse seeds
+    /// [`Self::narrow_screen`] from this, so the content the user was reading
+    /// survives the resize instead of dumping them back on the category list.
+    /// Defaults to [`NarrowScreen::Content`] — a collapse **never** defaults to
+    /// the navigation list.
+    last_active: NarrowScreen,
     /// A width to resolve the layout from before the first real frame — the
     /// offscreen `--shots` renderer seeds this so a cold screenshot picks the
     /// right wide/narrow layout immediately.
@@ -176,7 +183,11 @@ impl AppShell {
             search: None,
             sidebar_width: DEFAULT_SHELL_SIDEBAR_WIDTH,
             breakpoint: DEFAULT_SHELL_BREAKPOINT,
-            narrow_screen: NarrowScreen::List,
+            // Collapse to the CONTENT first: the primary content stays on
+            // screen and the category list is reachable via the back arrow.
+            // Never default a collapse to the navigation list.
+            narrow_screen: NarrowScreen::Content,
+            last_active: NarrowScreen::Content,
             width_hint: None,
             pending_rebuild: false,
             rect: Rect::ZERO,
@@ -221,10 +232,13 @@ impl AppShell {
         self
     }
 
-    /// Seed which narrow screen the shell starts on (a `--shots` state). No
-    /// visible effect when the layout resolves to wide.
+    /// Seed which narrow screen the shell starts on — the "active surface"
+    /// hint (a `--shots` state, or a host that tracks navigation in its own
+    /// model). No visible effect when the layout resolves to wide. Also seeds
+    /// the last-interacted surface, so a later collapse honours this choice.
     pub fn with_narrow_screen(mut self, screen: NarrowScreen) -> Self {
         self.narrow_screen = screen;
+        self.last_active = screen;
         self
     }
 
@@ -246,6 +260,9 @@ impl AppShell {
     /// navigates from the list screen to the content screen (the master→detail
     /// step). A no-op when wide (both are already visible).
     pub fn notify_selection(&mut self) {
+        // Picking a category is a move toward its content — remember that so a
+        // later collapse keeps the content on screen.
+        self.last_active = NarrowScreen::Content;
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List {
             self.narrow_screen = NarrowScreen::Content;
             self.pending_rebuild = true;
@@ -259,6 +276,9 @@ impl AppShell {
     pub fn back(&mut self) -> bool {
         if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
             self.narrow_screen = NarrowScreen::List;
+            // The user explicitly asked for the list — respect that on a later
+            // collapse instead of forcing the content-first default.
+            self.last_active = NarrowScreen::List;
             self.pending_rebuild = true;
             true
         } else {
@@ -609,6 +629,12 @@ impl Widget for AppShell {
         let now = ShellLayout::from_width(self.rect.width(), self.breakpoint);
         if now != self.built_layout {
             self.pending_rebuild = true;
+            // A wide→narrow collapse can only show one surface. Seed it from
+            // the last-interacted one (content by default) so the content the
+            // user was reading survives the resize — never the category list.
+            if now == ShellLayout::Narrow {
+                self.narrow_screen = self.last_active;
+            }
         }
         // Once we have a real rect, stop leaning on the seed hint.
         self.width_hint = None;
@@ -689,6 +715,18 @@ impl Widget for AppShell {
                     self.back_press = true;
                     *handled = true;
                     return;
+                }
+                // Record which surface the user engaged so a later collapse
+                // keeps them there. Not consumed — the press still routes to
+                // the child under it.
+                if self.content_area_rect.width() > 0.0
+                    && self.content_area_rect.contains(self.last_cursor)
+                {
+                    self.last_active = NarrowScreen::Content;
+                } else if self.sidebar_panel_rect.width() > 0.0
+                    && self.sidebar_panel_rect.contains(self.last_cursor)
+                {
+                    self.last_active = NarrowScreen::List;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
@@ -896,16 +934,40 @@ mod tests {
         assert!(s.content_area_rect.x1 > s.sidebar_panel_rect.x1, "content fills the area to the right");
     }
 
-    /// Narrow: the list is its OWN full-screen screen — not an overlay, not a
-    /// scrim over the content. The content is not even built behind it.
+    /// Narrow collapse keeps the CONTENT on screen, never the category list.
+    /// The list is reachable via the back arrow — it is not the default screen.
     #[test]
-    fn narrow_shows_a_standalone_list_screen_not_an_overlay() {
+    fn narrow_collapses_to_content_not_the_list() {
         // Seed the width so the cold frame resolves narrow immediately (as a
         // real narrow window boot does).
         let mut s = shell().with_width_hint(460.0);
         lay(&mut s, 460.0, 820.0);
         assert!(s.is_narrow(), "460px resolves to the narrow layout");
-        assert_eq!(s.narrow_screen(), NarrowScreen::List, "narrow starts on the list screen");
+        assert_eq!(
+            s.narrow_screen(),
+            NarrowScreen::Content,
+            "a collapse keeps the content — never defaults to the nav list",
+        );
+        assert!(!s.sidebar_open(), "the category list is NOT the shown surface");
+        // The content fills the whole window.
+        assert!((s.content_area_rect.width() - 460.0).abs() < 0.5, "content fills the screen width");
+        assert!((s.content_area_rect.height() - 820.0).abs() < 0.5, "content fills the screen height");
+        // The list is reachable: a back arrow sits in the top-left.
+        assert!(s.back_rect().width() > 0.0, "the content screen offers a back arrow to reach the list");
+        // Only the content is composed — the nav/search are off this screen.
+        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["Text"], "content screen composes only the content");
+    }
+
+    /// When the user IS on the list screen (reached via Back / an explicit
+    /// hint), it is its OWN full-screen screen — not an overlay, not a scrim
+    /// over the content. The content is not even built behind it.
+    #[test]
+    fn narrow_list_screen_is_standalone_not_an_overlay() {
+        let mut s = shell().with_width_hint(460.0).with_narrow_screen(NarrowScreen::List);
+        lay(&mut s, 460.0, 820.0);
+        assert!(s.is_narrow(), "460px resolves to the narrow layout");
+        assert_eq!(s.narrow_screen(), NarrowScreen::List);
         assert!(s.sidebar_open(), "the list screen shows the sidebar");
         // The list fills the whole window.
         assert!((s.sidebar_panel_rect.width() - 460.0).abs() < 0.5, "the list fills the screen width");
@@ -922,7 +984,8 @@ mod tests {
     /// screen, which shows the content full-screen with a back arrow.
     #[test]
     fn narrow_pick_navigates_to_content_with_back() {
-        let mut s = shell();
+        // Start on the list screen (the user navigated Back to it).
+        let mut s = shell().with_narrow_screen(NarrowScreen::List);
         lay(&mut s, 460.0, 820.0);
         assert_eq!(s.narrow_screen(), NarrowScreen::List);
         // The host calls this when a row is picked.
@@ -993,13 +1056,14 @@ mod tests {
         // Cross to narrow. The first frame after a breakpoint cross rebuilds
         // (the cross is only known once `apply_layout` sees the new width), so
         // settle with a second layout — exactly what the host's frame loop does.
+        // The collapse keeps the CONTENT, so only the content is composed.
         lay(&mut s, 460.0, 820.0);
+        lay(&mut s, 460.0, 820.0);
+        assert_eq!(s.children().len(), 1, "narrow collapse composes only the content");
+        // Navigate back to the list screen: search + nav, no content behind.
+        assert!(s.back(), "back moves to the list screen");
         lay(&mut s, 460.0, 820.0);
         assert_eq!(s.children().len(), 2, "narrow list composes search + nav (no content behind)");
-        // Navigate to the content screen: content only.
-        s.notify_selection();
-        lay(&mut s, 460.0, 820.0);
-        assert_eq!(s.children().len(), 1, "narrow content composes only the content");
     }
 
     #[test]
