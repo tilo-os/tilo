@@ -1418,6 +1418,40 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     state.set_client_keyboard_focus(target);
 }
 
+/// Tell the remote-input firewall what is on screen.
+///
+/// Called every tick, immediately after [`sync_keyboard_focus`], so a
+/// remote event is judged against the screen the local user is actually
+/// looking at — including which surface holds the keyboard, which is what
+/// mutes a guest's keystrokes the instant the host focuses something
+/// private.
+///
+/// The tile list comes from [`foreign_tiles`], the same enumeration
+/// [`foreign_tile_at`] resolves local clicks with. That shared traversal
+/// is the point: a clickjacking check that walked the tree separately
+/// would eventually disagree with where a click really lands, and the
+/// disagreement would be the hole.
+pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder) {
+    let tiles: Vec<(u64, Rect)> = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tiles(&tree, fb.host())
+            .into_iter()
+            // A tab whose surface the compositor no longer holds is not a
+            // place input can land, for the local user or a remote one.
+            .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
+            .map(|hit| (hit.surface_id, hit.rect))
+            .collect()
+    };
+    let view = crate::network::input_firewall::ShellView::new(
+        tiles,
+        state.client_input.keyboard_focus(),
+        chrome_captures_input(fb),
+        fb.host().palette_visible(),
+    );
+    state.remote_input_firewall.publish_view(view);
+}
+
 /// Route one backend input event.
 ///
 /// Returns `true` when the event was consumed by a client surface and must
@@ -1433,6 +1467,13 @@ pub fn route_input(
     event: &WindowEvent,
     modifiers: &Modifiers,
 ) -> bool {
+    // The host touching their own keyboard or mouse takes priority over
+    // every remote peer for the next half second. Stamped here because
+    // this is the one function both the live backend loop and the
+    // test-control socket push local input through.
+    state
+        .remote_input_firewall
+        .note_local_input(std::time::Instant::now());
     let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
