@@ -229,6 +229,50 @@ impl SlashMenu {
         )
     }
 
+    /// The visible-row index under logical point `pt`, if the menu is open
+    /// and `pt` lands on a row. Shared by hover-highlight and click-select.
+    fn row_at(&self, pt: Point) -> Option<usize> {
+        if !self.visible_flag {
+            return None;
+        }
+        let rect = self.rect();
+        if !rect.contains(pt) {
+            return None;
+        }
+        let rel = pt.y - (rect.y0 + PADDING_Y);
+        if rel < 0.0 {
+            return None;
+        }
+        let idx = (rel / ROW_HEIGHT).floor() as usize;
+        (idx < self.visible.len()).then_some(idx)
+    }
+
+    /// Move the highlight to the row under `pt` (pointer hover). No-op when
+    /// `pt` isn't over a row, so hovering the padding leaves the last row lit.
+    /// Returns `true` if the highlight moved (so the caller can redraw).
+    pub fn hover_at(&mut self, pt: Point) -> bool {
+        match self.row_at(pt) {
+            Some(idx) if idx != self.cursor => {
+                self.cursor = idx;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Commit the row under `pt` as if Enter were pressed on it — the chosen
+    /// [`BlockKind`] is both returned and queued via [`take_selected_kind`], and
+    /// the menu closes. Returns `None` (and leaves the menu open) when `pt`
+    /// isn't on a row, so the caller can treat an off-row click as a dismiss.
+    pub fn click_at(&mut self, pt: Point) -> Option<BlockKind> {
+        let idx = self.row_at(pt)?;
+        let &row_idx = self.visible.get(idx)?;
+        let kind = self.rows[row_idx].kind.clone();
+        self.pending_selection = Some(kind.clone());
+        self.set_visible(false);
+        Some(kind)
+    }
+
     fn rebuild_visible(&mut self) {
         let needle = self.filter.to_lowercase();
         self.visible.clear();
@@ -670,6 +714,45 @@ mod tests {
             m.take_selected_kind(),
             Some(BlockKind::Numbered { indent: 0 })
         );
+    }
+
+    #[test]
+    fn click_at_selects_row_strips_and_closes() {
+        let mut m = SlashMenu::new();
+        m.set_anchor(Point::new(0.0, 0.0));
+        m.set_visible(true);
+        // Row 1 is "Heading 1"; land the click inside its band.
+        let pt = Point::new(10.0, PADDING_Y + ROW_HEIGHT + 2.0);
+        assert_eq!(m.click_at(pt), Some(BlockKind::Heading(1)));
+        assert!(!m.is_visible(), "clicking a row commits and closes the menu");
+        assert_eq!(
+            m.take_selected_kind(),
+            Some(BlockKind::Heading(1)),
+            "the click also queues the kind for the parent to drain"
+        );
+    }
+
+    #[test]
+    fn click_off_any_row_selects_nothing() {
+        let mut m = SlashMenu::new();
+        m.set_anchor(Point::new(0.0, 0.0));
+        m.set_visible(true);
+        assert_eq!(m.click_at(Point::new(10.0, 5000.0)), None);
+        assert!(m.is_visible(), "an off-row click leaves the menu open for the caller");
+    }
+
+    #[test]
+    fn hover_at_moves_the_highlight_to_the_row_under_the_pointer() {
+        let mut m = SlashMenu::new();
+        m.set_anchor(Point::new(0.0, 0.0));
+        m.set_visible(true);
+        assert_eq!(m.highlighted_kind(), Some(&BlockKind::Paragraph));
+        // Row 2 is "Heading 2".
+        let pt = Point::new(10.0, PADDING_Y + 2.0 * ROW_HEIGHT + 2.0);
+        assert!(m.hover_at(pt), "hovering a new row reports a move");
+        assert_eq!(m.highlighted_kind(), Some(&BlockKind::Heading(2)));
+        assert!(!m.hover_at(pt), "hovering the same row is not a move");
+        assert!(!m.hover_at(Point::new(10.0, 5000.0)), "hovering off any row is a no-op");
     }
 
     #[test]
