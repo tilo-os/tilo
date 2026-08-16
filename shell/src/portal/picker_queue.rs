@@ -166,19 +166,32 @@ impl PickerScope {
 /// documents directory falls back to `$HOME` rather than growing one as
 /// a side effect of opening a dialog.
 fn documents_dir(home: Option<&Path>) -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_DOCUMENTS_DIR").map(PathBuf::from) {
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
     let home = home?;
-    if let Some(dir) = documents_from_user_dirs(home) {
-        if dir.is_dir() {
-            return Some(dir);
-        }
+    let configured = std::env::var_os("XDG_DOCUMENTS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| documents_from_user_dirs(home));
+    if let Some(dir) = configured.filter(|d| is_useful_documents_dir(d, home)) {
+        return Some(dir);
     }
     let conventional = home.join("Documents");
     conventional.is_dir().then_some(conventional)
+}
+
+/// Is a configured documents directory worth opening on?
+///
+/// It has to exist, and it has to be somewhere other than `$HOME`.
+/// `xdg-user-dirs` writes `XDG_DOCUMENTS_DIR="$HOME/"` when the user has
+/// no documents folder — this machine does — and that value carries no
+/// information: it is the "unset" state spelled as a path. Honouring it
+/// literally lands the dialog on the home directory, whose first screen
+/// is whatever sorts first there. On a developer's machine that is
+/// eighteen rows of dotfiles and not one document.
+///
+/// So a documents directory that *is* the home directory is treated as
+/// absent, and the conventional `~/Documents` gets a look before we give
+/// up and use `$HOME` anyway.
+fn is_useful_documents_dir(dir: &Path, home: &Path) -> bool {
+    dir.is_dir() && dir != home
 }
 
 /// Parse `XDG_DOCUMENTS_DIR="$HOME/…"` out of `user-dirs.dirs`.
@@ -259,6 +272,61 @@ mod tests {
             rx.await.is_err(),
             "a dropped sender must close the channel, which the \
              FileChooser backend maps to cancelled"
+        );
+    }
+
+    #[test]
+    fn a_documents_dir_that_is_home_is_treated_as_unset() {
+        // `xdg-user-dirs` writes XDG_DOCUMENTS_DIR="$HOME/" when there
+        // is no documents folder. Taking that literally opens the dialog
+        // on the home directory, which on a developer's machine is a
+        // screen of dotfiles.
+        let home = Path::new("/home/someone");
+        assert!(
+            !is_useful_documents_dir(home, home),
+            "a documents dir equal to home carries no information"
+        );
+    }
+
+    #[test]
+    fn a_missing_documents_dir_is_not_used() {
+        let home = Path::new("/home/someone");
+        assert!(!is_useful_documents_dir(
+            Path::new("/definitely/not/here"),
+            home
+        ));
+    }
+
+    #[test]
+    fn user_dirs_expands_the_home_variable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".config")).expect("mkdir");
+        std::fs::write(
+            home.join(".config/user-dirs.dirs"),
+            "XDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\nXDG_DOCUMENTS_DIR=\"$HOME/Papers\"\n",
+        )
+        .expect("write");
+        assert_eq!(
+            documents_from_user_dirs(home),
+            Some(home.join("Papers")),
+            "$HOME/ must expand to the real home"
+        );
+    }
+
+    #[test]
+    fn user_dirs_keeps_an_absolute_path_as_written() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path();
+        std::fs::create_dir_all(home.join(".config")).expect("mkdir");
+        std::fs::write(
+            home.join(".config/user-dirs.dirs"),
+            "XDG_DOCUMENTS_DIR=\"/srv/papers\"\n",
+        )
+        .expect("write");
+        assert_eq!(
+            documents_from_user_dirs(home),
+            Some(PathBuf::from("/srv/papers"))
         );
     }
 
