@@ -28,7 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Avatar, Link, TextInput, Widget};
+use ui::widget::{Avatar, Button, ButtonFace, ButtonStyle, Link, TextInput, Widget};
 
 use crate::date;
 use crate::doc::ContactsDoc;
@@ -55,13 +55,18 @@ const PAD: f64 = 16.0;
 const FIELD_H: f64 = 38.0;
 
 /// Edit-form header band geometry. The header is two stacked rows so the
-/// title and the Favorite control never overlap: row 1 is the title, row 2
+/// identity block and the Favorite control never overlap: row 1 is the
+/// identity anchor (an avatar + the contact's name, mirroring the read view so
+/// the switch into editing reads as the *same* record, not a new screen), row 2
 /// holds the Favorite pill and the Save/Cancel buttons. `layout_form` and
 /// `draw_form` both derive their offsets from these so the hit rects and the
-/// painted text stay aligned.
-const FORM_TITLE_TOP: f64 = 16.0; // title row top, relative to detail pane top
-const FORM_TITLE_H: f64 = 26.0; // title row height
-const FORM_ROW_GAP: f64 = 10.0; // vertical gap between header rows / before body
+/// painted content stay aligned.
+const FORM_TITLE_TOP: f64 = 16.0; // identity row top, relative to detail pane top
+const FORM_TITLE_H: f64 = 44.0; // identity row height (fits the avatar chip)
+const FORM_ROW_GAP: f64 = 12.0; // vertical gap between header rows / before body
+
+/// Avatar chip diameter in the edit-form identity row.
+const FORM_AVATAR: f64 = 40.0;
 
 /// Type labels offered in the phone/email/address chip menu.
 const TYPE_OPTIONS: &[&str] = &["home", "work", "mobile", "main", "other"];
@@ -807,6 +812,20 @@ impl ContactsApp {
         self.commit_select(id);
     }
 
+    /// Open `id` from *outside* the list — the global Ctrl+K palette. Unlike a
+    /// row click, the target may be hidden by the current group filter or in-app
+    /// search, so "open" has to actively reveal it: if it is not in the visible
+    /// set, drop those filters first, then select it. Otherwise the detail pane
+    /// would show the contact while the list left the row filtered out — opened
+    /// but not actually found.
+    fn reveal_contact(&mut self, id: ContactId) {
+        if !self.visible_ids().contains(&id) {
+            self.group_filter = None;
+            self.search.set_text("");
+        }
+        self.commit_select(id);
+    }
+
     /// Unconditionally switch selection to `id` (leaving any edit form).
     fn commit_select(&mut self, id: ContactId) {
         self.form = None;
@@ -1539,9 +1558,10 @@ impl ContactsApp {
             );
         }
 
-        toolbar_button(scene, t, tr, theme, self.hit.import, "Import", false);
-        toolbar_button(scene, t, tr, theme, self.hit.export, "Export", false);
-        toolbar_button(scene, t, tr, theme, self.hit.new, "+ New", true);
+        let hov = |r: Rect| r.contains(self.last_mouse);
+        toolbar_button(scene, t, tr, theme, self.hit.import, "Import", false, hov(self.hit.import), false);
+        toolbar_button(scene, t, tr, theme, self.hit.export, "Export", false, hov(self.hit.export), false);
+        toolbar_button(scene, t, tr, theme, self.hit.new, "+ New", true, hov(self.hit.new), false);
     }
 
     fn draw_list(
@@ -1730,8 +1750,8 @@ impl ContactsApp {
 
         // Action buttons (favorite star, Edit, Delete) — top right.
         draw_star(scene, t, self.hit.fav.center(), 11.0, theme.accent_primary, contact.favorite);
-        toolbar_button(scene, t, tr, theme, self.hit.edit, "Edit", true);
-        toolbar_button(scene, t, tr, theme, self.hit.delete, "Delete", false);
+        toolbar_button(scene, t, tr, theme, self.hit.edit, "Edit", true, self.hit.edit.contains(self.last_mouse), false);
+        toolbar_button(scene, t, tr, theme, self.hit.delete, "Delete", false, self.hit.delete.contains(self.last_mouse), false);
 
         // Name + subtitle on their own full-width rows beneath the avatar.
         let head_w = (x1 - x0).max(40.0) as f32;
@@ -1895,22 +1915,39 @@ impl ContactsApp {
         let off = self.detail_top_offset();
         let x0 = area.x0 + PAD;
 
-        // Header band (not scrolled), two stacked rows so the title and the
-        // Favorite control don't collide. On a narrow window the whole band is
-        // pushed down so the Back affordance pill sits above it. Title sits on
-        // its own row (`FORM_TITLE_TOP`), vertically centered in `FORM_TITLE_H`.
-        let title = if self.form.as_ref().map(|f| f.is_new).unwrap_or(false) {
-            "New Contact"
-        } else {
-            "Edit Contact"
+        // Header band (not scrolled), two stacked rows. Row 1 is the identity
+        // anchor: a compact avatar chip + the record's name, the same shape the
+        // read view leads with, so entering the editor reads as the *same*
+        // contact rather than a new screen. Row 2 holds the Favorite toggle
+        // (left) and the Cancel / Save actions (right). On a narrow window the
+        // whole band is pushed down so the Back affordance pill sits above it.
+        let (show_new, draft_name, initials) = {
+            let f = self.form.as_ref().unwrap();
+            let d = &f.draft;
+            // A brand-new record still reads as "New Contact" only while it has
+            // no identifying text; once a name/org is typed the heading follows
+            // it live, so the identity anchor forms as you fill the record in.
+            let blank = d.first.trim().is_empty()
+                && d.last.trim().is_empty()
+                && d.org.trim().is_empty();
+            (f.is_new && blank, d.display_name(), d.initials())
         };
         let title_y = area.y0 + FORM_TITLE_TOP + off;
+        // Avatar chip, vertically centred in the identity row.
+        let av_y = title_y + (FORM_TITLE_H - FORM_AVATAR) / 2.0;
+        let av = Rect::new(x0, av_y, x0 + FORM_AVATAR, av_y + FORM_AVATAR);
+        draw_avatar(scene, t, tr, theme, av, &initials);
+        // Heading: the forming name, or a clear "New Contact" while it is blank
+        // so a fresh record never reads as the "No Name" placeholder.
+        let heading = if show_new { "New Contact".to_string() } else { draft_name };
+        let head_avail = (self.hit.cancel.x0 - 12.0 - (av.x1 + 12.0)).max(40.0) as f32;
+        let heading = tr.elide_to_width_weighted(&heading, 20.0, head_avail, TextWeight::Bold);
         tr.draw_text_weighted(
             scene,
-            title,
-            18.0,
+            &heading,
+            20.0,
             c.text_primary,
-            t * Affine::translate((x0, title_y + (FORM_TITLE_H - 22.0) / 2.0)),
+            t * Affine::translate((av.x1 + 12.0, av.center().y - 13.0)),
             None,
             TextWeight::Bold,
         );
@@ -1918,22 +1955,29 @@ impl ContactsApp {
         // Favorite toggle pill.
         {
             let r = self.hit.fav_toggle;
+            let hovered = r.contains(self.last_mouse);
             let shape = RoundedRect::from_rect(r, theme.tokens.radii.md as f64);
-            let bg = if fav { theme.accent_primary.with_alpha_factor(0.18) } else { c.surfaces.raised };
+            let bg = if fav {
+                theme.accent_primary.with_alpha_factor(0.18)
+            } else if hovered {
+                theme.bg_hover
+            } else {
+                c.surfaces.raised
+            };
             scene.fill(Fill::NonZero, t, bg, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             draw_star(scene, t, Point::new(r.x0 + 16.0, r.center().y), 7.0, theme.accent_primary, fav);
             tr.draw_text(
                 scene,
-                "Favorite",
+                if fav { "Favorited" } else { "Favorite" },
                 12.0,
                 if fav { theme.accent_primary } else { c.text_dim },
                 t * Affine::translate((r.x0 + 30.0, r.center().y - 7.0)),
                 None,
             );
         }
-        toolbar_button(scene, t, tr, theme, self.hit.save, "Save", true);
-        toolbar_button(scene, t, tr, theme, self.hit.cancel, "Cancel", false);
+        toolbar_button(scene, t, tr, theme, self.hit.save, "Save", true, self.hit.save.contains(self.last_mouse), false);
+        toolbar_button(scene, t, tr, theme, self.hit.cancel, "Cancel", false, self.hit.cancel.contains(self.last_mouse), false);
 
         // Scrollable body, clipped below the two-row header band (title row +
         // controls row). Derived from the same constants as `layout_form` so
@@ -1966,12 +2010,14 @@ impl ContactsApp {
         }
         // Phone / email / address section headers anchored ABOVE the first
         // field row of each group (falling back to the group's "+ Add" button
-        // when the group is empty). Previously these anchored to the add
-        // button — which sits at the BOTTOM of the group — so the label was
-        // painted on the row *above* the button, bleeding through behind that
-        // row's type chip. Anchoring to the first row fixes that overlap.
+        // when the group is empty). The header's *x* is pinned to the form's
+        // left margin — the type-chip column — not the indented value input, so
+        // PHONE / EMAIL / ADDRESS line up flush-left with NAME / ORGANIZATION
+        // instead of floating in over the value column. Its *y* still tracks the
+        // first row so it sits cleanly above the group.
         let section_anchor = |slot: Slot, add_btn: Rect| -> Rect {
-            find(slot).unwrap_or(add_btn)
+            let r = find(slot).unwrap_or(add_btn);
+            Rect::new(x0, r.y0, r.x1, r.y1)
         };
         label(scene, tr, "PHONE", section_anchor(Slot::Phone(0), self.hit.add_phone));
         label(scene, tr, "EMAIL", section_anchor(Slot::Email(0), self.hit.add_email));
@@ -2220,9 +2266,10 @@ impl ContactsApp {
         scene.pop_layer();
 
         // Footer buttons.
-        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false);
-        toolbar_button(scene, t, tr, theme, g.export_v3, "Export 3.0", false);
-        toolbar_button(scene, t, tr, theme, g.export_v4, "Export 4.0", true);
+        let m = self.last_mouse;
+        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false, g.cancel.contains(m), false);
+        toolbar_button(scene, t, tr, theme, g.export_v3, "Export 3.0", false, g.export_v3.contains(m), false);
+        toolbar_button(scene, t, tr, theme, g.export_v4, "Export 4.0", true, g.export_v4.contains(m), false);
         let _ = g.content_h;
     }
 
@@ -2255,9 +2302,10 @@ impl ContactsApp {
             t * Affine::translate((g.panel.x0 + 20.0, g.panel.y0 + 48.0)),
             Some((g.panel.width() - 40.0) as f32),
         );
-        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false);
-        toolbar_button(scene, t, tr, theme, g.discard, "Discard", false);
-        toolbar_button(scene, t, tr, theme, g.save, "Save", true);
+        let m = self.last_mouse;
+        toolbar_button(scene, t, tr, theme, g.cancel, "Cancel", false, g.cancel.contains(m), false);
+        toolbar_button(scene, t, tr, theme, g.discard, "Discard", false, g.discard.contains(m), false);
+        toolbar_button(scene, t, tr, theme, g.save, "Save", true, g.save.contains(m), false);
     }
 
     fn draw_confirm(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, id: ContactId) {
@@ -2284,19 +2332,21 @@ impl ContactsApp {
             t * Affine::translate((panel.x0 + 20.0, panel.y0 + 48.0)),
             Some((panel.width() - 40.0) as f32),
         );
-        toolbar_button(scene, t, tr, theme, cancel, "Cancel", false);
-        // Danger button.
-        let shape = RoundedRect::from_rect(del, theme.tokens.radii.md as f64);
-        scene.fill(Fill::NonZero, t, c.semantic.danger, None, &shape);
-        let dw = tr.measure("Delete", 14.0, None).0 as f64;
-        tr.draw_text_weighted(
+        let m = self.last_mouse;
+        toolbar_button(scene, t, tr, theme, cancel, "Cancel", false, cancel.contains(m), false);
+        // Destructive confirm — the shared danger face, so it gives the same
+        // hover feedback as every other button rather than reading as dead.
+        Button::paint(
             scene,
-            "Delete",
-            14.0,
-            Color::WHITE,
-            t * Affine::translate((del.center().x - dw / 2.0, del.center().y - 8.0)),
-            None,
-            TextWeight::Semibold,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(del, "Delete")
+                .style(ButtonStyle::Danger)
+                .radius(theme.tokens.radii.md as f64)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .hovered(del.contains(m)),
         );
     }
 
@@ -2486,6 +2536,13 @@ fn type_label<'a>(draft: &'a Contact, target: TypeTarget) -> &'a str {
     }
 }
 
+/// A themed chrome button, painted through the shared [`ui::Button`] face
+/// ([`Button::paint`]/[`ButtonFace`]) so every button in the app reads from the
+/// one `face_colors` source of truth and gains real hover / press feedback,
+/// rather than a hand-rolled fill that looks dead. `hovered`/`pressed` come from
+/// the caller's own hit-testing against the last pointer position; the rest
+/// look (radius, 13px medium label, accent-vs-raised fills) matches the chrome
+/// this app has always drawn.
 fn toolbar_button(
     scene: &mut Scene,
     t: Affine,
@@ -2494,28 +2551,25 @@ fn toolbar_button(
     rect: Rect,
     label: &str,
     primary: bool,
+    hovered: bool,
+    pressed: bool,
 ) {
     if rect.width() <= 0.0 {
         return;
     }
-    let c = &theme.tokens.colors;
-    let shape = RoundedRect::from_rect(rect, theme.tokens.radii.md as f64);
-    if primary {
-        scene.fill(Fill::NonZero, t, theme.accent_primary, None, &shape);
-    } else {
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-    }
-    let col = if primary { Color::WHITE } else { c.text_primary };
-    let tw = tr.measure(label, 13.0, None).0 as f64;
-    tr.draw_text_weighted(
+    let style = if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral };
+    Button::paint(
         scene,
-        label,
-        13.0,
-        col,
-        t * Affine::translate((rect.center().x - tw / 2.0, rect.center().y - 8.0)),
-        None,
-        TextWeight::Medium,
+        t,
+        tr,
+        theme,
+        &ButtonFace::new(rect, label)
+            .style(style)
+            .radius(theme.tokens.radii.md as f64)
+            .text_size(13.0)
+            .weight(TextWeight::Medium)
+            .hovered(hovered)
+            .pressed(pressed),
     );
 }
 
@@ -3028,7 +3082,7 @@ impl Widget for ContactsApp {
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id) {
             if self.store.get(id).is_some() {
-                self.commit_select(id);
+                self.reveal_contact(id);
             }
         }
     }
@@ -4168,6 +4222,47 @@ mod tests {
         assert_eq!(app.selected, Some(id), "the palette row selected the contact");
     }
 
+    /// Opening a contact from the global palette must *reveal* it: if the list
+    /// is filtered to a group the target is not in, activating the search row
+    /// drops that filter so the contact is actually visible, not just selected
+    /// behind a filter. Drives the same two `Widget` hooks the shell palette
+    /// calls — `search_providers()` then `activate_search_result(id, doc, root)`.
+    #[test]
+    fn search_activation_reveals_a_contact_hidden_by_the_group_filter() {
+        let mut app = ContactsApp::new();
+        for c in sample_contacts() {
+            app.store.upsert(c);
+        }
+        // Grace Hopper is in "Work" only; narrowing the list to "Friends"
+        // (Alan Turing's group) filters her out of the visible set.
+        app.group_filter = Some("Friends".to_string());
+
+        let providers = Widget::search_providers(&app);
+        let hits = providers[0].search("grace");
+        let grace = hits
+            .iter()
+            .find(|r| r.title == "Grace Hopper")
+            .expect("global search finds Grace regardless of the in-app filter");
+        let id = crate::search_provider::ContactSearchProvider::parse_action_id(&grace.action_id)
+            .expect("the action id parses back to a contact");
+
+        // Precondition: under the Friends filter, Grace is not in the list.
+        assert!(
+            !app.visible_ids().contains(&id),
+            "the Friends group filter hides Grace before activation"
+        );
+
+        let mut doc = AutoCommit::new();
+        Widget::activate_search_result(&mut app, &grace.action_id, &mut doc, &ROOT);
+
+        assert_eq!(app.selected, Some(id), "activation selected Grace");
+        assert!(app.group_filter.is_none(), "opening from search dropped the hiding filter");
+        assert!(
+            app.visible_ids().contains(&id),
+            "Grace is now visible in the list — opened, not just selected behind a filter"
+        );
+    }
+
     /// Drive one full five-pass frame against `app` at the given size,
     /// encoding the scene on the CPU so any panic in sync/layout/draw
     /// surfaces. (GPU rasterization is verified separately by `--shots`.)
@@ -5203,6 +5298,36 @@ mod tests {
             !h.app.store.contacts.iter().any(|c| c.display_name() == "Ghost"),
             "the abandoned draft never entered the book",
         );
+    }
+
+    /// The read-view Edit affordance is a plain click that opens the edit form
+    /// on the *same* contact, and Cancel returns tidily to the read view — the
+    /// clean view→edit→view round trip, driven entirely through the production
+    /// click path (`handle_event`), not by poking `mode`/`begin_edit` directly.
+    #[test]
+    fn edit_affordance_opens_form_on_selected_contact_and_cancel_returns() {
+        let mut h = Harness::new(1280, 800);
+        assert_eq!(h.app.mode, Mode::View, "the app opens in the read view");
+        let sel = h.app.selected.expect("a contact is selected in the read view");
+        assert!(h.app.hit.edit.width() > 0.0, "the read-view Edit button is laid out");
+
+        // Clicking Edit enters the form on the shown contact (identity carried
+        // across the transition — the header's avatar + name reflect this draft).
+        h.press_left(h.app.hit.edit.center());
+        assert_eq!(h.app.mode, Mode::Edit, "clicking Edit opens the edit form");
+        {
+            let form = h.app.form.as_ref().expect("an edit form is open");
+            assert_eq!(form.draft.id, sel, "the form edits the same contact the view showed");
+            assert!(!form.is_new, "editing an existing record, not creating one");
+        }
+
+        // Leaving is just as direct: Cancel returns to the read view, no form.
+        h.relayout();
+        assert!(h.app.hit.cancel.width() > 0.0, "the Cancel button is laid out in the form");
+        h.press_left(h.app.hit.cancel.center());
+        assert_eq!(h.app.mode, Mode::View, "Cancel returns to the read view");
+        assert!(h.app.form.is_none(), "no edit form lingers after Cancel");
+        assert_eq!(h.app.selected, Some(sel), "the same contact stays selected");
     }
 
     #[test]
