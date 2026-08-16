@@ -153,6 +153,14 @@ pub struct CodeApp {
     /// The embedded system terminal, spawned lazily the first time the Terminal
     /// dock tab is shown. `None` until then (so `CodeApp::new` — used across the
     /// test suite — never spawns a shell) and if the shell fails to launch.
+    ///
+    /// This reuses `terminal::TerminalWidget` through a direct dependency on the
+    /// `terminal` app crate. That is a stop-gap: an app depending on another app
+    /// is the wrong shape, and the same widget should back both this panel and
+    /// the standalone terminal. The right home is a shared terminal-widget crate
+    /// that both binaries depend on; until the terminal is extracted there, this
+    /// panel keeps embedding the widget from the app crate rather than shipping a
+    /// second, weaker emulator.
     terminal: Option<terminal::TerminalWidget>,
     /// True while the terminal owns keyboard input (the user clicked into it).
     /// Cleared when a press lands anywhere else.
