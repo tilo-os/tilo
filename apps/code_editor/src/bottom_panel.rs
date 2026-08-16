@@ -1,11 +1,12 @@
-//! The collapsible bottom panel: a tabbed dock for Problems and Terminal.
-//! Problems lists diagnostics (a lightweight, real linter over the active
-//! buffer — see `app.rs`); Terminal hosts a live embedded shell, spawned on
-//! first open, and shows an honest empty-state note until then (never a
-//! fabricated build log).
+//! The collapsible bottom panel: a tabbed dock for Problems, Search and
+//! Terminal. Problems lists diagnostics — the local linter merged with whatever
+//! the language server has published (see `app.rs`). Search lists the hits a
+//! project-wide search streamed back from its worker thread. Terminal hosts a
+//! live embedded shell, spawned on first open, and shows an honest empty-state
+//! note until then (never a fabricated build log).
 //!
-//! Real LSP diagnostics are deferred — see the TODOs in `app.rs`. The panel
-//! renders the data the app feeds it.
+//! The panel renders the data the app feeds it and reports what the user
+//! clicked; it owns no filesystem or language-server state of its own.
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
@@ -13,21 +14,52 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{EmptyState, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 pub const PANEL_HEIGHT: f64 = 160.0;
+/// Search results get a taller dock: a list of file-and-line hits is only
+/// useful if you can see more than a handful at once.
+pub const PANEL_HEIGHT_SEARCH: f64 = 300.0;
 const TAB_H: f64 = 30.0;
 const ROW_H: f64 = 20.0;
+/// Search rows are taller than problem rows — each carries a path, a line
+/// number and a code preview.
+const HIT_ROW_H: f64 = 26.0;
 
 /// Which dock tab is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelTab {
     Problems,
+    Search,
     Terminal,
+}
+
+/// One row in the Search tab: everything the panel needs to draw a hit and
+/// nothing about where it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HitRow {
+    pub rel: String,
+    pub line: usize,
+    pub preview: String,
+    /// Character offset and length of the match *within `preview`*, so the
+    /// highlight lands on the matched text after the preview was clipped.
+    pub highlight: (usize, usize),
+}
+
+/// What the Search tab is currently showing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchState {
+    pub query: String,
+    pub rows: Vec<HitRow>,
+    /// True while the worker is still walking the tree.
+    pub running: bool,
+    /// True when the walk stopped at the hit cap.
+    pub truncated: bool,
+    pub files_scanned: usize,
 }
 
 /// Severity of a diagnostic.
@@ -64,6 +96,19 @@ pub struct BottomPanel {
     /// Note shown in the Terminal body when no live terminal is present (the
     /// pre-spawn invitation, or "shell unavailable" on a spawn failure).
     terminal_note: Option<String>,
+    /// What the language server is doing, when it has not finished. While this
+    /// is `Some`, an empty Problems list means "not analysed yet" rather than
+    /// "analysed and clean", and the panel must say so — see
+    /// [`BottomPanel::set_analysis`].
+    analysis: Option<String>,
+    /// The Search tab's contents, pushed in by the app as the worker streams.
+    search: SearchState,
+    /// First visible search row, advanced by the wheel.
+    search_scroll: usize,
+    /// Row index the user clicked, drained by the app.
+    activated_hit: Option<usize>,
+    /// Search hit rows recorded during `draw`, for hit-testing clicks.
+    hit_rects: Vec<Rect>,
     dirty: bool,
 }
 
@@ -78,13 +123,260 @@ impl BottomPanel {
             tab_changed: false,
             has_live_terminal: false,
             terminal_note: None,
+            analysis: None,
+            search: SearchState::default(),
+            search_scroll: 0,
+            activated_hit: None,
+            hit_rects: Vec::new(),
             dirty: true,
+        }
+    }
+
+    /// Replace the Search tab's contents.
+    pub fn set_search(&mut self, search: SearchState) {
+        if self.search != search {
+            // A different query is a different result list; keep the scroll
+            // position only while the same search is still streaming in.
+            if self.search.query != search.query {
+                self.search_scroll = 0;
+            }
+            self.search = search;
+            self.dirty = true;
+        }
+    }
+
+    /// The Search tab's current state.
+    pub fn search(&self) -> &SearchState {
+        &self.search
+    }
+
+    /// The search row the user clicked, if any. Cleared on read.
+    pub fn take_activated_hit(&mut self) -> Option<usize> {
+        self.activated_hit.take()
+    }
+
+    /// The height this panel wants, which depends on the tab: a search result
+    /// list needs more room than a status line.
+    pub fn height(&self) -> f64 {
+        match self.tab {
+            PanelTab::Search => PANEL_HEIGHT_SEARCH,
+            _ => PANEL_HEIGHT,
+        }
+    }
+
+    /// How many search rows fit in the body at the current height.
+    ///
+    /// The reserved strip covers the summary line above the rows *and* the
+    /// "more below" hint under them, so neither can be overprinted by a row.
+    fn visible_hit_rows(&self) -> usize {
+        let body = (self.rect.height() - TAB_H - 26.0 - 20.0).max(0.0);
+        (body / HIT_ROW_H).floor().max(0.0) as usize
+    }
+
+    /// The one-line summary above the results: how many hits, across how many
+    /// files, and whether the walk is still going or stopped at the cap.
+    fn search_summary(&self) -> String {
+        if self.search.query.is_empty() {
+            return String::new();
+        }
+        let files = {
+            let mut seen: Vec<&str> = self.search.rows.iter().map(|r| r.rel.as_str()).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen.len()
+        };
+        let n = self.search.rows.len();
+        let head = match (n, files) {
+            (0, _) if self.search.running => "Searching…".to_string(),
+            (0, _) => format!("No results for \u{201C}{}\u{201D}", self.search.query),
+            (1, _) => "1 result in 1 file".to_string(),
+            (n, 1) => format!("{n} results in 1 file"),
+            (n, f) => format!("{n} results in {f} files"),
+        };
+        if n > 0 && self.search.running {
+            format!("{head} \u{2014} still searching…")
+        } else if self.search.truncated {
+            format!("{head} \u{2014} stopped at the first {n}; narrow the search")
+        } else {
+            head
+        }
+    }
+
+    /// Draw the Search tab body: a summary line, then one row per hit.
+    fn draw_search(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let c = &theme.tokens.colors;
+        self.hit_rects.clear();
+
+        // Nothing has been asked yet: a real zero-state, not a blank panel.
+        if self.search.query.is_empty() {
+            let body = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + TAB_H,
+                self.rect.x1,
+                self.rect.y1,
+            );
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                body,
+                Some(ui::icons::Icon::Search),
+                "Search this project",
+                Some("Ctrl+Shift+F searches every file under the project root."),
+                None,
+                Point::new(-1.0, -1.0),
+            );
+            return;
+        }
+
+        let summary = self.search_summary();
+        text_renderer.draw_text(
+            scene,
+            &summary,
+            12.0,
+            if self.search.rows.is_empty() && !self.search.running {
+                c.semantic.warning
+            } else {
+                c.text_dim
+            },
+            transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y0 + TAB_H + 6.0)),
+            Some((self.rect.width() - 28.0) as f32),
+        );
+
+        // A fixed column for `path:line` so the previews line up into a
+        // readable second column instead of starting at a different x on every
+        // row. Paths longer than it are trimmed from the *front*: the file name
+        // and line number are the part you need, and the leading directories
+        // are the part you can infer.
+        const LOC_COL: f64 = 300.0;
+
+        let first_row_y = self.rect.y0 + TAB_H + 26.0;
+        let visible = self.visible_hit_rows();
+        for (i, row) in self
+            .search
+            .rows
+            .iter()
+            .skip(self.search_scroll)
+            .take(visible)
+            .enumerate()
+        {
+            let y = first_row_y + i as f64 * HIT_ROW_H;
+            let rect = Rect::new(self.rect.x0 + 8.0, y, self.rect.x1 - 8.0, y + HIT_ROW_H);
+            if rect.y1 > self.rect.y1 {
+                break;
+            }
+            self.hit_rects.push(rect);
+            if rect.contains(self.last_cursor) {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    c.surface_white_5,
+                    None,
+                    &RoundedRect::from_rect(rect, 4.0),
+                );
+            }
+
+            // `path:line`, then the code preview with the match tinted.
+            let location = ellipsize_front(
+                text_renderer,
+                &format!("{}:{}", row.rel, row.line),
+                12.0,
+                LOC_COL - 12.0,
+            );
+            // Drawn with no wrap width: a wrapped row would spill onto the row
+            // below it and the two would overprint.
+            text_renderer.draw_text(
+                scene,
+                &location,
+                12.0,
+                c.accent[5],
+                transform * Affine::translate((rect.x0 + 8.0, y + 5.0)),
+                None,
+            );
+
+            let preview_x = rect.x0 + 8.0 + LOC_COL;
+            let (start, len) = row.highlight;
+            let chars: Vec<char> = row.preview.chars().collect();
+            let before: String = chars[..start.min(chars.len())].iter().collect();
+            let hit: String = chars[start.min(chars.len())..(start + len).min(chars.len())]
+                .iter()
+                .collect();
+            let after: String = chars[(start + len).min(chars.len())..].iter().collect();
+
+            let right_edge = rect.x1 - 8.0;
+            let mut x = preview_x;
+            for (text, color) in [
+                (before.as_str(), c.text_dim),
+                (hit.as_str(), c.text_primary),
+                (after.as_str(), c.text_dim),
+            ] {
+                if text.is_empty() || x >= right_edge {
+                    continue;
+                }
+                // Truncated to what fits rather than wrapped, for the same
+                // reason as the path: one hit is one row.
+                let fitted = ellipsize_back(text_renderer, text, 12.0, right_edge - x);
+                let (w, _) = text_renderer.measure(&fitted, 12.0, None);
+                // The matched span is the one that must stay legible, so it is
+                // drawn on the theme's primary text colour against the dimmed
+                // surrounding line rather than on a coloured block.
+                text_renderer.draw_text(
+                    scene,
+                    &fitted,
+                    12.0,
+                    color,
+                    transform * Affine::translate((x, y + 5.0)),
+                    None,
+                );
+                x += w as f64;
+            }
+        }
+
+        // A quiet "more below" hint rather than a scrollbar the panel has no
+        // room for. `visible_hit_rows` already reserves this strip, so it never
+        // overprints the last row.
+        let shown = self.search_scroll + self.hit_rects.len();
+        if shown < self.search.rows.len() {
+            let more = format!(
+                "{} more \u{2014} scroll the list",
+                self.search.rows.len() - shown
+            );
+            text_renderer.draw_text(
+                scene,
+                &more,
+                11.0,
+                c.text_dim,
+                transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y1 - 17.0)),
+                None,
+            );
         }
     }
 
     pub fn set_problems(&mut self, problems: Vec<Diagnostic>) {
         if self.problems != problems {
             self.problems = problems;
+            self.dirty = true;
+        }
+    }
+
+    /// Say what the language server is still doing, or `None` once it has
+    /// answered.
+    ///
+    /// This exists because "No problems detected in the workspace." is a claim,
+    /// and for the first seconds — or, on a cold crate graph this size, the
+    /// first minutes — it is not a true one: nothing has been analysed. An
+    /// editor that asserts a clean bill of health before it has looked is worse
+    /// than one that looks broken, because the user believes it.
+    pub fn set_analysis(&mut self, note: Option<String>) {
+        if self.analysis != note {
+            self.analysis = note;
             self.dirty = true;
         }
     }
@@ -120,6 +412,17 @@ impl BottomPanel {
         self.problems.len()
     }
 
+    /// What the panel is saying in place of "no problems", if anything.
+    pub fn analysis(&self) -> Option<&str> {
+        self.analysis.as_deref()
+    }
+
+    /// The diagnostics currently listed, so callers can assert on what the user
+    /// is shown rather than only on how many rows there are.
+    pub fn problems(&self) -> &[Diagnostic] {
+        &self.problems
+    }
+
     pub fn set_tab(&mut self, tab: PanelTab) {
         if self.tab != tab {
             self.tab = tab;
@@ -130,6 +433,58 @@ impl BottomPanel {
     pub fn take_tab_changed(&mut self) -> bool {
         std::mem::take(&mut self.tab_changed)
     }
+}
+
+/// Trim `s` from the **front** until it fits `max_w`, prefixing an ellipsis.
+///
+/// For a path, the informative end is the right one — `…/code_editor/src/app.rs:1673`
+/// still tells you which file and which line, where trimming the tail would
+/// leave `apps/code_edi…`, which tells you nothing.
+fn ellipsize_front(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if (tr.measure(s, size, None).0 as f64) <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    // Binary search the longest suffix that fits, so a long list of rows does
+    // not cost a measure per character per row.
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String =
+            std::iter::once('\u{2026}').chain(chars[mid..].iter().copied()).collect();
+        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    std::iter::once('\u{2026}').chain(chars[lo..].iter().copied()).collect()
+}
+
+/// Trim `s` from the **back** until it fits `max_w`, appending an ellipsis.
+/// For a code preview the start of the line is the informative end.
+fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    if (tr.measure(s, size, None).0 as f64) <= max_w {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let candidate: String = chars[..mid].iter().copied().chain(std::iter::once('\u{2026}')).collect();
+        if (tr.measure(&candidate, size, None).0 as f64) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars[..lo].iter().copied().chain(std::iter::once('\u{2026}')).collect()
 }
 
 impl Widget for BottomPanel {
@@ -145,7 +500,7 @@ impl Widget for BottomPanel {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(PANEL_HEIGHT as f32),
+                    height: Dimension::length(self.height() as f32),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -189,8 +544,14 @@ impl Widget for BottomPanel {
 
         // Tab strip.
         self.tab_rects.clear();
+        let search_label = if self.search.rows.is_empty() {
+            "Search".to_string()
+        } else {
+            format!("Search ({})", self.search.rows.len())
+        };
         let labels = [
             (PanelTab::Problems, format!("Problems ({})", self.problems.len())),
+            (PanelTab::Search, search_label),
             (PanelTab::Terminal, "Terminal".to_string()),
         ];
         let mut x = self.rect.x0 + 8.0;
@@ -231,14 +592,48 @@ impl Widget for BottomPanel {
         match self.tab {
             PanelTab::Problems => {
                 if self.problems.is_empty() {
-                    text_renderer.draw_text(
-                        scene,
-                        "No problems detected in the workspace.",
-                        13.0,
-                        c.text_dim,
-                        transform * Affine::translate((self.rect.x0 + 14.0, content_y0)),
-                        None,
+                    // An empty list means two different things, and the panel
+                    // must not state the wrong one. While a language server is
+                    // still working nothing has been analysed yet; only once it
+                    // has answered is "no problems" a finding. Both go through
+                    // the shared zero-state so this tab reads like the Search
+                    // tab beside it rather than a bare line of dim text.
+                    let body = Rect::new(
+                        self.rect.x0,
+                        self.rect.y0 + TAB_H,
+                        self.rect.x1,
+                        self.rect.y1,
                     );
+                    let (icon, title, message) = match &self.analysis {
+                        Some(note) => (
+                            ui::icons::Icon::RotateCw,
+                            note.as_str(),
+                            "Nothing has been analysed yet. Problems appear here as \
+                             the language server reports them.",
+                        ),
+                        // Scoped to the open file, because that is what was
+                        // actually checked — the linter reads the active buffer,
+                        // not every file under the root.
+                        None => (
+                            ui::icons::Icon::Check,
+                            "No problems in this file",
+                            "Diagnostics from the language server and the built-in \
+                             checks both land here.",
+                        ),
+                    };
+                    EmptyState::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        body,
+                        Some(icon),
+                        title,
+                        Some(message),
+                        None,
+                        Point::new(-1.0, -1.0),
+                    );
+                    let _ = content_y0;
                 } else {
                     for (i, d) in self.problems.iter().enumerate() {
                         let y = content_y0 + i as f64 * ROW_H;
@@ -279,6 +674,7 @@ impl Widget for BottomPanel {
                     }
                 }
             }
+            PanelTab::Search => self.draw_search(scene, transform, text_renderer, theme),
             PanelTab::Terminal => {
                 if self.has_live_terminal {
                     // The embedded `TerminalWidget` renders the body over
@@ -315,6 +711,24 @@ impl Widget for BottomPanel {
                 self.last_cursor =
                     Point::new(position.x / scale_factor, position.y / scale_factor);
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.tab != PanelTab::Search || !self.rect.contains(self.last_cursor) {
+                    return;
+                }
+                let lines = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
+                    MouseScrollDelta::PixelDelta(p) => p.y / 20.0,
+                };
+                let step = (-lines).round() as i64;
+                let visible = self.visible_hit_rows();
+                let max = self.search.rows.len().saturating_sub(visible);
+                let next = (self.search_scroll as i64 + step).clamp(0, max as i64) as usize;
+                if next != self.search_scroll {
+                    self.search_scroll = next;
+                    self.dirty = true;
+                }
+                *handled = true;
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
@@ -330,6 +744,19 @@ impl Widget for BottomPanel {
                                 self.tab_changed = true;
                                 self.dirty = true;
                             }
+                            *handled = true;
+                            break;
+                        }
+                    }
+                    return;
+                }
+                // A click on a search hit asks the app to open that file at
+                // that line.
+                if self.tab == PanelTab::Search {
+                    for (i, rect) in self.hit_rects.iter().enumerate() {
+                        if rect.contains(self.last_cursor) {
+                            self.activated_hit = Some(self.search_scroll + i);
+                            self.dirty = true;
                             *handled = true;
                             break;
                         }
@@ -358,5 +785,176 @@ impl Widget for BottomPanel {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tr() -> TextRenderer {
+        TextRenderer::new()
+    }
+
+    fn row(rel: &str, line: usize) -> HitRow {
+        HitRow {
+            rel: rel.to_string(),
+            line,
+            preview: "x".into(),
+            highlight: (0, 1),
+        }
+    }
+
+    #[test]
+    fn a_short_string_is_left_alone() {
+        let mut t = tr();
+        assert_eq!(ellipsize_front(&mut t, "src/a.rs:1", 12.0, 500.0), "src/a.rs:1");
+        assert_eq!(ellipsize_back(&mut t, "fn main() {}", 12.0, 500.0), "fn main() {}");
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_file_and_line() {
+        // The point of trimming a path from the front: whatever survives must
+        // still name the file and the line. This is the row that used to wrap
+        // onto a second line and overprint the hit below it.
+        let mut t = tr();
+        let long = "docs/superpowers/archive/2026-04-18-nirios-chrome.md:682";
+        let out = ellipsize_front(&mut t, long, 12.0, 120.0);
+        assert!(out.starts_with('\u{2026}'), "trimmed from the front: {out}");
+        assert!(out.ends_with(":682"), "the line number survives: {out}");
+        assert!(
+            (t.measure(&out, 12.0, None).0 as f64) <= 120.0,
+            "and it actually fits: {out}"
+        );
+    }
+
+    #[test]
+    fn a_long_preview_keeps_its_beginning() {
+        let mut t = tr();
+        let long = "a".repeat(400);
+        let out = ellipsize_back(&mut t, &long, 12.0, 100.0);
+        assert!(out.ends_with('\u{2026}'), "trimmed from the back");
+        assert!(out.starts_with('a'));
+        assert!((t.measure(&out, 12.0, None).0 as f64) <= 100.0);
+    }
+
+    #[test]
+    fn zero_width_yields_nothing_rather_than_an_ellipsis() {
+        let mut t = tr();
+        assert_eq!(ellipsize_front(&mut t, "x", 12.0, 0.0), "");
+        assert_eq!(ellipsize_back(&mut t, "x", 12.0, -5.0), "");
+    }
+
+    #[test]
+    fn the_search_summary_says_what_is_true() {
+        let mut p = BottomPanel::new();
+        p.set_tab(PanelTab::Search);
+        assert_eq!(p.search_summary(), "", "no query yet");
+
+        p.set_search(SearchState {
+            query: "needle".into(),
+            rows: Vec::new(),
+            running: true,
+            truncated: false,
+            files_scanned: 0,
+        });
+        assert_eq!(p.search_summary(), "Searching\u{2026}");
+
+        p.set_search(SearchState {
+            query: "needle".into(),
+            rows: Vec::new(),
+            running: false,
+            truncated: false,
+            files_scanned: 12,
+        });
+        assert!(p.search_summary().starts_with("No results"));
+
+        let rows = vec![row("a.rs", 1), row("a.rs", 9), row("b.rs", 3)];
+        p.set_search(SearchState {
+            query: "needle".into(),
+            rows: rows.clone(),
+            running: false,
+            truncated: false,
+            files_scanned: 12,
+        });
+        assert_eq!(p.search_summary(), "3 results in 2 files");
+
+        p.set_search(SearchState {
+            query: "needle".into(),
+            rows,
+            running: false,
+            truncated: true,
+            files_scanned: 12,
+        });
+        assert!(
+            p.search_summary().contains("narrow the search"),
+            "a truncated walk must say so: {}",
+            p.search_summary()
+        );
+    }
+
+    #[test]
+    fn the_search_tab_reports_the_row_the_user_clicked() {
+        let mut p = BottomPanel::new();
+        assert_eq!(p.take_activated_hit(), None);
+        p.activated_hit = Some(4);
+        assert_eq!(p.take_activated_hit(), Some(4));
+        assert_eq!(p.take_activated_hit(), None, "cleared on read");
+    }
+
+    #[test]
+    fn the_search_tab_is_taller_than_the_others() {
+        let mut p = BottomPanel::new();
+        assert_eq!(p.height(), PANEL_HEIGHT);
+        p.set_tab(PanelTab::Search);
+        assert_eq!(p.height(), PANEL_HEIGHT_SEARCH);
+        assert!(PANEL_HEIGHT_SEARCH > PANEL_HEIGHT);
+    }
+
+    #[test]
+    fn a_new_query_resets_the_scroll_but_streaming_does_not() {
+        let mut p = BottomPanel::new();
+        p.set_search(SearchState {
+            query: "a".into(),
+            rows: (0..40).map(|i| row("f.rs", i)).collect(),
+            running: true,
+            truncated: false,
+            files_scanned: 0,
+        });
+        p.search_scroll = 10;
+        // More hits for the same query arrive: the user's scroll position holds.
+        p.set_search(SearchState {
+            query: "a".into(),
+            rows: (0..80).map(|i| row("f.rs", i)).collect(),
+            running: false,
+            truncated: false,
+            files_scanned: 0,
+        });
+        assert_eq!(p.search_scroll, 10);
+        // A different query is a different list: back to the top.
+        p.set_search(SearchState {
+            query: "b".into(),
+            rows: (0..5).map(|i| row("f.rs", i)).collect(),
+            running: false,
+            truncated: false,
+            files_scanned: 0,
+        });
+        assert_eq!(p.search_scroll, 0);
+    }
+
+    #[test]
+    fn the_row_budget_reserves_room_for_the_summary_and_the_more_hint() {
+        // A row count that ignored those two strips would draw the last row on
+        // top of the "N more" line.
+        let mut p = BottomPanel::new();
+        p.set_tab(PanelTab::Search);
+        p.rect = Rect::new(0.0, 0.0, 900.0, PANEL_HEIGHT_SEARCH);
+        let rows = p.visible_hit_rows();
+        assert!(rows > 0, "a 300px panel shows some rows");
+        let used = TAB_H + 26.0 + rows as f64 * HIT_ROW_H;
+        assert!(
+            used <= PANEL_HEIGHT_SEARCH - 20.0,
+            "rows must stop short of the hint strip: used {used} of {PANEL_HEIGHT_SEARCH}"
+        );
     }
 }
