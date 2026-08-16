@@ -45,6 +45,21 @@ use crate::manifest::{ServiceReq, ServiceReqParseError};
 /// from sysexits.h — a service the package declared isn't available.
 pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 
+/// Manifest name of the CRDT fan-out service (`[sandbox.services] collab`).
+///
+/// This constant is the single point that decides where the collab
+/// socket lives, and it has two owners on opposite sides of a
+/// namespace boundary: the compositor *binds* [`socket_for`] of this
+/// name, and the launcher *connects* it to hand the app a descriptor.
+/// They were once two independently-written path expressions, so the
+/// compositor bound a socket nobody dialled and every app quietly ran
+/// with collaboration switched off. Route both sides through here.
+///
+/// `shell::shell::collab_broker` binds it; see
+/// `collab_service_socket_is_the_path_the_compositor_binds` in the
+/// compositor for the test that fails if the two drift apart again.
+pub const COLLAB_SERVICE: &str = "collab";
+
 /// One resolved service handoff: the open fd + the in-sandbox child fd
 /// number it should take.
 #[derive(Debug)]
@@ -88,6 +103,35 @@ pub fn services_root() -> PathBuf {
 
 pub fn socket_for(name: &str) -> PathBuf {
     services_root().join(format!("{name}.sock"))
+}
+
+/// Where the session's CRDT fan-out broker listens.
+///
+/// The compositor binds this; the launcher dials it. Both call this
+/// function rather than spelling the path out, which is the whole
+/// point — see [`COLLAB_SERVICE`].
+pub fn collab_socket() -> PathBuf {
+    socket_for(COLLAB_SERVICE)
+}
+
+/// Create `$XDG_RUNTIME_DIR/qos/services/` if it does not exist.
+///
+/// Called by whoever binds a service socket — nothing else creates
+/// this directory, and a `bind` into a missing parent is `ENOENT`.
+/// Mode 0700: the directory is a set of live connections into the
+/// session's services, and the sandbox boundary assumes only this
+/// user's session can reach them.
+pub fn ensure_services_root() -> std::io::Result<PathBuf> {
+    let root = services_root();
+    std::fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort tighten: an inherited 0755 from an earlier
+        // umask would widen who can reach the session's services.
+        let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(root)
 }
 
 /// Walk the manifest's service requirements + open sockets. Returns
