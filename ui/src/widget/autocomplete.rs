@@ -214,11 +214,19 @@ impl Autocomplete {
     }
 
     /// Set a loading / "no matches" line shown in the dropdown while there are
-    /// no suggestions to list. `None` clears it. This keeps honest empty and
-    /// loading states inside the shared overlay instead of a bespoke panel —
-    /// pair it with [`open`](Autocomplete::open) so the dropdown shows.
+    /// no suggestions to list. `None` clears it. Pair with [`open`](Autocomplete::open).
     pub fn set_status(&mut self, status: Option<String>) {
         self.status = status;
+    }
+
+    /// Set the suggestions and, when the field is actively being edited, open
+    /// the dropdown to show them (for reactive/async hosts that receive results
+    /// after a round-trip). Closes the panel when the list is empty.
+    pub fn set_suggestions_open(&mut self, suggestions: Vec<Suggestion>) {
+        self.set_suggestions(suggestions);
+        if self.is_editing() {
+            self.open = !self.suggestions.is_empty();
+        }
     }
 
     /// The current field text.
