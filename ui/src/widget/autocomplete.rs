@@ -104,6 +104,9 @@ pub enum AutocompleteOutcome {
 pub type Suggester = Box<dyn Fn(&str) -> Vec<Suggestion>>;
 
 const ROW_H: f64 = 32.0;
+/// Height of the single non-interactive status row shown (loading / "no
+/// matches") when a reactive host has opened the dropdown with no suggestions.
+const STATUS_ROW_H: f64 = 34.0;
 const DROPDOWN_GAP: f64 = 6.0;
 const ROW_PAD_X: f64 = 12.0;
 const ICON_PX: f64 = 16.0;
@@ -121,6 +124,9 @@ pub struct Autocomplete {
     /// Mouse-hovered row, for the hover veneer.
     hover: Option<usize>,
     open: bool,
+    /// A loading / "no matches" line shown in the dropdown when a reactive
+    /// host has opened it but has no rows yet. `None` renders nothing.
+    status: Option<String>,
     max_visible: usize,
     rect: Rect,
     last_pointer: Point,
@@ -137,6 +143,7 @@ impl Autocomplete {
             highlight: None,
             hover: None,
             open: false,
+            status: None,
             max_visible: DEFAULT_MAX_VISIBLE,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -185,14 +192,33 @@ impl Autocomplete {
     }
 
     /// Directly set the visible suggestions (for hosts that compute them
-    /// reactively rather than through a [`Suggester`]). Re-clamps the highlight.
+    /// reactively rather than through a [`Suggester`]). Re-clamps the highlight
+    /// and clears any status line once real rows are available.
     pub fn set_suggestions(&mut self, suggestions: Vec<Suggestion>) {
         self.suggestions = suggestions;
+        if !self.suggestions.is_empty() {
+            self.status = None;
+        }
         if let Some(h) = self.highlight {
             if h >= self.suggestions.len() {
                 self.highlight = None;
             }
         }
+    }
+
+    /// Force the dropdown open. Reactive/async hosts call this after filling
+    /// suggestions or a status line that arrived *after* the keystroke which
+    /// requested them (a keystroke with no rows leaves the dropdown closed).
+    pub fn open(&mut self) {
+        self.open = true;
+    }
+
+    /// Set a loading / "no matches" line shown in the dropdown while there are
+    /// no suggestions to list. `None` clears it. This keeps honest empty and
+    /// loading states inside the shared overlay instead of a bespoke panel —
+    /// pair it with [`open`](Autocomplete::open) so the dropdown shows.
+    pub fn set_status(&mut self, status: Option<String>) {
+        self.status = status;
     }
 
     /// The current field text.
@@ -236,10 +262,17 @@ impl Autocomplete {
         self.highlight.and_then(|i| self.suggestions.get(i))
     }
 
+    /// Pre-arm the keyboard highlight on a row (clamped to range; `None`
+    /// clears). Reactive hosts use this to highlight the top match by default.
+    pub fn set_highlight(&mut self, index: Option<usize>) {
+        self.highlight = index.filter(|&i| i < self.suggestions.len());
+    }
+
     /// Close the dropdown (keeps the field text + focus).
     pub fn close(&mut self) {
         self.open = false;
         self.highlight = None;
+        self.status = None;
     }
 
     /// Rising-edge read of how the most recent interaction ended.
@@ -270,12 +303,14 @@ impl Autocomplete {
         self.input.set_text(&value);
         self.open = false;
         self.highlight = None;
+        self.status = None;
         self.outcome = AutocompleteOutcome::Accepted(value);
     }
 
     fn cancel(&mut self) {
         self.open = false;
         self.highlight = None;
+        self.status = None;
         self.input.set_focus(false);
         self.outcome = AutocompleteOutcome::Cancelled;
     }
@@ -318,13 +353,17 @@ impl Autocomplete {
         self.highlight = Some(next);
     }
 
-    /// The dropdown panel rect (below the field), or `None` when closed/empty.
+    /// The dropdown panel rect (below the field), or `None` when it should not
+    /// show. Shows for either real suggestion rows or a lone status line.
     fn dropdown_rect(&self) -> Option<Rect> {
-        if !self.is_open() {
+        if !self.open || (self.suggestions.is_empty() && self.status.is_none()) {
             return None;
         }
-        let rows = self.suggestions.len().min(self.max_visible) as f64;
-        let h = rows * ROW_H + 8.0;
+        let h = if self.suggestions.is_empty() {
+            STATUS_ROW_H + 8.0
+        } else {
+            self.suggestions.len().min(self.max_visible) as f64 * ROW_H + 8.0
+        };
         Some(Rect::new(
             self.rect.x0,
             self.rect.y1 + DROPDOWN_GAP,
@@ -422,6 +461,22 @@ impl Widget for Autocomplete {
 
         let text_size = tokens.typography.scale.base;
         let detail_size = tokens.typography.scale.sm;
+
+        // No rows yet: render the lone status line (loading / no matches).
+        if self.suggestions.is_empty() {
+            if let Some(status) = &self.status {
+                let ty = panel.y0 + (panel.height() - text_size as f64) / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    status,
+                    text_size,
+                    tokens.colors.text_dim,
+                    transform * Affine::translate((panel.x0 + ROW_PAD_X + 4.0, ty)),
+                    Some((panel.width() - 2.0 * (ROW_PAD_X + 4.0)).max(0.0) as f32),
+                );
+            }
+            return;
+        }
         for i in 0..self.suggestions.len().min(self.max_visible) {
             let s = &self.suggestions[i];
             let row = self.row_rect(panel, i);
@@ -820,5 +875,41 @@ mod tests {
         ac.open = true;
         assert!(ac.is_open());
         assert_eq!(ac.suggestions()[0].value, "/home/u/Docs");
+    }
+
+    #[test]
+    fn status_line_keeps_the_dropdown_open_with_no_rows() {
+        // A reactive host (async suggestions) shows an honest loading / empty
+        // line in the shared overlay while it has no rows to list yet.
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.begin_edit();
+        assert!(ac.dropdown_rect().is_none(), "nothing to show yet");
+        ac.set_status(Some("Searching…".into()));
+        ac.open();
+        let panel = ac.dropdown_rect().expect("status keeps the dropdown open");
+        assert!(panel.height() > 0.0);
+        // A lone status line offers no selectable rows.
+        assert!(ac.highlighted().is_none());
+        assert!(ac.row_at(panel.center()).is_none(), "the status line is not a row");
+    }
+
+    #[test]
+    fn reactive_suggestions_after_open_replace_the_status_line() {
+        // Results arriving async clear the status and become selectable rows.
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.begin_edit();
+        ac.set_status(Some("Searching…".into()));
+        ac.open();
+        ac.set_suggestions(vec![Suggestion::new("Paris"), Suggestion::new("Parma")]);
+        ac.open();
+        assert!(ac.is_open());
+        assert_eq!(ac.suggestions().len(), 2);
+        // Arrow-key navigation now works over the reactively-supplied rows.
+        drive(&mut ac, &named(NamedKey::ArrowDown));
+        assert_eq!(ac.highlighted().unwrap().value, "Paris");
+        drive(&mut ac, &named(NamedKey::ArrowDown));
+        assert_eq!(ac.highlighted().unwrap().value, "Parma");
     }
 }

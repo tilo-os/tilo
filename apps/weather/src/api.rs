@@ -13,12 +13,14 @@
 use serde::Deserialize;
 
 use crate::model::{
-    CurrentConditions, DayForecast, HourPoint, LocationId, SavedLocation, WeatherSnapshot,
+    AirQuality, CurrentConditions, DayForecast, HourPoint, LocationId, SavedLocation,
+    WeatherSnapshot,
 };
 use crate::units::Units;
 
 pub const FORECAST_BASE: &str = "https://api.open-meteo.com/v1/forecast";
 pub const GEOCODE_BASE: &str = "https://geocoding-api.open-meteo.com/v1/search";
+pub const AIR_QUALITY_BASE: &str = "https://air-quality-api.open-meteo.com/v1/air-quality";
 
 /// Build the forecast request URL for a location + unit preference.
 pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
@@ -34,6 +36,19 @@ pub fn forecast_url(lat: f64, lon: f64, units: Units) -> String {
         lon = lon,
         tu = units.temp_api(),
         wu = units.wind_api(),
+    )
+}
+
+/// Build the air-quality request URL for a location. AQI + the key pollutants
+/// are all unitless indices or µg/m³, so no unit preference is threaded here.
+pub fn air_quality_url(lat: f64, lon: f64) -> String {
+    format!(
+        "{base}?latitude={lat:.4}&longitude={lon:.4}\
+         &current=european_aqi,us_aqi,pm2_5,pm10,nitrogen_dioxide,ozone\
+         &timezone=auto",
+        base = AIR_QUALITY_BASE,
+        lat = lat,
+        lon = lon,
     )
 }
 
@@ -193,6 +208,67 @@ pub fn parse_forecast(
 }
 
 // ---------------------------------------------------------------------
+// Air-quality response
+// ---------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct AirQualityResponse {
+    current: AirQualityCurrentRaw,
+}
+
+#[derive(Debug, Deserialize)]
+struct AirQualityCurrentRaw {
+    #[serde(default)]
+    time: String,
+    #[serde(default)]
+    european_aqi: Option<f64>,
+    #[serde(default)]
+    us_aqi: Option<f64>,
+    #[serde(default)]
+    pm2_5: Option<f64>,
+    #[serde(default)]
+    pm10: Option<f64>,
+    #[serde(default)]
+    nitrogen_dioxide: Option<f64>,
+    #[serde(default)]
+    ozone: Option<f64>,
+}
+
+/// Parse an air-quality JSON body into an [`AirQuality`] reading. Missing
+/// fields decode to `None` (honest "unavailable"), never a fabricated zero.
+pub fn parse_air_quality(
+    body: &str,
+    location_id: LocationId,
+    fetched_at: u64,
+) -> Result<AirQuality, String> {
+    let raw: AirQualityResponse =
+        serde_json::from_str(body).map_err(|e| format!("air-quality decode: {e}"))?;
+    Ok(AirQuality {
+        location_id,
+        european_aqi: raw.current.european_aqi,
+        us_aqi: raw.current.us_aqi,
+        pm2_5: raw.current.pm2_5,
+        pm10: raw.current.pm10,
+        nitrogen_dioxide: raw.current.nitrogen_dioxide,
+        ozone: raw.current.ozone,
+        time: raw.current.time,
+        fetched_at,
+    })
+}
+
+/// The European-AQI qualitative band label for an index value.
+pub fn european_aqi_band(aqi: f64) -> &'static str {
+    match aqi.round() as i64 {
+        i64::MIN..=20 => "Good",
+        21..=40 => "Fair",
+        41..=60 => "Moderate",
+        61..=80 => "Poor",
+        81..=100 => "Very poor",
+        _ => "Extremely poor",
+    }
+}
+
+// ---------------------------------------------------------------------
 // Geocoding response
 // ---------------------------------------------------------------------
 
@@ -308,6 +384,38 @@ mod tests {
         assert_eq!(snap.hourly[0].time, "2026-06-30T02:00");
         assert_eq!(snap.current.uv_index, 5.0, "current uv comes from today's max");
         assert_eq!(snap.daily.len(), 1);
+    }
+
+    #[test]
+    fn parse_air_quality_maps_fields_and_nulls() {
+        let body = serde_json::json!({
+            "current": {
+                "time": "2026-06-30T14:00",
+                "european_aqi": 32.0,
+                "us_aqi": 45.0,
+                "pm2_5": 8.4,
+                "pm10": 14.2,
+                "nitrogen_dioxide": 18.0,
+                "ozone": null
+            }
+        })
+        .to_string();
+        let aq = parse_air_quality(&body, Uuid::new_v4(), 1234).unwrap();
+        assert_eq!(aq.european_aqi, Some(32.0));
+        assert_eq!(aq.pm2_5, Some(8.4));
+        assert_eq!(aq.ozone, None, "a null pollutant stays honestly absent");
+        assert!(aq.has_any());
+        assert_eq!(aq.fetched_at, 1234);
+    }
+
+    #[test]
+    fn european_aqi_bands_cover_the_scale() {
+        assert_eq!(european_aqi_band(10.0), "Good");
+        assert_eq!(european_aqi_band(30.0), "Fair");
+        assert_eq!(european_aqi_band(50.0), "Moderate");
+        assert_eq!(european_aqi_band(70.0), "Poor");
+        assert_eq!(european_aqi_band(90.0), "Very poor");
+        assert_eq!(european_aqi_band(140.0), "Extremely poor");
     }
 
     #[test]

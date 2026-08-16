@@ -15,18 +15,20 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::thread;
 
 use crate::api;
-use crate::model::{LocationId, SavedLocation, WeatherSnapshot};
+use crate::model::{AirQuality, LocationId, SavedLocation, WeatherSnapshot};
 use crate::units::Units;
 
 /// A job for the network worker.
 pub enum Request {
     Forecast { location_id: LocationId, lat: f64, lon: f64, units: Units },
+    AirQuality { location_id: LocationId, lat: f64, lon: f64 },
     Geocode { seq: u64, query: String },
 }
 
 /// A completed job (or an error string for the status line).
 pub enum Response {
     Forecast(WeatherSnapshot),
+    AirQuality(AirQuality),
     Geocode { seq: u64, results: Vec<SavedLocation> },
     Error(String),
 }
@@ -98,6 +100,22 @@ fn worker(req_rx: Receiver<Request>, res_tx: Sender<Response>) {
                             }
                         }
                     }
+                    Err(e) => {
+                        let _ = res_tx.send(Response::Error(e));
+                    }
+                }
+            }
+            Request::AirQuality { location_id, lat, lon } => {
+                let url = api::air_quality_url(lat, lon);
+                match rt.block_on(fetch(client.as_ref(), &url)) {
+                    Ok(body) => match api::parse_air_quality(&body, location_id, now_secs()) {
+                        Ok(aq) => {
+                            let _ = res_tx.send(Response::AirQuality(aq));
+                        }
+                        Err(e) => {
+                            let _ = res_tx.send(Response::Error(e));
+                        }
+                    },
                     Err(e) => {
                         let _ = res_tx.send(Response::Error(e));
                     }

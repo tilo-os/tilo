@@ -138,6 +138,7 @@ impl WeatherApp {
         let mut model = crate::sample::sample_model();
         model.locations.clear();
         model.snapshots.clear();
+        model.air_quality.clear();
         model.selected = 0;
         let units = crate::region::load_units();
         model.units = units;
@@ -223,6 +224,7 @@ impl WeatherApp {
                 let mut core = self.core.borrow_mut();
                 core.model.locations.clear();
                 core.model.snapshots.clear();
+                core.model.air_quality.clear();
                 core.model.selected = 0;
                 core.status.clear();
             }
@@ -239,7 +241,7 @@ impl WeatherApp {
             "search" => self
                 .core
                 .borrow_mut()
-                .seed_search("Par", crate::sample::sample_geocode_results()),
+                .seed_search_highlighted("Par", crate::sample::sample_geocode_results()),
             "search_loading" => self.core.borrow_mut().seed_search_loading("Reykjav"),
             "search_empty" => self.core.borrow_mut().seed_search_empty("Zzqx"),
             _ => {}
@@ -264,6 +266,9 @@ impl Widget for WeatherApp {
                         let mut merged = persisted;
                         for (id, snap) in core.model.snapshots.drain() {
                             merged.snapshots.entry(id).or_insert(snap);
+                        }
+                        for (id, aq) in core.model.air_quality.drain() {
+                            merged.air_quality.entry(id).or_insert(aq);
                         }
                         // Units are a system preference (Settings), not doc
                         // state — keep the region-derived value.
@@ -693,6 +698,7 @@ mod interaction_tests {
         let core = app.core.borrow();
         assert!(core.model.locations.is_empty(), "onboarding clears saved places");
         assert!(core.model.snapshots.is_empty(), "onboarding clears readings");
+        assert!(core.model.air_quality.is_empty(), "onboarding clears air quality");
         assert!(core.status.is_empty(), "onboarding shows no spinner");
     }
 
@@ -707,6 +713,7 @@ mod interaction_tests {
             let core = live.core.borrow();
             assert!(core.model.locations.is_empty(), "no fabricated saved places on startup");
             assert!(core.model.snapshots.is_empty(), "no invented readings on startup");
+            assert!(core.model.air_quality.is_empty(), "no invented air quality on startup");
             assert!(core.status.is_empty(), "no phantom Loading spinner with nothing to fetch");
         }
         // The bundled sample (used only by `--shots`/tests) still carries demo
@@ -714,6 +721,7 @@ mod interaction_tests {
         let sample = WeatherApp::new();
         assert!(!sample.core.borrow().model.locations.is_empty());
         assert!(!sample.core.borrow().model.snapshots.is_empty());
+        assert!(!sample.core.borrow().model.air_quality.is_empty());
     }
 
     #[test]
@@ -794,6 +802,24 @@ mod interaction_tests {
     }
 
     #[test]
+    fn city_search_uses_the_shared_autocomplete_overlay() {
+        // Seeding the search stages the shared `ui::Autocomplete`; its overlay
+        // is populated from the geocode results (not a bespoke dropdown).
+        let mut h = Harness::new(1280.0, 720.0);
+        h.app
+            .core
+            .borrow_mut()
+            .seed_search("Par", crate::sample::sample_geocode_results());
+        h.redraw();
+        assert!(h.app.core.borrow().search_is_focused(), "the shared field is editing");
+        assert_eq!(
+            h.app.core.borrow().search_suggestion_count(),
+            crate::sample::sample_geocode_results().len(),
+            "the overlay lists every geocoded match"
+        );
+    }
+
+    #[test]
     fn picking_a_search_result_adds_and_selects_it() {
         let mut h = Harness::new(1280.0, 720.0);
         let before = h.app.core.borrow().model.locations.len();
@@ -801,13 +827,17 @@ mod interaction_tests {
             .core
             .borrow_mut()
             .seed_search("Par", crate::sample::sample_geocode_results());
-        h.redraw(); // build the dropdown + its result-row hotspots
+        h.redraw(); // place the field + populate the shared overlay
 
-        // First result row, anchored below the search field.
-        let over = h.app.nav.overview_rect();
-        let rx = over.x0 + 60.0;
-        let ry = over.y0 + 56.0 + 38.0 + 6.0 + 6.0 + 23.0; // field + gap + pad + half row
-        h.click(rx, ry);
+        // Arrow-key navigation of the shared overlay, then Enter to accept —
+        // no bespoke dropdown hit-test.
+        h.key(Key::Named(NamedKey::ArrowDown), None);
+        assert_eq!(
+            h.app.core.borrow().search_highlight_label().as_deref(),
+            Some("Paris"),
+            "Arrow Down highlights the first suggestion"
+        );
+        h.key(Key::Named(NamedKey::Enter), None);
 
         let model = &h.app.core.borrow().model;
         assert_eq!(model.locations.len(), before + 1, "picking a geocoded result adds the city");
@@ -816,6 +846,74 @@ mod interaction_tests {
             "Paris",
             "the added city becomes selected"
         );
+    }
+
+    #[test]
+    fn arrow_nav_picks_the_disambiguated_result() {
+        // Two cities named "Paris" (France, then Texas): arrowing to the SECOND
+        // and accepting must add THAT one — proving the shared overlay's
+        // keyboard selection is bound to the real geocoded place, not matched by
+        // display name.
+        let mut h = Harness::new(1280.0, 720.0);
+        h.app
+            .core
+            .borrow_mut()
+            .seed_search("Par", crate::sample::sample_geocode_results());
+        h.redraw();
+        h.key(Key::Named(NamedKey::ArrowDown), None); // Paris, France
+        h.key(Key::Named(NamedKey::ArrowDown), None); // Paris, Texas
+        h.key(Key::Named(NamedKey::Enter), None);
+        let model = &h.app.core.borrow().model;
+        let added = model.selected_location().unwrap();
+        assert_eq!(added.name, "Paris");
+        assert_eq!(
+            added.region, "Texas",
+            "arrowing to the 2nd match adds Paris, Texas — not France"
+        );
+    }
+
+    #[test]
+    fn hourly_strip_scrolls_when_it_overflows() {
+        // The 24 hours are laid out at a minimum per-hour width, so they
+        // overflow the card and the strip scrolls horizontally via the shared
+        // scrollbar primitive.
+        let mut h = Harness::new(1280.0, 720.0);
+        h.redraw();
+        assert!(
+            h.app.core.borrow().hourly_max_scroll() > 0.0,
+            "24 hours at the min column width overflow the card"
+        );
+        assert_eq!(h.app.core.borrow().hourly_scroll_x(), 0.0);
+
+        // A horizontal wheel over the strip scrolls it.
+        let vp = h.app.core.borrow().hourly_viewport_rect();
+        let p = vp.center();
+        h.move_to(p.x, p.y);
+        h.dispatch(WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: MouseScrollDelta::LineDelta(-2.0, 0.0),
+            phase: TouchPhase::Moved,
+        });
+        assert!(
+            h.app.core.borrow().hourly_scroll_x() > 0.0,
+            "a horizontal wheel scrolls the overflowing strip"
+        );
+    }
+
+    #[test]
+    fn detail_renders_air_quality_from_real_data() {
+        // The sample carries a real air-quality reading; the detail render path
+        // must consume it (parsed fields → section) without panicking, and the
+        // selected place must actually have a reading to show.
+        let mut h = Harness::new(1280.0, 720.0);
+        {
+            let aq = h.app.core.borrow().model.selected_air_quality().cloned();
+            let aq = aq.expect("the selected place has an air-quality reading");
+            assert!(aq.has_any() && aq.european_aqi.is_some());
+        }
+        h.redraw(); // exercises draw_air_quality on the real reading
+        // The new section extends the scrollable body.
+        assert!(h.app.core.borrow().max_scroll() > 0.0);
     }
 
     // ---- right-click context menu (open → dispatch item) ----------------
