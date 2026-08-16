@@ -46,6 +46,7 @@ EXPECTED_INTERFACES=(
     "org.freedesktop.impl.portal.ScreenCast"
     "org.freedesktop.impl.portal.RemoteDesktop"
     "org.freedesktop.impl.portal.Access"
+    "org.freedesktop.impl.portal.Print"
 )
 
 fail=0

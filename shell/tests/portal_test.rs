@@ -19,8 +19,9 @@ use std::sync::Arc;
 use shell::portal::{
     self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
     MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
-    PortalCaller, PortalContext, PromptQueueHandle, PromptResolver, RecordingInjector,
-    RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
+    PortalCaller, PortalContext, PrintSpoolerHandle, PromptQueueHandle, PromptResolver,
+    RecordingInjector, RecordingSpooler, RemoteInputInjectorHandle,
+    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
 use shell::shell::state::{
     Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Principal, Subject, Workspace,
@@ -59,6 +60,7 @@ async fn bring_up_pair(
             MockScreenCastProvisioner::new_with_node(1, "test"),
         )),
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await
 }
@@ -70,6 +72,7 @@ async fn bring_up_pair_with_spawners(
     file_picker: FilePickerSpawnerHandle,
     screencast_provisioner: ScreenCastStreamProvisionerHandle,
     remote_input_injector: RemoteInputInjectorHandle,
+    print_spooler: PrintSpoolerHandle,
 ) -> (Connection, Connection, PortalContext) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
@@ -81,6 +84,7 @@ async fn bring_up_pair_with_spawners(
         screencast_provisioner,
         remote_input_injector,
         documents: shell::portal::DocumentStoreHandle::host_paths(),
+        print_spooler,
     };
     let ctx_clone = ctx.clone();
 
@@ -90,11 +94,14 @@ async fn bring_up_pair_with_spawners(
     // pair so both ends of the socket negotiate auth concurrently —
     // serial `await` calls deadlock because the server-side handshake
     // wants bytes the client hasn't sent yet.
-    use shell::portal::{AccessBackend, FileChooserBackend, RemoteDesktopBackend, ScreenCastBackend};
+    use shell::portal::{
+        AccessBackend, FileChooserBackend, PrintBackend, RemoteDesktopBackend, ScreenCastBackend,
+    };
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
     let rd = RemoteDesktopBackend::new(ctx.clone());
+    let pr = PrintBackend::new(ctx.clone());
 
     let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
@@ -107,7 +114,9 @@ async fn bring_up_pair_with_spawners(
         .serve_at(OBJECT_PATH, ac)
         .expect("serve_at ac")
         .serve_at(OBJECT_PATH, rd)
-        .expect("serve_at rd");
+        .expect("serve_at rd")
+        .serve_at(OBJECT_PATH, pr)
+        .expect("serve_at pr");
     let client_builder = Builder::unix_stream(client_sock).p2p();
 
     let (server_conn, client_conn) =
@@ -159,6 +168,7 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
         fp_handle,
         sc_handle,
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
 
@@ -445,6 +455,7 @@ async fn screencast_start_provisions_pipewire_stream() {
         fp_handle,
         sc_handle,
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
 
@@ -555,6 +566,7 @@ async fn screencast_start_honors_selected_source_type_and_cursor_mode() {
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
         ScreenCastStreamProvisionerHandle::new(provisioner.clone()),
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
@@ -597,6 +609,7 @@ async fn screencast_multiple_yields_one_stream_per_source() {
             MockScreenCastProvisioner::new_with_node(80, "t"),
         )),
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
@@ -628,6 +641,7 @@ async fn screencast_restore_token_skips_reprompt() {
             MockScreenCastProvisioner::new_with_node(90, "t"),
         )),
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
@@ -717,6 +731,7 @@ async fn screencast_open_pipewire_remote_returns_real_fd() {
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
@@ -772,6 +787,7 @@ async fn remote_desktop_notify_injects_after_consent() {
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         RemoteInputInjectorHandle::new(rec.clone()),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
@@ -832,6 +848,7 @@ async fn remote_desktop_denial_blocks_injection() {
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         RemoteInputInjectorHandle::new(rec.clone()),
+        PrintSpoolerHandle::null(),
     )
     .await;
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
@@ -852,4 +869,155 @@ async fn remote_desktop_denial_blocks_injection() {
         rec.actions().is_empty(),
         "a denied RemoteDesktop session must not inject input"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Print
+// ---------------------------------------------------------------------------
+//
+// The property under test is the one the whole portal exists for: an app
+// hands over a *file descriptor* and a request, and the bytes reach the
+// spooler on the compositor's side of the sandbox — while the app itself
+// never sees a printer, a socket, or an IPP message.
+
+/// Bring up a portal pair whose spooler records instead of printing.
+async fn bring_up_print_pair(
+    prompts: PromptQueueHandle,
+    spooler: Arc<RecordingSpooler>,
+) -> (Connection, Connection) {
+    let (store, _ws) = GrantStoreHandle::test_with_workspace(empty_workspace(90, "print"));
+    let (server, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        prompts,
+        CallerMap::new(),
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "test",
+        ))),
+        RemoteInputInjectorHandle::null(),
+        PrintSpoolerHandle::new(spooler),
+    )
+    .await;
+    (server, client)
+}
+
+/// A real on-disk document, handed over as a descriptor exactly as an app
+/// would. `OwnedFd` here is a genuine fd crossing the connection, not a path.
+fn document_fd(bytes: &[u8]) -> (tempfile::NamedTempFile, zbus::zvariant::OwnedFd) {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = tempfile::NamedTempFile::new().expect("temp document");
+    f.write_all(bytes).expect("write document");
+    f.flush().expect("flush");
+    f.as_file_mut().seek(SeekFrom::Start(0)).expect("rewind");
+    let dup = f.as_file().try_clone().expect("dup fd");
+    (f, zbus::zvariant::OwnedFd::from(std::os::fd::OwnedFd::from(dup)))
+}
+
+/// PreparePrint then Print: the document reaches the spooler, and the token
+/// minted by the first call is what authorises the second.
+#[tokio::test]
+async fn print_round_trips_the_document_to_the_spooler() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
+        "Office_LaserJet".to_string(),
+    ]));
+    let prompts = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let (_s, client) = bring_up_print_pair(prompts, spooler.clone()).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Print").await;
+
+    let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").unwrap();
+    let empty: HashMap<String, Value<'_>> = HashMap::new();
+    let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
+        .call(
+            "PreparePrint",
+            &(&handle, "org.example.Editor", "", "Quarterly report", &empty, &empty, &empty),
+        )
+        .await
+        .expect("PreparePrint");
+    assert_eq!(response, 0, "PreparePrint succeeded: {results:?}");
+    let token = results.get("token").expect("a token was minted");
+    let token: u32 = u32::try_from(token).expect("token is a u32");
+    assert_ne!(token, 0, "a zero token would be guessable");
+
+    let (doc, fd) = document_fd(b"%PDF-1.7\nthe quarterly report\n");
+    let mut opts: HashMap<String, Value<'_>> = HashMap::new();
+    opts.insert("token".to_string(), Value::from(token));
+    let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
+        .call(
+            "Print",
+            &(&handle, "org.example.Editor", "", "Quarterly report", fd, &opts),
+        )
+        .await
+        .expect("Print");
+    assert_eq!(response, 0, "Print succeeded: {results:?}");
+
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1, "exactly one job reached the spooler: {jobs:?}");
+    assert_eq!(
+        jobs[0].document, b"%PDF-1.7\nthe quarterly report\n",
+        "the spooler received the bytes behind the descriptor"
+    );
+    assert_eq!(
+        jobs[0].destination, "Office_LaserJet",
+        "the destination came from the machine's own printer list, not the app"
+    );
+    drop(doc);
+}
+
+/// A refused prompt must stop the job dead. This is the assertion that makes
+/// the consent real rather than decorative: the spooler is never called.
+#[tokio::test]
+async fn a_denied_print_never_reaches_the_spooler() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
+        "Office_LaserJet".to_string(),
+    ]));
+    let prompts = PromptQueueHandle::new(PromptResolver::AutoDeny);
+    let (_s, client) = bring_up_print_pair(prompts, spooler.clone()).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Print").await;
+
+    let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/2").unwrap();
+    let (doc, fd) = document_fd(b"%PDF-1.7\nsecret\n");
+    let opts: HashMap<String, Value<'_>> = HashMap::new();
+    let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
+        .call("Print", &(&handle, "org.example.Editor", "", "Secret", fd, &opts))
+        .await
+        .expect("Print call completes");
+    assert_eq!(response, 1, "a denied request reports user-cancelled");
+    assert!(
+        spooler.jobs().is_empty(),
+        "nothing was spooled: {:?}",
+        spooler.jobs()
+    );
+    drop(doc);
+}
+
+/// The app cannot pick a destination the machine does not have. Printing to
+/// an attacker-chosen name is how a device URI becomes a command line.
+#[tokio::test]
+async fn an_app_cannot_name_a_destination_that_does_not_exist() {
+    let spooler = Arc::new(RecordingSpooler::with_destinations(vec![
+        "Office_LaserJet".to_string(),
+    ]));
+    let prompts = PromptQueueHandle::new(PromptResolver::AutoAllow);
+    let (_s, client) = bring_up_print_pair(prompts, spooler.clone()).await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Print").await;
+
+    let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/3").unwrap();
+    let (doc, fd) = document_fd(b"%PDF-1.7\nx\n");
+    let mut opts: HashMap<String, Value<'_>> = HashMap::new();
+    opts.insert(
+        "printer".to_string(),
+        Value::from("../../etc/cups/printers.conf"),
+    );
+    let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
+        .call("Print", &(&handle, "org.example.Editor", "", "x", fd, &opts))
+        .await
+        .expect("Print call completes");
+    assert_eq!(response, 0, "the job still goes to a real printer");
+    let jobs = spooler.jobs();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(
+        jobs[0].destination, "Office_LaserJet",
+        "the app's chosen destination was ignored in favour of a real one"
+    );
+    drop(doc);
 }

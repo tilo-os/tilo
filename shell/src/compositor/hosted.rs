@@ -410,6 +410,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
             ),
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::documents_for_session(),
+            print_spooler: crate::portal::PrintSpoolerHandle::cups(),
         };
         let serve_result: Result<crate::portal::ServerHandle, zbus::Error> =
             rt_handle.block_on(async move {
