@@ -41,7 +41,7 @@ use anyhow::{anyhow, Context};
 use pdfium_render::prelude::*;
 use vello::peniko::{Blob, ImageAlphaType, ImageData as PenikoImage, ImageFormat};
 
-use crate::model::{AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature};
+use crate::model::{AnnoKind, Annotation, Comment, Document, OutlineItem, PtRect, Signature, SignatureInk};
 use crate::text_layer::PageText;
 
 /// A document loaded from disk plus its optional raster backend.
@@ -512,10 +512,10 @@ impl Rasterizer {
     /// including imported PDF/image pages — flatten the reader's markup onto it,
     /// and write it to `out` as a valid PDF. Highlights become translucent
     /// filled rectangles, ink becomes stroked paths, sticky notes become a
-    /// coloured marker plus their comment text, and signatures become a
-    /// handwriting stroke with the signer's name + date — all as ordinary page
-    /// content, so the saved file reopens with the edits + markup baked in for
-    /// any viewer.
+    /// coloured marker plus their comment text, and signatures become their
+    /// real ink — the drawn strokes, or the typed name as a script — plus the
+    /// signer name + date, all as ordinary page content, so the saved file
+    /// reopens with the edits + markup baked in for any viewer.
     ///
     /// Operates on a freshly-created document, leaving the on-screen render and
     /// the loaded sources untouched.
@@ -642,33 +642,57 @@ impl Rasterizer {
         font_italic: PdfFontToken,
     ) -> anyhow::Result<()> {
         let r = &s.rect;
-        // Handwriting stroke sampled from the on-screen signature glyph so the
-        // saved mark echoes what the reader drew.
         let stroke_area = PtRect::new(
             r.x + r.w * 0.06,
-            r.y + r.h * 0.12,
+            r.y + r.h * 0.10,
             r.w * 0.88,
             r.h * 0.46,
         );
-        let poly = signature_polyline(s.style, &stroke_area);
-        if poly.len() >= 2 {
-            let (x0, y0) = pt_tl_to_pdf(poly[0].0, poly[0].1, page_h);
-            let mut path = PdfPagePathObject::new(
-                doc,
-                x0,
-                y0,
-                Some(PdfColor::new(28, 33, 47, 255)),
-                Some(PdfPoints::new(1.6)),
-                None,
-            )
-            .map_err(|e| anyhow!("starting signature stroke: {e:?}"))?;
-            for p in &poly[1..] {
-                let (x, y) = pt_tl_to_pdf(p.0, p.1, page_h);
-                path.line_to(x, y).map_err(|e| anyhow!("signature line_to: {e:?}"))?;
+        // Flatten the signature's *real* ink onto the page: the freehand strokes
+        // the user drew (scaled from normalised field space), or their typed name
+        // as a large italic script. Both land as ordinary, extractable page
+        // content so the saved PDF looks the same in any viewer.
+        match &s.ink {
+            SignatureInk::Drawn { strokes } => {
+                let ink_col = PdfColor::new(28, 33, 47, 255);
+                for stroke in strokes {
+                    if stroke.len() < 2 {
+                        continue;
+                    }
+                    let map = |nx: f64, ny: f64| {
+                        let x = stroke_area.x + nx.clamp(0.0, 1.0) * stroke_area.w;
+                        let y = stroke_area.y + ny.clamp(0.0, 1.0) * stroke_area.h;
+                        pt_tl_to_pdf(x, y, page_h)
+                    };
+                    let (x0, y0) = map(stroke[0].0, stroke[0].1);
+                    let mut path = PdfPagePathObject::new(
+                        doc,
+                        x0,
+                        y0,
+                        Some(ink_col),
+                        Some(PdfPoints::new(1.6)),
+                        None,
+                    )
+                    .map_err(|e| anyhow!("starting signature stroke: {e:?}"))?;
+                    for p in &stroke[1..] {
+                        let (x, y) = map(p.0, p.1);
+                        path.line_to(x, y).map_err(|e| anyhow!("signature line_to: {e:?}"))?;
+                    }
+                    page.objects_mut()
+                        .add_path_object(path)
+                        .map_err(|e| anyhow!("adding signature stroke: {e:?}"))?;
+                }
             }
-            page.objects_mut()
-                .add_path_object(path)
-                .map_err(|e| anyhow!("adding signature stroke: {e:?}"))?;
+            SignatureInk::Typed => {
+                let name = s.signer.trim();
+                if !name.is_empty() {
+                    let size = (stroke_area.h * 0.72).clamp(10.0, 22.0);
+                    let (tx, ty) = pt_tl_to_pdf(stroke_area.x, stroke_area.y + stroke_area.h * 0.85, page_h);
+                    page.objects_mut()
+                        .create_text_object(tx, ty, name, font_italic, PdfPoints::new(size as f32))
+                        .map_err(|e| anyhow!("signature script: {e:?}"))?;
+                }
+            }
         }
 
         // Baseline under the name.
@@ -723,86 +747,6 @@ fn pt_tl_to_pdf(x: f64, y: f64, page_h: f64) -> (PdfPoints, PdfPoints) {
     (PdfPoints::new(x as f32), PdfPoints::new((page_h - y) as f32))
 }
 
-/// Sample the styled signature "handwriting" curve into a polyline in
-/// page-point (top-left) space. Mirrors the four bundled bezier styles drawn
-/// on screen in `render::draw_signature_glyph`, so a flattened signature looks
-/// like the placed one. Sampling to line segments keeps the flatten path free
-/// of coordinate-order pitfalls.
-fn signature_polyline(style: u8, area: &PtRect) -> Vec<(f64, f64)> {
-    // Control geometry in a normalised [0,1]×[0,1] box (y increases downward),
-    // as cubic segments `[(c1),(c2),(end)]` following a start point.
-    let (start, segs): ((f64, f64), Vec<[(f64, f64); 3]>) = match style % 4 {
-        0 => (
-            (0.02, 0.7),
-            vec![
-                [(0.10, 0.0), (0.18, 1.0), (0.26, 0.4)],
-                [(0.34, -0.1), (0.40, 0.9), (0.50, 0.5)],
-                [(0.62, 0.05), (0.72, 1.0), (0.86, 0.35)],
-                [(0.92, 0.15), (0.98, 0.6), (1.0, 0.45)],
-            ],
-        ),
-        1 => (
-            (0.0, 0.55),
-            vec![
-                [(0.15, -0.2), (0.30, 1.1), (0.45, 0.5)],
-                [(0.55, 0.1), (0.60, 0.95), (0.70, 0.55)],
-                [(0.80, 0.2), (0.95, 0.8), (1.0, 0.4)],
-            ],
-        ),
-        2 => (
-            (0.02, 0.5),
-            // Quadratics from the on-screen style, promoted to cubics.
-            vec![
-                quad_to_cubic((0.02, 0.5), (0.2, -0.05), (0.38, 0.6)),
-                quad_to_cubic((0.38, 0.6), (0.52, 1.05), (0.66, 0.45)),
-                quad_to_cubic((0.66, 0.45), (0.82, -0.05), (1.0, 0.5)),
-            ],
-        ),
-        _ => (
-            (0.0, 0.6),
-            vec![
-                [(0.2, 0.0), (0.3, 0.9), (0.5, 0.45)],
-                [(0.7, 0.0), (0.85, 1.0), (1.0, 0.5)],
-            ],
-        ),
-    };
-
-    let map = |p: (f64, f64)| (area.x + p.0 * area.w, area.y + p.1 * area.h);
-    let mut out = vec![map(start)];
-    let mut p0 = start;
-    for seg in segs {
-        let [c1, c2, end] = seg;
-        // Sample the cubic at a handful of steps for a smooth-enough stroke.
-        for k in 1..=10 {
-            let t = k as f64 / 10.0;
-            out.push(map(cubic(p0, c1, c2, end, t)));
-        }
-        p0 = end;
-    }
-    out
-}
-
-/// Promote a quadratic Bézier (control `q`) from `p0` to `p1` into an
-/// equivalent cubic `[(c1),(c2),(end)]`.
-fn quad_to_cubic(p0: (f64, f64), q: (f64, f64), p1: (f64, f64)) -> [(f64, f64); 3] {
-    let c1 = (p0.0 + 2.0 / 3.0 * (q.0 - p0.0), p0.1 + 2.0 / 3.0 * (q.1 - p0.1));
-    let c2 = (p1.0 + 2.0 / 3.0 * (q.0 - p1.0), p1.1 + 2.0 / 3.0 * (q.1 - p1.1));
-    [c1, c2, p1]
-}
-
-/// Evaluate a cubic Bézier at parameter `t`.
-fn cubic(p0: (f64, f64), c1: (f64, f64), c2: (f64, f64), p1: (f64, f64), t: f64) -> (f64, f64) {
-    let u = 1.0 - t;
-    let a = u * u * u;
-    let b = 3.0 * u * u * t;
-    let c = 3.0 * u * t * t;
-    let d = t * t * t;
-    (
-        a * p0.0 + b * c1.0 + c * c2.0 + d * p1.0,
-        a * p0.1 + b * c1.1 + c * c2.1 + d * p1.1,
-    )
-}
-
 /// Locate a usable pdfium library without ever bundling one.
 fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
     if let Ok(path) = std::env::var("QOS_PDFIUM_LIB") {
@@ -835,26 +779,6 @@ fn find_pdfium() -> Option<Box<dyn PdfiumLibraryBindings>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn quad_to_cubic_preserves_endpoints() {
-        let seg = quad_to_cubic((0.0, 0.0), (0.5, 1.0), (1.0, 0.0));
-        assert_eq!(seg[2], (1.0, 0.0), "the cubic ends where the quad ends");
-    }
-
-    #[test]
-    fn signature_polyline_stays_within_a_padded_area() {
-        let area = PtRect::new(100.0, 200.0, 180.0, 40.0);
-        for style in 0u8..4 {
-            let poly = signature_polyline(style, &area);
-            assert!(poly.len() > 10, "style {style} samples a real stroke");
-            // Points stay near the area (curves overshoot a little vertically).
-            for (x, y) in poly {
-                assert!(x >= area.x - 1.0 && x <= area.x + area.w + 1.0, "x in range");
-                assert!(y >= area.y - area.h && y <= area.y + 2.0 * area.h, "y near range");
-            }
-        }
-    }
 
     #[test]
     fn rect_tl_to_pdf_flips_the_y_axis() {

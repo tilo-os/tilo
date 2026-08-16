@@ -390,6 +390,30 @@ impl Comment {
 // Signatures
 // ----------------------------------------------------------------------
 
+/// The visible content of a placed signature — **real user input**, not a
+/// canned style picked from a name hash. A signature is either the signer's
+/// typed name (rendered in a signature script) or the freehand strokes they
+/// actually drew, normalised into the field's `0..1` box so it scales to any
+/// placement size.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SignatureInk {
+    /// Render the signer's name as a script-style typed signature.
+    Typed,
+    /// The signer drew this by hand: one or more polylines in normalised
+    /// `[0,1]²` field space (origin top-left).
+    Drawn { strokes: Vec<Vec<(f64, f64)>> },
+}
+
+impl SignatureInk {
+    /// A drawn signature with no ink is empty (nothing was actually drawn).
+    pub fn is_empty(&self) -> bool {
+        match self {
+            SignatureInk::Typed => false,
+            SignatureInk::Drawn { strokes } => strokes.iter().all(|s| s.len() < 2),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Signature {
     pub id: String,
@@ -397,8 +421,8 @@ pub struct Signature {
     pub rect: PtRect,
     pub signer: String,
     pub date: String,
-    /// Selects one of the bundled handwriting stroke styles (0..3).
-    pub style: u8,
+    /// The real signature content (typed name or drawn strokes).
+    pub ink: SignatureInk,
 }
 
 impl Signature {
