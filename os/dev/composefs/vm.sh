@@ -1,7 +1,9 @@
 #!/bin/bash
 # Boot a raw composefs disk image headlessly, with a software TPM attached.
 #
-#   ./os/dev/composefs/vm.sh boot [GENERATION]   start (detached), swtpm on
+#   ./os/dev/composefs/vm.sh boot [GENERATION] [--serial-socket]
+#                                                start (detached), swtpm on
+#   ./os/dev/composefs/vm.sh console             path of the serial socket
 #   ./os/dev/composefs/vm.sh wait                block until sshd answers
 #   ./os/dev/composefs/vm.sh ssh -- CMD...       run a command in the guest
 #   ./os/dev/composefs/vm.sh serial [GREP]       dump the serial console log
@@ -29,6 +31,7 @@ QOS_TPM_DIR="$QOS_CFS_RUN/tpm"
 QOS_TPM_SOCK="$QOS_TPM_DIR/swtpm-ctrl.sock"
 CFS_MON="$QOS_CFS_RUN/mon.sock"
 CFS_SERIAL="$QOS_CFS_RUN/serial.log"
+CFS_CONSOLE="$QOS_CFS_RUN/console.sock"
 CFS_PID="$QOS_CFS_RUN/qemu.pid"
 CFS_QEMU_LOG="$QOS_CFS_RUN/qemu.log"
 CFS_SSH_PORT="${CFS_SSH_PORT:-2322}"
@@ -44,9 +47,20 @@ gsh() {
 }
 
 cmd_boot() {
-  local gen="" disk
+  local gen="" disk serial_mode=file
   while [ $# -gt 0 ]; do
     case "$1" in
+      # A serial line something can type into. `-serial file:` can only be
+      # read, and repair mode is an interactive console on /dev/console — so
+      # without this there is no way to show it doing anything, only that it
+      # started. os/dev/serial-console.py drives the socket.
+      #
+      # SOMETHING MUST STAY ATTACHED. qemu writes the guest's console into the
+      # socket, and with no reader it blocks once the pipe fills — which stops
+      # the guest mid-boot, looking exactly like a hang in whatever it was
+      # doing. Use this only while a driver is connected, and boot without it
+      # for anything that only needs to read (`vm.sh serial`).
+      --serial-socket) serial_mode=socket ;;
       # Enforcement is a separate axis from measurement: the measuring firmware
       # is selected unconditionally (os/dev/_common.sh), and this only asks for a
       # variable store that survives a restart so keys enrolled in the guest
@@ -69,14 +83,21 @@ cmd_boot() {
   rm -f "$CFS_SERIAL" "$CFS_MON" "$CFS_PID"
   local varstore; varstore="$(firmware_varstore "$QOS_CFS_RUN")"
   swtpm_start
+  local serial_arg
+  if [ "$serial_mode" = socket ]; then
+    rm -f "$CFS_CONSOLE"
+    serial_arg="-serial unix:$CFS_CONSOLE,server=on,wait=off"
+  else
+    serial_arg="-serial file:$CFS_SERIAL"
+  fi
   local args="$(machine_args) -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     $(pflash_args "$varstore") \
     -drive file=$disk,format=raw,if=virtio \
     -device virtio-vga -display none \
     -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$CFS_SSH_PORT-:22 \
-    -monitor unix:$CFS_MON,server,nowait -serial file:$CFS_SERIAL \
+    -monitor unix:$CFS_MON,server,nowait $serial_arg \
     -pidfile $CFS_PID -name qos-composefs"
-  msg "boot generation $gen ($disk), TPM on, varstore keys=$QOS_SECBOOT_KEYS, ssh on 127.0.0.1:$CFS_SSH_PORT"
+  msg "boot generation $gen ($disk), TPM on, varstore keys=$QOS_SECBOOT_KEYS, ssh on 127.0.0.1:$CFS_SSH_PORT, serial=$serial_mode"
   inenv "setsid nohup qemu-system-x86_64 $args $(tpm_qemu_args) $(secboot_qemu_args) >'$CFS_QEMU_LOG' 2>&1 & disown"
   sleep 1
   inenv "test -S '$CFS_MON'" || { cat "$CFS_QEMU_LOG" >&2; die "boot failed"; }
@@ -121,6 +142,7 @@ cmd_stop() {
 sub="${1:-}"; shift || true
 case "$sub" in
   boot) cmd_boot "$@";;
+  console) printf '%s\n' "$CFS_CONSOLE";;
   wait) cmd_wait;;
   ssh) gsh "$@";;
   reboot) cmd_reboot;;

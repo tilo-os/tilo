@@ -116,11 +116,17 @@ fn load_missing_file_returns_default() {
     use std::path::PathBuf;
     let missing = PathBuf::from("/tmp/definitely-missing-xyz.json");
     let _ = std::fs::remove_file(&missing);
-    let t = load_or_default(&missing);
+    let (t, notice) = load_or_default(&missing);
     // `load_or_default` falls back to `WorkspaceTree::bootstrap_default`
     // when the persistence file is absent, so the workspace count must
     // match the seed (currently 3: Home / Research / Design).
     assert_eq!(t.workspaces.len(), 3);
+    // A first boot is not a refusal. Reporting one would put an alarming
+    // notification on every genuinely new machine.
+    assert!(
+        notice.is_none(),
+        "a missing state file is the first boot, not something to warn about"
+    );
 }
 
 #[test]
