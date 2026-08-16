@@ -1,16 +1,15 @@
 use vello::peniko::Color;
+use crate::color_compat::ColorCompat;
 
-/// Index into the accent ramp that maps to the concept's dominant
-/// indigo-500 fill (`#6366f1`). Used wherever a widget needs the "primary
-/// accent" colour (active dot, slider active track, checkbox tick,
-/// toggle on-state, etc.). The concept uses indigo-500 14× across
-/// `nirios-concept/src/components/` versus indigo-600 (4 hits) which is
-/// reserved for the *hover* state.
+/// Index into the accent ramp that maps to the theme's dominant accent
+/// fill. Used wherever a widget needs the "primary accent" colour (active
+/// dot, slider active track, checkbox tick, toggle on-state, etc.). The
+/// *hover* shade lives one step earlier, at [`ACCENT_HOVER_IDX`].
 pub const ACCENT_PRIMARY_IDX: usize = 5;
 
-/// Index into the accent ramp that maps to the concept's hover-state
-/// indigo-600 (`#4f46e5`). Bound to a const so future ramp swaps stay
-/// coherent with [`ACCENT_PRIMARY_IDX`].
+/// Index into the accent ramp that maps to the theme's hover-state accent
+/// (one step darker than [`ACCENT_PRIMARY_IDX`]). Bound to a const so future
+/// ramp swaps stay coherent with [`ACCENT_PRIMARY_IDX`].
 pub const ACCENT_HOVER_IDX: usize = 4;
 
 /// Translucent black scrim painted over an interactive widget whose
@@ -21,11 +20,40 @@ pub const ACCENT_HOVER_IDX: usize = 4;
 /// into 13 widgets).
 pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 
+/// Mix two colours in straight (non-premultiplied) 8-bit sRGB space.
+/// `t = 0` → `a`, `t = 1` → `b`. This is the same space the Themes app and
+/// most widget draw paths blend in, so tints stay consistent.
+fn mix8(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
+
+/// Same colour with an explicit 8-bit alpha.
+fn with_a(c: Color, a: u8) -> Color {
+    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
 
 impl ColorRamp {
     pub fn len(&self) -> usize { self.stops.len() }
+
+    /// Build an 11-stop ramp interpolating `a` (index 0) → `b` (index 10) in
+    /// straight sRGB, eased so the low indices cluster near `a`. The easing
+    /// keeps the dense-at-the-dark-end feel of a hand-tuned ramp (like
+    /// Tailwind's slate) so `neutral[2..5]` — the hover / pressed / muted
+    /// surface tints most widgets read — stay close to the base rather than
+    /// racing to the light end on a straight lerp.
+    pub fn eased(a: Color, b: Color) -> Self {
+        let mut stops = [a; 11];
+        for (i, stop) in stops.iter_mut().enumerate() {
+            let t = (i as f32 / 10.0).powf(1.5);
+            *stop = mix8(a, b, t);
+        }
+        Self { stops }
+    }
 }
 
 impl std::ops::Index<usize> for ColorRamp {
@@ -47,10 +75,11 @@ pub struct Surfaces {
     pub scrim: Color,
     pub glass: Color,
     pub glass_blur_px: f32,
-    /// White rounded-3xl card that frames each window tile in the concept
-    /// (`bg-white` in the React mock). Lives on top of the dark shell bg.
+    /// The card that frames each window tile. Sits on top of the shell
+    /// backdrop; for dark themes a light card (dark app content reads on it),
+    /// for light themes plain white.
     pub window_card: Color,
-    /// Subtle border around the card (`border-white/20` in the concept).
+    /// Subtle border around the window card.
     pub window_card_border: Color,
 }
 
@@ -64,24 +93,191 @@ pub struct Colors {
     pub semantic: SemanticColors,
     pub surfaces: Surfaces,
     pub text_primary: Color,
+    /// Secondary text — captions, sub-labels, de-emphasised copy. One clear
+    /// step down from [`Self::text_primary`] but still comfortably legible.
     pub text_dim: Color,
+    /// Tertiary text — the quietest readable tier (timestamps, hints,
+    /// placeholder-adjacent metadata). Sits below [`Self::text_dim`]; still
+    /// clears large-text contrast against the base surface, so it reads as
+    /// "quiet", never "broken".
+    pub text_tertiary: Color,
     pub border_standard: Color,
     pub border_focus: Color,
-    /// Translucent surface ≈ Tailwind `bg-white/5` (alpha 13 ≈ 0.05·255).
-    /// Use for "barely there" hover veneers and faint dividers.
+    /// Translucent surface ≈ `white/5` (alpha 13 ≈ 0.05·255). Use for
+    /// "barely there" hover veneers and faint dividers.
     pub surface_white_5: Color,
-    /// Translucent surface ≈ Tailwind `bg-white/10` (alpha 26 ≈ 0.10·255).
+    /// Translucent surface ≈ `white/10` (alpha 26 ≈ 0.10·255).
     pub surface_white_10: Color,
-    /// Translucent surface ≈ Tailwind `bg-white/20` (alpha 51 ≈ 0.20·255).
+    /// Translucent surface ≈ `white/20` (alpha 51 ≈ 0.20·255).
     pub surface_white_20: Color,
-    /// Translucent border ≈ Tailwind `border-white/10` (alpha 26).
+    /// Translucent border ≈ `border-white/10` (alpha 26).
     pub border_white_10: Color,
-    /// Translucent border ≈ Tailwind `border-white/20` (alpha 51).
+    /// Translucent border ≈ `border-white/20` (alpha 51).
     pub border_white_20: Color,
 }
 
+/// A compact description of a full palette. Every qOS theme is expressed as
+/// one of these and expanded into a coherent [`Colors`] token set by
+/// [`Colors::themed`] — so a preset only states the ~15 colours that carry
+/// its identity, and the ramps / translucent surfaces / scrim / glass are
+/// derived consistently for every theme.
+#[derive(Clone, Debug)]
+pub struct PaletteSpec {
+    /// Dark themes ramp their neutrals darkest→lightest; light themes invert.
+    pub dark: bool,
+    /// The window / page ground.
+    pub base: Color,
+    /// Raised cards, panels, controls — one elevation above [`Self::base`].
+    pub raised: Color,
+    /// The deep, rich surface for popovers / menus / the top-bar backdrop.
+    /// This is the "near-black context menu" tier — usually the darkest
+    /// (dark themes) or a crisp elevated white (light themes).
+    pub popover: Color,
+    pub text: Color,
+    pub text_dim: Color,
+    pub text_tertiary: Color,
+    pub border: Color,
+    /// Focus ring / selected-outline colour (often, but not always, the accent).
+    pub focus: Color,
+    /// Primary accent fill (interactive / selected states).
+    pub accent: Color,
+    /// Hover accent — one step from [`Self::accent`].
+    pub accent_hover: Color,
+    pub success: Color,
+    pub warning: Color,
+    pub danger: Color,
+    pub info: Color,
+    /// Override the window-card colour; `None` derives a sensible default
+    /// (light card on dark themes, white on light themes).
+    pub window_card: Option<Color>,
+}
+
 impl Colors {
+    /// Expand a [`PaletteSpec`] into a full, coherent token set. Surfaces,
+    /// text, accent and semantic colours are taken verbatim from the spec;
+    /// the neutral ramp, accent ramp, scrim, glass and translucent-white
+    /// veneers are derived so every theme has the same structural richness
+    /// without hand-authoring 40 values per preset.
+    pub fn themed(p: PaletteSpec) -> Self {
+        let black = Color::from_rgb8(0, 0, 0);
+
+        // Neutral ramp: dark themes run a deep shade → the text colour;
+        // light themes run the (light) base → the (dark) text colour, which
+        // naturally inverts the ramp direction.
+        let (n_lo, n_hi) = if p.dark {
+            (mix8(p.base, black, 0.45), p.text)
+        } else {
+            (p.base, p.text)
+        };
+        let neutral = ColorRamp::eased(n_lo, n_hi);
+
+        // Accent ramp: a full shade→tint spread with the primary and hover
+        // stops pinned to the spec so [`ACCENT_PRIMARY_IDX`] / [`ACCENT_HOVER_IDX`]
+        // land exactly on the theme's chosen accent.
+        let mut accent = ColorRamp::eased(mix8(p.accent, black, 0.62), mix8(p.accent, Color::WHITE, 0.85));
+        accent.stops[ACCENT_HOVER_IDX] = p.accent_hover;
+        accent.stops[ACCENT_PRIMARY_IDX] = p.accent;
+
+        let window_card = p.window_card.unwrap_or_else(|| {
+            if p.dark { Color::from_rgb8(0xF4, 0xF5, 0xF7) } else { Color::WHITE }
+        });
+        let window_card_border = if p.dark {
+            Color::from_rgba8(255, 255, 255, 51)
+        } else {
+            Color::from_rgba8(0, 0, 0, 30)
+        };
+
+        let scrim = if p.dark { mix8(p.base, black, 0.55) } else { Color::from_rgb8(12, 12, 14) };
+
+        Self {
+            neutral,
+            accent,
+            semantic: SemanticColors {
+                success: p.success,
+                warning: p.warning,
+                danger: p.danger,
+                info: p.info,
+            },
+            surfaces: Surfaces {
+                base: p.base,
+                raised: p.raised,
+                // Near-opaque so it reads as a solid deep surface while still
+                // letting a hair of blur bleed through behind it.
+                overlay: with_a(p.popover, 235),
+                scrim,
+                glass: with_a(mix8(p.base, p.raised, 0.4), 214),
+                glass_blur_px: 24.0,
+                window_card,
+                window_card_border,
+            },
+            text_primary: p.text,
+            text_dim: p.text_dim,
+            text_tertiary: p.text_tertiary,
+            border_standard: p.border,
+            border_focus: p.focus,
+            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
+            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
+            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
+            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
+            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+        }
+    }
+
+    /// The default dark palette — a calm, neutral **graphite** ground with a
+    /// faint cool bias (deliberately *not* a blue-drenched slate), soft
+    /// off-white typography in three legible tiers, deep near-black popovers,
+    /// and a single restrained blue accent reserved for interactive and
+    /// selected states.
     pub fn dark() -> Self {
+        Self::themed(PaletteSpec {
+            dark: true,
+            base:          Color::from_rgb8(0x16, 0x17, 0x1B), // graphite ground
+            raised:        Color::from_rgb8(0x1F, 0x20, 0x25), // cards / panels
+            popover:       Color::from_rgb8(0x0D, 0x0E, 0x11), // rich near-black menu
+            text:          Color::from_rgb8(0xEC, 0xED, 0xF0), // soft near-white
+            text_dim:      Color::from_rgb8(0x9A, 0x9C, 0xA6), // secondary
+            text_tertiary: Color::from_rgb8(0x6B, 0x6D, 0x77), // tertiary / hints
+            border:        Color::from_rgb8(0x2B, 0x2C, 0x33), // subtle structure
+            focus:         Color::from_rgb8(0x58, 0x91, 0xE8), // accent ring
+            accent:        Color::from_rgb8(0x58, 0x91, 0xE8), // restrained blue
+            accent_hover:  Color::from_rgb8(0x48, 0x7B, 0xD1),
+            success:       Color::from_rgb8(0x4F, 0xB4, 0x77),
+            warning:       Color::from_rgb8(0xE2, 0xA9, 0x3C),
+            danger:        Color::from_rgb8(0xE5, 0x61, 0x5F),
+            info:          Color::from_rgb8(0x5E, 0x9B, 0xEA),
+            window_card:   None,
+        })
+    }
+
+    /// A clean, faintly-warm neutral **light** theme — a paper-white ground
+    /// (not a clinical pure white), dark warm-neutral typography in three
+    /// tiers, and the same restrained blue accent as the dark default.
+    pub fn light() -> Self {
+        Self::themed(PaletteSpec {
+            dark: false,
+            base:          Color::from_rgb8(0xF3, 0xF3, 0xF1), // soft paper
+            raised:        Color::from_rgb8(0xFF, 0xFF, 0xFF), // crisp card
+            popover:       Color::from_rgb8(0xFF, 0xFF, 0xFF),
+            text:          Color::from_rgb8(0x1B, 0x1C, 0x1E),
+            text_dim:      Color::from_rgb8(0x5B, 0x5D, 0x63),
+            text_tertiary: Color::from_rgb8(0x8A, 0x8C, 0x92),
+            border:        Color::from_rgb8(0xDE, 0xDE, 0xDB),
+            focus:         Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            accent:        Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            accent_hover:  Color::from_rgb8(0x25, 0x5C, 0xB8),
+            success:       Color::from_rgb8(0x1E, 0x9E, 0x5A),
+            warning:       Color::from_rgb8(0xB5, 0x7A, 0x00),
+            danger:        Color::from_rgb8(0xCB, 0x3B, 0x3B),
+            info:          Color::from_rgb8(0x1E, 0x74, 0xC4),
+            window_card:   None,
+        })
+    }
+
+    /// The original qOS look — the slate-and-indigo "nirios concept" palette,
+    /// preserved verbatim as a selectable preset so nothing from the first
+    /// design is lost when the neutral graphite default takes over. Every
+    /// value here is Tailwind ground truth; see the tests for the mapping.
+    pub fn qos_blue() -> Self {
         // Slate-950 → slate-50, one Tailwind step per ramp slot.
         Self {
             neutral: ColorRamp { stops: [
@@ -121,19 +317,8 @@ impl Colors {
             surfaces: Surfaces {
                 base:   Color::from_rgb8(15, 23, 42),       // slate-900
                 raised: Color::from_rgb8(30, 41, 59),       // slate-800
-                // Top-bar backdrop — concept uses near-opaque black under the
-                // bar chrome. `bg-black/80` = alpha 204 (0.8 · 255 ≈ 204);
-                // previous 205 was a one-bit rounding artefact.
                 overlay: Color::from_rgba8(0, 0, 0, 204),   // black/80
-                // slate-950 rather than black: the dim under a palette
-                // is chrome, and every other chrome surface in this
-                // theme is on the slate ramp.
                 scrim: Color::from_rgb8(2, 6, 23),          // slate-950
-                // Overlay-panel "glass" — concept's QuickSettings and
-                // Collaborators popover use `bg-slate-900/80` = alpha 204.
-                // (GlobalSearch + WorkspaceSettings use /70; we pick the
-                // higher-visibility /80 here because it's the more prominent
-                // panel treatment in the mockup.)
                 glass:   Color::from_rgba8(15, 23, 42, 204),// slate-900/80
                 glass_blur_px: 24.0,
                 window_card: Color::WHITE,
@@ -141,57 +326,9 @@ impl Colors {
             },
             text_primary: Color::WHITE,
             text_dim: Color::from_rgb8(148, 163, 184), // slate-400
+            text_tertiary: Color::from_rgb8(100, 116, 139), // slate-500
             border_standard: Color::from_rgb8(51, 65, 85), // slate-700
             border_focus: Color::from_rgb8(99, 102, 241),  // indigo-500
-            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
-            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
-            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
-            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
-            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
-        }
-    }
-
-    pub fn light() -> Self {
-        Self {
-            neutral: ColorRamp { stops: [
-                Color::from_rgb8(255, 255, 255), Color::from_rgb8(245, 245, 248), Color::from_rgb8(235, 235, 240),
-                Color::from_rgb8(220, 220, 225), Color::from_rgb8(200, 200, 205), Color::from_rgb8(160, 160, 165),
-                Color::from_rgb8(120, 120, 125), Color::from_rgb8(90, 90, 95), Color::from_rgb8(60, 60, 65),
-                Color::from_rgb8(30, 30, 35), Color::from_rgb8(10, 10, 12),
-            ]},
-            accent: ColorRamp { stops: [
-                Color::from_rgb8(240, 250, 255), Color::from_rgb8(220, 240, 255), Color::from_rgb8(180, 220, 250),
-                Color::from_rgb8(130, 200, 250), Color::from_rgb8(80, 170, 240), Color::from_rgb8(40, 150, 230),
-                Color::from_rgb8(0, 120, 215), Color::from_rgb8(0, 100, 200), Color::from_rgb8(0, 75, 170),
-                Color::from_rgb8(0, 50, 120), Color::from_rgb8(0, 25, 60),
-            ]},
-            semantic: SemanticColors {
-                success: Color::from_rgb8(0, 150, 70),
-                warning: Color::from_rgb8(200, 130, 0),
-                danger: Color::from_rgb8(200, 50, 50),
-                info: Color::from_rgb8(0, 120, 200),
-            },
-            surfaces: Surfaces {
-                base: Color::from_rgb8(240, 240, 245),
-                raised: Color::WHITE,
-                overlay: Color::from_rgba8(255, 255, 255, 230),
-                // A scrim darkens in every theme — a light-theme scrim
-                // that brightened would raise the background towards the
-                // surface it is supposed to be pushing away.
-                scrim: Color::from_rgb8(10, 10, 12),
-                glass: Color::from_rgba8(245, 245, 250, 180),
-                glass_blur_px: 24.0,
-                window_card: Color::WHITE,
-                window_card_border: Color::from_rgba8(0, 0, 0, 30),
-            },
-            text_primary: Color::BLACK,
-            text_dim: Color::from_rgb8(100, 100, 105),
-            border_standard: Color::from_rgb8(200, 200, 205),
-            border_focus: Color::from_rgb8(0, 120, 215),
-            // Light theme keeps the same translucent-white tokens —
-            // they're meant to layer over arbitrary darker fills (e.g.
-            // window cards), not over the page background, so the
-            // alpha-on-white semantics are preserved across themes.
             surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
             surface_white_10: Color::from_rgba8(255, 255, 255, 26),
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
@@ -203,32 +340,91 @@ impl Colors {
 
 #[cfg(test)]
 mod tests {
-    //! Pin the dark theme's palette to Tailwind ground truth so that
-    //! drift away from the nirios-concept palette becomes a visible
-    //! test failure rather than a silent visual regression. Each
-    //! assertion below references the Tailwind class the value is
-    //! sourced from; see https://tailwindcss.com/docs/customizing-colors
-    //! for the canonical hex codes.
+    //! Two kinds of pin here:
     //!
-    //! These tests do not rely on cross-crate state: they exercise
-    //! `Colors::dark()` directly, so they are cheap to run via
-    //! `cargo test -p quick-ui --lib tokens`.
+    //! * The **new graphite default** ([`Colors::dark`]) — pin its identity
+    //!   surfaces / text / accent so a drift away from the neutral,
+    //!   restrained-blue design becomes a visible failure, and assert its
+    //!   text tiers clear WCAG AA against the ground.
+    //! * The **preserved concept palette** ([`Colors::qos_blue`]) — pin it to
+    //!   Tailwind ground truth (slate + indigo) so the original look is kept
+    //!   byte-for-byte as a selectable preset.
     use super::*;
+    use crate::a11y::contrast_ratio;
     use crate::color_compat::ColorCompat;
 
-    fn rgb(c: Color) -> [u8; 3] {
-        // peniko 0.1.x exposes straight (non-premultiplied) u8
-        // components directly on `Color`.
-        [c.r(), c.g(), c.b()]
-    }
+    fn rgb(c: Color) -> [u8; 3] { [c.r(), c.g(), c.b()] }
+    fn rgba(c: Color) -> [u8; 4] { [c.r(), c.g(), c.b(), c.a()] }
 
-    fn rgba(c: Color) -> [u8; 4] {
-        [c.r(), c.g(), c.b(), c.a()]
+    // --- the new graphite default -----------------------------------------
+
+    #[test]
+    fn dark_default_is_neutral_graphite_not_slate_blue() {
+        let c = Colors::dark();
+        assert_eq!(rgb(c.surfaces.base),   [0x16, 0x17, 0x1B], "graphite ground");
+        assert_eq!(rgb(c.surfaces.raised), [0x1F, 0x20, 0x25], "raised card");
+        // The ground is near-neutral: the blue channel leads red by only a
+        // hair (a faint cool bias), nothing like slate-900's 2.8× blue lead.
+        let b = c.surfaces.base;
+        assert!(
+            (b.b() as i32 - b.r() as i32) <= 6,
+            "the default ground must be a near-neutral graphite, not blue-drenched",
+        );
     }
 
     #[test]
-    fn dark_neutral_ramp_is_tailwind_slate_950_through_50() {
-        let n = &Colors::dark().neutral;
+    fn dark_default_accent_is_a_restrained_blue() {
+        let c = Colors::dark();
+        assert_eq!(rgb(c.accent[ACCENT_PRIMARY_IDX]), [0x58, 0x91, 0xE8], "restrained blue accent");
+        assert_eq!(rgb(c.accent[ACCENT_HOVER_IDX]),   [0x48, 0x7B, 0xD1], "hover one step darker");
+        // The accent is not used as a surface: the ground stays graphite.
+        assert_ne!(rgb(c.surfaces.base), rgb(c.accent[ACCENT_PRIMARY_IDX]));
+    }
+
+    #[test]
+    fn dark_default_has_three_legible_text_tiers() {
+        let c = Colors::dark();
+        let base = c.surfaces.base;
+        let primary = contrast_ratio(c.text_primary, base);
+        let dim = contrast_ratio(c.text_dim, base);
+        let tertiary = contrast_ratio(c.text_tertiary, base);
+
+        // A real hierarchy: each tier is quieter than the last.
+        assert!(primary > dim, "primary ({primary:.2}) must out-contrast secondary ({dim:.2})");
+        assert!(dim > tertiary, "secondary ({dim:.2}) must out-contrast tertiary ({tertiary:.2})");
+
+        // …yet all three stay legible. Primary + secondary clear AA for body
+        // text (4.5:1); tertiary clears AA for large / UI text (3:1) so it
+        // reads as "quiet", never "broken".
+        assert!(primary >= 4.5, "primary text clears AA (got {primary:.2})");
+        assert!(dim >= 4.5, "secondary text clears AA (got {dim:.2})");
+        assert!(tertiary >= 3.0, "tertiary text clears AA-large (got {tertiary:.2})");
+    }
+
+    #[test]
+    fn dark_default_body_text_clears_aa_on_raised_surfaces_too() {
+        // Cards and popovers are the other surfaces body text lands on.
+        let c = Colors::dark();
+        assert!(contrast_ratio(c.text_primary, c.surfaces.raised) >= 4.5, "primary on raised");
+        assert!(contrast_ratio(c.text_dim, c.surfaces.raised) >= 4.5, "secondary on raised");
+    }
+
+    #[test]
+    fn dark_default_popover_is_a_rich_near_black() {
+        // The context-menu / popover surface is the deep tier the design
+        // leans on. It must be darker than the ground.
+        let c = Colors::dark();
+        let base = c.surfaces.base;
+        let over = c.surfaces.overlay;
+        let lum = |x: Color| 0.2126 * x.r() as f32 + 0.7152 * x.g() as f32 + 0.0722 * x.b() as f32;
+        assert!(lum(over) < lum(base), "popover surface is deeper than the ground");
+    }
+
+    // --- the preserved concept palette (qOS Blue) -------------------------
+
+    #[test]
+    fn qos_blue_neutral_ramp_is_tailwind_slate_950_through_50() {
+        let n = &Colors::qos_blue().neutral;
         assert_eq!(rgb(n[0]),  [  2,   6,  23], "slate-950 #020617");
         assert_eq!(rgb(n[1]),  [ 15,  23,  42], "slate-900 #0f172a");
         assert_eq!(rgb(n[2]),  [ 30,  41,  59], "slate-800 #1e293b");
@@ -243,15 +439,13 @@ mod tests {
     }
 
     #[test]
-    fn dark_accent_ramp_is_tailwind_indigo_950_through_50() {
-        let a = &Colors::dark().accent;
+    fn qos_blue_accent_ramp_is_tailwind_indigo_950_through_50() {
+        let a = &Colors::qos_blue().accent;
         assert_eq!(rgb(a[0]),  [ 30,  27,  75], "indigo-950 #1e1b4b");
         assert_eq!(rgb(a[1]),  [ 49,  46, 129], "indigo-900 #312e81");
         assert_eq!(rgb(a[2]),  [ 55,  48, 163], "indigo-800 #3730a3");
         assert_eq!(rgb(a[3]),  [ 67,  56, 202], "indigo-700 #4338ca");
         assert_eq!(rgb(a[4]),  [ 79,  70, 229], "indigo-600 #4f46e5");
-        // accent[5] is the concept's primary `bg-indigo-500` (most-used
-        // accent fill in the concept — 14 occurrences vs 4 for indigo-600).
         assert_eq!(rgb(a[5]),  [ 99, 102, 241], "indigo-500 #6366f1");
         assert_eq!(rgb(a[6]),  [129, 140, 248], "indigo-400 #818cf8");
         assert_eq!(rgb(a[7]),  [165, 180, 252], "indigo-300 #a5b4fc");
@@ -261,8 +455,8 @@ mod tests {
     }
 
     #[test]
-    fn dark_semantic_colors_match_tailwind() {
-        let s = &Colors::dark().semantic;
+    fn qos_blue_semantic_colors_match_tailwind() {
+        let s = &Colors::qos_blue().semantic;
         assert_eq!(rgb(s.success), [ 16, 185, 129], "emerald-500 #10b981");
         assert_eq!(rgb(s.warning), [245, 158,  11], "amber-500   #f59e0b");
         assert_eq!(rgb(s.danger),  [239,  68,  68], "red-500     #ef4444");
@@ -270,54 +464,42 @@ mod tests {
     }
 
     #[test]
-    fn dark_surfaces_match_concept_layered_palette() {
-        let s = &Colors::dark().surfaces;
-        // base: solid slate-900 — concept's gradient bottom anchor
-        // (`from-slate-900 to-slate-950`, DesktopView.tsx:210).
+    fn qos_blue_surfaces_match_concept_layered_palette() {
+        let s = &Colors::qos_blue().surfaces;
         assert_eq!(rgb(s.base),   [ 15,  23,  42], "slate-900 #0f172a");
-        // raised: slate-800 — concept's `bg-slate-800` card fill
-        // (e.g. WorkspaceSettingsModal avatar tile, OverviewView pill).
         assert_eq!(rgb(s.raised), [ 30,  41,  59], "slate-800 #1e293b");
-        // overlay: black/80 — concept's top-bar `bg-black/80`.
-        // alpha 204 ≈ 0.80 × 255 (rounds to 204, not 205).
         assert_eq!(rgba(s.overlay), [0, 0, 0, 204], "black/80");
-        // glass: slate-900/80 — concept's QuickSettings + Collaborators
-        // popover `bg-slate-900/80 backdrop-blur-md`.
         assert_eq!(rgba(s.glass), [ 15,  23,  42, 204], "slate-900/80");
-        // window_card: WHITE — concept's `bg-white shadow-2xl` window frame.
         assert_eq!(rgba(s.window_card), [255, 255, 255, 255], "white");
-        // window_card_border: white/20 — concept's `border-white/20`.
-        // alpha 51 ≈ 0.20 × 255.
         assert_eq!(rgba(s.window_card_border), [255, 255, 255, 51], "white/20");
     }
 
     #[test]
-    fn dark_translucent_white_tokens_match_tailwind_alpha_bytes() {
-        // Tailwind's `/N` alpha utilities round to 0.N · 255:
-        //   /5  → 12.75 → 13
-        //   /10 → 25.5  → 26
-        //   /20 → 51.0  → 51
+    fn qos_blue_text_and_border_tokens_match_concept() {
+        let c = Colors::qos_blue();
+        assert_eq!(rgba(c.text_primary), [255, 255, 255, 255], "white");
+        assert_eq!(rgb(c.text_dim), [148, 163, 184], "slate-400 #94a3b8");
+        assert_eq!(rgb(c.border_standard), [ 51,  65,  85], "slate-700 #334155");
+        assert_eq!(rgb(c.border_focus), [ 99, 102, 241], "indigo-500 #6366f1");
+    }
+
+    // --- structural invariants shared by every themed palette --------------
+
+    #[test]
+    fn themed_pins_the_accent_and_hover_stops_exactly() {
+        // The eased ramp must not drift the two stops widgets actually read.
+        let c = Colors::dark();
+        assert_eq!(rgb(c.accent[ACCENT_PRIMARY_IDX]), [0x58, 0x91, 0xE8]);
+        assert_eq!(rgb(c.accent[ACCENT_HOVER_IDX]),   [0x48, 0x7B, 0xD1]);
+    }
+
+    #[test]
+    fn translucent_white_tokens_match_alpha_bytes() {
         let c = Colors::dark();
         assert_eq!(rgba(c.surface_white_5),  [255, 255, 255, 13], "white/5");
         assert_eq!(rgba(c.surface_white_10), [255, 255, 255, 26], "white/10");
         assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
         assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
         assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
-    }
-
-    #[test]
-    fn dark_text_and_border_tokens_match_concept() {
-        let c = Colors::dark();
-        assert_eq!(rgba(c.text_primary), [255, 255, 255, 255], "white");
-        // text_dim → slate-400 (most common dim text in the concept;
-        // the smaller-caption `text-slate-500` use-case is intentionally
-        // not represented as its own token — see audit notes).
-        assert_eq!(rgb(c.text_dim), [148, 163, 184], "slate-400 #94a3b8");
-        // border_standard → slate-700, the explicit border colour
-        // QuickSettings and the OverviewView mini-window cards use under
-        // their slate-900 fills (`border border-slate-700`).
-        assert_eq!(rgb(c.border_standard), [ 51,  65,  85], "slate-700 #334155");
-        // border_focus → indigo-500, the concept's focus-ring colour.
-        assert_eq!(rgb(c.border_focus), [ 99, 102, 241], "indigo-500 #6366f1");
     }
 }

@@ -3127,12 +3127,12 @@ mod tests {
 
     /// Concept parity: the maximized floating close chip
     /// (WindowFrame.tsx:249) uses `hover:bg-red-500/80`. Mirrors the
-    /// per-tab close pill pinned by `tabs::close_hover_uses_red_500_fill`.
-    /// On hover the chip fills with the destructive red at 80% alpha
+    /// per-tab close pill pinned by `tabs::close_hover_uses_danger_token_at_80_percent`.
+    /// On hover the chip fills with the theme's `semantic.danger` at 80% alpha
     /// and the glyph promotes to full white; off-hover reverts to the
     /// subtle white chrome tint + `text_primary` glyph.
     #[test]
-    fn maximized_close_chip_uses_red_500_on_hover() {
+    fn maximized_close_chip_uses_danger_token_on_hover() {
         let mut g = make_group();
         g.maximized = true;
         let theme = Theme::dark();
@@ -3154,13 +3154,14 @@ mod tests {
             "idle glyph uses theme text_primary",
         );
 
-        // Hover: red-500/80 fill, full-white glyph.
+        // Hover: danger-token/80 fill, full-white glyph.
         g.set_close_hover_for_tests(true);
         let hover_chip = g.maximized_close_chip_color_for_tests(&theme);
+        let expected_chip = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
         assert_eq!(
             (hover_chip.r(), hover_chip.g(), hover_chip.b(), hover_chip.a()),
-            (239, 68, 68, 204),
-            "hover maximized close chip paints red-500 at 80% alpha",
+            (expected_chip.r(), expected_chip.g(), expected_chip.b(), expected_chip.a()),
+            "hover maximized close chip paints the theme danger token at 80% alpha",
         );
         let hover_glyph = g.maximized_close_glyph_color_for_tests(&theme);
         assert_eq!(
