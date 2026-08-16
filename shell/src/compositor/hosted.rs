@@ -80,7 +80,11 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
-    let mut tree = persist::load_or_default(&path);
+    // The notice is carried all the way to the chrome rather than logged here:
+    // "your workspaces are gone" and "your workspaces are on the disk and this
+    // build declined to open them" look identical from the desk, and the journal
+    // is not where the person is looking.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
 
     // C-1: under `--enable-peer-sync`, derive a deterministic 16-bit
     // peer salt from the libp2p keypair and stamp it into every id
@@ -127,7 +131,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // the tree is what turns an `Always` grant into a durable one:
     // every capability mutation flushes here, so a grant survives both
     // a clean exit and a crash.
-    tree.persist_path = Some(path.clone());
+    //
+    // NOT when the file was refused. Declining to *read* a state file and
+    // then writing a bootstrapped tree over it is worse than never having
+    // checked: the check would announce that the person's workspaces are
+    // safe on disk while destroying them. So a refused session runs without
+    // persistence, the same way `ui::persist` switches an app's writer off
+    // over a document it would not open.
+    tree.persist_path = if state_notice.is_none() {
+        Some(path.clone())
+    } else {
+        None
+    };
     // The FUSE mount runs in another process and enforces the list it
     // reads from this path (`qos-fs --acl`). Exporting here is what
     // stops the filesystem from enforcing an empty list forever.
@@ -213,6 +228,9 @@ pub fn run_with_full_options(opts: HostedOptions) {
         enable_peer_sync,
         crate::shell::session_record_store(),
     );
+    if let Some(notice) = &state_notice {
+        crate::shell::notification::announce_state_notice(&_chrome, notice);
+    }
     // Which records each room holds outlives the session too, and the
     // records apps have written are found by looking. Both are switched
     // on here, beside the rest of the session's durable state, so

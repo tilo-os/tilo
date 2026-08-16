@@ -104,6 +104,25 @@ pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(24 * 3600);
 /// in `overlay_host.rs`.
 const ANIM_MS: u64 = 220;
 
+/// Put a startup refusal on the screen, and leave it there.
+///
+/// The compositor can decline to open the session's state file — most often
+/// because the file was written by a newer qOS than this build understands, which
+/// is the ordinary situation after a rollback. It then starts from a bootstrapped
+/// tree, and the person is looking at a desktop that is not theirs.
+///
+/// That has to be said where they are looking. `Error` severity so it is not
+/// mistaken for chatter, [`PERSISTENT_DISMISS`] so it waits for them rather than
+/// sliding away in five seconds, and the file's path in the body so the next step
+/// is obvious.
+pub fn announce_state_notice(chrome: &Chrome, notice: &crate::shell::persist::StateNotice) {
+    chrome.borrow_mut().push_notification_full(
+        Notification::new(notice.title(), notice.body())
+            .with_severity(NotificationSeverity::Error)
+            .with_dismiss_after(PERSISTENT_DISMISS),
+    );
+}
+
 /// Monotonically-incrementing id source for [`Notification::id`].
 /// Tests can pin behaviour by checking exact ids; production code
 /// only treats ids as opaque tokens (used by `dismiss(id)`).

@@ -1,0 +1,21 @@
+[package]
+name = "qos-cli"
+version = "0.1.0"
+edition = "2024"
+description = "The `qos` command: what a person types to ask this machine about the image it booted, and to change it."
+
+[[bin]]
+name = "qos"
+path = "src/main.rs"
+
+[dependencies]
+# Everything here drives tools the image already carries — bootc, bootctl,
+# systemctl, and /usr/libexec/qos-deployment. Nothing links against a system
+# library, so this builds on a host with no development headers, which is the
+# constraint that shaped qos-rollback the same way.
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
