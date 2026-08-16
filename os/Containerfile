@@ -393,29 +393,49 @@ FROM ${BASE_REF} AS rootfs
 # ~45-minute engine build for nothing.
 #
 # What is established, and what is not — because the next person will need to
-# know which half to trust:
+# know which half to trust. Two earlier claims here were wrong and are corrected
+# below; they were drawn from single passes of a fault that does not reproduce
+# reliably, which is the trap this note now exists to prevent.
 #
-#   Established. The damage is real and structural, not a stale cache: `rpm
-#   --verifydb` reports duplicate b-tree page references and wrong entry counts
-#   in Basenames_key_idx and Dirnames_key_idx. It appears only across a layer
-#   boundary — the same two dnf transactions run back to back inside ONE
-#   container leave the database clean, and a freshly pulled base is byte
-#   identical to the cached one (same digest), so neither a stale base nor a
-#   stale layer explains it. Removing the sidecars made it stop in every trial.
+#   Established. Carrying the sidecars across a layer boundary does corrupt the
+#   database, and dropping them does help. Measured directly, one transaction
+#   per arm, everything else identical: sidecars KEPT -> `rpm --verifydb` DIRTY
+#   in the next layer and the following dnf transaction fails; sidecars DROPPED
+#   -> CLEAN, transaction succeeds. So this line earns its place.
 #
-#   NOT established. Why carrying a zero-byte -wal and a 32 KiB -shm across a
-#   layer should damage the main database file. The -wal has no frames to
-#   replay, and the corruption is in rpmdb.sqlite itself, so "the next
-#   transaction replays a stale log" is the wrong shape for it — the bytes are
-#   already inconsistent when the layer is read back. The likelier story is that
-#   the capture of a large, just-checkpointed file mixes pages from before and
-#   after, which is a storage-stack behaviour: this host builds rootless through
-#   fuse-overlayfs ("Native Overlay Diff: false"), and CI, which builds the same
-#   Containerfile under buildkit, has never reproduced it.
+#   Also established, and this is the correction. Dropping them is NOT
+#   sufficient, and the fault is INTERMITTENT. Replaying one real dnf step onto
+#   one real parent layer, with the sidecars dropped every time, gives CLEAN on
+#   some runs and DIRTY on others — roughly one in four here. A layer can
+#   therefore ship a corrupt rpmdb with no sidecar anywhere in it, which is
+#   exactly what happened to the `chrony … glibc-langpack-en … ` step: its layer
+#   verified DIRTY while the six dnf layers before it verified CLEAN, and two
+#   steps later dnf resolved against the damaged indexes, decided glibc was not
+#   installed, and rpm refused the transaction ("package glibc-common … is
+#   already installed").
 #
-# Treat the diagnosis as strong but open. The assertion below is what actually
-# closes the loop, because it fails the build the moment the indexes are damaged
-# again, whatever the mechanism turns out to be.
+#   Ruled out as the mechanism, each by A/B trials rather than reasoning:
+#   `sync` before the layer ends (did not help, and the sync arm was dirtier
+#   than the plain one); `VACUUM` on the database before dropping the sidecars
+#   (rewrites in place, same inode, did not help); and the reproducible-build
+#   flags `--source-date-epoch` / `--rewrite-timestamp` (dirty and clean runs on
+#   both sides). Nor is the storage stack what the previous note said: podman
+#   here is the NATIVE overlay driver on btrfs, not fuse-overlayfs — though
+#   "Native Overlay Diff: false" does mean the layer changeset is computed by
+#   walking and re-reading the tree, which is where a large file being rewritten
+#   in place is most plausibly captured inconsistently.
+#
+#   NOT established. Why the capture tears. It correlates with how much of the
+#   database a transaction rewrites — the step that upgrades glibc, replacing
+#   four packages and every file list they own, is the one that fails, while
+#   small pure-install steps rarely do — but that is an observation, not a
+#   mechanism. CI builds the same Containerfile under buildkit and has never
+#   reproduced it.
+#
+# So: keep dropping the sidecars, and do not trust a green build to mean the
+# fault is gone — it is a dice roll per layer. The assertion below is what
+# actually closes the loop, because it fails the build the moment the indexes
+# are damaged, whatever the mechanism turns out to be.
 ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
 
 # Graphics stack
