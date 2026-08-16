@@ -728,11 +728,45 @@ impl Namespace {
                 }
             }
         }
+        // The content changed, so any recorded thumbnail is stale — drop the
+        // pointer (the cache is content-addressed and will regenerate lazily).
+        if let Some(obj) = self.node(&id) {
+            let _ = self.doc.delete(&obj, "thumb");
+        }
         self.set_field(&id, "size", size);
         self.set_field(&id, "mtime", mtime);
         let author = self.author.clone();
         self.set_field(&id, "author", author);
         true
+    }
+
+    // ---- thumbnail metadata (a preview that projects ahead of content) -----
+
+    /// Attach the content hash of a generated thumbnail blob to `ino`.
+    ///
+    /// The thumbnail is a small content-addressed blob (in the same
+    /// [`crate::ContentStore`] as file content); recording its hash **on the
+    /// namespace node** means the pointer rides the namespace gossip and a peer
+    /// sees it *projected* — before it has fetched the file itself. The peer can
+    /// then hydrate the tiny thumbnail blob to show a preview ahead of the
+    /// (large) content. This is the FS-metadata form of a thumbnail.
+    pub fn set_thumb(&mut self, ino: u64, thumb: &Hash) -> bool {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
+            return false;
+        };
+        if self.node(&id).is_none() {
+            return false;
+        }
+        self.set_field(&id, "thumb", hash_to_hex(thumb));
+        true
+    }
+
+    /// The content hash of `ino`'s thumbnail blob, if one has been recorded
+    /// (locally generated or projected from a peer). `None` when no thumbnail is
+    /// known yet.
+    pub fn thumb_hash(&self, ino: u64) -> Option<Hash> {
+        let id = self.ino_to_id.get(&ino)?;
+        read_str(&self.doc, &self.node(id)?, "thumb").and_then(|h| hash_from_hex(&h))
     }
 
     /// Delete = move the node (and its subtree) to TRASH.
