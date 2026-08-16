@@ -9927,6 +9927,7 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "tracing",
 ]
 
@@ -11158,6 +11159,7 @@ dependencies = [
  "serde",
  "serde_json",
  "settings-store",
+ "tempfile",
  "tokio",
  "tracing",
  "zbus 4.4.0",

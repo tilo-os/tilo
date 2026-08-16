@@ -29,3 +29,6 @@ futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1.52.3", features = ["full"] }
+# Fixture power-supply trees for the sysfs battery reader, so its parsing
+# is tested against real directory layouts rather than a mocked reader.
+tempfile = { workspace = true }

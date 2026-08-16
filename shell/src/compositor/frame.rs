@@ -124,7 +124,10 @@ impl FrameBuilder {
         viewport: (u32, u32),
     ) -> Self {
         Self::from_parts(
-            crate::shell::build_nirios_overlay_host_with_handle(tree, enable_peer_sync),
+            Self::with_live_status(crate::shell::build_nirios_overlay_host_with_handle(
+                tree,
+                enable_peer_sync,
+            )),
             viewport,
         )
     }
@@ -141,13 +144,28 @@ impl FrameBuilder {
         records: ui::record::RecordStore,
     ) -> Self {
         Self::from_parts(
-            crate::shell::build_nirios_overlay_host_with_records(
+            Self::with_live_status(crate::shell::build_nirios_overlay_host_with_records(
                 tree,
                 enable_peer_sync,
                 records,
-            ),
+            )),
             viewport,
         )
+    }
+
+    /// Attach a running status poller to a freshly-built host.
+    ///
+    /// Only the two real-session constructors above go through here. The
+    /// test / `--shots` constructors deliberately do not: a tray driven by
+    /// the rendering machine's own battery and Wi-Fi would make every
+    /// golden image a function of which laptop produced it. Without a
+    /// bridge the readings stay `None` and the tray draws nothing, which
+    /// is both deterministic and honest.
+    fn with_live_status(parts: (ShellOverlayHost, Chrome)) -> (ShellOverlayHost, Chrome) {
+        let (host, chrome) = parts;
+        let bridge = crate::shell::status::StatusBridge::new();
+        bridge.spawn();
+        (host.with_status_bridge(bridge), chrome)
     }
 
     fn from_parts(

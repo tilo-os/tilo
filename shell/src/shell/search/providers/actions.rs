@@ -88,6 +88,42 @@ impl Action {
                 );
             },
         },
+        // Making a window. Before these existed the palette could open
+        // every overlay the shell has and not one new tab, so the only
+        // route to a second terminal was to find the app again — and
+        // there was no route at all once the last one was closed.
+        Action {
+            id: "tab.new.terminal.here",
+            label: "New terminal tab here",
+            subtitle: "Open a terminal as a tab in the focused window group",
+            apply: |st| {
+                crate::shell::window_actions::open_terminal(
+                    st,
+                    crate::shell::window_actions::Destination::Here,
+                );
+            },
+        },
+        Action {
+            id: "window.new.terminal",
+            label: "New terminal window",
+            subtitle: "Open a terminal beside the focused window",
+            apply: |st| {
+                crate::shell::window_actions::open_terminal(
+                    st,
+                    crate::shell::window_actions::Destination::Beside,
+                );
+            },
+        },
+        Action {
+            id: "tab.duplicate",
+            label: "Duplicate this tab",
+            subtitle: "Open a second instance of the focused app beside it",
+            apply: |st| {
+                if let Err(err) = crate::shell::window_actions::duplicate_active_tab(st) {
+                    st.push_warning_notification("Can't duplicate this tab", err.user_message());
+                }
+            },
+        },
         Action {
             id: "notifications.dnd.toggle",
             label: "Toggle Do Not Disturb",

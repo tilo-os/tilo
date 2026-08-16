@@ -339,6 +339,9 @@ mod tests {
                 has_gui: true,
                 opens_extensions: Vec::new(),
             }],
+            // The destination only words the row; it does not enter the
+            // score, which is what this comparison is about.
+            crate::shell::chrome_state::OpenTarget::Beside,
         );
         assert!(
             qos_rows[0].score > host_rows[0].score,

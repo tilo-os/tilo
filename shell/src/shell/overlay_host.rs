@@ -328,6 +328,11 @@ pub struct ShellOverlayHost {
     /// assert that clicks routed through the popover translate into
     /// the expected shell-outs without actually invoking `nmcli` etc.
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Live battery / network / volume readings, or `None` when nothing
+    /// is polling — a `--shots` render and a headless test deliberately
+    /// have no poller so their pixels do not depend on the host's
+    /// hardware. See [`crate::shell::status`].
+    status_bridge: Option<crate::shell::status::StatusBridge>,
     /// Room-activity sheet — the workspace's own change history. Held rather
     /// than drawn immediate-mode because the timeline it wraps is a real
     /// `Widget` with its own hover, scroll and filter state; it is placed by
@@ -921,6 +926,7 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            status_bridge: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
             room_activity_transition: ui::Transition::closed(),
             room_activity_was_open: false,
@@ -939,6 +945,247 @@ impl ShellOverlayHost {
     ) -> Self {
         self.qs_actions = actions;
         self
+    }
+
+    /// Install the live-status bridge. Only the compositor's real-session
+    /// constructors do this; without it the tray's readings stay `None`
+    /// and it draws no indicators, which is what keeps golden renders
+    /// identical across machines.
+    pub fn with_status_bridge(mut self, bridge: crate::shell::status::StatusBridge) -> Self {
+        self.status_bridge = Some(bridge);
+        self
+    }
+
+    /// The QS action dispatcher, for callers that actuate hardware
+    /// outside the popover — the media keys, which drive the same
+    /// volume and brightness the sliders do and must go through the same
+    /// dispatcher so a test can record them.
+    pub fn qs_actions(&self) -> &dyn crate::shell::qs_actions::QsActions {
+        self.qs_actions.as_ref()
+    }
+
+    /// Handle on the status bridge, for the paths that publish a reading
+    /// rather than consume one (the volume keys, which must move the
+    /// indicator in the frame they were pressed rather than up to a poll
+    /// interval later).
+    pub fn status_bridge(&self) -> Option<&crate::shell::status::StatusBridge> {
+        self.status_bridge.as_ref()
+    }
+
+    /// Where the on-screen readout sits: horizontally centred, one
+    /// eighth of the viewport up from the bottom.
+    ///
+    /// Low, because it must not cover what the user is working on, and
+    /// centred because it is not attached to anything — unlike a
+    /// notification, which belongs to an app and lives in that app's
+    /// corner. This is the machine answering a key.
+    pub fn osd_rect(&self) -> Rect {
+        let w = 260.0_f64.min(self.rect.width() * 0.6);
+        let h = 96.0_f64;
+        let cx = self.rect.center().x;
+        let y1 = self.rect.y1 - (self.rect.height() * 0.12).max(56.0);
+        Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1)
+    }
+
+    /// Paint the transient hardware-key readout, if one is up.
+    fn draw_osd(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let now = Instant::now();
+        // Expiring here rather than on a timer keeps the slab's lifetime
+        // tied to the frames that actually paint it: a compositor that is
+        // idle is not painting, and a readout that expired while nothing
+        // was on screen has nothing to clean up.
+        {
+            let mut st = chrome.borrow_mut();
+            st.expire_osd(now);
+        }
+        let Some(osd) = chrome.borrow().osd else {
+            return;
+        };
+        let alpha = osd.alpha_at(now);
+        if alpha <= 0.0 {
+            return;
+        }
+
+        let rect = self.osd_rect();
+        let colors = &theme.tokens.colors;
+        let tokens = &theme.tokens;
+        let radius = 18.0_f64;
+
+        let faded = alpha < 0.999;
+        if faded {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                alpha,
+                transform,
+                &self.rect,
+            );
+        }
+
+        // Lift it off whatever it covers — without a shadow a translucent
+        // slab over a busy tile reads as a rendering artefact.
+        ui::surface::soft_shadow(
+            scene,
+            transform,
+            rect,
+            colors.neutral[0],
+            36.0,
+            14.0,
+            0.5,
+        );
+        let body = RoundedRect::from_rect(rect, radius);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &body,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_white_10,
+            None,
+            &body,
+        );
+
+        // Glyph, centred in the upper half.
+        let glyph_px = 28.0_f64;
+        let gx = rect.center().x;
+        let gy = rect.y0 + 26.0;
+        let glyph_rect = Rect::new(
+            gx - glyph_px / 2.0,
+            gy - glyph_px / 2.0,
+            gx + glyph_px / 2.0,
+            gy + glyph_px / 2.0,
+        );
+        let (icon, tint) = match osd.kind {
+            crate::shell::osd::OsdKind::Volume { muted: true } => {
+                (ui::icons::Icon::VolumeX, colors.text_primary)
+            }
+            crate::shell::osd::OsdKind::Volume { muted: false } => {
+                (ui::icons::Icon::Volume2, colors.text_primary)
+            }
+            crate::shell::osd::OsdKind::Brightness => (ui::icons::Icon::Sun, colors.text_primary),
+            crate::shell::osd::OsdKind::MicMute { muted } => (
+                ui::icons::Icon::MicOff,
+                if muted {
+                    colors.semantic.warning
+                } else {
+                    colors.text_primary
+                },
+            ),
+            crate::shell::osd::OsdKind::Transport(t) => (
+                match t {
+                    crate::shell::osd::Transport::Play => ui::icons::Icon::Play,
+                    crate::shell::osd::Transport::Pause => ui::icons::Icon::Pause,
+                    crate::shell::osd::Transport::Next => ui::icons::Icon::SkipForward,
+                    crate::shell::osd::Transport::Previous => ui::icons::Icon::SkipBack,
+                },
+                colors.text_primary,
+            ),
+        };
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            glyph_rect,
+            icon,
+            tint,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX * 1.4,
+        );
+
+        // Level bar. The track is always drawn at full width so the
+        // number and the bar occupy the same place whatever the value —
+        // a bar that shrinks its own track reads as a progress spinner.
+        if osd.has_level() {
+            let bar_h = 6.0_f64;
+            let inset = 24.0_f64;
+            let bar = Rect::new(
+                rect.x0 + inset,
+                rect.y0 + 50.0,
+                rect.x1 - inset,
+                rect.y0 + 50.0 + bar_h,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.surface_white_10,
+                None,
+                &RoundedRect::from_rect(bar, bar_h / 2.0),
+            );
+            // A muted sink draws an empty track: the level it will return
+            // to is still true, but reporting it as a filled bar would
+            // contradict the crossed-out glyph directly above it.
+            let filled = if matches!(
+                osd.kind,
+                crate::shell::osd::OsdKind::Volume { muted: true }
+            ) {
+                0.0
+            } else {
+                osd.level.clamp(0.0, 1.0) as f64
+            };
+            if filled > 0.0 {
+                let w = (bar.width() * filled).max(bar_h);
+                let fill_rect = Rect::new(bar.x0, bar.y0, bar.x0 + w, bar.y1);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(fill_rect, bar_h / 2.0),
+                );
+            }
+        }
+
+        // Caption.
+        let caption = osd.caption();
+        let size = tokens.typography.scale.sm;
+        let (cw, ch) = text_renderer.measure_weighted(&caption, size, None, TextWeight::Medium);
+        text_renderer.draw_text_weighted(
+            scene,
+            &caption,
+            size,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    rect.center().x - cw as f64 / 2.0,
+                    rect.y1 - 12.0 - ch as f64,
+                )),
+            None,
+            TextWeight::Medium,
+        );
+
+        if faded {
+            scene.pop_layer();
+        }
+    }
+
+    /// Copy the poller's latest reading onto the chrome, bumping the
+    /// revision only when something actually changed — the revision is
+    /// the repaint trigger, and a status that re-publishes an identical
+    /// battery percentage every five seconds must not wake the renderer.
+    fn sync_status_from_bridge(&mut self) {
+        let Some(bridge) = self.status_bridge.as_ref() else {
+            return;
+        };
+        let next = bridge.snapshot();
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.status != next {
+            st.status = next;
+            st.bump();
+        }
     }
 
     /// Return the slide translation to apply to the content widget this
@@ -2025,6 +2272,106 @@ impl ShellOverlayHost {
         self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
     }
 
+    /// Sibling of [`Self::harvest_pending_search_open`] for the tab
+    /// strip's "+" chip: drains each group's
+    /// [`UiWindowGroup::take_pending_new_tab`] and opens the palette
+    /// aimed at that group.
+    ///
+    /// The "+" deliberately opens the palette rather than immediately
+    /// minting a tab of some assumed type. A new tab is a *choice* — a
+    /// terminal, a browser, a note — and the palette is where choosing
+    /// already happens. What the "+" adds on top is the destination:
+    /// [`OpenTarget::Here`] pins the result to this group even when the
+    /// placement rule would have opened beside it, which is exactly the
+    /// distinction a user clicking a specific group's strip is making.
+    fn harvest_pending_new_tab(&mut self) -> bool {
+        if self.group_row_ptrs.is_empty() {
+            return false;
+        }
+        let mut requested: Option<u64> = None;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if let Some(id) = g.take_pending_new_tab() {
+                    requested = Some(id);
+                }
+            }
+        }
+        let Some(group) = requested else {
+            return false;
+        };
+        // Make the tree's focus match the strip that was clicked before
+        // anything reads it — the palette's own scope resolution and the
+        // launch path both walk from the active pointers.
+        self.harvest_active_tab_writeback();
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Here(group);
+            // `All` rather than `ActiveApp`: the question a "+" asks is
+            // "what do you want to open", and only the widest scope
+            // offers to launch something that isn't already running.
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        // Force-open rather than routing through `open_palette_with_scope`:
+        // that helper toggles closed on a same-scope repeat, which is the
+        // right behaviour for a chord and the wrong one for a button the
+        // user pointed at. Clicking "+" always means "show me the picker".
+        if !self.palette_visible {
+            self.palette_visible = true;
+            self.palette.set_focus(true);
+            self.palette.set_query("");
+        }
+        // Re-run the query even when the palette was already up: the rows
+        // carry a placement hint that just changed.
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        true
+    }
+
+    /// Drop a stale [`OpenTarget::Here`] once the palette is gone.
+    ///
+    /// The target is one-shot by contract — it aims exactly one launch at
+    /// exactly one group. Anything that dismisses the palette (Esc, an
+    /// outside click, activating a result) ends that window of intent, and
+    /// there are enough such paths that clearing at each of them would
+    /// rot. Reconciling here, once per frame against the single fact that
+    /// matters, cannot miss one.
+    fn clear_stale_open_target(&mut self) {
+        if self.palette_visible {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.open_target != crate::shell::chrome_state::OpenTarget::Beside {
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.bump();
+        }
+    }
+
+    /// Drop a passphrase buffer the user walked away from.
+    ///
+    /// Closing the popover — by Esc, by clicking outside, by any of the
+    /// paths that clear the flag — has to take the typed passphrase with
+    /// it. Reconciling once per frame against the one fact that matters
+    /// (is the popover open) cannot miss a path, and a password is
+    /// exactly the kind of buffer that must not outlive its window.
+    fn clear_stale_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let open = chrome.borrow().overlays.quick_settings;
+        if open {
+            return;
+        }
+        let mut st = chrome.borrow_mut();
+        if st.quick_settings.wifi_password.take().is_some() {
+            st.bump();
+        }
+    }
+
     /// Per-tick wire-up that keeps the focused window group scrolled into
     /// view. Edge-triggered on a change to the persisted `active_group`
     /// pointer for a strip: when the focused group differs from the one we
@@ -2467,6 +2814,12 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_search_open_for_tests(&mut self) {
         self.harvest_pending_search_open();
+    }
+
+    /// Test-only one-shot harvest for the tab strip's "+" chip.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_new_tab_for_tests(&mut self) -> bool {
+        self.harvest_pending_new_tab()
     }
 
     /// Test-only one-shot: run the focus-follow scroll reconcile from
@@ -3868,6 +4221,21 @@ impl Widget for ShellOverlayHost {
         // Open the search bar scoped to the app whose decoration magnifier the
         // user just clicked.
         self.harvest_pending_search_open();
+        // Open the palette aimed at the group whose "+" chip was clicked,
+        // and retire that aim once the palette is gone. The refresh has
+        // to happen here rather than inside the harvest: a picker that
+        // opens on "Nothing to show" until the user types reads as
+        // broken, and this is the frame where both the intent and the
+        // document are in hand.
+        let opened_for_new_tab = self.harvest_pending_new_tab();
+        if opened_for_new_tab {
+            self.refresh_search_results(s, p);
+        }
+        self.clear_stale_open_target();
+        self.clear_stale_wifi_password();
+        // Publish the poller's latest battery / network / volume reading
+        // onto the chrome the top bar draws from.
+        self.sync_status_from_bridge();
         // Mirror the widget-side `TabBar::active_id` into the persisted
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
@@ -4619,6 +4987,13 @@ impl Widget for ShellOverlayHost {
         // Peer-sync card last: while it is up it owns the keyboard, so
         // it has to sit above the palette that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
+
+        // The hardware-key readout sits above absolutely everything,
+        // including the modals. It reports a change the user just made
+        // with a physical key, and that key works while a modal is up —
+        // so hiding the answer behind the modal would make the key look
+        // broken exactly when the user is least able to check.
+        self.draw_osd(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -4960,6 +5335,14 @@ impl Widget for ShellOverlayHost {
             let ctrl_down = mstate.control_key();
             let alt_down = mstate.alt_key();
             let is_mod = super_down || ctrl_down;
+            // A passphrase field takes the keyboard whole while it is up.
+            // Ahead of every chord below, including the palette ones: a
+            // password can contain any character, and a `k` in one must
+            // not open search instead of being typed.
+            if self.handle_wifi_password_key(logical_key, modifiers) {
+                *handled = true;
+                return;
+            }
             // Space chord routes global-search: `Super+Space` matches the
             // Super+K convention; `Alt+Space` covers the nested case.
             // Both are captured here before the modifier-only branch so a
@@ -5015,6 +5398,96 @@ impl Widget for ShellOverlayHost {
                         st.bump();
                         *handled = true;
                         return;
+                    }
+                }
+                // Window-creation chords. All four are Super-only, which
+                // `is_shell_chord` already grabs wholesale, so none of
+                // them takes a key away from a focused client — the
+                // reason not to reach for the Ctrl+Shift+letter chords
+                // that browsers and terminals already define.
+                //
+                // `Super+Return` is the direct one: a terminal, now, no
+                // picker. It is the recovery path when the last shell is
+                // gone, so it must not depend on search working.
+                if super_down && matches!(logical_key, Key::Named(NamedKey::Enter)) {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        crate::shell::window_actions::open_terminal(
+                            &mut st,
+                            crate::shell::window_actions::Destination::Beside,
+                        );
+                        *handled = true;
+                        return;
+                    }
+                }
+                if super_down {
+                    if let Key::Character(s) = logical_key {
+                        match s.as_str() {
+                            // Super+T — a new tab *here*: the chord form
+                            // of the tab strip's "+".
+                            "t" | "T" => {
+                                let group = self
+                                    .chrome
+                                    .as_ref()
+                                    .and_then(|c| {
+                                        crate::shell::window_actions::focused_group(&c.borrow())
+                                    });
+                                if let (Some(chrome), Some(group)) = (self.chrome.clone(), group) {
+                                    let mut st = chrome.borrow_mut();
+                                    st.open_target =
+                                        crate::shell::chrome_state::OpenTarget::Here(group);
+                                    st.search_scope =
+                                        crate::shell::chrome_state::SearchScope::All;
+                                    st.bump();
+                                    drop(st);
+                                    self.palette_visible = true;
+                                    self.palette.set_focus(true);
+                                    self.palette.set_query("");
+                                    self.last_search_query =
+                                        "\u{0}not-yet-refreshed\u{0}".to_string();
+                                    self.refresh_search_results(state, path);
+                                    *handled = true;
+                                    return;
+                                }
+                            }
+                            // Super+N — a new window, placed by the rule.
+                            "n" | "N" => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    st.open_target =
+                                        crate::shell::chrome_state::OpenTarget::Beside;
+                                    st.search_scope =
+                                        crate::shell::chrome_state::SearchScope::All;
+                                    st.bump();
+                                }
+                                self.palette_visible = true;
+                                self.palette.set_focus(true);
+                                self.palette.set_query("");
+                                self.last_search_query =
+                                    "\u{0}not-yet-refreshed\u{0}".to_string();
+                                self.refresh_search_results(state, path);
+                                *handled = true;
+                                return;
+                            }
+                            // Super+D — a second instance of what you are
+                            // already looking at.
+                            "d" | "D" => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    if let Err(err) =
+                                        crate::shell::window_actions::duplicate_active_tab(&mut st)
+                                    {
+                                        st.push_warning_notification(
+                                            "Can't duplicate this tab",
+                                            err.user_message(),
+                                        );
+                                    }
+                                    *handled = true;
+                                    return;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 // Cmd+ArrowUp / Cmd+ArrowDown — switch active workspace.
@@ -5352,6 +5825,34 @@ impl Widget for ShellOverlayHost {
                         // `nmcli device wifi connect <ssid>` via the
                         // QS dispatcher. Everything else is swallowed.
                         let back = self.qs_back_chevron_rect();
+                        // A passphrase prompt owns the Wi-Fi pane while
+                        // it is up, so its controls are tested before the
+                        // list's — including the back chevron, which
+                        // backs out of the prompt rather than out of
+                        // Wi-Fi altogether.
+                        let prompt_up = self
+                            .chrome
+                            .as_ref()
+                            .map(|c| c.borrow().quick_settings.wifi_password.is_some())
+                            .unwrap_or(false);
+                        if prompt_up {
+                            let (cancel, connect) = self.qs_password_button_rects();
+                            if back.contains(p) || cancel.contains(p) {
+                                self.cancel_wifi_password();
+                                *handled = true;
+                                return;
+                            }
+                            if connect.contains(p) {
+                                self.submit_wifi_password();
+                                *handled = true;
+                                return;
+                            }
+                            // Everything else on the pane is inert: the
+                            // field is always focused, so there is
+                            // nothing a click inside it could focus.
+                            *handled = true;
+                            return;
+                        }
                         if back.contains(p) {
                             if let Some(chrome) = self.chrome.clone() {
                                 let mut st = chrome.borrow_mut();
@@ -5383,10 +5884,25 @@ impl Widget for ShellOverlayHost {
                                 );
                                 if row_rect.contains(p) {
                                     let ssid = net.ssid.clone();
-                                    crate::shell::qs_actions::log_qs_result(
-                                        "connect_wifi",
-                                        self.qs_actions.connect_wifi(&ssid, None),
-                                    );
+                                    // An open network, or one already
+                                    // joined, needs no passphrase — and
+                                    // asking for one the user does not
+                                    // have would be a dead end. A
+                                    // protected network we are not on
+                                    // gets the prompt: NetworkManager
+                                    // may already hold a profile, but it
+                                    // will not tell us that without
+                                    // trying, and a prompt the user can
+                                    // dismiss is cheaper than a silent
+                                    // failure.
+                                    if net.secure && !net.connected {
+                                        self.begin_wifi_password(&ssid);
+                                    } else {
+                                        crate::shell::qs_actions::log_qs_result(
+                                            "connect_wifi",
+                                            self.qs_actions.connect_wifi(&ssid, None),
+                                        );
+                                    }
                                     *handled = true;
                                     return;
                                 }
@@ -8760,6 +9276,15 @@ impl ShellOverlayHost {
         let colors = &tokens.colors;
         let rect = self.quick_settings_rect();
 
+        // A passphrase prompt takes over the pane. It is not a separate
+        // nav level: the user is still "in Wi-Fi", and pushing a level
+        // would put a second back-chevron in the stack that means
+        // something different from the first.
+        if let Some(prompt) = qs.wifi_password.as_ref() {
+            self.draw_qs_wifi_password(scene, transform, text_renderer, theme, prompt);
+            return;
+        }
+
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
 
         if qs.wifi_networks.is_empty() {
@@ -8856,6 +9381,405 @@ impl ShellOverlayHost {
                 scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
             }
         }
+    }
+
+    /// Raise the passphrase prompt for `ssid`.
+    pub fn begin_wifi_password(&mut self, ssid: &str) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        st.quick_settings.wifi_password =
+            Some(crate::shell::quick_settings::WifiPasswordPrompt::new(ssid));
+        st.bump();
+    }
+
+    /// Drop the prompt, clearing the passphrase with it. The buffer only
+    /// exists while it is being typed; nothing keeps it afterwards.
+    pub fn cancel_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut st = chrome.borrow_mut();
+        if st.quick_settings.wifi_password.take().is_some() {
+            st.bump();
+        }
+    }
+
+    /// Attempt the join.
+    ///
+    /// `nmcli device wifi connect` blocks until association succeeds or
+    /// fails, which on a busy band is seconds — but this is a deliberate
+    /// button press with a modal-ish prompt in front of it, the same
+    /// contract every other quick-settings action has, and the
+    /// alternative (a background join whose result arrives with no
+    /// prompt left to report it into) is worse. The prompt stays up on
+    /// failure carrying the reason.
+    pub fn submit_wifi_password(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let Some((ssid, password)) = ({
+            let st = chrome.borrow();
+            st.quick_settings
+                .wifi_password
+                .as_ref()
+                .filter(|p| p.can_submit())
+                .map(|p| (p.ssid.clone(), p.password.clone()))
+        }) else {
+            return;
+        };
+        {
+            let mut st = chrome.borrow_mut();
+            if let Some(p) = st.quick_settings.wifi_password.as_mut() {
+                p.connecting = true;
+                p.error = None;
+            }
+            st.bump();
+        }
+        let result = self.qs_actions.connect_wifi(&ssid, Some(&password));
+        let mut st = chrome.borrow_mut();
+        match result {
+            Ok(()) => {
+                st.quick_settings.wifi_password = None;
+                // The list's `connected` flags are now stale, and the
+                // next poll of the popover is on its next open. Mark the
+                // row we just joined so the pane the user lands back on
+                // is not still telling them they are not connected.
+                for n in st.quick_settings.wifi_networks.iter_mut() {
+                    n.connected = n.ssid == ssid;
+                }
+                st.quick_settings.wifi = true;
+                st.push_notification(
+                    format!("Connected to {ssid}"),
+                    "This network is saved; the machine will rejoin it automatically.",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "qos::os_actions", op = "connect_wifi", error = %e, "wifi join failed");
+                if let Some(p) = st.quick_settings.wifi_password.as_mut() {
+                    p.connecting = false;
+                    // The passphrase is kept so a typo is a correction
+                    // rather than a retype, and selected so the first
+                    // keystroke replaces it if it was simply wrong.
+                    p.selection.anchor = 0;
+                    p.selection.cursor = p.password.len();
+                    p.error = Some("Couldn't join. Check the password.".to_string());
+                }
+            }
+        }
+        st.bump();
+    }
+
+    /// Route a key press into the passphrase field, if one is up.
+    /// Returns `true` when the key was consumed.
+    fn handle_wifi_password_key(
+        &mut self,
+        logical_key: &Key,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let mods = crate::shell::text_entry::Mods::from_state(modifiers.state());
+        let outcome = {
+            let mut st = chrome.borrow_mut();
+            let Some(prompt) = st.quick_settings.wifi_password.as_mut() else {
+                return false;
+            };
+            let mut sel = prompt.selection;
+            let out = crate::shell::text_entry::apply(
+                logical_key,
+                mods,
+                &mut prompt.password,
+                &mut sel,
+            );
+            prompt.selection = sel;
+            // Typing after a rejection clears the rejection: the message
+            // was about the old value.
+            if matches!(out, crate::shell::text_entry::Edit::Changed) {
+                prompt.error = None;
+            }
+            out
+        };
+        match outcome {
+            crate::shell::text_entry::Edit::Ignored => false,
+            crate::shell::text_entry::Edit::ConsumedQuiet => true,
+            crate::shell::text_entry::Edit::Changed => {
+                chrome.borrow_mut().bump();
+                true
+            }
+            crate::shell::text_entry::Edit::Submit => {
+                self.submit_wifi_password();
+                true
+            }
+            crate::shell::text_entry::Edit::Cancel => {
+                self.cancel_wifi_password();
+                true
+            }
+        }
+    }
+
+    /// Geometry of the passphrase prompt's controls. Derived rather than
+    /// stored so the hit tests and the paint cannot drift apart — the
+    /// same contract [`Self::qs_back_chevron_rect`] follows.
+    fn qs_password_field_rect(&self) -> Rect {
+        let r = self.quick_settings_rect();
+        let y = r.y0 + 104.0;
+        Rect::new(r.x0 + 16.0, y, r.x1 - 16.0, y + 40.0)
+    }
+
+    /// Cancel + Connect, anchored to the foot of the pane rather than
+    /// stacked under the field.
+    ///
+    /// The popover's height is set by the network list this pane
+    /// replaces, and the prompt needs about a third of it — so buttons
+    /// placed directly below the field leave the bottom two thirds
+    /// visibly empty and the pane reads as half-drawn. Pinning them to
+    /// the foot is the layout every dialog uses for the same reason:
+    /// the question sits at the top, the answer at the bottom, and the
+    /// space between them is deliberate rather than left over.
+    fn qs_password_button_rects(&self) -> (Rect, Rect) {
+        let r = self.quick_settings_rect();
+        let h = 36.0_f64;
+        let gap = 10.0_f64;
+        let y = r.y1 - 16.0 - h;
+        let w = (r.width() - 32.0 - gap) / 2.0;
+        let cancel = Rect::new(r.x0 + 16.0, y, r.x0 + 16.0 + w, y + h);
+        let connect = Rect::new(r.x1 - 16.0 - w, y, r.x1 - 16.0, y + h);
+        (cancel, connect)
+    }
+
+    /// The "join this protected network" prompt.
+    fn draw_qs_wifi_password(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        prompt: &crate::shell::quick_settings::WifiPasswordPrompt,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.quick_settings_rect();
+
+        // The header names the network, because by the time the keyboard
+        // has focus the list that named it is gone.
+        self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, &prompt.ssid);
+
+        // Sub-line: what is being asked for, and why.
+        let sub_y = rect.y0 + 66.0;
+        let lock_box = Rect::new(rect.x0 + 16.0, sub_y, rect.x0 + 32.0, sub_y + 16.0);
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            lock_box,
+            ui::icons::Icon::Shield,
+            colors.text_dim,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            "This network is protected",
+            tokens.typography.scale.xs,
+            colors.text_dim,
+            transform * Affine::translate((lock_box.x1 + 8.0, sub_y + 1.0)),
+            None,
+            TextWeight::Medium,
+        );
+
+        // The field. Focused for as long as it is on screen — it is the
+        // only thing on the pane that takes typing, so a focus ring that
+        // could be off would only ever be a bug.
+        let field = self.qs_password_field_rect();
+        let field_shape = RoundedRect::from_rect(field, 10.0);
+        // Opaque, not the `surface_white_5` wash the popover's other
+        // cards use. The quick-settings panel is translucent by design,
+        // and a 5%-white rect over it lets whatever the app underneath
+        // is showing run straight through the input — here that put the
+        // word "Click to edit" across the passphrase. A field you cannot
+        // read is a field you cannot check what you typed into, which is
+        // the one thing a masked input has to get right.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.neutral[1],
+            None,
+            &field_shape,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &field_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.5),
+            transform,
+            if prompt.error.is_some() {
+                colors.semantic.danger
+            } else {
+                colors.border_focus
+            },
+            None,
+            &field_shape,
+        );
+
+        let text_size = tokens.typography.scale.sm;
+        let masked = crate::shell::text_entry::masked(&prompt.password);
+        let text_x = field.x0 + 12.0;
+        let (mask_w, mask_h) = text_renderer.measure_weighted(
+            &masked,
+            text_size,
+            None,
+            TextWeight::Medium,
+        );
+        let text_y = field.y0 + (field.height() - mask_h as f64) / 2.0;
+        if masked.is_empty() {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Password",
+                text_size,
+                colors.text_dim.with_alpha_factor(0.6),
+                transform * Affine::translate((text_x, text_y)),
+                None,
+                TextWeight::Medium,
+            );
+        } else {
+            text_renderer.draw_text_weighted(
+                scene,
+                &masked,
+                text_size,
+                colors.text_primary,
+                transform * Affine::translate((text_x, text_y)),
+                None,
+                TextWeight::Medium,
+            );
+        }
+        // Caret. Masked text is uniform-width bullets, so the caret's x
+        // is proportional to how many characters precede it — which is
+        // the only thing a masked field can honestly show.
+        let chars = prompt.password.chars().count();
+        let caret_chars = prompt.password[..prompt.selection.cursor.min(prompt.password.len())]
+            .chars()
+            .count();
+        let caret_x = if chars == 0 {
+            text_x
+        } else {
+            text_x + mask_w as f64 * (caret_chars as f64 / chars as f64)
+        };
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.text_primary,
+            None,
+            &Rect::new(caret_x, field.y0 + 9.0, caret_x + 1.5, field.y1 - 9.0),
+        );
+
+        // A failed attempt says so where the eye already is, rather than
+        // as a toast that would outlive the prompt.
+        if let Some(err) = prompt.error.as_ref() {
+            text_renderer.draw_text_weighted(
+                scene,
+                err,
+                tokens.typography.scale.xs,
+                colors.semantic.danger,
+                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+        } else if prompt.connecting {
+            text_renderer.draw_text_weighted(
+                scene,
+                "Connecting…",
+                tokens.typography.scale.xs,
+                colors.text_dim,
+                transform * Affine::translate((field.x0 + 2.0, field.y1 + 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+        }
+
+        // Buttons.
+        let (cancel, connect) = self.qs_password_button_rects();
+        let cancel_shape = RoundedRect::from_rect(cancel, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &cancel_shape,
+        );
+        Self::draw_centred_label(
+            scene,
+            transform,
+            text_renderer,
+            cancel,
+            "Cancel",
+            text_size,
+            colors.text_dim,
+        );
+
+        let live = prompt.can_submit();
+        let connect_shape = RoundedRect::from_rect(connect, 10.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            if live {
+                colors.accent[5]
+            } else {
+                // Not merely dim: a disabled primary button that still
+                // looks primary invites the click it will ignore.
+                colors.accent[5].with_alpha_factor(0.28)
+            },
+            None,
+            &connect_shape,
+        );
+        Self::draw_centred_label(
+            scene,
+            transform,
+            text_renderer,
+            connect,
+            if prompt.connecting {
+                "Connecting…"
+            } else {
+                "Connect"
+            },
+            text_size,
+            if live {
+                colors.text_primary
+            } else {
+                colors.text_primary.with_alpha_factor(0.5)
+            },
+        );
+    }
+
+    /// Centre a label inside `rect`. Small enough to inline, used often
+    /// enough in the popover that three copies had already drifted.
+    fn draw_centred_label(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        rect: Rect,
+        label: &str,
+        size: f32,
+        color: vello::peniko::Color,
+    ) {
+        let (w, h) = text_renderer.measure_weighted(label, size, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
+            label,
+            size,
+            color,
+            transform
+                * Affine::translate((
+                    rect.center().x - w as f64 / 2.0,
+                    rect.center().y - h as f64 / 2.0,
+                )),
+            None,
+            TextWeight::Semibold,
+        );
     }
 
     /// Render the Bluetooth drill-in pane: header + list of `bt_devices`
@@ -9346,6 +10270,265 @@ mod overview_transition_tests {
             t_mid
         );
         assert_eq!(h.overview_target, 0.0);
+    }
+}
+
+#[cfg(test)]
+mod wifi_password_tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::quick_settings::{QsLevel, WifiNetwork};
+    use crate::shell::state::WorkspaceTree;
+    use std::cell::RefCell;
+    use ui::widget::Container;
+
+    /// Records the join attempts and can be told to reject them, so the
+    /// failure branch is exercised without a radio.
+    #[derive(Default)]
+    struct JoinRecorder {
+        attempts: RefCell<Vec<(String, Option<String>)>>,
+        reject: bool,
+    }
+
+    impl crate::shell::qs_actions::QsActions for JoinRecorder {
+        fn set_brightness(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_volume(&self, _: f32) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_wifi(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_bluetooth(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn connect_wifi(&self, ssid: &str, password: Option<&str>) -> Result<(), String> {
+            self.attempts
+                .borrow_mut()
+                .push((ssid.to_string(), password.map(str::to_string)));
+            if self.reject {
+                Err("Secrets were required, but not provided".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        fn set_power_profile(&self, _: os_actions::PowerProfile) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// A host sitting on the Wi-Fi drill-in with one protected network
+    /// and one open one visible.
+    fn host_on_wifi_pane(
+        reject: bool,
+    ) -> (
+        ShellOverlayHost,
+        crate::shell::chrome_state::Chrome,
+        std::rc::Rc<JoinRecorder>,
+    ) {
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let rec = std::rc::Rc::new(JoinRecorder {
+            attempts: RefCell::new(Vec::new()),
+            reject,
+        });
+        struct Shim(std::rc::Rc<JoinRecorder>);
+        impl crate::shell::qs_actions::QsActions for Shim {
+            fn set_brightness(&self, v: f32) -> Result<(), String> {
+                self.0.set_brightness(v)
+            }
+            fn set_volume(&self, v: f32) -> Result<(), String> {
+                self.0.set_volume(v)
+            }
+            fn set_wifi(&self, v: bool) -> Result<(), String> {
+                self.0.set_wifi(v)
+            }
+            fn set_bluetooth(&self, v: bool) -> Result<(), String> {
+                self.0.set_bluetooth(v)
+            }
+            fn connect_wifi(&self, s: &str, p: Option<&str>) -> Result<(), String> {
+                self.0.connect_wifi(s, p)
+            }
+            fn set_power_profile(&self, p: os_actions::PowerProfile) -> Result<(), String> {
+                self.0.set_power_profile(p)
+            }
+        }
+        {
+            let mut st = chrome.borrow_mut();
+            st.overlays.quick_settings = true;
+            st.quick_settings.nav_stack = vec![QsLevel::Root, QsLevel::Wifi];
+            st.quick_settings.wifi_networks = vec![
+                WifiNetwork {
+                    ssid: "Cafe WiFi".into(),
+                    signal: 3,
+                    secure: true,
+                    connected: false,
+                },
+                WifiNetwork {
+                    ssid: "Airport Free".into(),
+                    signal: 2,
+                    secure: false,
+                    connected: false,
+                },
+            ];
+        }
+        let host = ShellOverlayHost::new(Box::new(Container::new()))
+            .with_chrome(chrome.clone())
+            .with_qs_actions(Box::new(Shim(rec.clone())));
+        (host, chrome, rec)
+    }
+
+    fn press(h: &mut ShellOverlayHost, key: Key) {
+        let mods = winit::event::Modifiers::default();
+        h.handle_wifi_password_key(&key, &mods);
+    }
+
+    fn ch(s: &str) -> Key {
+        Key::Character(s.into())
+    }
+
+    #[test]
+    fn a_protected_network_asks_for_a_password_instead_of_failing_silently() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        let prompt = chrome.borrow().quick_settings.wifi_password.clone();
+        let prompt = prompt.expect("a prompt is up");
+        assert_eq!(prompt.ssid, "Cafe WiFi");
+        assert!(prompt.password.is_empty());
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "nothing is attempted until there is a password to attempt with"
+        );
+        assert!(
+            !prompt.can_submit(),
+            "Connect stays inert until something is typed"
+        );
+    }
+
+    #[test]
+    fn typing_reaches_the_buffer_and_never_the_palette() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["h", "u", "n", "k"] {
+            press(&mut h, ch(c));
+        }
+        assert_eq!(
+            chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().password,
+            "hunk"
+        );
+        assert!(
+            !h.palette_visible,
+            "a 'k' in a password must be a character, not the search chord"
+        );
+    }
+
+    #[test]
+    fn enter_submits_the_typed_password_to_the_join() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["p", "w", "1"] {
+            press(&mut h, ch(c));
+        }
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert_eq!(
+            rec.attempts.borrow().as_slice(),
+            [("Cafe WiFi".to_string(), Some("pw1".to_string()))],
+            "the passphrase reaches nmcli — this is the whole point of the field"
+        );
+        let st = chrome.borrow();
+        assert!(
+            st.quick_settings.wifi_password.is_none(),
+            "a successful join closes the prompt"
+        );
+        assert!(
+            st.quick_settings
+                .wifi_networks
+                .iter()
+                .any(|n| n.ssid == "Cafe WiFi" && n.connected),
+            "the list the user lands back on shows the network they just joined"
+        );
+    }
+
+    #[test]
+    fn a_rejected_password_keeps_the_prompt_up_and_says_why() {
+        let (mut h, chrome, _) = host_on_wifi_pane(true);
+        h.begin_wifi_password("Cafe WiFi");
+        for c in ["b", "a", "d"] {
+            press(&mut h, ch(c));
+        }
+        press(&mut h, Key::Named(NamedKey::Enter));
+        let st = chrome.borrow();
+        let p = st
+            .quick_settings
+            .wifi_password
+            .as_ref()
+            .expect("the prompt survives a rejection");
+        assert!(!p.connecting, "the attempt is over");
+        assert!(p.error.is_some(), "and the reason is on screen");
+        assert_eq!(p.password, "bad", "a typo is a correction, not a retype");
+        assert_eq!(
+            (p.selection.anchor, p.selection.cursor),
+            (0, 3),
+            "and it is selected, so the next keystroke replaces it"
+        );
+    }
+
+    #[test]
+    fn typing_after_a_rejection_clears_the_stale_error() {
+        let (mut h, chrome, _) = host_on_wifi_pane(true);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("x"));
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert!(chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().error.is_some());
+        press(&mut h, ch("y"));
+        assert!(
+            chrome.borrow().quick_settings.wifi_password.as_ref().unwrap().error.is_none(),
+            "the message was about the old value"
+        );
+    }
+
+    #[test]
+    fn escape_backs_out_and_takes_the_password_with_it() {
+        let (mut h, chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("s"));
+        press(&mut h, Key::Named(NamedKey::Escape));
+        assert!(chrome.borrow().quick_settings.wifi_password.is_none());
+        assert!(rec.attempts.borrow().is_empty());
+    }
+
+    #[test]
+    fn closing_the_popover_discards_a_half_typed_password() {
+        let (mut h, chrome, _) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, ch("s"));
+        chrome.borrow_mut().overlays.quick_settings = false;
+        h.clear_stale_wifi_password();
+        assert!(
+            chrome.borrow().quick_settings.wifi_password.is_none(),
+            "a password buffer must not outlive the window it was typed into"
+        );
+    }
+
+    #[test]
+    fn an_empty_password_is_never_submitted() {
+        let (mut h, _chrome, rec) = host_on_wifi_pane(false);
+        h.begin_wifi_password("Cafe WiFi");
+        press(&mut h, Key::Named(NamedKey::Enter));
+        assert!(
+            rec.attempts.borrow().is_empty(),
+            "every WPA network rejects an empty passphrase; asking wastes a round trip"
+        );
+    }
+
+    #[test]
+    fn no_prompt_means_keys_fall_through_to_the_shell() {
+        let (mut h, _chrome, _) = host_on_wifi_pane(false);
+        let mods = winit::event::Modifiers::default();
+        assert!(
+            !h.handle_wifi_password_key(&ch("k"), &mods),
+            "with no field up, the shell's own chords must still work"
+        );
     }
 }
 
