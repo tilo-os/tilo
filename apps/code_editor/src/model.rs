@@ -496,6 +496,12 @@ impl Project {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name().to_string_lossy().to_string();
             let child_path = entry.path();
+            // Skipped by *name*, not by type: in a git worktree `.git` is a
+            // file holding a gitdir pointer, not a directory, and a
+            // directory-only test lets it through as an openable source file.
+            if crate::disk::is_ignored_dir(&name) {
+                continue;
+            }
             let Ok(ft) = entry.file_type() else { continue };
             // `file_type` does not follow symlinks, so a link pointing back up
             // the tree cannot make the walk cycle.
@@ -503,9 +509,6 @@ impl Project {
                 continue;
             }
             if ft.is_dir() {
-                if crate::disk::is_ignored_dir(&name) {
-                    continue;
-                }
                 folders.push((name, child_path));
             } else if ft.is_file() {
                 files.push((name, child_path));

@@ -187,8 +187,12 @@ pub const IGNORED_DIRS: &[&str] = &[
     ".next",
 ];
 
-/// Whether a directory entry name should be skipped when listing or searching a
+/// Whether a directory entry should be skipped when listing or searching a
 /// project tree.
+///
+/// Matched on the **name**, whatever the entry's type. In a git worktree `.git`
+/// is a *file* holding a gitdir pointer rather than a directory, so a
+/// type-gated test lets it through and it shows up as an openable source file.
 pub fn is_ignored_dir(name: &str) -> bool {
     IGNORED_DIRS.contains(&name)
 }

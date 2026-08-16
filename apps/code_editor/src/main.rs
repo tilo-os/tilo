@@ -173,6 +173,16 @@ fn render_scenario_to_png(
     if scenario == Some("terminal") {
         app.shots_open_terminal();
     }
+    // Scenarios that need a buffer open before the first sync so its text is
+    // seeded and the editor is bound. On a real project this opens a real file
+    // from the tree; on the demo tree `main.rs` is already open.
+    if matches!(scenario, Some("find") | Some("conflict") | Some("indexing")) {
+        if let Some(path) = std::env::var_os("QOS_SHOTS_OPEN") {
+            app.shots_open_path(std::path::Path::new(&path));
+        } else if app.project_root().is_some() {
+            app.shots_open_first_file();
+        }
+    }
 
     app.sync(&mut state.doc, &state.root);
 
@@ -239,7 +249,57 @@ fn render_scenario_to_png(
         }
         Some("selection") => app.shots_select_words(),
         Some("completion") => app.shots_completion_demo(&state.doc),
+        Some("find") => {
+            // `QOS_SHOTS_FIND` overrides the query so a shot of a real project
+            // can search for something that is actually in it.
+            let q = std::env::var("QOS_SHOTS_FIND").unwrap_or_else(|_| "primes".to_string());
+            app.shots_open_find(&q, true, &state.doc);
+        }
+        Some("search") => {
+            let q = std::env::var("QOS_SHOTS_SEARCH").unwrap_or_else(|_| "fn main".to_string());
+            app.shots_project_search(&q);
+            app.sync(&mut state.doc, &state.root);
+        }
+        Some("conflict") => app.shots_conflict(),
+        Some("indexing") => app.shots_indexing(),
         _ => {}
+    }
+    // The staged scenarios change the layout (the find bar appears, the search
+    // panel is taller), so the tree has to be rebuilt before the final draw or
+    // the new surfaces get last frame's geometry.
+    if matches!(scenario, Some("find") | Some("search")) {
+        let mut taffy2: TaffyTree<()> = TaffyTree::new();
+        let mut map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child2 = app.build_layout(&mut taffy2, &theme, &mut map2);
+        let root2 = taffy2.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child2],
+        )?;
+        {
+            let measure_map = map2.clone();
+            let tr = &mut text_renderer;
+            taffy2.compute_layout_with_measure(
+                root2,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )?;
+        }
+        app.apply_layout(&taffy2, child2, Point::ORIGIN);
     }
 
     let scene = draw(&mut app, &mut text_renderer);

@@ -1898,6 +1898,77 @@ impl CodeApp {
         self.terminal.as_ref().map(|t| t.grid_text())
     }
 
+    /// Stage the find bar over the active buffer with a real query, so the shot
+    /// shows real match highlighting and a real count.
+    pub fn shots_open_find(&mut self, query: &str, replace: bool, doc: &AutoCommit) {
+        self.find.open(replace, None);
+        self.find.set_query(query);
+        if replace {
+            self.find.set_replacement("buffer");
+        }
+        self.drain_find_events(&mut doc.clone());
+        self.refresh_find(doc);
+        // Land on the first match so the current-match fill is visible.
+        self.focus_match(if self.find_matches.is_empty() { None } else { Some(0) });
+    }
+
+    /// Run a real project-wide search and wait for it, so a single offscreen
+    /// frame shows genuine hits from the genuine walk rather than canned rows.
+    pub fn shots_project_search(&mut self, needle: &str) {
+        self.start_project_search(search::Query::new(needle));
+        let deadline = Instant::now() + std::time::Duration::from_secs(20);
+        while self.search_job.is_some() && Instant::now() < deadline {
+            self.poll_search();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        self.poll_search();
+        self.panel_visible = true;
+        self.panel.set_tab(PanelTab::Search);
+    }
+
+    /// Stage the "changed on disk" prompt for the active buffer.
+    pub fn shots_conflict(&mut self) {
+        if let Some(buf) = self.session.active_buffer() {
+            self.conflict = Some(Conflict {
+                node: buf.node,
+                name: buf.name.clone(),
+            });
+        }
+    }
+
+    /// Stage the language-server indexing readout.
+    pub fn shots_indexing(&mut self) {
+        self.lsp_status = LspStatus::Busy {
+            server: "rust-analyzer".to_string(),
+            title: "Indexing".to_string(),
+            detail: Some("qos-shell".to_string()),
+            percentage: Some(37),
+        };
+    }
+
+    /// Open the first file the tree found, so a shot of a real project shows a
+    /// real buffer instead of the empty state.
+    pub fn shots_open_first_file(&mut self) {
+        let first = self
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .find(|id| !self.session.project.get(*id).map(|n| n.is_folder()).unwrap_or(true));
+        if let Some(id) = first {
+            self.open_node(id);
+        }
+    }
+
+    /// Open a specific file by path, revealing it in the tree first.
+    pub fn shots_open_path(&mut self, path: &std::path::Path) {
+        let path = disk::canonical(path);
+        if let Some(node) = self.session.project.reveal_path(&path) {
+            self.sidebar.set_project(&self.session.project);
+            self.open_node(node);
+        }
+    }
+
     /// Stage a multi-word selection in the editor for the selection screenshot.
     pub fn shots_select_words(&mut self) {
         // Select a span on the first line that covers several words. Line 0 of
@@ -2675,6 +2746,39 @@ impl Widget for CodeApp {
 
     fn name(&self) -> &str {
         "CodeApp"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("code-editor")
+    }
+
+    /// Expose the panes so headless driving can address them by name. Without
+    /// this the whole editor is one opaque rect and `--headless-drive` can only
+    /// click at raw coordinates.
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut out: Vec<&dyn Widget> = vec![&self.sidebar, &self.tabs];
+        if self.find.is_visible() {
+            out.push(&self.find);
+        }
+        out.push(&self.editor);
+        if self.panel_visible {
+            out.push(&self.panel);
+        }
+        out.push(&self.status);
+        out
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.sidebar, &mut self.tabs];
+        if self.find.is_visible() {
+            out.push(&mut self.find);
+        }
+        out.push(&mut self.editor);
+        if self.panel_visible {
+            out.push(&mut self.panel);
+        }
+        out.push(&mut self.status);
+        out
     }
 
     /// Publish the open project + its buffers so the shell's one Ctrl+K palette
