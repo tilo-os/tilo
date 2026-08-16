@@ -57,6 +57,19 @@ pub fn run() -> Result<(), Box<dyn Error>> {
     )
 }
 
+/// Effective uid of this process. `0` means the identity step must not run —
+/// see [`run_as`].
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    // Safety: `geteuid` is always successful and takes no arguments.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(not(unix))]
+fn effective_uid() -> u32 {
+    1000
+}
+
 /// Pure form of [`run`] that takes env-var values as arguments instead
 /// of reading the real environment. Tests drive this directly with a
 /// `tempdir`-rooted fixture so the test suite never pokes the
@@ -64,6 +77,26 @@ pub fn run() -> Result<(), Box<dyn Error>> {
 pub fn run_with_env(
     xdg_config_home: Option<OsString>,
     home: Option<OsString>,
+) -> Result<(), Box<dyn Error>> {
+    run_as(xdg_config_home, home, effective_uid())
+}
+
+/// [`run_with_env`] with the effective uid supplied, so the "root must not
+/// mint an identity" rule is testable without running the suite as root.
+///
+/// # Why the uid matters
+///
+/// This hook is reachable from a *system* unit that runs before anyone has
+/// logged in. In that context `$HOME` is root's, so minting here would put
+/// the user's signing key in `/root/.config`, owned by root — somewhere the
+/// person it belongs to cannot read. The session would then find no identity
+/// and boot without one, which is exactly the failure this guard exists to
+/// prevent. A signing identity is *personal*: it is minted in the user's own
+/// session, by [`crate::onboarding`], after the user has been told what it is.
+pub fn run_as(
+    xdg_config_home: Option<OsString>,
+    home: Option<OsString>,
+    uid: u32,
 ) -> Result<(), Box<dyn Error>> {
     let Some(config_dir) = resolve_config_dir(xdg_config_home.clone(), home.clone()) else {
         tracing::warn!(
@@ -77,14 +110,24 @@ pub fn run_with_env(
         config_dir.display()
     );
 
-    // Identity provisioning: create a fresh single-device Ed25519
-    // record if none exists. Best-effort — a failure to write the
-    // identity does NOT prevent the compositor from continuing to
-    // boot; without a real record apps fall back to unsigned collab
-    // ops, which is the pre-existing behaviour. We keep the surface
-    // area small: this hook only handles the "no identity yet" first
-    // run. Any subsequent enrolment / rotation goes through the
-    // identity-flow ceremony in `ui::widget::identity_flow`.
+    // Identity provisioning happens in the user's session, never here as
+    // root. See `run_as` for why. Minting into root's tree produced a key the
+    // user could not read and a session that logged "no identity found" —
+    // refusing loudly is better than writing it to the wrong home.
+    if uid == 0 {
+        tracing::info!(
+            "firstboot: running as root, so no signing identity is minted here — \
+             the identity belongs to the user and is created in their session"
+        );
+        return Ok(());
+    }
+
+    // Create a fresh single-device Ed25519 record if none exists.
+    // Best-effort — a failure to write the identity does NOT prevent the
+    // compositor from continuing to boot; without a real record apps fall
+    // back to unsigned collab ops, which is the pre-existing behaviour. Any
+    // subsequent enrolment / rotation goes through the identity-flow
+    // ceremony in `ui::widget::identity_flow`.
     if let Some(identity_dir) = resolve_identity_dir(xdg_config_home, home) {
         match ensure_primary_identity(&identity_dir) {
             Ok(ProvisionOutcome::Existing) => {
@@ -328,6 +371,39 @@ mod tests {
         let sig = ed25519_dalek::Signature::from_bytes(&sig);
         vk.verify(b"firstboot-check", &sig)
             .expect("dalek verify must succeed against derived pubkey");
+    }
+
+    /// Running as root must not mint an identity. The system unit that used
+    /// to call this ran before login, so the key landed in `/root/.config`
+    /// owned by root — unreadable by the person it belonged to, and the
+    /// session then booted with no identity at all.
+    #[test]
+    fn root_does_not_mint_an_identity() {
+        let tmp = TmpDir::new("root-refuses");
+        run_as(Some(OsString::from(tmp.path())), None, 0).expect("root path is a no-op, not an error");
+        let identity_file = tmp
+            .path()
+            .join("qos")
+            .join("identity")
+            .join(PRIMARY_IDENTITY_FILE);
+        assert!(
+            !identity_file.exists(),
+            "root must not mint {identity_file:?} — the identity belongs to the user's session"
+        );
+    }
+
+    /// The same call as a normal user does mint, so the guard is about the
+    /// uid and not about the function having quietly stopped working.
+    #[test]
+    fn a_normal_user_still_mints() {
+        let tmp = TmpDir::new("user-mints");
+        run_as(Some(OsString::from(tmp.path())), None, 1000).expect("user path mints");
+        let identity_file = tmp
+            .path()
+            .join("qos")
+            .join("identity")
+            .join(PRIMARY_IDENTITY_FILE);
+        assert!(identity_file.exists(), "a non-root uid mints {identity_file:?}");
     }
 
     #[test]
