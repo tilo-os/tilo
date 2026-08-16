@@ -18,6 +18,7 @@ pub mod notifications;
 // `quick-desktop --firstboot`. See `src/firstboot.rs`.
 pub mod firstboot;
 pub mod bluetooth;
+pub mod bluetooth_prompt;
 pub mod onboarding;
 pub mod onboarding_view;
 // Observability counters aggregated per peer surface — read by the OSD
