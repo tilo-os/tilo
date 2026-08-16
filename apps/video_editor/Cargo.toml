@@ -40,13 +40,15 @@ media = { path = "../../crates/media" }
 gstreamer-app = { version = "0.24", optional = true }
 
 [features]
-default = []
-# Real decode for the preview canvas, via the shared `media::MediaEngine`
-# (GStreamer `playbin`). The default fleet build (and `--shots`) leaves this off
-# so the preview shows a representative composited frame without a decoder — the
-# headless CI box needs no media pipeline. With it on, the preview decodes the
-# real frame of the clip under the playhead (seeking to its source time) and
-# blits it; an un-hydrated reference falls back to the representative frame.
+# The preview canvas decoding real frames is the editor's core, so `decode`
+# ships on by default: the preview decodes the real frame of the clip under the
+# playhead through the shared `media::MediaEngine` (GStreamer `playbin`). The
+# `--shots` path renders the representative composited frame at runtime (an
+# un-hydrated reference always falls back to it), so the screenshot path stays
+# hermetic with the decoder compiled in. Full `gst` export (encode + mux) stays
+# opt-in — it is heavy and off the normal preview path.
+default = ["decode"]
+# Real decode for the preview canvas, via the shared `media::MediaEngine`.
 decode = ["media/decode"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
