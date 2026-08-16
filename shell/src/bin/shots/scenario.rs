@@ -184,6 +184,18 @@ pub enum Action {
     /// Open quick settings on the Wi-Fi pane with a passphrase prompt
     /// up, by preset name (`empty`, `typed`, `rejected`).
     SeedWifiPrompt(&'static str),
+    /// Raise the portal's file-chooser dialog, by mode (`open`,
+    /// `open_multiple`, `save`).
+    ///
+    /// The real trigger is a sandboxed app calling
+    /// `org.freedesktop.impl.portal.FileChooser`, which a `--shots`
+    /// render has no session bus to carry — so the dialog would never
+    /// appear in a capture, which is exactly where its styling wants
+    /// reviewing. This pushes a `FilePickerRequest` onto the same
+    /// `FilePickerQueue` the D-Bus backend pushes to, and turns the same
+    /// `pump_file_picker` the compositor turns every frame. Everything
+    /// downstream of the queue is the production path.
+    SeedFilePicker(&'static str),
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -514,6 +526,50 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             driver.with_chrome(|st: &mut ChromeState| {
                 st.show_osd(osd);
             });
+        }
+        Action::SeedFilePicker(mode) => {
+            use shell::portal::{
+                FilePickerOptions, FilePickerQueue, FilePickerSpawner, PickerFilter, PortalCaller,
+                PromptQueueHandle, PromptResolver,
+            };
+            use shell::shell::state::WorkspaceId;
+            let mode = *mode;
+            let queue = FilePickerQueue::new();
+            driver
+                .host_mut()
+                .set_portal_queues(PromptQueueHandle::new(PromptResolver::Channel), queue.clone());
+
+            let save = mode == "save";
+            let caller = PortalCaller::new(WorkspaceId(1), "dev.qos.word-processor");
+            let opts = FilePickerOptions::new(
+                caller,
+                if save { "Save Document" } else { "Open Document" },
+                save,
+            )
+            .multiple(mode == "open_multiple")
+            .filters(vec![
+                PickerFilter::from_pairs(
+                    "Documents",
+                    &[(0, "*.odt".into()), (0, "*.md".into()), (0, "*.txt".into())],
+                ),
+                PickerFilter::from_pairs("Images", &[(1, "image/png".into())]),
+            ])
+            .current_name(save.then(|| "Untitled.md".to_string()));
+            // The reply receiver is dropped: a screenshot has nobody to
+            // hand the answer to. The dialog does not care — it is the
+            // portal side that reads a closed channel as "cancelled".
+            let (tx, _rx) = tokio::sync::oneshot::channel();
+            queue.spawn(shell::portal::FilePickerRequest {
+                caller: opts.caller,
+                title: opts.title,
+                save: opts.save,
+                multiple: opts.multiple,
+                accept_label: opts.accept_label,
+                current_name: opts.current_name,
+                filters: opts.filters,
+                reply: tx,
+            });
+            driver.host_mut().pump_file_picker();
         }
         Action::SeedWifiPrompt(preset) => {
             let preset = *preset;
@@ -883,6 +939,7 @@ pub fn catalogue() -> Vec<Scenario> {
         status_tray_states(),
         media_key_osd(),
         wifi_password_prompt(),
+        file_chooser_dialog(),
     ]
 }
 
@@ -993,6 +1050,29 @@ fn media_key_osd() -> Scenario {
             Action::SeedOsd("next_track"),
             Action::Wait(3),
             Action::Snapshot("06-next-track"),
+        ],
+    }
+}
+
+/// The portal's file dialog, in the three shapes an app can ask for.
+///
+/// This is the surface a sandboxed app meets when it wants a file, and
+/// the compositor draws it — so it is also the surface that has to look
+/// like it belongs to the system rather than to the app.
+fn file_chooser_dialog() -> Scenario {
+    Scenario {
+        name: "file_chooser_dialog",
+        description: "The portal file dialog: open, multi-select open, and save.",
+        actions: vec![
+            Action::SeedFilePicker("open"),
+            Action::Wait(6),
+            Action::Snapshot("01-open"),
+            Action::SeedFilePicker("open_multiple"),
+            Action::Wait(4),
+            Action::Snapshot("02-open-multiple"),
+            Action::SeedFilePicker("save"),
+            Action::Wait(4),
+            Action::Snapshot("03-save"),
         ],
     }
 }
