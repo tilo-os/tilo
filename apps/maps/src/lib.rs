@@ -22,6 +22,7 @@ pub mod livetest;
 pub mod location;
 pub mod model;
 pub mod net;
+pub mod rank;
 pub mod sample;
 pub mod tiles;
 pub mod traffic;
