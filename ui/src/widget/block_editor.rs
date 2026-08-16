@@ -1290,6 +1290,14 @@ pub enum CursorPlacement {
     Byte(usize),
 }
 
+/// True when `s` is exactly a markdown heading prefix (`# `, `## `, `### `).
+/// Used by the editor's live shortcut: when the text before the caret equals
+/// one of these, the just-typed space completed the prefix and the paragraph
+/// should promote to the matching heading.
+fn is_heading_prefix(s: &str) -> bool {
+    matches!(s, "# " | "## " | "### ")
+}
+
 /// Round `byte` down to the nearest UTF-8 char boundary inside `text`.
 fn clamp_char_boundary(text: &str, byte: usize) -> usize {
     let mut b = byte.min(text.len());
@@ -2273,16 +2281,27 @@ impl Widget for BlockEditor {
             ..
         } = event
         {
+            // Slash menu open: a click on one of its rows selects that block
+            // kind (and strips the `/…` trigger, exactly like Enter); a click
+            // anywhere else dismisses the menu. Handled before anything else so
+            // the popover — which paints on top — also gets first claim on clicks.
+            if self.slash_menu.is_visible() {
+                if let Some(new_kind) = self.slash_menu.click_at(self.last_mouse_pos) {
+                    self.commit_slash_selection(new_kind);
+                    self.slash_open_at = None;
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                // Off-row click: dismiss without altering the block.
+                self.slash_menu.set_visible(false);
+                self.slash_open_at = None;
+                self.dirty = true;
+            }
             if let Some(hit_idx) = self.checkbox_hit_test_last_mouse() {
                 let _ = self.try_toggle_check(hit_idx);
                 *handled = true;
                 return;
-            }
-            // A click anywhere closes an open slash menu (matches
-            // every popover convention).
-            if self.slash_menu.is_visible() {
-                self.slash_menu.set_visible(false);
-                self.slash_open_at = None;
             }
             // Cross-block drag start: clear any leftover band from a
             // previous drag and record where this click landed (block
@@ -2316,6 +2335,12 @@ impl Widget for BlockEditor {
             let logical =
                 Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_mouse_pos = logical;
+
+            // Slash menu open: hovering a row moves the highlight to it, so the
+            // mouse and keyboard drive the same selection cursor.
+            if self.slash_menu.is_visible() && self.slash_menu.hover_at(logical) {
+                self.dirty = true;
+            }
 
             // Cross-block drag: while a drag is in flight (cross_
             // block_drag_start set + at least one inner TextInput is
@@ -2476,13 +2501,15 @@ impl Widget for BlockEditor {
         // re-reads `*handled` so a previously-handled event isn't
         // re-processed.
         if let Some(focused_idx) = self.focused {
-            let was_empty_paragraph = self
+            // Snapshot the paragraph's text so, after the edit, we can tell an
+            // actual content change (typing) from a mere caret move (a click) —
+            // the markdown heading shortcut must fire on the former, never the
+            // latter. `None` for a non-paragraph block skips the check entirely.
+            let before_text = self
                 .blocks
                 .get(focused_idx)
-                .map(|b| {
-                    matches!(b.kind, BlockKind::Paragraph) && b.line.value().is_empty()
-                })
-                .unwrap_or(false);
+                .filter(|b| matches!(b.kind, BlockKind::Paragraph))
+                .map(|b| b.line.value().to_string());
             if let Some(b) = self.blocks.get_mut(focused_idx) {
                 if b.kind.is_editable() {
                     b.line.handle_event(
@@ -2506,12 +2533,22 @@ impl Widget for BlockEditor {
             {
                 self.apply_signal(focused_idx, sig);
             }
-            // Markdown promotion: only fires when the focused block
-            // was an empty paragraph entering this event. The user's
-            // single keystroke must have produced an exact `# `,
-            // `## ` or `### ` prefix.
-            if was_empty_paragraph {
-                let _ = self.try_promote_to_heading(focused_idx);
+            // Markdown heading shortcut: promote when this event just typed the
+            // space that completes a `# ` / `## ` / `### ` prefix at the very
+            // start of the line — i.e. the text changed AND everything before the
+            // caret is exactly that prefix. Gating on "text changed" means a click
+            // that only parks the caret after an existing "# " never promotes; the
+            // caret-at-prefix-end check means a space typed mid-line doesn't.
+            if let Some(before) = before_text {
+                if let Some(b) = self.blocks.get(focused_idx) {
+                    let now = b.line.value();
+                    if now != before {
+                        let caret = b.line.cursor_pos().min(now.len());
+                        if is_heading_prefix(&now[..caret]) {
+                            let _ = self.try_promote_to_heading(focused_idx);
+                        }
+                    }
+                }
             }
         }
     }
