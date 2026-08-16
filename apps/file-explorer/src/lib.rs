@@ -10,6 +10,7 @@ pub mod model;
 pub mod fileops;
 pub mod breadcrumbs;
 pub mod breadcrumb_bar;
+pub mod path_bar;
 pub mod sidebar;
 pub mod places_sidebar;
 pub mod toolbar;

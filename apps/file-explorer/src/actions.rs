@@ -41,19 +41,16 @@
 //!   *in* the CRDT to hang add / remove / reorder actions off of, and this module
 //!   does not fabricate one.
 //!
-//! - **The search box and the inline-rename field are native collaborative
-//!   `Text`.** They are the *only* two things the app writes to its Automerge
-//!   document: [`SEARCH_QUERY_PATH`](crate::files_app) (`files.search_query`) and
-//!   [`RENAME_QUERY_PATH`](crate::files_app) (`files.rename_query`), each an
-//!   Automerge `Text` object the toolkit's `TextInput` splices into on the
-//!   CRDT-native text path — the same path the recipe says a flowing text body
-//!   must take *instead of* the action executor. Both are transient presentation
-//!   input: the search query filters the displayed list (which is view state, per
-//!   the recipe's "the search box … the current selection … presentation that
-//!   must never be an action"), and the rename field's committed value is handed
-//!   straight to the external `fileops::rename`, then discarded. Re-encoding a
-//!   keystroke into either as an action would only duplicate what the `Text`
-//!   object already replicates and undoes.
+//! - **The inline-rename field is native collaborative `Text`.** It is the
+//!   *only* thing the app writes to its Automerge document:
+//!   [`RENAME_QUERY_PATH`](crate::files_app) (`files.rename_query`), an Automerge
+//!   `Text` object the toolkit's `TextInput` splices into on the CRDT-native text
+//!   path — the same path the recipe says a flowing text body must take *instead
+//!   of* the action executor. It is transient presentation input: the rename
+//!   field's committed value is handed straight to the external `fileops::rename`,
+//!   then discarded. Re-encoding a keystroke into it as an action would only
+//!   duplicate what the `Text` object already replicates and undoes. (There is no
+//!   in-app search field — search is OS-owned, `ui/HIG.md` §5.)
 //!
 //! The rest of the explorer's world — the current directory, the multi-selection,
 //! the sort key/order, the view mode, the navigation history, the cut/copy
@@ -84,8 +81,7 @@ mod tests {
     use crate::command::FileCommand;
     use crate::favorites::UserDirs;
 
-    /// The two CRDT map keys the app seeds (kept in sync with `files_app.rs`).
-    const SEARCH_QUERY_PATH: &str = "files.search_query";
+    /// The CRDT map key the app seeds (kept in sync with `files_app.rs`).
     const RENAME_QUERY_PATH: &str = "files.rename_query";
 
     /// Resolve the `Text` object at `key` on the document root, asserting it is a
@@ -97,36 +93,35 @@ mod tests {
         }
     }
 
-    /// The document holds exactly two things, and both are native-`Text` input
-    /// fields: the search query and the inline-rename buffer. Driving the real
-    /// production `sync` seeds them, and the document carries no structural,
-    /// user-authored record collection — no favourites, bookmarks, tags, pins,
-    /// saved searches or groupings — for an action to mutate.
+    /// The document holds exactly one thing, and it is a native-`Text` input
+    /// field: the inline-rename buffer. Driving the real production `sync` seeds
+    /// it, and the document carries no structural, user-authored record
+    /// collection — no favourites, bookmarks, tags, pins, saved searches or
+    /// groupings — for an action to mutate.
     #[test]
     fn document_holds_only_ephemeral_input_text() {
         let mut w = FileExplorerWidget::new();
         let mut doc = AutoCommit::new();
 
-        // The real first-frame path: `sync` seeds the two backing Text objects
-        // (the toolkit's TextInput binds to an existing Text but never creates
-        // one, so the app must seed them here).
+        // The real first-frame path: `sync` seeds the backing Text object (the
+        // toolkit's TextInput binds to an existing Text but never creates one, so
+        // the app must seed it here).
         w.sync(&mut doc, &ROOT);
 
-        // Exactly the two input fields, nothing structural.
-        let mut keys: Vec<String> = doc.keys(&ROOT).collect();
-        keys.sort();
+        // Exactly the one input field, nothing structural.
+        let keys: Vec<String> = doc.keys(&ROOT).collect();
         assert_eq!(
             keys,
-            vec![RENAME_QUERY_PATH.to_string(), SEARCH_QUERY_PATH.to_string()],
-            "the document holds only the search + rename input fields: {keys:?}",
+            vec![RENAME_QUERY_PATH.to_string()],
+            "the document holds only the rename input field: {keys:?}",
         );
 
-        // Both are native Text objects (the CRDT-native collaborative text path).
-        let _ = text_obj(&doc, SEARCH_QUERY_PATH);
+        // It is a native Text object (the CRDT-native collaborative text path).
         let _ = text_obj(&doc, RENAME_QUERY_PATH);
 
         // No user-authored record collection exists to hang an action off — the
         // favourites/tags/pins model lives in per-user config files, not here.
+        // (There is no search field at all — search is OS-owned.)
         for forbidden in [
             "favorites",
             "favourites",
@@ -137,6 +132,7 @@ mod tests {
             "labels",
             "saved_searches",
             "groups",
+            "files.search_query",
         ] {
             assert!(
                 doc.get(&ROOT, forbidden).unwrap().is_none(),
@@ -145,20 +141,19 @@ mod tests {
         }
     }
 
-    /// The search field is native collaborative `Text`, so it already carries the
+    /// The rename field is native collaborative `Text`, so it already carries the
     /// guarantee an action would otherwise provide: a splice into the shared
     /// object (exactly what the `TextInput` does) replicates to an independent
-    /// replica byte-identically — same head hashes, not merely the same text — and
-    /// the production `sync` reads the query back to filter the list. Nothing to
-    /// encode as an action.
+    /// replica byte-identically — same head hashes, not merely the same text.
+    /// Nothing to encode as an action.
     #[test]
-    fn search_query_is_native_text_and_replicates_byte_identically() {
+    fn rename_field_is_native_text_and_replicates_byte_identically() {
         let mut w = FileExplorerWidget::new();
         let mut doc = AutoCommit::new();
 
         // Seed via the real `sync`, then snapshot a shared base state.
         w.sync(&mut doc, &ROOT);
-        let search = text_obj(&doc, SEARCH_QUERY_PATH);
+        let rename = text_obj(&doc, RENAME_QUERY_PATH);
         doc.commit();
         let base = doc.save();
         let mut peer = AutoCommit::load(&base).unwrap();
@@ -168,14 +163,10 @@ mod tests {
             "precondition: replicas share a base state",
         );
 
-        // Type into the search box the way the input does: splice into the shared
-        // Text object on the native collaborative text path.
-        doc.splice_text(&search, 0, 0, "argo").unwrap();
+        // Type into the rename field the way the input does: splice into the
+        // shared Text object on the native collaborative text path.
+        doc.splice_text(&rename, 0, 0, "renamed.txt").unwrap();
         doc.commit();
-
-        // The production `sync` read-back path picks the query back up.
-        w.sync(&mut doc, &ROOT);
-        assert_eq!(w.search_query(), "argo", "sync reads the query back from the Text object");
 
         // The collaboration guarantee, for free: the peer converges byte-identically.
         peer.merge(&mut doc).unwrap();
@@ -184,7 +175,7 @@ mod tests {
             peer.get_heads(),
             "byte-identical convergence after merge — the native text path already replicates",
         );
-        assert_eq!(peer.text(&search).unwrap(), "argo", "the peer sees the same search text");
+        assert_eq!(peer.text(&rename).unwrap(), "renamed.txt", "the peer sees the same rename text");
     }
 
     /// A file operation is external: renaming through the real command path
