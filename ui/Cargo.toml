@@ -105,6 +105,11 @@ tokio = { workspace = true, features = ["full"] }
 vello.workspace = true
 wgpu.workspace = true
 winit.workspace = true
+# Resolves the user's real, *localized* XDG user directories
+# (`~/.config/user-dirs.dirs`) for `sysdirs` — so a "Places" list (file
+# manager sidebar, file picker) shows the machine's own folder names
+# (Dokumente / Bilder) instead of hard-coded English ones.
+dirs.workspace = true
 fluent.workspace = true
 unic-langid.workspace = true
 once_cell.workspace = true

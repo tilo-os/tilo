@@ -79,6 +79,7 @@ pub mod nav_stack;
 pub mod reader_hud;
 pub mod search;
 pub mod profiling;
+pub mod sysdirs;
 
 // The toolkit's own stack, re-exported so an app never has to name a version.
 // See the crate-level note above for why this matters for `vello` and `winit`
