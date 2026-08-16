@@ -3469,9 +3469,14 @@ impl MapsApp {
         self.click_targets.push((swap, Hit::SwapEnds));
         y = to_r.y1 + 10.0;
 
-        // "Use my location" — a real device-location fix for the origin.
-        let loc_h = 32.0;
-        let loc_r = Rect::new(x, y, fields_right, y + loc_h);
+        // "Use my location" — a real device-location fix for the origin. A
+        // compact, content-sized chip (not a full-width bar): it is a secondary
+        // helper, so it stays quiet and lets the fields + mode read as the
+        // primary controls.
+        let loc_h = 30.0;
+        let loc_label = if self.locating { "Locating…" } else { "Use my location" };
+        let loc_w = draw::measure_w(tr, loc_label, 13.0) + 44.0;
+        let loc_r = Rect::new(x, y, x + loc_w, y + loc_h);
         let (loc_fill, loc_fg) = if self.locating {
             (draw::alpha(theme.accent_primary, 0.16), theme.accent_primary)
         } else {
@@ -3486,10 +3491,9 @@ impl MapsApp {
         for (dx, dy) in [(0.0, -8.0), (0.0, 8.0), (-8.0, 0.0), (8.0, 0.0)] {
             draw::line(scene, t, Point::new(gx + dx * 0.7, gy + dy * 0.7), Point::new(gx + dx, gy + dy), 1.4, loc_fg);
         }
-        let loc_label = if self.locating { "Locating…" } else { "Use my location" };
         draw::text(scene, tr, t, loc_label, gx + 16.0, vmid(loc_r.y0, loc_h, 13.0), 13.0, loc_fg);
         self.click_targets.push((loc_r, if self.locating { Hit::Consume } else { Hit::UseMyLocation }));
-        y += loc_h + 12.0;
+        y += loc_h + 14.0;
 
         // NOTE: the geocoded results for the focused endpoint are NOT drawn
         // inline here — that reflowed the mode control and route below every
@@ -3542,15 +3546,21 @@ impl MapsApp {
             y += 40.0;
 
             // Planned departure → arrival clock, derived from the time picker.
+            // Leaving now, a single ETA reads cleaner than "Leave x → Arrive y";
+            // the full pair only shows once a specific departure/arrival is set.
             let (dep_label, arr_label) = self.road_trip_clock(route.duration_s);
-            draw::text_w(scene, tr, t, &dep_label, x, y, 13.0, theme.text_primary, TextWeight::Medium);
-            let dep_w = draw::measure_w(tr, &dep_label, 13.0);
-            draw::text(scene, tr, t, "→", x + dep_w + 10.0, y, 13.0, theme.text_dim);
-            draw::text_w(scene, tr, t, &arr_label, x + dep_w + 30.0, y, 13.0, theme.text_primary, TextWeight::Medium);
-            y += 26.0;
+            if self.model.transit_time.is_now() {
+                draw::text_w(scene, tr, t, &arr_label, x, y, 13.0, theme.text_dim, TextWeight::Medium);
+            } else {
+                draw::text_w(scene, tr, t, &dep_label, x, y, 13.0, theme.text_primary, TextWeight::Medium);
+                let dep_w = draw::measure_w(tr, &dep_label, 13.0);
+                draw::text(scene, tr, t, "→", x + dep_w + 10.0, y, 13.0, theme.text_dim);
+                draw::text_w(scene, tr, t, &arr_label, x + dep_w + 30.0, y, 13.0, theme.text_primary, TextWeight::Medium);
+            }
+            y += 28.0;
 
             draw::line(scene, t, Point::new(x, y), Point::new(right, y), 1.0, c.border_standard);
-            y += 12.0;
+            y += 14.0;
 
             for (i, step) in route.steps.iter().enumerate() {
                 let rh = 46.0;
@@ -3613,8 +3623,15 @@ impl MapsApp {
         let right = content.x1;
         let tt = self.model.transit_time;
 
-        // Leave / Arrive segmented control.
-        let seg_rect = Rect::new(x, y, right, y + 34.0);
+        // One calm row: a Leave/Arrive toggle on the left, a [– clock +] stepper
+        // on the right. The old picker stacked two full-width segmented controls
+        // plus a separate reset chip and a hairline — a lot of chrome for a
+        // control that stays at "Leave now" most of the time.
+        let row_h = 36.0;
+        let toggle_w = 150.0_f64.min((right - x - 8.0) * 0.5);
+
+        // Leave / Arrive segmented toggle.
+        let seg_rect = Rect::new(x, y, x + toggle_w, y + row_h);
         draw::fill_rrect(scene, t, seg_rect, 9.0, c.surfaces.base);
         let modes = [(TransitTimeMode::Depart, "Leave"), (TransitTimeMode::Arrive, "Arrive")];
         let seg_w = seg_rect.width() / 2.0;
@@ -3626,43 +3643,41 @@ impl MapsApp {
                 draw::fill_rrect(scene, t, seg.inflate(-3.0, -3.0), 7.0, theme.accent_primary);
             }
             let fg = if active { Color::WHITE } else { theme.text_dim };
-            draw::text_center(scene, tr, t, label, seg.x0, seg.x1, vmid(seg.y0, seg.height(), 13.0), 13.0, fg);
+            draw::text_center(scene, tr, t, label, seg.x0, seg.x1, vmid(seg.y0, seg.height(), 12.0), 12.0, fg);
             self.click_targets.push((seg, Hit::TransitTimeMode(*m)));
         }
-        y += 42.0;
 
-        // Time stepper: [–] <clock> [+].
-        let row_h = 34.0;
-        let minus = Rect::new(x, y, x + 40.0, y + row_h);
-        let plus = Rect::new(right - 40.0, y, right, y + row_h);
+        // Stepper: [–] <clock> [+], sharing the row with the toggle.
+        let btn_w = 38.0;
+        let minus = Rect::new(seg_rect.x1 + 8.0, y, seg_rect.x1 + 8.0 + btn_w, y + row_h);
+        let plus = Rect::new(right - btn_w, y, right, y + row_h);
         draw::fill_rrect(scene, t, minus, 8.0, c.surfaces.base);
         draw::fill_rrect(scene, t, plus, 8.0, c.surfaces.base);
         draw::text_center(scene, tr, t, "–", minus.x0, minus.x1, vmid(minus.y0, row_h, 18.0), 18.0, theme.text_primary);
         draw::text_center(scene, tr, t, "+", plus.x0, plus.x1, vmid(plus.y0, row_h, 18.0), 18.0, theme.text_primary);
         let target = self.clock_anchor() + chrono::Duration::minutes(tt.offset_min as i64);
-        let clock = target.format("%H:%M").to_string();
-        let label = if tt.is_now() {
-            "Now".to_string()
-        } else {
-            clock
-        };
+        let label = if tt.is_now() { "Now".to_string() } else { target.format("%H:%M").to_string() };
         draw::text_center(scene, tr, t, &label, minus.x1, plus.x0, vmid(y, row_h, 15.0), 15.0, theme.accent_primary);
         self.click_targets.push((minus, Hit::TransitTimeDelta(-15)));
         self.click_targets.push((plus, Hit::TransitTimeDelta(15)));
-        y += row_h + 8.0;
+        y += row_h;
 
-        // "Now" reset chip when the anchor has moved off the default.
+        // A compact "Reset to now" appears only when the anchor is off default —
+        // the common leave-now case stays a single, quiet row.
         if !tt.is_now() {
-            let now_r = Rect::new(x, y, x + 72.0, y + 26.0);
-            draw::fill_rrect(scene, t, now_r, 8.0, c.surfaces.raised);
-            draw::stroke_rrect(scene, t, now_r, 8.0, 1.0, c.border_standard);
-            draw::text_center(scene, tr, t, "Now", now_r.x0, now_r.x1, vmid(now_r.y0, 26.0, 12.0), 12.0, theme.text_primary);
-            self.click_targets.push((now_r, Hit::TransitTimeNow));
-            y += 34.0;
+            y += 8.0;
+            let reset_w = draw::measure_w(tr, "Reset to now", 12.0) + 20.0;
+            let reset = Rect::new(x, y, x + reset_w, y + 26.0);
+            draw::fill_rrect(scene, t, reset, 8.0, c.surfaces.raised);
+            draw::stroke_rrect(scene, t, reset, 8.0, 1.0, c.border_standard);
+            draw::text_center(scene, tr, t, "Reset to now", reset.x0, reset.x1, vmid(reset.y0, 26.0, 12.0), 12.0, theme.text_primary);
+            self.click_targets.push((reset, Hit::TransitTimeNow));
+            y += 26.0;
         }
 
-        draw::line(scene, t, Point::new(x, y), Point::new(right, y), 1.0, c.border_standard);
-        y + 12.0
+        // Breathing space rather than a hairline — groups separate by space, not
+        // boxes-within-boxes (HIG §7).
+        y + 18.0
     }
 
     /// The public-transport departures list for Transit mode. The depart/arrive
