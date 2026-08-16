@@ -6,7 +6,7 @@
 //! Everything here runs against the REAL path with no mocks of the
 //! thing under test:
 //!   * the production fan-out broker (`ui::collaboration::broker::serve`,
-//!     the same code `apps/collab-broker` wraps),
+//!     the in-tree relay),
 //!   * two real `CollaborationManager`s trading real `CollabRequest` /
 //!     `CollabEvent` frames over a real `UnixStream`,
 //!   * real `automerge` documents on each side,
