@@ -37,7 +37,8 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{BlockEditor, DatePicker, TimePicker, TextInput};
+use ui::widget::{BlockEditor, DatePicker, Scrollable, TimePicker, TextInput};
+use ui::dnd::DRAG_START_THRESHOLD_PX;
 
 use crate::account::AccountStore;
 use crate::caldav::{self, SyncOutcome};
@@ -61,9 +62,22 @@ const SIDEBAR_W: f64 = 252.0;
 const TOPBAR_H: f64 = 60.0;
 const DETAIL_PAD: f64 = 22.0;
 const NOTES_TOP_OFFSET: f64 = 296.0;
-/// First/last hours shown in the week/day timelines.
-const DAY_START: i64 = 7;
-const DAY_END: i64 = 22;
+
+/// The week/day timelines span the full 24 hours and scroll vertically. Each
+/// hour keeps a legible **minimum** height; on a window too short to fit all
+/// 24 hours at that minimum the body scrolls (reusing the shared
+/// [`Scrollable`] primitive) rather than squashing the slots. On a tall window
+/// the hours grow to fill the viewport and nothing scrolls.
+const TIMELINE_MIN_HOUR_H: f64 = 44.0;
+/// Height of the fixed (non-scrolling) day-header strip above the hour grid.
+const TIMELINE_HEAD_H: f64 = 56.0;
+/// Height of the fixed all-day event strip below the day headers.
+const TIMELINE_ALLDAY_H: f64 = 26.0;
+/// Hour the timeline first scrolls to when the day doesn't fit — the start of a
+/// typical work day, rather than opening at midnight.
+const TIMELINE_INITIAL_HOUR: f64 = 7.0;
+/// Grid snap (minutes) for drag-to-create and drag-to-move on the timeline.
+const TIMELINE_SNAP_MIN: i64 = 15;
 
 /// Width at/above which the sidebar is an inline persistent panel. Below it the
 /// sidebar becomes an overlay drawer (see [`SidebarMode`] and
@@ -241,6 +255,77 @@ struct FormRects {
     notes_top: f64,
 }
 
+/// Fixed geometry of a week/day timeline, derived purely from the view's
+/// allocated `area`. Shared by the draw pass, the scroll driver, hit-testing
+/// and the drag handlers so they never disagree about where an hour sits.
+///
+/// The hour grid is a **content** surface `content_h` tall (24 × `hour_h`) that
+/// scrolls inside the `[body_top, body_bottom]` viewport; the day headers and
+/// all-day strip above it stay fixed. A content-space y (`0` at 00:00) maps to
+/// the screen via `body_top + y - scroll_offset`.
+#[derive(Clone, Copy, Debug)]
+struct TimelineGeom {
+    gutter: f64,
+    body_top: f64,
+    body_bottom: f64,
+    hour_h: f64,
+    content_h: f64,
+}
+
+impl TimelineGeom {
+    /// The scrolling body viewport rect for the given horizontal span.
+    fn body(&self, x0: f64, x1: f64) -> Rect {
+        Rect::new(x0, self.body_top, x1, self.body_bottom)
+    }
+}
+
+/// An in-progress pointer drag on the week/day timeline. Both variants use the
+/// shared drag-start threshold ([`DRAG_START_THRESHOLD_PX`]): a press that never
+/// travels past it stays a plain click (open the event / no-op), while crossing
+/// it promotes to a live drag with on-canvas feedback, committed on release
+/// through the action model.
+#[derive(Clone, Copy, Debug)]
+enum TimelineDrag {
+    /// Dragging across empty grid to carve out a new event. `day` is the column
+    /// grabbed in; `origin`/`current` are logical screen points.
+    Create { day: NaiveDate, origin: Point, current: Point, active: bool },
+    /// Dragging an existing event to a new time (and, in week view, day).
+    /// `grab_off_min` is the pointer's offset within the block at grab time
+    /// (minutes past the event's start), so the block keeps that point under the
+    /// cursor; `dur_min` preserves the event's duration across the move.
+    Move {
+        id: Id,
+        origin: Point,
+        current: Point,
+        grab_off_min: i64,
+        dur_min: i64,
+        active: bool,
+    },
+}
+
+impl TimelineDrag {
+    fn is_active(&self) -> bool {
+        match self {
+            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active,
+        }
+    }
+    fn origin(&self) -> Point {
+        match self {
+            TimelineDrag::Create { origin, .. } | TimelineDrag::Move { origin, .. } => *origin,
+        }
+    }
+    fn set_current(&mut self, p: Point) {
+        match self {
+            TimelineDrag::Create { current, .. } | TimelineDrag::Move { current, .. } => *current = p,
+        }
+    }
+    fn set_active(&mut self, a: bool) {
+        match self {
+            TimelineDrag::Create { active, .. } | TimelineDrag::Move { active, .. } => *active = a,
+        }
+    }
+}
+
 pub struct CalendarApp {
     model: Model,
     today: NaiveDate,
@@ -338,6 +423,26 @@ pub struct CalendarApp {
     last_mouse: Point,
     status: Option<String>,
     dirty: bool,
+
+    // --- timeline (week/day) scroll + drag -------------------------------
+    /// Vertical scroll of the full-24h week/day hour grid. Driven manually
+    /// (the timeline is painted imperatively, not through a child widget), it
+    /// still reuses the shared [`Scrollable`] for offset clamping, wheel /
+    /// keyboard / momentum, and the overlay bar.
+    timeline_scroll: Scrollable,
+    /// Vertical scroll of the agenda list, so a short window pages through the
+    /// upcoming days instead of clipping them.
+    agenda_scroll: Scrollable,
+    /// Whether the timeline scroll has been seeded to the work-day yet. Seeded
+    /// once, the first time the day is too tall to fit, so it opens around
+    /// [`TIMELINE_INITIAL_HOUR`] rather than at midnight.
+    timeline_scroll_seeded: bool,
+    /// Shots-only: pin the timeline scroll to a specific hour (e.g. `0.0` for
+    /// the top of the day, `24.0` for the bottom) so a screenshot can prove the
+    /// full 24h is reachable. `None` in the live app.
+    shots_scroll_hour: Option<f64>,
+    /// An in-progress drag on the week/day timeline (create or move).
+    timeline_drag: Option<TimelineDrag>,
 
     /// Receiver for an in-flight background CalDAV pull. The live sync runs on a
     /// worker thread (the `ui` event loop is synchronous and must never block on
@@ -462,6 +567,11 @@ impl CalendarApp {
             last_mouse: Point::ZERO,
             status: None,
             dirty: true,
+            timeline_scroll: Scrollable::new_vertical().always_visible(),
+            agenda_scroll: Scrollable::new_vertical().always_visible(),
+            timeline_scroll_seeded: false,
+            shots_scroll_hour: None,
+            timeline_drag: None,
             sync_rx: None,
             syncing: false,
             actions: ui::ActionHost::new(),
@@ -474,6 +584,13 @@ impl CalendarApp {
     /// Force a calendar view for a screenshot.
     pub fn shots_set_view(&mut self, v: View) {
         self.view = v;
+        self.dirty = true;
+    }
+
+    /// Pin the week/day timeline scroll to `hour` for a screenshot (`0.0` = top
+    /// of the day, `24.0` = clamped to the bottom). Proves the full 24h scrolls.
+    pub fn shots_scroll_timeline(&mut self, hour: f64) {
+        self.shots_scroll_hour = Some(hour);
         self.dirty = true;
     }
 
@@ -1085,24 +1202,272 @@ impl CalendarApp {
             calendar_id: None,
             project: None,
         };
+        self.spawn_event(ev, doc);
+    }
+
+    /// Insert a freshly-authored event into the model + CRDT (through the action
+    /// model), select it, and open its edit form with the caret in the title so
+    /// the next keystroke names it. Shared by the New button and the timeline's
+    /// drag-to-create. Notes are left EMPTY on purpose — the editor paints its
+    /// placeholder until the user types.
+    fn spawn_event(&mut self, ev: Event, doc: &mut AutoCommit) {
         let id = ev.id;
         self.perform_action(doc, crate::actions::upsert_event_action(&ev));
-        // Notes are left EMPTY on purpose — the notes editor paints its
-        // placeholder until the user types. Seeding body text here is exactly
-        // the "fake content the user must delete" this form avoids.
         self.model.events.push(ev);
         self.model.events.sort_by_key(|e| e.start);
         self.select_event(id);
-        // Land the caret in the title so the very next keystroke names the
-        // event — the "create → type the title" flow every calendar has. Seed
-        // the empty field + focus now (rather than only on the next sync's
-        // `ensure_form_bound`) so typing works immediately, even before a frame
-        // has re-bound the form. `ensure_form_bound` still runs next sync to
-        // seed the date/time pickers; it leaves the focus we set here alone.
         self.title_input.set_text("");
         self.location_input.set_text("");
         self.focus_field(FormField::Title);
         self.status = Some("New event".into());
+    }
+
+    /// Create a timed event spanning `[start_min, end_min]` minutes-of-day on
+    /// `day` and open it for editing — the timeline drag-to-create commit.
+    fn create_event_in_range(&mut self, day: NaiveDate, start_min: i64, end_min: i64, doc: &mut AutoCommit) {
+        let dur = (end_min - start_min).max(TIMELINE_SNAP_MIN);
+        let start_min = start_min.min(24 * 60 - dur).max(0);
+        let start = day.and_time(min_to_time(start_min));
+        let end = start + Duration::minutes(dur);
+        let ev = Event {
+            id: Uuid::new_v4(),
+            title: String::new(),
+            start,
+            end,
+            all_day: false,
+            location: String::new(),
+            color: self.model.next_event_order_color(),
+            recurrence: Recurrence::None,
+            reminder_min: Some(10),
+            calendar_id: None,
+            project: None,
+        };
+        self.spawn_event(ev, doc);
+        self.force_persist = true;
+        self.dirty = true;
+    }
+
+    /// Reschedule an existing event to a new day + start time, preserving its
+    /// duration — the timeline drag-to-move commit. Routed through the action
+    /// model so it replays byte-identically on peers.
+    fn move_event(&mut self, id: Id, day: NaiveDate, start_min: i64, dur_min: i64, doc: &mut AutoCommit) {
+        let start = day.and_time(min_to_time(start_min));
+        let end = start + Duration::minutes(dur_min.max(TIMELINE_SNAP_MIN));
+        let snap = if let Some(e) = self.model.event_mut(id) {
+            // An all-day event has no place on the timed grid; leave it alone.
+            if e.all_day {
+                None
+            } else {
+                e.start = start;
+                e.end = end;
+                Some(e.clone())
+            }
+        } else {
+            None
+        };
+        if let Some(snap) = snap {
+            self.perform_action(doc, crate::actions::upsert_event_action(&snap));
+            self.status = Some("Event rescheduled".into());
+            self.force_persist = true;
+            self.dirty = true;
+        }
+    }
+
+    // --- week/day timeline + agenda: scroll & drag input -----------------
+
+    /// Whether the calendar content (as opposed to a modal editor or an open
+    /// overlay sidebar) currently owns pointer input.
+    fn calendar_content_interactive(&self) -> bool {
+        self.content_rect.area() > 0.0
+            && !(self.detail_open && self.detail_rect.area() > 0.0)
+            && !(matches!(self.sidebar_mode, SidebarMode::Overlay) && self.sidebar_open)
+    }
+
+    /// Forward a raw event to one of the view scroll containers. Returns whether
+    /// it was consumed (a wheel that moved, or a scrollbar interaction).
+    #[allow(clippy::too_many_arguments)]
+    fn forward_to_scroll(
+        &mut self,
+        agenda: bool,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut handled = false;
+        let mut ft = *focus_target;
+        let scroll = if agenda { &mut self.agenda_scroll } else { &mut self.timeline_scroll };
+        scroll.handle_event(event, scale_factor, modifiers, state, path, &mut handled, &mut ft, node_id, taffy);
+        if handled {
+            *focus_target = ft;
+            self.dirty = true;
+        }
+        handled
+    }
+
+    /// Route mouse input to the active view's scroll container and — in the
+    /// week/day timeline — its drag-to-create / drag-to-move machine. Returns
+    /// `true` when the event was consumed.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_timeline_input(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        // A view/layout change out from under a live drag abandons it (no
+        // mutation happens until commit, so this is a clean cancel).
+        if self.timeline_drag.is_some() && !matches!(self.view, View::Week | View::Day) {
+            self.timeline_drag = None;
+        }
+        if !self.calendar_content_interactive() {
+            return false;
+        }
+
+        // Agenda: scroll only (no drag). A press that misses the bar falls
+        // through so the row hit-map still opens the event/task.
+        if matches!(self.view, View::Agenda) {
+            if matches!(
+                event,
+                WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { button: MouseButton::Left, .. }
+            ) {
+                let p = self.last_mouse;
+                if self.agenda_scroll.wants_pointer_capture() || self.view_rect().contains(p) {
+                    return self.forward_to_scroll(true, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy);
+                }
+            }
+            return false;
+        }
+
+        if !matches!(self.view, View::Week | View::Day) {
+            return false;
+        }
+
+        let area = self.view_rect();
+        let days = self.timeline_days();
+        let g = self.timeline_geom(area);
+        let body = g.body(area.x0, area.x1);
+        let p = self.last_mouse;
+
+        match event {
+            WindowEvent::MouseWheel { .. } => {
+                if area.contains(p) {
+                    return self.forward_to_scroll(false, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy);
+                }
+                false
+            }
+            WindowEvent::CursorMoved { .. } => {
+                // A scrollbar thumb drag owns every move until release.
+                if self.timeline_scroll.wants_pointer_capture() {
+                    return self.forward_to_scroll(false, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy);
+                }
+                // A live calendar drag updates its target.
+                if self.timeline_drag.is_some() {
+                    self.update_timeline_drag();
+                    self.dirty = true;
+                    return true;
+                }
+                // Otherwise let the bar track hover near the edge (never consumes).
+                if area.contains(p) {
+                    self.forward_to_scroll(false, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy);
+                }
+                false
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // Presses outside the scrolling grid (headers, gutter top) fall
+                // through to the normal hit-map path.
+                if !body.contains(p) {
+                    return false;
+                }
+                // Offer the press to the scrollbar first.
+                if self.forward_to_scroll(false, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy) {
+                    return true;
+                }
+                // Grab an existing block to move it, else carve a new event.
+                if let Some((id, s, en)) = self.timeline_event_at(area, &days, p) {
+                    let press_min = self.timeline_minute_at(&g, p.y);
+                    self.timeline_drag = Some(TimelineDrag::Move {
+                        id,
+                        origin: p,
+                        current: p,
+                        grab_off_min: (press_min - s).clamp(0, en - s),
+                        dur_min: (en - s).max(TIMELINE_SNAP_MIN),
+                        active: false,
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+                // Empty grid (in a day column, not the hour gutter) → carve a
+                // new event by dragging.
+                if p.x >= area.x0 + g.gutter {
+                    let col = self.timeline_col_at(area, days.len(), &g, p.x);
+                    self.timeline_drag = Some(TimelineDrag::Create {
+                        day: days[col],
+                        origin: p,
+                        current: p,
+                        active: false,
+                    });
+                    self.dirty = true;
+                    return true;
+                }
+                false
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                if self.timeline_scroll.wants_pointer_capture() {
+                    return self.forward_to_scroll(false, event, scale_factor, modifiers, state, path, focus_target, node_id, taffy);
+                }
+                if let Some(drag) = self.timeline_drag.take() {
+                    if drag.is_active() {
+                        self.commit_timeline_drag(drag, area, &days, state);
+                    } else if let Some(a) = self.hit_action_at(p) {
+                        // A press that never dragged is a plain click.
+                        self.apply_action(a, state);
+                    }
+                    self.dirty = true;
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Advance a pending timeline drag to the latest pointer position, promoting
+    /// it to a live drag once it clears [`DRAG_START_THRESHOLD_PX`].
+    fn update_timeline_drag(&mut self) {
+        let p = self.last_mouse;
+        let Some(drag) = &mut self.timeline_drag else { return };
+        drag.set_current(p);
+        if !drag.is_active() && drag.origin().distance(p) >= DRAG_START_THRESHOLD_PX {
+            drag.set_active(true);
+        }
+    }
+
+    /// Commit a completed (active) timeline drag through the action model.
+    fn commit_timeline_drag(&mut self, drag: TimelineDrag, area: Rect, days: &[NaiveDate], doc: &mut AutoCommit) {
+        match drag {
+            TimelineDrag::Create { .. } => {
+                if let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) {
+                    self.create_event_in_range(day, s, e, doc);
+                }
+            }
+            TimelineDrag::Move { .. } => {
+                if let Some((day, s, dur, id)) = self.timeline_move_target(area, days, &drag) {
+                    self.move_event(id, day, s, dur, doc);
+                }
+            }
+        }
     }
 
     // --- event form model edits -----------------------------------------
@@ -1615,6 +1980,17 @@ impl CalendarApp {
         // sidebar/flap.
         self.switcher_in_topbar = self.topbar_fits_switcher(self.content_rect.width());
 
+        // Point the active view's scroll container at the fresh geometry so a
+        // resize reflows the scroll extents (and re-clamps the offset) every
+        // frame rather than laying out once.
+        if self.content_rect.area() > 0.0 {
+            match self.view {
+                View::Week | View::Day => self.update_timeline_scroll(),
+                View::Agenda => self.update_agenda_scroll(),
+                View::Month => {}
+            }
+        }
+
         // Notes editor placement, derived from whichever detail rect is active.
         // The column width tracks the detail rect (capped for readability) so
         // the narrow single-pane screen fills its width instead of leaving a
@@ -1649,6 +2025,44 @@ impl CalendarApp {
             self.title_input.apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
             self.location_input.apply_layout_external(Rect::new(-10000.0, -10000.0, -9900.0, -9900.0));
         }
+    }
+
+    /// Point the timeline [`Scrollable`] at the current week/day geometry:
+    /// viewport rect + full-24h content height, seeding the initial work-day
+    /// scroll the first time the day is too tall to fit. Called from `relayout`.
+    fn update_timeline_scroll(&mut self) {
+        let area = self.view_rect();
+        let g = self.timeline_geom(area);
+        self.timeline_scroll.set_viewport_rect(g.body(area.x0, area.x1));
+        self.timeline_scroll.set_content_size(area.width() as f32, g.content_h as f32);
+        // Shots-only override: pin the scroll to a chosen hour so a screenshot
+        // can prove the full 24h is reachable (top/bottom of the day).
+        if let Some(hour) = self.shots_scroll_hour {
+            self.timeline_scroll.set_offset_y((hour * g.hour_h) as f32);
+            return;
+        }
+        if !self.timeline_scroll_seeded && self.timeline_scroll.vertical_overflows() {
+            // Open around the work day — or the current time when today is on
+            // screen — rather than at midnight.
+            let days = self.timeline_days();
+            let focus_hour = if days.contains(&self.today) {
+                let now = Local::now().naive_local();
+                (now.hour() as f64 + now.minute() as f64 / 60.0 - 1.0).max(0.0)
+            } else {
+                TIMELINE_INITIAL_HOUR
+            };
+            self.timeline_scroll.set_offset_y((focus_hour * g.hour_h) as f32);
+            self.timeline_scroll_seeded = true;
+        }
+    }
+
+    /// Point the agenda [`Scrollable`] at the current view geometry so a short
+    /// window pages through the upcoming days instead of clipping them.
+    fn update_agenda_scroll(&mut self) {
+        let area = self.view_rect();
+        let content_h = self.agenda_content_height();
+        self.agenda_scroll.set_viewport_rect(area);
+        self.agenda_scroll.set_content_size(area.width() as f32, content_h as f32);
     }
 
     /// Geometry of the centered modal editor card, sized to a comfortable
@@ -2803,6 +3217,140 @@ impl CalendarApp {
         hits
     }
 
+    // ── week / day timeline geometry + hit-testing ──────────────────────
+
+    /// Days shown in the current timeline view: the whole week, or a single day.
+    fn timeline_days(&self) -> Vec<NaiveDate> {
+        match self.view {
+            View::Day => vec![self.anchor],
+            _ => date::week_days(self.anchor),
+        }
+    }
+
+    /// Fixed geometry of the week/day timeline for the given view `area`. Pure
+    /// function of `area` so draw, scroll, hit-testing and drag all agree.
+    fn timeline_geom(&self, area: Rect) -> TimelineGeom {
+        let body_top = area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H;
+        let body_bottom = (area.y1 - 8.0).max(body_top + 40.0);
+        let viewport_h = (body_bottom - body_top).max(40.0);
+        // Every hour keeps at least the legible minimum; when the viewport can
+        // fit all 24 at that minimum the hours grow to fill it (no scroll),
+        // otherwise the body scrolls the full day.
+        let hour_h = (viewport_h / 24.0).max(TIMELINE_MIN_HOUR_H);
+        let content_h = hour_h * 24.0;
+        TimelineGeom { gutter: 56.0, body_top, body_bottom, hour_h, content_h }
+    }
+
+    /// Width of one day column in the timeline.
+    fn timeline_col_w(&self, area: Rect, days_len: usize, g: &TimelineGeom) -> f64 {
+        ((area.width() - g.gutter) / days_len.max(1) as f64).max(1.0)
+    }
+
+    /// Column index for a screen x, clamped into the grid.
+    fn timeline_col_at(&self, area: Rect, days_len: usize, g: &TimelineGeom, x: f64) -> usize {
+        let grid_x0 = area.x0 + g.gutter;
+        let col_w = self.timeline_col_w(area, days_len, g);
+        (((x - grid_x0) / col_w).floor() as i64).clamp(0, days_len as i64 - 1) as usize
+    }
+
+    /// Minute-of-day (0..=1440) for a screen y, honouring the scroll offset and
+    /// clamped to the content — so a drag past the body edge still resolves.
+    fn timeline_minute_at(&self, g: &TimelineGeom, y: f64) -> i64 {
+        let offset = self.timeline_scroll.offset_y() as f64;
+        let content_y = (y - g.body_top + offset).clamp(0.0, g.content_h);
+        (((content_y / g.hour_h) * 60.0).round() as i64).clamp(0, 24 * 60)
+    }
+
+    /// Screen rect for an event block on column `col` spanning `[start_min,
+    /// end_min]` minutes-of-day, at the current scroll offset.
+    fn timeline_block_rect(
+        &self,
+        area: Rect,
+        days_len: usize,
+        g: &TimelineGeom,
+        col: usize,
+        start_min: i64,
+        end_min: i64,
+    ) -> Rect {
+        let col_w = self.timeline_col_w(area, days_len, g);
+        let grid_x0 = area.x0 + g.gutter;
+        let x0 = grid_x0 + col_w * col as f64;
+        let offset = self.timeline_scroll.offset_y() as f64;
+        let top = g.body_top + (start_min as f64 / 60.0) * g.hour_h - offset;
+        let bottom = g.body_top + (end_min as f64 / 60.0) * g.hour_h - offset;
+        Rect::new(x0 + 3.0, top, x0 + col_w - 3.0, bottom.max(top + 16.0))
+    }
+
+    /// The timed event whose block contains `p`, with its minute-of-day span —
+    /// the grab target for a move drag. All-day events (which live in the fixed
+    /// header strip, not the scrolling grid) are excluded.
+    fn timeline_event_at(&self, area: Rect, days: &[NaiveDate], p: Point) -> Option<(Id, i64, i64)> {
+        let g = self.timeline_geom(area);
+        let grid_x0 = area.x0 + g.gutter;
+        if p.x < grid_x0 || p.x > area.x1 {
+            return None;
+        }
+        let col = self.timeline_col_at(area, days.len(), &g, p.x);
+        let day = days[col];
+        let spans: Vec<(Id, i64, i64)> = self
+            .visible_events_on(day)
+            .iter()
+            .filter(|e| !e.all_day)
+            .map(|e| {
+                let s = e.start.hour() as i64 * 60 + e.start.minute() as i64;
+                let en = e.end.hour() as i64 * 60 + e.end.minute() as i64;
+                (e.id, s, en.max(s + TIMELINE_SNAP_MIN))
+            })
+            .collect();
+        // Reverse so the topmost (last-drawn) block wins, matching the hit-map.
+        for (id, s, en) in spans.into_iter().rev() {
+            if self.timeline_block_rect(area, days.len(), &g, col, s, en).contains(p) {
+                return Some((id, s, en));
+            }
+        }
+        None
+    }
+
+    /// Resolve a live create drag to `(day, start_min, end_min)` — snapped to the
+    /// drag grid and ordered so `start <= end`, with a one-slot minimum span.
+    fn timeline_create_range(
+        &self,
+        area: Rect,
+        _days: &[NaiveDate],
+        drag: &TimelineDrag,
+    ) -> Option<(NaiveDate, i64, i64)> {
+        let TimelineDrag::Create { day, origin, current, .. } = drag else {
+            return None;
+        };
+        let g = self.timeline_geom(area);
+        let a = snap_minute(self.timeline_minute_at(&g, origin.y));
+        let b = snap_minute(self.timeline_minute_at(&g, current.y));
+        let (s, mut e) = (a.min(b), a.max(b));
+        if e - s < TIMELINE_SNAP_MIN {
+            e = (s + TIMELINE_SNAP_MIN).min(24 * 60);
+        }
+        Some((*day, s, e))
+    }
+
+    /// Resolve a live move drag to `(new_day, new_start_min, dur_min, id)` —
+    /// column under the cursor, start snapped, duration preserved and clamped
+    /// so the whole event stays within the day.
+    fn timeline_move_target(
+        &self,
+        area: Rect,
+        days: &[NaiveDate],
+        drag: &TimelineDrag,
+    ) -> Option<(NaiveDate, i64, i64, Id)> {
+        let TimelineDrag::Move { id, current, grab_off_min, dur_min, .. } = drag else {
+            return None;
+        };
+        let g = self.timeline_geom(area);
+        let col = self.timeline_col_at(area, days.len(), &g, current.x);
+        let cursor_min = self.timeline_minute_at(&g, current.y);
+        let start = snap_minute(cursor_min - grab_off_min).clamp(0, (24 * 60 - dur_min).max(0));
+        Some((days[col], start, *dur_min, *id))
+    }
+
     fn draw_timeline(
         &self,
         scene: &mut Scene,
@@ -2816,21 +3364,19 @@ impl CalendarApp {
         let mut hits = Vec::new();
         fill_rect(scene, t, c.surfaces.base, area);
 
-        let gutter = 56.0;
-        let head_h = 56.0;
-        let allday_h = 26.0;
-        let grid_x0 = area.x0 + gutter;
-        let col_w = (area.width() - gutter) / days.len() as f64;
-        let hours = (DAY_END - DAY_START) as f64;
-        let body_top = area.y0 + head_h + allday_h;
-        let body_h = (area.y1 - body_top - 8.0).max(40.0);
-        let hour_h = body_h / hours;
+        let g = self.timeline_geom(area);
+        let grid_x0 = area.x0 + g.gutter;
+        let col_w = self.timeline_col_w(area, days.len(), &g);
+        let offset = self.timeline_scroll.offset_y() as f64;
+        // content minute-of-day → screen y.
+        let y_at = |min: f64| g.body_top + (min / 60.0) * g.hour_h - offset;
 
-        // Day headers + all-day strip.
+        // Day headers + all-day strip — fixed; they do not scroll with the grid.
         for (i, day) in days.iter().enumerate() {
             let x0 = grid_x0 + col_w * i as f64;
-            let head = Rect::new(x0, area.y0, x0 + col_w, area.y0 + head_h);
+            let head = Rect::new(x0, area.y0, x0 + col_w, area.y0 + TIMELINE_HEAD_H);
             let is_today = *day == self.today;
+            let weekend = day.weekday().num_days_from_monday() >= 5;
             if is_today {
                 fill_rect(scene, t, c.accent[5].with_alpha(0.10), head);
             }
@@ -2838,7 +3384,7 @@ impl CalendarApp {
                 scene,
                 date::WEEKDAY_SHORT[day.weekday().num_days_from_monday() as usize],
                 11.0,
-                if i >= 5 { c.text_dim } else { c.neutral[7] },
+                if weekend { c.text_dim } else { c.neutral[7] },
                 t * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
                 None,
             );
@@ -2854,14 +3400,19 @@ impl CalendarApp {
             );
             hits.push((head, Action::OpenDay(*day)));
 
-            // all-day chips
+            // all-day chips (first shown in the fixed strip).
             let allday: Vec<(Id, String, Palette)> = self
                 .visible_events_on(*day)
                 .iter()
                 .filter(|e| e.all_day)
                 .map(|e| (e.id, e.display_title().to_string(), e.color))
                 .collect();
-            let strip = Rect::new(x0 + 2.0, area.y0 + head_h + 2.0, x0 + col_w - 2.0, area.y0 + head_h + allday_h - 2.0);
+            let strip = Rect::new(
+                x0 + 2.0,
+                area.y0 + TIMELINE_HEAD_H + 2.0,
+                x0 + col_w - 2.0,
+                area.y0 + TIMELINE_HEAD_H + TIMELINE_ALLDAY_H - 2.0,
+            );
             if !allday.is_empty() {
                 let (id, title, color) = &allday[0];
                 fill_round(scene, t, color.color(theme), strip, 4.0);
@@ -2877,15 +3428,35 @@ impl CalendarApp {
                 hits.push((strip, Action::OpenEvent(*id)));
             }
         }
+        // Separator under the fixed header band.
+        stroke_line(
+            scene,
+            t,
+            c.border_standard,
+            Point::new(area.x0, g.body_top),
+            Point::new(area.x1, g.body_top),
+            0.5,
+        );
 
-        // Hour gridlines + labels.
-        for h in 0..=(hours as i64) {
-            let y = body_top + hour_h * h as f64;
-            stroke_line(scene, t, c.border_standard.with_alpha(0.5), Point::new(grid_x0, y), Point::new(area.x1, y), 0.5);
-            if h < hours as i64 {
+        // ── scrolling body: hour grid + timed blocks + now-line + drag ghost ──
+        let body = g.body(area.x0, area.x1);
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &body);
+
+        // Hour gridlines + gutter labels (00:00 … 24:00).
+        for h in 0..=24 {
+            let y = y_at(h as f64 * 60.0);
+            stroke_line(
+                scene,
+                t,
+                c.border_standard.with_alpha(0.5),
+                Point::new(grid_x0, y),
+                Point::new(area.x1, y),
+                0.5,
+            );
+            if h < 24 {
                 tr.draw_text(
                     scene,
-                    &format!("{:02}:00", DAY_START + h),
+                    &format!("{h:02}:00"),
                     10.0,
                     c.text_dim,
                     t * Affine::translate((area.x0 + 12.0, y + 2.0)),
@@ -2893,27 +3464,36 @@ impl CalendarApp {
                 );
             }
         }
-        // vertical column separators
+        // Vertical column separators, spanning the body viewport.
         for i in 0..=days.len() {
             let x = grid_x0 + col_w * i as f64;
-            stroke_line(scene, t, c.border_standard.with_alpha(0.5), Point::new(x, body_top), Point::new(x, area.y1 - 8.0), 0.5);
+            stroke_line(
+                scene,
+                t,
+                c.border_standard.with_alpha(0.5),
+                Point::new(x, body.y0),
+                Point::new(x, body.y1),
+                0.5,
+            );
         }
 
         // "now" line if today is in range.
         let now = Local::now().naive_local();
         if let Some(i) = days.iter().position(|d| *d == self.today) {
-            let frac = ((now.hour() as i64 - DAY_START) as f64 + now.minute() as f64 / 60.0) / hours;
-            if (0.0..=1.0).contains(&frac) {
-                let y = body_top + body_h * frac;
-                let x0 = grid_x0 + col_w * i as f64;
-                stroke_line(scene, t, c.semantic.danger, Point::new(x0, y), Point::new(x0 + col_w, y), 2.0);
-                scene.fill(Fill::NonZero, t, c.semantic.danger, None, &Circle::new(Point::new(x0, y), 3.5));
-            }
+            let y = y_at(now.hour() as f64 * 60.0 + now.minute() as f64);
+            let x0 = grid_x0 + col_w * i as f64;
+            stroke_line(scene, t, c.semantic.danger, Point::new(x0, y), Point::new(x0 + col_w, y), 2.0);
+            scene.fill(Fill::NonZero, t, c.semantic.danger, None, &Circle::new(Point::new(x0, y), 3.5));
         }
+
+        // The event currently being moved is drawn only as its drag ghost.
+        let moving_id = match self.timeline_drag {
+            Some(TimelineDrag::Move { id, active: true, .. }) => Some(id),
+            _ => None,
+        };
 
         // Timed event blocks.
         for (i, day) in days.iter().enumerate() {
-            let x0 = grid_x0 + col_w * i as f64;
             let timed: Vec<(Id, String, String, Palette, NaiveDateTime, NaiveDateTime)> = self
                 .visible_events_on(*day)
                 .iter()
@@ -2921,19 +3501,16 @@ impl CalendarApp {
                 .map(|e| (e.id, e.display_title().to_string(), e.location.clone(), e.color, e.start, e.end))
                 .collect();
             for (id, title, loc, color, start, end) in timed {
-                let s = (start.hour() as i64 - DAY_START) as f64 + start.minute() as f64 / 60.0;
-                let e = (end.hour() as i64 - DAY_START) as f64 + end.minute() as f64 / 60.0;
-                let top = body_top + (s.max(0.0)) * hour_h;
-                let bottom = body_top + (e.min(hours)) * hour_h;
-                let block = Rect::new(x0 + 3.0, top, x0 + col_w - 3.0, (bottom).max(top + 16.0));
+                if Some(id) == moving_id {
+                    continue;
+                }
+                let s_min = start.hour() as i64 * 60 + start.minute() as i64;
+                let e_min = (end.hour() as i64 * 60 + end.minute() as i64).max(s_min + TIMELINE_SNAP_MIN);
+                let block = self.timeline_block_rect(area, days.len(), &g, i, s_min, e_min);
                 let col = color.color(theme);
                 fill_round(scene, t, col.with_alpha(0.22), block, 6.0);
                 fill_round(scene, t, col, Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1), 2.0);
                 scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &block);
-                // Single line, ellipsized to the block width rather than wrapped —
-                // a long title must never spill onto the time/location subtitle
-                // row below it, and it degrades to "Team stan…" instead of a hard
-                // mid-glyph slice.
                 let text_w = block.width() - 20.0;
                 let title_line = elide_to_width(tr, &title, 11.0, text_w);
                 tr.draw_text(
@@ -2946,9 +3523,6 @@ impl CalendarApp {
                 );
                 if block.height() > 34.0 {
                     let sub = format!("{}–{} {}", date::fmt_time(&start), date::fmt_time(&end), loc);
-                    // Single ellipsized line too — a short block has only one row
-                    // of vertical space for the subtitle, so wrapping the location
-                    // would spill past the block bottom.
                     let sub_line = elide_to_width(tr, &sub, 10.0, text_w);
                     tr.draw_text(
                         scene,
@@ -2960,11 +3534,98 @@ impl CalendarApp {
                     );
                 }
                 scene.pop_layer();
-                hits.push((block, Action::OpenEvent(id)));
+                // Clamp the click target to the visible body so a block scrolled
+                // up under the header can't be clicked through it.
+                let vis = block.intersect(body);
+                if vis.width() > 0.0 && vis.height() > 0.0 {
+                    hits.push((vis, Action::OpenEvent(id)));
+                }
             }
         }
 
+        // Live drag preview (create / move), inside the body clip.
+        self.draw_timeline_drag_ghost(scene, t, tr, theme, area, days, &g);
+
+        scene.pop_layer();
+
+        // Shared overlay scrollbar composited on top of the clipped body.
+        self.timeline_scroll.draw_bar_overlay(scene, t, theme);
+
         hits
+    }
+
+    /// Paint the on-canvas preview of a live timeline drag: a translucent block
+    /// spanning the carved-out range (create) or the event at its new slot
+    /// (move), with a time label.
+    fn draw_timeline_drag_ghost(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        days: &[NaiveDate],
+        g: &TimelineGeom,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some(drag) = self.timeline_drag else { return };
+        if !drag.is_active() {
+            return;
+        }
+        let (col, s, e, title, fill, stroke) = match drag {
+            TimelineDrag::Create { .. } => {
+                let Some((day, s, e)) = self.timeline_create_range(area, days, &drag) else { return };
+                let Some(col) = days.iter().position(|d| *d == day) else { return };
+                (col, s, e, TITLE_PLACEHOLDER.to_string(), c.accent[5].with_alpha(0.28), c.accent[5])
+            }
+            TimelineDrag::Move { id, .. } => {
+                let Some((day, s, dur, _)) = self.timeline_move_target(area, days, &drag) else { return };
+                let Some(col) = days.iter().position(|d| *d == day) else { return };
+                let Some(ev) = self.model.event(id) else { return };
+                let col_c = ev.color.color(theme);
+                (col, s, s + dur, ev.display_title().to_string(), col_c.with_alpha(0.55), col_c)
+            }
+        };
+        let block = self.timeline_block_rect(area, days.len(), g, col, s, e);
+        fill_round(scene, t, fill, block, 6.0);
+        stroke_round(scene, t, stroke, block, 6.0, 1.5);
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &block);
+        let title_line = elide_to_width(tr, &title, 11.0, block.width() - 16.0);
+        tr.draw_text(scene, &title_line, 11.0, c.neutral[9], t * Affine::translate((block.x0 + 8.0, block.y0 + 4.0)), None);
+        if block.height() > 30.0 {
+            tr.draw_text(
+                scene,
+                &format!("{} – {}", fmt_min(s), fmt_min(e)),
+                10.0,
+                c.text_dim,
+                t * Affine::translate((block.x0 + 8.0, block.y0 + 18.0)),
+                None,
+            );
+        }
+        scene.pop_layer();
+    }
+
+    /// Total content height of the agenda list, matching the row increments in
+    /// [`Self::draw_agenda`], so the scroll extent is exact.
+    fn agenda_content_height(&self) -> f64 {
+        let from = self.anchor;
+        let to = self.anchor + Duration::days(21);
+        let mut y = 18.0;
+        let mut day = from;
+        while day <= to {
+            let events = self.visible_events_on(day).len();
+            let tasks = self
+                .model
+                .tasks
+                .iter()
+                .filter(|tk| tk.due == Some(day) && tk.parent.is_none())
+                .count();
+            if events + tasks > 0 {
+                y += 26.0 + 32.0 * (events + tasks) as f64 + 12.0;
+            }
+            day += Duration::days(1);
+        }
+        y + 8.0
     }
 
     fn draw_agenda(
@@ -2981,11 +3642,21 @@ impl CalendarApp {
 
         let from = self.anchor;
         let to = self.anchor + Duration::days(21);
-        let mut y = area.y0 + 18.0;
         let x0 = area.x0 + 24.0;
+        // Wide enough to give the location its own right-hand column; below it
+        // the row keeps time + title and drops the location so nothing overlaps.
+        let show_loc = area.width() >= 520.0;
+        let offset = self.agenda_scroll.offset_y() as f64;
+        // Content-space cursor, mapped to the screen through the scroll offset.
+        let mut y = area.y0 + 18.0 - offset;
+        let mut drew_any = false;
+
+        // Row helper: cull rows fully outside the viewport (still advance `y`),
+        // otherwise draw and register a click target clamped to the viewport.
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &area);
 
         let mut day = from;
-        while day <= to && y < area.y1 - 20.0 {
+        while day <= to {
             let evs = self.visible_events_on(day);
             let tasks: Vec<_> = self
                 .model
@@ -2997,97 +3668,109 @@ impl CalendarApp {
                 day += Duration::days(1);
                 continue;
             }
+            drew_any = true;
 
             // Date heading.
-            let is_today = day == self.today;
-            let head_col = if is_today { c.accent[5] } else { c.neutral[8] };
-            tr.draw_text(
-                scene,
-                &date::relative_label(day, self.today),
-                15.0,
-                head_col,
-                t * Affine::translate((x0, y)),
-                None,
-            );
-            tr.draw_text(
-                scene,
-                &date::fmt_day_long(day),
-                12.0,
-                c.text_dim,
-                t * Affine::translate((x0 + 120.0, y + 2.0)),
-                None,
-            );
+            if y + 24.0 > area.y0 && y < area.y1 {
+                let is_today = day == self.today;
+                let head_col = if is_today { c.accent[5] } else { c.neutral[8] };
+                tr.draw_text(
+                    scene,
+                    &date::relative_label(day, self.today),
+                    15.0,
+                    head_col,
+                    t * Affine::translate((x0, y)),
+                    None,
+                );
+                tr.draw_text(
+                    scene,
+                    &date::fmt_day_long(day),
+                    12.0,
+                    c.text_dim,
+                    t * Affine::translate((x0 + 120.0, y + 2.0)),
+                    None,
+                );
+            }
             y += 26.0;
 
             for e in &evs {
-                if y > area.y1 - 18.0 {
-                    break;
-                }
                 let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, row, 6.0);
-                }
-                let col = e.color.color(theme);
-                fill_round(scene, t, col, Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0), 2.0);
-                let time = if e.all_day { "All day".to_string() } else { date::fmt_time(&e.start) };
-                tr.draw_text(scene, &time, 12.0, c.text_dim, t * Affine::translate((row.x0 + 16.0, y + 7.0)), None);
-                tr.draw_text(
-                    scene,
-                    &e.title,
-                    13.0,
-                    c.neutral[9],
-                    t * Affine::translate((row.x0 + 90.0, y + 7.0)),
-                    Some((row.width() - 220.0) as f32),
-                );
-                if !e.location.is_empty() {
+                if row.y1 > area.y0 && row.y0 < area.y1 {
+                    if row.contains(self.last_mouse) {
+                        fill_round(scene, t, c.surface_white_5, row, 6.0);
+                    }
+                    let col = e.color.color(theme);
+                    fill_round(scene, t, col, Rect::new(row.x0, row.y0 + 4.0, row.x0 + 4.0, row.y1 - 4.0), 2.0);
+                    let time = if e.all_day { "All day".to_string() } else { date::fmt_time(&e.start) };
+                    tr.draw_text(scene, &time, 12.0, c.text_dim, t * Affine::translate((row.x0 + 16.0, y + 7.0)), None);
+                    let title_max = if show_loc && !e.location.is_empty() {
+                        row.width() - 220.0
+                    } else {
+                        row.width() - 104.0
+                    };
                     tr.draw_text(
                         scene,
-                        &e.location,
-                        12.0,
-                        c.text_dim,
-                        t * Affine::translate((row.x1 - 130.0, y + 7.0)),
-                        Some(126.0),
+                        &e.title,
+                        13.0,
+                        c.neutral[9],
+                        t * Affine::translate((row.x0 + 90.0, y + 7.0)),
+                        Some(title_max.max(40.0) as f32),
                     );
+                    if show_loc && !e.location.is_empty() {
+                        tr.draw_text(
+                            scene,
+                            &e.location,
+                            12.0,
+                            c.text_dim,
+                            t * Affine::translate((row.x1 - 130.0, y + 7.0)),
+                            Some(126.0),
+                        );
+                    }
+                    if let Some(hit) = clamp_hit(row, area) {
+                        hits.push((hit, Action::OpenEvent(e.id)));
+                    }
                 }
-                hits.push((row, Action::OpenEvent(e.id)));
                 y += 32.0;
             }
             for tk in &tasks {
-                if y > area.y1 - 18.0 {
-                    break;
-                }
                 let row = Rect::new(x0, y, area.x1 - 24.0, y + 30.0);
-                if row.contains(self.last_mouse) {
-                    fill_round(scene, t, c.surface_white_5, row, 6.0);
-                }
-                // Open the task on a plain row click; checkbox + label toggle
-                // completion (pushed on top so they win the reverse hit-scan).
-                hits.push((row, Action::OpenTask(tk.id)));
-                let box_rect = Rect::new(row.x0 + 8.0, row.center().y - 8.0, row.x0 + 24.0, row.center().y + 8.0);
-                draw_checkbox(scene, t, theme, box_rect, tk.done);
-                let col = if tk.done { c.text_dim } else { c.neutral[9] };
-                let label_x0 = row.x0 + 34.0;
-                tr.draw_text(
-                    scene,
-                    &tk.title,
-                    13.0,
-                    col,
-                    t * Affine::translate((label_x0, y + 7.0)),
-                    Some((row.width() - 160.0) as f32),
-                );
-                let label_w = tr.measure(&tk.title, 13.0, None).0 as f64;
-                if tk.done {
-                    stroke_line(scene, t, c.text_dim, Point::new(label_x0, row.center().y), Point::new((label_x0 + label_w).min(row.x1 - 120.0), row.center().y), 1.0);
-                }
-                let complete = Rect::new(
-                    row.x0,
-                    row.y0,
-                    (label_x0 + label_w.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
-                    row.y1,
-                );
-                hits.push((complete, Action::ToggleTask(tk.id)));
-                if tk.priority != Priority::None {
-                    tr.draw_text(scene, tk.priority.flag(), 11.0, tk.priority.color(theme), t * Affine::translate((row.x1 - 30.0, y + 7.0)), None);
+                if row.y1 > area.y0 && row.y0 < area.y1 {
+                    if row.contains(self.last_mouse) {
+                        fill_round(scene, t, c.surface_white_5, row, 6.0);
+                    }
+                    // Open the task on a plain row click; checkbox + label toggle
+                    // completion (pushed on top so they win the reverse hit-scan).
+                    if let Some(hit) = clamp_hit(row, area) {
+                        hits.push((hit, Action::OpenTask(tk.id)));
+                    }
+                    let box_rect = Rect::new(row.x0 + 8.0, row.center().y - 8.0, row.x0 + 24.0, row.center().y + 8.0);
+                    draw_checkbox(scene, t, theme, box_rect, tk.done);
+                    let col = if tk.done { c.text_dim } else { c.neutral[9] };
+                    let label_x0 = row.x0 + 34.0;
+                    tr.draw_text(
+                        scene,
+                        &tk.title,
+                        13.0,
+                        col,
+                        t * Affine::translate((label_x0, y + 7.0)),
+                        Some((row.width() - 160.0).max(40.0) as f32),
+                    );
+                    let label_w = tr.measure(&tk.title, 13.0, None).0 as f64;
+                    if tk.done {
+                        stroke_line(scene, t, c.text_dim, Point::new(label_x0, row.center().y), Point::new((label_x0 + label_w).min(row.x1 - 120.0), row.center().y), 1.0);
+                    }
+                    let complete = Rect::new(
+                        row.x0,
+                        row.y0,
+                        (label_x0 + label_w.min(row.width() - 160.0) + 8.0).min(row.x1 - 40.0),
+                        row.y1,
+                    );
+                    if let Some(hit) = clamp_hit(complete, area) {
+                        hits.push((hit, Action::ToggleTask(tk.id)));
+                    }
+                    if tk.priority != Priority::None {
+                        tr.draw_text(scene, tk.priority.flag(), 11.0, tk.priority.color(theme), t * Affine::translate((row.x1 - 30.0, y + 7.0)), None);
+                    }
                 }
                 y += 32.0;
             }
@@ -3095,7 +3778,9 @@ impl CalendarApp {
             day += Duration::days(1);
         }
 
-        if y <= area.y0 + 18.0 {
+        scene.pop_layer();
+
+        if !drew_any {
             center_text(
                 scene,
                 tr,
@@ -3106,6 +3791,9 @@ impl CalendarApp {
                 t,
             );
         }
+
+        // Shared overlay scrollbar composited on top of the clipped list.
+        self.agenda_scroll.draw_bar_overlay(scene, t, theme);
         hits
     }
 
@@ -3812,6 +4500,14 @@ impl Widget for CalendarApp {
             return;
         }
 
+        // --- Week/day timeline + agenda: scroll and drag ------------------
+        // Owns mouse input inside the scrolling views (wheel, scrollbar,
+        // drag-to-create / drag-to-move) before the generic hit-map path.
+        if self.handle_timeline_input(event, scale_factor, modifiers, state, path, focus_target, _node_id, taffy) {
+            self.dirty = true;
+            return;
+        }
+
         // Keyboard.
         if let WindowEvent::KeyboardInput {
             event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
@@ -3821,9 +4517,15 @@ impl Widget for CalendarApp {
             let field_focused = self.title_input.is_focused() || self.location_input.is_focused();
             let notes_focused = editor_active && self.notes_editor.is_focused();
 
-            // Escape: blur a focused field first, then dismiss the overlay
-            // flap, then pop the narrow detail screen, then close the detail.
+            // Escape: cancel a live timeline drag first (it commits nothing),
+            // then blur a focused field, then dismiss the overlay flap, then pop
+            // the narrow detail screen, then close the detail.
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
+                if self.timeline_drag.take().is_some() {
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
                 if field_focused {
                     self.title_input.set_focus(false);
                     self.location_input.set_focus(false);
@@ -4012,6 +4714,8 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
+            || self.timeline_scroll.needs_redraw()
+            || self.agenda_scroll.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {
@@ -4019,6 +4723,8 @@ impl Widget for CalendarApp {
         self.notes_editor.mark_drawn();
         self.title_input.mark_drawn();
         self.location_input.mark_drawn();
+        self.timeline_scroll.mark_drawn();
+        self.agenda_scroll.mark_drawn();
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4034,8 +4740,11 @@ impl Widget for CalendarApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop ticking while a background CalDAV pull is running
         // so its result is drained in `sync` the moment it arrives, without
-        // waiting for an unrelated input event.
+        // waiting for an unrelated input event — and while a scroll container is
+        // still settling momentum / fading its bar.
         self.syncing
+            || self.timeline_scroll.needs_animation_frame()
+            || self.agenda_scroll.needs_animation_frame()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -4043,6 +4752,8 @@ impl Widget for CalendarApp {
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
+            || self.timeline_scroll.is_layout_dirty()
+            || self.agenda_scroll.is_layout_dirty()
     }
 
     /// While the event/task editor is open it OWNS the keyboard. Reporting the
@@ -4198,6 +4909,31 @@ fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, r: Rect, done: boo
     } else {
         stroke_round(scene, t, c.neutral[5], r, 4.0, 1.6);
     }
+}
+
+/// Round a minute-of-day to the timeline's drag snap grid, clamped to the day.
+fn snap_minute(m: i64) -> i64 {
+    let step = TIMELINE_SNAP_MIN;
+    (((m + step / 2) / step) * step).clamp(0, 24 * 60)
+}
+
+/// Format a minute-of-day as `HH:MM` (24:00 for the end of the day).
+fn fmt_min(min: i64) -> String {
+    let m = min.clamp(0, 24 * 60);
+    format!("{:02}:{:02}", m / 60, m % 60)
+}
+
+/// Intersect a click target with the visible viewport; `None` when the row is
+/// scrolled entirely out of view (so it can't be clicked through the edge).
+fn clamp_hit(row: Rect, viewport: Rect) -> Option<Rect> {
+    let r = row.intersect(viewport);
+    (r.width() > 0.0 && r.height() > 0.0).then_some(r)
+}
+
+/// A minute-of-day (0..=1439) as a wall-clock time.
+fn min_to_time(min: i64) -> NaiveTime {
+    let m = min.clamp(0, 24 * 60 - 1);
+    NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap()
 }
 
 fn draw_count_badge(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, cx: f64, cy: f64, n: usize) {
@@ -5166,6 +5902,30 @@ mod tests {
             });
         }
 
+        fn mouse_move(&mut self, p: Point) {
+            let device_id = unsafe { std::mem::zeroed() };
+            self.dispatch(&winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            });
+        }
+        fn mouse_button(&mut self, state: ElementState) {
+            let device_id = unsafe { std::mem::zeroed() };
+            self.dispatch(&winit::event::WindowEvent::MouseInput {
+                device_id,
+                state,
+                button: MouseButton::Left,
+            });
+        }
+
+        /// A full press → drag → release gesture through the real event path.
+        fn drag(&mut self, from: Point, to: Point) {
+            self.mouse_move(from);
+            self.mouse_button(ElementState::Pressed);
+            self.mouse_move(to);
+            self.mouse_button(ElementState::Released);
+        }
+
         /// Press a single character through the real keyboard path.
         fn type_char(&mut self, ch: &str) {
             self.dispatch(&char_press(ch));
@@ -5184,6 +5944,147 @@ mod tests {
                 .find(|(_, a)| pred(a))
                 .map(|(r, _)| r.center())
         }
+    }
+
+    #[test]
+    fn week_timeline_keeps_min_slot_height_and_scrolls_the_full_day() {
+        // The reported bug: a short window squashed the fixed 06:00–21:00 slots
+        // and hid everything outside them. Fixed: every hour keeps at least the
+        // legible minimum, the grid spans the full 24h, and the body scrolls.
+        let mut h = Harness::new(1000, 560);
+        h.app.shots_show_calendar();
+        h.app.view = View::Week;
+        h.relayout();
+
+        let g = h.app.timeline_geom(h.app.view_rect());
+        assert!(
+            (g.hour_h - TIMELINE_MIN_HOUR_H).abs() < 0.001,
+            "a short window pins the hour height to the legible minimum, got {}",
+            g.hour_h
+        );
+        assert!(
+            (g.content_h - 24.0 * TIMELINE_MIN_HOUR_H).abs() < 0.001,
+            "the grid content spans the full 24 hours, got {}",
+            g.content_h
+        );
+        assert!(
+            h.app.timeline_scroll.vertical_overflows(),
+            "the full day is taller than the viewport, so it scrolls"
+        );
+        let vp = (g.body_bottom - g.body_top) as f32;
+        assert!(
+            g.content_h as f32 - vp > 0.0,
+            "there is real scroll range (00:00 … 24:00 both reachable)"
+        );
+
+        // A tall window instead grows the hours to fill and stops scrolling.
+        let mut tall = Harness::new(1000, 2000);
+        tall.app.shots_show_calendar();
+        tall.app.view = View::Week;
+        tall.relayout();
+        let gt = tall.app.timeline_geom(tall.app.view_rect());
+        assert!(
+            gt.hour_h > TIMELINE_MIN_HOUR_H,
+            "a tall window grows the hours to fill the space, got {}",
+            gt.hour_h
+        );
+        assert!(
+            !tall.app.timeline_scroll.vertical_overflows(),
+            "the whole day fits, so nothing scrolls"
+        );
+    }
+
+    #[test]
+    fn dragging_empty_timeline_grid_creates_and_opens_an_event() {
+        let mut h = Harness::new(1000, 640);
+        h.app.shots_show_calendar();
+        h.app.view = View::Week;
+        h.relayout();
+        // Pin the scroll to the top so an early, empty slot is on screen.
+        h.app.timeline_scroll.set_offset_y(0.0);
+        h.relayout();
+
+        let area = h.app.view_rect();
+        let g = h.app.timeline_geom(area);
+        let days = h.app.timeline_days();
+        let col = 0usize;
+        let grid_x0 = area.x0 + g.gutter;
+        let col_w = h.app.timeline_col_w(area, days.len(), &g);
+        let x = grid_x0 + col_w * col as f64 + col_w * 0.5;
+        let offset = h.app.timeline_scroll.offset_y() as f64;
+        let y_at = |hour: f64| g.body_top + hour * g.hour_h - offset;
+
+        let ids_before: HashSet<Id> = h.app.model.events.iter().map(|e| e.id).collect();
+        // Drag 03:00 → 05:00 in the first column (empty in the demo seed).
+        h.drag(Point::new(x, y_at(3.0)), Point::new(x, y_at(5.0)));
+
+        let new_ev = h
+            .app
+            .model
+            .events
+            .iter()
+            .find(|e| !ids_before.contains(&e.id))
+            .expect("a drag across empty grid creates one event");
+        assert_eq!(new_ev.start.date(), days[col], "created on the dragged column's day");
+        assert_eq!(new_ev.start.time(), min_to_time(3 * 60), "starts at the drag origin (03:00)");
+        assert_eq!(
+            (new_ev.end - new_ev.start).num_minutes(),
+            120,
+            "spans the dragged range (03:00–05:00)"
+        );
+        assert_eq!(h.app.selection, Some(Sel::Event(new_ev.id)), "the new event is selected");
+        assert!(h.app.detail_open, "the event editor opened for the new event");
+    }
+
+    #[test]
+    fn dragging_an_event_reschedules_it_through_the_action_model() {
+        // Tall window so the whole day fits at offset 0 and every block sits at
+        // its true position.
+        let mut h = Harness::new(1200, 1900);
+        h.app.shots_show_calendar();
+        h.app.view = View::Week;
+        h.relayout();
+
+        let today = h.app.today;
+        let (id, start0, dur0) = {
+            let ev = h
+                .app
+                .model
+                .events
+                .iter()
+                .find(|e| e.title == "Design review")
+                .expect("seeded 11:00 event present");
+            (ev.id, ev.start, (ev.end - ev.start).num_minutes())
+        };
+        assert_eq!(start0.time(), min_to_time(11 * 60));
+
+        let area = h.app.view_rect();
+        let g = h.app.timeline_geom(area);
+        let days = h.app.timeline_days();
+        let col = days.iter().position(|d| *d == today).expect("today is in the week");
+        let block = h.app.timeline_block_rect(area, days.len(), &g, col, 11 * 60, 12 * 60);
+        let x = block.center().x;
+        // Grab near the block top and drag down two hours.
+        let from = Point::new(x, block.y0 + 3.0);
+        let to = Point::new(x, block.y0 + 3.0 + 2.0 * g.hour_h);
+        h.drag(from, to);
+
+        let moved = h.app.model.event(id).expect("event still present after the move");
+        assert_eq!(moved.start.date(), today, "stayed in the same day column");
+        assert_eq!(
+            moved.start.time(),
+            min_to_time(13 * 60),
+            "rescheduled two hours later (was {start0})"
+        );
+        assert_eq!(
+            (moved.end - moved.start).num_minutes(),
+            dur0,
+            "duration preserved across the move"
+        );
+        assert!(
+            h.app.last_dispatched().is_some(),
+            "the reschedule went through the action model"
+        );
     }
 
     // Synthesised winit keyboard events (the zeroed-KeyEvent trick the toolkit's
