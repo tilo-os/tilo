@@ -30,6 +30,7 @@ pub mod portal;
 pub mod preview;
 pub mod probe;
 pub mod timecode;
+pub mod waveform;
 
 pub use app::VideoEditorApp;
 
