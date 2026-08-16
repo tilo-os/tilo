@@ -172,4 +172,54 @@ else
   fi
 fi
 
+# --- 7. every REQUIRED sandbox service has something serving it --------------
+# `[sandbox.services]` entries marked `required@<v>` are hard launch
+# dependencies: resolve_service_binds returns RequiredMissing when
+# $XDG_RUNTIME_DIR/qos/services/<name>.sock is absent, so the app does not
+# start at all. An optional one only warns. Shipping an app whose required
+# service has no supervisor in the image is therefore shipping an app that
+# cannot run — which is how the Terminal came to declare `ush = "required@1"`
+# while nothing built, installed or started a `ush`.
+#
+# The convention this asserts: a required service `<name>` is served by
+# /usr/lib/systemd/user/qos-<name>.service, globally enabled, whose ExecStart
+# runs a binary the image installs on the socket the launcher looks at.
+required="$(grep -rh '^[a-z_-]* *= *"required@' "${manifests[@]}" \
+              | sed 's/^\([a-z_-]*\) *=.*/\1/' | sort -u)"
+if [ -z "$required" ]; then
+  ok "no app declares a required sandbox service"
+else
+  for svc in $required; do
+    unit_rel="os/usr/lib/systemd/user/qos-$svc.service"
+    unit="$REPO/$unit_rel"
+    users="$(grep -l "^$svc *= *\"required@" "${manifests[@]}" \
+               | sed 's|.*/apps/\([^/]*\)/.*|\1|' | tr '\n' ' ')"
+    if [ ! -r "$unit" ]; then
+      bad "apps [$users] declare '$svc' as a required service, but $unit_rel does not exist.
+      The launcher refuses to start those apps when
+      \$XDG_RUNTIME_DIR/qos/services/$svc.sock is absent, so they would be
+      shipped unable to launch."
+      continue
+    fi
+    grep -q "systemctl --global enable qos-$svc.service" "$CONTAINERFILE" \
+      && ok "qos-$svc.service is globally enabled, so '$svc' is served for every session" \
+      || bad "$unit_rel exists but os/Containerfile never runs
+      'systemctl --global enable qos-$svc.service' — the unit would ship disabled
+      and apps [$users] still could not launch."
+    grep -q "ExecStart=.*%t/qos/services/$svc\.sock" "$unit" \
+      && ok "qos-$svc.service serves the socket path the launcher resolves" \
+      || bad "$unit_rel does not serve %t/qos/services/$svc.sock, which is where
+      launcher::services::socket_for('$svc') looks."
+    svc_bin="$(sed -n 's|^ExecStart=\([^ ]*\).*|\1|p' "$unit" | head -1)"
+    if [ -z "$svc_bin" ]; then
+      bad "$unit_rel has no ExecStart, so nothing checks that its binary ships"
+    elif grep -q "^COPY --from=builder [^ ]* $svc_bin\$" "$CONTAINERFILE"; then
+      ok "the image installs $svc_bin for '$svc'"
+    else
+      bad "os/Containerfile never copies $svc_bin into the image, so
+      qos-$svc.service would fail at every start and apps [$users] could not launch."
+    fi
+  done
+fi
+
 exit "$fail"

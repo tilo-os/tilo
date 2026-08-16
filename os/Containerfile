@@ -239,7 +239,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback -p qos-cli \
+        -p qos-rollback -p qos-cli -p ush \
         -p pkg-cli -p install -p cli-shim \
         ${APP_PKGS} \
         ${BROWSER_PKG} \
@@ -262,6 +262,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-pkg \
           target/release/qos-install \
           target/release/qos-cli-shim \
+          target/release/qos-ush \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -492,11 +493,18 @@ COPY --from=builder /out/qos-power /usr/bin/qos-power
 # It lives under /usr/libexec (not on $PATH) since only the compositor invokes
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
 COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
+# The confined shell runtime. Apps declare `ush = "required@<v>"` under
+# [sandbox.services] and the launcher refuses to start them when its socket is
+# absent — apps/terminal does, so without this binary and the user unit below
+# the packaged Terminal cannot launch. /usr/libexec because the terminal's own
+# lookup order is $QOS_USH_BIN, then /usr/libexec/qos-ush, then $PATH.
+COPY --from=builder /out/qos-ush /usr/libexec/qos-ush
+COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
               /usr/bin/qos-install /usr/bin/qos-pkg /usr/libexec/qos-cli-shim \
-              /usr/bin/qos-power /usr/libexec/qos-unlock-helper \
+              /usr/bin/qos-power /usr/libexec/qos-unlock-helper /usr/libexec/qos-ush \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
@@ -1018,6 +1026,10 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 # account; `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
 # user-opt-in part.
 #
+# `qos-ush.service` is `--global` enabled too, and has to be: it owns the
+# `ush` service socket that every app declaring `ush = "required@<v>"` is
+# refused without, which today is the Terminal.
+#
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
 # pipewire + pipewire-pulse, plus the wireplumber session manager).
 RUN systemctl enable greetd.service && \
@@ -1025,6 +1037,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable shell-firstboot.service && \
     systemctl enable fs.service && \
     systemctl --global enable shell-portal.service && \
+    systemctl --global enable qos-ush.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.

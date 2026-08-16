@@ -1,0 +1,30 @@
+[Unit]
+Description=qOS confined shell runtime supervisor
+# Every packaged app that declares `ush = "required@<v>"` in its manifest is
+# refused at launch when this socket is absent — qos-launcher's
+# resolve_service_binds returns RequiredMissing rather than starting an app
+# whose shell would be unconfined. apps/terminal declares exactly that, so
+# without this unit the Terminal cannot start at all.
+#
+# Not socket-activated: `qos-ush serve` binds the listener itself (and creates
+# the parent directory), so handing it a pre-opened descriptor would mean two
+# owners of one path. It is started with the session instead, which leaves a
+# short window at login where an app launched immediately would still find the
+# socket absent; the supervisor binds in well under a second and the launcher's
+# error names the missing socket.
+
+[Service]
+Type=simple
+# Serves on $XDG_RUNTIME_DIR/qos/services/ush.sock and builds guests from the
+# running root — both are the defaults, spelled out here because they are the
+# contract with qos-launcher rather than an implementation detail.
+ExecStart=/usr/libexec/qos-ush serve --socket %t/qos/services/ush.sock --base /
+Restart=on-failure
+RestartSec=1s
+TimeoutStopSec=10s
+
+[Install]
+# default.target, not graphical-session.target: the runtime is what makes a
+# confined shell available at all, including from a text session, and nothing
+# in this repository starts graphical-session.target explicitly.
+WantedBy=default.target
