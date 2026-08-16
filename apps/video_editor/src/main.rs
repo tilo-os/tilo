@@ -76,6 +76,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             match scenario.as_deref() {
                 Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
                 Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("menu") => render_shot_to_png(video_editor::app_root_menu(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("rename") => render_shot_to_png(video_editor::app_root_rename(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("drag") => render_shot_to_png(video_editor::app_root_drag(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
                 _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
             }
         }
