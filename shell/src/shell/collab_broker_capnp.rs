@@ -1175,6 +1175,24 @@ pub fn spawn(
     let state = CapnpBrokerState::new(&peer_table, broker_channels);
     peer_table.attach_capnp(Arc::clone(&state));
 
+    // Bind on the caller's thread, before anything is detached.
+    //
+    // This is the socket apps actually connect to, so "did it bind?"
+    // has to be part of what `spawn` answers. Binding inside the
+    // worker meant the answer arrived on a different thread, after the
+    // caller had already been told it succeeded — a failure became a
+    // log line, and a success was not yet true when the caller
+    // returned, so a launch racing a fresh session could find no
+    // socket. Both are the same defect: the caller could not observe
+    // the thing it was asking for.
+    let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+    // tokio's reactor requires a non-blocking fd for `from_std`.
+    std_listener.set_nonblocking(true)?;
+    tracing::info!(
+        "capnp broker: bound {} for native SDK access",
+        socket_path.display()
+    );
+
     let thread = std::thread::Builder::new()
         .name("qos-collab-broker-capnp".into())
         .spawn(move || {
@@ -1190,17 +1208,16 @@ pub fn spawn(
             };
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
-                let listener = match tokio::net::UnixListener::bind(&socket_path) {
+                let listener = match tokio::net::UnixListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
-                        tracing::warn!("capnp broker: bind {} failed: {e}", socket_path.display());
+                        tracing::warn!(
+                            "capnp broker: adopting {} into the reactor failed: {e}",
+                            socket_path.display()
+                        );
                         return;
                     }
                 };
-                tracing::info!(
-                    "capnp broker: bound {} for native SDK access",
-                    socket_path.display()
-                );
                 loop {
                     if quit.load(Ordering::Relaxed) {
                         break;
