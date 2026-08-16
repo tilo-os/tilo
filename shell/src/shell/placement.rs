@@ -30,6 +30,7 @@
 //! and splices the window in.
 
 use crate::compositor::tab_binding::Placement;
+use crate::shell::chrome_state::OpenTarget;
 use crate::shell::state::{GroupId, StripId, WorkspaceTree};
 
 /// One window group's horizontal extent in the strip's **unscrolled
@@ -232,6 +233,41 @@ pub fn note_placement_for_launch_identities(
 ) {
     let placement = placement_for_new_window(tree, viewport);
     crate::shell::launcher::set_pending_placement_for_identities(key, identities, placement);
+}
+
+/// [`note_placement_for_launch`], with an explicit destination allowed to
+/// override the rule.
+///
+/// The rule infers where a window belongs from what is selected. That is
+/// the right answer when the user did not say — but the "+" on a group's
+/// tab strip *does* say, and naming a destination has to beat inferring
+/// one. Notably [`OpenTarget::Here`] lands a tab in a single-window group,
+/// which the rule would never do (it opens beside instead, so a lone
+/// window never silently acquires a tab bar).
+///
+/// A target naming a group that has since closed falls back to the rule
+/// rather than to `NewGroup`, so a stale aim degrades to the ordinary
+/// behaviour instead of to an arbitrary one.
+pub fn note_placement_for_launch_targeted(
+    package_id: &str,
+    tree: &WorkspaceTree,
+    viewport: Option<&StripViewport>,
+    target: OpenTarget,
+) {
+    let placement = match target {
+        OpenTarget::Here(group) if group_exists(tree, group) => Placement::TabIn(group),
+        _ => placement_for_new_window(tree, viewport),
+    };
+    crate::shell::launcher::set_pending_placement(package_id, placement);
+}
+
+/// Whether `group` is still a live window group in the active workspace.
+fn group_exists(tree: &WorkspaceTree, group: GroupId) -> bool {
+    tree.active_workspace().is_some_and(|ws| {
+        ws.strips
+            .iter()
+            .any(|s| s.window_groups.iter().any(|g| g.id == group))
+    })
 }
 
 #[cfg(test)]
