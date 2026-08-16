@@ -218,8 +218,9 @@ pub struct VideoEditorApp {
     /// Delete). Owned as a field and driven directly (open_at / item_at /
     /// take_selection) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
-    /// Which bin media the open context menu (or a pending menu action) targets.
-    bin_menu_media: Option<MediaId>,
+    /// What the open context menu (or a pending menu action) targets — a bin
+    /// media item or a timeline track header.
+    menu_target: Option<MenuTarget>,
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
     bin_rename: Option<(MediaId, EditableLabel)>,
@@ -246,6 +247,15 @@ struct BinDrag {
 /// Pointer travel (logical px) before a bin press becomes a drag toward the
 /// timeline, so a plain click never jitters into a placement.
 const BIN_DRAG_THRESHOLD: f64 = 6.0;
+
+/// What an open context menu acts on.
+#[derive(Clone, Copy, PartialEq)]
+enum MenuTarget {
+    /// A media-bin item: Add to timeline / Rename / Delete.
+    Media(MediaId),
+    /// A timeline track header: Add video/audio track / Delete track.
+    Track(TrackId),
+}
 
 impl Default for VideoEditorApp {
     fn default() -> Self {
@@ -293,7 +303,7 @@ impl VideoEditorApp {
             bin_flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
             bin_menu: ContextMenu::new(),
-            bin_menu_media: None,
+            menu_target: None,
             bin_rename: None,
             bin_drag: None,
             file_hovering: false,
@@ -449,6 +459,29 @@ impl VideoEditorApp {
         let x0 = self.time_to_x(clip.start, &r.lanes);
         let x1 = self.time_to_x(clip.end(), &r.lanes);
         Rect::new(x0, lane.y0 + 2.0, x1.max(x0 + 2.0), lane.y1 - 2.0)
+    }
+
+    /// The mute pill rect on a track header (shared by draw + hit-test).
+    fn mute_pill_rect(&self, header: Rect) -> Rect {
+        Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0)
+    }
+
+    /// The two "add track" buttons in the gutter footer, if there is room below
+    /// the last lane: `(kind, rect)` for a Video and an Audio add.
+    fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
+        let lanes = self.lane_rects(r);
+        let y = lanes
+            .last()
+            .map(|(_, _, l)| l.y1 + LANE_GAP + 4.0)
+            .unwrap_or(r.gutter.y0 + 6.0);
+        if y + 24.0 > r.timeline.y1 {
+            return Vec::new();
+        }
+        let pad = 8.0;
+        let w = (r.gutter.width() - pad * 2.0 - 6.0) / 2.0;
+        let vbtn = Rect::new(r.gutter.x0 + pad, y, r.gutter.x0 + pad + w, y + 24.0);
+        let abtn = Rect::new(vbtn.x1 + 6.0, y, vbtn.x1 + 6.0 + w, y + 24.0);
+        vec![(TrackKind::Video, vbtn), (TrackKind::Audio, abtn)]
     }
 
     fn transport_buttons(&self, r: &Regions) -> [(TransportAction, Rect); 5] {
@@ -872,8 +905,20 @@ impl VideoEditorApp {
         menu.push(MenuItem::action("Delete", || {}));
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
-        self.bin_menu_media = Some(mid);
+        self.menu_target = Some(MenuTarget::Media(mid));
         self.selected_media = Some(mid);
+    }
+
+    /// Open the track-header context menu for `tid` at logical point `at`.
+    fn open_track_menu(&mut self, tid: TrackId, at: Point) {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Add video track", || {}));
+        menu.push(MenuItem::action("Add audio track", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Delete track", || {}));
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.bin_menu = menu;
+        self.menu_target = Some(MenuTarget::Track(tid));
     }
 
     /// If the cursor is over a visible bin item, open its context menu there.
@@ -892,16 +937,100 @@ impl VideoEditorApp {
         false
     }
 
-    /// Act on a chosen bin-menu row (indices match [`Self::open_bin_menu`]).
-    fn bin_menu_choose(&mut self, doc: &mut AutoCommit, idx: usize) {
-        let Some(mid) = self.bin_menu_media else { return };
-        match idx {
-            0 => {
-                self.add_media_to_timeline(doc, mid);
+    /// If the cursor is over a timeline track header (the gutter), open its
+    /// track context menu there.
+    fn open_track_menu_at_cursor(&mut self, r: &Regions) -> bool {
+        let p = self.last_mouse;
+        if !r.gutter.contains(p) {
+            return false;
+        }
+        for (tid, _kind, lane) in self.lane_rects(r) {
+            let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+            if header.contains(p) {
+                self.open_track_menu(tid, p);
+                return true;
             }
-            1 => self.begin_rename(mid),
-            3 => self.delete_media(doc, mid),
-            _ => {}
+        }
+        false
+    }
+
+    /// Act on a chosen context-menu row (indices match the `open_*_menu`
+    /// builders for the current [`MenuTarget`]).
+    fn bin_menu_choose(&mut self, doc: &mut AutoCommit, idx: usize) {
+        match self.menu_target {
+            Some(MenuTarget::Media(mid)) => match idx {
+                0 => {
+                    self.add_media_to_timeline(doc, mid);
+                }
+                1 => self.begin_rename(mid),
+                3 => self.delete_media(doc, mid),
+                _ => {}
+            },
+            Some(MenuTarget::Track(tid)) => match idx {
+                0 => {
+                    self.add_track(doc, TrackKind::Video);
+                }
+                1 => {
+                    self.add_track(doc, TrackKind::Audio);
+                }
+                3 => self.delete_track(doc, tid),
+                _ => {}
+            },
+            None => {}
+        }
+    }
+
+    /// Add a fresh empty track of `kind` above the others of its kind
+    /// (index = current max of that kind + 1), dispatched as an action.
+    fn add_track(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+        let index = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind)
+            .map(|t| t.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let track = crate::model::Track {
+            id: Uuid::new_v4(),
+            name,
+            kind,
+            index,
+            muted: false,
+            locked: false,
+        };
+        let id = track.id;
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.project.tracks.push(track);
+        id
+    }
+
+    /// Delete a track and every clip on it, as one action.
+    fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+        let clip_ids: Vec<ClipId> =
+            self.project.clips.iter().filter(|c| c.track == tid).map(|c| c.id).collect();
+        if let Some(sel) = self.selected {
+            if clip_ids.contains(&sel) {
+                self.selected = None;
+            }
+        }
+        self.actions.dispatch(
+            doc,
+            VIDEO_EDITOR_ACTION_TYPE,
+            &crate::actions::delete_track_action(&tid, &clip_ids),
+        );
+    }
+
+    /// Toggle a track's mute flag (the header pill), dispatched as an action.
+    fn toggle_track_mute(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+        if let Some(t) = self.project.track(tid) {
+            let mut next = t.clone();
+            next.muted = !next.muted;
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
         }
     }
 
@@ -1298,11 +1427,16 @@ impl Widget for VideoEditorApp {
                 self.bin_rename = None;
             }
         }
-        if let Some(mid) = self.bin_menu_media {
-            if self.project.media(mid).is_none() {
+        match self.menu_target {
+            Some(MenuTarget::Media(mid)) if self.project.media(mid).is_none() => {
                 self.bin_menu.close();
-                self.bin_menu_media = None;
+                self.menu_target = None;
             }
+            Some(MenuTarget::Track(tid)) if self.project.track(tid).is_none() => {
+                self.bin_menu.close();
+                self.menu_target = None;
+            }
+            _ => {}
         }
         if let Some(bd) = self.bin_drag {
             if self.project.media(bd.media).is_none() {
@@ -1475,14 +1609,14 @@ impl Widget for VideoEditorApp {
                 return;
             }
         }
-        // Right-click on a bin item opens its context menu (Add / Rename / Delete).
+        // Right-click on a bin item or a track header opens its context menu.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Right,
             ..
         } = event
         {
-            if self.open_bin_menu_at_cursor(&r) {
+            if self.open_bin_menu_at_cursor(&r) || self.open_track_menu_at_cursor(&r) {
                 *handled = true;
                 return;
             }
@@ -1831,6 +1965,25 @@ impl VideoEditorApp {
             self.drag = Some(Drag::Playhead);
             self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                 .clamp(0.0, self.project.duration());
+            return;
+        }
+        // Timeline gutter: add-track buttons and per-track mute pills.
+        if r.gutter.contains(p) {
+            for (kind, rect) in self.add_track_buttons(r) {
+                if rect.contains(p) {
+                    self.add_track(state, kind);
+                    return;
+                }
+            }
+            for (tid, _kind, lane) in self.lane_rects(r) {
+                let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+                if header.contains(p) {
+                    if self.mute_pill_rect(header).contains(p) {
+                        self.toggle_track_mute(state, tid);
+                    }
+                    return;
+                }
+            }
             return;
         }
         // Timeline lanes — clips, trim handles, empty-space scrub.
@@ -2709,12 +2862,21 @@ impl VideoEditorApp {
             text_w(scene, tr, tf, name, 13.0, c.text_primary, header.x0 + 12.0, header.center().y - 8.0, TextWeight::Semibold);
             let knd = if *kind == TrackKind::Video { "VIDEO" } else { "AUDIO" };
             text(scene, tr, tf, knd, 9.0, c.text_dim, header.x0 + 12.0, header.center().y + 6.0);
-            // mute pill
+            // mute pill (clickable toggle)
             let muted = track.map(|t| t.muted).unwrap_or(false);
-            let pill = Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0);
-            fill_rrect(scene, tf, if muted { c.semantic.danger } else { c.neutral[3] }, pill, 4.0);
-            let ml = if *kind == TrackKind::Video { "H" } else { "M" };
-            text(scene, tr, tf, ml, 10.0, c.text_primary, pill.center().x - 4.0, pill.center().y - 6.0);
+            let pill = self.mute_pill_rect(header);
+            let pill_hover = pill.contains(self.last_mouse);
+            let pill_bg = if muted {
+                c.semantic.danger
+            } else if pill_hover {
+                c.surface_white_10
+            } else {
+                c.neutral[3]
+            };
+            fill_rrect(scene, tf, pill_bg, pill, 4.0);
+            let (ml, mc) = if muted { ("M", Color::WHITE) } else { ("M", c.text_dim) };
+            let (mlw, _) = tr.measure(ml, 10.0, None);
+            text(scene, tr, tf, ml, 10.0, mc, pill.center().x - mlw as f64 / 2.0, pill.center().y - 6.0);
         }
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
@@ -2740,6 +2902,16 @@ impl VideoEditorApp {
         let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
         text_w(scene, tr, tf, &tag, 10.0, Color::WHITE, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+
+        // Add-track buttons in the gutter footer.
+        for (kind, rect) in self.add_track_buttons(r) {
+            let hover = rect.contains(self.last_mouse);
+            fill_rrect(scene, tf, if hover { c.surface_white_10 } else { c.neutral[3] }, rect, 6.0);
+            stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
+            let label = if kind == TrackKind::Video { "+ Video" } else { "+ Audio" };
+            let (lw, _) = tr.measure(label, 11.0, None);
+            text(scene, tr, tf, label, 11.0, c.text_primary, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+        }
     }
 
     fn draw_clip(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, clip: &Clip, lane: &Rect, kind: TrackKind, r: &Regions) {
@@ -3555,7 +3727,7 @@ mod tests {
         move_to(&mut app, &mut doc, row.center().x, row.center().y);
         right_press(&mut app, &mut doc);
         assert!(app.bin_menu.is_open(), "right-click opens the bin context menu");
-        assert_eq!(app.bin_menu_media, Some(mid));
+        assert!(matches!(app.menu_target, Some(MenuTarget::Media(m)) if m == mid));
 
         // Locate the "Delete" row (index 3) and click it through the real menu.
         let menu = app.bin_menu.get_rect();
@@ -3637,6 +3809,63 @@ mod tests {
             placed.start,
         );
         assert!(app.bin_drag.is_none(), "the drag ended on release");
+    }
+
+    #[test]
+    fn clicking_add_audio_track_button_adds_a_track_to_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let before = VideoDoc::load_project(&doc)
+            .tracks
+            .iter()
+            .filter(|t| t.kind == TrackKind::Audio)
+            .count();
+        let (_, abtn) = app
+            .add_track_buttons(&r)
+            .into_iter()
+            .find(|(k, _)| *k == TrackKind::Audio)
+            .expect("an add-audio-track button");
+        click(&mut app, &mut doc, abtn.center().x, abtn.center().y);
+        let after = VideoDoc::load_project(&doc);
+        assert_eq!(
+            after.tracks.iter().filter(|t| t.kind == TrackKind::Audio).count(),
+            before + 1,
+            "the add-audio-track button added a track to the CRDT",
+        );
+    }
+
+    #[test]
+    fn right_click_track_header_delete_removes_the_track_and_its_clips() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // A track that actually has clips, so we can prove they go too.
+        let (tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(tid, _, _)| !app.project.clips_on(*tid).is_empty())
+            .expect("a track with clips");
+        let clip_ids: Vec<Uuid> = app.project.clips_on(tid).iter().map(|c| c.id).collect();
+        // Right-click the header (gutter) → the track menu opens for that track.
+        move_to(&mut app, &mut doc, r.gutter.x0 + 20.0, lane.center().y);
+        right_press(&mut app, &mut doc);
+        assert!(app.bin_menu.is_open(), "right-click opens the track menu");
+        assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
+        // "Delete track" is index 3.
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let del_y = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(3))
+            .expect("a Delete track row");
+        let before = VideoDoc::load_project(&doc).tracks.len();
+        move_to(&mut app, &mut doc, cx, del_y);
+        press(&mut app, &mut doc);
+        let after = VideoDoc::load_project(&doc);
+        assert_eq!(after.tracks.len(), before - 1, "the track was removed from the CRDT");
+        assert!(after.track(tid).is_none());
+        for cid in clip_ids {
+            assert!(after.clip(cid).is_none(), "the track's clips were removed too");
+        }
     }
 
     #[test]

@@ -468,6 +468,21 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         ));
     }
 
+    // Project-level: add a fresh empty track of either kind (index = current
+    // max of that kind + 1) — the same whole-track write the timeline's
+    // add-track buttons dispatch.
+    for kind in [TrackKind::Video, TrackKind::Audio] {
+        let index = p.tracks.iter().filter(|t| t.kind == kind).map(|t| t.index).max().unwrap_or(0) + 1;
+        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let track = Track { id: Uuid::new_v4(), name, kind, index, muted: false, locked: false };
+        let (id, label) = if kind == TrackKind::Video {
+            ("add-video-track", "Add video track")
+        } else {
+            ("add-audio-track", "Add audio track")
+        };
+        root = root.with_action(immediate(id, label, &upsert_track_action(&track)));
+    }
+
     for track in p.display_tracks() {
         let tid = track.id;
         let mut tr = Resource::new(
