@@ -26,7 +26,7 @@
 //! representative gradient and (eventually) a real shader, so the grade you
 //! see in the offline preview matches the graded export.
 
-use crate::model::{Clip, Filters, MediaId, Project, Transition};
+use crate::model::{Clip, ClipEffect, EffectKind, Filters, MediaId, Project, Transition};
 
 /// A normalised RGB triple in 0..1. Render-agnostic so the math is testable
 /// without a GPU.
@@ -65,6 +65,42 @@ impl Rgb {
     pub fn faded(self, gain: f64) -> Rgb {
         let g = gain.clamp(0.0, 1.0);
         Rgb::new(self.r * g, self.g * g, self.b * g)
+    }
+
+    /// Apply an ordered stack of [`ClipEffect`]s, in list order, after the grade.
+    pub fn with_effects(self, effects: &[ClipEffect]) -> Rgb {
+        effects.iter().fold(self, apply_effect)
+    }
+}
+
+/// Blend `a` toward `b` by `t` (0..1).
+fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    Rgb::new(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
+}
+
+/// Apply one [`ClipEffect`] to a colour. The single source of truth for both the
+/// representative preview and the (gated) export, so the look matches.
+fn apply_effect(c: Rgb, e: &ClipEffect) -> Rgb {
+    let a = e.amount.clamp(0.0, 1.0);
+    match e.kind {
+        EffectKind::Grayscale => {
+            let l = c.luma();
+            lerp(c, Rgb::new(l, l, l), a)
+        }
+        EffectKind::Sepia => {
+            let sr = 0.393 * c.r + 0.769 * c.g + 0.189 * c.b;
+            let sg = 0.349 * c.r + 0.686 * c.g + 0.168 * c.b;
+            let sb = 0.272 * c.r + 0.534 * c.g + 0.131 * c.b;
+            lerp(c, Rgb::new(sr, sg, sb), a)
+        }
+        EffectKind::Invert => lerp(c, Rgb::new(1.0 - c.r, 1.0 - c.g, 1.0 - c.b), a),
+        EffectKind::Warm => Rgb::new(c.r + a * 0.16, c.g + a * 0.04, c.b - a * 0.16),
+        EffectKind::Cool => Rgb::new(c.r - a * 0.16, c.g + a * 0.04, c.b + a * 0.16),
+        // A flat representative colour has no spatial extent, so a vignette
+        // reads as a gentle overall darkening here; the real spatial falloff
+        // lands in the (gated) shader/export.
+        EffectKind::Vignette => lerp(c, Rgb::new(0.0, 0.0, 0.0), a * 0.4),
     }
 }
 
@@ -105,7 +141,7 @@ pub fn composite(project: &Project, playhead: f64) -> CompositedFrame {
     let Some(clip) = project.top_video_clip_at(playhead) else {
         return CompositedFrame::Empty;
     };
-    let base = palette_rgb(clip.palette).graded(&clip.filters);
+    let base = palette_rgb(clip.palette).graded(&clip.filters).with_effects(&clip.effects);
     let envelope = clip.envelope(playhead) * clip.opacity;
     let flash = transition_flash(clip, playhead);
     CompositedFrame::Clip {
@@ -402,6 +438,43 @@ mod tests {
         let desat = neutral.graded(&Filters { brightness: 0.5, contrast: 0.5, saturation: 0.0 });
         // Full desaturation collapses channels toward luma → near-equal.
         assert!((desat.r - desat.g).abs() < 1e-6 && (desat.g - desat.b).abs() < 1e-6);
+    }
+
+    #[test]
+    fn grayscale_effect_collapses_channels_and_empty_is_a_noop() {
+        use crate::model::{ClipEffect, EffectKind};
+        let c = palette_rgb(0); // a saturated bluish clip
+        assert_eq!(c.with_effects(&[]), c, "no effects leaves the colour unchanged");
+        let g = c.with_effects(&[ClipEffect::new(EffectKind::Grayscale)]);
+        // Grayscale pulls the channels strongly toward luma (near-equal).
+        assert!(
+            (g.r - g.g).abs() < 0.12 && (g.g - g.b).abs() < 0.12,
+            "grayscale converges the channels: {g:?}",
+        );
+        // Invert flips the colour.
+        let inv = c.with_effects(&[ClipEffect { kind: EffectKind::Invert, amount: 1.0 }]);
+        assert!((inv.r - (1.0 - c.r)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn effects_stack_in_order_and_change_the_composite() {
+        use crate::model::{ClipEffect, EffectKind};
+        let mut p = sample_project();
+        // The drone open (clips[0]) carries seeded effects; strip them and prove
+        // adding a grayscale effect desaturates its composite base.
+        let cid = p.clips[0].id;
+        p.clip_mut(cid).unwrap().effects.clear();
+        let before = match composite(&p, 6.0) {
+            CompositedFrame::Clip { base, .. } => base,
+            _ => panic!("expected clip"),
+        };
+        p.clip_mut(cid).unwrap().effects = vec![ClipEffect { kind: EffectKind::Grayscale, amount: 1.0 }];
+        let after = match composite(&p, 6.0) {
+            CompositedFrame::Clip { base, .. } => base,
+            _ => panic!("expected clip"),
+        };
+        let spread = |c: Rgb| (c.r - c.g).abs() + (c.g - c.b).abs();
+        assert!(spread(after) < spread(before), "grayscale reduces channel spread in the composite");
     }
 
     #[test]
