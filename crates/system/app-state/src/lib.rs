@@ -402,6 +402,15 @@ impl DocStore {
     }
 
     fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
+        // Idempotent by design. The state directory already exists on every
+        // launch after the first, so "the directory is already there" is
+        // success, not an error — `create_dir_all` returns `Ok` in that case
+        // while still surfacing a genuinely unwritable path. A plain
+        // `create_dir` here would fail with `EEXIST` on the second run and drop
+        // every app to an in-memory document, silently breaking the
+        // survive-a-restart guarantee. Fresh-XDG CI never sees the pre-existing
+        // directory, so the invariant is pinned by
+        // `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
         fs::create_dir_all(&dir)
             .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))?;
 
@@ -1173,5 +1182,106 @@ mod tests {
             on_disk,
             "the document on disk must be byte-for-byte what it was"
         );
+    }
+
+    /// The second launch of an app must keep persistence ON.
+    ///
+    /// The failure this pins: the per-package state directory already exists on
+    /// every run after the first, so opening the store has to treat an
+    /// already-existing directory as success. If the directory create were not
+    /// idempotent it would fail with `EEXIST` on the second open, the caller
+    /// (`ui::persist::open`) would swallow the error and drop to an in-memory
+    /// document, and every app would silently lose its state on every launch
+    /// but the very first. Fresh-XDG CI never sees it because the directory is
+    /// always absent there — so this test creates the directory *before* the
+    /// first open, exercising the pre-existing-directory path both times.
+    #[test]
+    #[serial_test::serial]
+    fn opening_twice_against_an_existing_dir_keeps_persistence_enabled() {
+        let _tmp = scratch_home();
+        let pkg = "dev.qos.persist-twice";
+
+        // The directory is already present before the *first* open, exactly as
+        // it is on every launch after the app has run once. This is the path
+        // that must not fail with EEXIST.
+        let dir = cli::standalone_state_dir(pkg);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(dir.is_dir(), "the state directory pre-exists for both opens");
+
+        // Run 1: open, confirm the store is live (not refused), then persist a
+        // value through the real autosave writer — enabled, not the disabled
+        // in-memory fallback a swallowed EEXIST would have produced. `seed` runs
+        // on the freshly loaded document (before any edit), exactly as
+        // `ui::persist::open` sequences it, so the later edit is seen as a change.
+        let mut run1 = DocStore::open_for(pkg).expect("first open must succeed when the dir exists");
+        let mut doc = run1.load_or_new();
+        assert!(run1.refusal().is_none(), "a fresh store is not refused");
+        let mut autosave1 = Autosave::spawn(run1, DEFAULT_DEBOUNCE);
+        assert!(autosave1.is_enabled(), "run 1 must persist, not fall back");
+        autosave1.seed(&mut doc);
+        doc.put(&ROOT, "note", ScalarValue::Str("survives".into())).unwrap();
+        autosave1.request(&mut doc);
+        autosave1.flush();
+        assert_eq!(autosave1.last_error(), None, "no write may have failed");
+        drop(autosave1);
+
+        // Run 2: the directory still exists. The open must succeed again, the
+        // autosave must be enabled again, and run 1's value must be present.
+        let run2 = DocStore::open_for(pkg);
+        assert!(
+            run2.is_ok(),
+            "second open against the existing dir must succeed, got {:?}",
+            run2.err()
+        );
+        let mut run2 = run2.unwrap();
+        let mut doc2 = run2.load_or_new();
+        assert_eq!(
+            text_of(&doc2, "note").as_deref(),
+            Some("survives"),
+            "state written in run 1 must round-trip across the re-open"
+        );
+        let autosave2 = Autosave::spawn(run2, DEFAULT_DEBOUNCE);
+        assert!(
+            autosave2.is_enabled(),
+            "the SECOND run must persist too — this is the bug: a non-idempotent \
+             directory create disabled persistence for every launch after the first"
+        );
+        // The reopened store is still writable end-to-end.
+        doc2.put(&ROOT, "note", ScalarValue::Str("again".into())).unwrap();
+        autosave2.flush();
+    }
+
+    /// A state directory that genuinely cannot be created must still surface as
+    /// an error — the idempotent create must not paper over a real filesystem
+    /// failure. Making an already-existing directory succeed is only correct if
+    /// a create that *cannot* succeed still fails loudly.
+    #[test]
+    #[serial_test::serial]
+    fn an_uncreatable_state_dir_is_still_an_error() {
+        // A regular file sits where a parent directory would need to be, so the
+        // package directory cannot be created. This fails with `ENOTDIR` for
+        // any uid — unlike a read-only directory, which root would sail past —
+        // so the test is deterministic wherever it runs.
+        let tmp = TempDir::new().unwrap();
+        let blocker = tmp.path().join("blocker");
+        fs::write(&blocker, b"not a directory").unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", blocker.join("sub"));
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+
+        let result = DocStore::open_for("dev.qos.blocked");
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+
+        match result {
+            Err(StoreError::Io { .. }) => {}
+            Err(other) => panic!(
+                "expected an Io error from an uncreatable state directory, got {other:?}"
+            ),
+            Ok(_) => panic!(
+                "an uncreatable state directory must surface as an error, not be \
+                 masked by the idempotent create"
+            ),
+        }
     }
 }
