@@ -1,5 +1,10 @@
 [Unit]
 Description=QuickDesktop First Boot Setup
+# Machine-wide first-boot setup only. This runs as root before anyone has
+# logged in, so it deliberately does NOT mint the user's signing identity —
+# `$HOME` here is root's, and a key written there is owned by root and
+# unreadable by the person it belongs to. Identity minting happens in the
+# user's own session, see the `qos-identity.service` user unit.
 ConditionPathExists=!/etc/qos/.firstboot-done
 After=network-online.target
 Wants=network-online.target

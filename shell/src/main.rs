@@ -171,6 +171,7 @@ fn main() {
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
+    let provision_identity_requested = compositor::parse_provision_identity_from_args();
 
     if portal_only && firstboot_requested {
         eprintln!(
@@ -198,27 +199,33 @@ fn main() {
         // process exits at the bottom of `app.run()` as usual.
     }
 
-    // Phase 8 identity gate. The full UI ceremony lives in
-    // `ui::widget::identity_flow::IdentityFlow`; the disk-backed
-    // persistence in `shell::shell::identity_provisioning`. v1
-    // surfaces the check here so a fresh-machine boot logs a clear
-    // line (and the integration follow-up can swap the log for a
-    // pre-desktop winit loop that hosts IdentityFlow).
+    // The identity gate. A signing identity belongs to the person, so it is
+    // created here — in their session, in their home — and never by the
+    // system unit that runs as root before anyone has logged in.
     //
-    // TODO Phase 8 integration: replace this log with a blocking
-    // winit loop that renders IdentityFlow until is_done() returns
-    // true; persist + then fall through to the desktop boot path
-    // below. The wiring requires composing the compositor's existing
-    // `App` setup with an IdentityFlow-only `App` and is documented
-    // in the Phase 8 follow-up.
+    // `--provision-identity` is the `qos-identity.service` **user** unit's
+    // entry point: it runs the ceremony and exits without starting a
+    // compositor. Reaching this point without an identity and without that
+    // flag means something started the desktop directly, so we say so
+    // plainly rather than pretending a key exists.
     match identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) if identity_provisioning::needs_first_run_flow(&store) => {
+            if provision_identity_requested {
+                run_identity_onboarding(store.path().parent().map(|p| p.to_path_buf()));
+                return;
+            }
             tracing::warn!(
-                "no qOS identity found at {}; the desktop will boot without \
-                 a signing identity. Run the identity_flow_demo example to \
-                 walk the ceremony manually.",
+                "no qOS identity found at {}; the desktop will boot without a signing \
+                 identity. Nothing you do will be attributable to you until \
+                 qos-identity.service has run in this session.",
                 store.path().display()
             );
+        }
+        Ok(_) if provision_identity_requested => {
+            // Idempotent by design: the user unit runs on every login, and an
+            // identity that already exists is the success case.
+            tracing::info!("qOS identity already present; nothing to provision");
+            return;
         }
         Ok(store) => {
             tracing::info!("loaded qOS identity from {}", store.path().display());
@@ -259,6 +266,29 @@ fn main() {
 /// Used by the user-level `quick-desktop-portal.service` unit so the
 /// portal backend doesn't compete with the compositor for `wayland-N`
 /// and can be `Type=dbus`-activated independently.
+/// Host the first-login identity ceremony and block until the user has
+/// finished it.
+///
+/// Runs as its own `ui::App` rather than inside the compositor: the point is
+/// that this happens *before* a desktop exists, so there is nothing an
+/// application could be doing while the key is created.
+fn run_identity_onboarding(identity_dir: Option<std::path::PathBuf>) {
+    let Some(dir) = identity_dir else {
+        // No resolvable home means no right place for a signing key, and
+        // guessing one is how the key ended up in root's tree to begin with.
+        tracing::error!(
+            "cannot provision an identity: no user config directory resolved from \
+             $XDG_CONFIG_HOME or $HOME"
+        );
+        std::process::exit(1);
+    };
+    tracing::info!("running first-login identity onboarding into {}", dir.display());
+    let state = ui::State::new();
+    let view = shell::onboarding_view::OnboardingView::new(dir);
+    let app = ui::App::new(state, Box::new(view));
+    app.run();
+}
+
 fn run_portal_server_only() {
     tracing::info!("nirios portal server starting (--portal-server-only)");
 

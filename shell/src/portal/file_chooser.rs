@@ -382,6 +382,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
@@ -406,6 +407,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let name: OwnedUniqueName = ":1.7".try_into().unwrap();
@@ -437,6 +439,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
@@ -493,6 +496,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
@@ -551,6 +555,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
@@ -603,6 +608,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
@@ -642,6 +648,7 @@ mod tests {
                 file_picker: fp,
                 screencast_provisioner: sc,
                 remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+                print_spooler: crate::portal::PrintSpoolerHandle::null(),
                 documents: crate::portal::DocumentStoreHandle::host_paths(),
             };
             let backend = FileChooserBackend::new(ctx);

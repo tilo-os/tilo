@@ -9923,8 +9923,11 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "qos-bluez",
  "tempfile",
+ "tokio",
  "tracing",
+ "zbus 4.4.0",
 ]
 
 [[package]]
@@ -11106,6 +11109,16 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "uuid",
+]
+
+[[package]]
+name = "qos-bluez"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "tokio",
+ "tracing",
+ "zbus 4.4.0",
 ]
 
 [[package]]
@@ -13167,6 +13180,7 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
+ "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",
  "qos-power-mgmt",
