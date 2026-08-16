@@ -25,11 +25,11 @@ footage dropped in here under the same names would then decode.
 
 ## Real decode / import / export
 
-* **Import** — the editor's "Import…" action opens the XDG file portal
-  (`--features portal`) and probes each picked file for **real** metadata
-  (duration / dimensions / codec / fps) via `src/probe.rs`, with no decoder.
-  A picked file becomes a real clip in the bin. `--import PATH` seeds one
-  deterministically for `--shots`/tests.
+* **Import** — the editor's "Import…" action opens the shared XDG file portal
+  (`ui::portal`, compiled into every build) and probes each picked file for
+  **real** metadata (duration / dimensions / codec / fps) via `src/probe.rs`,
+  with no decoder. A picked file becomes a real clip in the bin. `--import PATH`
+  seeds one deterministically for `--shots`/tests.
 * **Real decode / export** run through GStreamer and are proven against
   genuinely-encoded clips: the `decode` and `gst` tests **generate** a real
   H.264 clip at test time with `gst-launch-1.0 videotestsrc … ! openh264enc !
