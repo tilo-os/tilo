@@ -9,7 +9,10 @@
 //!   * header — file name, byte count, edit-mode / endianness pills
 //!   * body   — offset gutter | hex byte columns | ASCII column   (left)
 //!              data inspector panel                              (right)
-//!   * status — cursor offset, selection length, dirty count, hints
+//!              (the grid + inspector span to the window bottom)
+//!   * status — a transient floating bubble (cursor offset, selection
+//!              length, dirty count, save/error flash) that surfaces on a
+//!              change or a bottom-corner hover, then fades; no permanent strip
 //!   * overlay — search bar and goto-offset prompt (modal-ish, on top)
 //!
 //! State lives in the CRDT: every edit is written straight back into the
@@ -27,7 +30,7 @@ use qos_actions::EncodedAction;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -105,6 +108,20 @@ pub struct HexView {
     /// keystroke and the Ctrl+K [`qos_actions::ActionSpec`] build the
     /// byte-identical action.
     actions: ui::ActionHost,
+
+    /// The cursor read-out / edit status, surfaced as a transient floating
+    /// bubble (see `draw_status_bubble`) instead of a permanent bottom strip,
+    /// so the byte grid + inspector span to the window bottom. Poked on a real
+    /// status change (cursor move, selection, dirty count, a fresh save/error
+    /// flash) and shown while the pointer hovers the bottom-right corner, then
+    /// it fades.
+    status_bubble: ui::StatusBubble,
+    /// The composed bubble label from the previous frame, so a poke fires only
+    /// when the status genuinely changes rather than every frame.
+    last_status_label: Option<String>,
+    /// `--shots` forces the bubble fully visible so a single headless frame
+    /// captures the floating chip.
+    shots_status: bool,
 }
 
 impl HexView {
@@ -130,6 +147,9 @@ impl HexView {
             flash: None,
             open_button: Rect::ZERO,
             actions: ui::ActionHost::new(),
+            status_bubble: ui::StatusBubble::new(),
+            last_status_label: None,
+            shots_status: false,
         }
     }
 
@@ -216,6 +236,13 @@ impl HexView {
             self.model.toggle_endian();
         }
         self
+    }
+
+    /// `--shots`: force the floating status bubble fully visible so a single
+    /// headless frame captures the floating chip.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(Instant::now());
     }
 
     /// Seed / replace the whole shared buffer at once — used when opening a file
@@ -928,83 +955,73 @@ impl HexView {
         }
     }
 
-    fn draw_status(
-        &self,
+    /// The composed status label for the floating bubble: the cursor offset
+    /// (hex + decimal), plus the selection length and dirty count when present,
+    /// plus a transient save/open flash folded in when one is active. The
+    /// decorative keyboard-hint line the old strip carried is gone — it was
+    /// always identical and never told the user anything about their document.
+    fn status_bubble_label(&self) -> String {
+        let mut s = format!("0x{:08X}  ({})", self.model.cursor(), self.model.cursor());
+        let sel = self.model.selection_len();
+        if sel > 0 {
+            s.push_str(&format!("   sel {} B", sel));
+        }
+        if self.model.dirty_count() > 0 {
+            s.push_str(&format!("   ●{} edited", self.model.dirty_count()));
+        }
+        if let Some((msg, _error, _)) = &self.flash {
+            s.push_str(&format!("   {msg}"));
+        }
+        s
+    }
+
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// window — the reclaimed home of the old bottom status strip. It surfaces
+    /// on a real status change (the cursor offset, selection, dirty count, or a
+    /// fresh save/error flash) or while the pointer hovers the bottom-right
+    /// band, then fades. All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(
+        &mut self,
         scene: &mut Scene,
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        m: &GridMetrics,
     ) {
-        let tokens = &theme.tokens;
-        let bar = Rect::new(self.rect.x0, m.status_top, self.rect.x1, self.rect.y1);
-        scene.fill(Fill::NonZero, t, tokens.colors.surfaces.raised, None, &bar);
-        scene.fill(
+        let now = Instant::now();
+        let label = self.status_bubble_label();
+        // Poke only on a genuine change — `draw` runs every frame, so poking
+        // unconditionally would pin the bubble open forever.
+        if self.last_status_label.as_deref() != Some(label.as_str()) {
+            self.status_bubble.poke(now);
+            self.last_status_label = Some(label.clone());
+        }
+        let text_size = theme.tokens.typography.scale.sm;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_mouse);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
             Fill::NonZero,
+            BlendMode::default(),
+            alpha,
             t,
-            tokens.colors.border_standard,
-            None,
-            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + 1.0),
+            &rect.inflate(12.0, 14.0),
         );
-        let size = tokens.typography.scale.sm;
-        let pad = tokens.spacing.s4 as f64;
-        let cy = bar.y0 + (bar.height() - size as f64) / 2.0;
-
-        // Left: cursor offset (hex + decimal) and selection length.
-        let mut left = format!(
-            "0x{:08X}  ({})",
-            self.model.cursor(),
-            self.model.cursor()
-        );
-        let sel = self.model.selection_len();
-        if sel > 0 {
-            left.push_str(&format!("   sel {} B", sel));
-        }
-        if self.model.dirty_count() > 0 {
-            left.push_str(&format!("   ●{} edited", self.model.dirty_count()));
-        }
-        tr.draw_text_styled(
-            scene,
-            &left,
-            size,
-            tokens.colors.text_primary,
-            t * Affine::translate((bar.x0 + pad, cy)),
-            None,
-            TextWeight::Regular,
-            false,
-            true,
-        );
-        let (left_w, _) = tr.measure(&left, size, None);
-
-        // Middle: a transient status flash (Saved / error), just right of the
-        // cursor read-out.
-        if let Some((msg, error, _)) = &self.flash {
-            let color = if *error { tokens.colors.semantic.danger } else { tokens.colors.semantic.success };
-            tr.draw_text_weighted(
-                scene,
-                msg,
-                size,
-                color,
-                t * Affine::translate((bar.x0 + pad + left_w as f64 + 20.0, cy)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-
-        // Right: keyboard hints.
-        let hints = "Ctrl+O open · Ctrl+S save · Ctrl+F find · Ctrl+G goto · Tab col · Ins mode · E endian";
-        let (hw, _) = tr.measure(hints, tokens.typography.scale.xs, None);
-        tr.draw_text(
-            scene,
-            hints,
-            tokens.typography.scale.xs,
-            tokens.colors.text_dim,
-            t * Affine::translate((
-                bar.x1 - pad - hw as f64,
-                bar.y0 + (bar.height() - tokens.typography.scale.xs as f64) / 2.0,
-            )),
-            None,
-        );
+        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     /// The no-file zero-state: a title, a one-line explanation, and a single
@@ -1372,8 +1389,10 @@ impl Widget for HexView {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while a portal pick is in flight (so it drains
-        // once the host dialog closes) and while a flash is counting down.
-        self.is_busy()
+        // once the host dialog closes), while a flash is counting down, and
+        // while the floating status bubble is lingering / fading so it hides
+        // itself without needing a stray pointer event.
+        self.is_busy() || self.status_bubble.needs_frame(Instant::now())
     }
 
     fn build_layout(
@@ -1438,7 +1457,9 @@ impl Widget for HexView {
         self.draw_header(scene, transform, text_renderer, theme, &m);
         self.draw_grid(scene, transform, text_renderer, theme, &m);
         self.draw_inspector(scene, transform, text_renderer, theme, &m);
-        self.draw_status(scene, transform, text_renderer, theme, &m);
+        // The permanent status strip is gone; a transient floating bubble
+        // surfaces the cursor read-out over the reclaimed space at the bottom.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
     }
 
     fn draw_overlay(
@@ -1703,7 +1724,6 @@ struct GridMetrics {
     col_header_y: f64,
     grid_top: f64,
     grid_bottom: f64,
-    status_top: f64,
     row_h: f64,
     cell_font: f32,
     byte_w: f64,
@@ -1741,12 +1761,13 @@ impl GridMetrics {
 
     fn new(rect: Rect, bpr: usize) -> Self {
         let header_bottom = rect.y0 + 44.0;
-        let status_h = 28.0;
-        let status_top = rect.y1 - status_h;
         let col_header_h = 20.0;
         let col_header_y = header_bottom + 10.0;
         let grid_top = col_header_y + col_header_h;
-        let grid_bottom = status_top - 8.0;
+        // No permanent status strip any more — the cursor read-out floats in a
+        // transient bubble — so the byte grid + inspector reclaim that space and
+        // span to the window bottom, keeping only a small margin off the edge.
+        let grid_bottom = rect.y1 - 8.0;
 
         let cell_font = Self::CELL_FONT;
         let row_h = Self::ROW_H;
@@ -1772,7 +1793,6 @@ impl GridMetrics {
             col_header_y,
             grid_top,
             grid_bottom,
-            status_top,
             row_h,
             cell_font,
             byte_w,
