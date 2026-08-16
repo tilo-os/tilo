@@ -281,4 +281,30 @@ $(printf '%s\n' "$bogus" | sed 's/^/      /')
   fi
 fi
 
+# --- nobody may re-enable ashpd's default backend ----------------------------
+# ashpd refuses to compile with both of its runtime backends on:
+#   compile_error!("You can't enable both async-std & tokio features at once")
+# Its own default is async-std; the workspace pins it to
+# `default-features = false, features = ["tokio"]` so the whole graph agrees on
+# one runtime. A member that says `default-features = true` does not get a
+# private async-std copy — cargo unions features, so it turns ashpd off for
+# every portal-using crate at once.
+#
+# apps/chat did exactly that, and it was invisible: chat's ashpd is behind
+# `live-media`, which is off by default, so no ordinary build, no --shots run
+# and no CI job ever compiled it. The OS image is the first thing that asks for
+# that feature, so the image build is where it surfaced — after the cold Rust
+# compile. A grep costs nothing and catches it before the build starts.
+offenders="$(grep -rln 'ashpd *= *{[^}]*default-features *= *true' \
+               --include=Cargo.toml "$REPO" 2>/dev/null \
+             | grep -v '/vendor/' | sed "s|^$REPO/||" | tr '\n' ' ')"
+if [ -z "$offenders" ]; then
+  ok "no crate re-enables ashpd's default (async-std) backend over the workspace pin"
+else
+  bad "these crates ask for ashpd with default-features = true: $offenders
+      ashpd's default is async-std and the workspace pins tokio. Cargo unions
+      features, so this does not stay local — ashpd then has both backends and
+      refuses to compile at all, for every crate that uses a portal."
+fi
+
 exit "$fail"
