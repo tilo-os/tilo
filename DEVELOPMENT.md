@@ -204,14 +204,32 @@ furniture present — no `/var/workspace`, `/etc/qos`, `/var/lib/qos` or
 `/usr/share/qos-apps` — and says so rather than failing. Two warnings are worth
 knowing about:
 
-- **No signing identity.** `~/.config/qos/identity/primary.json` does not exist,
-  so the session boots without one; anything that wants to sign is unavailable.
 - **No `ush` runtime**, so the terminal falls back to `$SHELL` unconfined. That
   works interactively and fails inside an app sandbox.
+- **No first-boot unit.** The image runs `shell --firstboot` from a systemd
+  unit before the session; a host has none, so without help nothing ever
+  creates `~/.config/qos/identity/primary.json` and every session logs *"no qOS
+  identity found"*. Both session wrappers therefore pass `--firstboot`
+  themselves — it does the setup and falls through into the compositor, and
+  provisioning returns early once the record exists. Start the compositor by
+  hand (`./target/debug/shell`) and you get the warning, because you skipped
+  the wrapper.
+- **`shell/src/config.rs`'s `load_config` is dead code** — nothing calls it, and
+  it looks for `/etc/quick-desktop/desktop.toml` while the image ships
+  `/etc/qos/desktop.toml`. So `desktop.toml` configures nothing today, on a host
+  or on the image. The host package does not ship one rather than pretend
+  otherwise.
 
 `/var/workspace` is a FUSE mount `fs.service` makes on the qOS image; there is
 no such unit here, so the permission UI will talk about a path that is not
 mounted.
+
+The app list is *not* empty, though: alongside qOS packages the shell scans the
+ordinary XDG entry directories — `$XDG_DATA_HOME/applications`, each
+`$XDG_DATA_DIRS` entry's `applications`, and both Flatpak export directories
+(`crates/system/desktop-entry/src/scan.rs`). On this host that is 108 system
+entries plus 97 Flatpak ones, so host-installed apps and Flatpaks show up
+without a qOS registry existing at all.
 
 The one that used to be a trap is fixed by installing the package: the
 compositor spawns `/usr/libexec/qos-unlock-helper` to verify an unlock, and with
