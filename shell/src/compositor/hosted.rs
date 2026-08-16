@@ -467,10 +467,18 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // bind it the same way the headless backend does and run the App
     // with a proxy that injects clicks/hovers into the event loop.
     // Same code path as hardware events; same gate; same redraw.
+    //
+    // Gated on `dev_env::DEV_ENV_OVERRIDES` as well as the cargo feature,
+    // for the same reason the native path is: this socket drives the shell
+    // as if it were the user, so an installed binary must not be able to
+    // open one however it was compiled.
     #[cfg(feature = "hosted-test-control")]
     {
-        if let Some(path) = std::env::var_os("QOS_TEST_CONTROL") {
-            let socket_path = std::path::PathBuf::from(path);
+        if let Some(path) = crate::compositor::native::test_control_path(
+            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+            std::env::var_os("QOS_TEST_CONTROL"),
+        ) {
+            let socket_path = path;
             qos_startup_metrics::mark("hosted-event-loop-enter");
             app.run_with_setup(move |proxy| {
                 crate::compositor::hosted_test_control::spawn(socket_path, proxy);
