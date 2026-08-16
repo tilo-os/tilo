@@ -129,21 +129,8 @@ fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
     assert_eq!(none[0].1, "Root");
 }
 
-#[test]
-fn search_filters_entries_by_lowercase_contains() {
-    use file_explorer::model::Entry;
-    let entries: Vec<Entry> = vec![
-        Entry { name: "README.md".into(), path: "r".into(), is_dir: false, size: 0, modified: None, mime: "text/markdown".into(), sync_state: None },
-        Entry { name: "Cargo.toml".into(), path: "c".into(), is_dir: false, size: 0, modified: None, mime: "text/plain".into(), sync_state: None },
-        Entry { name: "src".into(),        path: "s".into(), is_dir: true,  size: 0, modified: None, mime: "inode/directory".into(), sync_state: None },
-    ];
-    let filtered = file_explorer::files_app::filter_entries(&entries, "ARGO");
-    assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].name, "Cargo.toml");
-}
-
 // ---------------------------------------------------------------------------
-// Task 11 — behavioural parity tests
+// Behavioural parity tests
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -385,7 +372,17 @@ fn list_build_yields_a_file_view() {
         mime: String::new(),
         sync_state: None,
     }];
-    let w = build_list(&entries, &SelectionModel::new(), &new_sink(), 1.0, SortBy::Name, SortOrder::Ascending);
+    let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
+    let w = build_list(
+        &entries,
+        &SelectionModel::new(),
+        &new_sink(),
+        1.0,
+        SortBy::Name,
+        SortOrder::Ascending,
+        None,
+        rename_rect,
+    );
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
@@ -411,7 +408,8 @@ fn grid_mode_uses_responsive_file_view() {
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();
-    let w = build_grid(&entries, &sel, &sink, 1.0);
+    let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
+    let w = build_grid(&entries, &sel, &sink, 1.0, None, rename_rect);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 

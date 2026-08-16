@@ -1,94 +1,386 @@
-//! Toolbar widget-tree builder. Emits a `Row` of `quick-ui` buttons (with
-//! crisp vector icons) plus the search field, each wired to the app's
-//! [`CommandSink`](crate::command::CommandSink). Pure function — owns no
-//! state.
+//! `FileToolbar` — the file manager's single, calm top bar.
+//!
+//! One row, no banding:
+//!
+//! ```text
+//! [ ← → ↑ ]   [ Home › Projects › qos ················· ]   [ List | Grid ]  ( Sort by )  [ ⋯ ]
+//! ```
+//!
+//! * a nav cluster (back / forward / up) — the only icon-only controls, and
+//!   universally understood arrows;
+//! * the [`PathBar`] (breadcrumb that becomes an editable path field), which
+//!   grows to fill the middle;
+//! * a labelled `List | Grid` view switch;
+//! * a labelled **Sort** menu button, shown only in grid mode (list mode sorts
+//!   by clicking a column header);
+//! * a **⋯** overflow that opens the labelled "View options" menu (new folder /
+//!   file, show-hidden toggle, terminal).
+//!
+//! There is **no search field** (search is OS-owned, `ui/HIG.md` §5), **no
+//! reload button**, and **no unlabelled state-toggle icons** — the two cryptic
+//! symbolic controls and the mystery show-hidden toggle are gone; show-hidden
+//! now lives, clearly labelled with a check, inside the View menu.
+//!
+//! Because the [`PathBar`] holds live edit state (the in-progress path text +
+//! completion popover) that must survive the file manager's rebuild-each-frame
+//! composition, `FileToolbar` is held **persistently** by the app (like the
+//! body shell), and its stateless button children are rebuilt each layout.
+
+use std::collections::HashMap;
+
+use taffy::{
+    AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
+    Size, Style, TaffyTree,
+};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::Scene;
+
+use ui::icons::Icon;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::toggle_group::ToggleGroup;
+use ui::widget::toggle_group::Segment;
+use ui::widget::{Button, Widget};
 
 use crate::command::{push, CommandSink, FileCommand};
-use crate::model::{SortOrder, ViewMode};
-use ui::icons::Icon;
-use ui::widget::toggle_group::Segment;
-use ui::widget::{Button, Container, Row, TextInput, ToggleGroup, Widget};
+use crate::model::ViewMode;
+use crate::path_bar::PathBar;
 
-pub struct ToolbarSnapshot<'a> {
-    pub search_query: &'a str,
-    pub view_mode: ViewMode,
-    pub sort_order: SortOrder,
-    pub can_back: bool,
-    pub can_forward: bool,
-    pub can_up: bool,
+/// Compact nav-button size.
+const NAV_W: f32 = 36.0;
+const NAV_H: f32 = 32.0;
+
+pub struct FileToolbar {
+    sink: CommandSink,
+    /// The editable path bar (breadcrumb ⇄ text field). Persistent so an
+    /// in-progress path edit survives the app's per-frame rebuild.
+    path_bar: PathBar,
+    // Live context, refreshed each rebuild via `set_context`.
+    can_back: bool,
+    can_forward: bool,
+    can_up: bool,
+    view_mode: ViewMode,
+    // Stateless children, rebuilt each `build_layout`.
+    left: Vec<Box<dyn Widget>>,
+    right: Vec<Box<dyn Widget>>,
+    rect: Rect,
 }
 
-/// Compact toolbar icon-button size.
-const TB_BTN_W: f32 = 40.0;
-const TB_BTN_H: f32 = 36.0;
+impl FileToolbar {
+    pub fn new(sink: CommandSink) -> Self {
+        Self {
+            path_bar: PathBar::new(sink.clone()),
+            sink,
+            can_back: false,
+            can_forward: false,
+            can_up: false,
+            view_mode: ViewMode::List,
+            left: Vec::new(),
+            right: Vec::new(),
+            rect: Rect::ZERO,
+        }
+    }
 
-/// Build a compact icon button wired to push `cmd` when clicked. `enabled`
-/// drives the dimmed/inert affordance so nav buttons visibly reflect whether
-/// there's anywhere to go.
-fn icon_button(id: &str, icon: Icon, sink: &CommandSink, cmd: FileCommand, enabled: bool) -> Box<dyn Widget> {
-    let sink = sink.clone();
-    Box::new(
-        Button::new(id, "", None)
-            .with_icon(icon)
-            .with_size(TB_BTN_W, TB_BTN_H)
-            .with_enabled(enabled)
-            .on_click(move || push(&sink, cmd.clone())),
-    )
+    /// Refresh the live context (called before each rebuild).
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_context(
+        &mut self,
+        current: std::path::PathBuf,
+        home: Option<std::path::PathBuf>,
+        can_back: bool,
+        can_forward: bool,
+        can_up: bool,
+        view_mode: ViewMode,
+    ) {
+        self.can_back = can_back;
+        self.can_forward = can_forward;
+        self.can_up = can_up;
+        self.view_mode = view_mode;
+        self.path_bar.set_path(current, home);
+    }
+
+    /// Put the path bar into editable mode (the Ctrl+L "edit location" path).
+    pub fn begin_path_edit(&mut self) {
+        self.path_bar.begin_edit();
+    }
+
+    /// Whether the path bar is currently being edited (so the app leaves the
+    /// keyboard to it).
+    pub fn is_path_editing(&self) -> bool {
+        self.path_bar.is_editing()
+    }
+
+    fn nav_button(&self, id: &str, icon: Icon, cmd: FileCommand, enabled: bool) -> Box<dyn Widget> {
+        let sink = self.sink.clone();
+        Box::new(
+            Button::new(id, "", None)
+                .with_icon(icon)
+                .with_size(NAV_W, NAV_H)
+                .with_enabled(enabled)
+                .on_click(move || push(&sink, cmd.clone())),
+        )
+    }
+
+    fn build_left(&self) -> Vec<Box<dyn Widget>> {
+        vec![
+            self.nav_button("files.back", Icon::ArrowLeft, FileCommand::Back, self.can_back),
+            self.nav_button("files.forward", Icon::ArrowRight, FileCommand::Forward, self.can_forward),
+            self.nav_button("files.up", Icon::ArrowUp, FileCommand::Up, self.can_up),
+        ]
+    }
+
+    fn build_right(&self) -> Vec<Box<dyn Widget>> {
+        let mut out: Vec<Box<dyn Widget>> = Vec::new();
+
+        // View switch — labelled, so the active view is obvious.
+        let view_sink = self.sink.clone();
+        let selected = match self.view_mode {
+            ViewMode::List => 0,
+            ViewMode::Grid => 1,
+        };
+        out.push(Box::new(
+            ToggleGroup::new(vec![Segment::new("List"), Segment::new("Grid")], selected).on_change(
+                move |i| {
+                    let mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
+                    push(&view_sink, FileCommand::SetView(mode));
+                },
+            ),
+        ));
+
+        // Grid mode has no clickable column header, so it gets a labelled Sort
+        // menu button. List mode sorts by clicking a header, so it needs none.
+        if self.view_mode == ViewMode::Grid {
+            let sink = self.sink.clone();
+            out.push(Box::new(
+                Button::new("files.sort_menu", "Sort by", None)
+                    .with_icon(Icon::ArrowUpDown)
+                    .with_size(104.0, NAV_H)
+                    .on_click(move || push(&sink, FileCommand::OpenSortMenu)),
+            ));
+        }
+
+        // Overflow: the labelled View-options menu (new folder/file, show
+        // hidden, terminal). The trigger is the conventional ⋯ affordance; every
+        // action it reveals is spelled out in words.
+        let sink = self.sink.clone();
+        out.push(Box::new(
+            Button::new("files.view_menu", "", None)
+                .with_icon(Icon::MoreHorizontal)
+                .with_size(NAV_W, NAV_H)
+                .with_accessible_name("View options")
+                .on_click(move || push(&sink, FileCommand::OpenViewMenu)),
+        ));
+        out
+    }
+
+    /// Bottom-right anchor of the "View options" (⋯) button, so the app can
+    /// open its menu right-aligned under the button (never off the right edge).
+    /// The ⋯ is always the last control on the right.
+    pub fn view_menu_anchor(&self) -> Point {
+        self.right
+            .last()
+            .map(|b| {
+                let r = b.get_rect();
+                Point::new(r.x1, r.y1 + 2.0)
+            })
+            .unwrap_or_else(|| Point::new(self.rect.x1, self.rect.y1))
+    }
+
+    /// Bottom-right anchor of the "Sort by" button (present only in grid mode,
+    /// where it is the second control on the right, before the ⋯).
+    pub fn sort_menu_anchor(&self) -> Point {
+        self.right
+            .get(1)
+            .map(|b| {
+                let r = b.get_rect();
+                Point::new(r.x1, r.y1 + 2.0)
+            })
+            .unwrap_or_else(|| Point::new(self.rect.x1, self.rect.y1))
+    }
+
+    /// Group node ranges within the toolbar row's children.
+    fn child_groups<'a>(&self, children: &'a [NodeId]) -> (&'a [NodeId], NodeId, &'a [NodeId]) {
+        let nleft = self.left.len();
+        (&children[..nleft], children[nleft], &children[nleft + 1..])
+    }
 }
 
-/// Emit the toolbar widget tree.
-pub fn build_toolbar(snapshot: ToolbarSnapshot<'_>, sink: &CommandSink) -> Box<dyn Widget> {
-    let _ = snapshot.search_query; // shown by the search field via the CRDT
+impl Widget for FileToolbar {
+    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+        self.path_bar.sync(state, path);
+    }
 
-    // View-mode switch as a real segmented control so the active view is
-    // visibly selected (a plain pair of buttons couldn't show which is live).
-    let view_sink = sink.clone();
-    let selected_view = match snapshot.view_mode {
-        ViewMode::List => 0,
-        ViewMode::Grid => 1,
-    };
-    let view_switch = ToggleGroup::new(
-        vec![Segment::new("List"), Segment::new("Grid")],
-        selected_view,
-    )
-    .on_change(move |i| {
-        let mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
-        push(&view_sink, FileCommand::SetView(mode));
-    });
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let sp = &theme.tokens.spacing;
+        self.left = self.build_left();
+        self.right = self.build_right();
 
-    // Sort-order toggle: the glyph tracks the live direction so the button
-    // isn't a state-less no-op (chevron up = ascending, down = descending).
-    let sort_icon = match snapshot.sort_order {
-        SortOrder::Ascending => Icon::ChevronUp,
-        SortOrder::Descending => Icon::ChevronDown,
-    };
+        let mut child_nodes: Vec<NodeId> = Vec::new();
+        for c in &mut self.left {
+            child_nodes.push(c.build_layout(taffy, theme, node_map));
+        }
+        child_nodes.push(self.path_bar.build_layout(taffy, theme, node_map));
+        for c in &mut self.right {
+            child_nodes.push(c.build_layout(taffy, theme, node_map));
+        }
 
-    // No `no_wrap`: on a narrow window the control cluster wraps to a second
-    // line instead of colliding/clipping (the segmented view switch used to
-    // overlap the sort/terminal buttons at phone widths). Wide fits on one row,
-    // so the wrap never triggers there.
-    Box::new(
-        Row::new()
-            .push(icon_button("files.back", Icon::ArrowLeft, sink, FileCommand::Back, snapshot.can_back))
-            .push(icon_button("files.forward", Icon::ArrowRight, sink, FileCommand::Forward, snapshot.can_forward))
-            .push(icon_button("files.up", Icon::ArrowUp, sink, FileCommand::Up, snapshot.can_up))
-            .push(icon_button("files.refresh", Icon::RotateCw, sink, FileCommand::Refresh, true))
-            // The search field is `percent(1.0)` width; wrapped in a
-            // grow-from-zero container it fills the middle of a wide toolbar on
-            // one line yet lets the trailing controls wrap to a second line only
-            // when the window is genuinely narrow — instead of the field
-            // demanding the whole line and forcing an always-wrapped layout.
-            .push(Box::new(
-                Container::new().with_no_padding().with_flex_grow().with_child(Box::new(
-                    TextInput::new(vec![])
-                        .with_id("files.search")
-                        .with_on_change_path("files.search_query")
-                        .with_placeholder("Search"),
-                )),
-            ))
-            .push(icon_button("files.newfolder", Icon::FolderPlus, sink, FileCommand::NewFolder, true))
-            .push(Box::new(view_switch))
-            .push(icon_button("files.sort.toggle", sort_icon, sink, FileCommand::ToggleSortOrder, true))
-            .push(icon_button("files.open_terminal", Icon::Code, sink, FileCommand::OpenTerminal, true)),
-    )
+        let row_style = Style {
+            display: Display::Flex,
+            flex_direction: FlexDirection::Row,
+            align_items: Some(AlignItems::Center),
+            gap: Size { width: LengthPercentage::length(sp.s2), height: LengthPercentage::length(0.0) },
+            padding: TaffyRect {
+                left: LengthPercentage::length(sp.s3),
+                right: LengthPercentage::length(sp.s3),
+                top: LengthPercentage::length(sp.s2),
+                bottom: LengthPercentage::length(sp.s2),
+            },
+            size: Size { width: Dimension::percent(1.0), height: Dimension::auto() },
+            flex_shrink: 0.0,
+            ..Default::default()
+        };
+        let node = taffy.new_with_children(row_style, &child_nodes).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        let base = Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(children) = taffy.children(node) {
+            let nleft = self.left.len();
+            for (c, &n) in self.left.iter_mut().zip(children.iter()) {
+                c.apply_layout(taffy, n, base);
+            }
+            if let Some(&pn) = children.get(nleft) {
+                self.path_bar.apply_layout(taffy, pn, base);
+            }
+            for (c, &n) in self.right.iter_mut().zip(children.iter().skip(nleft + 1)) {
+                c.apply_layout(taffy, n, base);
+            }
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for c in &mut self.left {
+            c.draw(scene, transform, tr, theme, presence);
+        }
+        self.path_bar.draw(scene, transform, tr, theme, presence);
+        for c in &mut self.right {
+            c.draw(scene, transform, tr, theme, presence);
+        }
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &ui::permissions::PermissionContext,
+    ) {
+        for c in &mut self.left {
+            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
+        }
+        self.path_bar
+            .draw_with_presence(scene, transform, tr, theme, presence, permissions);
+        for c in &mut self.right {
+            c.draw_with_presence(scene, transform, tr, theme, presence, permissions);
+        }
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // The path bar's completion popover is the only overlay here.
+        self.path_bar.draw_overlay(scene, transform, tr, theme, presence);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let Ok(children) = taffy.children(node_id) else { return };
+        let (left_ns, path_n, right_ns) = self.child_groups(&children);
+        // Path bar first, so it captures the keyboard while editing.
+        self.path_bar.handle_event(
+            event, scale_factor, modifiers, state, path, handled, focus_target, path_n, taffy,
+        );
+        for (c, &n) in self.left.iter_mut().zip(left_ns.iter()) {
+            if *handled {
+                break;
+            }
+            c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+        }
+        for (c, &n) in self.right.iter_mut().zip(right_ns.iter()) {
+            if *handled {
+                break;
+            }
+            c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
+        }
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        let mut v: Vec<&dyn Widget> = self.left.iter().map(|c| c.as_ref()).collect();
+        v.push(&self.path_bar);
+        v.extend(self.right.iter().map(|c| c.as_ref()));
+        v
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        for c in &mut self.left {
+            v.push(c.as_mut());
+        }
+        v.push(&mut self.path_bar);
+        for c in &mut self.right {
+            v.push(c.as_mut());
+        }
+        v
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        self.path_bar.cursor_shape(point)
+    }
+
+    fn name(&self) -> &str {
+        "FileToolbar"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 }
