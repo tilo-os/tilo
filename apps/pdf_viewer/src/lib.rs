@@ -27,7 +27,7 @@ pub mod text_layer;
 pub use app::PdfApp;
 pub use doc::PdfDoc;
 pub use model::{
-    AnnoKind, Annotation, Comment, Document, Signature, Swatch, Tool,
+    AnnoKind, Annotation, Comment, Document, Signature, SignatureInk, Swatch, Tool,
 };
 
 pub mod source;
