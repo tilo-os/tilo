@@ -162,6 +162,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
         hyphen libavif libepoxy libmanette libxslt \
         nasm \
+        gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
 
 WORKDIR /build
@@ -225,6 +226,30 @@ COPY --from=wpe-builder /wpe/ /
 # `qos-install` pack and install those apps into the image-wide store below,
 # and `qos-install` ships so the running system can install and remove
 # packages of its own.
+# Every media engine in this tree sits behind a cargo feature that is OFF by
+# default, and deliberately so: `--shots`, the offline tests and CI must build
+# without a GStreamer stack, a camera or a network. An image that takes those
+# defaults is the one case where the trade-off is wrong — it ships a music
+# player that cannot produce sound, a video player that synthesises frames
+# instead of decoding them, a camera that cannot capture and clients whose
+# network backends are compiled out. The features are named here so the image,
+# and only the image, turns them on.
+#
+# Package-qualified (`<pkg>/<feature>`), which cargo resolves because every one
+# of these packages is already selected through APP_PKGS. Feature unification
+# means `ui` is built once with the union (portal + mpris), which is additive
+# and what the apps that ask for it need anyway.
+#
+# `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
+# engine behind it is the browser's, which QOS_WITH_BROWSER=0 does not build.
+#
+# `video_editor` takes decode and gst but no `portal`, because it has no such
+# feature to take: it depends on `ui` with features = ["portal"] unconditionally,
+# so its file chooser is compiled in on every build including --shots. Asking for
+# `video_editor/portal` is not a no-op — cargo refuses the whole invocation with
+# "none of the selected packages contains these features", which fails the image
+# build after the package install and the cold Rust compile have already run.
+# os/tests/app_store.sh checks each pair against cargo metadata for that reason.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -235,11 +260,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
                      | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
     && [ -n "${APP_PKGS}" ] \
         || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
+    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst" \
     && cargo build --release \
+        --features "${APP_FEATURES}" \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
-        -p qos-rollback -p qos-cli \
+        -p qos-rollback -p qos-cli -p ush \
         -p pkg-cli -p install -p cli-shim \
         ${APP_PKGS} \
         ${BROWSER_PKG} \
@@ -262,6 +289,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-pkg \
           target/release/qos-install \
           target/release/qos-cli-shim \
+          target/release/qos-ush \
           /out/ \
     && for m in /build/apps/*/qos-app.toml; do \
            b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -290,6 +318,16 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out
 # /usr/lib/qos-runtime/<version>/ and refuses to start the app when it is not
 # there. Baking "1" while the fleet asked for 2026.07 meant every packaged app
 # failed at launch with RuntimeBundleMissing.
+#
+# Baked at /usr/lib/qos-runtime/<version>/ — the path it will occupy on the
+# booted system — and not into a staging directory, for the same reason the app
+# store below is written at its final path. `qos-install` refuses to install a
+# package whose declared runtime is absent, and it looks for exactly two places:
+# the per-user bundle dir and this system one (runtime_status ->
+# runtime_bundle::system_bundle_path). Staging the bake somewhere else and
+# relocating it in the rootfs stage left that lookup failing during pack-apps,
+# so every packaged app was refused at *install* time with the message telling
+# the operator to run `qos-install runtime install` — 46 of them, and no image.
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
@@ -299,12 +337,12 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
         --arch "${ARCH}" \
         --from / \
         --identity /out/runtime-bundle-identity.json \
-        --out "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+        --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
     && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
     && /out/qos-runtime-bundle verify \
-        "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
     && rm -f /out/runtime-bundle-identity.json
 
@@ -330,19 +368,89 @@ RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
 
+# ---- Drop SQLite's WAL sidecars after every rpm transaction -----------------
+# rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
+# than letting SQLite delete them when the last connection closes. `-shm` is the
+# WAL *index*: pure derived state, valid only for the processes that mapped it,
+# and meaningless once the transaction's processes are gone. `-wal` is left at
+# zero bytes, i.e. already checkpointed into the database — so neither file
+# carries data, and neither survives correctly across a container layer.
+#
+# Every layer boundary is where that bites. The fedora-bootc base ships neither
+# file; every qOS image built so far shipped both, and every dnf step here left
+# a fresh pair in its layer. Reading such a layer back in the following RUN
+# yields a structurally corrupt database — duplicate b-tree page references and
+# wrong index entry counts under `pragma integrity_check`, with `rpm -qa` and
+# `rpm -ql` still fine because the Packages blob is intact while Basenames and
+# Dirnames are not. That surfaces as dnf refusing to resolve file dependencies
+# the base plainly satisfies ("/usr/bin/basename is needed by distrobox") and
+# `rpm -qf` reporting that no package owns files it just installed.
+#
+# So this is not a workaround for the corruption; it is not shipping derived
+# state that was never valid to ship. Only this stage needs it: the wpe-builder
+# and builder stages are thrown away and nothing in them reads the rpmdb after
+# their one transaction, and touching their dnf layers would invalidate a
+# ~45-minute engine build for nothing.
+#
+# What is established, and what is not — because the next person will need to
+# know which half to trust. Two earlier claims here were wrong and are corrected
+# below; they were drawn from single passes of a fault that does not reproduce
+# reliably, which is the trap this note now exists to prevent.
+#
+#   Established. Carrying the sidecars across a layer boundary does corrupt the
+#   database, and dropping them does help. Measured directly, one transaction
+#   per arm, everything else identical: sidecars KEPT -> `rpm --verifydb` DIRTY
+#   in the next layer and the following dnf transaction fails; sidecars DROPPED
+#   -> CLEAN, transaction succeeds. So this line earns its place.
+#
+#   Also established, and this is the correction. Dropping them is NOT
+#   sufficient, and the fault is INTERMITTENT. Replaying one real dnf step onto
+#   one real parent layer, with the sidecars dropped every time, gives CLEAN on
+#   some runs and DIRTY on others — roughly one in four here. A layer can
+#   therefore ship a corrupt rpmdb with no sidecar anywhere in it, which is
+#   exactly what happened to the `chrony … glibc-langpack-en … ` step: its layer
+#   verified DIRTY while the six dnf layers before it verified CLEAN, and two
+#   steps later dnf resolved against the damaged indexes, decided glibc was not
+#   installed, and rpm refused the transaction ("package glibc-common … is
+#   already installed").
+#
+#   Ruled out as the mechanism, each by A/B trials rather than reasoning:
+#   `sync` before the layer ends (did not help, and the sync arm was dirtier
+#   than the plain one); `VACUUM` on the database before dropping the sidecars
+#   (rewrites in place, same inode, did not help); and the reproducible-build
+#   flags `--source-date-epoch` / `--rewrite-timestamp` (dirty and clean runs on
+#   both sides). Nor is the storage stack what the previous note said: podman
+#   here is the NATIVE overlay driver on btrfs, not fuse-overlayfs — though
+#   "Native Overlay Diff: false" does mean the layer changeset is computed by
+#   walking and re-reading the tree, which is where a large file being rewritten
+#   in place is most plausibly captured inconsistently.
+#
+#   NOT established. Why the capture tears. It correlates with how much of the
+#   database a transaction rewrites — the step that upgrades glibc, replacing
+#   four packages and every file list they own, is the one that fails, while
+#   small pure-install steps rarely do — but that is an observation, not a
+#   mechanism. CI builds the same Containerfile under buildkit and has never
+#   reproduced it.
+#
+# So: keep dropping the sidecars, and do not trust a green build to mean the
+# fault is gone — it is a dice roll per layer. The assertion below is what
+# actually closes the loop, because it fails the build the moment the indexes
+# are damaged, whatever the mechanism turns out to be.
+ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
+
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     pipewire \
     pipewire-pulseaudio \
     wireplumber \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # GStreamer — the Music app plays audio through a `playbin` whose sink chain
 # ends in `autoaudiosink` (→ `pulsesink`, from -plugins-good, over the PipeWire
@@ -354,7 +462,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
     gstreamer1-plugin-libav \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
@@ -369,7 +477,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fprintd \
     fprintd-pam \
     polkit \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # System utilities.
 #
@@ -380,25 +488,38 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # full bus surface). Without this package the launcher logs a warning
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
+#
+# `git` is here because it was only ever in the throwaway builder stage: the
+# shipped system had none, so a developer on this machine could not clone the
+# repository the machine is built from. The Git client app does not need it —
+# it links a vendored libgit2 — so this is for the command line only.
+#
+# `cups` brings cups-client with it, which is what apps/settings' printers pane
+# actually calls: `lpstat -p -d` for the printer list, `lpstat -o` for the queue
+# and `cancel` per job. The pane already degrades honestly when lpstat is absent,
+# so the image shipped a printers pane that was permanently empty and correct
+# about it. The socket below is what makes those calls reach a daemon.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
     distrobox \
+    git \
+    cups \
     podman \
     foot \
     wl-clipboard \
     NetworkManager \
     fuse3 \
     cage \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # qOS backend (Sandbox Phase 4.3).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # ---------------------------------------------------------------------------
 # OS infrastructure (C2-C8)
@@ -413,7 +534,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     firewalld \
     bluez \
     power-profiles-daemon \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # C9 printing (cups). `cups` only — deliberately NOT `cups-browsed`, which is
 # the daemon that turns *remote* DNS-SD advertisements into local print
@@ -435,14 +556,14 @@ RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     google-noto-sans-fonts \
     google-noto-sans-mono-fonts \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Wayland runtime libraries (needed by compositor)
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
     libinput-devel \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # ---------------------------------------------------------------------------
 # Compiled qOS binaries (built in the `builder` stage above)
@@ -492,11 +613,18 @@ COPY --from=builder /out/qos-power /usr/bin/qos-power
 # It lives under /usr/libexec (not on $PATH) since only the compositor invokes
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
 COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
+# The confined shell runtime. Apps declare `ush = "required@<v>"` under
+# [sandbox.services] and the launcher refuses to start them when its socket is
+# absent — apps/terminal does, so without this binary and the user unit below
+# the packaged Terminal cannot launch. /usr/libexec because the terminal's own
+# lookup order is $QOS_USH_BIN, then /usr/libexec/qos-ush, then $PATH.
+COPY --from=builder /out/qos-ush /usr/libexec/qos-ush
+COPY os/usr/lib/systemd/user/qos-ush.service /usr/lib/systemd/user/qos-ush.service
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
               /usr/bin/qos-install /usr/bin/qos-pkg /usr/libexec/qos-cli-shim \
-              /usr/bin/qos-power /usr/libexec/qos-unlock-helper \
+              /usr/bin/qos-power /usr/libexec/qos-unlock-helper /usr/libexec/qos-ush \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; }
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
@@ -533,20 +661,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     at-spi2-atk \
     libmanette \
     libxslt \
-    && dnf clean all \
+    && dnf clean all && ${DROP_RPMDB_WAL} \
     && ldconfig
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
-# image's own rootfs at /out/qos-runtime-bundle-tree/${RUNTIME_VERSION}
-# and wrote its publisher pubkey to /out/runtime-bundle-publisher.hex.
-# Install both here so:
+# image's own rootfs at /usr/lib/qos-runtime/${RUNTIME_VERSION} — the same
+# path it takes here, because `qos-install` had to find it there while
+# packing the app store — and wrote its publisher pubkey to
+# /out/runtime-bundle-publisher.hex. Install both here so:
 #   * The launcher's `/usr/lib/qos-runtime/<v>/` lookup succeeds out
 #     of the box — no `qos-install runtime install --from-host` needed
 #     after first boot.
 #   * The signature check the launcher performs before every mount
 #     accepts this bake (the pubkey is the trust root).
-COPY --from=builder /out/qos-runtime-bundle-tree/ /usr/lib/qos-runtime/
+COPY --from=builder /usr/lib/qos-runtime/ /usr/lib/qos-runtime/
 COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/qos/runtime-bundle-publisher.hex
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
@@ -735,7 +864,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # The signing tools, in their own transaction and allowed to be absent.
 #
@@ -756,7 +885,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         sbsigntools \
         efitools \
         systemd-ukify \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
@@ -886,7 +1015,7 @@ RUN case "${QOS_GENERATION}" in \
 # it when automatic unlock has failed.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         tpm2-tools \
-    && dnf clean all && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+    && dnf clean all && ${DROP_RPMDB_WAL} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
 
 COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
 COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
@@ -982,7 +1111,7 @@ RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
 # compiler-rt also has to be present for qos-launcher's scoped hardening, which
 # preloads the same library into the packages listed in
 # /usr/lib/qos/untrusted-parsers.conf.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && ${DROP_RPMDB_WAL} && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
@@ -1021,6 +1150,10 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 # `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
 # user-opt-in part.
 #
+# `qos-ush.service` is `--global` enabled too, and has to be: it owns the
+# `ush` service socket that every app declaring `ush = "required@<v>"` is
+# refused without, which today is the Terminal.
+#
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
 # pipewire + pipewire-pulse, plus the wireplumber session manager).
 RUN systemctl enable greetd.service && \
@@ -1028,9 +1161,15 @@ RUN systemctl enable greetd.service && \
     systemctl enable shell-firstboot.service && \
     systemctl enable fs.service && \
     systemctl --global enable qos-identity.service && \
+    systemctl --global enable qos-ush.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
+# Printing is socket-activated rather than always-on: cupsd starts when
+# something first talks to it (the settings pane's lpstat, or a print dialog)
+# and costs nothing on a machine that never prints.
+RUN systemctl enable cups.socket
+
 RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
@@ -1211,7 +1350,26 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
-    dnf clean all
+    dnf clean all && ${DROP_RPMDB_WAL}
+
+# The rpm database this image ships is intact and carries no WAL sidecars.
+#
+# Asserted positively rather than by absence of an error, because that is how
+# this failed before: `rpm -qa` kept working off the Packages blob while the
+# Basenames/Dirnames indexes were structurally corrupt, so every step still
+# "succeeded" until a dnf resolve needed a file dependency and claimed the base
+# image did not provide /usr/bin/basename. `rpm -qf` on a file the base owns is
+# the cheapest query that actually reads those indexes.
+RUN test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+        || { echo "rpmdb.sqlite-wal is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
+ && test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+        || { echo "rpmdb.sqlite-shm is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
+ && owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
+ && case "$owner" in \
+      coreutils-*) echo "rpmdb file index intact: /usr/bin/basename -> $owner" ;; \
+      *) echo "rpmdb file index is corrupt: /usr/bin/basename -> $owner" >&2; exit 1 ;; \
+    esac \
+ && rpm --verifydb
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
 # state it once did: offering `qos-install --encrypt` while carrying no
