@@ -1110,28 +1110,14 @@ impl SnippetsApp {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
         let pad = 16.0;
-        let mut y = area.y0 + 18.0;
-
-        // App title. When the sidebar is an overlay flap the top-left toggle
-        // (close-X) floats over this same corner, so indent the title past it
-        // to avoid the glyphs colliding.
-        let title_x = if self.sidebar_layout() == SplitLayout::Overlay {
-            area.x0 + pad + TOGGLE_SIZE + 6.0
+        // No app-name wordmark: the OS titlebar shows "Snippets". Docked, the
+        // folder list starts at the top; as an overlay flap, keep a small band
+        // so the top-left close toggle floating over this corner has room.
+        let mut y = if self.sidebar_layout() == SplitLayout::Overlay {
+            area.y0 + TOGGLE_SIZE + 14.0
         } else {
-            area.x0 + pad
+            area.y0 + 14.0
         };
-        draw::text(
-            scene,
-            tr,
-            t,
-            "Snippets",
-            title_x,
-            y,
-            20.0,
-            c.text_primary,
-            TextWeight::Bold,
-        );
-        y += 34.0;
 
         // Smart folders.
         for smart in [SmartFolder::All, SmartFolder::Favorites, SmartFolder::MostUsed] {
