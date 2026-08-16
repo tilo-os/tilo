@@ -5424,6 +5424,62 @@ mod tests {
         );
     }
 
+    /// Route-finding never blocks the UI thread: entering Directions shows an
+    /// instant fallback synchronously, then the heavy work (fetch + geometry
+    /// simplification) runs on a worker thread and its result is folded through
+    /// the same channel + `drain_net` idle path the live worker uses. The worker
+    /// here mirrors `net::route`, simplifying dense geometry off the UI thread.
+    #[test]
+    fn route_reply_folds_from_a_worker_thread() {
+        let mut a = app_at(1280.0, 800.0);
+        a.select_place("marienplatz");
+        a.enter_directions();
+        // A fallback route is on screen immediately — the UI never waited.
+        let fallback = a.model.route.clone().expect("instant fallback route shown synchronously");
+        assert!(fallback.distance_m > 0.0, "fallback is a real, non-empty estimate");
+
+        let origin = a.model.origin.expect("origin set by entering directions");
+        let dest = a.model.dest.expect("destination set from the selection");
+        let tx = a.net_tx.clone();
+        // Worker thread: build dense OSRM-style geometry and simplify it off the
+        // UI thread, exactly as `net::route` does, then deliver over the channel.
+        let worker = std::thread::spawn(move || {
+            let dense: Vec<LatLon> = (0..500)
+                .map(|i| {
+                    let f = i as f64 / 499.0;
+                    LatLon::new(
+                        origin.lat + (dest.lat - origin.lat) * f,
+                        origin.lon + (dest.lon - origin.lon) * f,
+                    )
+                })
+                .collect();
+            let geometry = crate::geo::simplify_polyline(&dense, 3.0);
+            let route = crate::model::Route {
+                mode: TravelMode::Car,
+                distance_m: 4200.0,
+                duration_s: 600.0,
+                geometry,
+                steps: Vec::new(),
+                from: origin,
+                to: dest,
+            };
+            tx.send(NetMsg::Route(Ok(route))).unwrap();
+            dense.len()
+        });
+        let dense_len = worker.join().expect("worker thread completes");
+
+        // UI thread folds the worker's reply via the production drain path.
+        a.drain_net();
+        let landed = a.model.route.clone().expect("route present after drain");
+        assert_eq!(landed.distance_m, 4200.0, "the worker's route replaced the fallback");
+        assert!(
+            landed.geometry.len() < dense_len,
+            "geometry simplified on the worker: {} < {dense_len}",
+            landed.geometry.len()
+        );
+        assert!(landed.geometry.len() >= 2, "endpoints retained");
+    }
+
     // --- Location services -------------------------------------------------
 
     /// The "use my location" success path: a mocked portal fix becomes the route
