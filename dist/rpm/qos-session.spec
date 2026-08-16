@@ -36,9 +36,23 @@ Source0:        %{name}-%{version}.tar.gz
 # architecture. Nothing here is portable to another one.
 ExclusiveArch:  x86_64
 
-# The unlock helper dlopen()s libpam at runtime rather than linking it, so the
-# automatic ELF dependency scan cannot see this one.
+# Everything below is dlopen()ed at runtime, so the automatic ELF dependency
+# scan cannot see any of it — `ldd` on the compositor lists the libinput/seat/
+# xkbcommon stack and stops there. Left implicit, the package would install
+# cleanly onto a host with no Vulkan loader and the session would die at the
+# login screen instead, which is the worst of the two failures.
+#
+# The unlock helper resolves libpam itself (see its `pam` module).
 Requires:       pam
+# wgpu reaches Vulkan through ash, which dlopens libvulkan.so.1.
+Requires:       vulkan-loader
+# libEGL.so.1, for the DRM backend's buffer path.
+Requires:       libglvnd-egl
+# An ICD for the loader to find. Recommends rather than Requires because the
+# driver is hardware-specific — a Mesa host wants this one, an NVIDIA host gets
+# its ICD from the proprietary or nvidia-open driver package instead, and
+# depending on Mesa there would be wrong.
+Recommends:     mesa-vulkan-drivers
 # The session is only reachable through a login manager that scans
 # /usr/share/wayland-sessions. Not a hard Requires — greetd, SDDM and GDM all
 # qualify and the package should not pick one for the host.
