@@ -1,0 +1,384 @@
+//! Live system status for the top bar: battery, network, volume.
+//!
+//! The tray used to paint three lucide glyphs — Wi-Fi, Monitor, Battery —
+//! in dim text with nothing behind them. They were ornament: the same
+//! three shapes on a charging laptop, a dead one, and a desktop with the
+//! cable pulled out. This module is the state behind them.
+//!
+//! # Why a thread and not the frame loop
+//!
+//! Two of the three readings cost a subprocess (`nmcli`, `wpctl`), and
+//! the compositor's frame loop is the one place in the system that must
+//! never wait on one — a 200 ms `fork`/`exec` there is a dropped frame,
+//! and `nmcli` can take much longer than that. So the reads happen on a
+//! plain OS thread which owns a snapshot, and the frame loop only ever
+//! copies that snapshot, which is a mutex acquire.
+//!
+//! A plain thread rather than a task on the compositor's tokio runtime:
+//! the work is blocking `Command::output`, which would occupy that
+//! runtime's single worker and stall the notification service behind it.
+//!
+//! # Why the poller is opt-in
+//!
+//! [`StatusBridge::spawn`] is called from the compositor's real-session
+//! constructors only. A `--shots` render or a headless test must produce
+//! the same pixels on every machine, and a tray driven by the host's
+//! actual battery would make every golden image a function of whichever
+//! laptop rendered it. With no poller the readings stay `None`, and
+//! [`SystemStatus`] renders an absent reading as *nothing* rather than as
+//! a plausible-looking default — an indicator that invents a battery
+//! level is worse than no indicator.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use os_actions::{LinkKind, LinkStatus, VolumeState};
+use qos_power_mgmt::{BatterySnapshot, BatteryState};
+
+/// How often the poller re-reads. Fast enough that plugging in a charger
+/// or walking out of Wi-Fi range shows up while the user is still
+/// thinking about it, slow enough that two `nmcli` invocations a minute
+/// is the whole cost.
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Everything the tray draws. Every field is `Option` because "we have
+/// not read this yet" and "this machine does not have one" are both real
+/// and are both drawn as absence, not as a zero.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SystemStatus {
+    /// `None` until the first poll. `Some(snapshot)` with
+    /// `present == false` on a machine with no battery.
+    pub battery: Option<BatterySnapshot>,
+    pub link: Option<LinkStatus>,
+    pub volume: Option<VolumeState>,
+}
+
+impl SystemStatus {
+    /// Whether the battery is low enough to warrant the warning colour.
+    /// Matches `PowerPolicy`'s default low threshold; a charging battery
+    /// is never "low" however empty, because it is filling.
+    pub fn battery_is_low(&self) -> bool {
+        self.battery.is_some_and(|b| {
+            b.present && b.state.is_discharging() && b.percent <= 20
+        })
+    }
+
+    /// Critical enough to be alarming rather than merely dim.
+    pub fn battery_is_critical(&self) -> bool {
+        self.battery.is_some_and(|b| {
+            b.present && b.state.is_discharging() && b.percent <= 5
+        })
+    }
+
+    pub fn battery_is_charging(&self) -> bool {
+        self.battery
+            .is_some_and(|b| b.present && matches!(b.state, BatteryState::Charging))
+    }
+
+    /// The battery reading to draw, or `None` when there is no battery to
+    /// draw (absent, or not yet read).
+    pub fn battery_percent(&self) -> Option<u8> {
+        self.battery.filter(|b| b.present).map(|b| b.percent)
+    }
+
+    /// Whether audio is effectively silent — muted, or turned all the way
+    /// down. Both need the crossed-out speaker; a user who muted and a
+    /// user who dragged the slider to zero are asking the same question
+    /// of the icon.
+    pub fn audio_is_silent(&self) -> bool {
+        self.volume
+            .is_some_and(|v| v.muted || v.level <= f32::EPSILON)
+    }
+
+    /// A one-line description for the tray's accessible name and for
+    /// tests that want to assert on meaning rather than pixels.
+    pub fn summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        match &self.link {
+            Some(l) if l.kind == LinkKind::Wired => parts.push(
+                l.name
+                    .clone()
+                    .map(|n| format!("Wired: {n}"))
+                    .unwrap_or_else(|| "Wired".to_string()),
+            ),
+            Some(l) if l.kind == LinkKind::Wifi => parts.push(
+                l.name
+                    .clone()
+                    .map(|n| format!("Wi-Fi: {n}"))
+                    .unwrap_or_else(|| "Wi-Fi".to_string()),
+            ),
+            Some(_) => parts.push("Offline".to_string()),
+            None => {}
+        }
+        if let Some(v) = self.volume {
+            parts.push(if v.muted {
+                "Muted".to_string()
+            } else {
+                format!("Volume {}%", (v.level * 100.0).round() as u32)
+            });
+        }
+        if let Some(pct) = self.battery_percent() {
+            parts.push(if self.battery_is_charging() {
+                format!("Battery {pct}%, charging")
+            } else {
+                format!("Battery {pct}%")
+            });
+        }
+        if parts.is_empty() {
+            "System status".to_string()
+        } else {
+            parts.join(" · ")
+        }
+    }
+}
+
+/// A snapshot shared between the polling thread and the frame loop.
+///
+/// Cloning shares the same reading (it is an `Arc` bump), which is what
+/// lets the media-key handler push a fresh volume in without waiting for
+/// the next poll — a volume key must move the indicator *now*, not up to
+/// five seconds later.
+#[derive(Clone, Debug, Default)]
+pub struct StatusBridge {
+    inner: Arc<Mutex<SystemStatus>>,
+    /// Set once a poller thread owns this bridge, so a second
+    /// `spawn` on the same bridge is a no-op rather than a second thread
+    /// racing the first.
+    polling: Arc<AtomicBool>,
+}
+
+impl StatusBridge {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Read the current snapshot.
+    pub fn snapshot(&self) -> SystemStatus {
+        self.inner.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Overwrite the whole snapshot. Used by the poller.
+    pub fn set(&self, status: SystemStatus) {
+        if let Ok(mut g) = self.inner.lock() {
+            *g = status;
+        }
+    }
+
+    /// Publish a volume reading out of band, so a media key updates the
+    /// indicator and the OSD in the same frame it was pressed.
+    pub fn set_volume(&self, volume: VolumeState) {
+        if let Ok(mut g) = self.inner.lock() {
+            g.volume = Some(volume);
+        }
+    }
+
+    /// Whether a poller is already running against this bridge.
+    pub fn is_polling(&self) -> bool {
+        self.polling.load(Ordering::Relaxed)
+    }
+
+    /// Start the background poller. Idempotent: calling twice on the same
+    /// bridge starts one thread.
+    ///
+    /// The thread reads once immediately so the tray is populated within
+    /// milliseconds of the session starting, then settles into
+    /// [`POLL_INTERVAL`].
+    pub fn spawn(&self) {
+        if self.polling.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let bridge = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("qos-status".to_string())
+            .spawn(move || {
+                loop {
+                    bridge.set(read_once());
+                    std::thread::sleep(POLL_INTERVAL);
+                }
+            });
+        if let Err(e) = spawned {
+            // A machine that cannot spawn a thread has bigger problems,
+            // but the tray must degrade to "unknown" rather than to a
+            // process that refuses to start.
+            tracing::warn!(target: "qos::status", error = %e, "status poller not started");
+            self.polling.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+/// One full read of every source. Public so a diagnostic or a test can
+/// take a reading without owning a poller.
+pub fn read_once() -> SystemStatus {
+    // Battery is a file read, so it is always attempted and always cheap.
+    let battery = Some(qos_power_mgmt::sysfs_battery_snapshot());
+    // The two shell-outs are allowed to fail — a machine without
+    // NetworkManager or without PipeWire simply has no reading, and the
+    // indicator omits that glyph rather than claiming a state.
+    let link = os_actions::get_link_status().ok();
+    let volume = os_actions::get_volume_state().ok();
+    SystemStatus {
+        battery,
+        link,
+        volume,
+    }
+}
+
+/// Signal-strength bucket to draw for a link: `0` when offline or when
+/// the link is wired (a cable has no bars), `1..=4` on Wi-Fi.
+pub fn link_bars(link: &LinkStatus) -> u8 {
+    match link.kind {
+        LinkKind::Wifi => link.signal.clamp(1, 4),
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn battery(percent: u8, state: BatteryState) -> BatterySnapshot {
+        BatterySnapshot {
+            present: true,
+            percent,
+            state,
+        }
+    }
+
+    #[test]
+    fn an_unread_status_reports_nothing_rather_than_a_default() {
+        let s = SystemStatus::default();
+        assert_eq!(s.battery_percent(), None);
+        assert!(!s.battery_is_low());
+        assert!(!s.audio_is_silent(), "unknown volume is not silence");
+        assert_eq!(s.summary(), "System status");
+    }
+
+    #[test]
+    fn a_machine_with_no_battery_draws_no_battery() {
+        let s = SystemStatus {
+            battery: Some(BatterySnapshot::absent()),
+            ..Default::default()
+        };
+        assert_eq!(
+            s.battery_percent(),
+            None,
+            "absent is not 100% — a desktop shows no gauge at all"
+        );
+    }
+
+    #[test]
+    fn low_is_only_low_while_discharging() {
+        let draining = SystemStatus {
+            battery: Some(battery(12, BatteryState::Discharging)),
+            ..Default::default()
+        };
+        assert!(draining.battery_is_low());
+        assert!(!draining.battery_is_critical());
+
+        let filling = SystemStatus {
+            battery: Some(battery(12, BatteryState::Charging)),
+            ..Default::default()
+        };
+        assert!(
+            !filling.battery_is_low(),
+            "a battery that is filling is not a warning, however empty"
+        );
+        assert!(filling.battery_is_charging());
+    }
+
+    #[test]
+    fn critical_is_also_low() {
+        let s = SystemStatus {
+            battery: Some(battery(3, BatteryState::Discharging)),
+            ..Default::default()
+        };
+        assert!(s.battery_is_critical());
+        assert!(s.battery_is_low(), "critical never skips the low styling");
+    }
+
+    #[test]
+    fn zero_volume_reads_as_silent_just_like_mute() {
+        let muted = SystemStatus {
+            volume: Some(VolumeState {
+                level: 0.6,
+                muted: true,
+            }),
+            ..Default::default()
+        };
+        let zeroed = SystemStatus {
+            volume: Some(VolumeState {
+                level: 0.0,
+                muted: false,
+            }),
+            ..Default::default()
+        };
+        assert!(muted.audio_is_silent());
+        assert!(zeroed.audio_is_silent());
+    }
+
+    #[test]
+    fn summary_names_the_connection_and_the_charge() {
+        let s = SystemStatus {
+            battery: Some(battery(64, BatteryState::Charging)),
+            link: Some(LinkStatus {
+                kind: LinkKind::Wifi,
+                name: Some("Cafe WiFi".into()),
+                signal: 3,
+            }),
+            volume: Some(VolumeState {
+                level: 0.35,
+                muted: false,
+            }),
+        };
+        assert_eq!(
+            s.summary(),
+            "Wi-Fi: Cafe WiFi · Volume 35% · Battery 64%, charging"
+        );
+    }
+
+    #[test]
+    fn a_wired_link_has_no_bars() {
+        let wired = LinkStatus {
+            kind: LinkKind::Wired,
+            name: Some("eth0".into()),
+            signal: 4,
+        };
+        assert_eq!(link_bars(&wired), 0);
+        assert_eq!(link_bars(&LinkStatus::offline()), 0);
+    }
+
+    #[test]
+    fn a_connected_radio_always_shows_at_least_one_bar() {
+        let weak = LinkStatus {
+            kind: LinkKind::Wifi,
+            name: Some("Far".into()),
+            signal: 0,
+        };
+        assert_eq!(
+            link_bars(&weak),
+            1,
+            "connected-but-weak must not render identically to offline"
+        );
+    }
+
+    #[test]
+    fn the_bridge_publishes_a_volume_without_waiting_for_a_poll() {
+        let b = StatusBridge::new();
+        assert_eq!(b.snapshot().volume, None);
+        b.set_volume(VolumeState {
+            level: 0.8,
+            muted: false,
+        });
+        assert_eq!(b.snapshot().volume.unwrap().level, 0.8);
+    }
+
+    #[test]
+    fn a_bridge_starts_no_poller_until_asked() {
+        let b = StatusBridge::new();
+        assert!(
+            !b.is_polling(),
+            "a screenshot render must not depend on the host's hardware"
+        );
+    }
+}

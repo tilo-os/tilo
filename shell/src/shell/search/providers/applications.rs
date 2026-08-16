@@ -9,7 +9,7 @@
 
 use std::rc::Rc;
 
-use crate::shell::chrome_state::Chrome;
+use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
@@ -41,7 +41,17 @@ impl ApplicationsProvider {
     /// provider can assert its own scale ranks below this one — the
     /// two scales only mean anything relative to each other, and a
     /// test that reimplemented either would not notice them drifting.
-    pub(crate) fn results_for(&self, needle: &str, apps: Vec<InstalledApp>) -> Vec<SearchResult> {
+    ///
+    /// `open_target` is only used to word the row — the launch reads the
+    /// live target again at activation time, because the user can retarget
+    /// the palette (or dismiss and reopen it) between the query that built
+    /// this row and the Enter that fires it.
+    pub(crate) fn results_for(
+        &self,
+        needle: &str,
+        apps: Vec<InstalledApp>,
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
         let kind = ResourceKind::Application;
         let mut out = Vec::new();
@@ -62,10 +72,15 @@ impl ApplicationsProvider {
             // The category, when the publisher declared one, is the more
             // useful second line than the version: it tells you what kind
             // of app the row will open.
-            let subtitle = match app.category.as_deref() {
+            // Where the window will land leads the line. It is the one
+            // part of a launch row that changes with context, and a user
+            // who opened the palette from a specific group's "+" needs to
+            // see that the pick honours that group before they commit.
+            let detail = match app.category.as_deref() {
                 Some(cat) => format!("{cat} · {}", app.package_id),
                 None => format!("{} · {}", app.package_id, app.version),
             };
+            let subtitle = format!("{} · {detail}", open_target.result_hint());
             out.push(SearchResult {
                 kind: kind.clone(),
                 provider_id: self.id().to_string(),
@@ -95,10 +110,16 @@ impl ApplicationsProvider {
                         // at are both still true — the window itself maps
                         // seconds later, on another process. See
                         // `crate::shell::placement`.
-                        crate::shell::placement::note_placement_for_launch(
+                        //
+                        // An explicit target beats the rule: the "+" on a
+                        // group's tab strip names the destination, and
+                        // that is a stronger statement of intent than any
+                        // inference from what happens to be selected.
+                        crate::shell::placement::note_placement_for_launch_targeted(
                             &package_id,
                             &tree,
                             st.strip_viewport(),
+                            st.open_target,
                         );
                         tree.active_workspace().map(|ws| {
                             launcher::set_workspace_capabilities(ws.capabilities.clone());
@@ -158,7 +179,7 @@ impl SearchProvider for ApplicationsProvider {
         {
             return Vec::new();
         }
-        self.results_for(ctx.needle, self.apps())
+        self.results_for(ctx.needle, self.apps(), ctx.chrome.open_target)
     }
 }
 
@@ -257,14 +278,14 @@ mod tests {
     #[test]
     fn matching_app_offers_an_open_row() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for("hel", vec![app("dev.qos.hello", "Hello")]);
+        let out = p.results_for("hel", vec![app("dev.qos.hello", "Hello")], OpenTarget::Beside);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "Open Hello");
         assert_eq!(out[0].id, "dev.qos.hello");
         assert_eq!(out[0].score, 100, "prefix match on the display name");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("dev.qos.hello · 0.1.0"),
+            Some("Opens beside · dev.qos.hello · 0.1.0"),
             "the row names the package it will launch"
         );
     }
@@ -272,19 +293,16 @@ mod tests {
     #[test]
     fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for(
-            "office",
-            vec![
+        let out = p.results_for("office", vec![
                 app_in("dev.qos.sheets", "Sheets", Some("Office")),
                 app_in("dev.qos.calculator", "Calculator", Some("Utility")),
-            ],
-        );
+            ], OpenTarget::Beside);
         assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
         assert_eq!(out[0].id, "dev.qos.sheets");
         assert_eq!(out[0].score, 20, "category ranks below name and id matches");
         assert_eq!(
             out[0].subtitle.as_deref(),
-            Some("Office · dev.qos.sheets"),
+            Some("Opens beside · Office · dev.qos.sheets"),
             "a declared category is the more useful second line than the version"
         );
     }
@@ -294,13 +312,10 @@ mod tests {
         let p = ApplicationsProvider::new();
         // "system" is Monitor's category AND a substring of the other
         // app's display name. The name match has to win.
-        let out = p.results_for(
-            "system",
-            vec![
+        let out = p.results_for("system", vec![
                 app_in("dev.qos.monitor", "Monitor", Some("System")),
                 app_in("dev.qos.sysinfo", "System Info", Some("Utility")),
-            ],
-        );
+            ], OpenTarget::Beside);
         assert_eq!(out.len(), 2);
         let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
         assert_eq!(score("dev.qos.sysinfo"), 100, "prefix on the display name");
@@ -311,16 +326,13 @@ mod tests {
     #[test]
     fn package_id_matches_score_below_name_matches() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for(
-            "dev.qos",
-            vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
-        );
+        let out = p.results_for("dev.qos", vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")], OpenTarget::Beside);
         assert_eq!(out.len(), 1, "only the matching package: {out:?}");
         // A shared id *prefix* names a publisher, not an app, so it
         // stays below a name match. It is no longer lumped in with an
         // incidental substring, hence 60 rather than the old flat 25.
         assert_eq!(out[0].score, 60);
-        let by_name = p.results_for("hello", vec![app("dev.qos.hello", "Hello")]);
+        let by_name = p.results_for("hello", vec![app("dev.qos.hello", "Hello")], OpenTarget::Beside);
         assert!(
             by_name[0].score > out[0].score,
             "naming the app must still beat naming its publisher"
@@ -338,10 +350,7 @@ mod tests {
     #[test]
     fn the_id_last_segment_is_an_identity_match() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for(
-            "hex-editor",
-            vec![app("dev.qos.hex-editor", "Hex Editor")],
-        );
+        let out = p.results_for("hex-editor", vec![app("dev.qos.hex-editor", "Hex Editor")], OpenTarget::Beside);
         assert_eq!(out.len(), 1, "the app must match at all: {out:?}");
         assert_eq!(
             out[0].score, 100,
@@ -349,27 +358,21 @@ mod tests {
              naming the app does"
         );
         // And the full id, spelled out.
-        let full = p.results_for(
-            "dev.qos.hex-editor",
-            vec![app("dev.qos.hex-editor", "Hex Editor")],
-        );
+        let full = p.results_for("dev.qos.hex-editor", vec![app("dev.qos.hex-editor", "Hex Editor")], OpenTarget::Beside);
         assert_eq!(full[0].score, 100);
     }
 
     #[test]
     fn non_matching_needle_returns_nothing() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for("zzzqqq", vec![app("dev.qos.hello", "Hello")]);
+        let out = p.results_for("zzzqqq", vec![app("dev.qos.hello", "Hello")], OpenTarget::Beside);
         assert!(out.is_empty());
     }
 
     #[test]
     fn empty_needle_lists_every_app() {
         let p = ApplicationsProvider::new();
-        let out = p.results_for(
-            "",
-            vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
-        );
+        let out = p.results_for("", vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")], OpenTarget::Beside);
         assert_eq!(out.len(), 2);
         assert!(out.iter().all(|r| r.score == 0));
     }
@@ -400,7 +403,7 @@ mod tests {
         let mut doc = AutoCommit::new();
         // The row is built against an app that the registry does not
         // actually contain, so `launcher::launch` refuses it.
-        let out = p.results_for("ghost", vec![app("dev.qos.ghost", "Ghost")]);
+        let out = p.results_for("ghost", vec![app("dev.qos.ghost", "Ghost")], OpenTarget::Beside);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(&mut doc, &automerge::ROOT, &c);

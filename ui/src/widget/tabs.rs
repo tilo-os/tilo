@@ -201,6 +201,11 @@ pub struct TabBar {
     /// action button: clicking it publishes `pending_search` for the
     /// shell to open the command palette scoped to that tab.
     search_rects: Vec<Rect>,
+    /// Hit region for the trailing "+" chip that opens a new tab in this
+    /// group. Recomputed every `apply_layout` from the x-cursor left
+    /// behind by the pill walk, so it always sits immediately after the
+    /// last pill regardless of pinning or title lengths.
+    new_tab_rect: Rect,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
     /// Tab whose maximize icon the pointer is currently over. Kept
@@ -208,6 +213,10 @@ pub struct TabBar {
     /// into each other.
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
+    /// Whether the pointer is over [`Self::new_tab_rect`]. Drives the
+    /// chip's hover wash and glyph brightening, same contract as the
+    /// per-pill hover indices.
+    hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
     /// Offset from the pressed pill's top-left corner to the cursor at
     /// press time. Populated in the `Pressed` branch alongside
@@ -233,6 +242,10 @@ pub struct TabBar {
     /// tab. The shell drains this and opens the command palette scoped
     /// to that tab (concept's "Search in App" per-tab action).
     pub pending_search: Option<u64>,
+    /// Populated when the user clicks the trailing "+" chip. The outer
+    /// `WindowGroup` drains it and republishes it with its own id so the
+    /// shell knows which group asked for the new tab.
+    pub pending_new_tab: Option<()>,
     /// Populated when a drag gesture is released while the cursor is
     /// *outside* this bar's own rect — the user intends to move the tab
     /// to a different window-group. Carries `(tab_id, release_point)` so
@@ -340,10 +353,12 @@ impl TabBar {
             close_rects: Vec::new(),
             max_rects: Vec::new(),
             search_rects: Vec::new(),
+            new_tab_rect: Rect::ZERO,
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            hover_new_tab: false,
             pinned_ids: HashSet::new(),
             press_origin: None,
             drag_offset: None,
@@ -353,6 +368,7 @@ impl TabBar {
             pending_close: None,
             pending_max: None,
             pending_search: None,
+            pending_new_tab: None,
             pending_detach: None,
             drop_zone_target: None,
             drop_zone_animated_at: None,
@@ -1036,6 +1052,12 @@ impl TabBar {
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
     pub fn take_search(&mut self) -> Option<u64> { self.pending_search.take() }
+    /// One-shot drain of a "+" click. `Some(())` means the user asked for
+    /// a new tab in this bar's group since the last drain.
+    pub fn take_new_tab(&mut self) -> Option<()> { self.pending_new_tab.take() }
+    /// Live hit rect of the trailing "+" chip. `Rect::ZERO` when the
+    /// pills have filled the bar and the chip is suppressed.
+    pub fn new_tab_rect(&self) -> Rect { self.new_tab_rect }
     /// Test-only accessor pinning the lucide glyph used for the per-tab
     /// close chip. Returning a hard-coded [`icons::Icon`] variant keeps
     /// the widget's concept-parity contract visible in the test suite:
@@ -1229,6 +1251,9 @@ pub const TAB_BAR_HEIGHT: f64 = 40.0;
 /// Vertical inset of each pill within the bar. Bar height 40 – 2 × 6 =
 /// 28 px pill height, matching the concept's `px-4 py-2 text-sm` pill.
 pub const TAB_PILL_INSET_Y: f64 = 6.0;
+/// Edge length of the trailing "+" chip. Square at pill height so it
+/// reads as part of the pill row rather than a bolted-on toolbar button.
+pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
 impl Widget for TabBar {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
@@ -1335,6 +1360,18 @@ impl Widget for TabBar {
             self.search_rects[i] = search_rect;
             x += w + gap;
         }
+        // Trailing "+" chip. `x` is the strip's write head, so the chip
+        // lands immediately after the last pill however the pills were
+        // sized or ordered. It is square and pill-height so it reads as a
+        // sibling of the tabs rather than a floating button, and it is
+        // suppressed once the pills have eaten the bar so it can never
+        // overhang the group.
+        let plus_x1 = x + NEW_TAB_CHIP_PX;
+        self.new_tab_rect = if plus_x1 <= self.rect.x1 {
+            Rect::new(x, pill_y0, plus_x1, pill_y1)
+        } else {
+            Rect::ZERO
+        };
     }
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // Defensive: if `apply_layout` hasn't repopulated `tab_rects` to
@@ -1476,6 +1513,70 @@ impl Widget for TabBar {
             if pill_alpha_active {
                 scene.pop_layer();
             }
+        }
+
+        // Trailing "+" chip — the only affordance in the shell that opens
+        // a new tab by pointer. Painted after the pills so a springing
+        // neighbour never draws over it, and skipped entirely while a tab
+        // drag is in flight so it can't be mistaken for a drop target.
+        if self.new_tab_rect.area() > 0.0 && self.pending_drag.is_none() {
+            let r = self.new_tab_rect;
+            let radius = r.height() / 2.0;
+            let shape = RoundedRect::from_rect(r, radius);
+            let colors = &theme.tokens.colors;
+            // Idle reads as a dotted-outline "slot" rather than a filled
+            // button: it has to sit next to real tabs without competing
+            // with the active pill for attention. Hover fills it with the
+            // same `surface_white_5` wash a hovered tab uses, so the row
+            // has one hover language.
+            if self.hover_new_tab {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    colors.surface_white_10,
+                    None,
+                    &shape,
+                );
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    colors.border_white_20,
+                    None,
+                    &shape,
+                );
+            } else {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
+                    transform,
+                    colors.border_white_10,
+                    None,
+                    &shape,
+                );
+            }
+            // Deliberately smaller than the per-tab action glyphs: at
+            // 14 px the plus's arms nearly touched the ring and the chip
+            // read as crowded rather than as an empty slot.
+            let glyph = 11.0_f64;
+            let c = r.center();
+            let glyph_rect = Rect::new(
+                c.x - glyph / 2.0,
+                c.y - glyph / 2.0,
+                c.x + glyph / 2.0,
+                c.y + glyph / 2.0,
+            );
+            let glyph_color = if self.hover_new_tab {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
+            icons::draw_icon(
+                scene,
+                transform,
+                glyph_rect,
+                icons::Icon::Plus,
+                glyph_color,
+                icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
 
         // Closing-pill fade-out pass. Each entry paints at its
@@ -1703,6 +1804,8 @@ impl Widget for TabBar {
                     .tab_rects
                     .iter()
                     .position(|r| r.contains(p));
+                self.hover_new_tab =
+                    self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
                 if let Some((idx, origin)) = self.press_origin {
                     if (p - origin).hypot() > DRAG_START_THRESHOLD_PX {
                         if let Some(t) = self.tabs.get(idx) {
@@ -1782,6 +1885,14 @@ impl Widget for TabBar {
                     .position(|r| r.contains(cursor_pos))
                     .filter(|&i| !is_pinned_at(i));
 
+                // The "+" chip sits in the bar's trailing space, which is
+                // also the whole-group drag-grab zone, so it has to win
+                // the press before anything else claims it.
+                if self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(cursor_pos) {
+                    self.pending_new_tab = Some(());
+                    *handled = true;
+                    return;
+                }
                 // Close button takes priority over selection/drag.
                 // `start_closing` seeds `pending_close` for the
                 // `WindowGroup`-level drain *and* latches the
@@ -1877,6 +1988,13 @@ impl Widget for TabBar {
     }
     fn name(&self) -> &str { "TabBar" }
     fn test_id(&self) -> Option<&str> { Some("tabs") }
+
+    /// Expose the "+" chip by name so a scenario clicks the rect the
+    /// renderer actually painted rather than a guessed coordinate. The
+    /// zero-area case (chip suppressed) is filtered out by the registry.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        vec![("tabbar_new_tab".to_string(), self.new_tab_rect)]
+    }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
