@@ -40,6 +40,72 @@ const DISC_D: f64 = 72.0;
 /// Icon glyph size drawn inside the disc.
 const ICON_D: f64 = 34.0;
 
+/// Which elements a caller asked for.
+#[derive(Clone, Copy, Debug)]
+struct Parts {
+    icon: bool,
+    message: bool,
+    action: bool,
+}
+
+/// Measured heights the stack is built from.
+#[derive(Clone, Copy, Debug)]
+struct Metrics {
+    title_h: f64,
+    msg_h: f64,
+    gap: f64,
+    btn_h: f64,
+}
+
+/// Which elements actually fit, and how tall the result is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Fit {
+    icon: bool,
+    message: bool,
+    total: f64,
+}
+
+impl Fit {
+    /// Shed decorative elements rather than overflow the rect.
+    ///
+    /// A zero-state is not always given a full pane: a docked panel is a couple
+    /// of hundred pixels tall, and centring a stack taller than the rect pushes
+    /// the message out through the bottom edge, where whatever sits below clips
+    /// it mid-sentence. The hero disc is the largest element and the one
+    /// carrying the least information, so it goes first. The message explains
+    /// the state and goes only if the title alone still does not fit. The title
+    /// and the action are never dropped — the first is the whole point and the
+    /// second is the only thing the user can do here.
+    fn choose(height: f64, parts: Parts, m: Metrics) -> Fit {
+        let stack = |icon: bool, message: bool| {
+            let mut t = m.title_h;
+            if icon {
+                t += DISC_D + m.gap;
+            }
+            if message {
+                t += m.gap * 0.5 + m.msg_h;
+            }
+            if parts.action {
+                t += m.gap + m.btn_h;
+            }
+            t
+        };
+        let mut icon = parts.icon;
+        let mut message = parts.message;
+        if icon && stack(true, message) > height {
+            icon = false;
+        }
+        if message && stack(icon, true) > height {
+            message = false;
+        }
+        Fit {
+            icon,
+            message,
+            total: stack(icon, message),
+        }
+    }
+}
+
 /// Shared layout + paint for the empty state, centered inside `rect`. Used by
 /// both [`EmptyState`]'s [`Widget::draw`] and the public immediate-mode
 /// [`EmptyState::paint`] entry point. Returns the action pill's rect (for
@@ -76,16 +142,23 @@ fn paint_empty_state(
         .map(|a| text_renderer.measure(a, btn_size, None))
         .unwrap_or((0.0, 0.0));
 
-    let mut total = title_h as f64;
-    if icon.is_some() {
-        total += DISC_D + gap;
-    }
-    if message.is_some() {
-        total += gap * 0.5 + msg_h as f64;
-    }
-    if action_label.is_some() {
-        total += gap + btn_h;
-    }
+    let fit = Fit::choose(
+        rect.height(),
+        Parts {
+            icon: icon.is_some(),
+            message: message.is_some(),
+            action: action_label.is_some(),
+        },
+        Metrics {
+            title_h: title_h as f64,
+            msg_h: msg_h as f64,
+            gap,
+            btn_h,
+        },
+    );
+    let icon = if fit.icon { icon } else { None };
+    let message = if fit.message { message } else { None };
+    let total = fit.total;
 
     let cx = rect.center().x;
     let mut y = rect.center().y - total / 2.0;
@@ -413,6 +486,64 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
         handled
+    }
+
+    /// Representative numbers: the dark theme's `xl` title and `sm` message at
+    /// the spacing scale a docked panel is drawn with.
+    fn metrics() -> Metrics {
+        Metrics {
+            title_h: 24.0,
+            msg_h: 18.0,
+            gap: 16.0,
+            btn_h: 34.0,
+        }
+    }
+
+    /// A zero-state in a short pane must shed elements, not overflow.
+    ///
+    /// A docked panel body is a couple of hundred pixels tall. Centring the
+    /// full stack in it put the message through the bottom edge, where the
+    /// status bar clipped it mid-sentence — which is how the code editor's
+    /// Problems panel shipped its "still indexing" state before this.
+    #[test]
+    fn a_short_pane_sheds_the_hero_disc_before_it_overflows() {
+        let want = Parts { icon: true, message: true, action: false };
+        let m = metrics();
+
+        // Tall pane: everything fits, nothing is dropped.
+        let roomy = Fit::choose(400.0, want, m);
+        assert!(roomy.icon && roomy.message, "a full pane keeps the whole stack");
+        assert!(roomy.total <= 400.0);
+
+        // Docked panel: the disc alone is 72px plus a 16px gap, so the stack
+        // does not fit and the disc is what goes.
+        let docked = Fit::choose(120.0, want, m);
+        assert!(!docked.icon, "the disc is shed first");
+        assert!(docked.message, "the explanation is kept while it fits");
+        assert!(
+            docked.total <= 120.0,
+            "and the result fits: {} in 120",
+            docked.total
+        );
+
+        // Barely any room: the message goes too, but never the title.
+        let cramped = Fit::choose(30.0, want, m);
+        assert!(!cramped.icon && !cramped.message);
+        assert_eq!(cramped.total, m.title_h, "the title always survives");
+    }
+
+    /// The action pill is the only thing the user can do, so it is never shed —
+    /// and it still counts toward what fits.
+    #[test]
+    fn the_action_is_never_shed_and_is_counted() {
+        let m = metrics();
+        let with_action = Parts { icon: true, message: true, action: true };
+        let fit = Fit::choose(120.0, with_action, m);
+        assert!(!fit.icon, "the disc gives way to the action");
+        assert!(
+            fit.total >= m.title_h + m.gap + m.btn_h,
+            "the pill is still in the measured stack"
+        );
     }
 
     #[test]
