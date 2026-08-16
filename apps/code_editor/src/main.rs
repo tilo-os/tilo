@@ -261,7 +261,15 @@ fn render_scenario_to_png(
             app.sync(&mut state.doc, &state.root);
         }
         Some("conflict") => app.shots_conflict(),
-        Some("indexing") => app.shots_indexing(),
+        Some("indexing") => {
+            app.shots_indexing();
+            // The status bar and the Problems panel read the server state
+            // during `sync`, not during `draw`. Without this the shot renders
+            // the frame from before the state was staged — an "indexing"
+            // screenshot with no indexing in it, which would have looked like
+            // the feature working.
+            app.sync(&mut state.doc, &state.root);
+        }
         _ => {}
     }
     // The staged scenarios change the layout (the find bar appears, the search
