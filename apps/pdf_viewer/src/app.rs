@@ -20,6 +20,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::time::Duration;
 
+use ui::gesture::{DragSelect, Granularity};
 use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -388,6 +389,18 @@ pub struct PdfApp {
     raster_text: std::collections::HashMap<usize, Arc<PageText>>,
     /// A live text selection over the raster text layer, if any.
     selection: Option<TextSelection>,
+    /// The shared toolkit selection-gesture core: it owns the multi-click ladder
+    /// (single → double-word → triple-line), the timing/anchor rules, and reports
+    /// the drag granularity — so the reader never hand-rolls double-click
+    /// detection and page text selects exactly like a text field and the ebook.
+    drag_select: DragSelect,
+    /// The unit the in-flight text-selection drag snaps to (from the click
+    /// ladder): character, whole word, or whole visual line.
+    sel_gran: Granularity,
+    /// The glyph range `[lo, hi)` of the unit the drag anchored on (the
+    /// double-clicked word / triple-clicked line). The drag keeps this unit
+    /// inside the selection and grows by whole units (see [`ui::extend_span_drag`]).
+    sel_anchor_range: (usize, usize),
     /// A live image-region marquee (Shift + Select drag), if any.
     region: Option<RegionSelect>,
     /// Whether Shift is currently held (drives the region-copy marquee).
@@ -648,6 +661,9 @@ impl PdfApp {
             raster_matches: Vec::new(),
             raster_text: std::collections::HashMap::new(),
             selection: None,
+            drag_select: DragSelect::new(),
+            sel_gran: Granularity::Char,
+            sel_anchor_range: (0, 0),
             region: None,
             shift_down: false,
             source_path: None,
@@ -1298,12 +1314,44 @@ impl PdfApp {
     /// Try to begin a text selection at page-point `pt` on `page`. Returns
     /// `true` when the point lands on a glyph (selection armed); `false` when
     /// there is no text there, so the caller can fall back to panning.
-    fn begin_selection(&mut self, page: usize, pt: (f64, f64)) -> bool {
+    /// Begin a text selection at page-point `pt` on `page`. Routed through the
+    /// shared [`ui::gesture::DragSelect`] click ladder, so a single click places
+    /// the caret, a double-click selects the word under it, and a triple-click
+    /// selects the whole visual line — behaving identically to every text field
+    /// and the ebook reader. `press` is the screen point (for the multi-click
+    /// distance test). Returns whether a selection was armed (i.e. the press
+    /// landed on real glyph text); when it did not, the caller falls back to a
+    /// pan so empty page area still scrolls.
+    fn begin_selection(&mut self, page: usize, pt: (f64, f64), press: Point) -> bool {
         let Some(layer) = self.ensure_raster_text(page) else { return false };
         let Some(idx) = layer.char_at(pt.0, pt.1) else { return false };
-        self.selection = Some(TextSelection { page, anchor: idx, caret: idx, dragging: true });
+        let intent = self.drag_select.press(press, false);
+        match intent.granularity {
+            Granularity::Word | Granularity::Line => {
+                let (s, e) = if intent.granularity == Granularity::Word {
+                    layer.word_range(idx)
+                } else {
+                    layer.row_range(idx)
+                };
+                if e > s {
+                    self.selection = Some(TextSelection { page, anchor: s, caret: e - 1, dragging: true });
+                    self.sel_gran = intent.granularity;
+                    self.sel_anchor_range = (s, e);
+                } else {
+                    self.arm_char_selection(page, idx);
+                }
+            }
+            Granularity::Char => self.arm_char_selection(page, idx),
+        }
         self.dirty = true;
         true
+    }
+
+    /// Arm a fresh character-granularity selection collapsed at glyph `idx`.
+    fn arm_char_selection(&mut self, page: usize, idx: usize) {
+        self.selection = Some(TextSelection { page, anchor: idx, caret: idx, dragging: true });
+        self.sel_gran = Granularity::Char;
+        self.sel_anchor_range = (idx, idx + 1);
     }
 
     /// The pdfium text layer for 1-based `page`, extracting it on demand and
@@ -1321,24 +1369,45 @@ impl PdfApp {
     }
 
     /// Extend the live selection to the pointer at page-point `pt`. Only tracks
-    /// motion on the selection's own page (selection stays single-page).
+    /// motion on the selection's own page (selection stays single-page). A
+    /// character drag walks the caret glyph-by-glyph; a word/line drag (after a
+    /// double/triple click) keeps the anchored unit inside the selection and
+    /// grows by whole units through the shared [`ui::extend_span_drag`] rule.
     fn update_selection(&mut self, page: usize, pt: (f64, f64)) {
         let Some(sel) = self.selection else { return };
         if !sel.dragging || sel.page != page {
             return;
         }
         let Some(layer) = self.raster_text.get(&page) else { return };
-        if let Some(idx) = layer.char_at(pt.0, pt.1).or_else(|| layer.nearest_char(pt.0, pt.1)) {
-            if let Some(s) = self.selection.as_mut() {
-                s.caret = idx;
+        let Some(idx) = layer.char_at(pt.0, pt.1).or_else(|| layer.nearest_char(pt.0, pt.1)) else {
+            return;
+        };
+        let (anchor, caret) = match self.sel_gran {
+            Granularity::Char => (sel.anchor, idx),
+            Granularity::Word | Granularity::Line => {
+                let (unit_lo, unit_hi) = if self.sel_gran == Granularity::Word {
+                    layer.word_range(idx)
+                } else {
+                    layer.row_range(idx)
+                };
+                let (a_lo, a_hi) = self.sel_anchor_range;
+                let (a, c) = ui::extend_span_drag(a_lo, a_hi, idx, unit_lo, unit_hi);
+                let lo = a.min(c);
+                let hi = a.max(c).max(lo + 1);
+                (lo, hi - 1)
             }
-            self.dirty = true;
+        };
+        if let Some(s) = self.selection.as_mut() {
+            s.anchor = anchor;
+            s.caret = caret;
         }
+        self.dirty = true;
     }
 
     /// End the drag. A selection that never grew past its anchor (a bare click)
     /// is dropped so a single click doesn't leave a one-glyph highlight behind.
     fn finish_selection(&mut self) {
+        self.drag_select.release();
         if let Some(s) = self.selection.as_mut() {
             s.dragging = false;
             if !s.is_active() {
@@ -2729,6 +2798,95 @@ mod tests {
         );
     }
 
+    /// Seed a synthetic multi-word glyph layer on page 1 ("hello world"),
+    /// glyphs on one row with real boxes, so the selection-gesture tests need no
+    /// native pdfium. Returns the page-point of the centre of glyph `i`.
+    fn seed_words(app: &mut PdfApp, text: &str) {
+        let glyphs: Vec<(char, PtRect)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| (c, PtRect::new(72.0 + i as f64 * 9.0, 120.0, 8.0, 12.0)))
+            .collect();
+        app.raster_text.insert(1, std::sync::Arc::new(PageText::from_glyphs(glyphs)));
+    }
+    fn glyph_pt(i: usize) -> (f64, f64) {
+        (72.0 + i as f64 * 9.0 + 4.0, 126.0)
+    }
+
+    /// The reviewer's core ask: double-clicking a word selects the whole word,
+    /// exactly like a text field. Drives the production `begin_selection` /
+    /// `finish_selection` path (the same functions the press/release handlers
+    /// call) so the shared `DragSelect` click ladder + `word_range` are proven,
+    /// not a re-derived helper.
+    #[test]
+    fn double_click_selects_the_word_through_the_selection_path() {
+        let (mut app, _st) = app_with_state();
+        seed_words(&mut app, "hello world");
+        let pt = glyph_pt(1); // over the 'e' in "hello"
+        let scr = Point::new(pt.0, pt.1);
+
+        // First press → release: a single click places a collapsed caret only.
+        assert!(app.begin_selection(1, pt, scr));
+        assert!(!app.selection.unwrap().is_active(), "one click selects no text");
+        app.finish_selection();
+
+        // Second press at the same spot within the multi-click window is a
+        // double-click → the whole word under the pointer is selected.
+        assert!(app.begin_selection(1, pt, scr));
+        let sel = app.selection.expect("the double-click armed a selection");
+        let (lo, hi) = sel.range();
+        assert_eq!(
+            app.raster_text[&1].text_for_range(lo, hi),
+            "hello",
+            "double-click selects the whole word, not one glyph"
+        );
+        assert!(sel.is_active(), "the word selection is active (HUD shows)");
+    }
+
+    /// A word-granularity drag (after the double-click) keeps the anchored word
+    /// inside the selection and grows by whole words — the shared
+    /// `extend_span_drag` rule, so it never collapses back to the click.
+    #[test]
+    fn double_click_then_drag_extends_by_whole_words() {
+        let (mut app, _st) = app_with_state();
+        seed_words(&mut app, "hello world again");
+        let pt = glyph_pt(1);
+        let scr = Point::new(pt.0, pt.1);
+        app.begin_selection(1, pt, scr);
+        app.finish_selection();
+        app.begin_selection(1, pt, scr); // double-click "hello"
+        // Drag into "world" (glyph 7) — the selection grows to whole words.
+        app.update_selection(1, glyph_pt(7));
+        let sel = app.selection.expect("selection live");
+        let (lo, hi) = sel.range();
+        assert_eq!(
+            app.raster_text[&1].text_for_range(lo, hi),
+            "hello world",
+            "the word drag spans whole words and keeps the first word in"
+        );
+    }
+
+    /// Triple-click selects the whole visual line.
+    #[test]
+    fn triple_click_selects_the_line() {
+        let (mut app, _st) = app_with_state();
+        seed_words(&mut app, "hello world");
+        let pt = glyph_pt(1);
+        let scr = Point::new(pt.0, pt.1);
+        app.begin_selection(1, pt, scr);
+        app.finish_selection();
+        app.begin_selection(1, pt, scr);
+        app.finish_selection();
+        app.begin_selection(1, pt, scr); // third click
+        let sel = app.selection.expect("selection live");
+        let (lo, hi) = sel.range();
+        assert_eq!(
+            app.raster_text[&1].text_for_range(lo, hi),
+            "hello world",
+            "triple-click selects the whole line"
+        );
+    }
+
     #[test]
     fn dragging_a_note_marker_repositions_and_persists() {
         let (mut app, mut st) = app_with_state();
@@ -3479,7 +3637,7 @@ mod tests {
         // text layer, so this exercises on-demand extraction inside the press.
         assert!(app.raster_text.is_empty(), "no eager text layer before a selection");
         assert!(
-            app.begin_selection(1, start),
+            app.begin_selection(1, start, Point::new(start.0, start.1)),
             "pressing on a glyph starts a selection (extracting the layer on demand)"
         );
         app.update_selection(1, end);
