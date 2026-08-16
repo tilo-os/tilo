@@ -1,8 +1,20 @@
 # Terminal — qOS application manifest.
 #
-# A terminal is a shell host. What it can reach is what the user
-# granted it, and the confinement that matters is the workspace
-# sandbox it is launched into.
+# A terminal is a shell host, and this one hosts no shell of its own.
+# There is no `/bin` in an app sandbox — `launcher::profile` binds the
+# loader, fonts, `/sys` and the CA bundle and no executable directory —
+# so exec'ing `$SHELL` here fails with ENOENT. Binding the host's bin
+# dirs instead would hand the machine's whole command set to an app, and
+# would still leave `vim` and `less` broken for want of terminfo and the
+# prompt printing `I have no name!` for want of /etc/passwd.
+#
+# What runs is an `ush` guest: a root filesystem composed of the host's,
+# read-only, plus a layer belonging to the user. /usr/bin, terminfo and
+# /etc/passwd come with it by construction rather than as grants. The
+# terminal cannot build that itself — its seccomp filter denies `unshare`
+# and `mount`, which is the point — so it asks the session supervisor
+# over the `ush` service socket below and gets back a pty master. What
+# crosses the boundary is a terminal, not a namespace.
 #
 # The PTY is deliberately NOT granted: bwrap mounts a fresh devpts at
 # /dev, and binding the host's /dev/ptmx + /dev/pts over it leaves the
@@ -10,9 +22,10 @@
 # so openpty() fails with EACCES. Letting the sandbox's own devpts serve
 # is both what works and the tighter grant.
 #
-# Beyond the system read profile it needs, as consented capabilities:
-# read+exec on the host bin dirs for whatever the user runs, and read
-# on the shell's own rc files.
+# This app therefore asks for no filesystem capability at all. What the
+# user runs reaches their files through `perm trust-dir` inside the
+# guest, which mints the same CapOverride the permissions panel shows
+# and can revoke — see crates/runtime/ush/src/policy.rs.
 #
 # Pack and install:
 #
@@ -65,6 +78,11 @@ mode = "off"
 open-uri = "via-host"
 
 [sandbox.services]
+# The application runtime. Required: without it this app has no shell to
+# host, and falling back to `$SHELL` inside the sandbox would fail with
+# ENOENT anyway. The launcher opens the socket and passes the connected
+# descriptor as QOS_SVC_USH_FD.
+ush    = "required@1"
 collab = "optional@1"
 qos-fs = "optional@1"
 
