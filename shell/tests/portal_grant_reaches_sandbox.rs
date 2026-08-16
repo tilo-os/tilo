@@ -129,20 +129,20 @@ fn a_saved_file_is_bound_writable_at_the_next_launch() {
     );
 }
 
-/// The regression guard, at the layer where the damage would happen.
+/// The launcher refuses to bind the filesystem root, and must keep
+/// refusing.
 ///
-/// The FileChooser used to prompt on a `Capability::Filesystem`
-/// carrying `"/"`, and persist it verbatim when the user answered
-/// Session or Always. This is what that grant turns into: a bind of the
-/// filesystem root into the app's namespace. The assertion is on the
-/// launcher's own plan, so it fails whether the `/` comes from the
-/// portal, the drop router, the permissions UI, or anywhere else.
+/// `launcher::capabilities::is_bindable_path` rejects `"/"` outright
+/// (`path.is_absolute() && raw != "/"`), so the old `"/"` sentinel never
+/// reached bwrap as a root bind. That is defence in depth and it is
+/// load-bearing — this test is what stops the guard being relaxed on the
+/// grounds that "nothing mints a `/` grant anyway".
 #[test]
-fn nothing_may_bind_the_filesystem_root_into_a_sandbox() {
+fn the_launcher_refuses_to_bind_the_filesystem_root() {
     let (store, ws) = store();
     let caller = PortalCaller::new(ws, APP);
 
-    // The exact capability the old sentinel produced.
+    // The exact capability the removed sentinel produced.
     store.insert(
         &caller,
         Capability::Filesystem {
@@ -154,19 +154,54 @@ fn nothing_may_bind_the_filesystem_root_into_a_sandbox() {
 
     let plan = plan_for(&store, ws, APP);
     let root = PathBuf::from("/");
-
-    // This documents the consequence rather than preventing it: the
-    // launcher binds what it is told. The defence is that nothing mints
-    // this capability — asserted in `file_chooser.rs`
-    // (`the_grant_names_the_picked_path_and_never_the_filesystem_root`)
-    // and in `portal_file_chooser_e2e.rs`. If this ever stops being
-    // true, that is the launcher gaining a guard, and this test should
-    // be inverted rather than deleted.
-    let binds_root = plan.ro_paths.contains(&root) || plan.rw_paths.contains(&root);
     assert!(
-        binds_root,
-        "a '/' capability reaching the launcher binds the whole filesystem — \
-         if the launcher now refuses it, invert this assertion and say so"
+        !plan.ro_paths.contains(&root) && !plan.rw_paths.contains(&root),
+        "the launcher must never bind '/' into a sandbox; ro={:?} rw={:?}",
+        plan.ro_paths,
+        plan.rw_paths
+    );
+}
+
+/// Why the `"/"` sentinel was still a serious bug even though the
+/// launcher would not bind it.
+///
+/// The damage was never at the bwrap layer. It was that
+/// `Scope::FsPath("/")` is a prefix match over every path, so every
+/// compositor-side check that asks "has this app already been granted
+/// this?" answers yes — for anything. That is the same predicate
+/// `fs/src/acl.rs` answers `open`/`read`/`write` with, and it is what
+/// `flow::resolve` consulted before deciding whether to prompt: with an
+/// Always-scoped `/` recorded, the file dialog stopped appearing and
+/// every subsequent request was auto-approved.
+///
+/// This test pins that consequence, so the reason the sentinel had to go
+/// is written down as an executable fact rather than a claim in a commit
+/// message.
+#[test]
+fn a_root_grant_makes_every_path_read_as_already_granted() {
+    let (store, ws) = store();
+    let caller = PortalCaller::new(ws, APP);
+
+    let secret = std::path::Path::new("/home/someone/.ssh/id_ed25519");
+    assert!(
+        !store.filesystem_path_granted(&caller, secret),
+        "precondition: the app starts with nothing granted"
+    );
+
+    store.insert(
+        &caller,
+        Capability::Filesystem {
+            path: PathBuf::from("/"),
+            mode: FsMode::Read,
+            scope: GRANT_SESSION,
+        },
+    );
+
+    assert!(
+        store.filesystem_path_granted(&caller, secret),
+        "a '/' grant covers its whole subtree — this is the blast radius \
+         the FileChooser sentinel used to record on an 'Always' click, and \
+         the reason the dialog now grants only the path the user picked"
     );
 }
 
