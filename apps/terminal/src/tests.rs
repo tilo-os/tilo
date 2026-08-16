@@ -1984,4 +1984,202 @@ mod tests {
              grid was:\n{screen}"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Confinement / capability detection (issue: ush errors off qOS).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn confine_route_service_is_mandatory_and_cannot_be_downgraded() {
+        // The security invariant, at the decision point: when the supervisor
+        // service is available it is chosen unconditionally, so no combination
+        // of the inputs an app could influence (a present runtime, a host that
+        // *could* self-host) can force best-effort. On qOS the service is what
+        // the launcher provides, so this is "best-effort can't be forced on qOS".
+        use crate::inner::{decide_route, ConfineRoute};
+        use std::path::PathBuf;
+        let bin = PathBuf::from("/usr/libexec/qos-ush");
+        assert_eq!(decide_route(true, false, None), ConfineRoute::Service);
+        assert_eq!(decide_route(true, true, None), ConfineRoute::Service);
+        assert_eq!(decide_route(true, false, Some(bin.clone())), ConfineRoute::Service);
+        assert_eq!(decide_route(true, true, Some(bin)), ConfineRoute::Service);
+    }
+
+    #[test]
+    fn confine_route_best_effort_off_qos_and_never_a_doomed_spawn() {
+        // No service. Best-effort is chosen exactly when confinement genuinely
+        // isn't available: no runtime, OR a runtime that could only fail because
+        // this host can't build a namespace. The latter is the fix for the wall
+        // of ush errors — we don't launch the runtime where it can't succeed.
+        use crate::inner::{decide_route, ConfineRoute};
+        use std::path::PathBuf;
+        let bin = PathBuf::from("/usr/libexec/qos-ush");
+        // Can't self-host → best-effort even though the runtime is installed.
+        assert_eq!(decide_route(false, false, Some(bin.clone())), ConfineRoute::BestEffort);
+        // No runtime at all → best-effort (the plain-distro case).
+        assert_eq!(decide_route(false, false, None), ConfineRoute::BestEffort);
+        assert_eq!(decide_route(false, true, None), ConfineRoute::BestEffort);
+        // Could self-host AND runtime present → confine ourselves (dev tree).
+        assert_eq!(
+            decide_route(false, true, Some(bin.clone())),
+            ConfineRoute::SelfHosted(bin)
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn service_fd_is_detected_only_when_the_descriptor_is_actually_open() {
+        // The service path is selected on a *live* descriptor, not on the mere
+        // presence of the env var — so a stale or spoofed number can neither
+        // select the mandatory path nor, by extension, be used to steer the
+        // decision. A real open fd is detected; a closed/garbage one is not.
+        use crate::inner::ush_service_fd;
+
+        let mut fds = [0i32; 2];
+        // SAFETY: standard socketpair FFI; `fds` is written on success.
+        let rc = unsafe {
+            libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr())
+        };
+        assert_eq!(rc, 0, "socketpair for a live test fd");
+
+        // SAFETY (env): serialised via `#[serial]`; no other thread reads this
+        // var concurrently. `set_var`/`remove_var` are `unsafe` in edition 2024.
+        unsafe { std::env::set_var("QOS_SVC_USH_FD", fds[0].to_string()) };
+        assert_eq!(ush_service_fd(), Some(fds[0]), "an open descriptor is the service");
+
+        unsafe { std::env::set_var("QOS_SVC_USH_FD", "999999") };
+        assert_eq!(ush_service_fd(), None, "a closed descriptor is not the service");
+
+        unsafe { std::env::set_var("QOS_SVC_USH_FD", "not-a-number") };
+        assert_eq!(ush_service_fd(), None, "garbage is not the service");
+
+        unsafe { std::env::remove_var("QOS_SVC_USH_FD") };
+        assert_eq!(ush_service_fd(), None, "unset is not the service");
+
+        // SAFETY: closing the two fds we own.
+        unsafe {
+            libc::close(fds[0]);
+            libc::close(fds[1]);
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Selection latency (issue: highlight is slow to appear).
+    // ---------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn selection_highlight_is_produced_synchronously_on_drag() {
+        use ui::widget::Widget;
+        use winit::event::{Modifiers, WindowEvent};
+        use winit::dpi::PhysicalPosition;
+
+        let (mut widget, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 600.0), 10.0, 20.0);
+
+        // Press at col 2, row 1 (padding is 4px → col k spans [4+k*10, 4+(k+1)*10)).
+        send_cursor_move(&mut widget, &mut doc, 4.0 + 2.0 * 10.0 + 1.0, 20.0 + 1.0);
+        send_left_press(&mut widget, &mut doc);
+
+        // Drag across to col 20 — dispatch the CursorMoved directly so we can read
+        // back whether it was `handled` (the App's incremental-redraw gate only
+        // repaints a pointer move when the widget reports it, so a drag that
+        // isn't handled would leave the highlight invisible until the next tick).
+        let taffy = taffy::TaffyTree::<()>::new();
+        let node = taffy::NodeId::new(0);
+        let modifiers = Modifiers::default();
+        let mut handled = false;
+        let mut focus = None;
+        let ev = WindowEvent::CursorMoved {
+            device_id: fake_device_id(),
+            position: PhysicalPosition::new(4.0 + 20.0 * 10.0 + 1.0, 20.0 + 1.0),
+        };
+        widget.handle_event(
+            &ev, 1.0, &modifiers, &mut doc, &automerge::ROOT,
+            &mut handled, &mut focus, node, &taffy,
+        );
+
+        // The highlight span exists in the SAME event that moved the pointer —
+        // no deferred re-layout, no debounce, no full-grid rework required.
+        let spans = widget.current_row_spans();
+        assert_eq!(
+            spans,
+            vec![(1, 2, 20)],
+            "the selection highlight must cover the dragged cells synchronously"
+        );
+        assert!(
+            handled,
+            "the drag must be reported handled so the App repaints it immediately"
+        );
+    }
+
+    #[test]
+    fn commit_action_reports_whether_the_document_actually_changed() {
+        // The perf fix behind the selection latency: `commit_action` (called by
+        // the App after every handled event, including each drag `CursorMoved`)
+        // may now skip the full `doc.save()` + broadcast when nothing changed.
+        // This proves the signal it keys on — an empty transaction reports no
+        // change; a real edit reports one.
+        use ui::State;
+        use automerge::{transaction::Transactable, ROOT};
+
+        let mut state = State::new();
+        // Flush any ops the constructor might have left pending, so the sequence
+        // below is deterministic regardless of `State::new`'s internals.
+        let _ = state.commit_action_authored(None, None, None);
+
+        assert!(
+            !state.commit_action_authored(None, None, None),
+            "an empty transaction must report no change (App then skips save)"
+        );
+        state.doc.put(&ROOT, "k", "v").unwrap();
+        assert!(
+            state.commit_action_authored(None, None, None),
+            "a real edit must report a change (App then saves + broadcasts)"
+        );
+        assert!(
+            !state.commit_action_authored(None, None, None),
+            "with nothing new pending, the next commit reports no change again"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Colours (issue: hardcoded green-on-black; must track the OS theme).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn terminal_palette_tracks_the_theme_not_a_hardcoded_green_on_black() {
+        use ui::theme::Theme;
+        use ui::ColorCompat;
+        let rgb = |c: vello::peniko::Color| (c.r(), c.g(), c.b());
+
+        // Default dark theme: graphite ground, near-white text — never the old
+        // pure-black / green-400 scheme.
+        let dark = Theme::dark();
+        let p = &dark.tokens.terminal_palette;
+        assert_eq!(rgb(p.bg_default), rgb(dark.bg_app), "terminal bg is the theme ground");
+        assert_eq!(rgb(p.fg_default), rgb(dark.text_primary), "terminal fg is the theme text");
+        assert_ne!(rgb(p.bg_default), (0, 0, 0), "bg must not be the old pure black");
+        assert_ne!(rgb(p.fg_default), (0x4a, 0xde, 0x80), "fg must not be the old green-400");
+
+        // Light theme: fg/bg follow that theme's (much lighter) ground.
+        let light = Theme::light();
+        let lp = &light.tokens.terminal_palette;
+        assert_eq!(rgb(lp.bg_default), rgb(light.bg_app), "light terminal bg is that theme's ground");
+        let (r, g, b) = rgb(lp.bg_default);
+        assert!(
+            r as u32 + g as u32 + b as u32 > 360,
+            "the light terminal ground must actually be light, got {:?}",
+            (r, g, b)
+        );
+
+        // The ANSI ramp is anchored to the theme's own colours, and stays
+        // internally distinct (blue and cyan must not collapse together).
+        let c = &dark.tokens.colors;
+        assert_eq!(rgb(p.ansi[1]), rgb(c.semantic.danger), "ANSI red = theme danger");
+        assert_eq!(rgb(p.ansi[2]), rgb(c.semantic.success), "ANSI green = theme success");
+        assert_eq!(rgb(p.ansi[3]), rgb(c.semantic.warning), "ANSI yellow = theme warning");
+        assert_ne!(rgb(p.ansi[4]), rgb(p.ansi[6]), "blue and cyan stay distinct");
+    }
 }
