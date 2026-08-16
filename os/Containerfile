@@ -226,6 +226,22 @@ COPY --from=wpe-builder /wpe/ /
 # `qos-install` pack and install those apps into the image-wide store below,
 # and `qos-install` ships so the running system can install and remove
 # packages of its own.
+# Every media engine in this tree sits behind a cargo feature that is OFF by
+# default, and deliberately so: `--shots`, the offline tests and CI must build
+# without a GStreamer stack, a camera or a network. An image that takes those
+# defaults is the one case where the trade-off is wrong — it ships a music
+# player that cannot produce sound, a video player that synthesises frames
+# instead of decoding them, a camera that cannot capture and clients whose
+# network backends are compiled out. The features are named here so the image,
+# and only the image, turns them on.
+#
+# Package-qualified (`<pkg>/<feature>`), which cargo resolves because every one
+# of these packages is already selected through APP_PKGS. Feature unification
+# means `ui` is built once with the union (portal + mpris), which is additive
+# and what the apps that ask for it need anyway.
+#
+# `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
+# engine behind it is the browser's, which QOS_WITH_BROWSER=0 does not build.
 ARG QOS_WITH_BROWSER
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
@@ -236,7 +252,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
                      | grep -vx browser | sed 's/^/-p /' | tr '\n' ' ')" \
     && [ -n "${APP_PKGS}" ] \
         || { echo "no apps/* workspace members matched — the members list moved" >&2; exit 1; } \
+    && APP_FEATURES="music/audio,music/streaming,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video_editor/decode,video_editor/gst,video_editor/portal" \
     && cargo build --release \
+        --features "${APP_FEATURES}" \
         -p shell -p fs -p terminal -p file-explorer -p settings \
         -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
