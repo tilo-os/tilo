@@ -877,6 +877,28 @@ impl LibrarySort {
     }
 }
 
+/// One book the reader has added to their library — the app-managed collection,
+/// persisted in the CRDT so the shelf survives a restart and syncs across the
+/// reader's devices. Keyed by the content-hash [`id`](Book::id): re-adding the
+/// same file updates the same entry, and a book shared over the workspace keeps
+/// one identity everywhere. `path` records where the file currently lives so the
+/// book can be re-opened (and re-hydrated from the collaborative filesystem) and
+/// so the shelf can tell a workspace-shared book from a device-local one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LibraryEntry {
+    /// Content-hash id, shared with the book's annotations + progress.
+    pub id: String,
+    /// Where the `.epub` currently lives (a `/var/workspace/...` path means it
+    /// is shared with the workspace's peers).
+    pub path: std::path::PathBuf,
+    pub title: String,
+    pub author: String,
+    pub subject: String,
+    /// When the book was first added (ms since epoch), for a "recently added"
+    /// reading of the shelf.
+    pub added: u64,
+}
+
 /// Persisted shelf preferences: the sort order and whether finished books are
 /// hidden.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

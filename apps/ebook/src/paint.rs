@@ -187,6 +187,76 @@ pub fn bookmark(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64, 
     }
 }
 
+/// An open-book glyph — two pages meeting at a central spine. The onboarding
+/// emblem and a natural mark for anything book-shaped.
+pub fn book(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
+    let (x, y, s) = box_of(rect, 0.1);
+    let cx = x + s / 2.0;
+    let top = y + s * 0.16;
+    let bot = y + s * 0.9;
+    // Spine.
+    line(scene, t, Point::new(cx, top + s * 0.04), Point::new(cx, bot), color, w);
+    // Left and right pages, each a shallow open leaf meeting the spine.
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(cx, top + s * 0.04),
+            Point::new(x + s * 0.06, top),
+            Point::new(x + s * 0.06, bot - s * 0.06),
+            Point::new(cx, bot),
+        ],
+        color,
+        w,
+    );
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(cx, top + s * 0.04),
+            Point::new(x + s * 0.94, top),
+            Point::new(x + s * 0.94, bot - s * 0.06),
+            Point::new(cx, bot),
+        ],
+        color,
+        w,
+    );
+}
+
+/// A two-figure "people / shared" glyph — the mark for a book shared with the
+/// workspace's peers.
+pub fn people(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {
+    let (x, y, s) = box_of(rect, 0.12);
+    // Back figure (smaller, offset).
+    circle(scene, t, Point::new(x + s * 0.66, y + s * 0.34), s * 0.15, color);
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.5, y + s * 0.92),
+            Point::new(x + s * 0.54, y + s * 0.62),
+            Point::new(x + s * 0.82, y + s * 0.62),
+            Point::new(x + s * 0.86, y + s * 0.92),
+        ],
+        color,
+        w,
+    );
+    // Front figure.
+    circle(scene, t, Point::new(x + s * 0.34, y + s * 0.3), s * 0.17, color);
+    poly(
+        scene,
+        t,
+        &[
+            Point::new(x + s * 0.12, y + s * 0.92),
+            Point::new(x + s * 0.17, y + s * 0.58),
+            Point::new(x + s * 0.51, y + s * 0.58),
+            Point::new(x + s * 0.56, y + s * 0.92),
+        ],
+        color,
+        w,
+    );
+}
+
 /// A trash-can glyph — the "delete this" affordance. Lid + bin body with two
 /// vertical ribs, drawn as strokes so it stays crisp at any size.
 pub fn trash(scene: &mut Scene, t: Affine, rect: Rect, color: Color, w: f64) {

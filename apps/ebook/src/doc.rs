@@ -8,12 +8,19 @@
 //!
 //! ```text
 //! root
-//! ├── "settings"    (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
-//! ├── "progress"    (Map keyed by book-id)  { chapter, page, fraction }
-//! └── "annotations" (Map keyed by uuid)     { doc_id, kind, chapter, block,
-//!                                             start, end, excerpt, note,
-//!                                             color, created }
+//! ├── "settings"        (Map)  font_scale(f64) line_spacing(f64) font(str) theme(str)
+//! ├── "library"         (Map keyed by book-id)  { path, title, author, subject, added }
+//! ├── "watched_folders" (List of str)  folders auto-imported into the library
+//! ├── "progress"        (Map keyed by book-id)  { chapter, page, fraction }
+//! └── "annotations"     (Map keyed by uuid)     { doc_id, kind, chapter, block,
+//!                                                 start, end, excerpt, note,
+//!                                                 color, created }
 //! ```
+//!
+//! The library, progress and annotations are all keyed by the **content-hash
+//! book id**, so a book's shelf entry, where the reader left off, and every
+//! highlight and comment travel together — across the reader's devices and to
+//! anyone they share the book with over the workspace.
 //!
 //! The reader's *transient* view (which book is open, the live page index, the
 //! selected block) is per-peer and stays out of the document — two readers can
@@ -23,9 +30,11 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
 use uuid::Uuid;
 
+use std::path::PathBuf;
+
 use crate::model::{
-    default_fonts, default_schemes, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
-    HiColor, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
+    default_fonts, default_schemes, now_ms, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
+    HiColor, LibraryEntry, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -232,6 +241,103 @@ impl BooksDoc {
         let m = Self::root_map(doc, "settings");
         let _ = doc.put(&m, "library_sort", p.sort.as_str());
         let _ = doc.put(&m, "library_hide_read", p.hide_read);
+    }
+
+    // --- the library: books the reader has added --------------------------
+    //
+    // The shelf is the app's own collection, persisted here (keyed by the
+    // content-hash book id) rather than re-derived from a magic folder on every
+    // launch. It rides the same document as progress + annotations, so adding a
+    // book on one device makes it appear on the reader's others.
+
+    /// Add or update a book in the library. Re-importing the same file (same
+    /// content id) refreshes its recorded path + metadata while preserving the
+    /// original "added" time, so the shelf's add order stays stable.
+    pub fn upsert_library_entry(doc: &mut AutoCommit, e: &LibraryEntry) {
+        let lib = Self::root_map(doc, "library");
+        let existing_added = match doc.get(&lib, e.id.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => {
+                Self::scalar_i64(doc, &id, "added").filter(|&v| v > 0).map(|v| v as u64)
+            }
+            _ => None,
+        };
+        let entry = Self::get_or_make_map(doc, &lib, &e.id);
+        let _ = doc.put(&entry, "path", e.path.to_string_lossy().as_ref());
+        let _ = doc.put(&entry, "title", e.title.as_str());
+        let _ = doc.put(&entry, "author", e.author.as_str());
+        let _ = doc.put(&entry, "subject", e.subject.as_str());
+        let added = existing_added.unwrap_or_else(|| if e.added > 0 { e.added } else { now_ms() });
+        let _ = doc.put(&entry, "added", added as i64);
+    }
+
+    /// Drop a book from the library. Its annotations + progress are left in place
+    /// (keyed by content id) so re-adding the same file restores them.
+    pub fn remove_library_entry(doc: &mut AutoCommit, id: &str) {
+        let lib = Self::root_map(doc, "library");
+        let _ = doc.delete(&lib, id);
+    }
+
+    /// Every book in the library, ordered by when it was added (oldest first) so
+    /// the shelf has a stable base order the sort control then re-orders.
+    pub fn read_library_entries(doc: &AutoCommit) -> Vec<LibraryEntry> {
+        let lib = match doc.get(&ROOT, "library") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for key in doc.keys(&lib) {
+            let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(&lib, key.as_str()) else {
+                continue;
+            };
+            let Some(path) = Self::scalar_str(doc, &e, "path") else { continue };
+            if path.is_empty() {
+                continue;
+            }
+            out.push(LibraryEntry {
+                id: key,
+                path: PathBuf::from(path),
+                title: Self::scalar_str(doc, &e, "title").unwrap_or_default(),
+                author: Self::scalar_str(doc, &e, "author").unwrap_or_default(),
+                subject: Self::scalar_str(doc, &e, "subject").unwrap_or_default(),
+                added: Self::scalar_i64(doc, &e, "added").unwrap_or(0).max(0) as u64,
+            });
+        }
+        out.sort_by(|a, b| a.added.cmp(&b.added).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+
+    // --- watched folders: explicit, user-managed auto-import roots ---------
+
+    /// The folders the reader has asked to watch: any new `.epub` found in one is
+    /// pulled into the library automatically. Empty by default — the app never
+    /// watches a hidden magic folder the reader didn't choose.
+    pub fn read_watched_folders(doc: &AutoCommit) -> Vec<PathBuf> {
+        let list = match doc.get(&ROOT, "watched_folders") {
+            Ok(Some((Value::Object(ObjType::List), id))) => id,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Scalar(v), _))) = doc.get(&list, i) {
+                if let ScalarValue::Str(s) = v.as_ref() {
+                    if !s.is_empty() {
+                        out.push(PathBuf::from(s.to_string()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Replace the watched-folder set wholesale (the Library settings pane edits
+    /// it as a list).
+    pub fn write_watched_folders(doc: &mut AutoCommit, folders: &[PathBuf]) {
+        let list = doc
+            .put_object(&ROOT, "watched_folders", ObjType::List)
+            .expect("put_object list never fails");
+        for (i, f) in folders.iter().enumerate() {
+            let _ = doc.insert(&list, i, f.to_string_lossy().as_ref());
+        }
     }
 
     // --- colour schemes ----------------------------------------------------
@@ -530,6 +636,55 @@ mod tests {
         // Remove.
         BooksDoc::remove_annotation(&mut doc, id);
         assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
+    }
+
+    #[test]
+    fn library_entries_round_trip_and_preserve_added_time() {
+        use crate::model::LibraryEntry;
+        let mut doc = AutoCommit::new();
+        assert!(BooksDoc::read_library_entries(&doc).is_empty(), "fresh library is empty");
+
+        let e = LibraryEntry {
+            id: "book:abc".into(),
+            path: "/home/reader/Novel.epub".into(),
+            title: "Novel".into(),
+            author: "A. Writer".into(),
+            subject: "Fiction".into(),
+            added: 1_000,
+        };
+        BooksDoc::upsert_library_entry(&mut doc, &e);
+        let back = BooksDoc::read_library_entries(&doc);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0], e);
+
+        // Re-importing the same book from a new path (e.g. after sharing it into
+        // the workspace) updates the path but keeps the original added time, so
+        // the shelf order doesn't jump.
+        let moved = LibraryEntry {
+            path: "/var/workspace/Books/Novel.epub".into(),
+            added: 9_999,
+            ..e.clone()
+        };
+        BooksDoc::upsert_library_entry(&mut doc, &moved);
+        let back = BooksDoc::read_library_entries(&doc);
+        assert_eq!(back.len(), 1, "same content id updates in place, not duplicated");
+        assert_eq!(back[0].path, std::path::PathBuf::from("/var/workspace/Books/Novel.epub"));
+        assert_eq!(back[0].added, 1_000, "added time is preserved across a re-import");
+
+        BooksDoc::remove_library_entry(&mut doc, "book:abc");
+        assert!(BooksDoc::read_library_entries(&doc).is_empty(), "removed from the shelf");
+    }
+
+    #[test]
+    fn watched_folders_round_trip() {
+        let mut doc = AutoCommit::new();
+        assert!(BooksDoc::read_watched_folders(&doc).is_empty(), "nothing watched by default");
+        let folders = vec![
+            std::path::PathBuf::from("/home/reader/Books"),
+            std::path::PathBuf::from("/var/workspace/Books"),
+        ];
+        BooksDoc::write_watched_folders(&mut doc, &folders);
+        assert_eq!(BooksDoc::read_watched_folders(&doc), folders);
     }
 
     #[test]
