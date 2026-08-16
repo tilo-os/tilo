@@ -96,6 +96,11 @@ pub struct QuickFS {
     /// at boot; binding the list by value made a grant issued afterwards
     /// unreachable until the next remount. See [`crate::CapabilityFile`].
     enforcement: Option<(AclHandle, crate::acl::IdentityKey)>,
+    /// Host-side thumbnail generation + cache. `Some` when the mount has a
+    /// persistent cache directory; the driver then serves a preview through the
+    /// `user.qos.thumb` xattr and gossips its hash. `None` leaves the mount
+    /// thumbnail-less (an in-memory test mount, unless one is attached).
+    thumbs: Option<crate::thumbs::ThumbProvider>,
 }
 
 impl QuickFS {
@@ -127,6 +132,7 @@ impl QuickFS {
             write_buffers: Mutex::new(HashMap::new()),
             doc_exports: Mutex::new(HashMap::new()),
             enforcement: None,
+            thumbs: None,
         }
     }
 
@@ -240,6 +246,117 @@ impl QuickFS {
     pub fn with_sync(mut self, sync: Arc<SyncHandle>) -> Self {
         self.sync = Some(sync);
         self
+    }
+
+    /// Attach a host-side thumbnail provider (cache under `dir`). The mount then
+    /// answers the `user.qos.thumb` xattr with a generated preview and records
+    /// each thumbnail's hash on the namespace node so it projects to peers.
+    pub fn with_thumbs(mut self, provider: crate::thumbs::ThumbProvider) -> Self {
+        self.thumbs = Some(provider);
+        self
+    }
+
+    /// The thumbnail (PNG bytes) for a file, generated as **metadata ahead of /
+    /// independent of the content**, or `None` when unavailable. This is the
+    /// value the `user.qos.thumb` xattr serves.
+    ///
+    /// Resolution order:
+    /// 1. **Cache** — a content-addressed hit returns instantly (survives
+    ///    remount).
+    /// 2. **Projected from a peer** — if a peer has gossiped a thumbnail blob
+    ///    hash onto this node, hydrate that *tiny* blob (before the file's
+    ///    content) and adopt it. This is the preview-before-download path.
+    /// 3. **Host generation** — if the file's content is fully local, generate a
+    ///    preview from it, cache it, ingest it as a content blob, and record the
+    ///    blob's hash on the node so the pointer gossips to peers.
+    ///
+    /// Never hydrates the file's *content* from the network to make a preview —
+    /// only the host (which already has the bytes) generates.
+    pub fn thumbnail_for(&self, ino: u64) -> Option<Vec<u8>> {
+        let provider = self.thumbs.as_ref()?;
+        let (name, content_hash, thumb_hash) = {
+            let ns = self.namespace.lock().unwrap();
+            let name = ns.path_for(ino).and_then(|p| {
+                p.rsplit('/').next().map(|s| s.to_string())
+            })?;
+            (name, ns.hash_for(ino), ns.thumb_hash(ino))
+        };
+        let category = thumbnail::category_for_path(std::path::Path::new(&name));
+        if !category.has_preview() {
+            return None;
+        }
+        // No content hash → an empty (or CRDT-document) file → nothing to preview.
+        let content_hash = content_hash?;
+        let ch = *content_hash.as_bytes();
+
+        // 1. Cache hit.
+        if let Some(png) = provider.cached(ch) {
+            return Some(png);
+        }
+
+        // 2. A peer gossiped a thumbnail blob — hydrate the tiny blob (ahead of
+        //    the content) and adopt it.
+        if let Some(tbh) = thumb_hash {
+            if let Some(png) = self.read_blob_blocking(tbh) {
+                if let Some(out) = provider.adopt(ch, png) {
+                    return Some(out);
+                }
+            }
+        }
+
+        // 3. Host path: generate from local content only.
+        let bytes = self.local_content_blocking(content_hash)?;
+        let png = provider.generate(ch, category, &bytes)?;
+
+        // Ingest the preview as a content blob and record its hash on the node,
+        // so the pointer projects to peers (who then hydrate the blob, not the
+        // whole file, to show a preview).
+        if let Some(tbh) = self.ingest_blob_blocking(&png) {
+            let delta = {
+                let mut ns = self.namespace.lock().unwrap();
+                ns.set_thumb(ino, &tbh);
+                ns.save_incremental()
+            };
+            if !delta.is_empty() {
+                self.publish(delta);
+            }
+        }
+        Some(png)
+    }
+
+    /// Full content of `hash` **only if it is entirely local** (every chunk in
+    /// the cache); `None` otherwise, so making a preview never pulls content
+    /// from the network. Runs the hydrator on the shared runtime.
+    fn local_content_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
+        use crate::syncstate::SyncState;
+        let hydrator = self.hydrator.clone();
+        let rt = hydrator.runtime_handle.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move {
+                if hydrator.sync_state(hash).await != SyncState::Local {
+                    return None;
+                }
+                hydrator.read(hash, 0, u64::MAX).await.ok()
+            })
+        })
+    }
+
+    /// Read a raw blob (the thumbnail), serving it locally or hydrating it from
+    /// a peer — the small transfer that lets a preview arrive before content.
+    fn read_blob_blocking(&self, hash: Hash) -> Option<Vec<u8>> {
+        let hydrator = self.hydrator.clone();
+        let rt = hydrator.runtime_handle.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async move { hydrator.read_blob(hash, 0, u64::MAX).await.ok() })
+        })
+    }
+
+    /// Ingest the thumbnail PNG as a content-addressed blob, returning its hash.
+    fn ingest_blob_blocking(&self, png: &[u8]) -> Option<Hash> {
+        let store = self.hydrator.store.clone();
+        let rt = self.hydrator.runtime_handle.clone();
+        let data = png.to_vec();
+        tokio::task::block_in_place(|| rt.block_on(async move { store.ingest(data).await.ok() }))
     }
 
     /// Bind this mount to a workspace ACL, enforcing per-identity access
@@ -550,6 +667,18 @@ impl QuickFS {
 
 fn to_errno(e: i32) -> Errno {
     io::Error::from_raw_os_error(e).into()
+}
+
+/// Reply to a `getxattr` following the two-call protocol: `size == 0` asks for
+/// the length; a non-zero size must be big enough for the value, else `ERANGE`.
+fn reply_xattr_bytes(reply: ReplyXattr, bytes: &[u8], size: u32) {
+    if size == 0 {
+        reply.size(bytes.len() as u32);
+    } else if (size as usize) < bytes.len() {
+        reply.error(to_errno(libc::ERANGE));
+    } else {
+        reply.data(bytes);
+    }
 }
 
 /// `dir` + `name`, as the ACL spells paths: absolute, no trailing slash,
@@ -1097,6 +1226,18 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
+        // The thumbnail attribute carries the generated PNG preview (binary),
+        // served ahead of / independent of the file's content bytes.
+        if name.to_str() == Some(crate::syncstate::THUMB_XATTR) {
+            let Some(png) = self.thumbnail_for(ino.0) else {
+                // Not a previewable type, no local content to generate from, and
+                // no peer has gossiped one: the attribute is simply absent.
+                reply.error(to_errno(libc::ENODATA));
+                return;
+            };
+            reply_xattr_bytes(reply, &png, size);
+            return;
+        }
         if name.to_str() != Some(crate::syncstate::SYNC_XATTR) {
             reply.error(to_errno(libc::ENODATA));
             return;
@@ -1105,16 +1246,7 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         };
-        let bytes = state.as_str().as_bytes();
-        // The two-call xattr protocol: size==0 asks for the length; a non-zero
-        // size must be big enough for the value, else ERANGE.
-        if size == 0 {
-            reply.size(bytes.len() as u32);
-        } else if (size as usize) < bytes.len() {
-            reply.error(to_errno(libc::ERANGE));
-        } else {
-            reply.data(bytes);
-        }
+        reply_xattr_bytes(reply, state.as_str().as_bytes(), size);
     }
 
     /// List the extended attributes on `ino`: just `user.qos.sync` (NUL
@@ -1124,13 +1256,33 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if self.namespace.lock().unwrap().getattr(ino.0).is_none() {
+        let (exists, name) = {
+            let ns = self.namespace.lock().unwrap();
+            let exists = ns.getattr(ino.0).is_some();
+            let name = ns
+                .path_for(ino.0)
+                .and_then(|p| p.rsplit('/').next().map(|s| s.to_string()));
+            (exists, name)
+        };
+        if !exists {
             reply.error(to_errno(ENOENT));
             return;
         }
         let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len() + 1);
         buf.extend_from_slice(crate::syncstate::SYNC_XATTR.as_bytes());
         buf.push(0);
+        // Advertise the thumbnail attribute on files whose type can carry a
+        // preview (cheap check by extension — no generation here). A `getxattr`
+        // of it may still be `ENODATA` if the content isn't local yet.
+        let previewable = self.thumbs.is_some()
+            && name
+                .as_deref()
+                .map(|n| thumbnail::category_for_path(std::path::Path::new(n)).has_preview())
+                .unwrap_or(false);
+        if previewable {
+            buf.extend_from_slice(crate::syncstate::THUMB_XATTR.as_bytes());
+            buf.push(0);
+        }
         if size == 0 {
             reply.size(buf.len() as u32);
         } else if (size as usize) < buf.len() {
@@ -1138,5 +1290,176 @@ impl Filesystem for QuickFS {
         } else {
             reply.data(&buf);
         }
+    }
+}
+
+#[cfg(test)]
+mod thumb_tests {
+    //! The host-side thumbnail metadata path: `QuickFS::thumbnail_for` is the
+    //! exact code `getxattr(user.qos.thumb)` runs, so driving it exercises the
+    //! production path end to end.
+    use super::*;
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+    use crate::thumbs::ThumbProvider;
+    use iroh::endpoint::presets;
+    use iroh::endpoint::Endpoint;
+    use std::io::Cursor;
+
+    fn solid_png(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let mut buf = image::RgbaImage::new(w, h);
+        for px in buf.pixels_mut() {
+            *px = image::Rgba([rgb[0], rgb[1], rgb[2], 255]);
+        }
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(buf)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    async fn fixture(
+        thumb_dir: std::path::PathBuf,
+    ) -> (Arc<Mutex<Namespace>>, Arc<ContentStore>, QuickFS) {
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint, store.clone()));
+        let namespace = Arc::new(Mutex::new(Namespace::new("host")));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let provider = ThumbProvider::open(&thumb_dir).unwrap();
+        let fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics).with_thumbs(provider);
+        (namespace, store, fs)
+    }
+
+    /// The headline: the host generates a preview from a file's local content,
+    /// serves it as metadata (PNG bytes), records its blob hash on the node so
+    /// it projects to peers, and a second request hits the cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn host_generates_a_thumbnail_and_records_its_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+
+        // A real image file whose content is local to the host.
+        let png = solid_png(600, 400, [40, 130, 220]);
+        let mh = store.write_content(&png).await.unwrap().unwrap();
+        let ino = {
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "photo.png", Some(&mh), png.len() as u64, 1)
+                .unwrap()
+        };
+
+        // No thumbnail recorded yet.
+        assert!(namespace.lock().unwrap().thumb_hash(ino).is_none());
+
+        // The metadata path returns a real, sized PNG preview.
+        let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
+        let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
+        assert!(decoded.is_valid());
+        assert_eq!(decoded.max_edge(), thumbnail::DEFAULT_EDGE, "downscaled to target");
+        assert!(
+            decoded.max_edge() < png.len() as u32,
+            "the preview is far smaller than the source"
+        );
+
+        // The thumbnail's blob hash is now on the node (so it gossips), and the
+        // blob is a real content blob in the store peers can hydrate.
+        let tbh = namespace
+            .lock()
+            .unwrap()
+            .thumb_hash(ino)
+            .expect("thumbnail hash recorded on the node → projects to peers");
+        assert!(store.has(tbh).await, "the thumbnail blob is stored for peers");
+
+        // A second request returns the identical bytes from the cache.
+        let again = fs.thumbnail_for(ino).expect("cached");
+        assert_eq!(again, thumb, "second request is a cache hit, identical bytes");
+    }
+
+    /// A preview survives a remount: a fresh mount over the same cache directory
+    /// serves the same thumbnail without re-reading the file's content.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn thumbnail_survives_a_remount() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = solid_png(320, 240, [200, 60, 30]);
+
+        let thumb = {
+            let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+            let mh = store.write_content(&png).await.unwrap().unwrap();
+            let ino = {
+                let mut ns = namespace.lock().unwrap();
+                ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+            };
+            fs.thumbnail_for(ino).expect("generated")
+        };
+
+        // A brand-new mount (fresh store, so the content is NOT local) over the
+        // same thumb cache still serves the preview — proof it came from the
+        // persistent, content-addressed cache, not a re-decode.
+        let (namespace2, store2, fs2) = fixture(dir.path().join("thumbs")).await;
+        // Same content hash → same cache key. Register the node without the bytes.
+        let mh = store2.write_content(&png).await.unwrap().unwrap();
+        // Remove the content so it is not local on this mount.
+        let ino2 = {
+            let mut ns = namespace2.lock().unwrap();
+            ns.create_file(ROOT_INO, "pic.png", Some(&mh), png.len() as u64, 1).unwrap()
+        };
+        let served = fs2.thumbnail_for(ino2).expect("served from the on-disk cache");
+        assert_eq!(served, thumb, "same content → same cached preview after remount");
+    }
+
+    /// A file whose content is not local yields no thumbnail (the host never
+    /// hydrates content just to preview it), and a badge-only type never does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_local_content_and_badge_types_yield_no_thumbnail() {
+        let dir = tempfile::tempdir().unwrap();
+        let (namespace, _store, fs) = fixture(dir.path().join("thumbs")).await;
+
+        // A projected image: a hash the store never ingested (not local).
+        let projected = iroh_blobs::Hash::from([3u8; 32]);
+        let img_ino = {
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "remote.png", Some(&projected), 4096, 1).unwrap()
+        };
+        assert!(
+            fs.thumbnail_for(img_ino).is_none(),
+            "no preview without local content — never hydrate the file to make one"
+        );
+
+        // A non-previewable type is never a thumbnail regardless of content.
+        let zip_ino = {
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "bundle.zip", Some(&projected), 4096, 1).unwrap()
+        };
+        assert!(fs.thumbnail_for(zip_ino).is_none(), "a .zip is a badge, not a preview");
+    }
+
+    /// The projected-preview-before-content path: a peer that has only gossiped
+    /// metadata (the thumbnail blob hash + the blob) shows a preview WITHOUT the
+    /// file's content ever being local.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gossiped_thumbnail_is_served_before_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let (namespace, store, fs) = fixture(dir.path().join("thumbs")).await;
+
+        // The real (small) thumbnail a host generated, present as a content blob
+        // (as it would be after hydrating the tiny blob from the host).
+        let preview = thumbnail::encode_png(
+            &thumbnail::image_thumb(&solid_png(256, 256, [90, 200, 120]), 256).unwrap(),
+        )
+        .unwrap();
+        let thumb_blob = store.ingest(preview.clone()).await.unwrap();
+
+        // The file's content is projected (not local), but the node carries the
+        // gossiped thumbnail hash.
+        let projected = iroh_blobs::Hash::from([5u8; 32]);
+        let ino = {
+            let mut ns = namespace.lock().unwrap();
+            let ino = ns.create_file(ROOT_INO, "big-photo.png", Some(&projected), 9_000_000, 1).unwrap();
+            ns.set_thumb(ino, &thumb_blob);
+            ino
+        };
+
+        let served = fs.thumbnail_for(ino).expect("a projected preview is served before content");
+        assert_eq!(served, preview, "the gossiped thumbnail is served without local content");
     }
 }
