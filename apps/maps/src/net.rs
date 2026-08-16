@@ -66,6 +66,27 @@ pub enum NetMsg {
         generation: u64,
         pois: Result<Vec<Poi>, String>,
     },
+    /// Place candidates for the offline download-by-place flow, each carrying a
+    /// real area extent (Nominatim `boundingbox`). `query` is the text that was
+    /// searched, so a stale reply for an earlier query can be discarded.
+    RegionSearch {
+        query: String,
+        results: Result<Vec<RegionHit>, String>,
+    },
+}
+
+/// A geocoded place candidate for the offline-download flow. Unlike a [`Place`]
+/// it carries the place's real bounding box, so a download targets the actual
+/// footprint of a city / district rather than the visible screen rectangle.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegionHit {
+    pub name: String,
+    /// A one-line locality subtitle for the dropdown row (from `display_name`).
+    pub context: String,
+    pub pos: LatLon,
+    /// South-west / north-east corners of the place's bounding box.
+    pub sw: LatLon,
+    pub ne: LatLon,
 }
 
 /// Depart/arrive anchoring for a transit query. `time` is an RFC-3339 wall
@@ -103,6 +124,48 @@ pub fn geocode(query: &str) -> Result<Vec<Place>, String> {
     let arr = v.as_array().ok_or("unexpected response")?;
     let out = arr.iter().filter_map(place_from_json).collect();
     Ok(out)
+}
+
+/// Geocode `query` for the download-by-place flow: like [`geocode`], but each
+/// result carries the Nominatim `boundingbox` so the caller downloads the
+/// place's real area rather than the screen rectangle.
+pub fn geocode_regions(query: &str) -> Result<Vec<RegionHit>, String> {
+    let q = urlencode(query);
+    let url = format!(
+        "https://nominatim.openstreetmap.org/search?q={q}&format=jsonv2&limit=8&addressdetails=1"
+    );
+    let v = fetch_json(&url)?;
+    let arr = v.as_array().ok_or("unexpected response")?;
+    Ok(arr.iter().filter_map(region_from_json).collect())
+}
+
+/// Build a [`RegionHit`] from one Nominatim result, or `None` without a usable
+/// coordinate. Reuses the place label + coordinate parse and adds the bounding
+/// box; when the box is missing (rare) it falls back to a small square around
+/// the point so a single-building result still downloads its surroundings.
+pub fn region_from_json(item: &Value) -> Option<RegionHit> {
+    let place = place_from_json(item)?;
+    // Nominatim `boundingbox` is [south, north, west, east] as strings.
+    let (sw, ne) = item["boundingbox"]
+        .as_array()
+        .and_then(|b| {
+            let f = |i: usize| b.get(i)?.as_str()?.parse::<f64>().ok();
+            Some((LatLon::new(f(0)?, f(2)?), LatLon::new(f(1)?, f(3)?)))
+        })
+        .unwrap_or_else(|| {
+            let d = 0.006; // ~0.6 km half-extent
+            (
+                LatLon::new(place.pos.lat - d, place.pos.lon - d),
+                LatLon::new(place.pos.lat + d, place.pos.lon + d),
+            )
+        });
+    // A short locality subtitle: the display name minus the leading name.
+    let context = place
+        .address
+        .split_once(',')
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_else(|| place.address.clone());
+    Some(RegionHit { name: place.name, context, pos: place.pos, sw, ne })
 }
 
 /// Build a `Place` from one Nominatim result object, or `None` if it has no
@@ -577,6 +640,45 @@ mod tests {
     #[test]
     fn urlencode_basic() {
         assert_eq!(urlencode("a b&c"), "a%20b%26c");
+    }
+
+    /// A region candidate carries the Nominatim `boundingbox`
+    /// ([south, north, west, east]) as a real sw/ne extent, so a download
+    /// targets the place's footprint rather than the screen rectangle.
+    #[test]
+    fn region_from_json_parses_boundingbox() {
+        let item = serde_json::json!({
+            "lat": "48.1371", "lon": "11.5754",
+            "name": "Munich",
+            "display_name": "Munich, Bavaria, Germany",
+            "class": "boundary", "type": "administrative",
+            "osm_type": "relation", "osm_id": 62428,
+            "boundingbox": ["48.0616", "48.2482", "11.3608", "11.7229"]
+        });
+        let hit = region_from_json(&item).expect("a region with a coord + box");
+        assert_eq!(hit.name, "Munich");
+        assert!((hit.sw.lat - 48.0616).abs() < 1e-6, "south from boundingbox[0]");
+        assert!((hit.ne.lat - 48.2482).abs() < 1e-6, "north from boundingbox[1]");
+        assert!((hit.sw.lon - 11.3608).abs() < 1e-6, "west from boundingbox[2]");
+        assert!((hit.ne.lon - 11.7229).abs() < 1e-6, "east from boundingbox[3]");
+        // The box is a real area, not a degenerate point.
+        assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon);
+    }
+
+    /// Without a `boundingbox`, a result still yields a small square around the
+    /// point so a single-building hit downloads its surroundings.
+    #[test]
+    fn region_from_json_falls_back_to_a_small_box() {
+        let item = serde_json::json!({
+            "lat": "48.1374", "lon": "11.5755",
+            "name": "Marienplatz",
+            "display_name": "Marienplatz, München",
+            "class": "amenity", "type": "square",
+            "osm_type": "node", "osm_id": 1
+        });
+        let hit = region_from_json(&item).expect("a region from a coord");
+        assert!(hit.ne.lat > hit.sw.lat && hit.ne.lon > hit.sw.lon, "a non-degenerate box");
+        assert!((hit.ne.lat - hit.sw.lat) < 0.05, "the fallback box is small");
     }
 
     #[test]

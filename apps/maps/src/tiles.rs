@@ -35,6 +35,8 @@ use vello::peniko::{
     ImageFormat as Format,
 };
 
+use ui::theme::Theme;
+
 use crate::geo;
 use crate::model::LatLon;
 
@@ -68,16 +70,47 @@ struct FailedFetch {
     delay: Duration,
 }
 
-/// Base raster-tile endpoint: CARTO's **label-free** light basemap
-/// (`light_nolabels`). It is deliberately a *no-labels* style — the app draws
-/// its own themed, clickable POI/place markers over the imagery, so the base
-/// tiles must NOT bake in place names of their own. The standard OSM raster
-/// (`tile.openstreetmap.org`) has labels baked in, which double up with the
-/// marker layer; a `nolabels` style leaves labelling entirely to the app. The
-/// *light* palette is chosen to match the app's light UI — a dark basemap would
-/// clash with it. Data is still OpenStreetMap; CARTO serves the raster, and
-/// both credits are carried in the on-map attribution.
-const TILE_URL: &str = "https://basemaps.cartocdn.com/light_nolabels";
+/// Which CARTO basemap the raster layer fetches. Both variants are deliberately
+/// **label-free** (`*_nolabels`) — the app draws its own themed, clickable
+/// POI/place markers over the imagery, so the base tiles must NOT bake in place
+/// names of their own (the standard `tile.openstreetmap.org` raster does, which
+/// would double up with the marker layer). The style is resolved from the active
+/// OS [`Theme`] so the basemap tracks it: a dark chrome theme gets the *dark*
+/// basemap, a light theme the *light* one, and a view is never a mix of the two.
+/// Data is OpenStreetMap in both cases; CARTO serves the raster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileStyle {
+    Light,
+    Dark,
+}
+
+impl TileStyle {
+    /// The CARTO label-free basemap endpoint for this style.
+    pub fn base_url(self) -> &'static str {
+        match self {
+            TileStyle::Light => "https://basemaps.cartocdn.com/light_nolabels",
+            TileStyle::Dark => "https://basemaps.cartocdn.com/dark_nolabels",
+        }
+    }
+
+    /// Cache subdirectory, so light and dark tiles for the same `z/x/y` never
+    /// collide on disk (switching theme must not read a wrong-tone tile).
+    pub fn subdir(self) -> &'static str {
+        match self {
+            TileStyle::Light => "light",
+            TileStyle::Dark => "dark",
+        }
+    }
+
+    /// Resolve the basemap style from the active theme by the lightness of its
+    /// base surface — robust across every named/custom theme (and the two
+    /// high-contrast tracks), not just the two built-ins.
+    pub fn from_theme(theme: &Theme) -> Self {
+        let c = theme.tokens.colors.surfaces.base.to_rgba8();
+        let lum = 0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64;
+        if lum < 128.0 { TileStyle::Dark } else { TileStyle::Light }
+    }
+}
 
 const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
 
@@ -183,30 +216,58 @@ pub struct TileLayer {
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
     done_rx: Option<Receiver<Done>>,
-    /// On-disk cache root (`z/x/y.png` beneath it).
+    /// The active basemap style. Drives both the fetch endpoint and the cache
+    /// subdirectory, so the resident + on-disk tiles always match the theme.
+    style: TileStyle,
+    /// The style-agnostic cache root, when this layer owns one (the live app).
+    /// Tiles live under `cache_root/<style.subdir()>/z/x/y.png`, so switching
+    /// theme swaps the whole tile tree without cross-tone collisions. `None` for
+    /// the hermetic test/offline layers, whose `cache_dir` is exactly as given.
+    cache_root: Option<PathBuf>,
+    /// On-disk cache dir for the *current* style (`z/x/y.png` beneath it).
     cache_dir: PathBuf,
     /// Live offline-download progress.
     progress: DownloadProgress,
 }
 
 impl TileLayer {
-    /// Construct a live tile layer that spawns a worker thread.
+    /// Construct a live tile layer that spawns a worker thread. Its cache is
+    /// style-scoped under the default root, so light and dark tiles never
+    /// collide; the style is set to match the theme on the first `set_style`.
     pub fn new() -> Self {
-        Self::with_cache_dir(default_cache_dir())
+        Self::live_with_root(default_cache_dir())
     }
 
-    /// Construct a live tile layer rooted at a specific cache directory. The
-    /// worker still runs off the UI thread; the on-disk cache lives under
-    /// `cache_dir`. Used by tests to point the cache at a temp dir.
+    /// A live, style-scoped tile layer rooted at `root`: tiles live under
+    /// `root/<style>/z/x/y.png`. Starts in [`TileStyle::Light`]; the app calls
+    /// [`set_style`](Self::set_style) with the theme's style each draw, which
+    /// re-points the worker + cache dir on a change.
+    pub fn live_with_root(root: PathBuf) -> Self {
+        let style = TileStyle::Light;
+        let cache_dir = root.join(style.subdir());
+        let mut layer = Self::spawn_worker(cache_dir, style.base_url().to_string());
+        layer.cache_root = Some(root);
+        layer.style = style;
+        layer
+    }
+
+    /// Construct a live tile layer rooted at exactly `cache_dir` (no style
+    /// subdir). The worker runs off the UI thread. Used by the tile unit tests
+    /// to point the cache at a temp dir and drive the raw fetch path.
     pub fn with_cache_dir(cache_dir: PathBuf) -> Self {
-        Self::with_cache_dir_and_base(cache_dir, TILE_URL.to_string())
+        Self::with_cache_dir_and_base(cache_dir, TileStyle::Light.base_url().to_string())
     }
 
-    /// Live tile layer with an explicit tile-server base URL. The default
-    /// (`with_cache_dir`) uses the public OSM endpoint; a custom base lets a
-    /// test exercise the real fetch→fail→negative-cache path against a local
-    /// (closed-port) server without ever touching the public server.
+    /// Live tile layer at an explicit dir with an explicit tile-server base URL.
+    /// A custom base lets a test exercise the real fetch→fail→negative-cache
+    /// path against a local (closed-port) server without touching the public one.
     fn with_cache_dir_and_base(cache_dir: PathBuf, base_url: String) -> Self {
+        Self::spawn_worker(cache_dir, base_url)
+    }
+
+    /// Spawn the background worker for `cache_dir` + `base_url` and wrap it in a
+    /// fresh layer (style-agnostic root left `None`; the caller sets it).
+    fn spawn_worker(cache_dir: PathBuf, base_url: String) -> Self {
         let (job_tx, job_rx) = channel::<Job>();
         let (done_tx, done_rx) = channel::<Done>();
         let dir = cache_dir.clone();
@@ -221,9 +282,51 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: Some(job_tx),
             done_rx: Some(done_rx),
+            style: TileStyle::Light,
+            cache_root: None,
             cache_dir,
             progress: DownloadProgress::default(),
         }
+    }
+
+    /// Point the layer at the basemap `style` for the active theme. A no-op when
+    /// unchanged; on a change it re-points the on-disk cache dir, drops the
+    /// now-wrong-tone resident tiles, and re-spawns the worker against the new
+    /// endpoint + cache dir (the old worker exits when its channel drops, so any
+    /// in-flight wrong-style result is discarded with it). Offline layers just
+    /// record the style. Cheap on the steady state, so the app calls it each draw.
+    pub fn set_style(&mut self, style: TileStyle) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        if let Some(root) = &self.cache_root {
+            self.cache_dir = root.join(style.subdir());
+        }
+        // Wrong-tone imagery must not linger through the switch.
+        self.mem.clear();
+        self.lru.clear();
+        self.inflight.clear();
+        self.failed.clear();
+        // Re-spawn the worker for the new style (live layers only; offline layers
+        // have no `job_tx` and simply keep serving from the — now cleared — set).
+        if self.job_tx.is_some() {
+            let (job_tx, job_rx) = channel::<Job>();
+            let (done_tx, done_rx) = channel::<Done>();
+            let dir = self.cache_dir.clone();
+            let base_url = style.base_url().to_string();
+            std::thread::Builder::new()
+                .name("maps-tiles".into())
+                .spawn(move || worker(job_rx, done_tx, dir, base_url))
+                .expect("spawn maps tile worker");
+            self.job_tx = Some(job_tx);
+            self.done_rx = Some(done_rx);
+        }
+    }
+
+    /// The active basemap style.
+    pub fn style(&self) -> TileStyle {
+        self.style
     }
 
     /// Construct an inert layer with no worker thread and no network — used by
@@ -243,6 +346,8 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
+            style: TileStyle::Light,
+            cache_root: None,
             cache_dir,
             progress: DownloadProgress::default(),
         }
@@ -506,14 +611,17 @@ impl TileLayer {
     }
 
     /// Delete the entire on-disk tile cache and clear RAM. Returns bytes freed.
+    /// For the live layer this is the whole style-agnostic root (both light and
+    /// dark tiles); for a test/offline layer it is exactly its `cache_dir`.
     pub fn clear_cache(&mut self) -> u64 {
         self.mem.clear();
         self.lru.clear();
         self.inflight.clear();
         self.failed.clear();
         self.progress = DownloadProgress::default();
-        let freed = dir_size(&self.cache_dir);
-        let _ = std::fs::remove_dir_all(&self.cache_dir);
+        let target = self.cache_root.clone().unwrap_or_else(|| self.cache_dir.clone());
+        let freed = dir_size(&target);
+        let _ = std::fs::remove_dir_all(&target);
         freed
     }
 
@@ -537,9 +645,10 @@ impl TileLayer {
         freed
     }
 
-    /// Total bytes the on-disk cache currently occupies.
+    /// Total bytes the on-disk cache currently occupies (all styles, for the
+    /// live layer; exactly `cache_dir` for a test/offline layer).
     pub fn cache_bytes(&self) -> u64 {
-        dir_size(&self.cache_dir)
+        dir_size(self.cache_root.as_deref().unwrap_or(&self.cache_dir))
     }
 
     // --- internal ----------------------------------------------------------
@@ -902,9 +1011,12 @@ pub fn paint_ancestor(
         * Affine::scale_non_uniform(sx, sy)
         * Affine::translate((-src_x, -src_y));
     let brush = ImageBrush::new(img.clone());
-    scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &dst);
+    // The fill geometry is `dst`, so only pixels inside the tile rect are
+    // painted — no clip layer is needed to bound the stretched ancestor. A
+    // fresh zoom-in fills *every* visible tile from an ancestor, so dropping the
+    // per-tile push/pop_layer removes a clip layer per tile from the hottest
+    // frames (the whole tile pass is already clipped to the viewport upstream).
     scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &dst);
-    scene.pop_layer();
 }
 
 /// Fill a zoom-out hole from *cached descendant* (higher-z, sharper) tiles.
@@ -1331,8 +1443,9 @@ mod tests {
             .build()
             .expect("reqwest client builds");
 
+        let base = TileStyle::Light.base_url();
         let id = TileId::new(3, 4, 2);
-        let url = id.url(TILE_URL);
+        let url = id.url(base);
 
         // Raw request first, so a handshake failure is a clear, loud error.
         let resp = client
@@ -1352,7 +1465,7 @@ mod tests {
         // Now the full production helper: it must return pixels AND persist the
         // tile to the on-disk cache so re-views/zoom are instant.
         let cache = temp_cache();
-        let got = load_tile(&Some(client), &cache, TILE_URL, id)
+        let got = load_tile(&Some(client), &cache, base, id)
             .expect("load_tile returns decoded pixels over the real network");
         assert_eq!(got.0.len(), 256 * 256 * 4);
         assert!(
@@ -1381,18 +1494,34 @@ mod tests {
     /// (no duplicate, mismatched names baked into the tiles). This asserts on
     /// the exact constant the live worker uses, not a copy.
     #[test]
-    fn base_tile_url_is_label_free() {
-        assert!(
-            TILE_URL.contains("nolabels"),
-            "base tiles must be a label-free style so only the app draws POIs: {TILE_URL}"
-        );
-        assert!(
-            !TILE_URL.contains("tile.openstreetmap.org"),
-            "the standard OSM raster bakes labels into the tiles: {TILE_URL}"
-        );
+    fn base_tile_urls_are_label_free_per_theme() {
+        for style in [TileStyle::Light, TileStyle::Dark] {
+            let url = style.base_url();
+            assert!(
+                url.contains("nolabels"),
+                "base tiles must be a label-free style so only the app draws POIs: {url}"
+            );
+            assert!(
+                !url.contains("tile.openstreetmap.org"),
+                "the standard OSM raster bakes labels into the tiles: {url}"
+            );
+        }
+        // Light and dark are distinct endpoints, so a single view is never a mix
+        // of the two tones (the reported light-centre/dark-edge bug).
+        assert_ne!(TileStyle::Light.base_url(), TileStyle::Dark.base_url());
         // A well-formed z/x/y URL is produced for a sample tile.
         let id = TileId::new(14, 8800, 5680);
-        assert!(id.url(TILE_URL).ends_with("/14/8800/5680.png"), "{}", id.url(TILE_URL));
+        let url = TileStyle::Dark.base_url();
+        assert!(id.url(url).ends_with("/14/8800/5680.png"), "{}", id.url(url));
+    }
+
+    /// The basemap style tracks the theme: a dark chrome theme resolves to the
+    /// dark basemap, a light theme to the light one — the wiring that kills the
+    /// mixed-tone view.
+    #[test]
+    fn style_tracks_theme() {
+        assert_eq!(TileStyle::from_theme(&Theme::dark()), TileStyle::Dark);
+        assert_eq!(TileStyle::from_theme(&Theme::light()), TileStyle::Light);
     }
 
     /// A one-shot local HTTP/1.1 server that answers every request with the

@@ -728,6 +728,35 @@ pub fn sample_transit() -> Vec<TransitJourney> {
 
 /// Assemble the fully-populated default model used by `--shots` and as the
 /// initial state of a fresh live session.
+/// Sample geocoded region candidates for the offline download-by-place shot
+/// (no network). Real Munich bounding boxes; used only behind `--shots`/demo.
+pub fn download_regions() -> Vec<crate::net::RegionHit> {
+    use crate::net::RegionHit;
+    vec![
+        RegionHit {
+            name: "Munich".into(),
+            context: "Bavaria, Germany".into(),
+            pos: LatLon::new(48.1371, 11.5754),
+            sw: LatLon::new(48.0616, 11.3608),
+            ne: LatLon::new(48.2482, 11.7229),
+        },
+        RegionHit {
+            name: "München Hauptbahnhof".into(),
+            context: "Bahnhofplatz, München".into(),
+            pos: LatLon::new(48.1402, 11.5586),
+            sw: LatLon::new(48.1382, 11.5556),
+            ne: LatLon::new(48.1422, 11.5616),
+        },
+        RegionHit {
+            name: "Marienplatz".into(),
+            context: "Altstadt-Lehel, München".into(),
+            pos: LatLon::new(48.1374, 11.5755),
+            sw: LatLon::new(48.1364, 11.5745),
+            ne: LatLon::new(48.1384, 11.5765),
+        },
+    ]
+}
+
 pub fn default_model() -> MapModel {
     let mut m = MapModel::default();
     m.places = places();
