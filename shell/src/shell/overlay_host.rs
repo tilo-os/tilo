@@ -4790,25 +4790,6 @@ impl Widget for ShellOverlayHost {
             prompt.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        // The portal's file-chooser dialog. Painted last and over a
-        // scrim, because unlike the permission bar it *is* modal: an app
-        // is blocked on the answer, and the compositor drawing it is
-        // what makes it trustworthy — the requesting app cannot draw
-        // over it, read it, or dismiss it.
-        if let Some(active) = self.file_picker.as_mut() {
-            let scrim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.scrim,
-                None,
-                &scrim,
-            );
-            active.widget.set_rect(file_picker_rect(self.rect));
-            active
-                .widget
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
 
         // Top-right notification stack. Drawn above the desktop content
         // but below modal overlays (palette / settings / overview) and
@@ -5182,6 +5163,34 @@ impl Widget for ShellOverlayHost {
         // Peer-sync card last: while it is up it owns the keyboard, so
         // it has to sit above the palette that opened it.
         self.draw_peer_sync(scene, transform, text_renderer, theme);
+
+        // The portal's file-chooser dialog, over a scrim, above every
+        // other overlay — including the sidebar wheel, which paints
+        // after the desktop content and would otherwise sit on top of a
+        // dialog that is supposed to be modal.
+        //
+        // It genuinely is modal: an app in another process is blocked on
+        // the answer, and `handle_event` absorbs every event while it is
+        // up. Chrome that still looks live underneath a modal is chrome
+        // the user will try to click, so the scrim covers the whole
+        // viewport and the dialog is drawn last.
+        //
+        // The compositor drawing it is also what makes it trustworthy:
+        // the requesting app cannot draw over it, read it, or dismiss
+        // it.
+        if let Some(active) = self.file_picker.as_mut() {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.scrim,
+                None,
+                &self.rect,
+            );
+            active.widget.set_rect(file_picker_rect(self.rect));
+            active
+                .widget
+                .draw(scene, transform, text_renderer, theme, presence);
+        }
 
         // The hardware-key readout sits above absolutely everything,
         // including the modals. It reports a change the user just made
