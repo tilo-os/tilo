@@ -2232,6 +2232,63 @@ mod tests {
         );
     }
 
+    /// A tab is a place input can land only while the compositor still
+    /// holds the client's surface. A tab left in the tree after its
+    /// toplevel went away is a rectangle with nothing behind it, and
+    /// publishing it would hand a guest a coordinate the local user
+    /// cannot even click on.
+    ///
+    /// Drives the real publisher against the real laid-out tree, then
+    /// asks the firewall the question a peer's event asks.
+    #[test]
+    fn a_tab_whose_surface_the_compositor_does_not_hold_is_not_published() {
+        use crate::network::input_firewall::Denial;
+        use crate::network::streaming::{InputEvent, StreamingShare};
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.gone"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        // The tile is laid out — the tree says there is a window there.
+        assert!(
+            foreign_tiles(&fb.chrome().tree(), fb.host())
+                .iter()
+                .any(|hit| hit.surface_id == ORPHAN_SURFACE),
+            "the mirrored tab has to be laid out, or this proves nothing",
+        );
+
+        // The compositor never registered a toplevel for it.
+        let mut state = state_sharing(ORPHAN_SURFACE);
+        state
+            .share_registry
+            .insert(KILL_PEER, ORPHAN_SURFACE, StreamingShare::new());
+        publish_remote_input_view(&mut state, &fb);
+
+        let view = state.remote_input_firewall.view();
+        assert!(view.observed(), "the publisher has to publish something");
+        assert!(
+            view.rect(ORPHAN_SURFACE).is_none(),
+            "a tab with no live surface behind it was offered as an input target",
+        );
+        assert_eq!(
+            state.review_remote_input(
+                KILL_PEER,
+                ORPHAN_SURFACE,
+                InputEvent::PointerMotion { x: 5.0, y: 5.0 }
+            ),
+            Err(Denial::NotOnScreen),
+        );
+    }
+
+    const ORPHAN_SURFACE: u64 = 900_003;
+
     /// A `State` with a live seat, one peer holding write access to
     /// `surface`, and that surface on screen with the keyboard.
     fn state_sharing(surface: u64) -> crate::compositor::state::State {
