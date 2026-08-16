@@ -12,10 +12,14 @@ name = "music"
 path = "src/main.rs"
 
 [features]
-# Real HTTP audio-stream resolution (Piped/Invidious). Off by default so the
-# default build + offline `--shots` need no HTTP stack; the bundled sample
-# library keeps the UI fully populated.
-default = []
+# The real app ships on by default: `streaming` + `audio` + `live` give a
+# normally-built `music` real YouTube-Music search, real audio-stream
+# resolution, and real sound out of the box. The bundled sample library and
+# the runtime offline switch (`set_offline_for_shot`) keep `--shots` and tests
+# fully hermetic regardless — the features compile the live code in; the
+# runtime mode decides live vs sample. `lyrics` and `p2p` stay opt-in extras.
+default = ["streaming", "audio", "live"]
+# Real HTTP audio-stream resolution (Piped/Invidious).
 streaming = ["dep:reqwest"]
 # Real desktop audio integration. Off by default (no system GStreamer / D-Bus
 # dependency for CI / screenshots). Bundles everything the real running app
