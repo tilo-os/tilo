@@ -2669,7 +2669,7 @@ impl ShellOverlayHost {
         posted
     }
 
-    pub(crate) fn pump_permission_prompt(&mut self) {
+    pub fn pump_permission_prompt(&mut self) {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
         };
@@ -2854,7 +2854,7 @@ impl ShellOverlayHost {
     ///
     /// Returns whether anything moved, so the caller can mark the frame
     /// dirty and repaint with the prompt on screen.
-    pub(crate) fn drain_portal_prompts(&mut self) -> bool {
+    pub fn drain_portal_prompts(&mut self) -> bool {
         let Some(prompts) = self.portal_prompts.as_ref() else {
             return false;
         };
