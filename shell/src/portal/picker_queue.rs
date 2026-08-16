@@ -22,7 +22,7 @@
 //! the frame thread; if the frame thread cannot render (no chrome yet),
 //! it answers rather than holding them.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use super::file_picker_spawner::{FilePickerRequest, FilePickerSpawner};
