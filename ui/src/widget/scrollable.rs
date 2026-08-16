@@ -274,6 +274,41 @@ impl Scrollable {
     pub fn set_viewport_size(&mut self, w: f32, h: f32) { self.viewport_w = w; self.viewport_h = h; self.clamp(); }
     pub fn offset_x(&self) -> f32 { self.offset_x }
     pub fn offset_y(&self) -> f32 { self.offset_y }
+
+    /// Directly set the vertical scroll offset (clamped to the content). For a
+    /// manually-driven viewport seeding its initial position — e.g. a day
+    /// timeline opening at the work-day rather than at midnight.
+    pub fn set_offset_y(&mut self, y: f32) {
+        self.offset_y = y;
+        self.clamp();
+    }
+
+    /// Whether the vertical axis currently overflows its viewport (i.e. the
+    /// content is taller than the visible area and can be scrolled). Lets a
+    /// caller that drives this Scrollable manually decide whether to seed an
+    /// initial offset or draw the bar.
+    pub fn vertical_overflows(&self) -> bool {
+        self.content_h > self.viewport_h + FIT_EPS
+    }
+
+    /// Position a manually-driven (child-less) Scrollable: set the viewport
+    /// **rect** — used for scrollbar geometry and pointer hit-testing — and the
+    /// viewport size together. Pair with [`Scrollable::set_content_size`] when the
+    /// content is painted imperatively by the caller rather than laid out and
+    /// drawn through this widget's own `draw`.
+    pub fn set_viewport_rect(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.set_viewport_size(rect.width().max(0.0) as f32, rect.height().max(0.0) as f32);
+    }
+
+    /// Composite the shared overlay scrollbar (track + thumb, with the same
+    /// fade / hover behaviour as a laid-out Scrollable) on top of content the
+    /// caller painted itself. Pairs with [`Scrollable::set_viewport_rect`] +
+    /// [`Scrollable::set_content_size`] for a viewport this Scrollable neither
+    /// lays out nor draws.
+    pub fn draw_bar_overlay(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        self.draw_scrollbars(scene, transform, theme);
+    }
     pub fn momentum_speed(&self) -> f32 { (self.vx * self.vx + self.vy * self.vy).sqrt() }
 
     pub fn scroll_by(&mut self, dx: f32, dy: f32) {
