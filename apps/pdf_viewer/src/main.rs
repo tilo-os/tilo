@@ -80,6 +80,8 @@ fn build_widget(args: &Args) -> Box<dyn Widget> {
         Some("edit-comment") => return pdf_viewer::app_root_sample_editing(),
         Some("selection-hud") => return pdf_viewer::app_root_selection_hud(),
         Some("page-bubble") => return pdf_viewer::app_root_page_bubble(),
+        Some("search") => return pdf_viewer::app_root_search(),
+        Some("sign") => return pdf_viewer::app_root_sign(),
         Some("reorder") => return pdf_viewer::app_root_reorder_demo(args.file.as_deref()),
         Some("import") => return pdf_viewer::app_root_import_demo(args.file.as_deref()),
         _ => {}
