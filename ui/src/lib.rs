@@ -70,6 +70,7 @@ pub mod offscreen;
 pub mod image_store;
 pub mod render_thread;
 pub mod warmup;
+pub mod window_icon;
 pub mod webview;
 pub mod fullscreen;
 pub mod scale;
