@@ -223,7 +223,29 @@ pub struct VideoEditorApp {
     /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
     /// the edit real caret / selection / clipboard / a11y for free.
     bin_rename: Option<(MediaId, EditableLabel)>,
+    /// A bin item being dragged toward the timeline. Armed on a bin press and
+    /// promoted to a live drag once the pointer passes the threshold; on release
+    /// over a lane it places a clip at the drop position.
+    bin_drag: Option<BinDrag>,
+    /// `true` while the OS is hovering a file over the window (an external
+    /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
+    file_hovering: bool,
 }
+
+/// A drag that started on a media-bin item and is heading for the timeline.
+#[derive(Clone, Copy)]
+struct BinDrag {
+    media: MediaId,
+    /// Pointer position where the press began, to measure the drag threshold.
+    origin: Point,
+    /// `true` once the pointer has moved past the threshold — only then does a
+    /// ghost follow the cursor and a drop place a clip.
+    active: bool,
+}
+
+/// Pointer travel (logical px) before a bin press becomes a drag toward the
+/// timeline, so a plain click never jitters into a placement.
+const BIN_DRAG_THRESHOLD: f64 = 6.0;
 
 impl Default for VideoEditorApp {
     fn default() -> Self {
@@ -273,6 +295,8 @@ impl VideoEditorApp {
             bin_menu: ContextMenu::new(),
             bin_menu_media: None,
             bin_rename: None,
+            bin_drag: None,
+            file_hovering: false,
         }
     }
 
@@ -759,6 +783,75 @@ impl VideoEditorApp {
         Some(id)
     }
 
+    /// Place `media` on `track` at timeline time `start` (a drag-drop from the
+    /// bin), creating and selecting the clip. Returns the new clip id.
+    fn place_media_at(
+        &mut self,
+        doc: &mut AutoCommit,
+        media: MediaId,
+        track: TrackId,
+        start: f64,
+    ) -> Option<ClipId> {
+        let start = snap_to_frame(start.max(0.0), self.project.fps);
+        let id = self.project.add_clip(track, media, start)?;
+        self.dispatch_clip(doc, id);
+        self.selected = Some(id);
+        Some(id)
+    }
+
+    // ---- bin → timeline drag ---------------------------------------------
+
+    /// Promote an armed bin drag to a live one once the pointer passes the
+    /// threshold. Called on every pointer move.
+    fn update_bin_drag(&mut self) {
+        let mouse = self.last_mouse;
+        if let Some(bd) = self.bin_drag.as_mut() {
+            if !bd.active && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD {
+                bd.active = true;
+            }
+        }
+    }
+
+    /// The lane under the current cursor while a bin drag is live, as
+    /// `(track, kind, lane rect)` — the drop target.
+    fn bin_drop_lane(&self, r: &Regions) -> Option<(TrackId, TrackKind, Rect)> {
+        let p = self.last_mouse;
+        self.lane_rects(r)
+            .into_iter()
+            .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1 && p.x >= r.lanes.x0)
+    }
+
+    /// Finish a bin drag: place the dragged media as a clip at the drop
+    /// position. A drop on a matching-kind lane lands at the drop time on that
+    /// track; a kind-mismatched lane (audio onto a video lane) lands at the drop
+    /// time on a matching-kind track (created if needed); a drop elsewhere on
+    /// the timeline appends to a matching track. A drop off the timeline cancels.
+    fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
+        let Some(bd) = self.bin_drag.take() else { return };
+        if !bd.active {
+            return; // a plain click that never moved — nothing to place
+        }
+        let p = self.last_mouse;
+        let want_kind = if self.project.media(bd.media).map(|m| m.kind.is_visual()).unwrap_or(true) {
+            TrackKind::Video
+        } else {
+            TrackKind::Audio
+        };
+        if let Some((tid, kind, _)) = self.bin_drop_lane(r) {
+            let t = self.x_to_time(p.x, &r.lanes);
+            if kind == want_kind {
+                self.place_media_at(doc, bd.media, tid, t);
+            } else {
+                let track = self.ensure_track_of_kind(doc, want_kind);
+                self.place_media_at(doc, bd.media, track, t);
+            }
+        } else if r.timeline.contains(p) {
+            // On the timeline but not a specific lane (below the last lane, or
+            // the gutter) → append to a matching track.
+            self.add_media_to_timeline(doc, bd.media);
+        }
+    }
+
     // ---- media-bin clip management ---------------------------------------
 
     /// The sub-rect of a bin row where the media *name* is drawn — clicking it
@@ -1211,6 +1304,11 @@ impl Widget for VideoEditorApp {
                 self.bin_menu_media = None;
             }
         }
+        if let Some(bd) = self.bin_drag {
+            if self.project.media(bd.media).is_none() {
+                self.bin_drag = None;
+            }
+        }
         self.ensure_initial_selection();
         // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_applied && self.shot_scenario != ShotScenario::Live
@@ -1308,6 +1406,8 @@ impl Widget for VideoEditorApp {
                 self.draw_bin(scene, transform, tr, theme, &r);
             }
         }
+        // Live bin→timeline drag: drop-lane highlight, insertion marker + ghost.
+        self.draw_bin_drag(scene, transform, tr, theme, &r);
         // Inline rename field, drawn over the bin item's name band.
         self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
         if self.show_export {
@@ -1400,7 +1500,11 @@ impl Widget for VideoEditorApp {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.drag.is_some() {
+                if self.bin_drag.is_some() {
+                    // A bin→timeline drag drops a clip at the release position.
+                    self.release_bin_drag(state, &r);
+                    *handled = true;
+                } else if self.drag.is_some() {
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
                     self.commit_drag(state);
@@ -1413,6 +1517,26 @@ impl Widget for VideoEditorApp {
                 self.last_mouse = p;
                 self.update_hover(&r);
                 self.apply_drag(&r);
+                self.update_bin_drag();
+                *handled = true;
+            }
+            // External file drop (an OS drag-and-drop onto the window) imports
+            // media, exactly like the portal pick — the whole editor accepts it.
+            WindowEvent::DroppedFile(path) => {
+                self.file_hovering = false;
+                if self.import_one(state, path) {
+                    self.import_notice = Some(import_summary(1, 1));
+                } else {
+                    self.import_notice = Some("That file couldn't be imported".to_string());
+                }
+                *handled = true;
+            }
+            WindowEvent::HoveredFile(_) => {
+                self.file_hovering = true;
+                *handled = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.file_hovering = false;
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -1676,6 +1800,8 @@ impl VideoEditorApp {
                         self.begin_rename(mid);
                         self.last_click_media = None;
                     } else {
+                        // Arm a potential bin→timeline drag from this press.
+                        self.bin_drag = Some(BinDrag { media: mid, origin: p, active: false });
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -2105,6 +2231,14 @@ impl VideoEditorApp {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.raised, r.bin);
         stroke_line(scene, tf, c.border_standard, r.bin.x1, r.bin.y0, r.bin.x1, r.bin.y1, 1.0);
+        // Invite an external file drop while the OS is hovering one over us.
+        if self.file_hovering {
+            fill_rect(scene, tf, with_alpha(c.accent[5], 0.10), r.bin);
+            stroke_rrect(scene, tf, c.accent[5], r.bin.inset(-3.0), 8.0, 2.0);
+            let hint = "Drop to import";
+            let (hw, _) = tr.measure_weighted(hint, 13.0, None, TextWeight::Semibold);
+            text_w(scene, tr, tf, hint, 13.0, c.accent[5], r.bin.center().x - hw as f64 / 2.0, r.bin.center().y, TextWeight::Semibold);
+        }
         text_w(scene, tr, tf, "MEDIA BIN", 11.0, c.text_dim, r.bin.x0 + 14.0, r.bin.y0 + 14.0, TextWeight::Semibold);
         let count = format!("{} clips", self.project.media.len());
         let (cw, _) = tr.measure(&count, 11.0, None);
@@ -2180,6 +2314,40 @@ impl VideoEditorApp {
             text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
         }
         scene.pop_layer();
+    }
+
+    /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
+    /// the insertion point at the drop time, and float a ghost chip at the cursor.
+    fn draw_bin_drag(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
+        let Some(bd) = self.bin_drag else { return };
+        if !bd.active {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let p = self.last_mouse;
+        // Drop-lane highlight + insertion marker at the snapped drop time.
+        if let Some((_, _, lane)) = self.bin_drop_lane(r) {
+            fill_rect(
+                scene,
+                tf,
+                with_alpha(c.accent[5], 0.16),
+                Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1),
+            );
+            let t = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps);
+            let x = self.time_to_x(t, &r.lanes).clamp(r.lanes.x0, r.lanes.x1);
+            stroke_line(scene, tf, c.accent[5], x, lane.y0, x, lane.y1, 2.0);
+        }
+        // Ghost chip following the cursor.
+        if let Some(m) = self.project.media(bd.media) {
+            let (w, h) = (154.0, 30.0);
+            let gr = Rect::new(p.x + 12.0, p.y - h / 2.0, p.x + 12.0 + w, p.y + h / 2.0);
+            fill_rrect(scene, tf, with_alpha(clip_color(theme, m.palette), 0.92), gr, 6.0);
+            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.9), gr, 6.0, 1.0);
+            text_w(
+                scene, tr, tf, &elide(&m.name, 20), 12.0, Color::WHITE,
+                gr.x0 + 10.0, gr.center().y - 8.0, TextWeight::Medium,
+            );
+        }
     }
 
     /// Draw the in-flight inline rename field over its bin row's name band.
@@ -3425,6 +3593,67 @@ mod tests {
             app.actions.take_committed().is_some(),
             "the rename dispatched an action, arming one undo boundary",
         );
+    }
+
+    #[test]
+    fn drag_bin_item_to_a_lane_places_a_clip_at_the_drop_time() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // A visual bin item, and a video lane to drop it on.
+        let (mid, row) = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .expect("a visual bin item");
+        let (tid, _k, lane) = app
+            .lane_rects(&r)
+            .into_iter()
+            .find(|(_, k, _)| *k == TrackKind::Video)
+            .expect("a video lane");
+        let before = VideoDoc::load_project(&doc).clips_on(tid).len();
+        // Press on the bin item, drag past the threshold onto the lane, release.
+        move_to(&mut app, &mut doc, row.center().x, row.center().y);
+        press(&mut app, &mut doc);
+        let drop_x = lane.x0 + 300.0;
+        let drop_y = lane.center().y;
+        move_to(&mut app, &mut doc, drop_x, drop_y);
+        assert!(
+            matches!(app.bin_drag, Some(BinDrag { active: true, .. })),
+            "moving past the threshold promotes the bin drag",
+        );
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clips_on(tid).len(),
+            before + 1,
+            "a clip was placed on the drop track in the CRDT",
+        );
+        let placed = app.selected.and_then(|id| reloaded.clip(id)).expect("placed clip selected");
+        assert_eq!(placed.media, mid, "the placed clip references the dragged media");
+        let expected_t = app.x_to_time(drop_x, &r.lanes);
+        assert!(
+            (placed.start - expected_t).abs() < 0.2,
+            "clip placed near the drop time ({} vs {expected_t})",
+            placed.start,
+        );
+        assert!(app.bin_drag.is_none(), "the drag ended on release");
+    }
+
+    #[test]
+    fn dropped_file_imports_into_the_bin_through_the_doc() {
+        // An OS file drop onto the window imports, exactly like the portal pick.
+        let f = write_real_png(200, 120);
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project.media.is_empty(), "blank project starts empty");
+        dispatch(&mut app, &mut doc, WindowEvent::DroppedFile(f.clone()));
+        assert_eq!(app.project.media.len(), 1, "the dropped file landed in the bin");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.media.len(), 1, "and replicated through the document");
+        assert_eq!(reloaded.media[0].width, 200, "with real probed metadata");
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]
