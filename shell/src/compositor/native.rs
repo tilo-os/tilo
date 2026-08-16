@@ -2485,11 +2485,11 @@ pub fn run() -> ! {
 
         // Hand the remote-input firewall this frame's screen: which
         // foreign tiles are up and where, which one holds the keyboard,
-        // and whether chrome is drawn over the lot. Every coordinate and
-        // focus check a peer's input faces is answered from this, so it
-        // has to be refreshed after focus is reconciled and before any
-        // remote event is drained.
-        client_input::publish_remote_input_view(&mut state, &frame_builder);
+        // whether chrome is drawn over the lot, and whether the session
+        // is locked. Every coordinate and focus check a peer's input
+        // faces is answered from this, so it has to be refreshed after
+        // focus is reconciled and before any remote event is drained.
+        client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
 
         // Per-output HiDPI: tell each client the scale of the display its
         // tile is currently on. Runs every tick because a window dragged
