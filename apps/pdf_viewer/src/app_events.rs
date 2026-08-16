@@ -325,7 +325,7 @@ impl PdfApp {
                         // to copy; it never pans or selects text.
                         self.clear_selection();
                         self.region = Some(RegionSelect { page, start: pt, cur: pt });
-                    } else if self.raster.is_some() && self.begin_selection(page, pt) {
+                    } else if self.raster.is_some() && self.begin_selection(page, pt, p) {
                         // Text selection armed; motion extends it, release ends it.
                     } else {
                         self.clear_selection();

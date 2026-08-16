@@ -196,6 +196,47 @@ impl PageText {
         bands
     }
 
+    /// The half-open glyph range `[start, end)` of the **word** containing the
+    /// glyph at `glyph_idx`, resolved through the shared `ui::word_boundaries`
+    /// core so double-click word selection behaves identically to every text
+    /// field and the ebook reader. Falls back to the single glyph when it sits
+    /// on a boundary with no surrounding word (e.g. isolated punctuation).
+    pub fn word_range(&self, glyph_idx: usize) -> (usize, usize) {
+        if self.chars.is_empty() {
+            return (0, 0);
+        }
+        let g = glyph_idx.min(self.chars.len() - 1);
+        let byte = self.chars[g].byte_start;
+        let (bs, be) = ui::word_boundaries(&self.text, byte);
+        let gs = self.chars.partition_point(|c| c.byte_start < bs);
+        let ge = self.chars.partition_point(|c| c.byte_start < be);
+        if ge > gs { (gs, ge) } else { (g, g + 1) }
+    }
+
+    /// The half-open glyph range `[start, end)` of the **visual row** (line)
+    /// containing the glyph at `glyph_idx` — the contiguous run of glyphs whose
+    /// vertical band overlaps that glyph's row. Drives triple-click line
+    /// selection. Visual rows are used rather than `\n` boundaries because an
+    /// extracted PDF text layer routinely carries no newlines; a degenerate
+    /// (zero-size) glyph such as an inter-word space never breaks the run.
+    pub fn row_range(&self, glyph_idx: usize) -> (usize, usize) {
+        if self.chars.is_empty() {
+            return (0, 0);
+        }
+        let g = glyph_idx.min(self.chars.len() - 1);
+        let a = self.chars[g].rect;
+        let cont = |r: &PtRect| r.w <= 0.0 || r.h <= 0.0 || (r.y < a.y + a.h && r.y + r.h > a.y);
+        let mut s = g;
+        while s > 0 && cont(&self.chars[s - 1].rect) {
+            s -= 1;
+        }
+        let mut e = g + 1;
+        while e < self.chars.len() && cont(&self.chars[e].rect) {
+            e += 1;
+        }
+        (s, e)
+    }
+
     /// The text of the glyph run `[start, end)` — what a copy of the selection
     /// yields.
     pub fn text_for_range(&self, start: usize, end: usize) -> String {
@@ -325,5 +366,36 @@ mod tests {
         let pt = sample_layer();
         assert!(pt.search(1, "   ", SearchOptions::default()).is_empty());
         assert!(search_pages(&[pt], "", SearchOptions::default()).is_empty());
+    }
+
+    #[test]
+    fn word_range_snaps_to_the_word_under_the_glyph() {
+        // text "PDF text layer": glyphs 0..3="PDF", 3=' ', 4..8="text",
+        // 8=' ', 9..14="layer". Double-clicking inside "text" selects it.
+        let pt = sample_layer();
+        // A glyph inside "text" (index 5 = 'e') snaps to the whole word 4..8.
+        assert_eq!(pt.word_range(5), (4, 8));
+        assert_eq!(pt.text_for_range(4, 8), "text");
+        // Inside "PDF" (index 1).
+        assert_eq!(pt.word_range(1), (0, 3));
+        assert_eq!(pt.text_for_range(0, 3), "PDF");
+        // Inside "layer" on row 2 (index 10).
+        let (s, e) = pt.word_range(10);
+        assert_eq!(pt.text_for_range(s, e), "layer");
+    }
+
+    #[test]
+    fn row_range_selects_the_whole_visual_line() {
+        // Row 1 is "PDF text" + the trailing space (glyphs 0..=8); row 2 is
+        // "layer" (glyphs 8..13, 0-based 8..13). A triple-click on row 1 selects
+        // the whole first line across the inter-word space, not just one word.
+        let pt = sample_layer();
+        let (s, e) = pt.row_range(1); // inside "PDF" on row 1
+        assert_eq!(s, 0, "row starts at the first glyph");
+        // Row 1 covers "PDF text " — the eight letters + the space glyph.
+        assert_eq!(pt.text_for_range(s, e).trim_end(), "PDF text");
+        // A triple-click on row 2 stays on row 2.
+        let (s2, _) = pt.row_range(10);
+        assert!(s2 >= 9, "row 2 does not bleed into row 1: {s2}");
     }
 }
