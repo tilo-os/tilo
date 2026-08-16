@@ -114,6 +114,39 @@ impl SearchScope {
     }
 }
 
+/// Where the next window opened from the command palette should land.
+///
+/// Placement is normally decided by
+/// [`crate::shell::placement::placement_for_new_window`] — new windows
+/// open to the right of the active one, joining it as a tab when the
+/// active window is already part of a tabbed group. That rule is the
+/// default and stays untouched.
+///
+/// [`OpenTarget::Here`] is the explicit override the tab strip's "+"
+/// sets: whatever the user picks joins *that* group as a tab, even when
+/// the group holds a single window and the rule would have opened
+/// beside it. It is one-shot — the palette clears it when it closes, so
+/// a later `Super+Space` is never silently still aimed at an old group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenTarget {
+    /// Follow the placement rule.
+    #[default]
+    Beside,
+    /// Force the new window into `GroupId` as a tab.
+    Here(u64),
+}
+
+impl OpenTarget {
+    /// Short clause appended to launchable palette rows so a result says
+    /// where it will land before the user commits to it.
+    pub fn result_hint(self) -> &'static str {
+        match self {
+            OpenTarget::Beside => "Opens beside",
+            OpenTarget::Here(_) => "Opens here, as a tab",
+        }
+    }
+}
+
 /// Quick-settings tray values. Local UI state; does not sync to peers —
 /// device settings like brightness, volume, and radio toggles are always
 /// per-device, never shared.
@@ -136,6 +169,10 @@ pub struct QuickSettingsState {
     /// Demo Bluetooth devices rendered in the BT drill-in list. Mock data
     /// until real pairing lands; concept ref: `QuickSettings.tsx:140-160`.
     pub bt_devices: Vec<BtDevice>,
+    /// The passphrase prompt for a protected network, while one is up.
+    /// `None` the rest of the time — the buffer only exists for as long
+    /// as the user is typing into it.
+    pub wifi_password: Option<crate::shell::quick_settings::WifiPasswordPrompt>,
     /// Active power profile, mirrored from `powerprofilesctl` when the
     /// panel opens and pushed back via `set_power_profile` when the
     /// user cycles the chip. Defaults to `Balanced` so a host without
@@ -157,6 +194,7 @@ impl Default for QuickSettingsState {
             // a fresh boot never shows a network it isn't actually seeing.
             wifi_networks: Vec::new(),
             bt_devices: Vec::new(),
+            wifi_password: None,
             power_profile: PowerProfile::Balanced,
         }
     }
@@ -216,6 +254,22 @@ pub struct ChromeState {
     /// banner above the palette, and clicking a pill rotates through the
     /// variants of [`SearchScope`].
     pub search_scope: SearchScope,
+    /// Where a window launched from the palette should land. Set by the
+    /// tab strip's "+" and cleared when the palette closes.
+    pub open_target: OpenTarget,
+    /// Latest battery / network / volume reading, copied here once per
+    /// frame from [`crate::shell::status::StatusBridge`] so the top bar
+    /// reads it the same way it reads everything else — off the chrome,
+    /// synchronously, with no lock held across a draw. Every field is
+    /// `None` until a poller publishes one, and the tray draws an unread
+    /// field as absent rather than as a plausible default.
+    pub status: crate::shell::status::SystemStatus,
+    /// The transient on-screen readout raised by a hardware key, if one
+    /// is currently up. At most one: an OSD is a readout of a value
+    /// being changed, not a message, so eight volume presses show one
+    /// slab counting up rather than eight stacked banners. See
+    /// [`crate::shell::osd`].
+    pub osd: Option<crate::shell::osd::Osd>,
     /// Currently-active tab inside the Workspace Settings modal.
     /// Independent of [`Self::editing_workspace_name`] (which is only
     /// the name-input edit buffer). `Default::default()` is
@@ -390,6 +444,9 @@ impl ChromeState {
             editing_workspace_name: None,
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
+            open_target: OpenTarget::default(),
+            status: crate::shell::status::SystemStatus::default(),
+            osd: None,
             ws_settings_tab: WsTab::default(),
             ws_grant_draft: Default::default(),
             revision: 0,
@@ -885,6 +942,24 @@ impl ChromeState {
 
     /// Read-only view of the currently active notifications, ordered
     /// oldest first.
+    /// Put a transient readout on screen, replacing whatever was there.
+    /// Bumps the revision so the frame that raised it also repaints.
+    pub fn show_osd(&mut self, osd: crate::shell::osd::Osd) {
+        crate::shell::osd::raise(&mut self.osd, osd);
+        self.bump();
+    }
+
+    /// Drop the readout once its hold has elapsed. Returns `true` when
+    /// something was cleared, so the caller can bump once rather than
+    /// every frame.
+    pub fn expire_osd(&mut self, now: std::time::Instant) -> bool {
+        if crate::shell::osd::expire(&mut self.osd, now) {
+            self.bump();
+            return true;
+        }
+        false
+    }
+
     pub fn notifications(&self) -> &[Notification] {
         &self.notifications
     }

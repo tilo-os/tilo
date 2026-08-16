@@ -290,6 +290,12 @@ pub struct WindowGroup {
     /// maximize / width / reorder writebacks use. Without it the chip only
     /// toggled a local focus ring and appeared to do nothing.
     pending_search_open: Option<u64>,
+    /// One-shot "the user clicked this group's + chip" request awaiting
+    /// harvest by the shell, carrying this group's id. Creating a tab
+    /// means mutating the persisted tree and picking what goes in it —
+    /// both shell concerns — so the click travels out on the same
+    /// take-pattern wire as the search / maximize writebacks.
+    pending_new_tab: Option<u64>,
     /// One-shot `(from, to)` tab-index pair awaiting harvest by the shell.
     /// Set whenever an intra-group drag reorder is applied to the pill list,
     /// so the shell can mirror the same move into the persisted
@@ -338,6 +344,7 @@ impl WindowGroup {
             pending_width_change: None,
             pending_tab_reorder: None,
             pending_search_open: None,
+            pending_new_tab: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -555,6 +562,19 @@ impl WindowGroup {
     pub fn take_pending_search_open(&mut self) -> Option<u64> {
         self.pending_search_open.take()
     }
+
+    /// Drain a one-shot "+ was clicked in this group's tab bar" request.
+    /// Returns this group's id once per click.
+    pub fn take_pending_new_tab(&mut self) -> Option<u64> {
+        self.pending_new_tab.take()
+    }
+
+    /// Live hit rect of the tab bar's trailing "+" chip, in the same
+    /// coordinate space as [`Self::tab_rects`]. `Rect::ZERO` when the
+    /// chip is suppressed (bar full, or group maximized).
+    pub fn new_tab_rect(&self) -> Rect {
+        self.bar.new_tab_rect()
+    }
     /// Give every tab in this group its own document.
     ///
     /// `record_for` names the record a tab holds — the host decides that,
@@ -719,6 +739,7 @@ impl WindowGroup {
             pending_width_change: None,
             pending_tab_reorder: None,
             pending_search_open: None,
+            pending_new_tab: None,
         }
     }
 
@@ -753,6 +774,12 @@ impl WindowGroup {
         }
         // Right-edge resize band belongs to the width-resize gesture.
         if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+            return false;
+        }
+        // The "+" chip sits in the trailing bar space, which is otherwise
+        // pure grab zone — without this it would be impossible to click.
+        let plus = self.bar.new_tab_rect();
+        if plus.area() > 0.0 && plus.contains(p) {
             return false;
         }
         // A press on a tab pill belongs to the tab gesture, not the group.
@@ -1658,6 +1685,14 @@ impl Widget for WindowGroup {
             // same thing Ctrl+K does. The ring toggle above is only the local
             // focus affordance.
             self.pending_search_open = Some(id);
+            *handled = true;
+        }
+
+        // "+" chip from the tab bar. The group knows its own id; the
+        // shell knows what a new tab should contain, so republish with
+        // the id and let the harvester decide.
+        if self.bar.take_new_tab().is_some() {
+            self.pending_new_tab = Some(self.id);
             *handled = true;
         }
 
