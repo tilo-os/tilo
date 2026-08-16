@@ -995,6 +995,18 @@ impl NotesApp {
         &mut self.main
     }
 
+    /// Test hook: centre of the in-page title band, for click targeting.
+    #[doc(hidden)]
+    pub fn main_title_center_for_test(&self) -> Point {
+        self.main.title_rect_for_test().center()
+    }
+
+    /// Test hook: whether the in-page title is currently being edited.
+    #[doc(hidden)]
+    pub fn main_title_editing_for_test(&self) -> bool {
+        self.main.title_is_editing_for_test()
+    }
+
     /// Test hook: run one tick's worth of the edit-drain logic so
     /// tests don't have to actually go through `handle_event`. After
     /// this returns, any dirty edit is queued on the page saver.
@@ -1080,6 +1092,12 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn sidebar_row_depth_for_test(&self, idx: usize) -> Option<usize> {
         self.sidebar.row_depth_for_test(idx)
+    }
+
+    /// Test hook: the title shown on sidebar row `idx`.
+    #[doc(hidden)]
+    pub fn sidebar_row_title_for_test(&self, idx: usize) -> Option<&str> {
+        self.sidebar.row_title_for_test(idx)
     }
 
     /// Test hook: whether visible sidebar row `idx` has children.
@@ -1837,6 +1855,26 @@ impl Widget for NotesApp {
                     n,
                     taffy,
                 );
+            }
+        }
+        // A committed edit of the note's in-page title renames the current
+        // page on the same replayable action path the sidebar's inline rename
+        // uses, then re-syncs the sidebar so the new name shows in the tree.
+        if let Some(new_title) = self.main.take_title_rename() {
+            if let Some(id) = self.workspace.selected() {
+                let trimmed = new_title.trim();
+                let changed = self
+                    .workspace
+                    .get(id)
+                    .map(|m| m.title != trimmed)
+                    .unwrap_or(false);
+                if !trimmed.is_empty() && changed {
+                    self.apply_and_dispatch(
+                        state,
+                        OutEvent::Rename { id, new_title: trimmed.to_string() },
+                    );
+                    self.sidebar.sync_from_workspace(&self.workspace);
+                }
             }
         }
         // After every event, observe the editor's dirty flag and
