@@ -17,8 +17,15 @@ repo.
   stand-in here and reports `Hydration::Local`. That exercises the hydration
   branch deterministically.
 
+The two audio stand-ins (`VO_Take3.wav`, `Ambient_Pad.wav`) are **real
+16-bit PCM WAV files** (a few seconds each), so the timeline draws a genuine
+waveform from their samples in `--shots` — the editor reads audio peaks
+straight from PCM with no decoder (see `src/waveform.rs`). The video/image
+stand-ins stay tiny text placeholders: the default build's preview shows a
+representative composited frame, so they don't need to be real footage.
+
 The default build's preview shows a **representative composited frame**
-(graded gradient), so the stand-ins don't need to be real video. With
+(graded gradient), so the video stand-ins don't need to be real video. With
 `--features decode` the preview seeks a real `media::MediaEngine` (GStreamer
 `playbin`) to the clip's source time and blits the true decoded frame; real
 footage dropped in here under the same names would then decode.
