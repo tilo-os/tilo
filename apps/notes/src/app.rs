@@ -1070,6 +1070,12 @@ impl NotesApp {
         self.sidebar.row_center_for_test(idx)
     }
 
+    /// Test hook: x of the disclosure triangle for sidebar row `idx`.
+    #[doc(hidden)]
+    pub fn sidebar_disclosure_x_for_test(&self, idx: usize) -> Option<f64> {
+        self.sidebar.row_disclosure_x_for_test(idx)
+    }
+
     /// Test hook: the tree depth of visible sidebar row `idx`.
     #[doc(hidden)]
     pub fn sidebar_row_depth_for_test(&self, idx: usize) -> Option<usize> {
