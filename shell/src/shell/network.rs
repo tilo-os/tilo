@@ -440,6 +440,35 @@ impl ShellNetwork {
     /// Adapter: queue a received `AppCrdtIncremental` into the
     /// inbound buffer. Public so integration tests can inject
     /// messages without going through gossipsub.
+    /// Is `cluster_id` a room this machine is in?
+    ///
+    /// An app addresses its traffic by `(app_id, cluster_id,
+    /// record_id)` and the cluster is the room's uuid, so this is the
+    /// same question `apply_room_changes` asks of a tree payload
+    /// before it stores anything — and it gets the same answer here.
+    /// Without it the only filter on an inbound app document was the
+    /// self-echo test, which is a `DefaultHasher` fold: fine for
+    /// suppressing your own publishes, and not something to hang an
+    /// admission decision on (`plan/collaboration.md` §4).
+    ///
+    /// A `cluster_id` that is not a uuid is not a room, so it is not
+    /// one of ours: refusing on a parse failure is the fail-closed
+    /// direction.
+    fn is_in_room(&self, cluster_id: &str) -> bool {
+        let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            return false;
+        };
+        if room.is_nil() {
+            return false;
+        }
+        let Ok(replica) = self.replica.lock() else {
+            return false;
+        };
+        let in_room = replica.tree.read().rooms().contains(&room);
+        drop(replica);
+        in_room
+    }
+
     pub fn handle_app_crdt_message(
         &self,
         peer: u64,
@@ -816,7 +845,7 @@ impl ShellNetwork {
                     ref data,
                 } = msg
                 {
-                    if peer_hash != self.local_peer_hash {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
                         self.handle_app_crdt_message(
                             peer_hash,
                             app_id.clone(),
@@ -839,7 +868,7 @@ impl ShellNetwork {
                     ref envelope,
                 } = msg
                 {
-                    if peer_hash != self.local_peer_hash {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
                         self.handle_app_crdt_signed_message(
                             peer_hash,
                             app_id.clone(),
