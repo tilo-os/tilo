@@ -35,6 +35,7 @@
 
 pub mod audio;
 pub mod bluetooth;
+pub mod bluez;
 pub mod display;
 pub mod network;
 pub mod power;
