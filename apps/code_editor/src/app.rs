@@ -3028,6 +3028,12 @@ impl Widget for CodeApp {
             self.dispatch_lsp_ask(ask);
         }
 
+        // The zero-state's "Open File" pill routes to the same portal picker as
+        // the Open File command.
+        if self.editor.take_empty_action() {
+            self.request_open_file();
+        }
+
         // Drain whatever the children produced, then refresh derived views.
         self.drain_child_events(state);
         self.refresh_diagnostics(state);
