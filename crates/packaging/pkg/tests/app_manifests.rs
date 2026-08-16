@@ -239,22 +239,46 @@ fn no_manifest_names_a_filesystem_path() {
     assert!(checked >= 40, "expected the shipped fleet, found {checked}");
 }
 
-/// The shell's Applications provider hides packages without a GUI
-/// entrypoint, so a headless helper must declare itself as one — a
-/// service offered as a window is a launch that can never show anything.
+/// A service package's entrypoint says whether it draws, and the two
+/// answers have to agree.
+///
+/// The shell's Applications provider hides `kind = "service"`, so what
+/// the entrypoint claims is the only thing that decides whether the
+/// launcher ever gives it a surface: a `cli` service offered as a
+/// window is a launch that can never show anything, and a `gui` one
+/// with no GUI binary is the same failure from the other side.
+///
+/// Written over whatever services the tree holds rather than naming
+/// one, because it used to name `collab-broker` — and when that package
+/// was deleted the test did not start passing vacuously, it started
+/// failing on a missing file, which is luckier than it should have
+/// been. Requiring at least one subject keeps it honest either way.
 #[test]
-fn headless_packages_declare_a_cli_entrypoint() {
-    let m = load(&repo_root().join("apps/collab-broker"));
-    assert_eq!(
-        m.package.kind,
-        Kind::Service,
-        "collab-broker relays CRDT sync over a Unix socket; it is not an app"
-    );
-    let ep = m.entrypoint.as_ref().expect("[entrypoint]");
-    assert_eq!(ep.r#type, EntrypointType::Cli);
+fn service_packages_agree_with_their_entrypoint_about_drawing() {
+    let mut checked = 0usize;
+    for dir in app_dirs() {
+        let m = load(&dir);
+        if m.package.kind != Kind::Service {
+            continue;
+        }
+        let ep = m
+            .entrypoint
+            .as_ref()
+            .unwrap_or_else(|| panic!("{}: service with no [entrypoint]", dir.display()));
+        let draws = matches!(ep.r#type, EntrypointType::Gui | EntrypointType::Both);
+        assert_eq!(
+            ep.gui_bin_path().is_some(),
+            draws,
+            "{}: entrypoint type {:?} and the presence of a GUI binary disagree \
+             about whether this service draws",
+            dir.display(),
+            ep.r#type,
+        );
+        checked += 1;
+    }
     assert!(
-        ep.gui_bin_path().is_none(),
-        "a headless service must expose no GUI binary to the launcher"
+        checked >= 1,
+        "no service package found to check — this test cannot observe its subject",
     );
 }
 
