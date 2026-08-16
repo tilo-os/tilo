@@ -475,6 +475,13 @@ pub struct App {
     /// Refreshed on demand via [`Self::refresh_semantic_tree`]; read via
     /// [`Self::semantic_tree`]; driven via [`Self::invoke_semantic_action`].
     semantic_tree: crate::a11y_tree::SemanticTree,
+
+    /// Per-pass frame profiler + HUD, or `None` when profiling is off (the
+    /// default). Enabled by `QOS_PROFILE` / `QOS_PROFILE_OUT` via
+    /// [`crate::profiling::FrameProfiler::from_env`]. While `None`, the
+    /// render-loop hooks read no clock and allocate nothing — see the
+    /// `RedrawRequested` handler.
+    profiler: Option<crate::profiling::FrameProfiler>,
 }
 
 impl App {
@@ -543,6 +550,7 @@ impl App {
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
             semantic_tree: crate::a11y_tree::SemanticTree::new(),
+            profiler: crate::profiling::FrameProfiler::from_env(),
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -3137,9 +3145,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // record's, not the outgoing one's.
                 app.record_tick();
 
+                // Frame profiler (gated). `__prof_frame_start` is `Some` only
+                // when `QOS_PROFILE`/`QOS_PROFILE_OUT` installed a profiler, so
+                // the disabled path reads no clock. It marks the start of both
+                // the `sync` pass and the whole-frame total committed below.
+                let __prof_frame_start =
+                    app.profiler.as_ref().map(|_| std::time::Instant::now());
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
                     app.needs_sync = false;
+                }
+                if let Some(p) = app.profiler.as_mut() {
+                    p.record_since(crate::profiling::Pass::Sync, __prof_frame_start);
                 }
 
                 // Live regions: after the tree reflects the freshly-synced
@@ -3159,11 +3176,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // tree always needs a full solve regardless of the scroll fast
                 // path below.
                 let structure_rebuilt = app.structure_dirty;
+                let __prof_build = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 if app.structure_dirty {
                     // Rebuild the taffy tree, re-establishing keyboard focus
                     // AND (for `autofocus_on_structure_change` apps) the
                     // focused widget's caret/selection across the rebuild.
                     app.rebuild_structure();
+                }
+                // Widget-tree (re)build is part of the build_layout pass; the
+                // taffy `compute_layout` below adds to the same pass.
+                if let Some(p) = app.profiler.as_mut() {
+                    p.record_since(crate::profiling::Pass::BuildLayout, __prof_build);
                 }
 
                 // Phase timing (gated). `QUICK_UI_PERF=1` enables a
@@ -3220,6 +3243,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             .unwrap();
                         t_compute_us = t0.elapsed().as_micros();
                         app.last_layout_px = Some((width, height));
+                        if let Some(p) = app.profiler.as_mut() {
+                            p.record(
+                                crate::profiling::Pass::BuildLayout,
+                                std::time::Duration::from_micros(t_compute_us as u64),
+                            );
+                        }
                     }
                     let t1 = std::time::Instant::now();
                     app.root_widget.apply_layout(
@@ -3228,6 +3257,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         vello::kurbo::Point::new(0.0, 0.0),
                     );
                     t_apply_us = t1.elapsed().as_micros();
+                    if let Some(p) = app.profiler.as_mut() {
+                        p.record(
+                            crate::profiling::Pass::ApplyLayout,
+                            std::time::Duration::from_micros(t_apply_us as u64),
+                        );
+                    }
                     app.layout_dirty = false;
                     if must_compute {
                         app.update_focusable_order();
@@ -3256,6 +3291,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // region simply paints those tiles as background instead of
                 // preserving last frame. A correct damage path would need to
                 // retain + re-blit the previous target texture — deferred.
+                let __prof_draw = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 app.root_widget.draw_with_presence(
                     &mut scene,
                     transform,
@@ -3301,6 +3337,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         &app.theme,
                         &app.presence_ctx,
                     );
+                }
+                // The `draw` pass covers the whole widget tree, the top-layer
+                // overlay, and the action palette — everything encoded into the
+                // scene above (but NOT the profiling HUD, which is drawn after
+                // the timing is committed so it never inflates its own numbers).
+                if let Some(p) = app.profiler.as_mut() {
+                    p.record_since(crate::profiling::Pass::Draw, __prof_draw);
                 }
                 let t_draw_us = t_draw_start.map(|t| t.elapsed().as_micros()).unwrap_or(0);
 
@@ -3357,6 +3400,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     &app.theme,
                     &app.presence_ctx,
                 );
+
+                // Commit this frame to the profiler: the total is the measured
+                // wall time of the whole frame build (so it includes the small
+                // amount of work between passes), and any `handle_event` time
+                // banked since the last frame is folded in here.
+                if let (Some(p), Some(start)) = (app.profiler.as_mut(), __prof_frame_start) {
+                    p.commit_frame(start.elapsed().as_micros() as u64);
+                }
 
                 if app.debug_mode {
                     let debug_outline_cycle = [
@@ -3438,6 +3489,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // back into `scene_pool` for the next frame, so
                 // there is no per-frame `done` channel and no
                 // extra forwarder thread.
+                //
+                // Profiling HUD: painted last so it composites on top of the
+                // whole app, and AFTER the frame timing was committed above so
+                // its own cost never enters the numbers it reports.
+                if app.profiler.as_ref().is_some_and(|p| p.hud_enabled()) {
+                    let (hud_w, hud_h) =
+                        crate::scale::logical_size((width, height), scale_factor as f64);
+                    if let Some(p) = app.profiler.as_ref() {
+                        p.draw_hud(
+                            &mut scene,
+                            transform,
+                            &mut app.text_renderer,
+                            &app.theme,
+                            (hud_w, hud_h),
+                        );
+                    }
+                }
                 let req = RenderRequest::Frame {
                     scene,
                     width,
@@ -3483,6 +3551,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             other => {
                 let event = other;
                 let app = &mut self.app;
+                // Profiler `handle_event` pass: time the whole input-dispatch
+                // arm (this covers pointer, keyboard, and wheel — every event
+                // that reaches the widget tree). Banked per event and folded
+                // into the next frame's commit. `None`, and no clock read, when
+                // profiling is off. This arm has no early `return`, so the
+                // single record at its tail runs for every input event.
+                let __prof_input = app.profiler.as_ref().map(|_| std::time::Instant::now());
                 // DEBUGABILITY (RUST_LOG=ui::app=debug): trace every
                 // mouse/keyboard event hitting the App so a real
                 // click reproducer (xdotool, ydotool, the live
@@ -4066,6 +4141,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         app.current_cursor = desired;
                         window.set_cursor(desired);
                     }
+                }
+
+                if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
+                    p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
                 }
             }
         }
