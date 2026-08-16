@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use crate::media::{self, Hydration};
 use crate::model::{
-    Clip, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
+    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
 };
 
 pub struct VideoDoc;
@@ -139,6 +139,14 @@ impl VideoDoc {
         let _ = doc.put(&obj, "saturation", c.filters.saturation);
         let _ = doc.put(&obj, "fade_in", c.fade_in);
         let _ = doc.put(&obj, "fade_out", c.fade_out);
+        // The effects stack is an ordered list; store it as a compact JSON
+        // string (the whole clip is written atomically by the action model, so
+        // a scalar string is the simplest faithful representation).
+        let _ = doc.put(
+            &obj,
+            "effects",
+            serde_json::to_string(&c.effects).unwrap_or_else(|_| "[]".to_string()),
+        );
     }
 
     pub fn remove_clip(doc: &mut AutoCommit, id: Uuid) {
@@ -271,6 +279,9 @@ impl VideoDoc {
                     },
                     fade_in: Self::get_f64(doc, &obj, "fade_in").unwrap_or(0.0),
                     fade_out: Self::get_f64(doc, &obj, "fade_out").unwrap_or(0.0),
+                    effects: Self::get_str(doc, &obj, "effects")
+                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -369,6 +380,7 @@ pub fn sample_project() -> Project {
             filters,
             fade_in,
             fade_out,
+            effects: Vec::new(),
         });
     };
 
@@ -387,6 +399,13 @@ pub fn sample_project() -> Project {
     place(a1id, vo_id, 8.0, 1.5, 13.5, 5, 1.0, 1.0, Transition::None, neutral, 0.3, 0.5);
     // A2 — ambient bed under the whole piece, ducked low, gentle fades.
     place(a2id, pad_id, 0.0, 0.0, 28.0, 6, 1.0, 0.4, Transition::FadeIn, neutral, 2.0, 3.0);
+
+    // A couple of stacked effects on the drone open so the demo shows the
+    // effects stack (warm grade, then a gentle vignette).
+    if let Some(drone) = p.clips.first_mut() {
+        drone.add_effect(EffectKind::Warm);
+        drone.add_effect(EffectKind::Vignette);
+    }
 
     p
 }
@@ -416,6 +435,29 @@ mod tests {
         let clip = p.clips.iter().find(|c| c.media == interview.id).unwrap();
         assert!((clip.duration() - 12.0).abs() < 1e-9);
         assert_eq!(clip.transition, Transition::CrossDissolve);
+    }
+
+    #[test]
+    fn effects_stack_round_trips_through_the_doc() {
+        use crate::model::{ClipEffect, EffectKind};
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut p = VideoDoc::load_project(&doc);
+        let cid = p.clips[0].id;
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.effects = vec![
+                ClipEffect { kind: EffectKind::Sepia, amount: 0.6 },
+                ClipEffect { kind: EffectKind::Invert, amount: 1.0 },
+            ];
+        }
+        VideoDoc::upsert_clip(&mut doc, p.clip(cid).unwrap());
+        let reload = VideoDoc::load_project(&doc);
+        let effects = &reload.clip(cid).unwrap().effects;
+        assert_eq!(effects.len(), 2, "the effects stack survived the round-trip in order");
+        assert_eq!(effects[0].kind, EffectKind::Sepia);
+        assert!((effects[0].amount - 0.6).abs() < 1e-9);
+        assert_eq!(effects[1].kind, EffectKind::Invert);
     }
 
     #[test]
