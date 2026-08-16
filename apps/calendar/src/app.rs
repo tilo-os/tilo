@@ -2427,23 +2427,9 @@ impl CalendarApp {
 
         let pad = 18.0;
         let mut y = r.y0 + 22.0;
-        // App wordmark.
-        tr.draw_text(
-            scene,
-            "Calendar",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((r.x0 + pad, y)),
-            None,
-        );
-        // small accent dot
-        scene.fill(
-            Fill::NonZero,
-            t,
-            Palette::Indigo.color(theme),
-            None,
-            &Circle::new(Point::new(r.x0 + pad + 100.0, y + 9.0), 4.0),
-        );
+        // No app-name wordmark: the OS owns window chrome and shows "Calendar"
+        // in the titlebar. The sidebar leads with its collapse affordance and
+        // flows the calendar list up into the reclaimed space.
         // Collapse control — persistent sidebar only. A chevron pointing at the
         // edge it tucks into (never an X: this hides the panel, it does not
         // dismiss a dialog). When collapsed, the mirror-image expand chevron
@@ -2463,7 +2449,7 @@ impl CalendarApp {
             draw_cross(scene, t, c.neutral[8], cl.center());
             hits.push((cl, Action::DismissSidebar));
         }
-        y += 40.0;
+        y += 30.0;
 
         // View switcher — carried by the flap only when the topbar switch has
         // folded away (a too-narrow topbar). Without it a pointer/touch user
