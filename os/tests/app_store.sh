@@ -222,4 +222,63 @@ else
   done
 fi
 
+# --- every media feature the image turns on has to exist ---------------------
+# The apps' engines sit behind cargo features that default off so that --shots,
+# the offline tests and CI need no GStreamer stack, no camera and no network.
+# os/Containerfile names them in APP_FEATURES so the image, and only the image,
+# compiles them in.
+#
+# A pair naming a feature no crate has is not a no-op and not a silent
+# mis-build: cargo refuses the entire invocation ("none of the selected packages
+# contains these features"), so the image build dies — but it dies *after* the
+# builder stage's 600-odd package install and the cold Rust compile, tens of
+# minutes in, at the one step whose log nobody reads to the end. That is how
+# `video_editor/portal` reached this file: video_editor enables `ui`'s portal
+# unconditionally and has no portal feature of its own, so the pair looked exactly
+# like the twelve valid ones next to it.
+#
+# Checked against cargo metadata rather than a restated list here, so the two
+# cannot drift. Metadata that cannot be read is a FAILURE, not a skip: "could not
+# look" and "looked and found nothing wrong" are the same output otherwise.
+feat_line="$(sed -n 's/^ *&& APP_FEATURES="\([^"]*\)".*/\1/p' "$CONTAINERFILE" | head -1)"
+if [ -z "$feat_line" ]; then
+  bad "could not read APP_FEATURES from os/Containerfile — the declaration it is
+      parsed out of moved. Unchecked, the image would build every media app on its
+      default feature set: a music player that cannot produce sound, a video player
+      that synthesises frames, a camera that cannot capture."
+else
+  meta="$(cd "$REPO" && cargo metadata --no-deps --format-version 1 --offline 2>/dev/null)"
+  if [ -z "$meta" ]; then
+    bad "cargo metadata produced nothing, so the APP_FEATURES pairs in os/Containerfile
+      could not be checked. Treated as a failure: an unknown feature name stops the
+      image build only after the cold Rust compile."
+  else
+    bogus="$(printf '%s' "$meta" | python3 -c '
+import json, sys
+have = {p["name"]: set(p["features"]) for p in json.load(sys.stdin)["packages"]}
+for pair in (s.strip() for s in sys.argv[1].split(",")):
+    if not pair:
+        continue
+    if "/" not in pair:
+        print(f"{pair}: not package-qualified, so cargo applies it to the whole workspace")
+        continue
+    pkg, feat = pair.split("/", 1)
+    if pkg not in have:
+        print(f"{pair}: no workspace package named {pkg}")
+    elif feat not in have[pkg]:
+        opts = ", ".join(sorted(have[pkg])) or "none"
+        print(f"{pair}: {pkg} has no feature {feat} (it has: {opts})")
+' "$feat_line" 2>&1)"
+    if [ -z "$bogus" ]; then
+      n="$(printf '%s' "$feat_line" | tr ',' '\n' | grep -c .)"
+      ok "all $n APP_FEATURES pairs name a feature their package really has"
+    else
+      bad "os/Containerfile asks cargo for features that do not exist:
+$(printf '%s\n' "$bogus" | sed 's/^/      /')
+      cargo refuses the whole build for any one of these, after the builder stage
+      has already installed its packages and compiled the workspace."
+    fi
+  fi
+fi
+
 exit "$fail"
