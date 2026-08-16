@@ -1193,11 +1193,19 @@ impl MapsApp {
         });
     }
 
+    /// Rank geocoded results by relevance to `query` with distance to the search
+    /// anchor as the tie-breaker, and collapse co-located duplicates. This is
+    /// the fix for far-away namesakes (a 511 km hit) outranking the near place
+    /// the user meant — see [`crate::rank`].
+    fn rank_results(&self, places: &mut Vec<crate::model::Place>, query: &str) {
+        crate::rank::rank(places, self.search_anchor(), query);
+    }
+
     /// Instant offline matches for `q`, ranked by proximity — the zero-latency
     /// content shown in the search overlay before any network reply lands.
     fn ranked_matches(&self, q: &str) -> Vec<crate::model::Place> {
         let mut v = self.local_matches(q);
-        self.rank_by_proximity(&mut v);
+        self.rank_results(&mut v, q);
         v
     }
 
@@ -1913,7 +1921,7 @@ impl MapsApp {
                         for p in &ranked {
                             self.model.upsert_place(p.clone());
                         }
-                        self.rank_by_proximity(&mut ranked);
+                        self.rank_results(&mut ranked, &query);
                         if self.search_focused {
                             // Search-as-you-type: fill the floating overlay only.
                             // Never reflow the panel or recentre the map while
@@ -1933,15 +1941,21 @@ impl MapsApp {
                     Ok(_) => self.model.status = format!("No results for “{query}”"),
                     Err(e) => self.model.status = format!("Search failed: {e}"),
                 },
-                NetMsg::EndpointSearch { origin, query: _, results } => match results {
+                NetMsg::EndpointSearch { origin, query, results } => match results {
                     Ok(found) if !found.is_empty() => {
                         for p in &found {
                             self.model.upsert_place(p.clone());
                         }
+                        // Rank the From/To dropdown the same way the top search
+                        // is ranked — relevance first, nearest-first within a
+                        // tier — so a distant namesake never sits above the
+                        // near place the user meant.
+                        let mut ranked = found;
+                        self.rank_results(&mut ranked, &query);
                         if origin {
-                            self.origin_results = found;
+                            self.origin_results = ranked;
                         } else {
-                            self.dest_results = found;
+                            self.dest_results = ranked;
                         }
                         self.model.status.clear();
                     }
@@ -5369,6 +5383,45 @@ mod tests {
             "geocoded result populates the To dropdown"
         );
         assert!(a.model.place("osm-n-1").is_some(), "result upserted so its marker shows");
+    }
+
+    /// The From/To dropdown must rank a near same-named place above a far one.
+    /// Delivered in far-first (importance) order — the shape Nominatim returns —
+    /// and drained through the real production path; the near place must surface
+    /// first. Guards the "511 km above 2.8 km, same name" report.
+    #[test]
+    fn endpoint_results_rank_near_same_name_first() {
+        let mut a = app_at(1280.0, 800.0);
+        a.model.origin = None;
+        a.model.center = LatLon::new(48.137, 11.575); // Munich → the search anchor
+        a.focus_endpoint(EndField::Dest);
+        let far = crate::model::Place::new(
+            "far",
+            "Hauptbahnhof",
+            Category::Landmark,
+            "Hamburg",
+            LatLon::new(53.553, 10.006), // ~610 km away
+        );
+        let near = crate::model::Place::new(
+            "near",
+            "Hauptbahnhof",
+            Category::Landmark,
+            "München",
+            LatLon::new(48.140, 11.558), // ~2 km away
+        );
+        a.net_tx
+            .send(NetMsg::EndpointSearch {
+                origin: false,
+                query: "hauptbahnhof".into(),
+                results: Ok(vec![far, near]), // far listed first, as importance order would
+            })
+            .unwrap();
+        a.drain_net();
+        assert_eq!(
+            a.dest_results.first().map(|r| r.id.as_str()),
+            Some("near"),
+            "the nearer same-named endpoint ranks first, not the distant namesake"
+        );
     }
 
     // --- Location services -------------------------------------------------
