@@ -159,6 +159,16 @@ pub struct Notification {
     /// `(action_key, action_label)` pairs from the `Notify` call.
     /// Activating the toast invokes the default (or first) action.
     pub actions: Vec<(String, String)>,
+    /// Show this toast even while Do-Not-Disturb is on.
+    ///
+    /// Do-Not-Disturb is a request for quiet, not a request to be kept
+    /// uninformed about the machine's own security state. A handful of
+    /// notifications *are* the outcome of an action the user just took
+    /// with a panic key, and holding one of those back turns "I stopped
+    /// it" into "nothing happened" — the same thing a broken kill switch
+    /// looks like. Reserved for the shell; nothing reachable from D-Bus
+    /// sets it, so an app cannot opt itself out of DND.
+    pub bypass_dnd: bool,
 }
 
 impl Notification {
@@ -178,6 +188,7 @@ impl Notification {
             app_name: None,
             source_workspace: None,
             actions: Vec::new(),
+            bypass_dnd: false,
         }
     }
 
@@ -221,6 +232,9 @@ impl Notification {
             },
             source_workspace: inc.caller.as_ref().map(|c| c.workspace_id.0),
             actions: inc.actions,
+            // Never from the wire: an app that could ask to pierce
+            // Do-Not-Disturb would ask every time.
+            bypass_dnd: false,
         }
     }
 
@@ -258,6 +272,12 @@ impl Notification {
 
     pub fn with_dismiss_after(mut self, after: Duration) -> Self {
         self.dismiss_after = after;
+        self
+    }
+
+    /// Show this toast even under Do-Not-Disturb. See [`Self::bypass_dnd`].
+    pub fn bypassing_dnd(mut self) -> Self {
+        self.bypass_dnd = true;
         self
     }
 
