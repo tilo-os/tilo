@@ -127,6 +127,12 @@ fn guest_unavailable() -> Option<String> {
         .args(["--proc", "/proc", "--dev", "/dev"])
         .arg("/usr/bin/true")
         .output();
+    // The probe mounted an overlay here, so its workdir holds a mode-000
+    // directory that an ordinary recursive delete cannot enter. `TempDir`'s
+    // own cleanup would fail silently and leave it on disk.
+    let path = dir.keep();
+    ush::guest::remove_dir_all_forced(&path);
+
     match probe {
         Ok(o) if o.status.success() => None,
         Ok(o) => Some(format!(
@@ -251,6 +257,14 @@ fn run_handoff() {
 
     // SAFETY: this test owns the descriptor.
     unsafe { libc::close(fd) };
+
+    // `TempDir`'s own cleanup is an ordinary recursive delete and overlayfs
+    // leaves its workdir's inner directory at mode 000, so dropping the guard
+    // would fail silently and leave a few hundred megabytes of layer behind on
+    // every run. Take it down the way the runtime does.
+    let path = dir.keep();
+    ush::guest::remove_dir_all_forced(&path);
+    assert!(!path.exists(), "the test left its store behind at {path:?}");
 }
 
 /// A malformed request must be refused with a reply, not by dropping the
