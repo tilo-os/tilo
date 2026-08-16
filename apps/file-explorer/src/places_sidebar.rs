@@ -252,7 +252,9 @@ impl PlacesSidebar {
             LUCIDE_DEFAULT_STROKE_PX,
         );
         let size = theme.tokens.typography.scale.base;
-        let ty = rect.y0 + (ROW_H - size as f64) / 2.0;
+        // Optically center the label against the box-centered icon (shared with
+        // the file list / drag ghost — see `crate::text_layout`).
+        let ty = crate::text_layout::centered_text_y(rect.y0, ROW_H, size);
         tr.draw_text(
             scene,
             label,
