@@ -233,6 +233,23 @@ pub fn parse_firstboot(args: &[&str]) -> bool {
     args.iter().any(|a| *a == "--firstboot")
 }
 
+/// Process-global wrapper around [`parse_provision_identity`].
+pub fn parse_provision_identity_from_args() -> bool {
+    let owned: Vec<String> = std::env::args().skip(1).collect();
+    let borrowed: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+    parse_provision_identity(&borrowed)
+}
+
+/// Pure, testable `--provision-identity` flag parser.
+///
+/// Unlike `--firstboot`, this is a *separate entry point*: it runs the
+/// identity ceremony and exits without starting a compositor. The
+/// `qos-identity.service` **user** unit calls it, which is what puts the key
+/// in the user's own home instead of root's.
+pub fn parse_provision_identity(args: &[&str]) -> bool {
+    args.iter().any(|a| *a == "--provision-identity")
+}
+
 /// Process-global wrapper around [`parse_portals`]. Sandbox Phase 4.3:
 /// callers opt in via `--enable-portals` to spin up the
 /// `xdg-desktop-portal` D-Bus backend (FileChooser / ScreenCast /
