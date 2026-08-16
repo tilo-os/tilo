@@ -136,6 +136,14 @@ mod tests {
 
     #[test]
     fn open_first_device_or_skip() {
+        // Honest device test: opt-in only. This opens a real camera when one is
+        // present, which is not hermetic, so a plain `cargo test` (now that
+        // `live-capture` is a default feature) must not touch hardware. Set
+        // CAMERA_LIVE_TEST=1 to exercise it on a machine with a webcam.
+        if std::env::var("CAMERA_LIVE_TEST").is_err() {
+            eprintln!("CAMERA_LIVE_TEST not set — skipping live-open device test");
+            return;
+        }
         // Honest device test: skip cleanly when no camera is present.
         let devs = list_devices();
         let Some(dev) = devs.first() else {

@@ -12,11 +12,14 @@ name = "camera"
 path = "src/main.rs"
 
 [features]
-default = []
-# Live capture via GStreamer's v4l2src. OFF by default so the standard
-# build (and `--shots`) never needs the gstreamer dev libs or a camera
-# device. Enable with `--features live-capture` on a machine that has a
-# real camera + the gstreamer-1.0 stack. See `src/capture.rs`.
+# Live camera capture ships on by default: a normally-built `camera` opens the
+# real device (GStreamer v4l2src) and shows the live viewfinder. The capture
+# pipeline is only driven for the `Storage::Disk` (live) source — the sample
+# source used by `--shots` and tests synthesizes its viewfinder frame and never
+# enumerates or opens a device (see `poll_camera`), so the feature only compiles
+# the pipeline in while the runtime storage decides whether it runs.
+default = ["live-capture"]
+# Live capture via GStreamer's v4l2src. See `src/capture.rs`.
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]

@@ -647,6 +647,16 @@ impl CameraApp {
 
     #[cfg(feature = "live-capture")]
     fn poll_camera(&mut self) {
+        // Only the live/disk storage drives a real capture device. The sample
+        // storage backs `--shots`, the test suite and any headless render; it
+        // synthesizes its viewfinder frame, so it must never enumerate or open
+        // /dev/video*. The `live-capture` feature compiles the pipeline in; this
+        // runtime check is what decides whether it actually runs — keeping the
+        // hermetic path device-free even in a default (feature-on) build.
+        if !matches!(self.storage, Storage::Disk(_)) {
+            return;
+        }
+
         // Pick a device for the selected lens: enumerate /dev/video* and index
         // by facing (rear/front/wide → 0/1/2), clamped to what's present.
         let devices = crate::capture::list_devices();
