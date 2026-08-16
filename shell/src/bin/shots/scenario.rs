@@ -159,6 +159,31 @@ pub enum Action {
     /// clear it entirely with `None` — which is the state rule 3 (place
     /// at a seam) is about.
     SelectGroup(Option<usize>),
+    /// Seed the status tray with a named hardware state.
+    ///
+    /// The live poller is deliberately absent from a `--shots` render —
+    /// a tray driven by the rendering machine's own battery would make
+    /// every golden image a function of which laptop produced it. That
+    /// leaves the interesting states (nearly flat, charging, muted, no
+    /// network) unreachable by a screenshot, and those are exactly the
+    /// ones whose styling needs looking at. This seeds the same
+    /// `ChromeState::status` field the poller writes, so the tray takes
+    /// the identical path to the identical pixels.
+    ///
+    /// Presets rather than a struct literal: the DSL stays readable in
+    /// a scenario list, and a state worth capturing is worth naming.
+    SeedStatus(&'static str),
+    /// Raise the transient hardware-key readout, by preset name.
+    ///
+    /// The real trigger is a media key, and a `--shots` render has no
+    /// keyboard and no audio daemon to answer it — so the slab would
+    /// never appear in a capture, which is precisely where its styling
+    /// wants reviewing. This writes the same `ChromeState::osd` the key
+    /// handler writes.
+    SeedOsd(&'static str),
+    /// Open quick settings on the Wi-Fi pane with a passphrase prompt
+    /// up, by preset name (`empty`, `typed`, `rejected`).
+    SeedWifiPrompt(&'static str),
     /// Cut the `idx`-th group of the active strip down to one tab, so a
     /// scenario can set up the "lone window selected" shape rather than
     /// the four-tab group the default workspace boots with.
@@ -476,6 +501,58 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                     }
                 }
             }
+        }
+        Action::SeedStatus(preset) => {
+            let status = status_preset(preset);
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.status = status.clone();
+                st.bump();
+            });
+        }
+        Action::SeedOsd(preset) => {
+            let osd = osd_preset(preset);
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.show_osd(osd);
+            });
+        }
+        Action::SeedWifiPrompt(preset) => {
+            let preset = *preset;
+            driver.with_chrome(|st: &mut ChromeState| {
+                use shell::shell::quick_settings::{QsLevel, WifiNetwork, WifiPasswordPrompt};
+                st.overlays.quick_settings = true;
+                st.quick_settings.nav_stack = vec![QsLevel::Root, QsLevel::Wifi];
+                st.quick_settings.wifi_networks = vec![
+                    WifiNetwork {
+                        ssid: "Cafe WiFi".into(),
+                        signal: 3,
+                        secure: true,
+                        connected: false,
+                    },
+                    WifiNetwork {
+                        ssid: "Airport Free".into(),
+                        signal: 2,
+                        secure: false,
+                        connected: false,
+                    },
+                ];
+                let mut p = WifiPasswordPrompt::new("Cafe WiFi");
+                match preset {
+                    "typed" => {
+                        p.password = "hunter2pass".into();
+                        p.selection =
+                            ui::text_selection::Selection::collapsed(p.password.len());
+                    }
+                    "rejected" => {
+                        p.password = "wrongpass".into();
+                        p.selection.anchor = 0;
+                        p.selection.cursor = p.password.len();
+                        p.error = Some("Couldn't join. Check the password.".into());
+                    }
+                    _ => {}
+                }
+                st.quick_settings.wifi_password = Some(p);
+                st.bump();
+            });
         }
         Action::SelectGroup(idx) => {
             let idx = *idx;
@@ -802,7 +879,200 @@ pub fn catalogue() -> Vec<Scenario> {
         window_open_at_visible_seam(),
         window_open_at_next_seam_rightwards(),
         strip_scroll_across_apps(),
+        new_tab_from_the_plus_chip(),
+        status_tray_states(),
+        media_key_osd(),
+        wifi_password_prompt(),
     ]
+}
+
+/// Resolve a [`Action::SeedStatus`] preset name into the reading the
+/// poller would have published.
+///
+/// An unknown name yields the empty reading — which the tray draws as
+/// "nothing known yet", the same as a machine whose first poll has not
+/// landed. A typo therefore shows up as a visibly empty tray in the
+/// capture rather than as a silently wrong one.
+fn status_preset(name: &str) -> shell::shell::status::SystemStatus {
+    use os_actions::{LinkKind, LinkStatus, VolumeState};
+    use qos_power_mgmt::{BatterySnapshot, BatteryState};
+    use shell::shell::status::SystemStatus;
+
+    let wifi = |signal: u8| LinkStatus {
+        kind: LinkKind::Wifi,
+        name: Some("Cafe WiFi".to_string()),
+        signal,
+    };
+    let vol = |level: f32, muted: bool| VolumeState { level, muted };
+    let batt = |percent: u8, state: BatteryState| BatterySnapshot {
+        present: true,
+        percent,
+        state,
+    };
+
+    match name {
+        "healthy" => SystemStatus {
+            battery: Some(batt(72, BatteryState::Discharging)),
+            link: Some(wifi(4)),
+            volume: Some(vol(0.45, false)),
+        },
+        "charging" => SystemStatus {
+            battery: Some(batt(38, BatteryState::Charging)),
+            link: Some(wifi(3)),
+            volume: Some(vol(0.45, false)),
+        },
+        "low" => SystemStatus {
+            battery: Some(batt(14, BatteryState::Discharging)),
+            link: Some(wifi(2)),
+            volume: Some(vol(0.20, false)),
+        },
+        "critical" => SystemStatus {
+            battery: Some(batt(3, BatteryState::Discharging)),
+            link: Some(wifi(1)),
+            volume: Some(vol(0.20, false)),
+        },
+        "muted" => SystemStatus {
+            battery: Some(batt(88, BatteryState::Full)),
+            link: Some(wifi(4)),
+            volume: Some(vol(0.6, true)),
+        },
+        "offline" => SystemStatus {
+            battery: Some(batt(64, BatteryState::Discharging)),
+            link: Some(LinkStatus::offline()),
+            volume: Some(vol(0.45, false)),
+        },
+        "wired" => SystemStatus {
+            battery: None,
+            link: Some(LinkStatus {
+                kind: LinkKind::Wired,
+                name: Some("Wired connection 1".to_string()),
+                signal: 0,
+            }),
+            volume: Some(vol(0.75, false)),
+        },
+        _ => SystemStatus::default(),
+    }
+}
+
+/// Resolve a [`Action::SeedOsd`] preset into the readout the media-key
+/// handler would have raised.
+fn osd_preset(name: &str) -> shell::shell::osd::Osd {
+    use shell::shell::osd::{Osd, Transport};
+    match name {
+        "volume" => Osd::volume(0.65, false),
+        "volume_low" => Osd::volume(0.10, false),
+        "volume_muted" => Osd::volume(0.65, true),
+        "brightness" => Osd::brightness(0.40),
+        "mic_muted" => Osd::mic_mute(true),
+        "next_track" => Osd::transport(Transport::Next),
+        _ => Osd::volume(0.5, false),
+    }
+}
+
+/// The hardware-key readout, across the kinds it reports.
+fn media_key_osd() -> Scenario {
+    Scenario {
+        name: "media_key_osd",
+        description: "The transient slab a volume / brightness / mute / transport key raises.",
+        actions: vec![
+            Action::SeedOsd("volume"),
+            Action::Wait(3),
+            Action::Snapshot("01-volume"),
+            Action::SeedOsd("volume_low"),
+            Action::Wait(3),
+            Action::Snapshot("02-volume-low"),
+            Action::SeedOsd("volume_muted"),
+            Action::Wait(3),
+            Action::Snapshot("03-muted"),
+            Action::SeedOsd("brightness"),
+            Action::Wait(3),
+            Action::Snapshot("04-brightness"),
+            Action::SeedOsd("mic_muted"),
+            Action::Wait(3),
+            Action::Snapshot("05-mic-muted"),
+            Action::SeedOsd("next_track"),
+            Action::Wait(3),
+            Action::Snapshot("06-next-track"),
+        ],
+    }
+}
+
+/// Joining a protected network from the chrome — the first-boot path.
+fn wifi_password_prompt() -> Scenario {
+    Scenario {
+        name: "wifi_password_prompt",
+        description: "Quick settings' Wi-Fi pane asking for a passphrase, empty / typed / rejected.",
+        actions: vec![
+            Action::SeedWifiPrompt("empty"),
+            Action::Wait(8),
+            Action::Snapshot("01-asking"),
+            Action::SeedWifiPrompt("typed"),
+            Action::Wait(4),
+            Action::Snapshot("02-typed"),
+            Action::SeedWifiPrompt("rejected"),
+            Action::Wait(4),
+            Action::Snapshot("03-rejected"),
+        ],
+    }
+}
+
+/// Every state the status tray can be in, so the styling of each is
+/// something a reviewer can look at rather than infer.
+fn status_tray_states() -> Scenario {
+    Scenario {
+        name: "status_tray_states",
+        description: "The tray across battery levels, charge state, mute and link kind.",
+        actions: vec![
+            Action::SeedStatus("healthy"),
+            Action::Wait(3),
+            Action::Snapshot("01-healthy"),
+            Action::SeedStatus("charging"),
+            Action::Wait(3),
+            Action::Snapshot("02-charging"),
+            Action::SeedStatus("low"),
+            Action::Wait(3),
+            Action::Snapshot("03-low"),
+            Action::SeedStatus("critical"),
+            Action::Wait(3),
+            Action::Snapshot("04-critical"),
+            Action::SeedStatus("muted"),
+            Action::Wait(3),
+            Action::Snapshot("05-muted"),
+            Action::SeedStatus("offline"),
+            Action::Wait(3),
+            Action::Snapshot("06-offline"),
+            Action::SeedStatus("wired"),
+            Action::Wait(3),
+            Action::Snapshot("07-wired-no-battery"),
+        ],
+    }
+}
+
+/// The one affordance in the chrome that opens a tab.
+///
+/// Captured as a flow rather than a still because the "+" is only half
+/// the feature: the click has to land the palette, and the palette has
+/// to come up saying it will open *here*. A still of the chip proves it
+/// is drawn; only the sequence proves it is wired.
+fn new_tab_from_the_plus_chip() -> Scenario {
+    Scenario {
+        name: "new_tab_from_the_plus_chip",
+        description: "Click the tab strip's + chip; the palette opens aimed at that group, \
+                      and its launch rows say they will open here.",
+        actions: vec![
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Snapshot("01-tab-strip-with-plus"),
+            // Resolved against the live widget tree, so this clicks the
+            // rect the renderer actually painted.
+            Action::ClickNamed("tabbar_new_tab"),
+            Action::Wait(12),
+            Action::Snapshot("02-palette-aimed-here"),
+            Action::Type("term".to_string()),
+            Action::Wait(8),
+            Action::Snapshot("03-results-say-where-they-land"),
+        ],
+    }
 }
 
 // =====================================================================

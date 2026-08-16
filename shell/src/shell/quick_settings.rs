@@ -51,6 +51,53 @@ pub struct WifiNetwork {
     pub connected: bool,
 }
 
+/// An in-flight "join this protected network" prompt.
+///
+/// The Wi-Fi list used to call `connect_wifi(ssid, None)` on a row
+/// click, full stop. That works for an open network and for one whose
+/// profile NetworkManager already holds — and fails for every protected
+/// network the machine has not seen before, which is every network on
+/// first boot. There was nowhere to type a passphrase in the whole
+/// compositor, and Settings is the other place it could have been asked
+/// for, which does not help a machine that has no network yet to install
+/// anything from. So the chrome asks for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WifiPasswordPrompt {
+    /// The network being joined.
+    pub ssid: String,
+    /// What has been typed. Held in the clear only for as long as the
+    /// prompt is up: it is cleared on submit, on cancel, and whenever
+    /// the popover closes.
+    pub password: String,
+    /// Caret + selection into [`Self::password`].
+    pub selection: ui::text_selection::Selection,
+    /// Set after a failed attempt, so a wrong passphrase says so instead
+    /// of silently reopening an empty prompt.
+    pub error: Option<String>,
+    /// True while `nmcli` is associating. The prompt stays up and inert
+    /// so the user is not left wondering whether the click registered.
+    pub connecting: bool,
+}
+
+impl WifiPasswordPrompt {
+    pub fn new(ssid: impl Into<String>) -> Self {
+        Self {
+            ssid: ssid.into(),
+            password: String::new(),
+            selection: ui::text_selection::Selection::collapsed(0),
+            error: None,
+            connecting: false,
+        }
+    }
+
+    /// Whether the Connect button is live. An empty passphrase would be
+    /// rejected by every WPA network, so offering it is a wasted round
+    /// trip and a confusing failure.
+    pub fn can_submit(&self) -> bool {
+        !self.connecting && !self.password.is_empty()
+    }
+}
+
 /// A single Bluetooth device entry rendered in the drill-in list.
 /// `battery` is a percentage in `[0, 100]`; `connected` flags the
 /// active-radio dot. Mock data until real pairing lands.
