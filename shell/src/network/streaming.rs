@@ -64,7 +64,12 @@ pub use qos_callstream::throttle::StreamingThrottle;
 /// deterministic multi-typist behaviour should serialise upstream.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum InputEvent {
-    /// Pointer moved to logical `(x, y)` inside the surface's content rect.
+    /// Pointer moved to logical `(x, y)`, **surface-local** to the shared
+    /// surface's content rect: a peer sees only the surface it was given
+    /// and has no way to know where on the owner's output that surface
+    /// sits. [`crate::network::input_firewall`] checks the coordinate
+    /// against that rect and translates it into the owner's output space
+    /// before it reaches the seat.
     PointerMotion { x: f64, y: f64 },
     /// Mouse button transitioned to `pressed`. `button` mirrors smithay's
     /// libinput-style button codes (e.g. 272 = BTN_LEFT).
@@ -223,10 +228,17 @@ impl ShareRegistry {
         }
     }
 
-    /// Decide whether an inbound `RemoteInput` should be applied. Returns
-    /// `true` to apply, `false` to drop. The drop path covers both
-    /// "share doesn't exist" (peer is making things up) and "share is
-    /// read-only" (owner revoked write access).
+    /// Decide whether an inbound `RemoteInput` clears the *share* gate:
+    /// there is a record for this `(peer, surface)` pair and the owner has
+    /// not marked it read-only. The drop path covers both "share doesn't
+    /// exist" (peer is making things up) and "share is read-only" (owner
+    /// revoked write access).
+    ///
+    /// This is the first two of the checks a remote event has to pass, not
+    /// all of them — where the event may land, which chords it may carry
+    /// and how fast it may arrive are
+    /// [`crate::network::input_firewall`]'s. The whole sequence is
+    /// [`crate::compositor::state::State::review_remote_input`].
     pub fn accept_remote_input(&self, peer: PeerId, surface: SurfaceId) -> bool {
         match self.shares.get(&(peer, surface)) {
             Some(share) => !share.read_only,
@@ -234,10 +246,35 @@ impl ShareRegistry {
         }
     }
 
-    /// Convenience: route an inbound `InputEvent` to `sink` only if the
-    /// registry permits it. Returns whether the event was applied. The
-    /// owner's actor loop calls this from its `NeighbourMsg::RemoteInput`
-    /// handler.
+    /// Mark every share read-only. The registry side of the kill switch:
+    /// peers keep seeing what they were shown, and stop being able to
+    /// touch it.
+    ///
+    /// Returns how many shares actually lost write access, so the caller
+    /// can report what the panic key did.
+    pub fn revoke_all_input(&mut self) -> usize {
+        let mut revoked = 0;
+        for share in self.shares.values_mut() {
+            if !share.read_only {
+                share.read_only = true;
+                revoked += 1;
+            }
+        }
+        revoked
+    }
+
+    /// Route an inbound `InputEvent` to `sink` if — and only as far as —
+    /// the registry permits it. Returns whether the event was applied.
+    ///
+    /// **This is not the injection path.** It applies the share gate and
+    /// nothing else: an event routed through here has not been checked
+    /// against the surface's rect, against what is on top of it, against
+    /// the chord table, or against the peer's rate budget. Anything
+    /// whose sink is the compositor's seat must go through
+    /// [`crate::compositor::state::State::review_remote_input`] instead.
+    /// This exists for sinks that are not the seat — recorders in tests,
+    /// and adapters that only need to know whether a peer holds write
+    /// access.
     pub fn route_to<S: RemoteInputSink>(
         &self,
         peer: PeerId,
@@ -346,6 +383,21 @@ mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
     use std::time::Duration;
+
+    /// Put `surface` on screen, focused, with nothing over it, so the
+    /// firewall's region / z-order / focus checks have something to
+    /// answer from. Without this a bare `State` has observed no screen at
+    /// all and — correctly — refuses every remote event.
+    fn stage_shared_surface(state: &mut crate::compositor::state::State, surface: SurfaceId) {
+        use crate::network::input_firewall::ShellView;
+        use vello::kurbo::Rect;
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(surface, Rect::new(0.0, 0.0, 1920.0, 1080.0))],
+            Some(surface),
+            false,
+            false,
+        ));
+    }
 
     // The `StreamingThrottle` unit tests (30-fps cap, first-call-accepts,
     // rejects-back-to-back) moved with the type into the `qos_callstream`
@@ -574,6 +626,10 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        // The shared surface fills the output from its origin, so a
+        // surface-local coordinate and its output-space translation are
+        // the same number and the assertions below read unchanged.
+        stage_shared_surface(&mut state, surface);
 
         // Before injection: pointer is at the seat's default origin
         // (0, 0). `current_location` returns the last-known location;
@@ -653,6 +709,10 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        // Staged as the focused surface: the scrubber's focus guard mutes
+        // a guest's keystrokes unless the shared surface is the one the
+        // seat's keyboard is pointed at.
+        stage_shared_surface(&mut state, surface);
 
         // Baseline: no keys pressed.
         {
@@ -737,6 +797,7 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        stage_shared_surface(&mut state, surface);
 
         // No seat entry yet — the peer hasn't emitted any input.
         assert!(state.remote_seats.seat(peer).is_none());

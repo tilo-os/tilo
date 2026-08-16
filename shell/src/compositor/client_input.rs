@@ -57,6 +57,9 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::state::State;
+use crate::shell::notification::{
+    Notification, NotificationIconKind, NotificationSeverity, PERSISTENT_DISMISS,
+};
 use crate::shell::overlay_host::ShellOverlayHost;
 use crate::shell::state::{
     GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
@@ -305,8 +308,27 @@ pub fn foreign_tile_at(
     host: &ShellOverlayHost,
     point: (f64, f64),
 ) -> Option<TileHit> {
-    let ws = tree.active_workspace()?;
     let p = KurboPoint::new(point.0, point.1);
+    foreign_tiles(tree, host)
+        .into_iter()
+        .find(|hit| hit.rect.contains(p))
+}
+
+/// Every foreign tile currently on screen, in the compositor's own
+/// front-to-back order — the order [`foreign_tile_at`] resolves ties in,
+/// so the first entry whose rect contains a point is what local input
+/// would be routed to.
+///
+/// Exposed because remote input has to answer the same question
+/// ("what is actually on top at this point?") from a different thread of
+/// control, and answering it from a second traversal is how a
+/// clickjacking check ends up disagreeing with where the click really
+/// lands. See [`crate::network::input_firewall`].
+pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
+    let Some(ws) = tree.active_workspace() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
     for strip in &ws.strips {
         for group in &strip.window_groups {
             let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) else {
@@ -321,17 +343,15 @@ pub fn foreign_tile_at(
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
-            if rect.contains(p) {
-                return Some(TileHit {
-                    surface_id: *surface_id,
-                    strip: strip.id,
-                    group: group.id,
-                    rect,
-                });
-            }
+            out.push(TileHit {
+                surface_id: *surface_id,
+                strip: strip.id,
+                group: group.id,
+                rect,
+            });
         }
     }
-    None
+    out
 }
 
 /// Surface-local coordinates for a global `point` inside `rect`.
@@ -396,36 +416,184 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
     true
 }
 
-/// Is this key event a compositor-level binding that must be handled by the
-/// shell *before* a focused client ever sees it?
+/// A key reduced to the shape chord classification cares about.
+///
+/// Exists so the chord table can be consulted from two directions. Local
+/// input arrives as a winit [`Key`]; input injected by a remote peer
+/// arrives as a bare evdev keycode off the wire. Both narrow to this enum
+/// and ask [`shell_owns_chord`], so the shell's list of grabbed chords and
+/// the list a guest is refused cannot drift apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChordKey {
+    Space,
+    Tab,
+    ArrowUp,
+    ArrowDown,
+    Escape,
+    Delete,
+    /// `F1`..`F12`, numbered from 1.
+    Function(u8),
+    /// A single printable character, already lowercased.
+    Char(char),
+    /// A bare modifier. Never a chord on its own — a client's xkb state
+    /// has to see modifier transitions or it desynchronises from the seat.
+    Modifier,
+    /// Anything the chord table has no opinion about.
+    Other,
+}
+
+/// The modifier mask a chord is evaluated against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChordMods {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub logo: bool,
+}
+
+impl ChordMods {
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the
+    /// peer-sync wire protocol uses for
+    /// [`crate::network::streaming::InputEvent::Key`].
+    pub fn from_xkb_bits(bits: u32) -> Self {
+        Self {
+            shift: bits & 0x1 != 0,
+            ctrl: bits & 0x4 != 0,
+            alt: bits & 0x8 != 0,
+            logo: bits & 0x40 != 0,
+        }
+    }
+
+    /// Union of two masks. Used where a mask is assembled from more than
+    /// one source and any bit set in either has to count.
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            shift: self.shift || other.shift,
+            ctrl: self.ctrl || other.ctrl,
+            alt: self.alt || other.alt,
+            logo: self.logo || other.logo,
+        }
+    }
+}
+
+impl From<&Modifiers> for ChordMods {
+    fn from(m: &Modifiers) -> Self {
+        let s = m.state();
+        Self {
+            shift: s.shift_key(),
+            ctrl: s.control_key(),
+            alt: s.alt_key(),
+            logo: s.super_key(),
+        }
+    }
+}
+
+/// The shell's chord table, expressed once.
 ///
 /// Covers the shell's whole chord set: every `Super` chord (Super is the
 /// compositor modifier — `Super+L` lock, `Super+K` / `Super+Space` search,
-/// `Super+Tab` overview, `Super+Arrow` workspace switch), `Ctrl+K` /
-/// `Alt+Space` search, `Ctrl+Tab` overview, `Ctrl+Arrow` workspace switch,
-/// and `Escape` *only while an overlay is open* (an unconditional Escape
-/// grab would break every modal editor running as a client).
+/// `Super+Tab` overview, `Super+Arrow` workspace switch, `Super+Esc` the
+/// remote-input kill switch), `Ctrl+K` / `Alt+Space` search, `Ctrl+Tab`
+/// overview, `Ctrl+Arrow` workspace switch, and `Escape` *only while an
+/// overlay is open* (an unconditional Escape grab would break every modal
+/// editor running as a client).
+pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
+    if key == ChordKey::Modifier {
+        return false;
+    }
+    if mods.logo {
+        return true;
+    }
+    match key {
+        ChordKey::Space => mods.alt,
+        ChordKey::Tab => mods.ctrl,
+        ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::Escape => overlay_open,
+        ChordKey::Char(c) => mods.ctrl && c == 'k',
+        ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
+    }
+}
+
+/// Narrow a winit logical key to its [`ChordKey`].
+pub fn chord_key_for_logical(key: &Key) -> ChordKey {
+    if is_modifier_key(key) {
+        return ChordKey::Modifier;
+    }
+    match key {
+        Key::Named(NamedKey::Space) => ChordKey::Space,
+        Key::Named(NamedKey::Tab) => ChordKey::Tab,
+        Key::Named(NamedKey::ArrowUp) => ChordKey::ArrowUp,
+        Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
+        Key::Named(NamedKey::Escape) => ChordKey::Escape,
+        Key::Named(NamedKey::Delete) => ChordKey::Delete,
+        Key::Named(NamedKey::F1) => ChordKey::Function(1),
+        Key::Named(NamedKey::F2) => ChordKey::Function(2),
+        Key::Named(NamedKey::F3) => ChordKey::Function(3),
+        Key::Named(NamedKey::F4) => ChordKey::Function(4),
+        Key::Named(NamedKey::F5) => ChordKey::Function(5),
+        Key::Named(NamedKey::F6) => ChordKey::Function(6),
+        Key::Named(NamedKey::F7) => ChordKey::Function(7),
+        Key::Named(NamedKey::F8) => ChordKey::Function(8),
+        Key::Named(NamedKey::F9) => ChordKey::Function(9),
+        Key::Named(NamedKey::F10) => ChordKey::Function(10),
+        Key::Named(NamedKey::F11) => ChordKey::Function(11),
+        Key::Named(NamedKey::F12) => ChordKey::Function(12),
+        Key::Character(s) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                // A layout that delivers the space bar as text rather than
+                // `NamedKey::Space` must still reach the `Alt+Space` arm.
+                (Some(' '), None) => ChordKey::Space,
+                (Some(c), None) => ChordKey::Char(c.to_ascii_lowercase()),
+                _ => ChordKey::Other,
+            }
+        }
+        _ => ChordKey::Other,
+    }
+}
+
+/// Narrow an evdev keycode to its [`ChordKey`].
+///
+/// The inverse of [`evdev_from_logical`] over the range that table covers;
+/// `chord_key_agrees_across_both_directions` in this module's tests pins
+/// the two together so a key added to one is not missed by the other.
+pub fn chord_key_for_evdev(code: u32) -> ChordKey {
+    match code {
+        1 => ChordKey::Escape,
+        15 => ChordKey::Tab,
+        29 | 97 => ChordKey::Modifier,  // left / right Ctrl
+        42 | 54 => ChordKey::Modifier,  // left / right Shift
+        56 | 100 => ChordKey::Modifier, // Alt / AltGr
+        57 => ChordKey::Space,
+        58 => ChordKey::Modifier, // CapsLock
+        59..=68 => ChordKey::Function((code - 58) as u8),
+        69 => ChordKey::Modifier, // NumLock
+        87 => ChordKey::Function(11),
+        88 => ChordKey::Function(12),
+        103 => ChordKey::ArrowUp,
+        108 => ChordKey::ArrowDown,
+        111 => ChordKey::Delete,
+        125 | 126 => ChordKey::Modifier, // left / right Super
+        _ => match char_from_evdev(code) {
+            Some(c) => ChordKey::Char(c),
+            None => ChordKey::Other,
+        },
+    }
+}
+
+/// Is this key event a compositor-level binding that must be handled by the
+/// shell *before* a focused client ever sees it?
+///
+/// Thin winit adapter over [`shell_owns_chord`] — see there for the table.
 pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: bool) -> bool {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
     };
-    if is_modifier_key(&key.logical_key) {
-        return false;
-    }
-    let m = modifiers.state();
-    if m.super_key() {
-        return true;
-    }
-    let ctrl = m.control_key();
-    let alt = m.alt_key();
-    match &key.logical_key {
-        Key::Named(NamedKey::Space) => alt,
-        Key::Named(NamedKey::Tab) => ctrl,
-        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => ctrl,
-        Key::Named(NamedKey::Escape) => overlay_open,
-        Key::Character(s) => ctrl && s.eq_ignore_ascii_case("k"),
-        _ => false,
-    }
+    shell_owns_chord(
+        chord_key_for_logical(&key.logical_key),
+        ChordMods::from(modifiers),
+        overlay_open,
+    )
 }
 
 /// The evdev keycode for a winit key event.
@@ -556,6 +724,61 @@ fn evdev_from_char(c: char) -> Option<u32> {
         _ => return None,
     };
     Some(code)
+}
+
+/// evdev keycode → the single character [`evdev_from_char`] would have
+/// mapped to it, in lowercase. `None` for codes that carry no character.
+fn char_from_evdev(code: u32) -> Option<char> {
+    Some(match code {
+        30 => 'a',
+        48 => 'b',
+        46 => 'c',
+        32 => 'd',
+        18 => 'e',
+        33 => 'f',
+        34 => 'g',
+        35 => 'h',
+        23 => 'i',
+        36 => 'j',
+        37 => 'k',
+        38 => 'l',
+        50 => 'm',
+        49 => 'n',
+        24 => 'o',
+        25 => 'p',
+        16 => 'q',
+        19 => 'r',
+        31 => 's',
+        20 => 't',
+        22 => 'u',
+        47 => 'v',
+        17 => 'w',
+        45 => 'x',
+        21 => 'y',
+        44 => 'z',
+        2 => '1',
+        3 => '2',
+        4 => '3',
+        5 => '4',
+        6 => '5',
+        7 => '6',
+        8 => '7',
+        9 => '8',
+        10 => '9',
+        11 => '0',
+        12 => '-',
+        13 => '=',
+        26 => '[',
+        27 => ']',
+        39 => ';',
+        40 => '\'',
+        41 => '`',
+        43 => '\\',
+        51 => ',',
+        52 => '.',
+        53 => '/',
+        _ => return None,
+    })
 }
 
 /// evdev button code for a winit mouse button.
@@ -1198,6 +1421,85 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     state.set_client_keyboard_focus(target);
 }
 
+/// Tell the remote-input firewall what is on screen.
+///
+/// Called every tick, immediately after [`sync_keyboard_focus`], so a
+/// remote event is judged against the screen the local user is actually
+/// looking at — including which surface holds the keyboard, which is what
+/// mutes a guest's keystrokes the instant the host focuses something
+/// private.
+///
+/// The tile list comes from [`foreign_tiles`], the same enumeration
+/// [`foreign_tile_at`] resolves local clicks with. That shared traversal
+/// is the point: a clickjacking check that walked the tree separately
+/// would eventually disagree with where a click really lands, and the
+/// disagreement would be the hole.
+///
+/// `session_locked` has to be passed in because the lock surface is not
+/// part of the tiled tree: the tiles underneath it are still laid out
+/// and still topmost as far as the tree is concerned, so without this
+/// the firewall would clear a guest's click on a window the local user
+/// cannot reach without a password.
+pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
+    let tiles: Vec<(u64, Rect)> = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tiles(&tree, fb.host())
+            .into_iter()
+            // A tab whose surface the compositor no longer holds is not a
+            // place input can land, for the local user or a remote one.
+            .filter(|hit| state.client_input.surfaces.contains_key(&hit.surface_id))
+            .map(|hit| (hit.surface_id, hit.rect))
+            .collect()
+    };
+    let view = crate::network::input_firewall::ShellView::new(
+        tiles,
+        state.client_input.keyboard_focus(),
+        chrome_captures_input(fb),
+        fb.host().palette_visible(),
+    )
+    .locked(session_locked);
+    state.remote_input_firewall.publish_view(view);
+}
+
+/// Stop every peer from driving this seat, and say so on screen.
+///
+/// The action half of the `Super+Esc` kill switch; the backend loop
+/// recognises the chord and calls this. Split out from that loop so the
+/// behaviour can be driven from a test — the loop itself is a `-> !`
+/// function that cannot be.
+///
+/// The confirmation is not decoration. Someone reaches for this key
+/// because a pointer is moving on their screen and they did not move it;
+/// what they need next is to know it stopped. So the toast is pushed
+/// with [`Notification::bypassing_dnd`] — Do-Not-Disturb is a request
+/// for quiet, and silently swallowing the answer to a panic key makes a
+/// working kill switch indistinguishable from a broken one — and it is
+/// persistent, because the stop is: nothing lifts it but the host.
+///
+/// Returns how many shares lost write access, which is what the toast
+/// counts.
+pub fn stop_remote_input(state: &mut State, fb: &mut FrameBuilder) -> usize {
+    let revoked = state.engage_remote_input_kill_switch();
+    fb.with_chrome(|chrome| {
+        chrome.push_notification_full(
+            Notification::new(
+                "Remote input stopped",
+                match revoked {
+                    0 => "No peer was driving this session.".to_string(),
+                    1 => "1 shared window is now view-only.".to_string(),
+                    n => format!("{n} shared windows are now view-only."),
+                },
+            )
+            .with_severity(NotificationSeverity::Warning)
+            .with_icon_kind(NotificationIconKind::Network)
+            .with_dismiss_after(PERSISTENT_DISMISS)
+            .bypassing_dnd(),
+        );
+    });
+    revoked
+}
+
 /// Route one backend input event.
 ///
 /// Returns `true` when the event was consumed by a client surface and must
@@ -1213,6 +1515,13 @@ pub fn route_input(
     event: &WindowEvent,
     modifiers: &Modifiers,
 ) -> bool {
+    // The host touching their own keyboard or mouse takes priority over
+    // every remote peer for the next half second. Stamped here because
+    // this is the one function both the live backend loop and the
+    // test-control socket push local input through.
+    state
+        .remote_input_firewall
+        .note_local_input(std::time::Instant::now());
     let captured = chrome_captures_input(fb);
     match event {
         WindowEvent::CursorMoved { position, .. } => {
@@ -1836,6 +2145,406 @@ mod tests {
             foreign_tile_at(&tree, fb.host(), (centre.0, rect.y0 - 4.0)).is_none(),
             "the tab strip above the tile must never resolve to a client surface"
         );
+    }
+
+    /// The remote-input firewall's z-order check and local pointer
+    /// routing must never disagree about what is on top, because the
+    /// disagreement *is* the clickjacking hole: a point local input would
+    /// deliver to one surface, the firewall would clear for another.
+    ///
+    /// They share [`foreign_tiles`], so this asserts the property that
+    /// sharing is supposed to buy, on the real laid-out tree.
+    #[test]
+    fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
+        use crate::network::input_firewall::ShellView;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, 900_001, Some("org.example.one"));
+                insert_foreign_group(&mut tree, 900_002, Some("org.example.two"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let tiles = foreign_tiles(&tree, fb.host());
+        assert_eq!(
+            tiles.len(),
+            2,
+            "both mirrored clients must be laid out; got {tiles:?}"
+        );
+
+        let view = ShellView::new(
+            tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
+            None,
+            false,
+            false,
+        );
+
+        // Probe each tile's inside and the pixels just past each of its
+        // edges: a hit-test discrepancy shows up at a boundary long
+        // before it shows up in the middle. Derived from the rects the
+        // layout actually produced rather than from fixed screen
+        // coordinates, because a strip that scrolls a group out of the
+        // viewport would otherwise turn this into a sweep over empty
+        // space that agrees on `None` everywhere and proves nothing.
+        let mut probes: Vec<(f64, f64)> = Vec::new();
+        for hit in &tiles {
+            let r = hit.rect;
+            let c = r.center();
+            probes.extend([
+                (c.x, c.y),
+                (r.x0 + 0.5, r.y0 + 0.5),
+                (r.x1 - 0.5, r.y1 - 0.5),
+                (r.x0 - 0.5, c.y),
+                (r.x1 + 0.5, c.y),
+                (c.x, r.y0 - 0.5),
+                (c.x, r.y1 + 0.5),
+            ]);
+        }
+        // Plus a coarse sweep of the whole output, which is mostly
+        // chrome: every one of those has to resolve to nothing on both
+        // sides, or the firewall would clear a click on the top bar.
+        for gx in 0..80 {
+            for gy in 0..45 {
+                probes.push((gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0));
+            }
+        }
+
+        // Wherever local input would land on a client, the firewall must
+        // name that same client; wherever local input lands on chrome,
+        // the firewall must name nothing.
+        let mut inside = 0;
+        for p in probes {
+            let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
+            assert_eq!(
+                view.topmost_at(p),
+                local,
+                "at {p:?} the firewall and the pointer router disagree",
+            );
+            if local.is_some() {
+                inside += 1;
+            }
+        }
+        assert!(
+            inside >= tiles.len() * 3,
+            "only {inside} probes landed inside a tile across {} tiles, so \
+             agreement on a hit was never actually tested",
+            tiles.len(),
+        );
+    }
+
+    /// A tab is a place input can land only while the compositor still
+    /// holds the client's surface. A tab left in the tree after its
+    /// toplevel went away is a rectangle with nothing behind it, and
+    /// publishing it would hand a guest a coordinate the local user
+    /// cannot even click on.
+    ///
+    /// Drives the real publisher against the real laid-out tree, then
+    /// asks the firewall the question a peer's event asks.
+    #[test]
+    fn a_tab_whose_surface_the_compositor_does_not_hold_is_not_published() {
+        use crate::network::input_firewall::Denial;
+        use crate::network::streaming::{InputEvent, StreamingShare};
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.gone"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        // The tile is laid out — the tree says there is a window there.
+        assert!(
+            foreign_tiles(&fb.chrome().tree(), fb.host())
+                .iter()
+                .any(|hit| hit.surface_id == ORPHAN_SURFACE),
+            "the mirrored tab has to be laid out, or this proves nothing",
+        );
+
+        // The compositor never registered a toplevel for it.
+        let mut state = state_sharing(ORPHAN_SURFACE);
+        state
+            .share_registry
+            .insert(KILL_PEER, ORPHAN_SURFACE, StreamingShare::new());
+        publish_remote_input_view(&mut state, &fb, false);
+
+        let view = state.remote_input_firewall.view();
+        assert!(view.observed(), "the publisher has to publish something");
+        assert!(
+            view.rect(ORPHAN_SURFACE).is_none(),
+            "a tab with no live surface behind it was offered as an input target",
+        );
+        assert_eq!(
+            state.review_remote_input(
+                KILL_PEER,
+                ORPHAN_SURFACE,
+                InputEvent::PointerMotion { x: 5.0, y: 5.0 }
+            ),
+            Err(Denial::NotOnScreen),
+        );
+    }
+
+    const ORPHAN_SURFACE: u64 = 900_003;
+
+    /// The lock surface is drawn by the session, not by the tiled tree,
+    /// so the tiles beneath it stay laid out and stay topmost as far as
+    /// the tree knows. The publisher has to carry the lock across, or a
+    /// guest keeps driving a window the host needs a password to reach.
+    #[test]
+    fn a_locked_session_is_carried_into_the_published_view() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.locked"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        let mut state = state_sharing(ORPHAN_SURFACE);
+        publish_remote_input_view(&mut state, &fb, false);
+        assert!(
+            !state.remote_input_firewall.view().session_locked(),
+            "an unlocked session must not publish itself as locked",
+        );
+
+        publish_remote_input_view(&mut state, &fb, true);
+        assert!(state.remote_input_firewall.view().session_locked());
+    }
+
+    /// A `State` with a live seat, one peer holding write access to
+    /// `surface`, and that surface on screen with the keyboard.
+    fn state_sharing(surface: u64) -> crate::compositor::state::State {
+        use crate::network::input_firewall::ShellView;
+        use crate::network::streaming::StreamingShare;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, crate::compositor::state::State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<crate::compositor::state::State> =
+            Display::new().expect("wayland display");
+        let mut state =
+            crate::compositor::state::State::new(event_loop.handle(), display.handle());
+        state
+            .share_registry
+            .insert(KILL_PEER, surface, StreamingShare::new());
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(surface, Rect::new(0.0, 0.0, 400.0, 300.0))],
+            Some(surface),
+            false,
+            false,
+        ));
+        state
+    }
+
+    const KILL_PEER: u64 = 77;
+    const KILL_SURFACE: u64 = 808;
+
+    fn guest_motion(
+        state: &mut crate::compositor::state::State,
+    ) -> Result<(), crate::network::input_firewall::Denial> {
+        state.review_remote_input(
+            KILL_PEER,
+            KILL_SURFACE,
+            crate::network::streaming::InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+        )
+    }
+
+    /// The panic key, end to end from the action the chord triggers: a
+    /// guest is driving the seat, the host presses it, the guest stops,
+    /// and the host is told so.
+    #[test]
+    fn stopping_remote_input_halts_the_guest_and_says_so_on_screen() {
+        use crate::network::input_firewall::Denial;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+
+        guest_motion(&mut state).expect("the guest is driving the seat to begin with");
+
+        let revoked = stop_remote_input(&mut state, &mut fb);
+        assert_eq!(revoked, 1, "the one writable share had to lose write access");
+
+        assert_eq!(
+            guest_motion(&mut state),
+            Err(Denial::KillSwitch),
+            "the guest still reached the seat after the kill switch",
+        );
+
+        let chrome = fb.chrome();
+        let toast = chrome
+            .notifications()
+            .iter()
+            .find(|n| n.title == "Remote input stopped")
+            .expect("the host got no confirmation that anything happened");
+        assert!(
+            toast.body.contains('1'),
+            "the confirmation has to say what it stopped; body was {:?}",
+            toast.body,
+        );
+        assert!(
+            toast.dismiss_after >= std::time::Duration::from_secs(60),
+            "a stop that lasts until the host lifts it cannot be confirmed by a \
+             toast that slides away in five seconds",
+        );
+    }
+
+    /// Do-Not-Disturb is a request for quiet, not a request to be kept
+    /// uninformed about the machine's own security state. A suppressed
+    /// confirmation makes a working kill switch look exactly like a
+    /// broken one.
+    #[test]
+    fn the_kill_switch_confirmation_is_shown_under_do_not_disturb() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        fb.with_chrome(|chrome| chrome.set_dnd(true));
+
+        stop_remote_input(&mut state, &mut fb);
+
+        let chrome = fb.chrome();
+        assert!(
+            chrome.dnd(),
+            "the test has to actually be under DND or it proves nothing",
+        );
+        assert!(
+            chrome
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped"),
+            "the confirmation was held back into history by Do-Not-Disturb",
+        );
+    }
+
+    /// The notification stack is capped, and a guest driving a client can
+    /// make that client post toasts. Filling the stack must not be a way
+    /// to keep the host from seeing that their panic key worked.
+    #[test]
+    fn a_flood_of_app_toasts_cannot_push_the_confirmation_off_the_screen() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut state = state_sharing(KILL_SURFACE);
+        fb.with_chrome(|chrome| {
+            for i in 0..crate::shell::notification::MAX_NOTIFICATIONS * 3 {
+                chrome.push_notification(format!("App toast {i}"), "noise");
+            }
+        });
+
+        stop_remote_input(&mut state, &mut fb);
+
+        let chrome = fb.chrome();
+        assert!(
+            chrome
+                .notifications()
+                .iter()
+                .any(|n| n.title == "Remote input stopped"),
+            "a flood of app toasts buried the kill-switch confirmation",
+        );
+    }
+
+    /// The scrubber reads evdev keycodes off the wire; local input reads
+    /// winit logical keys. Both narrow to a [`ChordKey`], and a key that
+    /// narrowed differently on the two sides would be a chord the shell
+    /// grabs from its own user and hands to a guest.
+    #[test]
+    fn chord_key_agrees_across_both_directions() {
+        let named = [
+            NamedKey::Escape,
+            NamedKey::Backspace,
+            NamedKey::Tab,
+            NamedKey::Enter,
+            NamedKey::Control,
+            NamedKey::Shift,
+            NamedKey::Alt,
+            NamedKey::Space,
+            NamedKey::CapsLock,
+            NamedKey::F1,
+            NamedKey::F2,
+            NamedKey::F3,
+            NamedKey::F4,
+            NamedKey::F5,
+            NamedKey::F6,
+            NamedKey::F7,
+            NamedKey::F8,
+            NamedKey::F9,
+            NamedKey::F10,
+            NamedKey::F11,
+            NamedKey::F12,
+            NamedKey::Home,
+            NamedKey::ArrowUp,
+            NamedKey::PageUp,
+            NamedKey::ArrowLeft,
+            NamedKey::ArrowRight,
+            NamedKey::End,
+            NamedKey::ArrowDown,
+            NamedKey::PageDown,
+            NamedKey::Insert,
+            NamedKey::Delete,
+            NamedKey::Super,
+        ];
+        let mut checked = 0;
+        for n in named {
+            let key = Key::Named(n);
+            let code = evdev_from_logical(&key)
+                .unwrap_or_else(|| panic!("{n:?} is in the forward keycode table"));
+            assert_eq!(
+                chord_key_for_evdev(code),
+                chord_key_for_logical(&key),
+                "{n:?} (evdev {code}) narrows differently from each side",
+            );
+            checked += 1;
+        }
+        // Every character the forward table maps, including the space
+        // some layouts deliver as text rather than `NamedKey::Space`.
+        const CHARS: &str = "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ";
+        for c in CHARS.chars() {
+            let key = Key::Character(SmolStr::new(c.to_string()));
+            let code = evdev_from_logical(&key)
+                .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
+            assert_eq!(
+                chord_key_for_evdev(code),
+                chord_key_for_logical(&key),
+                "{c:?} (evdev {code}) narrows differently from each side",
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked,
+            named.len() + CHARS.chars().count(),
+            "the round-trip sweep skipped keys",
+        );
+    }
+
+    /// Function keys carry no chord on their own — the compositor hands
+    /// `F2` to a focused client. It is the `Ctrl+Alt` combination that
+    /// the kernel takes, which is why the scrubber names that pair
+    /// itself rather than expecting the shell's table to cover it.
+    #[test]
+    fn function_keys_are_not_shell_chords_on_their_own() {
+        assert!(!shell_owns_chord(
+            ChordKey::Function(2),
+            ChordMods::default(),
+            false
+        ));
+        assert!(shell_owns_chord(
+            ChordKey::Function(2),
+            ChordMods {
+                logo: true,
+                ..Default::default()
+            },
+            false
+        ));
     }
 
     #[test]

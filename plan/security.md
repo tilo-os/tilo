@@ -188,20 +188,26 @@ If the gate cannot start, the launch is **refused** rather than downgraded — s
 
 ## Input firewall (remote input)
 
-When a peer publishes `RemoteInput { peer, surface, event }`:
+When a peer publishes `RemoteInput { peer, surface, event }`, the owner's compositor runs it through `State::review_remote_input` (`shell/src/compositor/state.rs`) — the single door between the network and the seat. The order below is the order that function reads in:
 
-1. The owner's compositor checks the per-peer `read_only` flag. If set, drop.
-2. Verify the target surface is one the peer has been granted view-access to (the surface belongs to a workspace the peer joined).
-3. **Region check** — is the event coordinate inside the shared surface's content rect?
-4. **Z-order check** — is the surface visible and topmost at that point? (Prevents clickjacking via transparent overlays.)
-5. **Keyboard scrubber** — system shortcuts are denied for remote users: `Ctrl+Alt+F*` (TTY switch), the Super key (DE launcher), `Alt+Tab`, `Ctrl+Alt+Delete`. Focus guard: keystrokes only inject if a shared surface has keyboard focus; if the host focuses a private window, the remote keyboard stream mutes instantly.
-6. **Rate limit** — max 120 input events/s per remote peer; >10 clicks in 100 ms triggers a temporary block.
-7. Inject via `smithay::input::Seat::input`.
+0. **Host overrides** — the kill-switch latch, the session lock, then physical-input priority. All three are absolute and none looks at the event, so a flooding peer cannot delay any of them. The lock is checked here rather than falling out of the z-order test because the lock surface is not part of the tiled tree: the tiles under it stay laid out and stay topmost as far as the tree knows.
+1. The per-peer `read_only` flag. If set, drop.
+2. Surface ownership — there must be a share record for this `(peer, surface)` pair. A peer inventing a surface id it was never given is refused here.
+3. **Region check** — is the event coordinate inside the shared surface's content rect? A peer sees only the surface it was shared, so it sends *surface-local* coordinates; an accepted one is translated into the owner's output space by adding the tile origin, which is what confines a guest's pointer to the rectangle it was actually given.
+4. **Z-order check** — is the surface visible and topmost at that point? (Prevents clickjacking via transparent overlays.) The hit test runs against the live tile list the compositor publishes each tick from `client_input::foreign_tiles` — the same enumeration `foreign_tile_at` routes *local* clicks with, so the two cannot drift into disagreeing about what is on top.
+5. **Keyboard scrubber** — system shortcuts are denied for remote users. The denylist is not a second hand-written table: it is `client_input::shell_owns_chord`, the one the shell already uses to decide whether the *local* user's keystroke belongs to the compositor rather than to the focused client, plus the chords the shell never classifies because something below it takes them first — `Ctrl+Alt+F*` (kernel TTY switch) and `Ctrl+Alt+Delete`. The Super key is refused on its own, and `Alt+Tab` is named explicitly. Modifier state is reconstructed from the peer's own keycode stream rather than trusted from the wire's `modifiers` field, which the peer writes and can zero. Focus guard: keystrokes only inject if the shared surface holds the seat's keyboard focus; if the host focuses a private window or shell chrome, the remote keyboard stream mutes instantly.
+6. **Rate limit** — max 120 input events/s per remote peer; >10 clicks in 100 ms trips a one-second block on everything from that peer. Every event a peer offers is metered, including the ones another check refuses, so a flood of junk cannot buy a fresh budget.
+7. Inject into the compositor's `smithay::input::Seat`.
+
+Steps 3-6 live in `shell/src/network/input_firewall.rs`. Every one of them is **deny-biased**: a check that cannot answer refuses. A compositor that has published no screen refuses all remote input rather than passing it, and a button that arrives before any motion has established where the peer's pointer is has no coordinate to check and is refused.
 
 ## Host overrides
 
-- **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control.
-- **Kill switch (`Super+Esc`).** Drops all P2P connections, revokes all capability grants for the current session, unmounts any peer-owned FUSE bind-mounts, and locks the screen.
+- **Session lock.** While the lock surface is up, every remote event is refused. A locked machine has no driver.
+- **Physical priority.** Physical input from the host's seat causes a 500 ms block on all remote input — the user can always grab control. Stamped at the backend event funnel in `compositor/native.rs`, so branches that never reach the client router (the lock screen, the VT chord, the power key) still count as the host taking over.
+- **Kill switch (`Super+Esc`).** Stops every peer's input at once: the firewall latches (nothing but the host clears it) and every share is flipped read-only, so the stop survives anything that rebuilds the input path. Recognised at the same funnel, ahead of the client router and ahead of the shell's own `Escape` handling — a panic key an overlay or a focused client can swallow is not a panic key — and confirmed to the user with a notification naming how many windows went view-only.
+
+  **Not yet implemented:** the wider teardown this document used to describe. Dropping the P2P connections, revoking the session's capability grants, unmounting peer-owned FUSE bind-mounts and locking the screen are all still open. `Super+Esc` today stops remote *input* and says so; it does not end the session. There is also no affordance for undoing it — `RemoteInputFirewall::clear_kill_switch` exists and nothing in the UI calls it, so restoring a guest's write access means restarting the share. That is the safe direction to be incomplete in, but it is incomplete.
 
 ## Encryption
 
@@ -218,15 +224,15 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 | Hardware exfil (cam/mic)   | Default-deny binds + portal-mediated grant              | `sandbox/profile.rs`, `portal/`    |
 | Cross-workspace input leak | Bridge tag + per-workspace seat routing                 | `compositor/bridge.rs`             |
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
-| Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `compositor/state.rs`              |
+| Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `network/input_firewall.rs`, driven from `compositor/state.rs::review_remote_input` |
 | Sandbox escape via syscall | seccomp-bpf blocklist                                   | `sandbox/seccomp.rs`               |
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
-| Clickjacking               | Z-order verification before remote input inject         | compositor scene graph             |
+| Clickjacking               | Z-order verification before remote input inject         | `network/input_firewall.rs`, over the tile order `compositor/client_input.rs` publishes |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `shell/state.rs::Workspace.grants` |
 | Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `shell/state.rs::apply_room_changes` |
 | Traffic snoop              | noise / TLS 1.3 end-to-end                              | libp2p, iroh                       |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
-| Host takeover by peer      | Physical-input priority + kill switch                   | compositor input loop              |
+| Host takeover by peer      | Physical-input priority + `Super+Esc` kill switch        | `network/input_firewall.rs`, `compositor/native.rs` |
 
 ## Where to read first
 
@@ -235,4 +241,5 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 - `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
 - `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `shell/src/network/invite.rs` — invite tokens.
+- `shell/src/network/input_firewall.rs` — the remote-input checks, with each denial proven through `State::review_remote_input` in its `production_path` tests.
 - `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.
