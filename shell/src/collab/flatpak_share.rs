@@ -895,10 +895,15 @@ impl SharedFlatpakSession {
         reg.accept_remote_input(peer, self.surface_id)
     }
 
-    /// Convenience for tests + adapters: route an inbound `InputEvent`
-    /// through the registry into a caller-supplied
-    /// [`crate::network::streaming::RemoteInputSink`]. Returns whether
-    /// the sink saw the event.
+    /// Route an inbound `InputEvent` through the registry into a
+    /// caller-supplied [`crate::network::streaming::RemoteInputSink`].
+    /// Returns whether the sink saw the event.
+    ///
+    /// The share gate only — see
+    /// [`crate::network::streaming::ShareRegistry::route_to`]. A sink
+    /// that is the compositor's seat must not be driven from here;
+    /// [`crate::compositor::state::State::review_remote_input`] is the
+    /// path that runs the region, z-order, scrubber and rate checks.
     pub fn route_input<S: crate::network::streaming::RemoteInputSink>(
         &self,
         peer: PeerId,
