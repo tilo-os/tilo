@@ -20,6 +20,31 @@
 //! It requires `rust-analyzer` and `cargo` on PATH and **fails** without them.
 //! A test that quietly passes when it could not look at its subject is worse
 //! than no test, and this suite has been bitten by that before.
+//!
+//! # Two things here look like waste and are not
+//!
+//! **The 180-second budget.** That is what a cold crate graph costs:
+//! `cargo metadata`, proc-macro loading, then indexing. Shrinking it does not
+//! make the test faster in the passing case — a diagnostic normally arrives in
+//! a second or two, because rust-analyzer resolves names itself without waiting
+//! for `cargo check`. What a smaller budget changes is the *failing* case,
+//! turning "the server never reported this error" into "timed out", which is
+//! the least useful sentence a failure can print.
+//!
+//! **The `$/progress` assertions.** They are not decoration. rust-analyzer only
+//! emits `$/progress` when the client advertised `window.workDoneProgress` in
+//! `initialize`, so [`indexing_is_visible_while_it_happens`] is what fails if
+//! that capability is ever dropped — and if it is dropped, the editor goes back
+//! to sitting silent for minutes on a cold workspace, which is the exact
+//! failure mode of looking broken while working correctly.
+//!
+//! Both were verified by falsification rather than by assertion: the deliberate
+//! error was removed from the fixture and the test re-run. It then failed —
+//! after the full 180 seconds, reporting the real progress stream (`Fetching`,
+//! `Building CrateGraph`, `Roots Scanned`, `Loading proc-macros`,
+//! `Indexing 0%…100%`, `cargo check`) and a `Diagnostics(0)` for the correct
+//! file URI. That is the evidence that a pass here means the diagnostic really
+//! arrived, rather than that nothing was ever looked at.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
