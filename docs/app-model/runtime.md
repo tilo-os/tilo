@@ -22,7 +22,7 @@ Re-exports:
 
 | Path                   | What it is                                  |
 | ---------------------- | ------------------------------------------- |
-| `runtime::collab`      | The collab-broker client (`runtime_collab`).|
+| `runtime::collab`      | The collab broker client (`runtime_collab`).|
 | `runtime::fs`          | The workspace filesystem client (`runtime_fs`). |
 | `runtime::identity`    | Local Ed25519 signing (`runtime_identity`). |
 | `runtime::portal`      | Service-fd + Cap'n Proto plumbing (`runtime_portal`). |

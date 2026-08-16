@@ -23,7 +23,7 @@
 //! // Workspace filesystem — a Cap'n Proto proxy to the FUSE tree.
 //! let workspace = fs::try_connect()?;
 //!
-//! // Collab broker — Cap'n Proto proxy to apps/collab-broker.
+//! // Collab broker — Cap'n Proto proxy to the session's broker.
 //! let broker = collab::try_connect()?;
 //! ```
 //!
@@ -48,7 +48,7 @@
 //!
 //! ## What lives elsewhere
 //!
-//! Broker daemon → `apps/collab-broker`. FUSE driver → `fs/`.
+//! Broker → the compositor, in-session. FUSE driver → `fs/`.
 //! Launcher → `qos-launcher`. This umbrella is client-side only.
 
 pub use runtime_collab as collab;

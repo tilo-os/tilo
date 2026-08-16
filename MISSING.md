@@ -136,13 +136,13 @@ Every "everything composes" test is in-process — single binary spawns a broker
 - **No accessibility tree integration** for the new identity-flow screens (AT-SPI / AccessKit). Main got `feat-a11y-accesskit`; identity-flow widgets ignore it.
 - **No i18n** on the identity-flow screens — strings hardcoded English.
 - **The wheel disc** in the shell renders workspaces, not Spaces. The Space/Channel model never crossed into shell state.
-- **The collab-broker daemon ignores its identity** — multiple users on the same machine would share state via the same `/tmp` socket path.
+- **The broker does not read the persisted identity.** Ops are attributed from `QUICK_APP_ID`, not from a key. The socket is now per-session under `$XDG_RUNTIME_DIR`, so two users no longer share one path.
 
 ---
 
 ## What the integration spine actually needs (concrete next steps)
 
-1. **Lift broker validation out of `shell`** into a shared crate that both `apps/collab-broker` and the shell embed. The standalone daemon picks up Phase 3 / 6 enforcement for free.
+1. **Route apps through the validating path.** The broker the session runs already holds it; what is missing is apps sending `SignedSyncIncremental` and a registered `authorised_signers` set per channel.
 2. **Wire `ui::CollaborationManager` to a real `SigningIdentity`** loaded from `~/.config/qos/identity/primary.json`. Switch the default outbound path from `SyncIncremental` to `SignedSyncIncremental`.
 3. **Make the broker bootstrap `ChannelState` from a persisted channel registry** (TOML or Automerge) at startup so the role table isn't empty.
 4. **Wire MLS encryption in the broker.** A channel-config bit (cleartext vs. MLS-encrypted) decides whether incoming/outgoing payloads get an encrypt/decrypt step.

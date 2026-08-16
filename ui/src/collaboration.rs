@@ -2,7 +2,7 @@
 //!
 //! Historical shape (still the public API, so every downstream app —
 //! `apps/notes`, `apps/word-processor`,
-//! `apps/collab-broker`, plus the toolkit's own `ui::App` — keeps
+//! the in-tree relay used by tests, plus the toolkit's own `ui::App` — keeps
 //! compiling): a synchronous, non-blocking `send` / `poll` pair
 //! trading typed [`CollabRequest`] / [`CollabEvent`] frames.
 //!
@@ -19,8 +19,8 @@
 //!
 //! The legacy JSON-over-Unix-socket dialect is kept behind the
 //! `legacy-broker` feature flag (default on) so the in-tree test
-//! suites, the `collab-broker` binary and the shell's production
-//! broker keep compiling while the fleet migrates onto the SDK.
+//! suites and the shell's production broker keep compiling while the
+//! fleet migrates onto the SDK.
 //!
 //! ## Flipping the feature off
 //!
@@ -379,9 +379,9 @@ enum Backend {
     /// online still converge — transparently to the app.
     Relay(RelayChannel),
     /// Legacy JSON-over-Unix-socket dialect. Gated behind the
-    /// `legacy-broker` feature (default on). Preserved so tests, the
-    /// `collab-broker` binary, and the shell's existing broker keep
-    /// working during the fleet migration.
+    /// `legacy-broker` feature (default on). Preserved so tests and
+    /// the shell's existing broker keep working during the fleet
+    /// migration.
     #[cfg(feature = "legacy-broker")]
     Legacy(LegacyStream),
 }
@@ -1555,7 +1555,7 @@ pub mod broker {
     }
 
     /// Bind `path` (removing any stale inode first) and serve forever.
-    /// Convenience entry point for the `collab-broker` binary.
+    /// Convenience entry point for the in-tree test relay.
     pub fn serve_path<P: AsRef<Path>>(path: P) -> std::io::Result<()> {
         let path = path.as_ref();
         let _ = std::fs::remove_file(path);

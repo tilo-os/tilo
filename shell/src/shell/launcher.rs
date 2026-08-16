@@ -1224,8 +1224,8 @@ mod tests {
         assert!(!cli.has_gui, "a cli-only package is not a GUI app");
 
         // Enumerating it is fine; offering it to launch is not. A headless
-        // package — `collab-broker` is the shipped one — has no window to
-        // show, so a row that starts it would open nothing. This asserts
+        // package has no window to show, so a row that starts it would open
+        // nothing. This asserts
         // the filter the applications provider actually calls.
         let offered_ids: Vec<&str> = offered.iter().map(|a| a.package_id.as_str()).collect();
         assert_eq!(
