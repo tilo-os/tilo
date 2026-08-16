@@ -27,7 +27,7 @@ use crate::draw;
 use crate::model::ThemeSpec;
 use crate::widgets::ThemeRow;
 
-const HEADER_H: f64 = 52.0;
+const HEADER_H: f64 = 34.0;
 const PAD: f32 = 14.0;
 const GAP: f32 = 8.0;
 
@@ -237,9 +237,10 @@ impl Widget for Gallery {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, p: &PresenceCtx) {
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
         draw::line(scene, t, Point::new(self.rect.x1, self.rect.y0), Point::new(self.rect.x1, self.rect.y1), theme.border_standard, 1.0);
-        // Header.
-        draw::text_w(tr, scene, t, "Themes", 16.0, theme.text_primary, self.rect.x0 + PAD as f64, self.rect.y0 + 16.0, TextWeight::Bold);
-        draw::text(tr, scene, t, &format!("{} themes", self.count), 11.0, theme.text_dim, self.rect.x0 + PAD as f64, self.rect.y0 + 36.0);
+        // No app-name wordmark: the OS titlebar shows "Themes". The gallery
+        // header is just the functional theme count, and the list flows up into
+        // the reclaimed space.
+        draw::text_w(tr, scene, t, &format!("{} themes", self.count), 12.0, theme.text_dim, self.rect.x0 + PAD as f64, self.rect.y0 + 12.0, TextWeight::Semibold);
         for r in &mut self.rows {
             r.draw(scene, t, tr, theme, p);
         }
