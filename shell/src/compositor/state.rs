@@ -1731,50 +1731,9 @@ impl FractionalScaleHandler for State {
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
 // -----------------------------------------------------------------------------
 
-// Clipboard and drag-and-drop between clients.
-//
-// The hooks below are deliberately empty and that is not a stub: smithay
-// routes a `wl_data_device.set_selection` from one client to another
-// client's offer itself, so client-to-client copy/paste works with no
-// code here. `new_selection` / `send_selection` exist for a *server*
-// that also owns a second selection channel to bridge — an X11 clipboard
-// bridge, or a remote peer in a shared session. qOS has neither on this
-// path, so there is nothing to forward.
-impl DataDeviceHandler for State {
-    fn data_device_state(&self) -> &DataDeviceState {
-        &self.data_device_state
-    }
-}
-
-impl SelectionHandler for State {
-    type SelectionUserData = ();
-
-    fn new_selection(
-        &mut self,
-        _target: SelectionTarget,
-        _source: Option<smithay::wayland::selection::SelectionSource>,
-        _seat: Seat<Self>,
-    ) {
-    }
-
-    fn send_selection(
-        &mut self,
-        _target: SelectionTarget,
-        _mime_type: String,
-        _fd: std::os::unix::io::OwnedFd,
-        _seat: Seat<Self>,
-        _user_data: &Self::SelectionUserData,
-    ) {
-    }
-}
-
-impl ClientDndGrabHandler for State {}
-impl ServerDndGrabHandler for State {}
-
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
 delegate_shm!(State);
-delegate_data_device!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
