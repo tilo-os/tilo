@@ -28,11 +28,14 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{
+    ContextMenu, EditOutcome, EditableLabel, FlapState, MenuItem, SplitLayout, Widget,
+};
 
 use crate::actions::{
-    delete_clip_action, ripple_delete_action, split_clip_action, upsert_clip_action,
-    upsert_media_action, upsert_track_action, VideoResourceCtx, VIDEO_EDITOR_ACTION_TYPE,
+    delete_clip_action, remove_media_action, ripple_delete_action, split_clip_action,
+    upsert_clip_action, upsert_media_action, upsert_track_action, VideoResourceCtx,
+    VIDEO_EDITOR_ACTION_TYPE,
 };
 use crate::doc::VideoDoc;
 use crate::export::{
@@ -210,6 +213,16 @@ pub struct VideoEditorApp {
     bin_flap: FlapState,
     /// Real-time clock for the flap's frame-rate-independent eased slide.
     flap_tick: Instant,
+    // --- media-bin clip management ---
+    /// Right-click context menu for a bin item (Add to timeline / Rename /
+    /// Delete). Owned as a field and driven directly (open_at / item_at /
+    /// take_selection) because the editor is a canvas, not a taffy tree.
+    bin_menu: ContextMenu,
+    /// Which bin media the open context menu (or a pending menu action) targets.
+    bin_menu_media: Option<MediaId>,
+    /// In-flight inline rename of a bin item: the shared `EditableLabel` gives
+    /// the edit real caret / selection / clipboard / a11y for free.
+    bin_rename: Option<(MediaId, EditableLabel)>,
 }
 
 impl Default for VideoEditorApp {
@@ -257,6 +270,9 @@ impl VideoEditorApp {
             flap_settled: false,
             bin_flap: FlapState::open_when_docked(),
             flap_tick: Instant::now(),
+            bin_menu: ContextMenu::new(),
+            bin_menu_media: None,
+            bin_rename: None,
         }
     }
 
@@ -690,29 +706,158 @@ impl VideoEditorApp {
         self.edit_selected(doc, move |c| c.palette = p);
     }
 
-    /// Append the bin-selected (or given) media as a clip on a matching
-    /// track, at the end of that track's content.
-    fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) {
-        let Some(m) = self.project.media(media).cloned() else { return };
-        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
-        // Lowest-index track of the right kind, else any.
-        let track = self
+    /// Return the lowest-index track of `kind`, creating one (dispatched as an
+    /// action, in the same undo boundary as the caller's edit) when the project
+    /// has none — so placing a clip from the bin works even on a blank project.
+    fn ensure_track_of_kind(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
+        if let Some(t) =
+            self.project.tracks.iter().filter(|t| t.kind == kind).min_by_key(|t| t.index)
+        {
+            return t.id;
+        }
+        let index = self
             .project
             .tracks
             .iter()
             .filter(|t| t.kind == kind)
-            .min_by_key(|t| t.index)
-            .map(|t| t.id);
-        let Some(track) = track else { return };
+            .map(|t| t.index)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let name = format!("{}{index}", if kind == TrackKind::Video { "V" } else { "A" });
+        let track = crate::model::Track {
+            id: Uuid::new_v4(),
+            name,
+            kind,
+            index,
+            muted: false,
+            locked: false,
+        };
+        let id = track.id;
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
+        self.project.tracks.push(track);
+        id
+    }
+
+    /// Append the given media as a clip on a matching track (creating that track
+    /// if the project has none), at the end of that track's content. Returns the
+    /// new clip id.
+    fn add_media_to_timeline(&mut self, doc: &mut AutoCommit, media: MediaId) -> Option<ClipId> {
+        let m = self.project.media(media).cloned()?;
+        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        let track = self.ensure_track_of_kind(doc, kind);
         let start = self
             .project
             .clips_on(track)
             .last()
             .map(|c| c.end())
             .unwrap_or(0.0);
-        if let Some(id) = self.project.add_clip(track, media, start) {
-            self.dispatch_clip(doc, id);
-            self.selected = Some(id);
+        let id = self.project.add_clip(track, media, start)?;
+        self.dispatch_clip(doc, id);
+        self.selected = Some(id);
+        Some(id)
+    }
+
+    // ---- media-bin clip management ---------------------------------------
+
+    /// The sub-rect of a bin row where the media *name* is drawn — clicking it
+    /// (on an already-selected item) begins an inline rename, and it's where the
+    /// rename field is placed.
+    fn bin_name_rect(&self, row: Rect) -> Rect {
+        // Mirrors draw_bin: a 64px thumbnail at the left, then the name text.
+        let x0 = row.x0 + 8.0 + 64.0 + 12.0;
+        Rect::new(x0, row.y0 + 4.0, row.x1 - 8.0, row.y0 + 30.0)
+    }
+
+    /// Open the bin context menu for `mid` at logical point `at`.
+    fn open_bin_menu(&mut self, mid: MediaId, at: Point) {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Add to timeline", || {}));
+        menu.push(MenuItem::action("Rename", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Delete", || {}));
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.bin_menu = menu;
+        self.bin_menu_media = Some(mid);
+        self.selected_media = Some(mid);
+    }
+
+    /// If the cursor is over a visible bin item, open its context menu there.
+    fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
+        let p = self.last_mouse;
+        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        if !bin_visible {
+            return false;
+        }
+        for (mid, rect) in self.bin_item_rects(r) {
+            if rect.contains(p) {
+                self.open_bin_menu(mid, p);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Act on a chosen bin-menu row (indices match [`Self::open_bin_menu`]).
+    fn bin_menu_choose(&mut self, doc: &mut AutoCommit, idx: usize) {
+        let Some(mid) = self.bin_menu_media else { return };
+        match idx {
+            0 => {
+                self.add_media_to_timeline(doc, mid);
+            }
+            1 => self.begin_rename(mid),
+            3 => self.delete_media(doc, mid),
+            _ => {}
+        }
+    }
+
+    /// Begin an inline rename of bin media `mid` using the shared editable
+    /// label (real caret / selection / clipboard). No-op if the media is gone.
+    fn begin_rename(&mut self, mid: MediaId) {
+        let Some(m) = self.project.media(mid) else { return };
+        let mut label = EditableLabel::new(&m.name)
+            .with_font_size(13.0)
+            .with_id("bin_rename");
+        label.begin_edit();
+        self.bin_rename = Some((mid, label));
+        self.selected_media = Some(mid);
+    }
+
+    /// Commit an inline rename: dispatch a whole-media write with the new name.
+    fn commit_rename(&mut self, doc: &mut AutoCommit, mid: MediaId, name: &str) {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if let Some(m) = self.project.media(mid) {
+            if m.name == trimmed {
+                return;
+            }
+            let mut next = m.clone();
+            next.name = trimmed.to_string();
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_media_action(&next));
+        }
+    }
+
+    /// Delete a bin media and every clip that placed it, as one action.
+    fn delete_media(&mut self, doc: &mut AutoCommit, mid: MediaId) {
+        let clip_ids: Vec<ClipId> =
+            self.project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
+        // Keep the in-memory selection consistent before the reload.
+        if let Some(sel) = self.selected {
+            if clip_ids.contains(&sel) {
+                self.selected = None;
+            }
+        }
+        self.actions
+            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &remove_media_action(&mid, &clip_ids));
+        if self.selected_media == Some(mid) {
+            self.selected_media = None;
+        }
+        if self.hover_media == Some(mid) {
+            self.hover_media = None;
         }
     }
 
@@ -810,28 +955,12 @@ impl VideoEditorApp {
     /// Used by the `--shots`/preload placed-import path so the preview shows the
     /// clip; a normal portal import lands in the bin only.
     fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
-        let Some(m) = self.project.media(media_id).cloned() else { return };
-        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
-        if !self.project.tracks.iter().any(|t| t.kind == kind) {
-            let track = crate::model::Track {
-                id: Uuid::new_v4(),
-                name: if kind == TrackKind::Video { "V1" } else { "A1" }.into(),
-                kind,
-                index: 1,
-                muted: false,
-                locked: false,
-            };
-            self.actions
-                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&track));
-            self.project.tracks.push(track);
-        }
-        self.add_media_to_timeline(doc, media_id);
-        // Park the playhead inside the placed clip so the preview has content.
-        if let Some(cid) = self.selected {
-            if let Some(c) = self.project.clip(cid) {
-                let inside = c.start + (c.duration() * 0.4);
-                self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
-            }
+        // `add_media_to_timeline` now creates a matching track when the project
+        // has none, so this just places and parks the playhead in the new clip.
+        let Some(cid) = self.add_media_to_timeline(doc, media_id) else { return };
+        if let Some(c) = self.project.clip(cid) {
+            let inside = c.start + (c.duration() * 0.4);
+            self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
         }
     }
 
@@ -1070,6 +1199,18 @@ impl Widget for VideoEditorApp {
                 self.selected = None;
             }
         }
+        // Drop a rename / menu whose target media vanished (e.g. remote delete).
+        if let Some((mid, _)) = &self.bin_rename {
+            if self.project.media(*mid).is_none() {
+                self.bin_rename = None;
+            }
+        }
+        if let Some(mid) = self.bin_menu_media {
+            if self.project.media(mid).is_none() {
+                self.bin_menu.close();
+                self.bin_menu_media = None;
+            }
+        }
         self.ensure_initial_selection();
         // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_applied && self.shot_scenario != ShotScenario::Live
@@ -1096,7 +1237,11 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playing || self.shuttle != 0.0 || self.flap_animating() || self.import_rx.is_some()
+        self.playing
+            || self.shuttle != 0.0
+            || self.flap_animating()
+            || self.import_rx.is_some()
+            || self.bin_rename.is_some() // a live rename blinks its caret
     }
 
     fn build_layout(
@@ -1134,7 +1279,7 @@ impl Widget for VideoEditorApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         self.advance_playback();
         self.advance_flap();
@@ -1163,9 +1308,13 @@ impl Widget for VideoEditorApp {
                 self.draw_bin(scene, transform, tr, theme, &r);
             }
         }
+        // Inline rename field, drawn over the bin item's name band.
+        self.draw_bin_rename(scene, transform, tr, theme, presence, &r);
         if self.show_export {
             self.draw_export_modal(scene, transform, tr, theme, &r);
         }
+        // The bin context menu floats above everything else.
+        self.bin_menu.draw(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(
@@ -1174,13 +1323,70 @@ impl Widget for VideoEditorApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         let r = self.regions();
+        // An in-flight inline rename owns input: forward every event to the
+        // shared editable label, then reconcile its outcome. A blur-commit
+        // (click outside) is intentionally not consumed, so the same click also
+        // reaches the host — native inline-rename behaviour.
+        if self.bin_rename.is_some() {
+            let name_rect = self
+                .bin_item_rects(&r)
+                .into_iter()
+                .find(|(m, _)| Some(*m) == self.bin_rename.as_ref().map(|(id, _)| *id))
+                .map(|(_, row)| self.bin_name_rect(row));
+            let (mid, outcome) = {
+                let (mid, label) = self.bin_rename.as_mut().unwrap();
+                if let Some(rect) = name_rect {
+                    label.apply_layout_external(rect);
+                }
+                label.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                    taffy,
+                );
+                (*mid, label.take_outcome())
+            };
+            match outcome {
+                EditOutcome::Committed(name) => {
+                    self.commit_rename(state, mid, &name);
+                    self.bin_rename = None;
+                }
+                EditOutcome::Cancelled => self.bin_rename = None,
+                EditOutcome::None => {}
+            }
+            if *handled {
+                return;
+            }
+        }
+        // An open bin context menu is a transient overlay that owns clicks/keys.
+        if self.bin_menu.is_open() {
+            self.bin_menu.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+            );
+            if let Some(idx) = self.bin_menu.take_selection() {
+                self.bin_menu_choose(state, idx);
+            }
+            if *handled {
+                return;
+            }
+        }
+        // Right-click on a bin item opens its context menu (Add / Rename / Delete).
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+            ..
+        } = event
+        {
+            if self.open_bin_menu_at_cursor(&r) {
+                *handled = true;
+                return;
+            }
+        }
         match event {
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
@@ -1453,9 +1659,21 @@ impl VideoEditorApp {
             for (mid, rect) in self.bin_item_rects(r) {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
+                    // A prior *click* on this same item (not a programmatic
+                    // selection) gates both the double-click and the rename, so a
+                    // freshly-imported, auto-selected item is never renamed on the
+                    // first click.
+                    let clicked_before =
+                        matches!(self.last_click_media, Some((m, _)) if m == mid);
                     let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
                     if dbl {
                         self.add_media_to_timeline(state, mid);
+                        self.last_click_media = None;
+                    } else if clicked_before && self.bin_name_rect(rect).contains(p) {
+                        // A deliberate second, slower click on the name of an item
+                        // we already clicked begins an inline rename (Finder /
+                        // Files pattern).
+                        self.begin_rename(mid);
                         self.last_click_media = None;
                     } else {
                         self.last_click_media = Some((mid, Instant::now()));
@@ -1949,9 +2167,12 @@ impl VideoEditorApp {
                 MediaKind::Image => c.semantic.warning,
             };
             scene.fill(Fill::NonZero, tf, kc, None, &Circle::new(Point::new(thumb.x1 - 8.0, thumb.y0 + 8.0), 4.0));
-            // text.
+            // text (the name is drawn by the inline rename field while editing).
             let tx = thumb.x1 + 12.0;
-            text_w(scene, tr, tf, &elide(&m.name, 22), 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+            let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
+            if !renaming {
+                text_w(scene, tr, tf, &elide(&m.name, 22), 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+            }
             let sub = match m.kind {
                 MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
                 _ => format!("{}p · {}", m.height, clock(m.duration)),
@@ -1959,6 +2180,39 @@ impl VideoEditorApp {
             text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
         }
         scene.pop_layer();
+    }
+
+    /// Draw the in-flight inline rename field over its bin row's name band.
+    fn draw_bin_rename(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        r: &Regions,
+    ) {
+        let mid = match &self.bin_rename {
+            Some((m, _)) => *m,
+            None => return,
+        };
+        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        if !bin_visible {
+            return;
+        }
+        let Some(row) = self
+            .bin_item_rects(r)
+            .into_iter()
+            .find(|(m, _)| *m == mid)
+            .map(|(_, row)| row)
+        else {
+            return;
+        };
+        let rect = self.bin_name_rect(row);
+        if let Some((_, label)) = self.bin_rename.as_mut() {
+            label.apply_layout_external(rect);
+            label.draw(scene, tf, tr, theme, presence);
+        }
     }
 
     fn draw_preview(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
@@ -3093,6 +3347,105 @@ mod tests {
     fn click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
         move_to(app, doc, x, y);
         press(app, doc);
+    }
+    fn right_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+        dispatch(app, doc, WindowEvent::MouseInput {
+            device_id: fake_device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Right,
+        });
+    }
+    fn char_ev(s: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = WKey::Character(s.into());
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(s.into());
+        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+    }
+    fn named_ev(k: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = WKey::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+    }
+
+    #[test]
+    fn right_click_bin_item_opens_menu_and_delete_removes_media_from_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (mid, row) = app.bin_item_rects(&r)[0];
+        // Right-click the row → the context menu opens targeting that media.
+        move_to(&mut app, &mut doc, row.center().x, row.center().y);
+        right_press(&mut app, &mut doc);
+        assert!(app.bin_menu.is_open(), "right-click opens the bin context menu");
+        assert_eq!(app.bin_menu_media, Some(mid));
+
+        // Locate the "Delete" row (index 3) and click it through the real menu.
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let del_y = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(3))
+            .expect("a Delete row in the menu");
+        let before = VideoDoc::load_project(&doc).media.len();
+        move_to(&mut app, &mut doc, cx, del_y);
+        press(&mut app, &mut doc);
+        let after = VideoDoc::load_project(&doc);
+        assert_eq!(after.media.len(), before - 1, "Delete removed the media from the CRDT");
+        assert!(after.media(mid).is_none(), "the deleted source is gone");
+        assert!(!app.bin_menu.is_open(), "the menu closed after choosing Delete");
+    }
+
+    #[test]
+    fn inline_rename_writes_the_new_name_to_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (mid, _row) = app.bin_item_rects(&r)[0];
+        app.begin_rename(mid);
+        assert!(app.bin_rename.is_some(), "rename began");
+        // begin_edit select-all: the first keystroke replaces the whole name.
+        for ch in ["R", "e", "e", "l"] {
+            dispatch(&mut app, &mut doc, char_ev(ch));
+        }
+        // Enter commits → dispatches an UpsertMedia carrying the new name.
+        dispatch(&mut app, &mut doc, named_ev(NamedKey::Enter));
+        assert!(app.bin_rename.is_none(), "Enter ends the rename");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.media(mid).unwrap().name, "Reel", "rename wrote through to the CRDT");
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the rename dispatched an action, arming one undo boundary",
+        );
+    }
+
+    #[test]
+    fn double_click_bin_item_on_empty_project_creates_track_and_clip() {
+        // A blank live project with one imported media and no tracks: double-
+        // clicking a bin item must create a matching track and place the clip.
+        let f = write_real_png(320, 240);
+        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.project.media.len(), 1);
+        assert!(app.project.tracks.is_empty(), "blank project starts with no tracks");
+        let r = app.regions();
+        let (_mid, rect) = app.bin_item_rects(&r)[0];
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        click(&mut app, &mut doc, rect.center().x, rect.center().y);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.tracks.len(), 1, "a matching track was created");
+        assert_eq!(reloaded.clips.len(), 1, "the clip was placed on the timeline");
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]
