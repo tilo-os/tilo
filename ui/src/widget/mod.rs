@@ -644,6 +644,7 @@ mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
 pub mod code_editor; pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color};
 mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};
+pub mod autocomplete; pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
 mod number_input; pub use number_input::NumberInput;
 pub mod marks; pub use marks::{Mark, MarkSpan};
 pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};

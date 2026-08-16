@@ -185,6 +185,11 @@ pub struct NavShell {
     /// The active top-left affordance chip's hit rect (zero when None).
     affordance_rect: Rect,
     affordance: Affordance,
+    /// When set, the sidebar collapse chip is suppressed while the sidebar is
+    /// *docked* (wide) — the sidebar is permanent there, so no toggle is needed.
+    /// The hamburger still appears in the narrow overlay layout to summon the
+    /// drawer. Off by default so existing shells keep their collapse control.
+    hide_docked_toggle: bool,
 
     last_cursor: Point,
 
@@ -223,6 +228,7 @@ impl NavShell {
             scrim_rect: Rect::ZERO,
             affordance_rect: Rect::ZERO,
             affordance: Affordance::None,
+            hide_docked_toggle: false,
             last_cursor: Point::ZERO,
             inner_taffy: None,
             sidebar_node: None,
@@ -277,6 +283,14 @@ impl NavShell {
     /// Override the overview (master) width in the side-by-side layout.
     pub fn with_overview_width(mut self, px: f64) -> Self {
         self.overview_width = px;
+        self
+    }
+
+    /// Suppress the sidebar collapse chip while the sidebar is docked (wide):
+    /// the sidebar is permanent there, so the toggle is clutter. The hamburger
+    /// still appears in the narrow overlay layout to summon the drawer.
+    pub fn hide_toggle_when_docked(mut self) -> Self {
+        self.hide_docked_toggle = true;
         self
     }
 
@@ -392,7 +406,14 @@ impl NavShell {
         if self.content_layout() == ContentLayout::Push && self.pane == NavPane::Detail {
             Affordance::Back
         } else if self.has_sidebar() {
-            Affordance::SidebarToggle
+            // A docked sidebar needs no collapse chip when the host opts out —
+            // it is permanent at this width. The narrow overlay keeps the
+            // hamburger so the drawer can still be summoned.
+            if self.hide_docked_toggle && self.sidebar_split_layout() == SplitLayout::Docked {
+                Affordance::None
+            } else {
+                Affordance::SidebarToggle
+            }
         } else {
             Affordance::None
         }
