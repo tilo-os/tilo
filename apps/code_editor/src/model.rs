@@ -354,14 +354,27 @@ impl Project {
     /// Build a project rooted at the real directory `path`, reading its top
     /// level immediately. Sub-folders are read lazily on first expansion via
     /// [`Project::load_children`], so opening a large tree is cheap.
+    ///
+    /// The root is canonicalised, so every path the editor derives from it —
+    /// the language server's workspace root, a search hit, a save target — is
+    /// absolute and symlink-resolved, and two ways of naming the same directory
+    /// cannot open as two different projects.
     pub fn from_dir(path: &Path) -> io::Result<Project> {
-        let name = dir_display_name(path);
+        let md = std::fs::metadata(path)?;
+        if !md.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                format!("{} is not a directory", path.display()),
+            ));
+        }
+        let path = crate::disk::canonical(path);
+        let name = dir_display_name(&path);
         let mut p = Project::new(&name);
         let root = p.root;
         // Point the root at the real directory and mark it unloaded so
         // `load_children` reads it.
         if let Some(node) = p.nodes.get_mut(&root) {
-            node.disk_path = Some(path.to_path_buf());
+            node.disk_path = Some(path.clone());
             if let NodeKind::Folder { loaded, expanded, .. } = &mut node.kind {
                 *loaded = false;
                 *expanded = true;
@@ -369,6 +382,65 @@ impl Project {
         }
         p.load_children(root)?;
         Ok(p)
+    }
+
+    /// The real directory this project is rooted at, if it came from disk.
+    pub fn root_path(&self) -> Option<PathBuf> {
+        self.nodes.get(&self.root).and_then(|n| n.disk_path.clone())
+    }
+
+    /// Whether this project projects a real directory (as opposed to the
+    /// bundled demo tree or a set of scratch buffers).
+    pub fn is_disk_backed(&self) -> bool {
+        self.root_path().is_some()
+    }
+
+    /// Find the node for a real path, if the tree has read that far. Used to
+    /// focus the file a search hit or a go-to-definition landed in.
+    pub fn node_for_path(&self, path: &Path) -> Option<NodeId> {
+        self.nodes
+            .iter()
+            .find(|(_, n)| n.disk_path.as_deref() == Some(path))
+            .map(|(id, _)| *id)
+    }
+
+    /// Read every folder along `path` from the project root so the file at the
+    /// end becomes a node the tree and the tabs can address, expanding the
+    /// folders on the way. Returns the file's node id.
+    ///
+    /// This is what lets a project-wide search hit open its file: the hit names
+    /// a path in a folder that has very likely never been expanded, so the
+    /// lazily-loaded tree has no node for it yet.
+    pub fn reveal_path(&mut self, path: &Path) -> Option<NodeId> {
+        if let Some(id) = self.node_for_path(path) {
+            return Some(id);
+        }
+        let root_path = self.root_path()?;
+        let rel = path.strip_prefix(&root_path).ok()?;
+
+        let mut current = self.root;
+        let mut walked = root_path;
+        let mut components = rel.components().peekable();
+        while let Some(component) = components.next() {
+            walked = walked.join(component);
+            // Reading the parent is what materialises this component as a node.
+            self.load_children(current).ok()?;
+            let child = self.node_for_path(&walked)?;
+            if components.peek().is_some() {
+                // An intermediate component: a folder we must descend into.
+                if let Some(TreeNode {
+                    kind: NodeKind::Folder { expanded, .. },
+                    ..
+                }) = self.nodes.get_mut(&child)
+                {
+                    *expanded = true;
+                }
+                current = child;
+            } else {
+                return Some(child);
+            }
+        }
+        None
     }
 
     /// Build a single-file project: a root folder named after the file's parent
@@ -396,6 +468,14 @@ impl Project {
     /// Read a disk-backed folder's children from the filesystem the first time
     /// it is expanded. Idempotent: a folder with no `disk_path`, or one already
     /// loaded, is left untouched.
+    ///
+    /// One directory level is read at a time, which is what keeps opening a
+    /// repository the size of this one instant — the alternative, walking the
+    /// whole tree up front, would read hundreds of thousands of entries before
+    /// the first frame. Build output and VCS internals are skipped entirely
+    /// (see [`crate::disk::IGNORED_DIRS`]): `target/` here holds more files
+    /// than the rest of the repository by two orders of magnitude, and none of
+    /// them is source anyone opens.
     pub fn load_children(&mut self, id: NodeId) -> io::Result<()> {
         let (path, already_loaded) = match self.nodes.get(&id) {
             Some(TreeNode {
@@ -408,20 +488,38 @@ impl Project {
         if already_loaded {
             return Ok(());
         }
+        // Collect and sort before inserting, so the arena order matches the
+        // display order and a folder's children do not shuffle between reads.
+        let mut folders: Vec<(String, PathBuf)> = Vec::new();
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
         for entry in std::fs::read_dir(&path)? {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name().to_string_lossy().to_string();
             let child_path = entry.path();
-            let is_dir = entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or_else(|_| child_path.is_dir());
-            if is_dir {
-                self.add_disk_folder(id, &name, &child_path);
-            } else {
-                self.add_disk_file(id, &name, &child_path);
+            let Ok(ft) = entry.file_type() else { continue };
+            // `file_type` does not follow symlinks, so a link pointing back up
+            // the tree cannot make the walk cycle.
+            if ft.is_symlink() {
+                continue;
+            }
+            if ft.is_dir() {
+                if crate::disk::is_ignored_dir(&name) {
+                    continue;
+                }
+                folders.push((name, child_path));
+            } else if ft.is_file() {
+                files.push((name, child_path));
             }
         }
+        folders.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        files.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        for (name, p) in folders {
+            self.add_disk_folder(id, &name, &p);
+        }
+        for (name, p) in files {
+            self.add_disk_file(id, &name, &p);
+        }
+
         if let Some(TreeNode {
             kind: NodeKind::Folder { loaded, .. },
             ..
@@ -433,24 +531,26 @@ impl Project {
     }
 
     /// The bytes to seed a file buffer with: the in-memory seed if present,
-    /// otherwise the real file read from disk. Returns an empty string for a
-    /// folder, a missing node, or an unreadable disk file.
-    pub fn file_seed(&self, id: NodeId) -> String {
+    /// otherwise the real file read from disk.
+    ///
+    /// The disk read is fallible and its failure is *returned*, not swallowed.
+    /// An unreadable file that opened as a silently-empty buffer would be saved
+    /// back as an empty file the moment the user pressed Ctrl+S — the read
+    /// error has to reach them before that.
+    pub fn file_seed(&self, id: NodeId) -> Result<(String, Option<crate::disk::Stamp>), crate::disk::LoadError> {
         match self.nodes.get(&id) {
             Some(TreeNode {
                 kind: NodeKind::File { seed, .. },
                 disk_path,
                 ..
-            }) => {
-                if !seed.is_empty() {
-                    seed.clone()
-                } else if let Some(path) = disk_path {
-                    std::fs::read_to_string(path).unwrap_or_default()
-                } else {
-                    String::new()
+            }) => match disk_path {
+                Some(path) => {
+                    let loaded = crate::disk::load(path)?;
+                    Ok((loaded.text, Some(loaded.stamp)))
                 }
-            }
-            _ => String::new(),
+                None => Ok((seed.clone(), None)),
+            },
+            _ => Ok((String::new(), None)),
         }
     }
 
@@ -548,6 +648,35 @@ pub struct OpenBuffer {
     pub language: Language,
     /// Whether the buffer has unsaved edits relative to its on-disk seed.
     pub dirty: bool,
+    /// The real file this buffer writes back to, if it has one. A scratch
+    /// buffer has none until Save As gives it one.
+    pub path: Option<PathBuf>,
+    /// The state the file was in when we last agreed with it — set on open and
+    /// on every successful save. Save re-stats against this to refuse
+    /// clobbering someone else's write; see [`crate::disk::save`].
+    pub stamp: Option<crate::disk::Stamp>,
+    /// The text as last read from or written to disk. Dirty is
+    /// `buffer_text != saved_text` — a real comparison rather than a flag that
+    /// an undo back to the original would leave stuck on.
+    pub saved_text: String,
+    /// Set once the file is known to have changed on disk since it was opened,
+    /// so the tab can say so before the user tries to save over it.
+    pub stale: bool,
+}
+
+impl OpenBuffer {
+    /// Whether the buffer's current text differs from what is on disk.
+    pub fn is_dirty(&self, current: &str) -> bool {
+        current != self.saved_text
+    }
+
+    /// Adopt `text` as the on-disk truth (after a load, a save, or a reload).
+    pub fn mark_saved(&mut self, text: String, stamp: Option<crate::disk::Stamp>) {
+        self.saved_text = text;
+        self.stamp = stamp;
+        self.dirty = false;
+        self.stale = false;
+    }
 }
 
 /// The full editor session: the project, the ordered list of open buffers,
@@ -584,11 +713,36 @@ impl Session {
             name: tn.name.clone(),
             language,
             dirty: false,
+            path: tn.disk_path.clone(),
+            stamp: None,
+            saved_text: String::new(),
+            stale: false,
         };
         self.open.push(buf);
         let idx = self.open.len() - 1;
         self.active = Some(idx);
         Some(idx)
+    }
+
+    /// The open buffer for `node`, if any.
+    pub fn buffer_of(&self, node: NodeId) -> Option<&OpenBuffer> {
+        self.open.iter().find(|b| b.node == node)
+    }
+
+    /// Mutable access to the open buffer for `node`.
+    pub fn buffer_of_mut(&mut self, node: NodeId) -> Option<&mut OpenBuffer> {
+        self.open.iter_mut().find(|b| b.node == node)
+    }
+
+    /// Every open buffer with unsaved edits, by tab index. Drives Save All and
+    /// the "you have unsaved work" question on close.
+    pub fn dirty_indices(&self) -> Vec<usize> {
+        self.open
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.dirty)
+            .map(|(i, _)| i)
+            .collect()
     }
 
     /// Close the tab at `idx`, adjusting the active index so it stays valid.
@@ -678,6 +832,179 @@ mod tests {
         let i2 = s.open_file(f).unwrap();
         assert_eq!(i1, i2);
         assert_eq!(s.open.len(), 1);
+    }
+
+    // ---- real filesystem projection -----------------------------------
+
+    /// A small on-disk project shaped like a real one: nested source, build
+    /// output that must be invisible, and a VCS directory.
+    fn disk_fixture() -> tempfile::TempDir {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        std::fs::create_dir_all(r.join("src/inner")).unwrap();
+        std::fs::create_dir_all(r.join("target/debug")).unwrap();
+        std::fs::create_dir_all(r.join(".git/objects")).unwrap();
+        std::fs::write(r.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(r.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(r.join("src/inner/deep.rs"), "// deep\n").unwrap();
+        std::fs::write(r.join("target/debug/junk.rs"), "// build output\n").unwrap();
+        d
+    }
+
+    fn names(p: &Project) -> Vec<String> {
+        p.visible_rows()
+            .into_iter()
+            .map(|id| p.get(id).unwrap().name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn from_dir_projects_the_real_top_level_only() {
+        let d = disk_fixture();
+        let p = Project::from_dir(d.path()).expect("open the fixture directory");
+
+        // The top level is there…
+        let top = names(&p);
+        assert!(top.contains(&"src".to_string()));
+        assert!(top.contains(&"Cargo.toml".to_string()));
+        // …build output and VCS internals are not…
+        assert!(!top.contains(&"target".to_string()), "target/ must be hidden");
+        assert!(!top.contains(&".git".to_string()), ".git/ must be hidden");
+        // …and the nested file has NOT been read: the tree is lazy, which is
+        // what makes opening a large repository instant.
+        assert!(!top.contains(&"main.rs".to_string()));
+        assert_eq!(p.nodes.len(), 3, "root + src + Cargo.toml, nothing deeper");
+    }
+
+    #[test]
+    fn expanding_a_folder_reads_its_children_on_demand() {
+        let d = disk_fixture();
+        let mut p = Project::from_dir(d.path()).unwrap();
+        let src = p.nodes.values().find(|n| n.name == "src").unwrap().id;
+
+        p.load_children(src).expect("read src/");
+        p.toggle_folder(src);
+        let shown = names(&p);
+        assert!(shown.contains(&"main.rs".to_string()));
+        assert!(shown.contains(&"inner".to_string()));
+        // Still lazy one level further down.
+        assert!(!shown.contains(&"deep.rs".to_string()));
+    }
+
+    #[test]
+    fn load_children_is_idempotent() {
+        let d = disk_fixture();
+        let mut p = Project::from_dir(d.path()).unwrap();
+        let src = p.nodes.values().find(|n| n.name == "src").unwrap().id;
+        p.load_children(src).unwrap();
+        let after_first = p.nodes.len();
+        p.load_children(src).unwrap();
+        assert_eq!(p.nodes.len(), after_first, "a second read adds no duplicates");
+    }
+
+    #[test]
+    fn reveal_path_walks_a_never_expanded_tree_down_to_the_file() {
+        // This is the search-hit path: a hit names a file several folders deep
+        // that the lazy tree has no node for yet.
+        let d = disk_fixture();
+        let mut p = Project::from_dir(d.path()).unwrap();
+        let target = crate::disk::canonical(d.path()).join("src/inner/deep.rs");
+        assert!(p.node_for_path(&target).is_none(), "not yet read");
+
+        let id = p.reveal_path(&target).expect("reveal the nested file");
+        assert_eq!(p.get(id).unwrap().name, "deep.rs");
+        assert_eq!(p.disk_path_of(id).as_deref(), Some(target.as_path()));
+        // The folders along the way were expanded, so it is actually visible.
+        assert!(names(&p).contains(&"deep.rs".to_string()));
+        // And it is idempotent.
+        assert_eq!(p.reveal_path(&target), Some(id));
+    }
+
+    #[test]
+    fn file_seed_reads_the_real_bytes_and_reports_a_stamp() {
+        let d = disk_fixture();
+        let mut p = Project::from_dir(d.path()).unwrap();
+        let main = p
+            .reveal_path(&crate::disk::canonical(d.path()).join("src/main.rs"))
+            .unwrap();
+        let (text, stamp) = p.file_seed(main).expect("read the file");
+        assert_eq!(text, "fn main() {}\n");
+        assert_eq!(stamp.expect("a disk file has a stamp").len, 13);
+    }
+
+    #[test]
+    fn an_unreadable_file_surfaces_its_error_instead_of_an_empty_buffer() {
+        // Opening a binary as a silently-empty buffer would let the next Ctrl+S
+        // truncate it, so the failure has to be returned.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a.bin"), [0u8, 1, 2]).unwrap();
+        let mut p = Project::from_dir(d.path()).unwrap();
+        let node = p
+            .reveal_path(&crate::disk::canonical(d.path()).join("a.bin"))
+            .unwrap();
+        assert!(matches!(
+            p.file_seed(node),
+            Err(crate::disk::LoadError::NotText)
+        ));
+    }
+
+    #[test]
+    fn opening_a_single_file_gives_a_project_rooted_at_its_folder() {
+        let d = disk_fixture();
+        let file = d.path().join("src/main.rs");
+        let (p, node) = Project::open_single_file(&file).expect("open one file");
+        assert_eq!(p.get(node).unwrap().name, "main.rs");
+        assert_eq!(p.name, "src");
+        assert_eq!(p.disk_path_of(node).as_deref(), Some(file.as_path()));
+    }
+
+    #[test]
+    fn opening_a_missing_path_fails_rather_than_opening_an_empty_project() {
+        assert!(Project::from_dir(Path::new("/nonexistent/qos/project")).is_err());
+        assert!(Project::open_single_file(Path::new("/nonexistent/qos/a.rs")).is_err());
+    }
+
+    #[test]
+    fn a_file_is_not_a_project_directory() {
+        let d = disk_fixture();
+        assert!(
+            Project::from_dir(&d.path().join("Cargo.toml")).is_err(),
+            "a file must not open as a project tree"
+        );
+    }
+
+    #[test]
+    fn the_sample_project_is_not_disk_backed_but_a_real_one_is() {
+        assert!(!crate::sample_project::build().is_disk_backed());
+        let d = disk_fixture();
+        let p = Project::from_dir(d.path()).unwrap();
+        assert!(p.is_disk_backed());
+        assert_eq!(p.root_path(), Some(crate::disk::canonical(d.path())));
+    }
+
+    #[test]
+    fn dirty_is_a_comparison_with_disk_not_a_sticky_flag() {
+        let mut buf = OpenBuffer {
+            node: 0,
+            name: "a.rs".into(),
+            language: Language::Rust,
+            dirty: false,
+            path: None,
+            stamp: None,
+            saved_text: "fn main() {}".into(),
+            stale: false,
+        };
+        assert!(!buf.is_dirty("fn main() {}"));
+        assert!(buf.is_dirty("fn main() { x }"));
+        // Undoing back to the original is clean again — a flag would be stuck.
+        assert!(!buf.is_dirty("fn main() {}"));
+
+        buf.dirty = true;
+        buf.stale = true;
+        buf.mark_saved("new".into(), Some(crate::disk::Stamp::default()));
+        assert!(!buf.dirty);
+        assert!(!buf.stale);
+        assert!(!buf.is_dirty("new"));
     }
 
     #[test]
