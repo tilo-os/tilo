@@ -118,6 +118,11 @@ pub struct Driver {
     /// the widget whose `is_focused()` is still set (widget instances survive
     /// a relayout; their taffy ids do not).
     focused: Option<NodeId>,
+    /// Per-pass frame profiler, installed by the perf harness via
+    /// [`Driver::begin_profiling`]. `None` on a normal (persistence) run, so
+    /// [`Driver::relayout`] and [`Driver::send`] pay nothing. When set, each
+    /// pass is timed and every frame committed — see [`crate::profiling`].
+    profiler: Option<crate::profiling::FrameProfiler>,
 }
 
 impl Driver {
@@ -140,6 +145,7 @@ impl Driver {
             modifiers: winit::event::Modifiers::default(),
             viewport,
             focused: None,
+            profiler: None,
         };
         d.relayout();
         d
@@ -206,7 +212,13 @@ impl Driver {
         if let Some(set) = self.records.as_mut() {
             crate::record::tick(set, &mut self.state, self.room_index.as_mut(), &*self.root);
         }
+        let t_sync = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.sync(&mut self.state.doc, &self.state.root);
+        if let Some(p) = self.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::Sync, t_sync);
+        }
+
+        let t_build = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.taffy = TaffyTree::new();
         self.node_map.clear();
         let child = self
@@ -248,10 +260,19 @@ impl Driver {
                 },
             )
             .expect("headless layout");
+        if let Some(p) = self.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::BuildLayout, t_build);
+        }
+
+        let t_apply = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.apply_layout(&self.taffy, child, Point::ORIGIN);
+        if let Some(p) = self.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
+        }
         self.root_node = root_node;
         self.child_node = child;
 
+        let t_draw = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.scene.reset();
         self.root.draw_with_presence(
             &mut self.scene,
@@ -261,6 +282,9 @@ impl Driver {
             &self.presence,
             &self.permissions,
         );
+        if let Some(p) = self.profiler.as_mut() {
+            p.record_since(crate::profiling::Pass::Draw, t_draw);
+        }
 
         // The taffy tree was rebuilt, so the previous `focused` NodeId is
         // stale. The widget *instances* survive (a relayout rebuilds layout,
@@ -274,6 +298,14 @@ impl Driver {
             // borrowed here.
             unsafe { (*p).is_focused() }.then_some(n)
         });
+
+        // One `relayout` is one rendered frame. Commit it (folding in any
+        // `handle_event` time banked by a preceding `send`) so the harness
+        // sees a per-frame sample. The passes ran contiguously here, so the
+        // frame total is taken as their sum.
+        if let Some(p) = self.profiler.as_mut() {
+            p.commit_frame_summed();
+        }
     }
 
     /// The keyboard-focusable widgets in tree order — the same DFS
@@ -401,6 +433,7 @@ impl Driver {
     pub fn send(&mut self, event: WindowEvent) {
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
+        let t_event = self.profiler.as_ref().map(|_| std::time::Instant::now());
         self.root.handle_event(
             &event,
             1.0,
@@ -412,6 +445,10 @@ impl Driver {
             self.child_node,
             &self.taffy,
         );
+        if let Some(p) = self.profiler.as_mut() {
+            // Banked; folded into the frame the following `relayout` commits.
+            p.record_since(crate::profiling::Pass::HandleEvent, t_event);
+        }
         // Mirror the App: a widget that claimed focus during dispatch (a
         // click on a field / button) becomes the focused node, so subsequent
         // keystrokes route to it.
@@ -486,6 +523,49 @@ impl Driver {
         for ch in text.chars() {
             self.key(&ch.to_string());
         }
+    }
+
+    /// Send one vertical wheel scroll of `(dx, dy)` line-deltas through the
+    /// production event path (`MouseWheel { LineDelta }`), then relayout — the
+    /// same three-step frame a real notch produces. Used by the perf harness's
+    /// scroll scenarios. Content scrollables handle the wheel regardless of
+    /// pointer position, so no prior cursor move is needed.
+    pub fn scroll(&mut self, dx: f64, dy: f64) {
+        self.send(WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::LineDelta(dx as f32, dy as f32),
+            phase: winit::event::TouchPhase::Moved,
+        });
+    }
+
+    // -- Perf harness plumbing (see [`crate::profiling`]) ------------------
+
+    /// Install a capture profiler so [`Self::relayout`] / [`Self::send`] time
+    /// each pass and commit a per-frame sample. Called by
+    /// [`crate::profiling::run_scenario`].
+    pub fn begin_profiling(&mut self) {
+        self.profiler = Some(crate::profiling::FrameProfiler::for_capture());
+    }
+
+    /// Render one frame with no input and record it. A frame here is one
+    /// `relayout`, which runs the real sync → build → apply → draw passes.
+    pub fn profile_frame(&mut self) {
+        self.relayout();
+    }
+
+    /// Discard captured frames (e.g. warmup) without stopping capture.
+    pub fn clear_profile_samples(&mut self) {
+        if let Some(p) = self.profiler.as_mut() {
+            p.clear_capture();
+        }
+    }
+
+    /// Take every captured frame so far, draining the buffer.
+    pub fn take_profile_samples(&mut self) -> Vec<crate::profiling::FrameTiming> {
+        self.profiler
+            .as_mut()
+            .map(|p| p.take_capture())
+            .unwrap_or_default()
     }
 
     /// Set the held modifier set. Names: `ctrl`, `shift`, `alt`, `logo`.
