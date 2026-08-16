@@ -7,6 +7,9 @@
 //!   * `--viewport WxH` — (with `--shots`) render at a custom size, e.g.
 //!                       `--viewport 720x900` to exercise the narrow,
 //!                       overlay-sidebar layout. Defaults to 1280x800.
+//!   * `--status`     — (with `--shots`) arm the floating status bubble fully
+//!                       visible so the chip that replaced the old status strip
+//!                       is captured at the bottom-right.
 
 use std::collections::HashMap;
 
@@ -37,6 +40,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (no saved connections) instead of the seeded demo.
         let root = if args.iter().any(|a| a == "--empty") {
             db_client::app_root_for_shot_empty(viewport.0 as f64)
+        } else if args.iter().any(|a| a == "--status") {
+            // `--status` arms the floating status bubble fully visible so the
+            // chip that replaced the bottom status strip is captured.
+            db_client::app_root_for_shot_status(viewport.0 as f64)
         } else {
             db_client::app_root_for_shot(viewport.0 as f64)
         };
