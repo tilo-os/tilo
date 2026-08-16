@@ -29,6 +29,7 @@ pub mod model;
 pub mod portal;
 pub mod preview;
 pub mod probe;
+pub mod thumbnail;
 pub mod timecode;
 pub mod waveform;
 
