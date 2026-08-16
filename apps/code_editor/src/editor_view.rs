@@ -887,12 +887,233 @@ impl EditorView {
         self.insert(doc, &payload);
     }
 
-    /// Indent: insert `indent_width` spaces at the caret (or, with a multi-line
-    /// selection, this could indent each line — kept simple as cursor-level
-    /// for now).
+    /// Indent: insert `indent_width` spaces at the caret.
     fn insert_indent(&mut self, doc: &mut AutoCommit) {
         let spaces = " ".repeat(self.indent_width);
         self.insert(doc, &spaces);
+    }
+
+    // ---- line operations (all route through the CRDT) ----
+
+    /// The inclusive `[first, last]` line range the primary caret covers. A
+    /// selection that ends exactly at column 0 of a line does not pull that
+    /// trailing line in — matching every editor's line-op behaviour, so that
+    /// selecting down to the start of a line and running "delete line" does not
+    /// eat the line the caret only touches.
+    fn primary_line_range(&self) -> (usize, usize) {
+        let c = self.carets[0];
+        match c.selection() {
+            Some((s, e)) => {
+                let last = if e.1 == 0 && e.0 > s.0 { e.0 - 1 } else { e.0 };
+                (s.0, last)
+            }
+            None => (c.line, c.line),
+        }
+    }
+
+    /// The flat char index of the first character of `line`.
+    fn line_start_index(&self, line: usize) -> usize {
+        self.char_index(line, 0)
+    }
+
+    /// Reposition the primary caret (and its selection anchor) by `delta` lines,
+    /// keeping the column. Used after a line move so the caret rides with the
+    /// text it moved.
+    fn shift_primary_lines(&mut self, delta: isize) {
+        let cur = self.carets[0];
+        let shift = |l: usize| (l as isize + delta).max(0) as usize;
+        self.carets = vec![Caret {
+            line: shift(cur.line),
+            col: cur.col,
+            anchor: cur.anchor.map(|(al, ac)| (shift(al), ac)),
+        }];
+        self.clamp_carets();
+        self.scroll_to_caret();
+    }
+
+    /// Duplicate the caret's line(s), inserting the copy directly below. With
+    /// `focus_copy` the caret rides down onto the new copy (copy-down); without
+    /// it the caret stays on the original (copy-up). Bound to Shift+Alt+Down /
+    /// Shift+Alt+Up.
+    pub fn duplicate_lines(&mut self, doc: &mut AutoCommit, focus_copy: bool) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        let block: String = self.lines[a..=b].join("\n");
+        let end_of_b = self.char_index(b, self.lines[b].chars().count());
+        EditorDoc::splice(doc, &text, end_of_b, 0, &format!("\n{block}"));
+        self.sync_from_doc(doc);
+        if focus_copy {
+            self.shift_primary_lines((b - a + 1) as isize);
+        } else {
+            self.scroll_to_caret();
+        }
+    }
+
+    /// Move the caret's line(s) up or down by one, swapping with the neighbour.
+    /// A single CRDT splice, so it undoes as one step. Bound to Alt+Up/Alt+Down.
+    pub fn move_lines(&mut self, doc: &mut AutoCommit, up: bool) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        let block: String = self.lines[a..=b].join("\n");
+        if up {
+            if a == 0 {
+                return;
+            }
+            let prev = self.lines[a - 1].clone();
+            let from = self.line_start_index(a - 1);
+            let to = self.char_index(b, self.lines[b].chars().count());
+            // Region is "{prev}\n{block}" → swap to "{block}\n{prev}".
+            EditorDoc::splice(doc, &text, from, to - from, &format!("{block}\n{prev}"));
+            self.sync_from_doc(doc);
+            self.shift_primary_lines(-1);
+        } else {
+            if b + 1 >= self.lines.len() {
+                return;
+            }
+            let next = self.lines[b + 1].clone();
+            let from = self.line_start_index(a);
+            let to = self.char_index(b + 1, self.lines[b + 1].chars().count());
+            // Region is "{block}\n{next}" → swap to "{next}\n{block}".
+            EditorDoc::splice(doc, &text, from, to - from, &format!("{next}\n{block}"));
+            self.sync_from_doc(doc);
+            self.shift_primary_lines(1);
+        }
+    }
+
+    /// Delete the caret's line(s) entirely, landing the caret at the start of
+    /// what follows. Bound to Ctrl+Shift+K.
+    pub fn delete_lines(&mut self, doc: &mut AutoCommit) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        let (from, to) = if b + 1 < self.lines.len() {
+            // Take the block and its trailing newline so the line vanishes.
+            (self.line_start_index(a), self.line_start_index(b + 1))
+        } else if a > 0 {
+            // Last line(s): take the leading newline instead.
+            (
+                self.char_index(a - 1, self.lines[a - 1].chars().count()),
+                self.char_index(b, self.lines[b].chars().count()),
+            )
+        } else {
+            // The whole buffer is selected — leave a single empty line.
+            (0, self.char_index(b, self.lines[b].chars().count()))
+        };
+        EditorDoc::splice(doc, &text, from, to - from, "");
+        self.sync_from_doc(doc);
+        let target = a.min(self.lines.len().saturating_sub(1));
+        self.carets = vec![Caret::at(target, 0)];
+        self.clamp_carets();
+        self.scroll_to_caret();
+    }
+
+    /// Toggle a line comment on the caret's line(s). If every non-blank line in
+    /// the range is already commented, uncomment; otherwise comment them all
+    /// (at the range's shallowest indent, so the comment markers line up).
+    /// No-op for languages without a line comment. Bound to Ctrl+/.
+    pub fn toggle_line_comment(&mut self, doc: &mut AutoCommit) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let Some(token) = self.language.line_comment() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        let non_blank: Vec<usize> = (a..=b)
+            .filter(|&l| !self.lines[l].trim().is_empty())
+            .collect();
+        if non_blank.is_empty() {
+            return;
+        }
+        let all_commented = non_blank
+            .iter()
+            .all(|&l| self.lines[l].trim_start().starts_with(token));
+        // Shallowest indent across the range, so added markers align.
+        let indent = non_blank
+            .iter()
+            .map(|&l| self.lines[l].chars().take_while(|c| *c == ' ' || *c == '\t').count())
+            .min()
+            .unwrap_or(0);
+        // Splice bottom-up so earlier line indices stay valid.
+        for &l in non_blank.iter().rev() {
+            let line = &self.lines[l];
+            if all_commented {
+                // Remove the token (and one following space, if present) at the
+                // first non-whitespace column.
+                let lead = line.chars().take_while(|c| c.is_whitespace()).count();
+                let after = &line[line.char_indices().nth(lead).map(|(i, _)| i).unwrap_or(line.len())..];
+                if let Some(rest) = after.strip_prefix(token) {
+                    let mut remove = token.chars().count();
+                    if rest.starts_with(' ') {
+                        remove += 1;
+                    }
+                    let at = self.char_index(l, lead);
+                    EditorDoc::splice(doc, &text, at, remove, "");
+                }
+            } else {
+                let at = self.char_index(l, indent);
+                EditorDoc::splice(doc, &text, at, 0, &format!("{token} "));
+            }
+        }
+        self.sync_from_doc(doc);
+        self.clamp_carets();
+        self.scroll_to_caret();
+    }
+
+    /// Indent every line the selection spans by one indent unit. Falls back to
+    /// a plain tab-at-caret when the selection is empty or single-line (handled
+    /// by the caller). Bound to Tab with a multi-line selection.
+    pub fn indent_selection(&mut self, doc: &mut AutoCommit) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        let pad = " ".repeat(self.indent_width);
+        for l in (a..=b).rev() {
+            if self.lines[l].is_empty() {
+                continue;
+            }
+            let at = self.line_start_index(l);
+            EditorDoc::splice(doc, &text, at, 0, &pad);
+        }
+        self.sync_from_doc(doc);
+        self.clamp_carets();
+    }
+
+    /// Outdent every line the selection spans by up to one indent unit. Bound
+    /// to Shift+Tab.
+    pub fn outdent_selection(&mut self, doc: &mut AutoCommit) {
+        let Some(text) = self.text_obj.clone() else {
+            return;
+        };
+        let (a, b) = self.primary_line_range();
+        for l in (a..=b).rev() {
+            let line = &self.lines[l];
+            // Remove up to `indent_width` leading spaces, or a single leading tab.
+            let remove = if line.starts_with('\t') {
+                1
+            } else {
+                line.chars().take_while(|c| *c == ' ').count().min(self.indent_width)
+            };
+            if remove > 0 {
+                let at = self.line_start_index(l);
+                EditorDoc::splice(doc, &text, at, remove, "");
+            }
+        }
+        self.sync_from_doc(doc);
+        self.clamp_carets();
+    }
+
+    /// Whether the primary selection spans more than one line — the caller uses
+    /// this to decide between block-indent and a plain tab insertion.
+    pub fn selection_is_multiline(&self) -> bool {
+        let (a, b) = self.primary_line_range();
+        b > a
     }
 
     // ---- hit testing ----
@@ -1573,16 +1794,26 @@ impl Widget for EditorView {
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
-                        if ctrl && mods.alt_key() {
+                        let alt = mods.alt_key();
+                        if ctrl && alt {
                             self.add_caret_below();
+                        } else if alt && shift {
+                            self.duplicate_lines(state, false);
+                        } else if alt {
+                            self.move_lines(state, true);
                         } else {
                             self.move_caret(0, -1, shift);
                         }
                         *handled = true;
                     }
                     Key::Named(NamedKey::ArrowDown) => {
-                        if ctrl && mods.alt_key() {
+                        let alt = mods.alt_key();
+                        if ctrl && alt {
                             self.add_caret_below();
+                        } else if alt && shift {
+                            self.duplicate_lines(state, true);
+                        } else if alt {
+                            self.move_lines(state, false);
                         } else {
                             self.move_caret(0, 1, shift);
                         }
@@ -1619,7 +1850,16 @@ impl Widget for EditorView {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Tab) => {
-                        self.insert_indent(state);
+                        // Shift+Tab outdents; Tab over a multi-line selection
+                        // indents the whole block; otherwise it inserts one
+                        // indent unit at the caret.
+                        if shift {
+                            self.outdent_selection(state);
+                        } else if self.selection_is_multiline() {
+                            self.indent_selection(state);
+                        } else {
+                            self.insert_indent(state);
+                        }
                         *handled = true;
                     }
                     Key::Named(NamedKey::Space) => {
@@ -1651,6 +1891,14 @@ impl Widget for EditorView {
                             }
                             "d" => {
                                 self.add_caret_below();
+                                *handled = true;
+                            }
+                            "k" if shift => {
+                                self.delete_lines(state);
+                                *handled = true;
+                            }
+                            "/" => {
+                                self.toggle_line_comment(state);
                                 *handled = true;
                             }
                             _ => {}
@@ -1764,6 +2012,12 @@ impl EditorView {
     #[cfg(test)]
     pub fn selection_for_test(&self) -> Option<((usize, usize), (usize, usize))> {
         self.carets[0].selection()
+    }
+
+    /// Test hook: how many find matches the editor is currently highlighting.
+    #[cfg(test)]
+    pub fn find_match_count_for_test(&self) -> usize {
+        self.find_matches.len()
     }
 
     /// Test hook: the primary selection's text (production `selected_text`).
