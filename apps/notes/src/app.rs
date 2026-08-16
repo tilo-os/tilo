@@ -37,7 +37,7 @@ use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{NoteTreeView, OutEvent};
-use crate::status_bar::{count_words, StatusBar, StatusBarState};
+use crate::status_bar::{count_words, StatusBarState, StatusModel};
 use crate::storage::{self, PageSaver, SaveStatus, Saver};
 
 /// Sidebar width when the window is wide enough to show it inline.
@@ -71,7 +71,16 @@ pub struct NotesApp {
     workspace: Workspace,
     sidebar: NoteTreeView,
     main: MainPanel,
-    status: StatusBar,
+    /// The note's save + page/word status, surfaced as a transient
+    /// floating bubble (see `status_bubble`) instead of a permanent strip.
+    status: StatusModel,
+    /// Transient floating status bubble: poked on a status change (a save
+    /// flip, a page switch, a word-count tick), and shown while the pointer
+    /// hovers the bottom-right corner. Replaces the old bottom status bar so
+    /// the editor spans to the window bottom.
+    status_bubble: ui::StatusBubble,
+    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    shots_status: bool,
     shortcuts: ShortcutsOverlay,
     /// Root container rect, populated by `apply_layout`.
     rect: Rect,
@@ -79,7 +88,6 @@ pub struct NotesApp {
     /// `apply_layout` and `handle_event`.
     sidebar_node: Option<NodeId>,
     main_node: Option<NodeId>,
-    status_node: Option<NodeId>,
     /// Rect covering [sidebar + main] — the upper "content row" of
     /// the column layout, sibling of the status bar. We don't expose
     /// this through taffy node ids; it's a flex sub-container whose
@@ -230,12 +238,13 @@ impl NotesApp {
             workspace,
             sidebar,
             main,
-            status: StatusBar::new(),
+            status: StatusModel::new(),
+            status_bubble: ui::StatusBubble::new(),
+            shots_status: false,
             shortcuts: ShortcutsOverlay::new(),
             rect: Rect::ZERO,
             sidebar_node: None,
             main_node: None,
-            status_node: None,
             content_node: None,
             root,
             saver: Some(saver),
@@ -306,12 +315,67 @@ impl NotesApp {
             .map(|s| s.status())
             .unwrap_or(SaveStatus::Saved);
         let save_status = combine_save_status(workspace_status, page_status);
-        self.status.set_state(StatusBarState {
+        let changed = self.status.set_state(StatusBarState {
             save_status,
             page_path: path,
             page_count: self.workspace.pages().len(),
             word_count,
         });
+        // Surface the floating status bubble only on a real change (a save
+        // flip, a page switch, a word-count tick) — refresh_status runs every
+        // frame, so poking unconditionally would pin the bubble open forever.
+        if changed {
+            self.status_bubble.poke(std::time::Instant::now());
+        }
+    }
+
+    /// `--shots`: force the status bubble fully visible so a single headless
+    /// frame captures the floating chip.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// window — the reclaimed home of the old bottom status strip. It shows
+    /// on a status change or while the pointer hovers the bottom-right band,
+    /// then fades. All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = std::time::Instant::now();
+        let label = self.status.bubble_text();
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_mouse);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -1020,7 +1084,7 @@ impl NotesApp {
     /// tests can assert on save state / page count / word count
     /// without going through pixel-level inspection.
     #[doc(hidden)]
-    pub fn status_bar_for_test(&self) -> &crate::status_bar::StatusBar {
+    pub fn status_bar_for_test(&self) -> &crate::status_bar::StatusModel {
         &self.status
     }
 
@@ -1451,9 +1515,9 @@ impl Widget for NotesApp {
         }
         column_children.push(content_node);
 
-        let status_node = self.status.build_layout(taffy, theme, node_map);
-        self.status_node = Some(status_node);
-        column_children.push(status_node);
+        // No status-bar row: the note's status floats as a transient bubble
+        // (see `draw_status_bubble`), so the content column spans to the
+        // window bottom and reclaims the strip's height.
 
         let root = taffy
             .new_with_children(
@@ -1554,9 +1618,6 @@ impl Widget for NotesApp {
             self.menu_btn_rect = Rect::ZERO;
         }
 
-        if let Some(n) = self.status_node {
-            self.status.apply_layout(taffy, n, new_origin);
-        }
         // Keep the shortcuts overlay's viewport synced — host-driven
         // since the overlay never participates in the taffy pass.
         self.shortcuts.set_viewport(self.rect);
@@ -1592,8 +1653,9 @@ impl Widget for NotesApp {
         } else {
             self.sidebar.draw(scene, transform, text_renderer, theme, presence);
         }
-        // Status bar across the bottom edge of the window.
-        self.status.draw(scene, transform, text_renderer, theme, presence);
+        // Transient floating status bubble (bottom-right), in place of the
+        // old permanent bottom status strip.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
         // Page-jump palette renders on top of everything.
         if self.palette.is_visible() {
             // Dim backdrop — `surfaces.overlay` is `bg-black/80` (the
@@ -1611,6 +1673,13 @@ impl Widget for NotesApp {
         // Shortcuts overlay sits above every other layer when
         // visible. Drawn last so it covers the palette too.
         self.shortcuts.draw_overlay(scene, transform, text_renderer, theme);
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming only while the floating status bubble is lingering
+        // / fading, so it hides itself without needing a stray pointer event.
+        // Idle otherwise (no idle redraw spin).
+        self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn handle_event(
@@ -1908,7 +1977,6 @@ impl Widget for NotesApp {
         self.self_dirty
             || self.sidebar.needs_redraw()
             || self.main.needs_redraw()
-            || self.status.needs_redraw()
             || self.shortcuts.needs_redraw()
     }
 
@@ -1916,7 +1984,6 @@ impl Widget for NotesApp {
         self.self_dirty = false;
         self.sidebar.mark_drawn();
         self.main.mark_drawn();
-        self.status.mark_drawn();
         self.shortcuts.mark_drawn();
     }
 
