@@ -305,8 +305,27 @@ pub fn foreign_tile_at(
     host: &ShellOverlayHost,
     point: (f64, f64),
 ) -> Option<TileHit> {
-    let ws = tree.active_workspace()?;
     let p = KurboPoint::new(point.0, point.1);
+    foreign_tiles(tree, host)
+        .into_iter()
+        .find(|hit| hit.rect.contains(p))
+}
+
+/// Every foreign tile currently on screen, in the compositor's own
+/// front-to-back order — the order [`foreign_tile_at`] resolves ties in,
+/// so the first entry whose rect contains a point is what local input
+/// would be routed to.
+///
+/// Exposed because remote input has to answer the same question
+/// ("what is actually on top at this point?") from a different thread of
+/// control, and answering it from a second traversal is how a
+/// clickjacking check ends up disagreeing with where the click really
+/// lands. See [`crate::network::input_firewall`].
+pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
+    let Some(ws) = tree.active_workspace() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
     for strip in &ws.strips {
         for group in &strip.window_groups {
             let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) else {
@@ -321,17 +340,15 @@ pub fn foreign_tile_at(
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
                 continue;
             }
-            if rect.contains(p) {
-                return Some(TileHit {
-                    surface_id: *surface_id,
-                    strip: strip.id,
-                    group: group.id,
-                    rect,
-                });
-            }
+            out.push(TileHit {
+                surface_id: *surface_id,
+                strip: strip.id,
+                group: group.id,
+                rect,
+            });
         }
     }
-    None
+    out
 }
 
 /// Surface-local coordinates for a global `point` inside `rect`.
