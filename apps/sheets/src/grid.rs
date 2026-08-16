@@ -31,6 +31,10 @@ const MIN_COL_W: f64 = 40.0;
 const MIN_ROW_H: f64 = 18.0;
 const RESIZE_GRAB: f64 = 4.0;
 const CELL_PAD_X: f64 = 6.0;
+/// Side length of the fill handle square drawn at the selection's bottom-right
+/// corner, and the extra grab margin around it for pointer hit-testing.
+const FILL_HANDLE_SIZE: f64 = 8.0;
+const FILL_HANDLE_GRAB: f64 = 3.0;
 /// Upper bound for an auto-fitted column so one very long value can't blow the
 /// column out to an unreadable width (it clips past this, like Excel).
 const MAX_AUTOFIT_W: f64 = DEFAULT_COL_W * 3.0;
@@ -124,6 +128,17 @@ struct ResizeDrag {
     origin_size: f64,
 }
 
+/// An in-flight fill-handle drag. The selection at grab time is the source
+/// *pattern*; `target` is the cell currently under the pointer, projected onto
+/// the dominant forward axis (down or right) to a fill region.
+#[derive(Clone, Copy)]
+struct FillDrag {
+    /// Source selection bounds captured at grab, `(top_left, bottom_right)`.
+    src: (Addr, Addr),
+    /// Cell currently under the pointer.
+    target: Addr,
+}
+
 pub struct Grid {
     pub rect: Rect,
     scroll_x: f64,
@@ -156,6 +171,13 @@ pub struct Grid {
     fmt: HashMap<Addr, CellFormat>,
     last_cursor: Point,
     resize: Option<ResizeDrag>,
+    /// An in-flight fill-handle drag (grab the selection's bottom-right corner
+    /// and drag down/right to extend the pattern).
+    fill_drag: Option<FillDrag>,
+    /// A committed fill the app consumes on the next event: the source pattern
+    /// bounds and the destination region to fill, `(src_tl, src_br, dst_tl,
+    /// dst_br)`. Rising-edge, cleared by `take_pending_fill`.
+    pending_fill: Option<(Addr, Addr, Addr, Addr)>,
     selecting: bool,
     /// Formula "point mode": while editing a formula, clicking/dragging cells
     /// inserts their references. `point_anchor` is the char index in the edit
@@ -198,6 +220,8 @@ impl Grid {
             fmt: HashMap::new(),
             last_cursor: Point::ZERO,
             resize: None,
+            fill_drag: None,
+            pending_fill: None,
             selecting: false,
             point_anchor: None,
             point_drag_start: (0, 0),
@@ -575,6 +599,62 @@ impl Grid {
         Rect::new(x, y, x + self.col_w(c), y + self.row_h(r))
     }
 
+    /// Screen rect of the fill handle — a small square centred on the live
+    /// selection's bottom-right corner. Shown only for a single contiguous
+    /// selection that is not being edited, and only while the corner is on the
+    /// visible body. `None` otherwise.
+    fn fill_handle_rect(&self) -> Option<Rect> {
+        if self.edit.is_some() || !self.extra_ranges.is_empty() {
+            return None;
+        }
+        let (_, _, c1, r1) = self.current_range().bounds();
+        let cell = self.cell_screen_rect(c1, r1);
+        let (cx, cy) = (cell.x1, cell.y1);
+        let body = self.body_rect();
+        let m = FILL_HANDLE_SIZE;
+        if cx < body.x0 - m || cx > body.x1 + m || cy < body.y0 - m || cy > body.y1 + m {
+            return None;
+        }
+        let h = FILL_HANDLE_SIZE / 2.0;
+        Some(Rect::new(cx - h, cy - h, cx + h, cy + h))
+    }
+
+    /// Project a fill-handle drag onto the dominant **forward** axis (down or
+    /// right) and return `(src_tl, src_br, dst_tl, dst_br)`, or `None` when the
+    /// pointer has not left the source (no extension yet). Dragging beyond the
+    /// bottom fills down; beyond the right fills right; a diagonal snaps to the
+    /// axis with the larger overshoot.
+    fn fill_region(src: (Addr, Addr), target: Addr) -> Option<(Addr, Addr, Addr, Addr)> {
+        let ((c0, r0), (c1, r1)) = src;
+        let (tc, tr) = target;
+        let down = tr as i64 - r1 as i64;
+        let right = tc as i64 - c1 as i64;
+        if down <= 0 && right <= 0 {
+            return None;
+        }
+        if down > 0 && down >= right {
+            Some(((c0, r0), (c1, r1), (c0, r1 + 1), (c1, tr)))
+        } else {
+            Some(((c0, r0), (c1, r1), (c1 + 1, r0), (tc, r1)))
+        }
+    }
+
+    /// Consume a committed fill-handle drag: `(src_tl, src_br, dst_tl, dst_br)`.
+    /// The app extends the source pattern over the destination region.
+    pub fn take_pending_fill(&mut self) -> Option<(Addr, Addr, Addr, Addr)> {
+        self.pending_fill.take()
+    }
+
+    /// Drive a fill-handle drag from the current selection to `target` and
+    /// release, exactly as a pointer grab + drag + release would — the
+    /// production `pointer_up` path records the pending fill. Used by tests and
+    /// the `--shots` scenarios to exercise the real fill without a display.
+    pub fn start_fill_to(&mut self, target: Addr) {
+        let (c0, r0, c1, r1) = self.current_range().bounds();
+        self.fill_drag = Some(FillDrag { src: ((c0, r0), (c1, r1)), target });
+        self.pointer_up();
+    }
+
     /// Visible column indices given the current scroll + body width.
     fn visible_cols(&self) -> Vec<u32> {
         let mut out = Vec::new();
@@ -901,6 +981,22 @@ impl Grid {
             self.resize = Some(ResizeDrag { target, origin_px, origin_size });
             return true;
         }
+        // Fill handle: grab the selection's bottom-right corner and drag to
+        // extend the pattern. A plain press only (Ctrl/Shift keep their normal
+        // selection meaning). Checked before the body-click so a grab near the
+        // corner starts a fill rather than a new selection.
+        if !ctrl && !shift {
+            if let Some(hr) = self.fill_handle_rect() {
+                let grab = hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB);
+                if grab.contains(p) {
+                    self.commit_edit(out);
+                    let (c0, r0, c1, r1) = self.current_range().bounds();
+                    self.fill_drag = Some(FillDrag { src: ((c0, r0), (c1, r1)), target: (c1, r1) });
+                    self.dirty = true;
+                    return true;
+                }
+            }
+        }
         // Column header click → select the whole column (Ctrl adds it, Shift
         // extends the column span from the current anchor).
         if p.y >= self.rect.y0 && p.y < self.grid_y0() && p.x >= self.grid_x0() {
@@ -968,6 +1064,19 @@ impl Grid {
 
     pub fn pointer_move(&mut self, p: Point) -> bool {
         self.last_cursor = p;
+        // A held fill-handle drag tracks the pointer; the projected region is
+        // recomputed (and previewed) each frame.
+        if self.fill_drag.is_some() {
+            if let Some(addr) = self.cell_at(p) {
+                if let Some(fd) = &mut self.fill_drag {
+                    if addr != fd.target {
+                        fd.target = addr;
+                        self.dirty = true;
+                    }
+                }
+            }
+            return true;
+        }
         // A held point-mode drag grows the pending reference into a range.
         if self.point_selecting {
             if let Some(addr) = self.cell_at(p) {
@@ -1009,6 +1118,16 @@ impl Grid {
         // reference (Excel keeps a click-inserted ref "hot" until you type);
         // only the drag itself ends here.
         self.point_selecting = false;
+        // A fill-handle drag commits its projected region for the app to fill,
+        // then extends the visible selection over it.
+        if let Some(fd) = self.fill_drag.take() {
+            if let Some((stl, sbr, dtl, dbr)) = Self::fill_region(fd.src, fd.target) {
+                self.pending_fill = Some((stl, sbr, dtl, dbr));
+                self.anchor = stl;
+                self.active = dbr;
+                self.dirty = true;
+            }
+        }
     }
 
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
@@ -1536,6 +1655,27 @@ impl Grid {
                 None,
                 &ar,
             );
+        }
+
+        // Fill handle + drag preview. While dragging, a dashed outline shows
+        // the region the pattern will extend into; at rest, a small solid
+        // square sits on the selection's bottom-right corner (Excel's handle).
+        if let Some(fd) = self.fill_drag {
+            if let Some((_, _, dtl, dbr)) = Self::fill_region(fd.src, fd.target) {
+                let tl = self.cell_screen_rect(dtl.0, dtl.1);
+                let br = self.cell_screen_rect(dbr.0, dbr.1);
+                if let Some(cr) = intersect(Rect::new(tl.x0, tl.y0, br.x1, br.y1), body) {
+                    let dashed = Stroke::new(1.5).with_dashes(0.0, [4.0, 3.0]);
+                    scene.stroke(&dashed, transform, colors.accent[5], None, &cr);
+                }
+            }
+        } else if let Some(hr) = self.fill_handle_rect() {
+            if let Some(cr) = intersect(hr, body) {
+                // A thin base-coloured ring keeps the accent square legible on
+                // any cell fill underneath.
+                scene.stroke(&Stroke::new(2.0), transform, colors.surfaces.base, None, &hr);
+                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &cr);
+            }
         }
 
         // Referenced ranges of the formula being edited — coloured outlines

@@ -33,6 +33,7 @@ use ui::ColorCompat;
 
 use crate::actions::{self, SheetsAction, SheetsResourceCtx};
 use crate::doc::SheetsDoc;
+use crate::fill;
 use crate::formula;
 use crate::grid::{Grid, GridCmd};
 use crate::infer::infer_entry;
@@ -435,6 +436,61 @@ impl SheetsApp {
         self.open_command_palette();
     }
 
+    /// Shots hook: seed three fill patterns in an empty region and extend each
+    /// through the *real* fill-handle path, so the captured frame shows genuine
+    /// filled series — a linear number run (1, 2 → …6), a weekday sequence
+    /// (Mon → …Sat), and a text+number run (Task 1 → …Task 6) — plus the fill
+    /// handle on the resulting selection.
+    pub fn shots_fill_series(&mut self, doc: &mut AutoCommit) {
+        // Labels + seed patterns in columns B..D under an empty region.
+        let seeds: &[(Addr, &str)] = &[
+            ((0, 14), "Fill demo"),
+            ((1, 14), "Count"),
+            ((2, 14), "Weekday"),
+            ((3, 14), "Task"),
+            ((1, 15), "1"),
+            ((1, 16), "2"),
+            ((2, 15), "Mon"),
+            ((3, 15), "Task 1"),
+        ];
+        let cmds: Vec<GridCmd> = seeds
+            .iter()
+            .map(|(a, v)| GridCmd::SetCell { addr: *a, raw: v.to_string() })
+            .collect();
+        self.apply_cmds(doc, cmds);
+
+        // Numeric pair B16:B17 → extend down to B21 (3,4,5,6).
+        self.grid.select_range_public((1, 15), (1, 16));
+        self.grid.start_fill_to((1, 20));
+        self.run_pending_fill(doc);
+        // Single weekday C16 → extend down to C21 (Tue…Sat).
+        self.grid.select_only((2, 15));
+        self.grid.start_fill_to((2, 20));
+        self.run_pending_fill(doc);
+        // Single text+number D16 → extend down to D21 (Task 2…Task 6).
+        self.grid.select_only((3, 15));
+        self.grid.start_fill_to((3, 20));
+        self.run_pending_fill(doc);
+
+        // Land the selection on the filled numeric column so its fill handle
+        // shows at the bottom-right corner.
+        self.grid.select_range_public((1, 15), (1, 20));
+        self.reload(doc);
+    }
+
+    /// Shots hook: copy the `=SUM(B2:D2)` cell and paste it one column to the
+    /// right, then select the pasted cell — the frame shows the *adjusted*
+    /// formula `=SUM(C2:E2)` in the formula bar and its recomputed result in
+    /// the cell, demonstrating relative-reference adjustment on paste.
+    pub fn shots_paste_formula(&mut self, doc: &mut AutoCommit) {
+        self.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
+        self.copy_selection(false);
+        self.grid.select_only((5, 1)); // F2 (seeded AVERAGE; overwritten)
+        self.paste(doc);
+        self.grid.select_only((5, 1));
+        self.reload(doc);
+    }
+
     /// The document's effective locale (per-doc overrides over global).
     fn locale(&self) -> EffectiveLocale {
         EffectiveLocale::resolve(&self.global.locale, &self.doc_settings)
@@ -668,13 +724,17 @@ impl SheetsApp {
         self.dirty = true;
     }
 
-    /// Paste at the active cell. When the system clipboard still holds exactly
-    /// what we last copied, the rich rectangle is used — raw inputs and
-    /// formats are restored and relative formula references shift to the new
-    /// location. Otherwise the plain-text clipboard is parsed as a TSV grid
-    /// and each field is smart-typed, so a paste from any other app works too.
+    /// Paste at the selection's top-left. When the system clipboard still holds
+    /// exactly what we last copied, the rich rectangle is used — raw inputs and
+    /// formats are restored and, for a *copy*, relative formula references shift
+    /// to the new location (a *cut* moves the block verbatim, references
+    /// following it). When the paste target is a selection that is a whole
+    /// multiple of the copied block, the block **tiles** to fill it, each tile
+    /// offset by its own position — matching Excel/Sheets. Otherwise the
+    /// plain-text clipboard is parsed as a TSV grid and each field is
+    /// smart-typed, so a paste from any other app works too.
     fn paste(&mut self, doc: &mut AutoCommit) {
-        let target = self.grid.active();
+        let (target, sel_br) = self.grid.selection_bounds();
         let system = ui::clipboard_paste();
         let use_internal = match (&self.clipboard, &system) {
             (Some(cb), Some(text)) => *text == cb.tsv,
@@ -694,6 +754,18 @@ impl SheetsApp {
             }
             let dc = target.0 as i64 - cb.src.0 as i64;
             let dr = target.1 as i64 - cb.src.1 as i64;
+            // Tile the block to fill the target selection when it is a whole
+            // multiple of the block in both axes (Excel's "paste into a range").
+            // A cut never tiles — a move places its block exactly once.
+            let sel_cols = sel_br.0 - target.0 + 1;
+            let sel_rows = sel_br.1 - target.1 + 1;
+            let (tile_cols, tile_rows) = if cb.cut {
+                (1u32, 1u32)
+            } else {
+                let tc = if sel_cols > cols && sel_cols % cols == 0 { sel_cols / cols } else { 1 };
+                let tr = if sel_rows > rows && sel_rows % rows == 0 { sel_rows / rows } else { 1 };
+                (tc, tr)
+            };
             let sheet = self.active_sheet;
             // Collect the whole paste into one batched change. A cut moves the
             // block: clear the source first (pushed ahead of the writes so an
@@ -708,16 +780,27 @@ impl SheetsApp {
                 }
             }
             let mut last = target;
-            for (ri, row) in cb.cells.iter().enumerate() {
-                for (ci, (raw, fmt)) in row.iter().enumerate() {
-                    let addr = (target.0 + ci as u32, target.1 + ri as u32);
-                    let out_raw = if cb.cut {
-                        raw.clone()
-                    } else {
-                        shift_formula_refs(raw, dc, dr)
-                    };
-                    writes.push((addr, out_raw, Some(*fmt)));
-                    last = addr;
+            for tr in 0..tile_rows {
+                for tc in 0..tile_cols {
+                    for (ri, row) in cb.cells.iter().enumerate() {
+                        for (ci, (raw, fmt)) in row.iter().enumerate() {
+                            let addr = (
+                                target.0 + tc * cols + ci as u32,
+                                target.1 + tr * rows + ri as u32,
+                            );
+                            let out_raw = if cb.cut {
+                                raw.clone()
+                            } else {
+                                formula::offset_refs(
+                                    raw,
+                                    dc + (tc * cols) as i64,
+                                    dr + (tr * rows) as i64,
+                                )
+                            };
+                            writes.push((addr, out_raw, Some(*fmt)));
+                            last = addr;
+                        }
+                    }
                 }
             }
             self.perform_action(doc, actions::set_cells_action(sheet, writes));
@@ -821,7 +904,7 @@ impl SheetsApp {
             let src_raw = self.grid.cell_raw_at((c, r0));
             let src_fmt = self.grid.cell_fmt_at((c, r0));
             for r in (r0 + 1)..=r1 {
-                let out_raw = shift_formula_refs(&src_raw, 0, (r - r0) as i64);
+                let out_raw = formula::offset_refs(&src_raw, 0, (r - r0) as i64);
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
@@ -846,13 +929,66 @@ impl SheetsApp {
             let src_raw = self.grid.cell_raw_at((c0, r));
             let src_fmt = self.grid.cell_fmt_at((c0, r));
             for c in (c0 + 1)..=c1 {
-                let out_raw = shift_formula_refs(&src_raw, (c - c0) as i64, 0);
+                let out_raw = formula::offset_refs(&src_raw, (c - c0) as i64, 0);
                 writes.push(((c, r), out_raw, Some(src_fmt)));
             }
         }
         self.perform_action(doc, actions::set_cells_action(sheet, writes));
         self.reload(doc);
         self.status = format!("Filled right {}", self.grid.selection_label());
+    }
+
+    /// Snapshot a cell for the fill engine: its raw input, computed value, and
+    /// effective display format.
+    fn fill_cell_at(&self, addr: Addr) -> fill::FillCell {
+        fill::FillCell {
+            raw: self.grid.cell_raw_at(addr),
+            value: self.grid.cell_value_at(addr).unwrap_or(CellValue::Empty),
+            fmt: self.grid.cell_fmt_at(addr),
+        }
+    }
+
+    /// Commit a fill-handle drag the grid recorded: the selected block is the
+    /// *pattern*, and the dragged-out region is filled by extending it (per
+    /// column when filling down, per row when filling right) through the smart
+    /// [`crate::fill`] engine — formulas offset their relative refs, numeric
+    /// pairs extrapolate a series, dates/names continue, text+number
+    /// increments. One batched action, one undo boundary.
+    fn run_pending_fill(&mut self, doc: &mut AutoCommit) {
+        let Some((src_tl, src_br, dst_tl, dst_br)) = self.grid.take_pending_fill() else {
+            return;
+        };
+        let sheet = self.active_sheet;
+        let mut writes: Vec<(Addr, String, Option<CellFormat>)> = Vec::new();
+        // Vertical when the destination starts below the source; else horizontal.
+        let vertical = dst_tl.1 > src_br.1;
+        if vertical {
+            let count = (dst_br.1 - dst_tl.1 + 1) as usize;
+            for c in src_tl.0..=src_br.0 {
+                let pattern: Vec<fill::FillCell> =
+                    (src_tl.1..=src_br.1).map(|r| self.fill_cell_at((c, r))).collect();
+                for (i, out) in fill::extend_series(&pattern, count, 0, 1).into_iter().enumerate() {
+                    writes.push(((c, dst_tl.1 + i as u32), out.raw, Some(out.fmt)));
+                }
+            }
+        } else {
+            let count = (dst_br.0 - dst_tl.0 + 1) as usize;
+            for r in src_tl.1..=src_br.1 {
+                let pattern: Vec<fill::FillCell> =
+                    (src_tl.0..=src_br.0).map(|c| self.fill_cell_at((c, r))).collect();
+                for (i, out) in fill::extend_series(&pattern, count, 1, 0).into_iter().enumerate() {
+                    writes.push(((dst_tl.0 + i as u32, r), out.raw, Some(out.fmt)));
+                }
+            }
+        }
+        if writes.is_empty() {
+            return;
+        }
+        self.perform_action(doc, actions::set_cells_action(sheet, writes));
+        self.reload(doc);
+        self.grid.select_range_public(src_tl, dst_br);
+        self.status = format!("Filled {}", self.grid.selection_label());
+        self.dirty = true;
     }
 
     /// Import the most recently modified `.csv` file from the shared Sheets
@@ -2328,114 +2464,6 @@ fn tsv_cell(display: &str) -> String {
     display.replace(['\t', '\n', '\r'], " ")
 }
 
-/// Rewrite a formula so its **relative** cell references shift by `(dc, dr)`
-/// when it is pasted to a new location — the behaviour every spreadsheet
-/// applies on copy/paste. `$`-anchored column/row components stay put, string
-/// literals and function names are left untouched, and numeric literals
-/// (including scientific notation like `1e3`) are never mistaken for a
-/// reference. Non-formula raw inputs are returned unchanged.
-fn shift_formula_refs(raw: &str, dc: i64, dr: i64) -> String {
-    let Some(body) = raw.strip_prefix('=') else {
-        return raw.to_string();
-    };
-    if dc == 0 && dr == 0 {
-        return raw.to_string();
-    }
-    let chars: Vec<char> = body.chars().collect();
-    let mut out = String::with_capacity(raw.len() + 4);
-    out.push('=');
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '"' {
-            // Copy a string literal verbatim, including the closing quote.
-            out.push(c);
-            i += 1;
-            while i < chars.len() {
-                out.push(chars[i]);
-                let done = chars[i] == '"';
-                i += 1;
-                if done {
-                    break;
-                }
-            }
-            continue;
-        }
-        if c == '$' || c.is_ascii_alphabetic() {
-            let start = i;
-            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
-                i += 1;
-            }
-            let token: String = chars[start..i].iter().collect();
-            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
-            let prev_numish = start > 0
-                && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
-            // An identifier followed by `(` is a function name, not a ref.
-            let mut k = i;
-            while k < chars.len() && chars[k].is_whitespace() {
-                k += 1;
-            }
-            let is_call = k < chars.len() && chars[k] == '(';
-            if !prev_numish && !is_call {
-                if let Some(shifted) = shift_ref_token(&token, dc, dr) {
-                    out.push_str(&shifted);
-                    continue;
-                }
-            }
-            out.push_str(&token);
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
-}
-
-/// Shift one `A1`/`$A$1`-shaped token by `(dc, dr)`, preserving any `$`
-/// anchors. Returns `None` when the token is not a well-formed reference
-/// (leaving function names, booleans, etc. untouched).
-fn shift_ref_token(tok: &str, dc: i64, dr: i64) -> Option<String> {
-    let bytes = tok.as_bytes();
-    let mut i = 0;
-    let col_abs = i < bytes.len() && bytes[i] == b'$';
-    if col_abs {
-        i += 1;
-    }
-    let ls = i;
-    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
-        i += 1;
-    }
-    if i == ls {
-        return None;
-    }
-    let letters = &tok[ls..i];
-    let row_abs = i < bytes.len() && bytes[i] == b'$';
-    if row_abs {
-        i += 1;
-    }
-    let ds = i;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i == ds || i != bytes.len() {
-        return None;
-    }
-    let col = crate::model::letters_to_col(letters)? as i64;
-    let row: i64 = tok[ds..i].parse().ok()?; // 1-based
-    let new_col = if col_abs { col } else { (col + dc).max(0) };
-    let new_row = if row_abs { row } else { (row + dr).max(1) };
-    let mut s = String::new();
-    if col_abs {
-        s.push('$');
-    }
-    s.push_str(&crate::model::col_to_letters(new_col as u32));
-    if row_abs {
-        s.push('$');
-    }
-    s.push_str(&new_row.to_string());
-    Some(s)
-}
-
 /// Where the workbook is persisted between sessions:
 /// `$XDG_DATA_HOME/qos/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
@@ -2875,7 +2903,10 @@ impl Widget for SheetsApp {
                 ..
             } => {
                 self.grid.pointer_up();
+                // A completed fill-handle drag commits its expansion here.
+                self.run_pending_fill(state);
                 self.formula_bar_selecting = false;
+                self.dirty = true;
                 *handled = true;
             }
             WindowEvent::MouseInput {
@@ -3946,21 +3977,116 @@ mod tests {
         assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (0, 20)), "Category");
     }
 
+    /// A **cut** moves a formula verbatim — its references follow the cells and
+    /// are *not* re-relativised (unlike a copy). The real cut→paste path.
+    #[test]
+    fn cut_paste_formula_does_not_relativize() {
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
+        app.copy_selection(true); // cut
+        app.grid.select_only((6, 10)); // G11, empty, far away
+        app.paste(&mut doc);
+        // The formula is unchanged: a move keeps references pointing at B2:D2.
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (6, 10)), "=SUM(B2:D2)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 1)), "", "source cleared");
+    }
+
+    /// Pasting a copied formula into a **range** tiles the block, offsetting
+    /// each destination cell's relative references by its own position — the
+    /// real range-paste path.
+    #[test]
+    fn paste_tiles_a_formula_across_a_range() {
+        let _clip = CLIP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
+        app.copy_selection(false);
+        // Target a 1×3 range F2:F4; the 1×1 block tiles down it.
+        app.grid.select_range_public((5, 1), (5, 3));
+        app.paste(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 1)), "=SUM(C2:E2)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 2)), "=SUM(C3:E3)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (5, 3)), "=SUM(C4:E4)");
+    }
+
+    /// The fill handle: dragging it from a two-number selection extends a
+    /// linear series, driven through the production `pointer_up` →
+    /// `run_pending_fill` path (no display).
+    #[test]
+    fn fill_handle_drag_extends_numeric_series() {
+        let (mut app, mut doc) = seeded_app();
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: (7, 1), raw: "1".into() }, // H2
+                GridCmd::SetCell { addr: (7, 2), raw: "2".into() }, // H3
+                GridCmd::Commit,
+            ],
+        );
+        app.grid.select_range_public((7, 1), (7, 2)); // the pattern
+        app.grid.start_fill_to((7, 5)); // drag the handle down to H6
+        app.run_pending_fill(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 3)), "3");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 4)), "4");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (7, 5)), "5");
+        assert_eq!(value_at(&app, (7, 5)), Some(CellValue::Number(5.0)));
+    }
+
+    /// The fill handle on a formula cell fills down with the relative refs
+    /// shifted per row — the same adjustment copy/paste applies.
+    #[test]
+    fn fill_handle_drag_shifts_formula_refs() {
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((4, 1)); // E2 = =SUM(B2:D2)
+        app.grid.start_fill_to((4, 4)); // drag down to E5
+        app.run_pending_fill(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 2)), "=SUM(B3:D3)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 3)), "=SUM(B4:D4)");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (4, 4)), "=SUM(B5:D5)");
+        match value_at(&app, (4, 4)) {
+            Some(CellValue::Number(n)) => assert!(n > 0.0, "filled formula recomputed to {n}"),
+            other => panic!("expected numeric fill result, got {other:?}"),
+        }
+    }
+
+    /// The fill handle also fills to the right, extending a series across
+    /// columns per row.
+    #[test]
+    fn fill_handle_drag_fills_right() {
+        let (mut app, mut doc) = seeded_app();
+        app.apply_cmds(
+            &mut doc,
+            vec![
+                GridCmd::SetCell { addr: (7, 10), raw: "10".into() }, // H11
+                GridCmd::SetCell { addr: (8, 10), raw: "20".into() }, // I11
+                GridCmd::Commit,
+            ],
+        );
+        app.grid.select_range_public((7, 10), (8, 10));
+        app.grid.start_fill_to((10, 10)); // drag right to K11
+        app.run_pending_fill(&mut doc);
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (9, 10)), "30");
+        assert_eq!(SheetsDoc::cell_raw(&mut doc, 0, (10, 10)), "40");
+    }
+
+    /// The copy/paste + fill relativisation the app dispatches goes through the
+    /// formula layer's `offset_refs`; prove the wiring on the shapes the paste
+    /// path relies on (the full matrix lives in `formula`'s own tests).
     #[test]
     fn shift_refs_handles_anchors_functions_and_numbers() {
-        assert_eq!(shift_formula_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
-        assert_eq!(shift_formula_refs("=SUM(A1:A3)*2", 2, 0), "=SUM(C1:C3)*2");
+        assert_eq!(formula::offset_refs("=A1+$B$2", 1, 1), "=B2+$B$2");
+        assert_eq!(formula::offset_refs("=SUM(A1:A3)*2", 2, 0), "=SUM(C1:C3)*2");
         // Mixed anchors: `$A1` shifts row only, `A$1` shifts column only.
-        assert_eq!(shift_formula_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
+        assert_eq!(formula::offset_refs("=$A1+A$1", 1, 1), "=$A2+B$1");
         // Scientific-notation literals are not references.
-        assert_eq!(shift_formula_refs("=1e3+A1", 0, 1), "=1e3+A2");
+        assert_eq!(formula::offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
         // Function names + string literals are left untouched.
         assert_eq!(
-            shift_formula_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+            formula::offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
             "=IF(A2>0,\"A1\",B3)"
         );
         // A plain literal is returned unchanged.
-        assert_eq!(shift_formula_refs("1200", 3, 3), "1200");
+        assert_eq!(formula::offset_refs("1200", 3, 3), "1200");
     }
 
     /// The layout is re-derived from the current rect on every pass, so a

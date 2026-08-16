@@ -8,7 +8,10 @@
 //!     parseable date/time becomes a date/time, …).
 //!   * [`formula`]  — tokenizer -> parser -> evaluator with ranges, common
 //!     functions, dependency-aware recalculation, and cycle detection, plus
-//!     unit/format propagation for computed cells.
+//!     unit/format propagation for computed cells, and reference adjustment
+//!     (relative/absolute) for copy/paste and fill.
+//!   * [`fill`]     — the smart fill-handle engine: extend a selected pattern
+//!     (formula, numeric series, dates, month/weekday names, text+number).
 //!   * [`settings`] — the shared per-user global settings store and the
 //!     per-document overrides that layer on top of it.
 //!   * [`doc`]      — the Automerge document model (sheets + cells live in
@@ -28,6 +31,7 @@ pub mod actions;
 pub mod app;
 pub mod csv;
 pub mod doc;
+pub mod fill;
 pub mod formula;
 pub mod grid;
 pub mod infer;

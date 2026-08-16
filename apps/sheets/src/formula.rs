@@ -145,6 +145,130 @@ pub fn ref_color_slots(spans: &[RefSpan]) -> Vec<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Reference adjustment (copy/paste + fill relativisation)
+// ---------------------------------------------------------------------------
+
+/// Rewrite a formula so its **relative** cell references shift by `(dcol,
+/// drow)` — the adjustment every spreadsheet applies when a formula is copied
+/// or filled to a new location. This is the formula layer's single source of
+/// truth for relativisation; the copy/paste and fill paths both route through
+/// it.
+///
+/// The rules match Excel/Sheets exactly:
+///   * a bare `A1` shifts on both axes (`=A1` copied one row down → `=A2`);
+///   * `$A$1` is fully anchored and never moves;
+///   * `$A1` locks the column, so only the row shifts;
+///   * `A$1` locks the row, so only the column shifts;
+///   * a range shifts each endpoint independently (`A1:B3` → `B2:C4`);
+///   * string literals, function names, and numeric literals (including
+///     scientific notation like `1e3`) are never mistaken for references.
+///
+/// Non-formula input (no leading `=`) and a zero offset are returned
+/// unchanged. A relative component never underflows past the grid origin
+/// (column `A` / row `1`).
+pub fn offset_refs(raw: &str, dcol: i64, drow: i64) -> String {
+    let Some(body) = raw.strip_prefix('=') else {
+        return raw.to_string();
+    };
+    if dcol == 0 && drow == 0 {
+        return raw.to_string();
+    }
+    let chars: Vec<char> = body.chars().collect();
+    let mut out = String::with_capacity(raw.len() + 4);
+    out.push('=');
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '"' {
+            // Copy a string literal verbatim, including the closing quote.
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                out.push(chars[i]);
+                let done = chars[i] == '"';
+                i += 1;
+                if done {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '$' || c.is_ascii_alphabetic() {
+            let start = i;
+            while i < chars.len() && (chars[i] == '$' || chars[i].is_ascii_alphanumeric()) {
+                i += 1;
+            }
+            let token: String = chars[start..i].iter().collect();
+            // A run right after a digit/dot is an exponent (`1e3`), not a ref.
+            let prev_numish =
+                start > 0 && (chars[start - 1].is_ascii_digit() || chars[start - 1] == '.');
+            // An identifier immediately followed by `(` is a function name.
+            let mut k = i;
+            while k < chars.len() && chars[k].is_whitespace() {
+                k += 1;
+            }
+            let is_call = k < chars.len() && chars[k] == '(';
+            if !prev_numish && !is_call {
+                if let Some(shifted) = offset_ref_token(&token, dcol, drow) {
+                    out.push_str(&shifted);
+                    continue;
+                }
+            }
+            out.push_str(&token);
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Shift one `A1`/`$A$1`-shaped token by `(dcol, drow)`, preserving each `$`
+/// anchor. Returns `None` when the token is not a well-formed reference
+/// (leaving function names, booleans, and bare words untouched).
+fn offset_ref_token(tok: &str, dcol: i64, drow: i64) -> Option<String> {
+    let bytes = tok.as_bytes();
+    let mut i = 0;
+    let col_abs = i < bytes.len() && bytes[i] == b'$';
+    if col_abs {
+        i += 1;
+    }
+    let ls = i;
+    while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
+        i += 1;
+    }
+    if i == ls {
+        return None;
+    }
+    let letters = &tok[ls..i];
+    let row_abs = i < bytes.len() && bytes[i] == b'$';
+    if row_abs {
+        i += 1;
+    }
+    let ds = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == ds || i != bytes.len() {
+        return None;
+    }
+    let col = crate::model::letters_to_col(letters)? as i64;
+    let row: i64 = tok[ds..i].parse().ok()?; // 1-based
+    let new_col = if col_abs { col } else { (col + dcol).max(0) };
+    let new_row = if row_abs { row } else { (row + drow).max(1) };
+    let mut s = String::new();
+    if col_abs {
+        s.push('$');
+    }
+    s.push_str(&crate::model::col_to_letters(new_col as u32));
+    if row_abs {
+        s.push('$');
+    }
+    s.push_str(&new_row.to_string());
+    Some(s)
+}
+
+// ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
 
@@ -2556,6 +2680,46 @@ mod tests {
         let spans = references("IF(B7>B9,\"A1\",\"B2\")");
         let keys: Vec<&str> = spans.iter().map(|s| s.key.as_str()).collect();
         assert_eq!(keys, vec!["B7", "B9"]);
+    }
+
+    // --- reference adjustment (copy/paste + fill) ---------------------------
+
+    #[test]
+    fn offset_refs_shifts_relative_preserves_absolute() {
+        // A bare reference shifts on the pasted-to axis. Copying `=A1` from B2
+        // and pasting into B3 (Δrow +1) yields `=A2`; into C2 (Δcol +1) → `=B1`.
+        assert_eq!(offset_refs("=A1", 0, 1), "=A2");
+        assert_eq!(offset_refs("=A1", 1, 0), "=B1");
+        assert_eq!(offset_refs("=A1", 1, 1), "=B2");
+
+        // `$A$1` is fully anchored and never moves anywhere.
+        assert_eq!(offset_refs("=$A$1", 3, 4), "=$A$1");
+        // `$A1` locks the column: only the row shifts.
+        assert_eq!(offset_refs("=$A1", 5, 2), "=$A3");
+        // `A$1` locks the row: only the column shifts.
+        assert_eq!(offset_refs("=A$1", 2, 5), "=C$1");
+
+        // Ranges shift each endpoint independently.
+        assert_eq!(offset_refs("=SUM(A1:B3)", 1, 1), "=SUM(B2:C4)");
+        // A range mixing anchored and relative endpoints shifts only the free one.
+        assert_eq!(offset_refs("=$A$1:B2", 1, 1), "=$A$1:C3");
+    }
+
+    #[test]
+    fn offset_refs_leaves_functions_strings_and_numbers_alone() {
+        // Function names and quoted string literals are never references.
+        assert_eq!(
+            offset_refs("=IF(A1>0,\"A1\",B2)", 0, 1),
+            "=IF(A2>0,\"A1\",B3)"
+        );
+        // Scientific-notation literals (`1e3`) are numbers, not references.
+        assert_eq!(offset_refs("=1e3+A1", 0, 1), "=1e3+A2");
+        // A plain literal (not a formula) is returned unchanged.
+        assert_eq!(offset_refs("1200", 3, 3), "1200");
+        // A zero offset is an identity, formula or not.
+        assert_eq!(offset_refs("=A1+B2", 0, 0), "=A1+B2");
+        // A relative component never underflows past the grid origin.
+        assert_eq!(offset_refs("=A1", -5, -5), "=A1");
     }
 
     #[test]
