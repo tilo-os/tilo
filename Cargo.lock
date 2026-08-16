@@ -2257,13 +2257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "collab-broker"
-version = "0.1.0"
-dependencies = [
- "ui",
-]
-
-[[package]]
 name = "collab-fixtures"
 version = "0.1.0"
 dependencies = [
