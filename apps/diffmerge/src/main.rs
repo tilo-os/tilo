@@ -25,7 +25,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(diffmerge::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // `--scenario <name>` drives the shot into a specific overlay state a
+        // single still can't otherwise reach; `status` pins the floating status
+        // bubble open. Default is the seeded demo (no forced overlay).
+        let widget = match parse_scenario_arg(&args).as_deref() {
+            Some("status") => diffmerge::app_root_status(),
+            _ => diffmerge::app_root_demo(),
+        };
+        render_shot_to_png(widget, DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
@@ -53,6 +60,19 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
         }
     }
     None
