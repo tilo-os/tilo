@@ -15912,7 +15912,6 @@ name = "video_editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
  "automerge",
  "gstreamer",
  "gstreamer-app",
@@ -15921,7 +15920,6 @@ dependencies = [
  "serde",
  "serde_json",
  "taffy",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",

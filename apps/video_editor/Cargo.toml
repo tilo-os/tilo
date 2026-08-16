@@ -11,8 +11,15 @@ path = "src/lib.rs"
 name = "video_editor"
 path = "src/main.rs"
 
+# Media import always goes through the shared host file chooser
+# (`ui::portal`), so its `portal` feature is on unconditionally: picking a file
+# is a pure-Rust portal round-trip that compiles and links in every build
+# (including hermetic CI / `--shots`) — at runtime it reaches the host desktop's
+# chooser, and a headless box with no portal simply never exercises it. Import
+# is a file-pick plus metadata probe; it needs no GStreamer, so it must never be
+# gated behind the decode/export features.
 [dependencies]
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
@@ -30,8 +37,6 @@ anyhow.workspace = true
 # the gstreamer-1.0 dev headers present. ffmpeg is intentionally NOT a dep.
 gstreamer = { workspace = true, optional = true }
 media = { path = "../../crates/media" }
-ashpd = { version = "0.9", default-features = false, features = ["tokio"], optional = true }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
 gstreamer-app = { version = "0.24", optional = true }
 
 [features]
@@ -46,5 +51,3 @@ decode = ["media/decode"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
 gst = ["dep:gstreamer", "dep:gstreamer-app"]
-# Real host-native file import via the XDG desktop portal.
-portal = ["dep:ashpd", "dep:tokio"]

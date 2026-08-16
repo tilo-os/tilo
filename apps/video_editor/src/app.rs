@@ -158,7 +158,7 @@ pub struct VideoEditorApp {
     /// A media-import portal request in flight, drained each `sync`.
     import_rx: Option<ImportChannel>,
     /// A short, honest status line shown after an import attempt (how many
-    /// clips landed, or why the picker was unavailable). Never a fake success.
+    /// clips landed, or why the portal round-trip failed). Never a fake success.
     import_notice: Option<String>,
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
@@ -717,9 +717,9 @@ impl VideoEditorApp {
     }
 
     // ---- media import ----------------------------------------------------
-    /// Open the host file picker to import media (a real XDG portal on
-    /// `--features portal`, otherwise an honest "unavailable" notice — never a
-    /// fake success).
+    /// Open the host file picker to import media through the shared XDG portal
+    /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
+    /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
         self.import_notice = Some("Choose media to import…".to_string());
         self.import_rx = Some(portal::request_import());
@@ -754,7 +754,7 @@ impl VideoEditorApp {
             self.import_rx = None;
         }
         match outcome {
-            Some(ImportOutcome::Chosen(paths)) => {
+            Some(ImportOutcome::Selected(paths)) => {
                 let n = self.import_files(doc, &paths);
                 self.import_notice = Some(import_summary(n, paths.len()));
             }
@@ -1894,8 +1894,8 @@ impl VideoEditorApp {
             if let Some(btn) = self.empty_bin_import_rect(r) {
                 draw_button(scene, tf, tr, theme, btn, "Import media", true);
             }
-            // Show the last import status (why the picker is unavailable on a
-            // hermetic build, or how many clips landed) — never a fake success.
+            // Show the last import status (how many clips landed, or why the
+            // portal round-trip failed) — never a fake success.
             if let Some(notice) = &self.import_notice {
                 let (nw, _) = tr.measure(notice, 10.5, None);
                 text(scene, tr, tf, notice, 10.5, c.text_dim, cx - nw as f64 / 2.0, r.bin.y0 + 200.0);
@@ -2726,6 +2726,39 @@ mod tests {
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.media.len(), 1);
         assert_eq!(reloaded.media[0].width, 320);
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn portal_import_action_adds_the_clip_through_the_document() {
+        // Drive the exact per-frame path a real portal pick feeds — an injected
+        // multi-select outcome carrying one real file, installed on `import_rx`
+        // exactly as `portal::request_import()` would. This proves the import
+        // code path is compiled into the default build (no feature wall) and
+        // that draining it routes the clip through the `UpsertMedia` action on
+        // `ui::ActionHost`, so it lands in the shared document a peer replicates.
+        let f = write_real_png(480, 270);
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Selected(vec![f.clone()])));
+
+        let mut doc = AutoCommit::new();
+        assert!(app.project.media.is_empty(), "blank project starts with no media");
+        app.sync(&mut doc, &automerge::ROOT);
+
+        // The in-memory projection gained the clip with real, probed metadata…
+        assert_eq!(app.project.media.len(), 1, "the picked file landed in the bin");
+        let m = &app.project.media[0];
+        assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
+        assert_eq!((m.width, m.height), (480, 270), "real probed dimensions");
+        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+
+        // …and, crucially, so did the CRDT the action wrote to: the import is a
+        // document mutation dispatched through the action model, not a local-only
+        // edit, so a second replica loading these bytes sees the same clip.
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.media.len(), 1, "import routed through the doc action");
+        assert_eq!(reloaded.media[0].width, 480, "real probed metadata replicated");
         std::fs::remove_file(&f).ok();
     }
 
