@@ -1112,3 +1112,428 @@ mod tests {
         );
     }
 }
+
+/// Denials proven through the production injection path.
+///
+/// Everything here drives
+/// [`crate::compositor::state::State::review_remote_input`] — the one door
+/// between the network and the seat — against a real `State` with a real
+/// smithay `Seat`, and asserts both the rule that refused the event *and*
+/// that the seat did not move. A test that only asserted the return value
+/// would still pass if the refusal happened after injection.
+#[cfg(test)]
+mod production_path {
+    use super::*;
+    use crate::compositor::state::State;
+    use crate::network::streaming::StreamingShare;
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::wayland_server::Display;
+
+    const PEER: PeerId = 3;
+    const SHARED: SurfaceId = 501;
+    const PRIVATE: SurfaceId = 502;
+
+    /// The tile the guest was shared: 400x300 at (100, 50).
+    const TILE: Rect = Rect {
+        x0: 100.0,
+        y0: 50.0,
+        x1: 500.0,
+        y1: 350.0,
+    };
+
+    /// A `State` with a live seat, one writable share, and one shared
+    /// surface on screen holding keyboard focus.
+    fn staged() -> State {
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        state
+            .share_registry
+            .insert(PEER, SHARED, StreamingShare::new());
+        state
+            .remote_input_firewall
+            .publish_view(ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false));
+        state
+    }
+
+    fn pointer_at(state: &State) -> (f64, f64) {
+        let p = state
+            .seat
+            .get_pointer()
+            .expect("seat has a pointer")
+            .current_location();
+        (p.x, p.y)
+    }
+
+    fn key_is_down(state: &State, keycode: u32) -> bool {
+        state
+            .seat
+            .get_keyboard()
+            .expect("seat has a keyboard")
+            .pressed_keys()
+            .iter()
+            .any(|k| u32::from(*k) == keycode)
+    }
+
+    /// Put the peer's pointer somewhere legitimate so button events have
+    /// a coordinate to be judged at.
+    fn establish_cursor(state: &mut State) {
+        state
+            .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 })
+            .expect("a point inside the shared tile is injectable");
+    }
+
+    /// Read-only: the share exists, the owner took write access away.
+    #[test]
+    fn a_read_only_share_refuses_input_and_the_pointer_does_not_move() {
+        let mut state = staged();
+        state.share_registry.set_read_only(PEER, SHARED, true);
+        let before = pointer_at(&state);
+
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 });
+
+        assert_eq!(verdict, Err(Denial::ReadOnly));
+        assert_eq!(pointer_at(&state), before, "a refused event moved the seat");
+        assert!(state.last_remote_input.is_none());
+    }
+
+    /// Surface ownership: a peer naming a surface it was never shared.
+    #[test]
+    fn a_surface_the_peer_was_never_shared_is_refused() {
+        let mut state = staged();
+        let before = pointer_at(&state);
+
+        let verdict = state.review_remote_input(
+            PEER,
+            PRIVATE,
+            InputEvent::PointerMotion { x: 10.0, y: 10.0 },
+        );
+
+        assert_eq!(verdict, Err(Denial::NotShared));
+        assert_eq!(pointer_at(&state), before);
+    }
+
+    /// Region: a coordinate outside the rect the guest was actually shown.
+    ///
+    /// The tile is 400x300, so `(700, 20)` is off its right-hand side. It
+    /// is nonetheless a real point on the output — under the previous
+    /// code, which injected a peer's surface-local coordinates as if they
+    /// were output-space ones, that is a pointer the guest could park
+    /// anywhere on the host's screen.
+    #[test]
+    fn a_coordinate_outside_the_shared_region_never_moves_the_host_pointer() {
+        let mut state = staged();
+        let before = pointer_at(&state);
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::PointerMotion { x: 700.0, y: 20.0 },
+        );
+
+        assert_eq!(verdict, Err(Denial::OutsideRegion));
+        assert_eq!(
+            pointer_at(&state),
+            before,
+            "a coordinate outside the shared tile reached the seat",
+        );
+        assert_eq!(
+            state.last_remote_input_denial,
+            Some((PEER, SHARED, Denial::OutsideRegion)),
+        );
+    }
+
+    /// An accepted coordinate is translated out of the guest's
+    /// surface-local space into the host's output space — the guest can
+    /// only ever address points inside the rectangle it was given.
+    #[test]
+    fn an_accepted_coordinate_lands_inside_the_shared_tile() {
+        let mut state = staged();
+        state
+            .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 20.0 })
+            .expect("inside the tile");
+        assert_eq!(pointer_at(&state), (110.0, 70.0));
+    }
+
+    /// Z-order: the shared surface is underneath something else at that
+    /// point. This is the clickjacking refusal — the share record still
+    /// says the guest may drive this surface, and the answer is still no.
+    #[test]
+    fn a_click_aimed_at_an_occluded_surface_is_dropped() {
+        let mut state = staged();
+        establish_cursor(&mut state);
+        let before = pointer_at(&state);
+
+        // The host raises a private window over the shared one. The share
+        // is untouched; only the screen changed.
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(PRIVATE, TILE), (SHARED, TILE)],
+            Some(SHARED),
+            false,
+            false,
+        ));
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::PointerButton {
+                button: 272,
+                pressed: true,
+            },
+        );
+
+        assert_eq!(verdict, Err(Denial::Occluded));
+        assert_eq!(pointer_at(&state), before);
+        assert!(
+            state.share_registry.get(PEER, SHARED).is_some(),
+            "the share is still live — occlusion is a screen fact, not a share fact",
+        );
+    }
+
+    /// Scrubber: `Ctrl+Alt+F2` is the kernel's VT switch. A guest holding
+    /// it would drop the host to a text console.
+    ///
+    /// Sent the way a peer really sends a chord — modifier keycodes in
+    /// their own events, with the wire's `modifiers` field left at zero,
+    /// which is exactly what a guest after a forbidden chord would do.
+    #[test]
+    fn ctrl_alt_f2_from_a_guest_never_reaches_a_client() {
+        let mut state = staged();
+        const F2: u32 = 60;
+
+        for code in [29u32 /* Ctrl */, 56 /* Alt */] {
+            state
+                .review_remote_input(
+                    PEER,
+                    SHARED,
+                    InputEvent::Key {
+                        keysym: code,
+                        pressed: true,
+                        modifiers: 0,
+                    },
+                )
+                .expect("a bare modifier reaches the seat; xkb state depends on it");
+        }
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::Key {
+                keysym: F2,
+                pressed: true,
+                modifiers: 0,
+            },
+        );
+
+        assert_eq!(verdict, Err(Denial::SystemChord));
+        assert!(
+            !key_is_down(&state, F2),
+            "the VT-switch chord reached the seat",
+        );
+    }
+
+    /// Scrubber, focus guard: the host moves focus to a private window
+    /// and the guest's keyboard goes silent mid-stream.
+    #[test]
+    fn keystrokes_stop_the_instant_the_host_focuses_a_private_window() {
+        let mut state = staged();
+        const A: u32 = 30;
+
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: A,
+                    pressed: true,
+                    modifiers: 0,
+                },
+            )
+            .expect("the shared surface has focus");
+        state
+            .review_remote_input(
+                PEER,
+                SHARED,
+                InputEvent::Key {
+                    keysym: A,
+                    pressed: false,
+                    modifiers: 0,
+                },
+            )
+            .expect("release mirrors the press");
+
+        // The host clicks into a window that is not shared.
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(SHARED, TILE), (PRIVATE, Rect::new(600.0, 50.0, 900.0, 350.0))],
+            Some(PRIVATE),
+            false,
+            false,
+        ));
+
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::Key {
+                keysym: A,
+                pressed: true,
+                modifiers: 0,
+            },
+        );
+
+        assert_eq!(verdict, Err(Denial::FocusMuted));
+        assert!(!key_is_down(&state, A), "a muted keystroke reached the seat");
+    }
+
+    /// Rate limit: 120 events a second sustained, and the next one is
+    /// refused.
+    #[test]
+    fn the_hundred_and_twenty_first_event_in_a_second_is_dropped() {
+        let mut state = staged();
+        let started = std::time::Instant::now();
+
+        for i in 0..MAX_EVENTS_PER_SECOND {
+            let y = 10.0 + (i % 100) as f64;
+            state
+                .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y })
+                .unwrap_or_else(|d| panic!("event {i} refused as {d:?}, inside the budget"));
+        }
+
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 11.0, y: 11.0 });
+
+        // The rate window is wall-clock. If this machine took longer than
+        // the window to deliver the burst, the test never asked the
+        // question it claims to — say so rather than passing quietly.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < RATE_WINDOW,
+            "the burst took {elapsed:?}, longer than the {RATE_WINDOW:?} window, \
+             so the rate limit was never exercised",
+        );
+        assert_eq!(verdict, Err(Denial::RateLimited));
+    }
+
+    /// Physical priority: the host's own input blocks the remote side.
+    #[test]
+    fn remote_input_within_the_physical_priority_window_is_dropped() {
+        let mut state = staged();
+        let before = pointer_at(&state);
+
+        state
+            .remote_input_firewall
+            .note_local_input(std::time::Instant::now());
+
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 });
+
+        assert_eq!(verdict, Err(Denial::PhysicalPriority));
+        assert_eq!(pointer_at(&state), before);
+    }
+
+    /// Kill switch: one press stops every peer, and keeps them stopped.
+    #[test]
+    fn the_kill_switch_stops_every_peer_and_drops_their_write_access() {
+        let mut state = staged();
+        const OTHER_PEER: PeerId = 4;
+        state
+            .share_registry
+            .insert(OTHER_PEER, SHARED, StreamingShare::new());
+        establish_cursor(&mut state);
+        let before = pointer_at(&state);
+
+        let revoked = state.engage_remote_input_kill_switch();
+        assert_eq!(revoked, 2, "both peers' shares lose write access");
+
+        for peer in [PEER, OTHER_PEER] {
+            assert_eq!(
+                state.review_remote_input(
+                    peer,
+                    SHARED,
+                    InputEvent::PointerMotion { x: 20.0, y: 20.0 }
+                ),
+                Err(Denial::KillSwitch),
+                "peer {peer} still reached the seat after the kill switch",
+            );
+        }
+        assert_eq!(pointer_at(&state), before);
+
+        // The latch is what makes it a panic key rather than a policy
+        // tweak: republishing the screen does not undo it, and neither
+        // does anything the guest can send.
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(SHARED, TILE)],
+            Some(SHARED),
+            false,
+            false,
+        ));
+        assert_eq!(
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
+            Err(Denial::KillSwitch),
+        );
+        // And write access is gone underneath it, so clearing the latch
+        // alone does not hand control back.
+        state.remote_input_firewall.clear_kill_switch();
+        assert_eq!(
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 }),
+            Err(Denial::ReadOnly),
+        );
+    }
+
+    /// A guest cannot outrun the kill switch: the latch is checked before
+    /// anything about the share, ahead of the per-peer budget, so a peer
+    /// flooding the queue is refused on the same rule as a quiet one.
+    #[test]
+    fn a_flooding_peer_cannot_suppress_the_kill_switch() {
+        let mut state = staged();
+        state.engage_remote_input_kill_switch();
+        for i in 0..500 {
+            assert_eq!(
+                state.review_remote_input(
+                    PEER,
+                    SHARED,
+                    InputEvent::PointerMotion { x: 10.0, y: 10.0 }
+                ),
+                Err(Denial::KillSwitch),
+                "flood event {i} was refused on some other rule",
+            );
+        }
+    }
+
+    /// A focus grab is a way to point the host's keyboard somewhere. A
+    /// guest must not be able to aim it at a surface outside its share.
+    #[test]
+    fn a_focus_grab_naming_an_unshared_surface_is_refused() {
+        let mut state = staged();
+        let verdict = state.review_remote_input(
+            PEER,
+            SHARED,
+            InputEvent::PointerEnter { surface: PRIVATE },
+        );
+        assert_eq!(verdict, Err(Denial::SurfaceMismatch));
+        assert!(
+            state.remote_seats.seat(PEER).is_none(),
+            "a refused grab still moved the peer's seat",
+        );
+    }
+
+    /// The deny-biased default: a compositor that has not published a
+    /// screen cannot answer where an event would land, so it refuses.
+    #[test]
+    fn a_compositor_that_has_published_no_screen_refuses_remote_input() {
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        state
+            .share_registry
+            .insert(PEER, SHARED, StreamingShare::new());
+
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 1.0, y: 1.0 });
+
+        assert_eq!(verdict, Err(Denial::NoView));
+        assert_eq!(pointer_at(&state), (0.0, 0.0));
+    }
+}
