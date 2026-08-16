@@ -34,6 +34,15 @@ pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new_demo())
 }
 
+/// Screenshot-only: the seeded demo with the transient floating status bubble
+/// pinned open, so a single headless still shows the summary overlay (not a
+/// bottom strip).
+pub fn app_root_status() -> Box<dyn Widget> {
+    let mut app = DiffMergeApp::new_demo();
+    app.arm_status_bubble_for_shots();
+    Box::new(app)
+}
+
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new())
 }
