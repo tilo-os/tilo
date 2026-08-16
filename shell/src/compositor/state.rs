@@ -77,6 +77,7 @@ use crate::compositor::selection::SelectionState;
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
+use crate::network::input_firewall::{Denial, RemoteInputFirewall};
 use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use crate::wayland::color_management::ColorManagerState;
 
@@ -267,11 +268,24 @@ pub struct State {
     /// [`crate::network::NeighbourMsg::RemoteInput`] events are filtered
     /// through this registry before they reach the seat.
     pub share_registry: ShareRegistry,
+    /// The rest of the remote-input firewall: region, z-order, keyboard
+    /// scrubber, rate limit, physical-input priority and the kill switch.
+    ///
+    /// The share registry decides *whether* a peer may drive a surface;
+    /// this decides what, where and how fast. Fed a view of the screen
+    /// once per tick by the compositor loop — until then it has observed
+    /// nothing and refuses everything.
+    pub remote_input_firewall: RemoteInputFirewall,
     /// Last `RemoteInput` event that survived the share-registry gate.
     /// Read by integration tests that want to assert seat-equivalent
     /// injection happened, without spinning up a real `Seat<State>`.
     /// v2 replaces this with the proper smithay seat-call path.
     pub last_remote_input: Option<(MsgPeerId, SurfaceId, InputEvent)>,
+    /// Last `RemoteInput` event the firewall refused, and the rule that
+    /// refused it. The counterpart to `last_remote_input`: a dropped
+    /// event is otherwise invisible, and "nothing happened" is exactly
+    /// what a broken filter also looks like.
+    pub last_remote_input_denial: Option<(MsgPeerId, SurfaceId, Denial)>,
     /// Per-foreign-surface RGBA staging — Peer-sync Phase 4 v2. The
     /// compositor's [`CompositorHandler::commit`] hook calls
     /// [`SurfaceTracker::on_commit`] for every committed surface whose
@@ -598,7 +612,9 @@ impl State {
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
             share_registry: ShareRegistry::new(),
+            remote_input_firewall: RemoteInputFirewall::new(),
             last_remote_input: None,
+            last_remote_input_denial: None,
             surface_tracker: SurfaceTracker::new(),
             seat,
             serial_counter: 0,
@@ -805,35 +821,123 @@ impl State {
 
     /// Apply a remote-input event from `peer` targeting `surface`.
     ///
-    /// Phase 4 Task 4.4. The actor's event loop calls this from its
-    /// [`crate::network::NeighbourMsg::RemoteInput`] handler. The
-    /// per-share `read_only` flag in [`Self::share_registry`] is the
-    /// only gate — when set, the event drops here and never reaches the
-    /// smithay seat.
+    /// The actor's event loop calls this from its
+    /// [`crate::network::NeighbourMsg::RemoteInput`] handler. It is the
+    /// only door between the network and the seat, and the whole input
+    /// firewall reads top to bottom here:
     ///
-    /// Seat injection itself is deferred to the v2 path once the
-    /// compositor's `Seat<State>` is wired into this struct. For v1 we
-    /// rely on the routing decision made here (verified by
-    /// `streaming::tests::remote_input_blocked_when_read_only`) and
-    /// surface the event into [`tracing::debug`] so production logs show
-    /// the round-trip.
+    /// 1. host overrides — the kill switch, and physical-input priority;
+    /// 2. the per-share `read_only` flag;
+    /// 3. surface ownership — is there a share for this pair at all;
+    /// 4. region — is the coordinate inside the shared surface's rect;
+    /// 5. z-order — is that surface really on top at that point;
+    /// 6. keyboard scrubber — system chords, and the focus guard;
+    /// 7. rate limit;
+    /// 8. inject into the smithay seat.
+    ///
+    /// Steps 4-7 live in [`crate::network::input_firewall`], which also
+    /// translates an accepted pointer coordinate out of the peer's
+    /// surface-local space into the output space the seat wants.
+    ///
+    /// Returns whether the event reached the seat. Use
+    /// [`Self::review_remote_input`] when the refusal reason matters.
     pub fn apply_remote_input(
         &mut self,
         peer: MsgPeerId,
         surface: SurfaceId,
         event: InputEvent,
     ) -> bool {
+        self.review_remote_input(peer, surface, event).is_ok()
+    }
+
+    /// [`Self::apply_remote_input`], reporting which rule refused the
+    /// event rather than collapsing every refusal to `false`.
+    pub fn review_remote_input(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: InputEvent,
+    ) -> Result<(), Denial> {
+        let now = std::time::Instant::now();
+
+        // The host's own machine wins, unconditionally and before
+        // anything about the share is consulted.
+        if let Some(denial) = self.remote_input_firewall.host_override(now) {
+            return Err(self.refuse_remote_input(peer, surface, &event, denial));
+        }
+
+        // Read-only, then ownership. `None` covers a peer inventing a
+        // surface id it was never shared.
+        match self.share_registry.get(peer, surface) {
+            Some(share) if share.read_only => {
+                return Err(self.refuse_remote_input(peer, surface, &event, Denial::ReadOnly));
+            }
+            Some(_) => {}
+            None => {
+                return Err(self.refuse_remote_input(peer, surface, &event, Denial::NotShared));
+            }
+        }
+
+        // Region, z-order, scrubber, rate limit. What comes back is the
+        // event to inject: pointer coordinates have been moved into
+        // output space, having been checked against the rect they were
+        // expressed relative to.
+        let injectable = match self
+            .remote_input_firewall
+            .review(peer, surface, &event, now)
+        {
+            Ok(ev) => ev,
+            Err(denial) => return Err(self.refuse_remote_input(peer, surface, &event, denial)),
+        };
+
         // We can't pass `self` twice (once as `&ShareRegistry` via
         // `&self.share_registry` and once as `&mut RemoteInputSink`), so
-        // inline the routing decision: read the gate from the registry,
-        // drop if blocked, otherwise call `RemoteInputSink::apply` on
-        // ourselves. Equivalent to `ShareRegistry::route_to`, just
-        // expressed without an aliasing-prone helper.
-        if !self.share_registry.accept_remote_input(peer, surface) {
-            return false;
-        }
-        RemoteInputSink::apply(self, peer, surface, event);
-        true
+        // the routing decision is inlined above and the sink call made
+        // directly on ourselves.
+        RemoteInputSink::apply(self, peer, surface, injectable);
+        Ok(())
+    }
+
+    /// Record a refused remote-input event and hand the reason back.
+    ///
+    /// Every denial goes through here so a dropped event is visible in
+    /// production logs with the rule that dropped it, and so
+    /// `last_remote_input_denial` can be asserted on.
+    fn refuse_remote_input(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: &InputEvent,
+        denial: Denial,
+    ) -> Denial {
+        tracing::debug!(
+            target: "shell::compositor::state",
+            peer, surface, ?event, reason = denial.reason(),
+            "remote-input refused"
+        );
+        self.last_remote_input_denial = Some((peer, surface, denial));
+        denial
+    }
+
+    /// Engage the remote-input kill switch: every peer's input stops at
+    /// once and stays stopped, and no share keeps write access.
+    ///
+    /// Flipping the shares as well as latching the firewall is what makes
+    /// this survive a restart of the input path — a latch alone would be
+    /// undone by anything that rebuilt the firewall, and the user pressed
+    /// the panic key.
+    ///
+    /// Returns the number of shares that lost write access, so the caller
+    /// can tell the user what just happened.
+    pub fn engage_remote_input_kill_switch(&mut self) -> usize {
+        self.remote_input_firewall.engage_kill_switch();
+        let revoked = self.share_registry.revoke_all_input();
+        tracing::warn!(
+            target: "shell::compositor::state",
+            revoked,
+            "remote-input kill switch engaged"
+        );
+        revoked
     }
 
     /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
