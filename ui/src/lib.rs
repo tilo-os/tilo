@@ -78,6 +78,7 @@ pub mod format;
 pub mod nav_stack;
 pub mod reader_hud;
 pub mod search;
+pub mod profiling;
 
 // The toolkit's own stack, re-exported so an app never has to name a version.
 // See the crate-level note above for why this matters for `vello` and `winit`
@@ -104,6 +105,10 @@ pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use search::{fuzzy_score, FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
 pub use caps_lock::CapsLockEstimate;
+pub use profiling::{
+    FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep, StatSummary,
+    run_scenario, run_scenario_on, FRAME_BUDGET_US,
+};
 pub use selection::SelectionModel;
 
 // Accessibility semantic model (W0). `a11y::Role` / `a11y::Action` are reached
