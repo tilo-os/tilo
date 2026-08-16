@@ -239,11 +239,26 @@ impl Autocomplete {
         self.input.set_text(s);
     }
 
-    /// Enter edit mode: focus the field, select the whole value (so the first
-    /// keystroke replaces it), recompute suggestions and open the dropdown.
+    /// Enter edit mode: focus the field and recompute suggestions / open the
+    /// dropdown.
+    ///
+    /// On the genuine **transition into editing** the whole value is selected,
+    /// so the first keystroke replaces a pre-seeded value (e.g. the path bar's
+    /// current path). Crucially this select-all runs **only** on that
+    /// transition: a redundant `begin_edit` while the field is *already* being
+    /// edited leaves the caret and selection untouched. Re-selecting here was
+    /// the "first letter swallowed" bug — a focus/refresh path calling
+    /// `begin_edit` again after the user typed one character would re-select
+    /// that character, and the next keystroke would overwrite it, so the first
+    /// letter silently vanished. An empty field selects nothing either way, so
+    /// a freshly-focused empty search box always inserts normally with no
+    /// spurious selection.
     pub fn begin_edit(&mut self) {
+        let entering = !self.input.is_focused();
         self.input.set_focus(true);
-        self.input.select_all();
+        if entering {
+            self.input.select_all();
+        }
         self.outcome = AutocompleteOutcome::None;
         self.recompute();
         self.open = !self.suggestions.is_empty();
@@ -778,12 +793,78 @@ mod tests {
         handled
     }
 
+    // ---- reproduction: first-letter swallow --------------------------------
+
+    #[test]
+    fn freshly_focused_empty_field_keeps_every_letter() {
+        // The reported bug: the first typed letter is swallowed. Root cause to
+        // check: a spurious selection at focus that the first char replaces, so
+        // the second char overwrites it — net first-letter loss.
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.begin_edit();
+        drive(&mut ac, &char_key("a"));
+        // After the very first char there must be NO active selection, or the
+        // next char would replace it.
+        assert_eq!(ac.input.selection_range_public(), None, "no selection after first char");
+        drive(&mut ac, &char_key("b"));
+        drive(&mut ac, &char_key("c"));
+        assert_eq!(ac.text(), "abc", "every letter is kept (not \"bc\")");
+    }
+
+    #[test]
+    fn begin_edit_on_empty_field_arms_no_selection() {
+        // Focusing an empty field must not leave a whole-field selection armed.
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.begin_edit();
+        assert_eq!(ac.input.selection_range_public(), None, "empty focus = no selection");
+    }
+
+    #[test]
+    fn redundant_begin_edit_does_not_reselect_typed_text() {
+        // The exact "first letter swallowed" symptom: a focus/refresh path calls
+        // begin_edit AGAIN after the user has typed one character. It must not
+        // re-select that character — otherwise the next keystroke replaces it and
+        // the first letter is lost.
+        let mut ac = suggester_paths();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.begin_edit();
+        drive(&mut ac, &char_key("a")); // field now holds "a"
+        assert_eq!(ac.text(), "a");
+        // A redundant begin_edit while already editing must be inert w.r.t. the
+        // selection (no whole-field re-select of the typed "a").
+        ac.begin_edit();
+        assert_eq!(ac.input.selection_range_public(), None, "typed text is not re-selected");
+        drive(&mut ac, &char_key("l"));
+        assert_eq!(ac.text(), "al", "second char appends — the first letter survives");
+    }
+
+    #[test]
+    fn begin_edit_still_selects_a_preseeded_value_for_replace() {
+        // The intended replace-on-type for a pre-filled field (the path bar seeds
+        // the current path) is preserved: a genuine fresh entry selects all, so
+        // the first keystroke replaces the seed.
+        let mut ac = Autocomplete::new();
+        ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
+        ac.set_text("/home/user");
+        ac.begin_edit();
+        assert_eq!(
+            ac.input.selection_range_public(),
+            Some((0, "/home/user".len())),
+            "fresh entry into a pre-seeded field selects the whole value",
+        );
+        drive(&mut ac, &char_key("x"));
+        assert_eq!(ac.text(), "x", "the first keystroke replaces the selected seed");
+    }
+
     #[test]
     fn typing_recomputes_and_opens_the_dropdown() {
         let mut ac = suggester_paths();
         ac.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 34.0));
         ac.begin_edit();
-        // begin_edit selects-all, so the first keystroke replaces the value.
+        // The field starts empty, so both letters insert normally (no select-all
+        // to swallow the first one).
         drive(&mut ac, &char_key("a"));
         drive(&mut ac, &char_key("l"));
         assert_eq!(ac.text(), "al");
