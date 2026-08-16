@@ -211,6 +211,18 @@ impl PdfApp {
         if !self.show_sidebar || !self.sidebar_rect.contains(p) {
             return false;
         }
+        // In draw mode, a press inside the signature pad begins a freehand
+        // stroke (tracked through CursorMoved / release) rather than hitting a
+        // control beneath it.
+        if self.sidebar_tab == SidebarTab::Signatures
+            && self.sig_mode == SigMode::Draw
+            && self.sig_pad_rect != Rect::ZERO
+            && self.sig_pad_rect.contains(p)
+        {
+            self.sig_stroke = Some(vec![self.sig_pad_norm(p)]);
+            self.dirty = true;
+            return true;
+        }
         let mut chosen: Option<SidebarHit> = None;
         let mut best_area = f64::MAX;
         for (hit, r) in &self.sidebar_hits {
@@ -264,6 +276,16 @@ impl PdfApp {
                 self.delete_target(&DeleteTarget::Comment(id), state);
             }
             SidebarHit::AddSignature => self.set_tool(Tool::Sign),
+            SidebarHit::SigMode(mode) => {
+                // Switching between typing and drawing keeps whatever the other
+                // mode composed; only the in-progress stroke is dropped.
+                self.sig_mode = mode;
+                self.sig_stroke = None;
+            }
+            SidebarHit::SigClear => {
+                self.sig_strokes.clear();
+                self.sig_stroke = None;
+            }
             SidebarHit::SigJump(i) => {
                 if let Some(s) = self.signatures.get(i) {
                     let page = s.page;
@@ -407,6 +429,19 @@ impl PdfApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+
+                // Drawing a signature on the pad: extend the in-progress stroke.
+                if self.sig_stroke.is_some() {
+                    let n = self.sig_pad_norm(p);
+                    if let Some(st) = self.sig_stroke.as_mut() {
+                        let far = st.last().map(|l| (l.0 - n.0).abs() + (l.1 - n.1).abs() > 0.004).unwrap_or(true);
+                        if far {
+                            st.push(n);
+                        }
+                    }
+                    self.dirty = true;
+                    return;
+                }
 
                 // Route motion to the inline editor so its hover tracks (for a
                 // click-to-caret) and a press-drag extends its selection.
@@ -613,6 +648,15 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Finish a signature pad stroke: commit it if it has real ink.
+                if let Some(stroke) = self.sig_stroke.take() {
+                    if stroke.len() >= 2 {
+                        self.sig_strokes.push(stroke);
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // End an inline-editor drag-selection.
                 if self.editing.as_ref().map(|e| e.input.is_dragging()).unwrap_or(false) {
                     self.drive_editor(event, scale_factor, modifiers, state);

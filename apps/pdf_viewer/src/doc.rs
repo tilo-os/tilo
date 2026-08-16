@@ -21,7 +21,7 @@
 //! ├── "comments" (List of Map)
 //! │     { id, anno, page, author, body, created, resolved, replies:List }
 //! └── "signatures" (List of Map)
-//!       { id, page, x, y, w, h, signer, date, style }
+//!       { id, page, x, y, w, h, signer, date, ink, strokes }
 //! ```
 //!
 //! View state (current page, zoom, active tool) is deliberately NOT here —
@@ -387,6 +387,20 @@ impl PdfDoc {
 
     // ---- signatures -------------------------------------------------
 
+    /// Serialise freehand signature strokes to a string: points within a stroke
+    /// are `x,y` pairs joined by spaces (reusing [`Self::points_to_str`]),
+    /// strokes joined by `;`.
+    fn strokes_to_str(strokes: &[Vec<(f64, f64)>]) -> String {
+        strokes.iter().map(|s| Self::points_to_str(s)).collect::<Vec<_>>().join(";")
+    }
+
+    fn strokes_from_str(s: &str) -> Vec<Vec<(f64, f64)>> {
+        s.split(';')
+            .map(Self::points_from_str)
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
     pub fn add_signature(doc: &mut AutoCommit, s: &Signature) {
         let list = Self::list(doc, "signatures");
         let idx = doc.length(&list);
@@ -401,7 +415,15 @@ impl PdfDoc {
         let _ = doc.put(&m, "h", s.rect.h);
         let _ = doc.put(&m, "signer", s.signer.as_str());
         let _ = doc.put(&m, "date", s.date.as_str());
-        let _ = doc.put(&m, "style", s.style as i64);
+        match &s.ink {
+            crate::model::SignatureInk::Typed => {
+                let _ = doc.put(&m, "ink", "typed");
+            }
+            crate::model::SignatureInk::Drawn { strokes } => {
+                let _ = doc.put(&m, "ink", "drawn");
+                let _ = doc.put(&m, "strokes", Self::strokes_to_str(strokes));
+            }
+        }
     }
 
     pub fn list_signatures(doc: &AutoCommit) -> Vec<Signature> {
@@ -412,6 +434,16 @@ impl PdfDoc {
         for i in 0..doc.length(&list) {
             let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) else {
                 continue;
+            };
+            // Signatures written before real ink existed carry no "ink" field;
+            // they render as a typed-name signature (no fabricated squiggle).
+            let ink = match Self::get_str(doc, &m, "ink").as_deref() {
+                Some("drawn") => crate::model::SignatureInk::Drawn {
+                    strokes: Self::strokes_from_str(
+                        &Self::get_str(doc, &m, "strokes").unwrap_or_default(),
+                    ),
+                },
+                _ => crate::model::SignatureInk::Typed,
             };
             out.push(Signature {
                 id: Self::get_str(doc, &m, "id").unwrap_or_default(),
@@ -424,7 +456,7 @@ impl PdfDoc {
                 ),
                 signer: Self::get_str(doc, &m, "signer").unwrap_or_default(),
                 date: Self::get_str(doc, &m, "date").unwrap_or_default(),
-                style: Self::get_i64(doc, &m, "style").unwrap_or(0) as u8,
+                ink,
             });
         }
         out
@@ -608,14 +640,43 @@ mod tests {
             rect: PtRect::new(360.0, 640.0, 180.0, 56.0),
             signer: "Alice Example".into(),
             date: "2026-06-30".into(),
-            style: 1,
+            ink: crate::model::SignatureInk::Typed,
         };
         PdfDoc::add_signature(&mut doc, &s);
         let got = PdfDoc::list_signatures(&doc);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].signer, "Alice Example");
         assert_eq!(got[0].page, 5);
-        assert_eq!(got[0].style, 1);
+        assert_eq!(got[0].ink, crate::model::SignatureInk::Typed);
+    }
+
+    #[test]
+    fn drawn_signature_strokes_round_trip() {
+        let mut doc = AutoCommit::new();
+        let strokes = vec![
+            vec![(0.1, 0.5), (0.3, 0.2), (0.5, 0.6)],
+            vec![(0.6, 0.4), (0.9, 0.5)],
+        ];
+        let s = Signature {
+            id: Signature::new_id(),
+            page: 2,
+            rect: PtRect::new(100.0, 100.0, 200.0, 70.0),
+            signer: "Grace".into(),
+            date: "2026-08-17".into(),
+            ink: crate::model::SignatureInk::Drawn { strokes: strokes.clone() },
+        };
+        PdfDoc::add_signature(&mut doc, &s);
+        let got = PdfDoc::list_signatures(&doc);
+        assert_eq!(got.len(), 1);
+        match &got[0].ink {
+            crate::model::SignatureInk::Drawn { strokes: back } => {
+                assert_eq!(back.len(), 2, "both strokes survive");
+                assert_eq!(back[0].len(), 3);
+                assert!((back[0][1].0 - 0.3).abs() < 1e-2 && (back[0][1].1 - 0.2).abs() < 1e-2);
+                assert_eq!(back[1].len(), 2);
+            }
+            other => panic!("expected drawn ink, got {other:?}"),
+        }
     }
 
     #[test]
@@ -683,7 +744,7 @@ mod tests {
             rect: PtRect::new(10.0, 10.0, 100.0, 40.0),
             signer: "Alice".into(),
             date: "2026-06-30".into(),
-            style: 0,
+            ink: crate::model::SignatureInk::Typed,
         };
         let sid = s.id.clone();
         PdfDoc::add_signature(&mut doc, &s);
