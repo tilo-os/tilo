@@ -153,10 +153,30 @@ pub struct FileExplorerWidget {
     /// The qOS collaborative-workspace roots the FUSE driver mounts, surfaced as
     /// first-class System locations in the sidebar. Resolved once at startup.
     workspace_roots: Vec<PathBuf>,
-    /// A folder being dragged out of the file list toward the sidebar to pin it
-    /// to Favourites. `Some(path)` while the drag is live; a floating ghost
-    /// tracks the cursor and a drop over the sidebar pins it. `None` otherwise.
+    /// The row a drag started on. `Some(path)` while a drag is live; a floating
+    /// ghost tracks the cursor. On release the app resolves the drop: onto a
+    /// folder row (or the Up target) moves [`Self::drag_paths`] there; over the
+    /// sidebar pins a folder to Favourites. `None` when no drag is in flight.
     pin_drag: Option<PathBuf>,
+    /// All paths carried by the live drag — the pressed row, or the whole
+    /// multi-selection when the drag started on a row that was part of it.
+    drag_paths: Vec<PathBuf>,
+    /// The multi-selection captured at the moment of a press, before the press's
+    /// click collapses the selection to the single row. If a drag then starts
+    /// from a row that was in this set, the drag carries the whole set (so a
+    /// user can drag several selected items at once). Empty otherwise.
+    drag_seed: Vec<PathBuf>,
+    /// Whether the row the live drag started on is a folder (from the drag-begin
+    /// signal, not a filesystem probe). Only a single dragged folder can be
+    /// pinned to the sidebar.
+    drag_origin_is_dir: bool,
+    /// The folder currently under the cursor during a drag (a valid drop
+    /// target), so it can be highlighted. `None` when over no target.
+    drag_hover: Option<PathBuf>,
+    /// Folder rows the file view publishes each layout, so a drag's drop point
+    /// can be resolved to the folder it lands on (the view never sees the
+    /// release — the app captures the pointer for the duration of the drag).
+    drop_targets: crate::views::file_view::DropTargets,
     /// The content pane's live scroll position, owned here so it survives the
     /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
     /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
@@ -271,6 +291,11 @@ impl FileExplorerWidget {
             user_dirs,
             workspace_roots: crate::model::workspace_roots(),
             pin_drag: None,
+            drag_paths: Vec::new(),
+            drag_seed: Vec::new(),
+            drag_origin_is_dir: false,
+            drag_hover: None,
+            drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -353,6 +378,7 @@ impl FileExplorerWidget {
                 self.renaming,
                 self.rename_rect.clone(),
                 self.last_cursor,
+                self.drop_targets.clone(),
             ),
             ViewMode::Grid => crate::views::grid_view::build_grid(
                 &displayed,
@@ -362,6 +388,7 @@ impl FileExplorerWidget {
                 self.renaming,
                 self.rename_rect.clone(),
                 self.last_cursor,
+                self.drop_targets.clone(),
             ),
         };
         let sp = &theme.tokens.spacing;
@@ -628,9 +655,21 @@ impl FileExplorerWidget {
                 if ctrl || shift {
                     self.selection.apply_click(index, ctrl, shift);
                     self.last_click = None;
-                } else if let Some(path) = self.select(Some(index)) {
-                    // Double-click → open / enter.
-                    self.open_path(path);
+                } else {
+                    // Capture a multi-selection the press lands inside *before*
+                    // the click collapses it, so a drag that starts here carries
+                    // the whole set (drag a multi-selection). A press outside the
+                    // multi-selection seeds nothing.
+                    let sel = self.selection.selected();
+                    self.drag_seed = if sel.len() > 1 && sel.contains(&index) {
+                        self.selected_paths()
+                    } else {
+                        Vec::new()
+                    };
+                    if let Some(path) = self.select(Some(index)) {
+                        // Double-click → open / enter.
+                        self.open_path(path);
+                    }
                 }
                 true
             }
@@ -770,10 +809,16 @@ impl FileExplorerWidget {
                 }
                 true
             }
-            FileCommand::BeginDrag(path) => {
-                // Start carrying the folder toward the sidebar; the ghost + the
-                // drop are owned by `handle_event`.
+            FileCommand::BeginDrag { path, is_dir } => {
+                // Start carrying the row(s); the ghost + the drop are owned by
+                // `handle_event`. Drag the whole multi-selection when the press
+                // landed inside it (captured in `drag_seed` before the click
+                // collapsed it, Finder/Nautilus behaviour), else just this row.
+                let seed = std::mem::take(&mut self.drag_seed);
+                self.drag_paths = if seed.contains(&path) { seed } else { vec![path.clone()] };
+                self.drag_origin_is_dir = is_dir;
                 self.pin_drag = Some(path);
+                self.drag_hover = None;
                 true
             }
             FileCommand::AddFavorite(path) => {
@@ -947,8 +992,45 @@ impl FileExplorerWidget {
     /// a mid-drag screenshot.
     #[doc(hidden)]
     pub fn debug_begin_pin_drag(&mut self, path: PathBuf, at: Point) {
-        self.pin_drag = Some(path);
+        self.pin_drag = Some(path.clone());
+        self.drag_paths = vec![path];
+        self.drag_origin_is_dir = true;
         self.last_cursor = at;
+    }
+
+    /// Start a drag carrying `srcs` hovering the folder `over` — for a shot of a
+    /// drag-to-move in progress (ghost + drop-target highlight). Requires the
+    /// file view to have published its folder rows (a layout must have run);
+    /// returns `false` if `over` isn't a laid-out folder row.
+    #[doc(hidden)]
+    pub fn debug_begin_move_drag(&mut self, srcs: Vec<PathBuf>, over: PathBuf) -> bool {
+        let rect = self
+            .drop_targets
+            .borrow()
+            .iter()
+            .find(|t| t.path == over)
+            .map(|t| t.rect);
+        let Some(rect) = rect else { return false };
+        self.pin_drag = srcs.first().cloned();
+        self.drag_paths = srcs;
+        self.drag_hover = Some(over);
+        // Cursor inside the target row so the ghost sits over it.
+        self.last_cursor = Point::new(rect.x0 + 48.0, (rect.y0 + rect.y1) / 2.0);
+        true
+    }
+
+    /// The folder rows the file view currently publishes as drop targets — for
+    /// tests / the shots demo to pick a real target.
+    #[doc(hidden)]
+    pub fn debug_folder_targets(&self) -> Vec<(PathBuf, vello::kurbo::Rect)> {
+        self.drop_targets.borrow().iter().map(|t| (t.path.clone(), t.rect)).collect()
+    }
+
+    /// The Up nav button's rect — the drop target that moves carried items into
+    /// the parent directory. `None` at the root (no Up button).
+    #[doc(hidden)]
+    pub fn debug_up_button_rect(&self) -> Option<vello::kurbo::Rect> {
+        self.toolbar.up_button_rect()
     }
 
     /// The responsive body's current mode (docked-wide vs push-narrow) — for
@@ -988,6 +1070,88 @@ impl FileExplorerWidget {
             .into_iter()
             .filter_map(|i| disp.get(i).map(|e| e.path.clone()))
             .collect()
+    }
+
+    // --- drag & drop --------------------------------------------------
+
+    /// The folder a drag released at `pt` would move into: a folder row under
+    /// the cursor (never one of the dragged items), else the parent directory
+    /// when the cursor is over the Up affordance. `None` over anything else.
+    fn folder_target_at(&self, pt: Point) -> Option<PathBuf> {
+        for t in self.drop_targets.borrow().iter() {
+            if t.rect.contains(pt) && !self.drag_paths.contains(&t.path) {
+                return Some(t.path.clone());
+            }
+        }
+        if let Some(rect) = self.toolbar.up_button_rect() {
+            if rect.contains(pt) {
+                if let Some(parent) = self.current_path.parent() {
+                    return Some(parent.to_path_buf());
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve and apply a drag's drop: move the carried row(s) into a folder
+    /// (a row, or the parent via the Up target), else pin a single folder to
+    /// Favourites when released over the sidebar. Clears the drag state.
+    fn finish_drag(&mut self) {
+        let target = self.folder_target_at(self.last_cursor);
+        let over_sidebar =
+            self.nav.is_sidebar_open() && self.nav.sidebar_rect().contains(self.last_cursor);
+        let paths = std::mem::take(&mut self.drag_paths);
+        let origin = self.pin_drag.take();
+        self.drag_hover = None;
+        if let Some(dir) = target {
+            self.move_paths_into(&paths, &dir);
+        } else if over_sidebar {
+            // Only a single folder can be a favourite — files and multi-drags
+            // are not pinnable. `is_dir` comes from the dragged row, so this
+            // holds even for a folder that isn't physically on disk (tests).
+            if paths.len() == 1 && self.drag_origin_is_dir {
+                if let Some(path) = origin {
+                    self.apply_command(FileCommand::AddFavorite(path));
+                }
+            }
+        }
+        self.drag_origin_is_dir = false;
+    }
+
+    /// Move each of `paths` into directory `dir` as a real filesystem move
+    /// (an honest side effect, not a CRDT action). No-ops and impossible moves
+    /// — into itself, into its own subtree, or into the folder it already lives
+    /// in — are skipped rather than erroring. Refreshes and reports the result.
+    fn move_paths_into(&mut self, paths: &[PathBuf], dir: &std::path::Path) {
+        let mut moved = 0usize;
+        let mut errors = 0usize;
+        for src in paths {
+            let already_here = src.parent() == Some(dir);
+            let into_self = src.as_path() == dir;
+            let into_descendant = dir.starts_with(src);
+            if already_here || into_self || into_descendant {
+                continue;
+            }
+            match fileops::move_into(src, dir) {
+                Ok(_) => moved += 1,
+                Err(_) => errors += 1,
+            }
+        }
+        if moved > 0 {
+            self.refresh();
+        }
+        let dest = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| dir.display().to_string());
+        self.status = Some(if errors > 0 {
+            format!("Moved {moved} to \u{201c}{dest}\u{201d} ({errors} failed)")
+        } else if moved > 0 {
+            let noun = if moved == 1 { "item" } else { "items" };
+            format!("Moved {moved} {noun} to \u{201c}{dest}\u{201d}")
+        } else {
+            "Nothing to move".to_string()
+        });
     }
 
     fn paste(&mut self) {
@@ -1172,8 +1336,42 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw the floating folder ghost that tracks the cursor during a
-    /// drag-to-pin, so the drag reads as carrying the folder toward the sidebar.
+    /// Draw the accent highlight over the folder (or Up affordance) a live drag
+    /// is hovering, so the drop target is unmistakable. Drawn under the ghost.
+    fn draw_drop_highlight(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        theme: &ui::Theme,
+    ) {
+        use vello::kurbo::{Rect, RoundedRect, Stroke};
+        use vello::peniko::Fill;
+        let Some(hover) = &self.drag_hover else { return };
+        // A row target carries its published rect; the parent (Up) target uses
+        // the Up button's rect.
+        let rect = self
+            .drop_targets
+            .borrow()
+            .iter()
+            .find(|t| &t.path == hover)
+            .map(|t| t.rect)
+            .or_else(|| {
+                (Some(hover.as_path()) == self.current_path.parent())
+                    .then(|| self.toolbar.up_button_rect())
+                    .flatten()
+            });
+        let Some(rect) = rect else { return };
+        use ui::ColorCompat;
+        let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let inset = Rect::new(rect.x0 + 6.0, rect.y0 + 2.0, rect.x1 - 6.0, rect.y1 - 2.0);
+        let shape = RoundedRect::from_rect(inset, 8.0);
+        scene.fill(Fill::NonZero, transform, accent.with_alpha_factor(0.25), None, &shape);
+        scene.stroke(&Stroke::new(2.0), transform, accent, None, &shape);
+    }
+
+    /// Draw the floating ghost that tracks the cursor during a drag, so it reads
+    /// as carrying the row(s). Shows the dragged item's own icon/name, or an
+    /// item count when several are carried at once.
     fn draw_pin_ghost(
         &self,
         scene: &mut vello::Scene,
@@ -1184,13 +1382,18 @@ impl FileExplorerWidget {
         use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
         use vello::peniko::Fill;
         let Some(path) = &self.pin_drag else { return };
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string());
+        let count = self.drag_paths.len().max(1);
+        let glyph = ui::icons::icon_for_path(path, path.is_dir());
+        let label = if count > 1 {
+            format!("{count} items")
+        } else {
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        };
         let tokens = &theme.tokens;
         let size = tokens.typography.scale.base;
-        let (tw, _) = text_renderer.measure(&name, size, None);
+        let (tw, _) = text_renderer.measure(&label, size, None);
         let (pad, icon, gap, h) = (10.0_f64, 16.0_f64, 8.0_f64, 30.0_f64);
         let w = pad + icon + gap + tw as f64 + pad;
         // Offset from the cursor so the ghost sits beside, not under, the pointer.
@@ -1206,14 +1409,14 @@ impl FileExplorerWidget {
             scene,
             transform,
             Rect::new(x0 + pad, iy, x0 + pad + icon, iy + icon),
-            ui::icons::Icon::Folder,
+            glyph,
             accent,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let ty = crate::text_layout::centered_text_y(y0, h, size);
         text_renderer.draw_text(
             scene,
-            &name,
+            &label,
             size,
             tokens.colors.text_primary,
             transform * Affine::translate((x0 + pad + icon + gap, ty)),
@@ -2009,7 +2212,9 @@ impl Widget for FileExplorerWidget {
             layout_menu_widget(&mut self.submenu);
             self.submenu.draw(scene, transform, text_renderer, theme, presence);
         }
-        // The drag-to-pin ghost floats above everything else.
+        // The drop-target highlight sits on the target folder; the drag ghost
+        // floats above everything else.
+        self.draw_drop_highlight(scene, transform, theme);
         self.draw_pin_ghost(scene, transform, text_renderer, theme);
     }
 
@@ -2031,11 +2236,14 @@ impl Widget for FileExplorerWidget {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        // A live drag-to-pin owns the pointer: the ghost follows the cursor and
-        // a release over the sidebar pins the folder to Favourites.
+        // A live drag owns the pointer: the ghost follows the cursor, the
+        // hovered folder is highlighted, and the release resolves the drop —
+        // moving the carried row(s) into a folder (or the parent), or pinning a
+        // folder to the sidebar.
         if self.pin_drag.is_some() {
             match event {
                 WindowEvent::CursorMoved { .. } => {
+                    self.drag_hover = self.folder_target_at(self.last_cursor);
                     *handled = true;
                     self.structure_dirty = true;
                     return;
@@ -2045,13 +2253,7 @@ impl Widget for FileExplorerWidget {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    let over_sidebar = self.nav.is_sidebar_open()
-                        && self.nav.sidebar_rect().contains(self.last_cursor);
-                    if let Some(path) = self.pin_drag.take() {
-                        if over_sidebar {
-                            self.apply_command(FileCommand::AddFavorite(path));
-                        }
-                    }
+                    self.finish_drag();
                     *handled = true;
                     self.structure_dirty = true;
                     return;
@@ -3405,7 +3607,7 @@ mod responsive_body_tests {
         let folder = PathBuf::from("/home/tester/Projects/qos");
 
         // Begin the drag (what the file view emits once a folder press travels).
-        assert!(h.w.apply_command(FileCommand::BeginDrag(folder.clone())));
+        assert!(h.w.apply_command(FileCommand::BeginDrag { path: folder.clone(), is_dir: true }));
         assert!(h.w.debug_pin_dragging(), "the drag is in flight");
 
         // Move over the sidebar, then release → pin.
@@ -3426,7 +3628,7 @@ mod responsive_body_tests {
         );
         let mut h = H::from_widget(w, 1200.0, 720.0);
         let before = h.w.favorites().len();
-        h.w.apply_command(FileCommand::BeginDrag(PathBuf::from("/home/tester/Downloads/tmp")));
+        h.w.apply_command(FileCommand::BeginDrag { path: PathBuf::from("/home/tester/Downloads/tmp"), is_dir: true });
         // Release over the content pane (not the sidebar).
         let content = h.w.debug_content_rect();
         h.cursor(content.center().x, content.center().y);
