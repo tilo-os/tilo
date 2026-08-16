@@ -3400,6 +3400,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "blake3",
  "image",
  "qos-actions",
  "roxmltree",
