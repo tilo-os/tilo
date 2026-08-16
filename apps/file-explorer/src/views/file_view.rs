@@ -20,7 +20,9 @@
 //! [`FileCommand`]s. Ephemeral per-frame state (hover) is recomputed from the
 //! cursor, so nothing is lost across a rebuild.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -84,11 +86,24 @@ pub struct FileView {
     hover: Option<usize>,
     last_cursor: Point,
     is_focused: bool,
+    /// When `Some(i)`, item `i` is being renamed in place: its label is omitted
+    /// and the label's on-screen rect is published into `rename_rect` so the
+    /// host can draw the shared rename editor exactly where the name was.
+    renaming: Option<usize>,
+    rename_rect: Option<Rc<Cell<Option<Rect>>>>,
     /// The scroll viewport observed at the last `draw`, so the header
     /// hit-test can follow the pinned header (which sits at the viewport top
     /// once the list is scrolled). `None` before the first paint.
     last_vp: Option<Rect>,
+    /// A plain press on a directory row `(press point, its path)`, held until
+    /// the pointer either releases (a click) or travels past the drag threshold
+    /// (begins a drag-to-pin toward the sidebar).
+    pressed_dir: Option<(Point, std::path::PathBuf)>,
 }
+
+/// Pointer travel (logical px) past which a held directory press becomes a
+/// drag rather than a click.
+const DRAG_THRESHOLD: f64 = 6.0;
 
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
@@ -106,11 +121,23 @@ impl FileView {
             last_cursor: Point::ZERO,
             is_focused: false,
             last_vp: None,
+            renaming: None,
+            rename_rect: None,
+            pressed_dir: None,
         }
     }
 
     pub fn mode(mut self, mode: ViewMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Render item `index` (if any) as an in-place rename: omit its label and
+    /// publish the label's on-screen rect into `sink` so the host can draw the
+    /// shared rename editor over it.
+    pub fn with_rename(mut self, index: Option<usize>, sink: Rc<Cell<Option<Rect>>>) -> Self {
+        self.renaming = index;
+        self.rename_rect = Some(sink);
         self
     }
     pub fn with_scale(mut self, scale: f64) -> Self {
@@ -419,21 +446,34 @@ impl FileView {
             }
             let text_y = row.y0 + (row.height() - size as f64) / 2.0;
             let name_x = icon_x + icon_px + 10.0;
-            let label = if entry.is_conflict() {
-                format!("{}  \u{26A0}", entry.name)
+            if self.renaming == Some(i) {
+                // Publish the name field's rect and omit the label; the host
+                // draws the in-place rename editor here.
+                if let Some(sink) = &self.rename_rect {
+                    sink.set(Some(Rect::new(
+                        name_x - 4.0,
+                        row.y0 + 3.0,
+                        name_rect.x1 - 4.0,
+                        row.y1 - 3.0,
+                    )));
+                }
             } else {
-                entry.name.clone()
-            };
-            let avail = (name_rect.x1 - name_x - 6.0).max(0.0);
-            let label = truncate(tr, &label, size, avail);
-            tr.draw_text(
-                scene,
-                &label,
-                size,
-                Self::cell_text(theme, selected),
-                transform * Affine::translate((name_x, text_y)),
-                None,
-            );
+                let label = if entry.is_conflict() {
+                    format!("{}  \u{26A0}", entry.name)
+                } else {
+                    entry.name.clone()
+                };
+                let avail = (name_rect.x1 - name_x - 6.0).max(0.0);
+                let label = truncate(tr, &label, size, avail);
+                tr.draw_text(
+                    scene,
+                    &label,
+                    size,
+                    Self::cell_text(theme, selected),
+                    transform * Affine::translate((name_x, text_y)),
+                    None,
+                );
+            }
             // Size.
             if self.show_size() {
                 let size_rect = self.header_col_rect(1);
@@ -507,18 +547,31 @@ impl FileView {
                 draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
             }
             // Label centred under the icon, truncated to the cell width.
-            let label = truncate(tr, &entry.name, size, self.cell_w() - 10.0);
-            let (lw, _) = tr.measure(&label, size, None);
-            let lx = cell.x0 + (self.cell_w() - lw as f64) / 2.0;
             let ly = icon_y + icon_px + 10.0 * self.scale;
-            tr.draw_text(
-                scene,
-                &label,
-                size,
-                Self::cell_text(theme, selected),
-                transform * Affine::translate((lx, ly)),
-                None,
-            );
+            if self.renaming == Some(i) {
+                // Publish the label field's rect and omit the label; the host
+                // draws the in-place rename editor here.
+                if let Some(sink) = &self.rename_rect {
+                    sink.set(Some(Rect::new(
+                        cell.x0 + 6.0,
+                        ly - 4.0,
+                        cell.x1 - 6.0,
+                        ly + size as f64 + 6.0,
+                    )));
+                }
+            } else {
+                let label = truncate(tr, &entry.name, size, self.cell_w() - 10.0);
+                let (lw, _) = tr.measure(&label, size, None);
+                let lx = cell.x0 + (self.cell_w() - lw as f64) / 2.0;
+                tr.draw_text(
+                    scene,
+                    &label,
+                    size,
+                    Self::cell_text(theme, selected),
+                    transform * Affine::translate((lx, ly)),
+                    None,
+                );
+            }
         }
     }
 }
@@ -601,6 +654,11 @@ impl Widget for FileView {
         // the header hit-test can follow the pinned header on the next event.
         let vp = presence.viewport.get();
         self.last_vp = vp;
+        // Clear last frame's rename-field rect; the draw below republishes it
+        // only if the renaming row is actually on screen.
+        if let Some(sink) = &self.rename_rect {
+            sink.set(None);
+        }
         match self.mode {
             ViewMode::List => self.draw_list(scene, transform, tr, theme, vp),
             ViewMode::Grid => self.draw_grid(scene, transform, tr, theme, vp),
@@ -647,6 +705,14 @@ impl Widget for FileView {
                 if new_hover != self.hover {
                     self.hover = new_hover;
                 }
+                // A held directory press that travels far enough starts a
+                // drag-to-pin; the app carries the folder toward the sidebar.
+                if let Some((start, path)) = self.pressed_dir.clone() {
+                    if pt.distance(start) > DRAG_THRESHOLD {
+                        push(&self.sink, FileCommand::BeginDrag(path));
+                        self.pressed_dir = None;
+                    }
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 // Header click → sort.
@@ -664,8 +730,20 @@ impl Widget for FileView {
                     self.selection.apply_click(i, ctrl, shift);
                     *focus_target = Some(node_id);
                     push(&self.sink, FileCommand::Click { index: i, ctrl, shift });
+                    // A plain press on a folder arms a potential drag-to-pin.
+                    if !ctrl && !shift {
+                        if let Some(entry) = self.entries.get(i) {
+                            if entry.is_dir {
+                                self.pressed_dir = Some((self.last_cursor, entry.path.clone()));
+                            }
+                        }
+                    }
                     *handled = true;
                 }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                // A release without travel was just a click — disarm the drag.
+                self.pressed_dir = None;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
                 // Select the row under the cursor before the context menu opens
@@ -1015,6 +1093,50 @@ mod tests {
             dl_color,
             theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
             "downloading badge uses the accent colour",
+        );
+    }
+
+    #[test]
+    fn dragging_a_directory_row_begins_a_pin_drag() {
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut entries = items(5);
+        entries[2] = ent("folder", true);
+        let mut v = FileView::new(&entries, &sel, &sink);
+        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+
+        // Press on the folder row (row 2), then travel past the threshold.
+        let y = v.rect.y0 + v.header_h() + 2.0 * v.row_h() + v.row_h() / 2.0;
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (50.0, y).into() });
+        dispatch(&mut v, &tree, node, WindowEvent::MouseInput { device_id: dev(), state: ElementState::Pressed, button: MouseButton::Left });
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (120.0, y).into() });
+
+        let cmds = sink.borrow();
+        assert!(
+            cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag(p) if p.ends_with("folder"))),
+            "a folder press that travels begins a pin drag: {cmds:?}",
+        );
+    }
+
+    #[test]
+    fn a_file_row_press_does_not_begin_a_pin_drag() {
+        // Only folders can be pinned to Favourites, so a file must not drag.
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut v = FileView::new(&items(5), &sel, &sink);
+        v.rect = Rect::new(0.0, 0.0, 600.0, 600.0);
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let y = v.rect.y0 + v.header_h() + v.row_h() / 2.0;
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (50.0, y).into() });
+        dispatch(&mut v, &tree, node, WindowEvent::MouseInput { device_id: dev(), state: ElementState::Pressed, button: MouseButton::Left });
+        dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (120.0, y).into() });
+        let cmds = sink.borrow();
+        assert!(
+            !cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag(_))),
+            "a file does not start a pin drag: {cmds:?}",
         );
     }
 
