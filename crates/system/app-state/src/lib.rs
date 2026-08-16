@@ -71,7 +71,8 @@ use std::io::{self, Write};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad};
+use automerge::transaction::Transactable;
+use automerge::{ActorId, AutoCommit, ChangeHash, LoadOptions, OnPartialLoad, ROOT, ReadDoc};
 
 mod autosave;
 pub use autosave::{Autosave, DEFAULT_DEBOUNCE};
@@ -89,6 +90,27 @@ pub const RECORDS_DIR: &str = "records";
 /// **room** — the index of which records that room holds. See
 /// [`DocStore::open_room`].
 pub const ROOMS_DIR: &str = "rooms";
+
+/// Root-map key carrying the document's layout version.
+///
+/// Namespaced so it cannot collide with an app's own key. Every document this
+/// crate creates gets it; a document from before it existed does not, and is read
+/// as [`SCHEMA_VERSION`] — the key was added alongside the check, not alongside a
+/// format change, so treating its absence as "unknown" would condemn every
+/// existing user's documents on the upgrade that introduced it.
+pub const SCHEMA_VERSION_KEY: &str = "qos:schema_version";
+
+/// The document layout this build writes and understands.
+///
+/// Bump it when a change makes a document **unreadable to an older build in a
+/// way that loses meaning**. Adding a key does not qualify: an older build
+/// ignores it, and Automerge merges it back untouched.
+///
+/// It exists for one direction. Newer reading older is what a CRDT is for. Older
+/// reading newer is the case with no safe default answer, and the answer here
+/// used to be to start empty and then overwrite — the two together turning a
+/// version skew into data loss. See [`DocStore::load`].
+pub const SCHEMA_VERSION: u32 = 1;
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -116,12 +138,68 @@ pub enum StoreError {
         #[source]
         source: automerge::AutomergeError,
     },
+    /// The document was written by a newer build than this one.
+    ///
+    /// Its own error rather than a variant of [`StoreError::Automerge`],
+    /// because the two want opposite things from whoever sees them: an
+    /// unloadable document may be damage, while this one means the data is
+    /// intact and *this build* is the wrong one to open it with. Saying
+    /// "unreadable" for a document that plainly states its layout would throw
+    /// away the only actionable part of the failure.
+    #[error(
+        "{path} has layout {found}, and this build understands {understood}. \
+         It was written by a newer version of this app; nothing has been \
+         changed."
+    )]
+    NewerSchema {
+        path: PathBuf,
+        found: u32,
+        understood: u32,
+    },
 }
 
 fn io_err(context: impl Into<String>, source: io::Error) -> StoreError {
     StoreError::Io {
         context: context.into(),
         source,
+    }
+}
+
+/// The layout version a document declares.
+///
+/// A document with no such key is [`SCHEMA_VERSION`] — see
+/// [`SCHEMA_VERSION_KEY`] for why absence is not "unknown". A key that is
+/// present but not an integer is treated the same way: this crate is the only
+/// thing that writes it, so a non-integer there is somebody else's key of the
+/// same name, and refusing to open a user's documents over it would be a worse
+/// answer than ignoring it.
+pub fn schema_version_of(doc: &AutoCommit) -> u32 {
+    match doc.get(ROOT, SCHEMA_VERSION_KEY) {
+        Ok(Some((v, _))) => v
+            .to_u64()
+            .or_else(|| v.to_i64().and_then(|i| u64::try_from(i).ok()))
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(SCHEMA_VERSION),
+        _ => SCHEMA_VERSION,
+    }
+}
+
+/// Write the current layout version into a document's root map.
+fn stamp_schema_version(doc: &mut AutoCommit) {
+    if let Err(e) = doc.put(ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION)) {
+        tracing::warn!(error = %e, "could not stamp the document's schema version");
+    }
+}
+
+/// Stamp the version if the document does not already carry one.
+///
+/// Called on the write paths so that a document created before versioning
+/// existed gains its version the first time it is saved, rather than staying
+/// unlabelled for ever and being read as version 1 by builds that will one day
+/// be wrong about that.
+fn ensure_schema_version(doc: &mut AutoCommit) {
+    if matches!(doc.get(ROOT, SCHEMA_VERSION_KEY), Ok(None) | Err(_)) {
+        stamp_schema_version(doc);
     }
 }
 
@@ -215,6 +293,21 @@ pub struct DocStore {
     /// Heads the file on disk is known to contain. Empty until the first
     /// load or save.
     persisted: Vec<ChangeHash>,
+    /// Why [`DocStore::load_or_new`] handed back an empty document instead of
+    /// the one on disk.
+    ///
+    /// Set only for a refusal this store must not write over. Everything that
+    /// builds a writer on top of a store checks it: an [`Autosave`] over a
+    /// refused store is switched off, because starting empty and then saving is
+    /// what turns a version skew into data loss.
+    refusal: Option<Refusal>,
+}
+
+/// The document on disk, and why this build would not open it.
+#[derive(Clone, Debug)]
+struct Refusal {
+    found: u32,
+    message: String,
 }
 
 impl DocStore {
@@ -330,6 +423,7 @@ impl DocStore {
             actor,
             lock,
             persisted: Vec::new(),
+            refusal: None,
         })
     }
 
@@ -388,6 +482,18 @@ impl DocStore {
             path: self.document.clone(),
             source,
         })?;
+        // Before anything reads a value out of it. A newer layout may use a key
+        // this build reads with a different meaning, and the writer above this
+        // one saves the whole document back — so "load it and see" is
+        // "overwrite it and see".
+        let found = schema_version_of(&doc);
+        if found > SCHEMA_VERSION {
+            return Err(StoreError::NewerSchema {
+                path: self.document.clone(),
+                found,
+                understood: SCHEMA_VERSION,
+            });
+        }
         doc.set_actor(self.actor.clone());
         self.persisted = doc.get_heads();
         Ok(Some(doc))
@@ -398,10 +504,31 @@ impl DocStore {
     /// An unreadable file is logged and treated as empty rather than
     /// crashing the app on launch — the same policy the calendar and chat
     /// stores already had.
+    ///
+    /// A document from a **newer** layout is different in kind and is handled
+    /// differently: the store records the refusal ([`DocStore::refusal`]), and
+    /// every writer built on it switches itself off. Starting empty is
+    /// survivable; starting empty and then saving over the file is the data
+    /// loss this exists to prevent.
     pub fn load_or_new(&mut self) -> AutoCommit {
         match self.load() {
             Ok(Some(doc)) => doc,
             Ok(None) => self.new_document(),
+            Err(e @ StoreError::NewerSchema { .. }) => {
+                tracing::error!(error = %e, "app state was written by a newer version; \
+                                             starting empty and NOT writing back");
+                let found = match &e {
+                    StoreError::NewerSchema { found, .. } => *found,
+                    _ => unreachable!("matched NewerSchema"),
+                };
+                let message = e.to_string();
+                let doc = self.new_document();
+                // After new_document, which clears it: the refusal describes the
+                // file, not the document just made, and it has to outlive the
+                // call for the write paths below to see it.
+                self.refusal = Some(Refusal { found, message });
+                doc
+            }
             Err(e) => {
                 tracing::error!(error = %e, "app state unreadable; starting empty");
                 self.new_document()
@@ -409,28 +536,69 @@ impl DocStore {
         }
     }
 
-    /// An empty document already carrying this store's actor id.
+    /// Why this store handed back an empty document, when it did.
+    ///
+    /// `Some` means the document on disk must not be written over. Anything
+    /// that builds a writer over this store has to consult it.
+    pub fn refusal(&self) -> Option<&str> {
+        self.refusal.as_ref().map(|r| r.message.as_str())
+    }
+
+    /// An empty document already carrying this store's actor id, stamped with
+    /// the current layout version.
+    ///
+    /// The stamp goes on at creation rather than at the first save, so a
+    /// document that is created and never edited still says what it is — and so
+    /// the version cannot be forgotten by a code path that writes without going
+    /// through here.
     pub fn new_document(&mut self) -> AutoCommit {
         self.persisted = Vec::new();
-        AutoCommit::new().with_actor(self.actor.clone())
+        self.refusal = None;
+        let mut doc = AutoCommit::new().with_actor(self.actor.clone());
+        stamp_schema_version(&mut doc);
+        doc
     }
 
     /// Rewrite the whole document atomically: temp file, `fsync`, rename.
     ///
     /// A crash at any point leaves either the previous complete file or the
     /// new complete file, never a half-written one.
+    /// Refuses outright when [`DocStore::refusal`] is set: the document in
+    /// memory is an empty stand-in for one this build declined to open, and
+    /// writing it out is the difference between "the app came up empty" and
+    /// "the app deleted your work".
     pub fn save(&mut self, doc: &mut AutoCommit) -> Result<(), StoreError> {
+        self.refuse_to_write()?;
+        ensure_schema_version(doc);
         let bytes = doc.save();
         self.write_full(&bytes)?;
         self.persisted = doc.get_heads();
         Ok(())
     }
 
+    /// The guard both write paths share. Returns the original refusal, so a
+    /// caller that logs the error says why rather than "write failed".
+    fn refuse_to_write(&self) -> Result<(), StoreError> {
+        match &self.refusal {
+            None => Ok(()),
+            Some(r) => Err(StoreError::NewerSchema {
+                path: self.document.clone(),
+                found: r.found,
+                understood: SCHEMA_VERSION,
+            }),
+        }
+    }
+
     /// Append only the changes `doc` has that the file does not.
     ///
     /// Returns the number of bytes appended — `0` when the document has not
     /// moved since the last save, which is the common idle case.
+    /// Refuses for the same reason [`DocStore::save`] does — appending an empty
+    /// stand-in document's changes onto a file this build declined to read is
+    /// still writing over it.
     pub fn append(&mut self, doc: &mut AutoCommit) -> Result<usize, StoreError> {
+        self.refuse_to_write()?;
+        ensure_schema_version(doc);
         let heads = doc.get_heads();
         if heads == self.persisted {
             return Ok(0);
@@ -878,5 +1046,132 @@ mod tests {
         let _tmp = scratch_home();
         let mut store = DocStore::open_for("dev.qos.nomigrate").unwrap();
         assert!(!store.migrate_from(Path::new("/nonexistent/nope")).unwrap());
+    }
+
+    /// Every document this crate creates says which layout it is, from the
+    /// moment it exists. Without the stamp the check below has nothing to
+    /// read, and a document created and never edited would be indistinguishable
+    /// from one written before versioning.
+    #[test]
+    #[serial_test::serial]
+    fn a_new_document_carries_the_schema_version() {
+        let _tmp = scratch_home();
+        let mut store = DocStore::open_for("dev.qos.stamped").unwrap();
+        let mut doc = store.new_document();
+        assert_eq!(schema_version_of(&doc), SCHEMA_VERSION);
+        store.save(&mut doc).unwrap();
+
+        let mut reopened = DocStore::open_for("dev.qos.stamped").unwrap();
+        let loaded = reopened.load().unwrap().expect("saved document");
+        assert_eq!(
+            loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
+            true,
+            "the version has to survive the round trip, not just live in memory"
+        );
+        assert_eq!(schema_version_of(&loaded), SCHEMA_VERSION);
+    }
+
+    /// A document from before versioning existed opens, and gains its version
+    /// the next time it is written. Reading its absence as "unknown" would
+    /// refuse every existing user's documents on the upgrade that introduced
+    /// the check — the exact loss the check exists to prevent, caused by it.
+    #[test]
+    #[serial_test::serial]
+    fn a_document_written_before_versioning_opens_and_is_stamped_on_save() {
+        let _tmp = scratch_home();
+        let mut store = DocStore::open_for("dev.qos.unversioned").unwrap();
+
+        // Written the way the crate used to: a bare AutoCommit, no stamp.
+        let mut old = AutoCommit::new();
+        old.put(&ROOT, "note", ScalarValue::Str("kept".into())).unwrap();
+        assert!(
+            old.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_none(),
+            "the fixture must actually be unversioned"
+        );
+        fs::create_dir_all(store.dir()).unwrap();
+        fs::write(store.document_path(), old.save()).unwrap();
+
+        let mut doc = store.load_or_new();
+        assert!(store.refusal().is_none(), "an unversioned document is not refused");
+        assert_eq!(
+            text_of(&doc, "note").as_deref(),
+            Some("kept"),
+            "its contents must load"
+        );
+        store.save(&mut doc).unwrap();
+
+        let mut reopened = DocStore::open_for("dev.qos.unversioned").unwrap();
+        let loaded = reopened.load().unwrap().unwrap();
+        assert!(
+            loaded.get(ROOT, SCHEMA_VERSION_KEY).unwrap().is_some(),
+            "saving must stamp a document that had no version, so a later build \
+             is not left guessing"
+        );
+        assert_eq!(text_of(&loaded, "note").as_deref(), Some("kept"));
+    }
+
+    /// The one this exists for: an older build meets a document a newer one
+    /// wrote. It must refuse, keep the bytes, and refuse to write over them —
+    /// the last of which is what turns a survivable empty session into data
+    /// loss when it is missing.
+    #[test]
+    #[serial_test::serial]
+    fn a_newer_document_is_refused_and_never_written_over() {
+        let _tmp = scratch_home();
+        let mut store = DocStore::open_for("dev.qos.future").unwrap();
+
+        let mut future = AutoCommit::new();
+        future
+            .put(&ROOT, "irreplaceable", ScalarValue::Str("please keep".into()))
+            .unwrap();
+        future
+            .put(&ROOT, SCHEMA_VERSION_KEY, u64::from(SCHEMA_VERSION) + 1)
+            .unwrap();
+        fs::create_dir_all(store.dir()).unwrap();
+        let on_disk = future.save();
+        fs::write(store.document_path(), &on_disk).unwrap();
+
+        // load() names the situation rather than calling it corruption.
+        match store.load() {
+            Err(StoreError::NewerSchema {
+                found, understood, ..
+            }) => {
+                assert_eq!(found, SCHEMA_VERSION + 1);
+                assert_eq!(understood, SCHEMA_VERSION);
+            }
+            other => panic!("expected NewerSchema, got {other:?}"),
+        }
+
+        // load_or_new comes up empty and records why.
+        let mut doc = store.load_or_new();
+        assert!(
+            text_of(&doc, "irreplaceable").is_none(),
+            "a refused document must not be loaded"
+        );
+        let reason = store
+            .refusal()
+            .expect("the refusal has to be visible, or nothing downstream can act on it");
+        assert!(
+            reason.contains(&(SCHEMA_VERSION + 1).to_string()),
+            "the reason must name the layout found, got: {reason}"
+        );
+
+        // And every write path refuses, so the bytes survive an app that
+        // carries on regardless.
+        doc.put(&ROOT, "scribble", ScalarValue::Str("no".into())).unwrap();
+        assert!(
+            matches!(store.save(&mut doc), Err(StoreError::NewerSchema { .. })),
+            "save over a refused document must fail, not succeed quietly"
+        );
+        assert!(
+            matches!(store.append(&mut doc), Err(StoreError::NewerSchema { .. })),
+            "append over a refused document must fail too — it writes to the \
+             same file"
+        );
+        assert_eq!(
+            fs::read(store.document_path()).unwrap(),
+            on_disk,
+            "the document on disk must be byte-for-byte what it was"
+        );
     }
 }

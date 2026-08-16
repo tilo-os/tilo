@@ -204,12 +204,18 @@ if [ "$COMPOSEFS" = yes ]; then BOOT_IS_ESP=yes; else BOOT_IS_ESP=no; fi
 # os/tests/esp_capacity.sh asserts the same arithmetic against the Rust default,
 # so the two cannot drift apart unnoticed.
 RETAINED_NEWER=2
+# The repair-mode image. Exactly one at a time, not one per generation: it is
+# derived on the machine from whichever UKI the running deployment boots
+# (docs/security/repair-mode.md), so it is refreshed rather than accumulated.
+# Counting it here is what keeps a machine from filling its ESP the first time a
+# repair entry is made — which would happen at update time, in the field.
+REPAIR_UKI=1
 KERNEL_FS_SLACK_MIB=64
 esp_mib="$(to_mib "$ESP_SIZE")"
 root_mib="$(to_mib "$ROOT_MIN")"
 uki_mib="$(to_mib "$UKI_BUDGET")"
 [ "$RETAIN" -ge 1 ] 2>/dev/null || die "--retain must be a positive integer, got: $RETAIN"
-kernels_need=$(( (RETAIN + RETAINED_NEWER) * uki_mib + KERNEL_FS_SLACK_MIB ))
+kernels_need=$(( (RETAIN + RETAINED_NEWER + REPAIR_UKI) * uki_mib + KERNEL_FS_SLACK_MIB ))
 if [ "$BOOT_IS_ESP" = yes ]; then
   kernels_have="$esp_mib"; kernels_flag="--esp $ESP_SIZE"; kernels_where="the ESP"
 else
@@ -218,8 +224,8 @@ fi
 if [ "$kernels_have" -lt "$kernels_need" ]; then
   die "$kernels_where is too small for the rollback retention window.
     $kernels_flag ($kernels_have MiB)
-    needs $kernels_need MiB = ($RETAIN retained + $RETAINED_NEWER staged) x $UKI_BUDGET + $KERNEL_FS_SLACK_MIB MiB slack
-  Raise it, or lower --retain to at most $(( (kernels_have - KERNEL_FS_SLACK_MIB) / uki_mib - RETAINED_NEWER )).
+    needs $kernels_need MiB = ($RETAIN retained + $RETAINED_NEWER staged + $REPAIR_UKI repair) x $UKI_BUDGET + $KERNEL_FS_SLACK_MIB MiB slack
+  Raise it, or lower --retain to at most $(( (kernels_have - KERNEL_FS_SLACK_MIB) / uki_mib - RETAINED_NEWER - REPAIR_UKI )).
   --retain must match qos-rollback's retained_generations
   (crates/system/qos-rollback/src/lib.rs); os/tests/esp_capacity.sh checks that."
 fi
