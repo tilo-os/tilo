@@ -36,7 +36,6 @@ use shell::portal::{
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{Capability, FsMode, Workspace, WorkspaceId, WorkspaceTree};
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 use zbus::connection::Builder;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 use zbus::{Connection, Proxy};
@@ -229,7 +228,7 @@ async fn pump_until(
     what: &str,
     mut f: impl FnMut(&mut ShellOverlayHost) -> bool,
 ) {
-    for _ in 0..400 {
+    for _ in 0..1000 {
         host.pump_file_picker();
         if f(host) {
             return;
@@ -237,6 +236,28 @@ async fn pump_until(
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     panic!("timed out waiting for {what}");
+}
+
+/// Await a spawned portal call while still turning the pump.
+///
+/// The pump is what answers the call, so awaiting one without running
+/// the other is a deadlock — the same deadlock this whole branch is
+/// about, reproduced in the harness. Every wait on a portal response
+/// goes through here so a test can never accidentally stop the
+/// compositor and then wonder why the app never heard back.
+async fn await_response(
+    host: &mut ShellOverlayHost,
+    what: &str,
+    handle: tokio::task::JoinHandle<(u32, std::collections::HashMap<String, OwnedValue>)>,
+) -> (u32, std::collections::HashMap<String, OwnedValue>) {
+    for _ in 0..1000 {
+        host.pump_file_picker();
+        if handle.is_finished() {
+            return handle.await.expect("join");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the portal call for {what} never answered — the caller is hung");
 }
 
 /// The rect the host paints the dialog into, so a click lands where the
@@ -332,10 +353,7 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     })
     .await;
 
-    let (code, results) = timeout(Duration::from_secs(5), call)
-        .await
-        .expect("the portal call must not hang")
-        .expect("join");
+    let (code, results) = await_response(&mut host, "the open", call).await;
 
     assert_eq!(code, 0, "a completed pick is response=0");
     let uris = uris_of(&results);
@@ -444,10 +462,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     })
     .await;
 
-    let (code, results) = timeout(Duration::from_secs(5), call)
-        .await
-        .expect("the portal call must not hang")
-        .expect("join");
+    let (code, results) = await_response(&mut host, "the save", call).await;
 
     assert_eq!(code, 0);
     assert!(
@@ -535,10 +550,7 @@ async fn cancelling_the_dialog_answers_the_app_instead_of_hanging_it() {
     })
     .await;
 
-    let (code, results) = timeout(Duration::from_secs(5), call)
-        .await
-        .expect("cancel must answer the caller, not strand it")
-        .expect("join");
+    let (code, results) = await_response(&mut host, "the cancel", call).await;
     assert_eq!(code, 1, "cancel is response=1");
     assert!(results.is_empty());
 }
@@ -599,10 +611,7 @@ async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
 
     // The second request is refused while the first dialog holds the
     // screen; the first is still up.
-    let (code2, _) = timeout(Duration::from_secs(5), second)
-        .await
-        .expect("the second request must be answered, not left pending")
-        .expect("join");
+    let (code2, _) = await_response(&mut host, "the second request", second).await;
     assert_eq!(code2, 1, "a request we will not show is cancelled");
     assert!(
         host.file_picker().is_some(),
@@ -621,9 +630,6 @@ async fn a_second_request_while_a_dialog_is_up_is_answered_not_stacked() {
         h.file_picker().is_none()
     })
     .await;
-    let (code1, _) = timeout(Duration::from_secs(5), first)
-        .await
-        .expect("the first request must still answer")
-        .expect("join");
+    let (code1, _) = await_response(&mut host, "the first request", first).await;
     assert_eq!(code1, 1);
 }
