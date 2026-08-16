@@ -2158,17 +2158,7 @@ pub fn run() -> ! {
                         // ahead of the shell's Escape handling, because a
                         // panic key an overlay or a focused client can
                         // swallow is not a panic key.
-                        let revoked = state.engage_remote_input_kill_switch();
-                        frame_builder.with_chrome(|st| {
-                            st.push_notification(
-                                "Remote input stopped",
-                                match revoked {
-                                    0 => "No peer was driving this session.".to_string(),
-                                    1 => "1 shared window is now view-only.".to_string(),
-                                    n => format!("{n} shared windows are now view-only."),
-                                },
-                            );
-                        });
+                        client_input::stop_remote_input(&mut state, &mut frame_builder);
                         session_changed = true;
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
@@ -3499,6 +3489,48 @@ mod tests {
     fn super_l_release_is_not_lock_chord() {
         let ev = keyboard_input_event(Key::Character(SmolStr::new("l")), false);
         assert!(!is_lock_chord(&ev, &mods_with_super(true)));
+    }
+
+    /// `Super+Esc` on press is the remote-input kill switch.
+    #[test]
+    fn super_escape_press_is_the_remote_input_kill_switch() {
+        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        assert!(is_remote_input_kill_switch(&ev, &mods_with_super(true)));
+    }
+
+    /// Escape on its own closes an overlay and reaches modal clients. It
+    /// must not stop a shared session by accident.
+    #[test]
+    fn escape_without_super_is_not_the_kill_switch() {
+        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        assert!(!is_remote_input_kill_switch(&ev, &mods_with_super(false)));
+    }
+
+    /// Press only. A release that re-fired would engage the latch a
+    /// second time and post a second toast for one keystroke.
+    #[test]
+    fn super_escape_release_is_not_the_kill_switch() {
+        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), false);
+        assert!(!is_remote_input_kill_switch(&ev, &mods_with_super(true)));
+    }
+
+    /// The panic key is not a key a client can be handed. `Super` is the
+    /// compositor modifier, so the shell's own chord table already claims
+    /// it — asserted here because the kill switch depends on it: were the
+    /// chord routable, a focused client could take the keystroke and the
+    /// host would press Escape into a guest-driven window.
+    #[test]
+    fn super_escape_is_a_shell_chord_and_never_reaches_a_client() {
+        let ev = keyboard_input_event(Key::Named(NamedKey::Escape), true);
+        assert!(client_input::is_shell_chord(
+            &ev,
+            &mods_with_super(true),
+            false
+        ));
+        assert!(
+            client_input::is_shell_chord(&ev, &mods_with_super(true), true),
+            "an open overlay must not swallow the panic key either"
+        );
     }
 
     /// A non-keyboard event (cursor move) is never the lock chord even
