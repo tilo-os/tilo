@@ -18,6 +18,13 @@ use crate::model::{
 
 const USER_AGENT: &str = "qOS-Maps/0.1 (https://qos.example; native maps app)";
 
+/// Ramer–Douglas–Peucker tolerance (metres) applied to fetched route and
+/// transit-leg geometry on the fetch worker, before it reaches the model. A few
+/// metres is imperceptible at map zoom but strips the dense collinear shape
+/// points OSRM/MOTIS emit along straight segments, so the render thread projects
+/// far fewer points per frame. See [`crate::geo::simplify_polyline`].
+const GEOMETRY_SIMPLIFY_M: f64 = 3.0;
+
 /// Install the process-wide rustls [`CryptoProvider`] exactly once, before any
 /// HTTPS fetch runs.
 ///
@@ -364,7 +371,7 @@ pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String
     let r0 = &v["routes"][0];
     let distance_m = r0["distance"].as_f64().unwrap_or(0.0);
     let duration_s = r0["duration"].as_f64().unwrap_or(0.0);
-    let geometry = r0["geometry"]["coordinates"]
+    let raw_geometry = r0["geometry"]["coordinates"]
         .as_array()
         .map(|a| {
             a.iter()
@@ -376,6 +383,8 @@ pub fn route(from: LatLon, to: LatLon, mode: TravelMode) -> Result<Route, String
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
+    // Simplify on the worker so the render thread projects fewer points.
+    let geometry = crate::geo::simplify_polyline(&raw_geometry, GEOMETRY_SIMPLIFY_M);
 
     let mut steps = Vec::new();
     if let Some(legs) = r0["legs"].as_array() {
@@ -558,7 +567,8 @@ fn leg_geometry(leg: &Value) -> Vec<LatLon> {
         return Vec::new();
     };
     let precision = g["precision"].as_u64().unwrap_or(5) as u32;
-    decode_polyline(points, precision)
+    // Simplify the leg on the worker (same rationale as the road route).
+    crate::geo::simplify_polyline(&decode_polyline(points, precision), GEOMETRY_SIMPLIFY_M)
 }
 
 /// Decode a Google-encoded polyline string into `LatLon`s at the given
