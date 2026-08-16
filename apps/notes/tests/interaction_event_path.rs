@@ -823,6 +823,169 @@ fn slash_menu_creates_numbered_list_that_continues_on_enter() {
 }
 
 #[test]
+fn editing_the_in_page_title_renames_the_page_and_updates_the_sidebar() {
+    // Clicking the prominent title opens an inline rename; committing it renames
+    // the page in the model AND re-syncs the sidebar row — the in-note title and
+    // the tree stay in step.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    let welcome = app.workspace_pages_for_test()[0].id;
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    assert_eq!(app.sidebar_row_title_for_test(0), Some("Welcome"));
+
+    // Click the title band → begin editing (whole title selected).
+    let c = app.main_title_center_for_test();
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c.x, c.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    assert!(
+        app.main_title_editing_for_test(),
+        "clicking the title opens the inline rename"
+    );
+
+    // Type a new name — select-all means it replaces the old value — then Enter.
+    for ch in ["R", "o", "a", "d", "m", "a", "p"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(ch));
+    }
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Enter));
+
+    assert!(!app.main_title_editing_for_test(), "Enter commits and ends the edit");
+    let pages = app.workspace_pages_for_test();
+    let renamed = pages.iter().find(|p| p.id == welcome).unwrap();
+    assert_eq!(renamed.title, "Roadmap", "committing the title renames the page");
+    assert_eq!(app.main_panel_mut().title(), Some("Roadmap"), "the panel shows the new title");
+    assert_eq!(
+        app.sidebar_row_title_for_test(0),
+        Some("Roadmap"),
+        "the rename propagates into the sidebar row"
+    );
+
+    // Escape must cancel without renaming.
+    let c = app.main_title_center_for_test();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(c.x, c.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    for ch in ["N", "o", "p", "e"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(ch));
+    }
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Escape));
+    assert!(!app.main_title_editing_for_test(), "Escape ends the edit");
+    let pages = app.workspace_pages_for_test();
+    let after = pages.iter().find(|p| p.id == welcome).unwrap();
+    assert_eq!(after.title, "Roadmap", "Escape cancels — the title is unchanged");
+}
+
+#[test]
+fn hash_space_promotes_paragraph_to_heading_through_the_event_path() {
+    // The markdown shortcut, proven on the real keystroke flow: typing `#`
+    // then a space at the start of an empty paragraph turns it into an H1 and
+    // strips the `# ` prefix. This is the sequence a user actually types —
+    // the old code only fired when the block was empty *before* the keystroke,
+    // so the space (typed into a non-empty "#") never promoted.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    // A fresh, empty page so the first block is an empty paragraph.
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    assert!(app.main_panel_mut().editor_mut().is_focused());
+
+    let no_mods = Modifiers::default();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key("#"));
+    // A lone `#` must NOT promote — the prefix isn't complete yet.
+    assert!(
+        matches!(
+            app.main_panel_mut().editor().blocks()[0].kind,
+            ui::widget::BlockKind::Paragraph
+        ),
+        "a bare `#` stays a paragraph until the space completes the prefix"
+    );
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(" "));
+
+    {
+        let blocks = app.main_panel_mut().editor().blocks();
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),
+            "`# ` promotes the paragraph to an H1"
+        );
+        assert_eq!(blocks[0].text(), "", "the `# ` prefix is stripped on promotion");
+    }
+
+    // `## ` and `### ` promote to H2 / H3 on their own fresh pages.
+    for (hashes, level) in [("##", 2u8), ("###", 3u8)] {
+        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.sync_sidebar_for_test();
+        let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+        for ch in hashes.chars() {
+            dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(&ch.to_string()));
+        }
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(" "));
+        let blocks = app.main_panel_mut().editor().blocks();
+        assert!(
+            matches!(blocks[0].kind, ui::widget::BlockKind::Heading(l) if l == level),
+            "`{hashes} ` promotes to a level-{level} heading"
+        );
+        assert_eq!(blocks[0].text(), "");
+    }
+}
+
+#[test]
+fn slash_command_click_applies_kind_and_strips_the_trigger() {
+    // Selecting a slash command with the MOUSE must delete the `/…` trigger
+    // and apply the block kind — the old menu had no mouse handler, so a click
+    // just dismissed it and left the literal `/` behind.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    assert!(app.main_panel_mut().editor_mut().is_focused());
+
+    let no_mods = Modifiers::default();
+    // Open the menu and filter to the single "Heading 1" row.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key("/"));
+    assert!(app.editor_slash_menu_visible_for_test(), "`/` opens the block menu");
+    for c in ["h", "1"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(c));
+    }
+    assert_eq!(
+        app.main_panel_mut().editor().slash_menu().visible_len(),
+        1,
+        "`/h1` narrows to exactly the Heading 1 row"
+    );
+
+    // Click that row through the real pointer path.
+    let (cx, cy) = {
+        let rect = app.main_panel_mut().editor().slash_menu().rect();
+        (rect.center().x, rect.y0 + 14.0)
+    };
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(cx, cy));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+
+    assert!(
+        !app.editor_slash_menu_visible_for_test(),
+        "clicking a row closes the menu"
+    );
+    let blocks = app.main_panel_mut().editor().blocks();
+    assert_eq!(blocks.len(), 1);
+    assert!(
+        matches!(blocks[0].kind, ui::widget::BlockKind::Heading(1)),
+        "the clicked command converts the block to a Heading 1"
+    );
+    assert_eq!(
+        blocks[0].text(),
+        "",
+        "the `/` trigger (and filter) is stripped — no literal slash left behind"
+    );
+}
+
+#[test]
 fn alt_arrow_reorders_selected_page_among_siblings() {
     let tmp = TempDir::new().unwrap();
     let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();

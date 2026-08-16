@@ -64,8 +64,6 @@ fn seed_sample_workspace(root: &Path) {
         (
             launch,
             "\
-# Launch checklist
-
 What has to land before we ship. Owner in **bold**.
 
 ## This week
@@ -92,8 +90,6 @@ git push origin v1.0 --tags
         (
             inbox,
             "\
-# Inbox
-
 Quick captures to sort later.
 
 - Call the dentist
@@ -106,8 +102,6 @@ Quick captures to sort later.
         (
             reading,
             "\
-# Reading list
-
 Things worth coming back to.
 
 - *The Timeless Way of Building* — Alexander
@@ -120,8 +114,6 @@ Things worth coming back to.
         (
             projects,
             "\
-# Projects
-
 Active work, one page each.
 
 - [[Launch checklist]]
@@ -130,8 +122,6 @@ Active work, one page each.
         (
             recipes,
             "\
-# Recipes
-
 ## Weeknight pasta
 
 - 200g pasta
@@ -221,6 +211,10 @@ fn settle_layout(
 ///   live reflow gap).
 /// - `Some("menu")` — open a page row's right-click context menu.
 /// - `Some("slash")` — open the editor's `/` block menu.
+/// - `Some("slash_applied")` — pick a `/` command by click; the trigger is
+///   stripped and the block converts.
+/// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
+/// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
 pub fn render_to_path(
     viewport: (u32, u32),
@@ -398,6 +392,22 @@ fn drive_scenario(
         }
     };
 
+    let named_key = |k: winit::keyboard::NamedKey| {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    };
     match scenario {
         Some("drawer") => app.open_drawer_for_shots(),
         Some("drag") => {
@@ -446,6 +456,52 @@ fn drive_scenario(
         Some("slash") => {
             // The editor holds focus on load; `/` opens the block menu.
             send(app, &char_key("/"));
+        }
+        Some("slash_applied") => {
+            // Fresh page → open the block menu → filter to "Heading 1" →
+            // click that row. The `/` trigger is stripped and the block
+            // becomes a heading, which we then type into. Proves the slash
+            // command applies AND removes its trigger text.
+            let btn = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor(btn.x, btn.y));
+            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            for s in ["/", "h", "1"] {
+                send(app, &char_key(s));
+            }
+            let (cx, cy) = {
+                let rect = app.main_panel_mut().editor().slash_menu().rect();
+                (rect.center().x, rect.y0 + 14.0)
+            };
+            send(app, &cursor(cx, cy));
+            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            for s in ["O", "v", "e", "r", "v", "i", "e", "w"] {
+                send(app, &char_key(s));
+            }
+        }
+        Some("heading") => {
+            // Fresh page → type a `# ` markdown shortcut: the paragraph
+            // promotes to an H1 and the prefix is stripped as the space lands.
+            let btn = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor(btn.x, btn.y));
+            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            for s in ["#", " ", "R", "o", "a", "d", "m", "a", "p"] {
+                send(app, &char_key(s));
+            }
+            // A second line of body under the heading, for context.
+            send(app, &named_key(winit::keyboard::NamedKey::Enter));
+            for s in ["S", "h", "i", "p", " ", "b", "y", " ", "Q", "3"] {
+                send(app, &char_key(s));
+            }
+        }
+        Some("title_edit") => {
+            // Click the prominent title to open its inline rename, then type —
+            // shows the editable title mid-edit (caret + selection replace).
+            let c = app.main_title_center_for_test();
+            send(app, &cursor(c.x, c.y));
+            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            for s in ["L", "a", "u", "n", "c", "h", " ", "p", "l", "a", "n"] {
+                send(app, &char_key(s));
+            }
         }
         Some("recipes") => {
             // Select the "Recipes" row (index 4) so the shot shows the
