@@ -1,0 +1,30 @@
+#!/bin/sh
+# qOS session entry point, as installed on a host that is not the qOS image.
+#
+# The display manager execs this; it execs the compositor. There is nothing
+# configurable here on purpose: the path below is the one the package owns,
+# and no environment variable, config file or argument can redirect it. The
+# developer counterpart that *can* be redirected is `qos-session-dev`, in the
+# separate `-devel` subpackage, so a machine that never installed that
+# subpackage has no way to start a session from a binary of someone's
+# choosing.
+set -eu
+
+QOS_SHELL=/usr/bin/qos-shell
+
+# `DesktopNames=nirios` in the .desktop entry is what xdg-desktop-portal
+# matches on to pick the qOS portal backend; the display manager exports it as
+# XDG_CURRENT_DESKTOP, but not every one does, so make it certain.
+XDG_CURRENT_DESKTOP=nirios
+XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+
+if [ ! -x "$QOS_SHELL" ]; then
+    echo "qos-session: $QOS_SHELL is missing or not executable" >&2
+    exit 1
+fi
+
+# --backend drm: this is a real login session on a seat of its own, driving
+# KMS directly. The winit backend (the default) is for running nested inside
+# another compositor and would have nothing to attach to here.
+exec "$QOS_SHELL" --backend drm "$@"

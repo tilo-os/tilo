@@ -1,0 +1,16 @@
+[Desktop Entry]
+# Developer session entry. Starts the compositor named in
+# ~/.config/qos/dev-session instead of the installed one; see
+# /usr/libexec/qos-session-dev for the checks it makes first.
+#
+# Named distinctly on purpose — this is the entry you pick when you want to
+# log into the build you just made, and the one you should not see on a
+# machine that has no business having it. It arrives only with the
+# qos-session-devel subpackage.
+Name=qOS (my build)
+GenericName=Collaborative spatial desktop, developer build
+Comment=Start the compositor named in ~/.config/qos/dev-session
+Exec=/usr/libexec/qos-session-dev
+TryExec=/usr/libexec/qos-session-dev
+Type=Application
+DesktopNames=nirios

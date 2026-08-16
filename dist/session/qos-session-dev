@@ -1,0 +1,98 @@
+#!/bin/sh
+# qOS *developer* session entry point.
+#
+# Starts the compositor named in ~/.config/qos/dev-session instead of the one
+# the package installed, so "edit, build, log out, log into my own build" does
+# not mean reinstalling an RPM and rebooting between every iteration.
+#
+# That is a real capability — it decides which program runs as someone's login
+# session — so it is deliberately kept away from the production path:
+#
+#   * It lives in a separate subpackage (qos-session-devel). A machine that
+#     never installed that subpackage cannot reach any of this.
+#   * It is a separate, differently-named entry in the session picker. The
+#     production session never consults a config file at all.
+#   * The target must carry the build marker that a compositor only gets from
+#     `cargo build -p shell --features dev-session` in a debug profile. So the
+#     entry starts *a qOS compositor someone deliberately built*, not an
+#     arbitrary executable — it is not a general run-this-at-login primitive.
+#   * The config file, its directory chain, the target binary and *its*
+#     directory chain must each be owned by this user or root and be writable
+#     by no one else. Anything else refuses.
+#   * $HOME, XDG_CONFIG_HOME and the rest of the environment are not consulted;
+#     the home directory comes from the passwd database. There is no
+#     environment variable that redirects this script.
+#
+# Every refusal is fatal and loud. Falling back to the installed compositor
+# would be worse than failing: you would be testing the wrong binary and the
+# session would look like it worked.
+set -eu
+
+MARKER='qos-dev-session-build-marker-v1'
+ME=$(id -u)
+
+die() {
+    echo "qos-session-dev: $*" >&2
+    echo "qos-session-dev: refusing to start a session." >&2
+    exit 1
+}
+
+[ "$ME" -ne 0 ] || die "refusing to run as root"
+
+HOMEDIR=$(getent passwd "$ME" | cut -d: -f6)
+[ -n "${HOMEDIR:-}" ] || die "no home directory in the passwd database for uid $ME"
+CONF="$HOMEDIR/.config/qos/dev-session"
+
+# Owned by this user or by root, and writable by neither group nor other.
+# `stat -L` so a symlink is judged by what it points at; the chain walk below
+# covers the directories the link itself sits in.
+path_is_trusted() {
+    _info=$(stat -L -c '%u %a' -- "$1" 2>/dev/null) || return 1
+    _uid=${_info% *}
+    _mode=${_info#* }
+    [ "$_uid" -eq "$ME" ] || [ "$_uid" -eq 0 ] || return 1
+    [ $(( 0"$_mode" & 0022 )) -eq 0 ] || return 1
+    return 0
+}
+
+# Every directory from the given one up to / must be trusted, otherwise
+# someone else can swap out what a trusted-looking path resolves to.
+chain_is_trusted() {
+    _d=$1
+    while :; do
+        path_is_trusted "$_d" || { echo "qos-session-dev: untrusted: $_d" >&2; return 1; }
+        [ "$_d" != "/" ] || return 0
+        _d=$(dirname -- "$_d")
+    done
+}
+
+[ -f "$CONF" ] || die "$CONF does not exist — write the absolute path of your compositor build into it"
+CONF_REAL=$(realpath -e -- "$CONF") || die "cannot resolve $CONF"
+path_is_trusted "$CONF_REAL" || die "$CONF_REAL must be owned by you and not writable by anyone else"
+chain_is_trusted "$(dirname -- "$CONF_REAL")" || die "the directories above $CONF_REAL are writable by others"
+
+# First non-empty, non-comment line.
+TARGET=$(sed -e 's/#.*//' -e 's/[[:space:]]*$//' -- "$CONF_REAL" | grep -m1 -v '^[[:space:]]*$' || true)
+[ -n "${TARGET:-}" ] || die "$CONF_REAL names no compositor binary"
+case "$TARGET" in
+    /*) ;;
+    *) die "the path in $CONF_REAL must be absolute, got: $TARGET" ;;
+esac
+
+TARGET_REAL=$(realpath -e -- "$TARGET") || die "cannot resolve $TARGET"
+[ -f "$TARGET_REAL" ] || die "$TARGET_REAL is not a regular file"
+[ -x "$TARGET_REAL" ] || die "$TARGET_REAL is not executable"
+path_is_trusted "$TARGET_REAL" || die "$TARGET_REAL must be owned by you and not writable by anyone else"
+chain_is_trusted "$(dirname -- "$TARGET_REAL")" || die "the directories above $TARGET_REAL are writable by others"
+
+LC_ALL=C grep -q -a -F -e "$MARKER" -- "$TARGET_REAL" || die \
+    "$TARGET_REAL carries no dev-session build marker — build it with
+    cargo build -p shell --features dev-session
+  (a --release build never carries the marker, by design)"
+
+XDG_CURRENT_DESKTOP=nirios
+XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+
+echo "qos-session-dev: starting $TARGET_REAL" >&2
+exec "$TARGET_REAL" --backend drm "$@"

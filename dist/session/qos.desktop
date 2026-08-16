@@ -1,0 +1,18 @@
+[Desktop Entry]
+# Wayland session entry for a host that runs qOS as one session among
+# others (GDM, SDDM, greetd — anything that scans
+# /usr/share/wayland-sessions). The qOS image ships its own entries under
+# os/usr/share/wayland-sessions/; this one differs in that it names
+# /usr/bin/qos-shell rather than /usr/bin/shell, because a package installed
+# onto someone else's distribution has no business claiming a name as generic
+# as `shell` in /usr/bin.
+#
+# DesktopNames=nirios is what the xdg-desktop-portal `qos.portal` file
+# matches via UseIn=nirios to activate the qOS portal backend.
+Name=qOS
+GenericName=Collaborative spatial desktop
+Comment=qOS compositor as a session on this machine
+Exec=/usr/libexec/qos-session
+TryExec=/usr/bin/qos-shell
+Type=Application
+DesktopNames=nirios

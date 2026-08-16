@@ -2,6 +2,9 @@
 os/output/
 os/quick-desktop
 **/target/
+# rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
+# staged payload, tarball and the built RPMs.
+dist/rpm/build/
 
 # BranchBox
 .branchbox/registry.json
