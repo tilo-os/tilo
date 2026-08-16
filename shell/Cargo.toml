@@ -30,6 +30,21 @@ nvenc = ["ffmpeg-next"]
 # decoder side is feature-gated because software HEVC decode is the one
 # piece that needs libavcodec.
 hdr-decode = ["ffmpeg-next"]
+# Compile the tests that need libavcodec to actually *carry* HEVC —
+# `tests/hdr_decode_pipeline.rs`, which encodes with libx265 and decodes
+# with the HEVC decoder. Off by default because that is a property of the
+# host's ffmpeg, not of qOS: Fedora builds `libavcodec-free` with
+# `--disable-decoder='h264,hevc,vc1,vvc'` and ships no libx265, so on the
+# platform qOS is built from and runs on, those tests cannot observe
+# their subject. Compiling them anyway meant one passed by printing
+# "skipping" and two failed forever. Enable on a host with an
+# HEVC-capable libavcodec (rpmfusion `libavcodec-freeworld`, or a
+# self-built ffmpeg); under the feature a missing codec is a failure.
+#
+# This gates *tests only*. `hdr-decode` still governs whether the decoder
+# is built, and the dispatch contract that holds on every host is
+# asserted in the always-compiled unit tests.
+hevc-codec-tests = ["hdr-decode"]
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
