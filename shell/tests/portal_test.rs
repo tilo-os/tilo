@@ -80,6 +80,7 @@ async fn bring_up_pair_with_spawners(
         file_picker,
         screencast_provisioner,
         remote_input_injector,
+        documents: shell::portal::DocumentStoreHandle::host_paths(),
     };
     let ctx_clone = ctx.clone();
 

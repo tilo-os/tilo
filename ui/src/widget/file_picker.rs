@@ -204,22 +204,6 @@ pub struct FilePicker {
     hover_entry: Option<usize>,
     /// Which button (0 = Cancel, 1 = Open) is hovered, or `None`.
     hover_button: Option<u8>,
-
-    /// Whether the user may return more than one path. `false` for a
-    /// plain `OpenFile`, and enforced rather than advisory: a
-    /// ctrl-click in single-select mode replaces the selection instead
-    /// of adding to it, so the dialog cannot hand back a list the
-    /// calling app is not expecting.
-    multiple: bool,
-    /// The confirm button's label. The calling app supplies it
-    /// ("Import", "Attach"); falls back to Open/Save by mode.
-    confirm_label: String,
-    /// The app that asked for this dialog, shown in the subtitle. The
-    /// user is choosing a file *for* something, and which something is
-    /// the part that makes the choice meaningful.
-    requester: Option<String>,
-    /// Caret position within `filename`, in bytes. Save mode only.
-    filename_caret: usize,
 }
 
 impl FilePicker {
@@ -259,77 +243,14 @@ impl FilePicker {
             last_click: None,
             hover_entry: None,
             hover_button: None,
-            multiple: false,
-            confirm_label: "Open".to_string(),
-            requester: None,
-            filename_caret: 0,
         };
         me.refresh_entries();
         me
     }
 
-    /// Builder: allow returning more than one path.
-    pub fn with_multiple(mut self, multiple: bool) -> Self {
-        self.multiple = multiple;
-        self
-    }
-
-    /// Builder: override the confirm button's label.
-    pub fn with_confirm_label(mut self, label: impl Into<String>) -> Self {
-        let label = label.into();
-        if !label.trim().is_empty() {
-            self.confirm_label = label;
-        }
-        self
-    }
-
-    /// Builder: name the app the dialog is choosing a file for.
-    pub fn with_requester(mut self, app_id: impl Into<String>) -> Self {
-        let app_id = app_id.into();
-        self.requester = if app_id.trim().is_empty() {
-            None
-        } else {
-            Some(app_id)
-        };
-        self
-    }
-
-    /// `true` when the dialog may return more than one path.
-    pub fn allows_multiple(&self) -> bool {
-        self.multiple
-    }
-
-    /// The confirm button's label, as rendered.
-    pub fn confirm_label(&self) -> &str {
-        &self.confirm_label
-    }
-
-    /// The subtitle line under the title: who is asking, and for what.
-    pub fn subtitle(&self) -> String {
-        match self.requester.as_deref() {
-            Some(app) if self.mode == FilePickerMode::Save => {
-                format!("{app} wants to save a file")
-            }
-            Some(app) if self.multiple => format!("{app} wants to open files"),
-            Some(app) => format!("{app} wants to open a file"),
-            None => String::new(),
-        }
-    }
-
     /// Builder: change the mode after construction.
-    ///
-    /// The confirm label follows the mode unless the caller has already
-    /// set one of its own — an app that asked for "Import" keeps it.
     pub fn with_mode(mut self, mode: FilePickerMode) -> Self {
-        let label_is_default =
-            self.confirm_label == "Open" || self.confirm_label == "Save";
         self.mode = mode;
-        if label_is_default {
-            self.confirm_label = match mode {
-                FilePickerMode::Open => "Open".to_string(),
-                FilePickerMode::Save => "Save".to_string(),
-            };
-        }
         self
     }
 
@@ -630,7 +551,7 @@ impl FilePicker {
                 }
             }
             FilePickerMode::Open => {
-                let mut paths: Vec<PathBuf> = self
+                let paths: Vec<PathBuf> = self
                     .selection
                     .selected()
                     .into_iter()
@@ -638,12 +559,6 @@ impl FilePicker {
                     .filter(|e| !e.is_dir)
                     .map(|e| e.path.clone())
                     .collect();
-                // Last line of defence on the single-select contract: an
-                // app that asked for one file gets one, whatever the
-                // selection model ended up holding.
-                if !self.multiple {
-                    paths.truncate(1);
-                }
                 if paths.is_empty() {
                     self.pending_outcome = Some(FilePickerOutcome::Cancelled);
                 } else {
@@ -676,19 +591,10 @@ impl FilePicker {
             self.last_click,
             Some((pi, t)) if pi == i && now.duration_since(t) < std::time::Duration::from_millis(500)
         );
-        // Multi-select modifiers only mean anything when the caller asked
-        // for multiple paths. In single-select mode a ctrl-click is a
-        // plain click, so the dialog cannot build a selection it is not
-        // allowed to return.
-        let (ctrl, shift) = if self.multiple {
-            (ctrl, shift)
-        } else {
-            (false, false)
-        };
         self.selection.apply_click(i, ctrl, shift);
         // In Save mode, clicking a file copies its name into the field.
         if self.mode == FilePickerMode::Save {
-            self.set_filename(entry.name.clone());
+            self.filename = entry.name.clone();
         }
         if is_double {
             self.last_click = None;
@@ -707,92 +613,8 @@ impl FilePicker {
         }
         let cur = self.selection.primary().map(|i| i as isize).unwrap_or(-1);
         let next = (cur + delta).clamp(0, len as isize - 1) as usize;
-        // Shift extends a range, which is only meaningful when more than
-        // one path may come back.
-        self.selection.move_to(next, shift && self.multiple);
+        self.selection.move_to(next, shift);
         self.scroll_to(next);
-        // Keyboard navigation in Save mode fills the field the same way
-        // clicking does, so Up/Down/Enter is a complete way to overwrite
-        // an existing file without touching the mouse.
-        if self.mode == FilePickerMode::Save {
-            if let Some(entry) = self.entries.get(next) {
-                if !entry.is_dir {
-                    let name = entry.name.clone();
-                    self.set_filename(name);
-                }
-            }
-        }
-    }
-
-    /// Replace the Save filename and park the caret at the end.
-    fn set_filename(&mut self, name: String) {
-        self.filename_caret = name.len();
-        self.filename = name;
-    }
-
-    /// The Save filename field's caret, in bytes. Clamped to the buffer
-    /// and to a character boundary, so a caret can never split a
-    /// multi-byte character and panic the splice below.
-    fn caret(&self) -> usize {
-        let mut c = self.filename_caret.min(self.filename.len());
-        while c > 0 && !self.filename.is_char_boundary(c) {
-            c -= 1;
-        }
-        c
-    }
-
-    /// Insert `s` at the caret. Used by both typing and paste, so the
-    /// two cannot disagree about where text lands.
-    fn insert_at_caret(&mut self, s: &str) {
-        let at = self.caret();
-        self.filename.insert_str(at, s);
-        self.filename_caret = at + s.len();
-    }
-
-    /// Delete the character before the caret.
-    fn backspace(&mut self) {
-        let at = self.caret();
-        if at == 0 {
-            return;
-        }
-        let mut prev = at - 1;
-        while prev > 0 && !self.filename.is_char_boundary(prev) {
-            prev -= 1;
-        }
-        self.filename.replace_range(prev..at, "");
-        self.filename_caret = prev;
-    }
-
-    /// Delete the character after the caret.
-    fn delete_forward(&mut self) {
-        let at = self.caret();
-        if at >= self.filename.len() {
-            return;
-        }
-        let mut next = at + 1;
-        while next < self.filename.len() && !self.filename.is_char_boundary(next) {
-            next += 1;
-        }
-        self.filename.replace_range(at..next, "");
-        self.filename_caret = at;
-    }
-
-    /// Move the caret one character left/right.
-    fn move_caret(&mut self, forward: bool) {
-        let at = self.caret();
-        if forward {
-            let mut next = (at + 1).min(self.filename.len());
-            while next < self.filename.len() && !self.filename.is_char_boundary(next) {
-                next += 1;
-            }
-            self.filename_caret = next;
-        } else if at > 0 {
-            let mut prev = at - 1;
-            while prev > 0 && !self.filename.is_char_boundary(prev) {
-                prev -= 1;
-            }
-            self.filename_caret = prev;
-        }
     }
 
     /// Jump to the next entry whose name starts with `ch` (type-ahead).
@@ -877,24 +699,6 @@ impl Widget for FilePicker {
             transform * Affine::translate((self.rect.x0 + PADDING, self.rect.y0 + 8.0)),
             None,
         );
-        // Who is asking. A file dialog with no attribution is a dialog
-        // the user cannot reason about — "open a file" is a different
-        // decision depending on which app is going to read it.
-        let subtitle = self.subtitle();
-        if !subtitle.is_empty() {
-            let title_w = text_renderer.measure(&self.title, title_size, None).0 as f64;
-            text_renderer.draw_text(
-                scene,
-                &subtitle,
-                tokens.typography.scale.sm,
-                tokens.colors.text_dim,
-                transform * Affine::translate((
-                    self.rect.x0 + PADDING + title_w + 10.0,
-                    self.rect.y0 + 10.0,
-                )),
-                None,
-            );
-        }
         // Up button.
         if self.can_go_up() {
             let up_hovered = self.up_rect.contains(self.last_cursor);
@@ -972,30 +776,14 @@ impl Widget for FilePicker {
             scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_focus, None, &s);
             let shown = if self.filename.is_empty() { "Filename…" } else { &self.filename };
             let color = if self.filename.is_empty() { tokens.colors.text_dim } else { tokens.colors.text_primary };
-            let text_x = field.x0 + 8.0;
-            let text_y = field.y0 + (field.height() - row_size as f64) / 2.0;
             text_renderer.draw_text(
                 scene,
                 shown,
                 row_size,
                 color,
-                transform * Affine::translate((text_x, text_y)),
+                transform * Affine::translate((field.x0 + 8.0, field.y0 + (field.height() - row_size as f64) / 2.0)),
                 None,
             );
-            // The caret. Without it the field looks like a label rather
-            // than something you can type into, and there is no way to
-            // tell where an edit will land.
-            let caret_at = self.caret();
-            let caret_dx = text_renderer
-                .measure(&self.filename[..caret_at], row_size, None)
-                .0 as f64;
-            let caret = Rect::new(
-                text_x + caret_dx,
-                field.y0 + 6.0,
-                text_x + caret_dx + 1.5,
-                field.y1 - 6.0,
-            );
-            scene.fill(Fill::NonZero, transform, tokens.colors.text_primary, None, &caret);
         }
 
         // --- Filter chip ---
@@ -1016,28 +804,11 @@ impl Widget for FilePicker {
 
         // --- Footer buttons ---
         draw_button(scene, transform, text_renderer, theme, self.cancel_rect, "Cancel", self.hover_button == Some(0), false);
-        draw_button(scene, transform, text_renderer, theme, self.open_rect, &self.confirm_label, self.hover_button == Some(1), true);
-
-        // Selection readout, between the filter chip and the buttons.
-        // In multi-select this is the only way to tell how many files
-        // are about to be handed over — the highlighted rows may be
-        // scrolled out of view.
-        let selected = self.selected_indices().len();
-        if self.mode == FilePickerMode::Open && selected > 1 {
-            let label = format!("{selected} files selected");
-            let w = text_renderer.measure(&label, row_size, None).0 as f64;
-            text_renderer.draw_text(
-                scene,
-                &label,
-                row_size,
-                tokens.colors.text_dim,
-                transform * Affine::translate((
-                    self.cancel_rect.x0 - BUTTON_GAP - w - 8.0,
-                    self.cancel_rect.y0 + (BUTTON_HEIGHT - row_size as f64) / 2.0,
-                )),
-                None,
-            );
-        }
+        let open_label = match self.mode {
+            FilePickerMode::Open => "Open",
+            FilePickerMode::Save => "Save",
+        };
+        draw_button(scene, transform, text_renderer, theme, self.open_rect, open_label, self.hover_button == Some(1), true);
     }
 
     fn handle_event(
@@ -1154,60 +925,15 @@ impl Widget for FilePicker {
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if self.mode == FilePickerMode::Save && !self.filename.is_empty() {
-                            self.backspace();
+                            self.filename.pop();
                         } else {
                             self.go_up();
                         }
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Delete) if self.mode == FilePickerMode::Save => {
-                        self.delete_forward();
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowLeft) if self.mode == FilePickerMode::Save => {
-                        self.move_caret(false);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::ArrowRight) if self.mode == FilePickerMode::Save => {
-                        self.move_caret(true);
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Home) if self.mode == FilePickerMode::Save => {
-                        self.filename_caret = 0;
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::End) if self.mode == FilePickerMode::Save => {
-                        self.filename_caret = self.filename.len();
-                        *handled = true;
-                    }
                     Key::Character(s) => {
-                        let ctrl =
-                            modifiers.state().control_key() || modifiers.state().super_key();
-                        // Ctrl+A selects every file, which is only a
-                        // meaningful request when several may come back.
-                        if ctrl && s.eq_ignore_ascii_case("a") {
-                            if self.multiple && self.mode == FilePickerMode::Open {
-                                self.selection.select_all(self.entries.len());
-                                *handled = true;
-                            }
-                        } else if ctrl && s.eq_ignore_ascii_case("v") {
-                            if self.mode == FilePickerMode::Save {
-                                if let Some(text) = crate::text_selection::clipboard_paste() {
-                                    // A pasted filename is one line. Newlines
-                                    // and separators would silently turn one
-                                    // name into a path.
-                                    let cleaned: String = text
-                                        .chars()
-                                        .filter(|c| !c.is_control() && *c != '/')
-                                        .collect();
-                                    self.insert_at_caret(&cleaned);
-                                }
-                                *handled = true;
-                            }
-                        } else if ctrl {
-                            // Leave other chords to the host.
-                        } else if self.mode == FilePickerMode::Save {
-                            self.insert_at_caret(s);
+                        if self.mode == FilePickerMode::Save {
+                            self.filename.push_str(s);
                             *handled = true;
                         } else if let Some(ch) = s.chars().next() {
                             self.type_ahead(ch);
@@ -1215,7 +941,7 @@ impl Widget for FilePicker {
                         }
                     }
                     Key::Named(NamedKey::Space) if self.mode == FilePickerMode::Save => {
-                        self.insert_at_caret(" ");
+                        self.filename.push(' ');
                         *handled = true;
                     }
                     _ => {}

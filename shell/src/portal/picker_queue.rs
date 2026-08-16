@@ -91,15 +91,17 @@ pub struct PickerScope {
 }
 
 impl PickerScope {
-    /// The scope for a caller with no workspace-specific placesin: the
-    /// user's own directories.
+    /// The baseline scope: the user's own directories.
     ///
     /// This is the *user's* reach, not the app's. The app gets nothing
-    /// from this — it gets whatever the user then picks, and only that.
+    /// from it — it gets whatever the user then picks, and only that.
+    /// The distinction matters: scoping the dialog to what the app
+    /// already holds would make the portal incapable of granting
+    /// anything new, which is the only thing it is for.
     pub fn for_user() -> Self {
         let home = std::env::var_os("HOME").map(PathBuf::from);
         let mut roots: Vec<PathBuf> = Vec::new();
-        if let Some(h) = home.as_ref() {
+        if let Some(h) = home.as_ref().filter(|h| h.is_dir()) {
             roots.push(h.clone());
         }
         // The projected workspace tree, when it is mounted. A picker
@@ -109,14 +111,43 @@ impl PickerScope {
         if workspace.is_dir() {
             roots.push(workspace);
         }
-        let initial_dir = home
-            .filter(|h| h.is_dir())
-            .or_else(|| roots.first().cloned())
+        let initial_dir = roots
+            .first()
+            .cloned()
             .unwrap_or_else(|| PathBuf::from("/"));
         if roots.is_empty() {
             roots.push(initial_dir.clone());
         }
         Self { initial_dir, roots }
+    }
+
+    /// Widen the scope with the filesystem paths this workspace has
+    /// already granted the caller.
+    ///
+    /// A path the app can already reach is not a new decision, so
+    /// showing it costs nothing — and leaving it out would be worse than
+    /// cosmetic. An app granted a project directory outside `$HOME`
+    /// would otherwise be unable to reach its own files through the
+    /// dialog, and the user would have no way to say "that one".
+    ///
+    /// Directories are added as roots. A grant on a single *file* adds
+    /// its parent, so the file is visible in a listing — the grant
+    /// itself still only covers the file.
+    pub fn with_granted_paths<I: IntoIterator<Item = PathBuf>>(mut self, granted: I) -> Self {
+        for path in granted {
+            let root = if path.is_dir() {
+                path
+            } else {
+                match path.parent() {
+                    Some(p) if p.is_dir() => p.to_path_buf(),
+                    _ => continue,
+                }
+            };
+            if !self.roots.iter().any(|r| root.starts_with(r)) {
+                self.roots.push(root);
+            }
+        }
+        self
     }
 }
 

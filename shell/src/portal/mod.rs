@@ -608,6 +608,17 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
+/// The document store this session should use.
+///
+/// One place to make the choice, so the compositor and any future
+/// caller cannot disagree about which mechanism is live. Today that is
+/// the host-path store; see [`doc_store`] for what it does and does not
+/// reach, and for the design of the FUSE-backed store that replaces it
+/// for confined callers.
+pub fn documents_for_session() -> DocumentStoreHandle {
+    DocumentStoreHandle::host_paths()
+}
+
 /// Bus name we register under. xdg-desktop-portal expects backends to
 /// own `org.freedesktop.impl.portal.desktop.<vendor>`; the vendor suffix
 /// is matched against the `portals/<vendor>.portal` config file (see
