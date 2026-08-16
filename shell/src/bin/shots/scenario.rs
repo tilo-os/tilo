@@ -534,6 +534,14 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
             };
             use shell::shell::state::WorkspaceId;
             let mode = *mode;
+            // Only one dialog is on screen at a time — a second request
+            // while one is up is answered rather than stacked. So a
+            // scenario capturing several shapes has to dismiss the
+            // previous one first, the way the user would.
+            if let Some(picker) = driver.host_mut().file_picker_mut() {
+                picker.click_cancel();
+            }
+            driver.host_mut().pump_file_picker();
             let queue = FilePickerQueue::new();
             driver
                 .host_mut()
