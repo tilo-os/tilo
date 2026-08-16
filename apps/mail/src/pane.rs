@@ -233,9 +233,11 @@ impl Pane {
             match role {
                 Role::Sidebar => {
                     let sb = r;
-                    // compose button under the header
+                    // Compose button under the shell's collapse chip (no
+                    // app-name header band to clear anymore), so it aligns with
+                    // the list column's first row.
                     let pad = 12.0;
-                    let mut y = sb.y0 + HEADER_H + 6.0;
+                    let mut y = sb.y0 + CHIP_INSET + CHIP_SIZE + 8.0;
                     hits.push((
                         Rect::new(sb.x0 + pad, y, sb.x1 - pad, y + 40.0),
                         Hit::Compose,
@@ -344,18 +346,10 @@ impl Pane {
         let sb = self.rect;
         fill_rect(scene, t, sb, c.neutral[0]);
 
-        // Header: section label (past the collapse chip). Account settings are
-        // reached per-account (the gear on each account row), not from a single
-        // global-looking header control — so there is no header gear here.
-        tr.draw_text_weighted(
-            scene,
-            "Mail",
-            15.0,
-            c.text_primary,
-            t * Affine::translate((sb.x0 + CHIP_CLEARANCE, sb.y0 + 18.0)),
-            None,
-            TextWeight::Bold,
-        );
+        // No app-name header: the OS owns window chrome and shows "Mail" in the
+        // titlebar. The shell's collapse chip sits at the sidebar's top-left;
+        // the compose action and account list flow up beneath it. Account
+        // settings are reached per-account (the gear on each account row).
 
         // Compose button.
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
