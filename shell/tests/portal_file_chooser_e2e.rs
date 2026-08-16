@@ -237,6 +237,7 @@ fn context(
             MockScreenCastProvisioner::new_with_node(1, "t"),
         )),
         remote_input_injector: RemoteInputInjectorHandle::null(),
+        print_spooler: shell::portal::PrintSpoolerHandle::null(),
         documents: portal::documents_for_session(),
     }
 }
