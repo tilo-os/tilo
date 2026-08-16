@@ -511,6 +511,10 @@ fn drive_scenario(
                 send(app, &mouse(ElementState::Pressed, MouseButton::Left));
             }
         }
+        Some("status") => {
+            // Force the floating status bubble fully visible for the still.
+            app.arm_status_bubble_for_shots();
+        }
         _ => {}
     }
 }
