@@ -78,25 +78,26 @@ echo "PASS: core binaries present (browser: $([ -x /usr/bin/browser ] && echo pr
 # a graphical session running; static plus on-disk-shape checks are
 # the strongest thing we can do at multi-user.target.
 echo "--- [3/4] Portal backend registration ---"
+# The portal is served by the compositor itself. The standalone
+# `--portal-server-only` daemon, its user unit and its D-Bus activation
+# file were removed: D-Bus permits one owner per name, so two servers
+# race and the loser serves nobody while looking healthy. Assert the
+# definition ships and that the daemon's files are gone — a resurrected
+# activation file is the failure this guards.
+PORTAL_DEF=/usr/share/xdg-desktop-portal/portals/qos.portal
 PORTAL_DBUS_SERVICE=/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
 PORTAL_USER_UNIT=/usr/lib/systemd/user/shell-portal.service
-PORTAL_DEF=/usr/share/xdg-desktop-portal/portals/qos.portal
 
-for f in "$PORTAL_DBUS_SERVICE" "$PORTAL_USER_UNIT" "$PORTAL_DEF"; do
-    if [ ! -f "$f" ]; then
-        echo "FAIL: missing portal config file: $f"
+if [ ! -f "$PORTAL_DEF" ]; then
+    echo "FAIL: missing portal definition: $PORTAL_DEF"
+    exit 1
+fi
+for f in "$PORTAL_DBUS_SERVICE" "$PORTAL_USER_UNIT"; do
+    if [ -e "$f" ]; then
+        echo "FAIL: $f is back; it races the compositor for the bus name"
         exit 1
     fi
 done
-
-if ! grep -q '^Name=org.freedesktop.impl.portal.desktop.qos$' "$PORTAL_DBUS_SERVICE"; then
-    echo "FAIL: $PORTAL_DBUS_SERVICE wrong bus name"
-    exit 1
-fi
-if ! grep -q -- '--portal-server-only' "$PORTAL_DBUS_SERVICE"; then
-    echo "FAIL: $PORTAL_DBUS_SERVICE doesn't invoke --portal-server-only"
-    exit 1
-fi
 if ! grep -q '^DBusName=org.freedesktop.impl.portal.desktop.qos$' "$PORTAL_DEF"; then
     echo "FAIL: $PORTAL_DEF wrong DBusName"
     exit 1
