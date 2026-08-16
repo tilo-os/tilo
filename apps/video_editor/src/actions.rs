@@ -46,7 +46,7 @@ use qos_actions::{
 
 use crate::doc::VideoDoc;
 use crate::model::{
-    Clip, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
+    Clip, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind, Transition,
 };
 
 /// Registry `type_id` for every video-editor action.
@@ -74,6 +74,10 @@ pub struct ClipData {
     pub saturation: f64,
     pub fade_in: f64,
     pub fade_out: f64,
+    /// The ordered effects stack, carried verbatim so a whole-clip write
+    /// (add / remove / reorder an effect) replays byte-identically.
+    #[serde(default)]
+    pub effects: Vec<crate::model::ClipEffect>,
 }
 
 impl ClipData {
@@ -94,6 +98,7 @@ impl ClipData {
             saturation: c.filters.saturation,
             fade_in: c.fade_in,
             fade_out: c.fade_out,
+            effects: c.effects.clone(),
         }
     }
 
@@ -119,6 +124,7 @@ impl ClipData {
             },
             fade_in: self.fade_in,
             fade_out: self.fade_out,
+            effects: self.effects.clone(),
         })
     }
 }
@@ -607,6 +613,28 @@ pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 ));
             }
 
+            // Effects stack — add one by name, or clear them all.
+            let add_base = clip.clone();
+            cr = cr.with_action(ActionSpec::prompted(
+                "add-effect",
+                "Add effect",
+                "grayscale / sepia / invert / warm / cool / vignette",
+                "grayscale",
+                ExecutionLocus::ClientLocal,
+                move |arg: &str| {
+                    let mut next = add_base.clone();
+                    if let Some(k) = EffectKind::from_str(arg) {
+                        next.add_effect(k);
+                    }
+                    encode(&upsert_clip_action(&next))
+                },
+            ));
+            if !clip.effects.is_empty() {
+                let mut cleared = clip.clone();
+                cleared.effects.clear();
+                cr = cr.with_action(immediate("clear-effects", "Clear effects", &upsert_clip_action(&cleared)));
+            }
+
             // Transition at the head cut — prompted by name.
             let base = clip.clone();
             cr = cr.with_action(ActionSpec::prompted(
@@ -936,6 +964,30 @@ mod tests {
         expected.filters.brightness = 0.9;
         let from_builder = encode(&upsert_clip_action(&expected));
         assert_eq!(from_spec.payload, from_builder.payload, "slider folds into one clip write");
+    }
+
+    /// The Ctrl+K "Add effect" prompt appends the named effect to the clip's
+    /// stack through the same whole-clip write the inspector uses.
+    #[test]
+    fn add_effect_action_appends_to_the_stack() {
+        let (app, mut doc) = seeded();
+        let resources = Widget::resources(&app, &doc);
+        let clip_res = resources[0]
+            .children
+            .iter()
+            .flat_map(|t| t.children.iter())
+            .find(|c| c.kind == "video.clip")
+            .unwrap();
+        let cid: Uuid = clip_res.id.0.trim_start_matches("video.clip:").parse().unwrap();
+        let before = VideoDoc::load_project(&doc).clip(cid).unwrap().effects.len();
+        let spec = clip_res.actions.iter().find(|a| a.id == "add-effect").expect("add-effect action");
+        let encoded = prompted_encode(spec, "sepia");
+        let decoded = registry().decode(&encoded).unwrap();
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        let after = VideoDoc::load_project(&doc).clip(cid).unwrap().effects.clone();
+        assert_eq!(after.len(), before + 1, "the effect was appended to the stack");
+        assert_eq!(after.last().unwrap().kind, EffectKind::Sepia);
     }
 
     /// The full undo covenant on one action: dispatched through the executor it
