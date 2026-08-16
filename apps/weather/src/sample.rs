@@ -15,7 +15,8 @@
 //! [`WeatherApp::live`]: crate::app::WeatherApp::live
 
 use crate::model::{
-    CurrentConditions, DayForecast, HourPoint, SavedLocation, WeatherModel, WeatherSnapshot,
+    AirQuality, CurrentConditions, DayForecast, HourPoint, SavedLocation, WeatherModel,
+    WeatherSnapshot,
 };
 use crate::units::Units;
 
@@ -39,6 +40,8 @@ struct DaySpec {
     /// Per-hour precip probability profile peaks around this hour (or
     /// `None` for a dry day).
     precip_peak: Option<(usize, f64)>,
+    /// Representative European AQI for the bundled air-quality reading.
+    aqi: f64,
 }
 
 /// Synthesize a 24h hourly strip starting at midnight, plus the current
@@ -158,6 +161,24 @@ fn synth_snapshot(loc: &SavedLocation, spec: &DaySpec) -> WeatherSnapshot {
     }
 }
 
+/// Synthesize a plausible air-quality reading from a [`DaySpec`]'s AQI, so the
+/// offscreen shot's air-quality section is populated without a network call.
+fn synth_air_quality(loc: &SavedLocation, spec: &DaySpec) -> AirQuality {
+    let aqi = spec.aqi;
+    let r1 = |v: f64| (v * 10.0).round() / 10.0;
+    AirQuality {
+        location_id: loc.id,
+        european_aqi: Some(aqi.round()),
+        us_aqi: Some((aqi * 1.4).round()),
+        pm2_5: Some(r1(aqi * 0.28)),
+        pm10: Some(r1(aqi * 0.46)),
+        nitrogen_dioxide: Some(r1(aqi * 0.55)),
+        ozone: Some((40.0 + aqi * 0.5).round()),
+        time: format!("2026-06-30T{:02}:00", spec.now_hour),
+        fetched_at: 0,
+    }
+}
+
 /// Build the default multi-location model used for the screenshot and as
 /// the live binary's first-frame seed.
 pub fn sample_model() -> WeatherModel {
@@ -189,6 +210,7 @@ pub fn sample_model() -> WeatherModel {
                 sunrise_h: 6,
                 sunset_h: 20,
                 precip_peak: None,
+                aqi: 24.0,
             },
         ),
         (
@@ -216,6 +238,7 @@ pub fn sample_model() -> WeatherModel {
                 sunrise_h: 4,
                 sunset_h: 19,
                 precip_peak: Some((19, 85.0)),
+                aqi: 58.0,
             },
         ),
         (
@@ -243,6 +266,7 @@ pub fn sample_model() -> WeatherModel {
                 sunrise_h: 3,
                 sunset_h: 23,
                 precip_peak: Some((22, 70.0)),
+                aqi: 12.0,
             },
         ),
         (
@@ -270,13 +294,16 @@ pub fn sample_model() -> WeatherModel {
                 sunrise_h: 5,
                 sunset_h: 19,
                 precip_peak: None,
+                aqi: 96.0,
             },
         ),
     ];
 
     for (loc, spec) in specs {
         let snap = synth_snapshot(&loc, &spec);
+        let aq = synth_air_quality(&loc, &spec);
         model.snapshots.insert(loc.id, snap);
+        model.air_quality.insert(loc.id, aq);
         model.locations.push(loc);
     }
     model.selected = 0;
@@ -309,6 +336,16 @@ mod tests {
             let snap = m.snapshot_for(loc.id).expect("every location has a snapshot");
             assert_eq!(snap.hourly.len(), 24);
             assert_eq!(snap.daily.len(), 7);
+        }
+    }
+
+    #[test]
+    fn sample_carries_air_quality_for_every_place() {
+        let m = sample_model();
+        for loc in &m.locations {
+            let aq = m.air_quality_for(loc.id).expect("every location has air quality");
+            assert!(aq.has_any(), "the reading carries real index/pollutant values");
+            assert!(aq.european_aqi.is_some());
         }
     }
 

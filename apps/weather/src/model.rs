@@ -116,6 +116,44 @@ pub struct DayForecast {
     pub sunset: String,
 }
 
+/// An air-quality reading for one location, from Open-Meteo's air-quality
+/// API. AQI values are unitless indices; the pollutant concentrations are in
+/// µg/m³. Every field is optional so a partial or missing response degrades to
+/// an honest "unavailable" rather than a fabricated zero.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AirQuality {
+    pub location_id: LocationId,
+    /// European AQI (0–20 good … >100 extremely poor).
+    pub european_aqi: Option<f64>,
+    /// US AQI (0–500).
+    pub us_aqi: Option<f64>,
+    /// Fine particulate matter, µg/m³.
+    pub pm2_5: Option<f64>,
+    /// Coarse particulate matter, µg/m³.
+    pub pm10: Option<f64>,
+    /// Nitrogen dioxide, µg/m³.
+    pub nitrogen_dioxide: Option<f64>,
+    /// Ground-level ozone, µg/m³.
+    pub ozone: Option<f64>,
+    /// Local time of the reading, ISO8601 "YYYY-MM-DDTHH:MM".
+    pub time: String,
+    /// Wall-clock epoch seconds when this reading was fetched (0 = sample).
+    pub fetched_at: u64,
+}
+
+impl AirQuality {
+    /// Whether any index or pollutant value is present — false means the
+    /// section shows its honest "unavailable" state rather than empty tiles.
+    pub fn has_any(&self) -> bool {
+        self.european_aqi.is_some()
+            || self.us_aqi.is_some()
+            || self.pm2_5.is_some()
+            || self.pm10.is_some()
+            || self.nitrogen_dioxide.is_some()
+            || self.ozone.is_some()
+    }
+}
+
 /// A complete fetched snapshot for one location.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WeatherSnapshot {
@@ -151,6 +189,9 @@ pub struct WeatherModel {
     pub selected: usize,
     pub units: Units,
     pub snapshots: std::collections::HashMap<LocationId, WeatherSnapshot>,
+    /// Latest air-quality reading per place (fetched from a separate endpoint,
+    /// so it never races the forecast snapshot).
+    pub air_quality: std::collections::HashMap<LocationId, AirQuality>,
 }
 
 impl WeatherModel {
@@ -165,6 +206,15 @@ impl WeatherModel {
 
     pub fn snapshot_for(&self, id: LocationId) -> Option<&WeatherSnapshot> {
         self.snapshots.get(&id)
+    }
+
+    pub fn air_quality_for(&self, id: LocationId) -> Option<&AirQuality> {
+        self.air_quality.get(&id)
+    }
+
+    pub fn selected_air_quality(&self) -> Option<&AirQuality> {
+        let loc = self.selected_location()?;
+        self.air_quality.get(&loc.id)
     }
 
     /// Move selection by `delta`, clamped to the location list.
@@ -211,6 +261,7 @@ impl WeatherModel {
         let selected_id = self.selected_location().map(|l| l.id);
         let removed = self.locations.remove(idx);
         self.snapshots.remove(&removed.id);
+        self.air_quality.remove(&removed.id);
         self.reselect_by_id(selected_id);
     }
 

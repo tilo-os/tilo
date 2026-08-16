@@ -106,11 +106,16 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
         lon: berlin.longitude,
         units: Units::METRIC,
     });
+    svc.request(Request::AirQuality {
+        location_id: berlin.id,
+        lat: berlin.latitude,
+        lon: berlin.longitude,
+    });
     svc.request(Request::Geocode { seq: 1, query: "Tokyo".to_string() });
 
     let deadline = Instant::now() + Duration::from_secs(10);
-    let (mut got_forecast, mut got_geocode) = (false, false);
-    while Instant::now() < deadline && !(got_forecast && got_geocode) {
+    let (mut got_forecast, mut got_geocode, mut got_aq) = (false, false, false);
+    while Instant::now() < deadline && !(got_forecast && got_geocode && got_aq) {
         for resp in svc.drain() {
             match resp {
                 Response::Forecast(snap) => {
@@ -122,6 +127,13 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
                         snap.hourly.len(),
                         snap.daily.len(),
                         snap.fetched_at,
+                    );
+                }
+                Response::AirQuality(aq) => {
+                    got_aq = true;
+                    println!(
+                        "probe: air quality Berlin — EU AQI {:?}, PM2.5 {:?}, NO2 {:?} µg/m³",
+                        aq.european_aqi, aq.pm2_5, aq.nitrogen_dioxide,
                     );
                 }
                 Response::Geocode { results, .. } => {
@@ -139,12 +151,12 @@ fn run_probe() -> Result<(), Box<dyn std::error::Error>> {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    if got_forecast && got_geocode {
-        println!("probe: OK — live Open-Meteo fetch + parse succeeded");
+    if got_forecast && got_geocode && got_aq {
+        println!("probe: OK — live Open-Meteo forecast + air-quality + geocode fetch succeeded");
         Ok(())
     } else {
         Err(format!(
-            "probe: incomplete (forecast={got_forecast}, geocode={got_geocode}) — network unreachable?"
+            "probe: incomplete (forecast={got_forecast}, air_quality={got_aq}, geocode={got_geocode}) — network unreachable?"
         )
         .into())
     }
