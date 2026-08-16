@@ -391,11 +391,17 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # full bus surface). Without this package the launcher logs a warning
 # and falls back to a direct bind of the raw session bus — degraded
 # security, no functional regression.
+#
+# `git` is here because it was only ever in the throwaway builder stage: the
+# shipped system had none, so a developer on this machine could not clone the
+# repository the machine is built from. The Git client app does not need it —
+# it links a vendored libgit2 — so this is for the command line only.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
     distrobox \
+    git \
     podman \
     foot \
     wl-clipboard \
