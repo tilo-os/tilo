@@ -231,6 +231,11 @@ pub struct VideoEditorApp {
     /// `true` while the OS is hovering a file over the window (an external
     /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
     file_hovering: bool,
+    /// Real audio waveform peaks per source, computed off-thread and cached.
+    waveforms: crate::waveform::WaveformCache,
+    /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
+    /// captures them). The live app leaves this off and computes off-thread.
+    warm_waveforms_sync: bool,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -307,6 +312,8 @@ impl VideoEditorApp {
             bin_rename: None,
             bin_drag: None,
             file_hovering: false,
+            waveforms: crate::waveform::WaveformCache::new(),
+            warm_waveforms_sync: false,
         }
     }
 
@@ -316,6 +323,9 @@ impl VideoEditorApp {
     pub fn new_demo() -> Self {
         let mut app = Self::new();
         app.seed_demo = true;
+        // A single-frame demo/`--shots` render can't wait on a background
+        // waveform compute, so warm them synchronously for a deterministic shot.
+        app.warm_waveforms_sync = true;
         app
     }
 
@@ -1444,6 +1454,23 @@ impl Widget for VideoEditorApp {
             }
         }
         self.ensure_initial_selection();
+        // Keep audio waveforms current: drain completed background computes, then
+        // request (off-thread) or warm (synchronous, for --shots) each source.
+        self.waveforms.drain();
+        let audio: Vec<(MediaId, crate::media::MediaSource)> = self
+            .project
+            .media
+            .iter()
+            .filter(|m| m.kind == MediaKind::Audio)
+            .map(|m| (m.id, m.source()))
+            .collect();
+        for (id, src) in audio {
+            if self.warm_waveforms_sync {
+                self.waveforms.warm_blocking(id, &src);
+            } else {
+                self.waveforms.request(id, &src);
+            }
+        }
         // Apply a one-shot capture scenario once the project is loaded.
         if !self.shot_applied && self.shot_scenario != ShotScenario::Live
             && !self.project.clips.is_empty()
@@ -1466,6 +1493,7 @@ impl Widget for VideoEditorApp {
             || (self.seed_demo && self.project.clips.is_empty())
             || self.import_rx.is_some()
             || !self.pending_imports.is_empty()
+            || self.waveforms.has_pending() // keep syncing until peaks land
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2439,12 +2467,17 @@ impl VideoEditorApp {
                     fill_rrect(scene, tf, lighten(base, 0.18), block, 2.0);
                 }
             } else {
-                let midy = thumb.center().y;
-                for i in 0..9 {
-                    let bx = thumb.x0 + 6.0 + i as f64 * 6.4;
-                    let amp = waveform_amp(i as f64) * (thumb.height() / 2.0 - 6.0);
-                    let bar = Rect::new(bx, midy - amp, bx + 3.0, midy + amp);
-                    fill_rect(scene, tf, lighten(base, 0.25), bar);
+                let color = lighten(base, 0.25);
+                if let Some(peaks) = self.waveforms.peaks(m.id) {
+                    let inner = Rect::new(thumb.x0 + 4.0, thumb.y0 + 6.0, thumb.x1 - 4.0, thumb.y1 - 6.0);
+                    draw_waveform(scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color);
+                } else {
+                    let midy = thumb.center().y;
+                    for i in 0..9 {
+                        let bx = thumb.x0 + 6.0 + i as f64 * 6.4;
+                        let amp = waveform_amp(i as f64) * (thumb.height() / 2.0 - 6.0);
+                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 3.0, midy + amp));
+                    }
                 }
             }
             // kind dot.
@@ -2941,12 +2974,20 @@ impl VideoEditorApp {
                     fill_rrect(scene, tf, lighten(base, 0.16), Rect::new(bx, inner.y0 + 3.0, bx + 22.0, inner.y1 - 3.0), 2.0);
                 }
             } else {
-                let midy = inner.center().y;
-                let n = (inner.width() / 4.0).floor() as i64;
-                for i in 0..n {
-                    let bx = inner.x0 + 2.0 + i as f64 * 4.0;
-                    let amp = waveform_amp(i as f64 + clip.start) * (inner.height() / 2.0 - 2.0) * (0.35 + clip.volume * 0.65);
-                    fill_rect(scene, tf, lighten(base, 0.3), Rect::new(bx, midy - amp, bx + 2.0, midy + amp));
+                let color = lighten(base, 0.3);
+                let media_dur = self.project.media(clip.media).map(|m| m.duration).unwrap_or(0.0);
+                if let Some(peaks) = self.waveforms.peaks(clip.media) {
+                    // Real waveform: map the clip's source window into the peaks.
+                    draw_waveform(scene, tf, inner, peaks, clip.in_point, clip.out_point, media_dur, clip.volume, color);
+                } else {
+                    // No real signal yet — a neutral representative envelope.
+                    let midy = inner.center().y;
+                    let n = (inner.width() / 4.0).floor() as i64;
+                    for i in 0..n {
+                        let bx = inner.x0 + 2.0 + i as f64 * 4.0;
+                        let amp = waveform_amp(i as f64 + clip.start) * (inner.height() / 2.0 - 2.0) * (0.35 + clip.volume * 0.65);
+                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 2.0, midy + amp));
+                    }
                 }
             }
         }
@@ -3183,6 +3224,40 @@ fn lighten(c: Color, t: f64) -> Color {
 }
 fn darken(c: Color, t: f64) -> Color {
     Color::from_rgb8(lerp_u8(c.r(), 0, t), lerp_u8(c.g(), 0, t), lerp_u8(c.b(), 0, t))
+}
+
+/// Draw a real audio waveform from normalized `peaks` into `area`, mapping the
+/// source window `[in_p, out_p]` (over `media_dur`) into the peaks array so a
+/// trimmed clip shows its own portion. `volume` scales the bar height.
+#[allow(clippy::too_many_arguments)]
+fn draw_waveform(
+    scene: &mut Scene,
+    tf: Affine,
+    area: Rect,
+    peaks: &[f32],
+    in_p: f64,
+    out_p: f64,
+    media_dur: f64,
+    volume: f64,
+    color: Color,
+) {
+    if area.width() < 3.0 || area.height() < 2.0 || peaks.is_empty() {
+        return;
+    }
+    let bars = (area.width() / 3.0).floor().max(1.0) as i64;
+    let midy = area.center().y;
+    let half = (area.height() / 2.0 - 2.0).max(1.0);
+    let dur = media_dur.max(1e-6);
+    let vscale = 0.25 + volume.clamp(0.0, 1.0) * 0.75;
+    for i in 0..bars {
+        let fx = (i as f64 + 0.5) / bars as f64;
+        let x = area.x0 + 2.0 + fx * (area.width() - 4.0);
+        let t = in_p + fx * (out_p - in_p);
+        let frac = (t / dur).clamp(0.0, 1.0);
+        let idx = ((frac * peaks.len() as f64) as usize).min(peaks.len() - 1);
+        let amp = (peaks[idx] as f64 * half * vscale).max(0.5);
+        fill_rect(scene, tf, color, Rect::new(x, midy - amp, x + 2.0, midy + amp));
+    }
 }
 
 /// Deterministic pseudo-waveform amplitude in 0..1 for column `i`.
@@ -3809,6 +3884,68 @@ mod tests {
             placed.start,
         );
         assert!(app.bin_drag.is_none(), "the drag ended on release");
+    }
+
+    /// Write a real 16-bit PCM mono WAV to a temp file for waveform tests.
+    fn write_real_wav() -> std::path::PathBuf {
+        let mut data = Vec::new();
+        for i in 0..8000u32 {
+            let s = ((i as f32 * 0.2).sin() * 0.7 * 32767.0) as i16;
+            data.extend_from_slice(&s.to_le_bytes());
+        }
+        let sr = 8000u32;
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data.len() as u32).to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&sr.to_le_bytes());
+        v.extend_from_slice(&(sr * 2).to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        v.extend_from_slice(&data);
+        let f = std::env::temp_dir().join(format!("qos-ve-appwave-{}.wav", std::process::id()));
+        std::fs::write(&f, v).unwrap();
+        f
+    }
+
+    #[test]
+    fn app_warms_a_real_waveform_for_an_audio_source() {
+        // An audio source pointing at a real WAV file gets real peaks cached by
+        // the sync wiring (synchronous warm, as a --shots capture uses).
+        let f = write_real_wav();
+        let mut app = VideoEditorApp::new();
+        app.warm_waveforms_sync = true;
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        let m = MediaItem {
+            id: Uuid::new_v4(),
+            name: "vo.wav".into(),
+            kind: MediaKind::Audio,
+            duration: 1.0,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            palette: 5,
+            path: f.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        };
+        let mid = m.id;
+        VideoDoc::upsert_media(&mut doc, &m);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.waveforms.peaks(mid).is_some(),
+            "the app warmed real peaks for the audio source",
+        );
+        let peaks = app.waveforms.peaks(mid).unwrap();
+        assert_eq!(peaks.len(), crate::waveform::WAVE_BUCKETS);
+        assert!(peaks.iter().cloned().fold(0.0, f32::max) > 0.9, "a real signal is present");
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]
