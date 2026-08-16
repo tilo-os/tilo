@@ -517,6 +517,11 @@ impl FileExplorerWidget {
         // A new directory starts at the top; the persisted scroll offset only
         // survives *structural* rebuilds within the same directory.
         self.scroll_offset.set((0.0, 0.0));
+        // Opening the Trash for the first time (nothing deleted yet) should show
+        // an empty folder, not a "no such directory" error, so materialise it.
+        if fileops::is_trash_dir(&path) {
+            let _ = fileops::ensure_trash_dir();
+        }
         match read_dir_sync(&path) {
             Ok(mut entries) => {
                 if !self.show_hidden {
@@ -763,13 +768,52 @@ impl FileExplorerWidget {
             FileCommand::Delete => {
                 let paths = self.selected_paths();
                 if !paths.is_empty() {
-                    match fileops::delete_to_trash(&paths) {
-                        Ok(()) => {
-                            self.refresh();
-                            self.status = Some(format!("Moved {} to Trash", paths.len()));
+                    if self.is_trash_view() {
+                        // Already in the Trash — a second delete is a permanent
+                        // purge, not a re-trash.
+                        match fileops::purge_entries(&paths) {
+                            Ok(n) => {
+                                self.refresh();
+                                self.status = Some(format!("Permanently deleted {n}"));
+                            }
+                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
                         }
-                        Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                    } else {
+                        match fileops::delete_to_trash(&paths) {
+                            Ok(()) => {
+                                self.refresh();
+                                self.status = Some(format!("Moved {} to Trash", paths.len()));
+                            }
+                            Err(e) => self.status = Some(format!("Delete failed: {e}")),
+                        }
                     }
+                }
+                true
+            }
+            FileCommand::RestoreFromTrash => {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    match fileops::restore_entries(&paths) {
+                        Ok(n) => {
+                            self.refresh();
+                            self.status = Some(format!("Restored {n}"));
+                        }
+                        Err(e) => self.status = Some(format!("Restore failed: {e}")),
+                    }
+                }
+                true
+            }
+            FileCommand::EmptyTrash => {
+                match fileops::empty_trash() {
+                    Ok(n) => {
+                        self.refresh();
+                        self.status = Some(if n == 0 {
+                            "Trash is already empty".to_string()
+                        } else {
+                            format!("Emptied Trash ({n})")
+                        });
+                    }
+                    Err(e) => self.status = Some(format!("Empty Trash failed: {e}")),
                 }
                 true
             }
@@ -1603,7 +1647,23 @@ impl FileExplorerWidget {
         let has_sel = !self.selection.is_empty();
         let can_paste = !self.clipboard.is_empty();
         let has_templates = !templates.is_empty();
+        let in_trash = self.is_trash_view();
         let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+
+        // The Trash is a restore/purge surface, not an editing one: offer Open
+        // plus Restore / permanent-delete / Empty, and nothing that would edit
+        // in place.
+        if in_trash {
+            if has_sel {
+                spec.push(("Open".into(), self.selection.primary().map(FileCommand::Activate)));
+                spec.push((String::new(), None));
+                spec.push(("Restore".into(), Some(FileCommand::RestoreFromTrash)));
+                spec.push(("Delete Permanently".into(), Some(FileCommand::Delete)));
+            }
+            spec.push((String::new(), None));
+            spec.push(("Empty Trash".into(), Some(FileCommand::EmptyTrash)));
+            return spec;
+        }
 
         if has_sel {
             spec.push(("Open".into(), self.selection.primary().map(FileCommand::Activate)));
@@ -1657,6 +1717,12 @@ impl FileExplorerWidget {
         spec.push((String::new(), None));
         spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
         spec
+    }
+
+    /// Whether the current directory is the Trash, which swaps the delete
+    /// affordances for Restore / Empty / permanent-delete.
+    fn is_trash_view(&self) -> bool {
+        fileops::is_trash_dir(&self.current_path)
     }
 
     /// The path of the single selected entry when it is a directory (drives the
@@ -1770,6 +1836,10 @@ impl FileExplorerWidget {
             },
             Some(FileCommand::ToggleHidden),
         ));
+        if self.is_trash_view() {
+            spec.push((String::new(), None));
+            spec.push(("Empty Trash".into(), Some(FileCommand::EmptyTrash)));
+        }
         spec.push((String::new(), None));
         spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
         self.open_menu_right_aligned(spec, anchor);
@@ -2730,6 +2800,28 @@ mod command_path_tests {
         assert!(w.apply_command(FileCommand::SetSort(SortBy::Name)));
         assert_eq!(w.sort_by(), SortBy::Name);
         assert_eq!(w.entries_snapshot()[0].name, "a.txt");
+    }
+
+    #[test]
+    fn trash_view_menu_offers_restore_and_empty_not_move_to_trash() {
+        let Some(trash) = crate::fileops::trash_dir() else { return };
+        let mut w = FileExplorerWidget::new();
+        // Pretend we are viewing the Trash (without touching the real trash).
+        w.current_path = trash;
+        w.entries = vec![ent("deleted.txt", false, "text/plain")];
+        w.selection.select_only(0);
+        w.open_context_menu(Point::new(5.0, 5.0));
+        let labels: Vec<String> = w
+            .context_menu
+            .items()
+            .iter()
+            .filter_map(|i| i.label().map(str::to_string))
+            .collect();
+        assert!(labels.contains(&"Restore".to_string()), "trash menu offers Restore: {labels:?}");
+        assert!(labels.contains(&"Empty Trash".to_string()), "and Empty Trash: {labels:?}");
+        assert!(labels.contains(&"Delete Permanently".to_string()), "and a permanent delete");
+        assert!(!labels.contains(&"Move to Trash".to_string()), "not re-trash (already trashed)");
+        assert!(!labels.contains(&"Rename".to_string()), "no in-place editing in the trash");
     }
 
     #[test]

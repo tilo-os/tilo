@@ -109,6 +109,11 @@ pub enum FileCommand {
     ZoomOut,
     /// Toggle showing dotfiles.
     ToggleHidden,
+    /// Restore the current selection from the Trash to its original location
+    /// (only meaningful while viewing the Trash).
+    RestoreFromTrash,
+    /// Permanently empty the Trash.
+    EmptyTrash,
 }
 
 /// Shared, cheaply-clonable queue the child widgets push into.

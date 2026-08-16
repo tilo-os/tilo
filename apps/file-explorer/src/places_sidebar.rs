@@ -105,10 +105,16 @@ pub struct PlacesSidebar {
 
 impl PlacesSidebar {
     pub fn new(favs: FavStore, active: PathBuf, sink: CommandSink) -> Self {
+        // System places: the filesystem root, then the Trash (when the platform
+        // exposes one). Deleting moves files here; clicking it opens the trash.
+        let mut system = vec![(Icon::HardDrive, "Root".to_string(), PathBuf::from("/"))];
+        if let Some(trash) = crate::fileops::trash_dir() {
+            system.push((Icon::Trash2, "Trash".to_string(), trash));
+        }
         Self {
             favs,
             active,
-            system: vec![(Icon::HardDrive, "Root".to_string(), PathBuf::from("/"))],
+            system,
             sink,
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
@@ -629,6 +635,22 @@ mod tests {
     }
 
     #[test]
+    fn trash_is_a_system_place_pointing_at_the_home_trash() {
+        // Deleting moves files to the Trash; the sidebar must offer a way back to
+        // it. It sits in the System section (near Root) and points at the XDG
+        // home-trash files dir.
+        let sink = new_sink();
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink);
+        if let Some(trash) = crate::fileops::trash_dir() {
+            let entry = sb.system.iter().find(|(_, label, _)| label == "Trash");
+            let (icon, _, path) = entry.expect("a Trash system place");
+            assert_eq!(*icon, Icon::Trash2, "the trash uses a trash-can glyph");
+            assert_eq!(*path, trash, "and points at the home-trash files dir");
+        }
+    }
+
+    #[test]
     fn workspace_roots_are_clickable_system_places() {
         let sink = new_sink();
         let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
@@ -638,7 +660,10 @@ mod tests {
         // The workspace leads the System section with a cloud emblem.
         assert_eq!(sb.system[0].1, "workspace", "labelled by the mount's folder name");
         assert_eq!(sb.system[0].2, ws);
-        assert_eq!(sb.system.last().unwrap().1, "Root", "Root still present, after the workspace");
+        assert!(
+            sb.system.iter().any(|(_, label, _)| label == "Root"),
+            "Root still present, after the workspace",
+        );
 
         let (tree, node) = lay_out(&mut sb);
         // Click the first System row (the workspace) and expect a navigation.
