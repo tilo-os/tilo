@@ -3936,13 +3936,13 @@ mod tests {
 
     /// Concept parity: the per-tab close pill in
     /// `nirios-concept/src/components/WindowFrame.tsx:334` uses
-    /// `hover:bg-red-500/80`. Our implementation must render the same
-    /// red-500 fill at 80% alpha (≈ rgba(239, 68, 68, 204)) when the
-    /// cursor is over the close glyph. This pins the semantic token
-    /// path end-to-end: `semantic.danger` is red-500, and we multiply
-    /// by 0.8 at paint time rather than hard-coding a literal.
+    /// `hover:bg-red-500/80`. Our implementation must render the theme's
+    /// `semantic.danger` fill at 80% alpha when the cursor is over the close
+    /// glyph. This pins the semantic token path end-to-end: the chip is
+    /// `semantic.danger` multiplied by 0.8 at paint time, never a hard-coded
+    /// literal — so it tracks whatever danger colour the active theme carries.
     #[test]
-    fn close_hover_uses_red_500_fill() {
+    fn close_hover_uses_danger_token_at_80_percent() {
         let mut b = bar();
         // Synthetic pill/close layout. The numbers don't matter — the
         // chip-color decision only consults hover state.
@@ -3956,10 +3956,11 @@ mod tests {
         let color = b
             .close_chip_color_for_tests(0, &theme)
             .expect("close-hover must produce a chip fill");
+        let expected = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
         assert_eq!(
             (color.r(), color.g(), color.b(), color.a()),
-            (239, 68, 68, 204),
-            "close-hover must paint red-500 at 80% alpha (concept: hover:bg-red-500/80)",
+            (expected.r(), expected.g(), expected.b(), expected.a()),
+            "close-hover must paint the theme danger token at 80% alpha",
         );
 
         // Without close-hover (tab hovered only) we should fall back
