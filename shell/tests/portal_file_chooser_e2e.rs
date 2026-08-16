@@ -70,6 +70,30 @@ fn left_press() -> winit::event::WindowEvent {
     }
 }
 
+/// winit 0.30 exposes no `KeyEvent` constructor (`platform_specific` is
+/// `pub(crate)`), so zero-init and overwrite the fields the shell reads.
+/// Same workaround as `tests/document_open_e2e.rs::key_press_event` and
+/// `bin/shots/driver.rs::key_press_event`.
+fn key_press(ch: char) -> winit::event::WindowEvent {
+    use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey, SmolStr};
+    // SAFETY: every public field of `KeyEvent` has a valid all-zero bit
+    // pattern (`Option` → `None`, the enums' first variants, `bool` →
+    // `false`) and the fields the shell reads are overwritten below.
+    let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+    let s = SmolStr::new(ch.to_string());
+    ev.logical_key = Key::Character(s.clone());
+    ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = winit::event::ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = Some(s);
+    winit::event::WindowEvent::KeyboardInput {
+        device_id: synth_device(),
+        event: ev,
+        is_synthetic: false,
+    }
+}
+
 /// Send one event into the live dialog through the host's own
 /// `handle_event` — the modal intercept the compositor installs, not the
 /// widget in isolation.
@@ -151,10 +175,9 @@ fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
 /// Register the FileChooser backend on a p2p pair and hand back a proxy.
 async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'static>) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
-    let guid: zbus::names::OwnedGuid = zbus::Guid::try_from(TEST_GUID).unwrap().into();
     let server = Builder::unix_stream(server_sock)
-        .server(guid)
-        .unwrap()
+        .server(TEST_GUID)
+        .expect("guid")
         .p2p()
         .serve_at(OBJECT_PATH, portal::FileChooserBackend::new(ctx))
         .unwrap()
@@ -405,24 +428,7 @@ async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     // Type the filename, character by character, through the host's
     // modal keyboard route.
     for ch in "notes.md".chars() {
-        dispatch(
-            &mut host,
-            &winit::event::WindowEvent::KeyboardInput {
-                device_id: synth_device(),
-                event: winit::event::KeyEvent {
-                    physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                        winit::keyboard::NativeKeyCode::Unidentified,
-                    ),
-                    logical_key: winit::keyboard::Key::Character(ch.to_string().into()),
-                    text: None,
-                    location: winit::keyboard::KeyLocation::Standard,
-                    state: winit::event::ElementState::Pressed,
-                    repeat: false,
-                    platform_specific: Default::default(),
-                },
-                is_synthetic: false,
-            },
-        );
+        dispatch(&mut host, &key_press(ch));
     }
     assert_eq!(
         host.file_picker().expect("dialog").filename(),

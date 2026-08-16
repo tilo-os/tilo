@@ -2769,7 +2769,7 @@ impl ShellOverlayHost {
     /// with.
     ///
     /// Returns whether anything changed, so the caller can repaint.
-    pub(crate) fn pump_file_picker(&mut self) -> bool {
+    pub fn pump_file_picker(&mut self) -> bool {
         let mut dirty = false;
 
         // Step 1 — resolve a finished dialog. `take_outcome` drains, so
@@ -6955,7 +6955,7 @@ fn compose_overlay_transition(t: f32, target: f32) -> (f32, f64, f32, f64) {
 /// Sized as a fraction of the viewport with a floor and a ceiling, so it
 /// stays usable on a small output and does not become a full-screen wall
 /// of filenames on a large one.
-pub(crate) fn file_picker_rect(viewport: Rect) -> Rect {
+pub fn file_picker_rect(viewport: Rect) -> Rect {
     const MIN_W: f64 = 420.0;
     const MIN_H: f64 = 320.0;
     const MAX_W: f64 = 900.0;
