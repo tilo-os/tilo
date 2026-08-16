@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::command::CommandSink;
 use crate::model::{Entry, SortBy, SortOrder, ViewMode};
-use crate::views::file_view::FileView;
+use crate::views::file_view::{DropTargets, FileView};
 use ui::widget::Widget;
 use ui::SelectionModel;
 use vello::kurbo::{Point, Rect};
@@ -34,6 +34,7 @@ pub fn build_list(
     renaming: Option<usize>,
     rename_rect: Rc<Cell<Option<Rect>>>,
     cursor: Point,
+    drop_targets: DropTargets,
 ) -> Box<dyn Widget> {
     Box::new(
         FileView::new(entries, selection, sink)
@@ -41,6 +42,7 @@ pub fn build_list(
             .with_scale(scale)
             .with_sort(sort_by, sort_order)
             .with_rename(renaming, rename_rect)
-            .with_cursor(cursor),
+            .with_cursor(cursor)
+            .with_drop_targets(drop_targets),
     )
 }

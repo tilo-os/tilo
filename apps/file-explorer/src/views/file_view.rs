@@ -20,8 +20,9 @@
 //! [`FileCommand`]s. Ephemeral per-frame state (hover) is recomputed from the
 //! cursor, so nothing is lost across a rebuild.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
@@ -56,6 +57,20 @@ const GRID_CELL_W: f64 = 112.0;
 const GRID_CELL_H: f64 = 104.0;
 const GRID_ICON: f64 = 46.0;
 const GRID_GAP: f64 = 16.0;
+
+/// A folder drop target the view publishes each layout: a directory row's
+/// absolute on-screen rect and path. The host owns the drag (it captures the
+/// pointer once a drag begins, so the view never sees the release), so it needs
+/// the view to tell it where each folder sits to resolve what a drop lands on.
+#[derive(Clone, Debug)]
+pub struct FolderDropTarget {
+    pub path: PathBuf,
+    pub rect: Rect,
+}
+
+/// Shared, host-owned sink the view republishes its folder rows into each
+/// layout (cleared + refilled), analogous to the rename-rect channel.
+pub type DropTargets = Rc<RefCell<Vec<FolderDropTarget>>>;
 
 /// A list column the header exposes for click-to-sort. `sort_col` is the index
 /// the app's `SortColumn` command understands (1 = name, 2 = size, 3 = date).
@@ -95,10 +110,14 @@ pub struct FileView {
     /// hit-test can follow the pinned header (which sits at the viewport top
     /// once the list is scrolled). `None` before the first paint.
     last_vp: Option<Rect>,
-    /// A plain press on a directory row `(press point, its path)`, held until
-    /// the pointer either releases (a click) or travels past the drag threshold
-    /// (begins a drag-to-pin toward the sidebar).
-    pressed_dir: Option<(Point, std::path::PathBuf)>,
+    /// A plain press on a row `(press point, its path, whether it is a folder)`,
+    /// held until the pointer either releases (a click) or travels past the drag
+    /// threshold (begins a drag — to move the row onto a folder, or to pin a
+    /// folder to the sidebar).
+    pressed_row: Option<(Point, PathBuf, bool)>,
+    /// Host-owned sink for this view's folder rows, republished each layout so
+    /// the host can resolve which folder a drag is dropped onto.
+    drop_targets: Option<DropTargets>,
 }
 
 /// Pointer travel (logical px) past which a held directory press becomes a
@@ -123,8 +142,16 @@ impl FileView {
             last_vp: None,
             renaming: None,
             rename_rect: None,
-            pressed_dir: None,
+            pressed_row: None,
+            drop_targets: None,
         }
+    }
+
+    /// Bind the host's folder-drop-target sink; the view republishes its folder
+    /// rows into it each layout so the host can hit-test a drag's drop point.
+    pub fn with_drop_targets(mut self, sink: DropTargets) -> Self {
+        self.drop_targets = Some(sink);
+        self
     }
 
     pub fn mode(mut self, mode: ViewMode) -> Self {
@@ -214,6 +241,25 @@ impl FileView {
     fn list_row_rect(&self, i: usize) -> Rect {
         let y0 = self.rect.y0 + self.header_h() + i as f64 * self.row_h();
         Rect::new(self.rect.x0, y0, self.rect.x1, y0 + self.row_h())
+    }
+
+    /// Republish the absolute rect of every folder row into the host's drop-
+    /// target sink, so the host can resolve which folder a drag is released
+    /// over. Only directories are targets — you can't drop a file *into* a file.
+    fn publish_drop_targets(&self) {
+        let Some(sink) = &self.drop_targets else { return };
+        let mut out = Vec::new();
+        for (i, entry) in self.entries.iter().enumerate() {
+            if !entry.is_dir {
+                continue;
+            }
+            let rect = match self.mode {
+                ViewMode::List => self.list_row_rect(i),
+                ViewMode::Grid => self.cell_rect(i),
+            };
+            out.push(FolderDropTarget { path: entry.path.clone(), rect });
+        }
+        *sink.borrow_mut() = out;
     }
 
     /// The item under a logical point, or `None` (header band, gaps, empties).
@@ -650,6 +696,7 @@ impl Widget for FileView {
         if self.mode == ViewMode::Grid {
             self.columns = self.columns_for_width(self.rect.width());
         }
+        self.publish_drop_targets();
     }
 
     fn draw(
@@ -718,12 +765,13 @@ impl Widget for FileView {
                 if new_hover != self.hover {
                     self.hover = new_hover;
                 }
-                // A held directory press that travels far enough starts a
-                // drag-to-pin; the app carries the folder toward the sidebar.
-                if let Some((start, path)) = self.pressed_dir.clone() {
+                // A held press that travels far enough starts a drag; the app
+                // carries the row(s) and, on release, moves them onto a folder
+                // (or pins a folder to the sidebar).
+                if let Some((start, path, is_dir)) = self.pressed_row.clone() {
                     if pt.distance(start) > DRAG_THRESHOLD {
-                        push(&self.sink, FileCommand::BeginDrag(path));
-                        self.pressed_dir = None;
+                        push(&self.sink, FileCommand::BeginDrag { path, is_dir });
+                        self.pressed_row = None;
                     }
                 }
             }
@@ -743,12 +791,12 @@ impl Widget for FileView {
                     self.selection.apply_click(i, ctrl, shift);
                     *focus_target = Some(node_id);
                     push(&self.sink, FileCommand::Click { index: i, ctrl, shift });
-                    // A plain press on a folder arms a potential drag-to-pin.
+                    // A plain press on any row arms a potential drag (move onto a
+                    // folder, or pin a folder to the sidebar). A modifier press is
+                    // extending the selection, not starting a drag.
                     if !ctrl && !shift {
                         if let Some(entry) = self.entries.get(i) {
-                            if entry.is_dir {
-                                self.pressed_dir = Some((self.last_cursor, entry.path.clone()));
-                            }
+                            self.pressed_row = Some((self.last_cursor, entry.path.clone(), entry.is_dir));
                         }
                     }
                     *handled = true;
@@ -756,7 +804,7 @@ impl Widget for FileView {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 // A release without travel was just a click — disarm the drag.
-                self.pressed_dir = None;
+                self.pressed_row = None;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
                 // Select the row under the cursor before the context menu opens
@@ -1128,14 +1176,16 @@ mod tests {
 
         let cmds = sink.borrow();
         assert!(
-            cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag(p) if p.ends_with("folder"))),
+            cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag { path, is_dir: true } if path.ends_with("folder"))),
             "a folder press that travels begins a pin drag: {cmds:?}",
         );
     }
 
     #[test]
-    fn a_file_row_press_does_not_begin_a_pin_drag() {
-        // Only folders can be pinned to Favourites, so a file must not drag.
+    fn a_file_row_press_begins_a_move_drag() {
+        // Files (not only folders) are draggable now — a row drag moves the
+        // file into a folder it is dropped onto. The host decides drop
+        // semantics; the view just reports the drag started on this row.
         let sink = new_sink();
         let sel = SelectionModel::new();
         let mut v = FileView::new(&items(5), &sel, &sink);
@@ -1148,9 +1198,37 @@ mod tests {
         dispatch(&mut v, &tree, node, WindowEvent::CursorMoved { device_id: dev(), position: (120.0, y).into() });
         let cmds = sink.borrow();
         assert!(
-            !cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag(_))),
-            "a file does not start a pin drag: {cmds:?}",
+            cmds.iter().any(|c| matches!(c, FileCommand::BeginDrag { path, is_dir: false } if path.ends_with("f0"))),
+            "a file row that travels begins a drag: {cmds:?}",
         );
+    }
+
+    #[test]
+    fn apply_layout_publishes_folder_rows_as_drop_targets() {
+        // The host resolves a drop against the folder rects the view publishes,
+        // so only directories must appear, at their laid-out positions.
+        let sink = new_sink();
+        let sel = SelectionModel::new();
+        let mut entries = items(5); // f0..f4 are files
+        entries[1] = ent("docs", true);
+        entries[3] = ent("music", true);
+        let targets: super::DropTargets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut v = FileView::new(&entries, &sel, &sink).with_drop_targets(targets.clone());
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(taffy::Style {
+            size: taffy::Size { width: Dimension::length(600.0), height: Dimension::length(600.0) },
+            ..Default::default()
+        }).unwrap();
+        tree.compute_layout(node, taffy::Size {
+            width: taffy::AvailableSpace::Definite(600.0),
+            height: taffy::AvailableSpace::Definite(600.0),
+        }).unwrap();
+        v.apply_layout(&tree, node, Point::ZERO);
+        let published = targets.borrow();
+        let names: Vec<String> = published.iter().map(|t| t.path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["docs".to_string(), "music".to_string()], "only folders, in row order");
+        // Each target's rect sits on its row (row 1 above row 3).
+        assert!(published[0].rect.y0 < published[1].rect.y0, "row order preserved in geometry");
     }
 
     #[test]

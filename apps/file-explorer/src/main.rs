@@ -250,6 +250,20 @@ fn render_shot_to_png(
             let folder = widget.current_path().join("Development");
             widget.debug_begin_pin_drag(folder, Point::new(150.0, 300.0));
         }
+        Some("dropmove") => {
+            // Drag a file onto a folder — mid-drop, so the ghost + the folder's
+            // drop-target highlight both show. Pick the first published folder
+            // row as the target and the first file as the dragged item.
+            let target = widget.debug_folder_targets().into_iter().next().map(|(p, _)| p);
+            let source = widget
+                .entries()
+                .iter()
+                .find(|e| !e.is_dir)
+                .map(|e| e.path.clone());
+            if let (Some(target), Some(source)) = (target, source) {
+                widget.debug_begin_move_drag(vec![source], target);
+            }
+        }
         Some("select") => {
             // Move the cursor over a (different) row so the hover veneer shows
             // alongside the accent selection.

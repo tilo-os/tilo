@@ -92,11 +92,12 @@ pub enum FileCommand {
     /// right-press on a sidebar favourite). The app opens a labelled menu with
     /// the normal folder actions plus "Remove from Favourites".
     OpenFavoriteMenu(PathBuf),
-    /// Begin dragging a folder out of the file list toward the sidebar (a press
-    /// on a directory row that moved past the drag threshold). The app carries
-    /// the folder as a floating ghost until it is dropped; a drop over the
-    /// sidebar pins it to Favourites.
-    BeginDrag(PathBuf),
+    /// Begin dragging a row out of the file list (a press that moved past the
+    /// drag threshold). The app carries the row(s) as a floating ghost until
+    /// they are dropped: onto a folder (or the parent) they move there; a single
+    /// folder dropped on the sidebar is pinned to Favourites. `is_dir` lets the
+    /// app gate pinning to folders without a filesystem probe.
+    BeginDrag { path: PathBuf, is_dir: bool },
     /// Add a folder to the favourites / places list.
     AddFavorite(PathBuf),
     /// Remove a folder from the favourites list.

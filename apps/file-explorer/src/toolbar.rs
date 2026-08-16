@@ -199,6 +199,13 @@ impl FileToolbar {
             .unwrap_or_else(|| Point::new(self.rect.x1, self.rect.y1))
     }
 
+    /// The Up nav button's on-screen rect, so a drag can be dropped on it to
+    /// move the carried items into the parent directory. `left` is
+    /// `[back, forward, up]`, so the Up button is the third control.
+    pub fn up_button_rect(&self) -> Option<Rect> {
+        self.left.get(2).map(|b| b.get_rect())
+    }
+
     /// Group node ranges within the toolbar row's children.
     fn child_groups<'a>(&self, children: &'a [NodeId]) -> (&'a [NodeId], NodeId, &'a [NodeId]) {
         let nleft = self.left.len();
