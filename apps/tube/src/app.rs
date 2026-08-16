@@ -309,6 +309,14 @@ impl TubeApp {
         self.model.route = Route::Watch(id.clone());
         {
             let mut p = self.player.borrow_mut();
+            // Pin the deterministic synthesized-frame backend for the shot: the
+            // `media` feature (real GStreamer decode) is compiled in by default,
+            // so `MediaEngine::new()` would otherwise build a real pipeline and
+            // contact the placeholder `demo.local` host. The synthesized engine
+            // seeds the same surface without a pipeline or network. (The real
+            // decode path is exercised by `with_live_frame_for_shot` under the
+            // separate `--live-shots` hook.)
+            p.set_engine(media::MediaEngine::new_synthesized());
             p.open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
             // Seed a colourful mid-stream frame for the still, then pump the
             // engine so the frame lands in the surface. The offscreen renderer
