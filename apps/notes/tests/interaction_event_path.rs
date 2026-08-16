@@ -438,8 +438,9 @@ fn disclosure_triangle_click_toggles_child_visibility() {
 
     // Click the disclosure triangle (leftmost glyph of row 0) to COLLAPSE.
     let row0 = app.sidebar_row_center_for_test(0).unwrap();
+    let glyph_x = app.sidebar_disclosure_x_for_test(0).unwrap();
     let no_mods = Modifiers::default();
-    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(8.0, row0.y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(glyph_x, row0.y));
     dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
     // Re-settle so the re-flattened rows lay out.
     let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
@@ -450,7 +451,8 @@ fn disclosure_triangle_click_toggles_child_visibility() {
 
     // Click again → the child row reappears.
     let row0 = app.sidebar_row_center_for_test(0).unwrap();
-    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(8.0, row0.y));
+    let glyph_x = app.sidebar_disclosure_x_for_test(0).unwrap();
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(glyph_x, row0.y));
     dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
     let _ = settle_layout(&mut app, &mut state, 1200, 800);
     assert!(
