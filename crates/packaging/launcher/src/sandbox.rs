@@ -468,6 +468,39 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("QOS_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
 
+    // The human-readable app name, from the manifest `[package].name`.
+    // The toolkit uses it for the window title (the string a titlebar /
+    // window-list shows) — the counterpart to the `QOS_PACKAGE_ID` the
+    // app_id is keyed on. Omitted when the manifest names no `name`; the
+    // toolkit then derives a title from the package id.
+    if let Some(name) = manifest
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        argv.push("--setenv".to_string());
+        argv.push("QOS_APP_NAME".to_string());
+        argv.push(name.to_string());
+    }
+
+    // The app's window icon, from the manifest `[package].icon`. The
+    // manifest names it relative to the payload; the file lives inside
+    // the payload we just bound, so the value the app sees is the path
+    // under the in-sandbox payload mount. Omitted when the manifest
+    // ships no icon art; the toolkit then draws a generated default.
+    if let Some(icon_rel) = manifest
+        .icon
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let in_sandbox = payload_mount.join(icon_rel.trim_start_matches('/'));
+        argv.push("--setenv".to_string());
+        argv.push("QOS_APP_ICON".to_string());
+        argv.push(in_sandbox.display().to_string());
+    }
+
     // Hardened allocator + shadow stacks, for the packages the image lists as
     // handling untrusted bytes. Decided from the package id against an
     // image-owned policy, not from anything the manifest can ask for — an app
@@ -799,6 +832,7 @@ mod tests {
             package_id: "com.example.notes".to_string(),
             name: Some("Notes".to_string()),
             category: Some("Office".to_string()),
+            icon: None,
             version: "0.1.0".to_string(),
             kind: crate::manifest::KIND_APP.to_string(),
             runtime: None,
@@ -1013,6 +1047,56 @@ mod tests {
             .expect("payload host path in argv");
         assert_eq!(argv[pos - 1], "--ro-bind");
         assert_eq!(argv[pos + 1], "/var/qos-apps/com.example.notes");
+    }
+
+    /// Value of the `--setenv <key> <value>` triple for `key`, or `None`
+    /// when the builder emitted no such assignment.
+    fn setenv_value<'a>(argv: &'a [String], key: &str) -> Option<&'a str> {
+        argv.windows(3)
+            .find(|w| w[0] == "--setenv" && w[1] == key)
+            .map(|w| w[2].as_str())
+    }
+
+    #[test]
+    fn argv_exports_the_app_name_from_the_manifest() {
+        // The manifest names the app "Notes"; the toolkit reads
+        // QOS_APP_NAME for the window title, so the builder must export
+        // it alongside QOS_PACKAGE_ID.
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), Some("Notes"));
+    }
+
+    #[test]
+    fn argv_omits_the_app_name_when_the_manifest_has_none() {
+        // A manifest with no `[package].name` exports nothing — the
+        // toolkit then derives a title from the package id.
+        let mut m = mk_manifest("off");
+        m.name = None;
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        assert_eq!(setenv_value(&argv, "QOS_APP_NAME"), None);
+    }
+
+    #[test]
+    fn argv_exports_the_icon_path_under_the_payload_mount() {
+        // A manifest that ships icon art names it payload-relative; the
+        // builder resolves it to the in-sandbox payload mount so the
+        // toolkit can open it.
+        let mut m = mk_manifest("off");
+        m.icon = Some("assets/icon.png".to_string());
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        assert_eq!(
+            setenv_value(&argv, "QOS_APP_ICON"),
+            Some("/var/qos-apps/com.example.notes/assets/icon.png"),
+        );
+    }
+
+    #[test]
+    fn argv_omits_the_icon_when_the_manifest_has_none() {
+        // No icon art: no QOS_APP_ICON, so the toolkit draws its default.
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        assert_eq!(setenv_value(&argv, "QOS_APP_ICON"), None);
     }
 
     /// The reads a launch gets are the system profile's, and a manifest

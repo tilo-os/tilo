@@ -47,6 +47,7 @@ fn manifest() -> MinimalManifest {
         package_id: PACKAGE.to_string(),
         name: None,
         category: None,
+        icon: None,
         version: "0.0.0".to_string(),
         // Confinement is a property of every package the launcher runs,
         // but this fixture is deliberately the kind a user opens: an app
