@@ -704,6 +704,20 @@ pub struct ServerHandle {
     // tears the object server down, so the portal stops answering.
     #[allow(dead_code)]
     connection: zbus::Connection,
+    owns_name: bool,
+}
+
+impl ServerHandle {
+    /// Did this connection actually acquire [`BUS_NAME`]?
+    ///
+    /// `false` means the object server is up but nothing on the session
+    /// bus can route to it — either there is no broker (a p2p test
+    /// connection) or another process already holds the name. On a real
+    /// session the second case is the one that matters: the portal is
+    /// running and answering nobody.
+    pub fn owns_name(&self) -> bool {
+        self.owns_name
+    }
 }
 
 #[cfg(test)]

@@ -1329,6 +1329,21 @@ fn start_portal_backend(
         }
     };
 
+    // Losing the name is not a warning-shaped problem. xdg-desktop-portal
+    // routes FileChooser to whoever owns it, so if that is somebody else
+    // this compositor's dialog will never be asked for and every Open in
+    // the session goes to a backend with no session state. Say so at a
+    // level that reaches the journal by default.
+    if !server.owns_name() {
+        tracing::error!(
+            "portal: another process already owns {} — this session's file \
+             dialog will never be reached. The standalone \
+             `shell --portal-server-only` daemon is the usual culprit; it is \
+             no longer part of the image and its unit should be disabled.",
+            crate::portal::BUS_NAME
+        );
+    }
+
     // The queues are useless until something drains them. Attaching them
     // to the overlay host is what makes the per-frame pumps run, and
     // doing it here — rather than at host construction — is what keeps

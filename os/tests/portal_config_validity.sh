@@ -96,26 +96,43 @@ if assert_file_exists "$PORTAL_FILE"; then
     done
 fi
 
-# --- D-Bus session-bus .service file ---------------------------------
-if assert_file_exists "$DBUS_SERVICE_FILE"; then
-    assert_contains "$DBUS_SERVICE_FILE" "^\[D-BUS Service\]$"
-    assert_contains "$DBUS_SERVICE_FILE" "^Name=$EXPECTED_BUS_NAME$"
-    assert_contains "$DBUS_SERVICE_FILE" "^Exec=/usr/bin/shell"
-    # Pattern with a leading `[-]` defangs the leading `--` that grep
-    # would otherwise treat as a flag-terminator.
-    assert_contains "$DBUS_SERVICE_FILE" "[-]-portal-server-only"
-    assert_contains "$DBUS_SERVICE_FILE" "^SystemdService=shell-portal.service$"
-fi
+# --- no second claimant for the bus name -----------------------------
+#
+# The compositor owns $EXPECTED_BUS_NAME in-process
+# (`compositor::native::start_portal_backend`). D-Bus permits exactly one
+# owner per name, so anything else on the image that claims it is not a
+# redundant backup — it is a coin flip over which of the two answers the
+# session's file dialogs, and the loser looks healthy while serving
+# nobody.
+#
+# These two files used to start `shell --portal-server-only`, whose
+# portal context was built on an empty WorkspaceTree. Their absence is
+# the invariant now, so re-adding either one fails here rather than in a
+# user's session.
+assert_file_absent() {
+    local path="$1"
+    local why="$2"
+    if [[ -e "$path" ]]; then
+        echo "FAIL: $path must not exist: $why" >&2
+        fail=1
+    fi
+}
 
-# --- systemd user unit -----------------------------------------------
-if assert_file_exists "$SYSTEMD_UNIT_FILE"; then
-    assert_contains "$SYSTEMD_UNIT_FILE" "^Type=dbus$"
-    assert_contains "$SYSTEMD_UNIT_FILE" "^BusName=$EXPECTED_BUS_NAME$"
-    assert_contains "$SYSTEMD_UNIT_FILE" "ExecStart=.*shell.*[-]-portal-server-only"
+assert_file_absent "$DBUS_SERVICE_FILE" \
+    "D-Bus activation would start a second owner of $EXPECTED_BUS_NAME"
+assert_file_absent "$SYSTEMD_UNIT_FILE" \
+    "the unit would start a second owner of $EXPECTED_BUS_NAME"
+
+# The image must also not enable such a unit by name anywhere.
+if [[ -d "$OS_ROOT/usr/lib/systemd" ]]; then
+    if grep -rqF "shell-portal.service" "$OS_ROOT/usr/lib/systemd" 2>/dev/null; then
+        echo "FAIL: shell-portal.service is still referenced under /usr/lib/systemd" >&2
+        fail=1
+    fi
 fi
 
 if (( fail == 0 )); then
-    echo "OK: portal config validity (4 files, $(( ${#EXPECTED_INTERFACES[@]} + 8 )) checks)"
+    echo "OK: portal config validity ($(( ${#EXPECTED_INTERFACES[@]} + 7 )) checks)"
     exit 0
 else
     exit 1
