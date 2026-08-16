@@ -102,7 +102,13 @@ vello_encoding.workspace = true
 png.workspace = true
 
 [features]
-default = []
+# The real app ships on by default: `live` gives real YouTube data and `media`
+# gives real GStreamer decode/playback + audio out, so a normally-built `tube`
+# streams real video out of the box. `--shots` and tests stay hermetic at
+# runtime (the live worker is never spawned on the shots path and the watch
+# surface synthesizes frames), so the features only compile the live code in.
+# `grayjay-sync` stays an opt-in extra.
+default = ["live", "media"]
 # Real YouTube data. The live backend shells out to **yt-dlp** (the
 # community-maintained extractor) for search / video / channel / streams and
 # keeps `rustypipe` compiled as a fallback source. `--features live` must
