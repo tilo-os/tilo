@@ -20,6 +20,18 @@
 //! because it pulls in `ffmpeg-next`. A build without it accepts SDR
 //! streams normally and rejects HEVC with a clear error — a wire-
 //! compat concession for stripped-down OS images.
+//!
+//! **Compiling the feature is not the same as having the codec.**
+//! `hdr-decode` links libavcodec; whether that libavcodec carries an
+//! HEVC decoder is a property of the distro's build. Fedora — which qOS
+//! images are built from and on — ships `libavcodec-free` configured
+//! `--disable-decoder='h264,hevc,vc1,vvc'`, so [`HevcDecoder::new`]
+//! fails there and no amount of cargo features changes it. The receive
+//! path is written for that: `PeerView::new_for_stream` falls back to
+//! the H.264 decoder, and the sender never emits HEVC without a
+//! hardware encoder (`vaapi` / `nvenc`, neither of which is a default
+//! feature), so an SDR share keeps working. HDR screen-share is an
+//! enhancement gated on both ends, not a baseline capability.
 
 use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
@@ -262,9 +274,16 @@ static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
 #[cfg(feature = "hdr-decode")]
 impl HevcDecoder {
     /// Construct a new HEVC decoder. Errors with the libavcodec message
-    /// if the runtime is missing the HEVC decoder (e.g. libavcodec built
-    /// without `libx265` and without in-tree `libavcodec/hevcdec.c`,
-    /// which is unusual — most distros ship both).
+    /// when the linked libavcodec has no HEVC decoder.
+    ///
+    /// That is the **expected** outcome on Fedora, and therefore on a
+    /// stock qOS image: `libavcodec-free` is configured
+    /// `--disable-decoder='h264,hevc,vc1,vvc'` and its decoder list
+    /// contains no `hevc` entry of any kind, software or hardware. Only
+    /// a host that has replaced it (rpmfusion's `libavcodec-freeworld`,
+    /// or a self-built ffmpeg) can construct this decoder. Callers must
+    /// treat the error as routine and fall back to SDR rather than
+    /// dropping the stream.
     pub fn new() -> Result<Self, String> {
         FFMPEG_INIT.call_once(|| {
             let _ = ffmpeg_next::init();
@@ -473,20 +492,70 @@ mod tests {
 
     #[test]
     fn video_decoder_dispatches_on_wire_label() {
-        // "h264" always works — SDR path is always compiled.
+        // "h264" always works — the SDR path is always compiled, and it
+        // is the only codec a default build can encode, so a receiver
+        // that cannot build it cannot view any share at all.
         let d = VideoDecoder::for_wire_codec("h264").expect("h264 available");
         assert!(matches!(d, VideoDecoder::H264(_)));
 
-        // "hevc-main10" works when `hdr-decode` is compiled (default).
-        #[cfg(feature = "hdr-decode")]
-        {
-            let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc available");
-            assert!(matches!(d, VideoDecoder::Hevc(_)));
-        }
-
-        // Unknown labels always error.
+        // Unknown labels always error, and say which label they choked on.
         let e = VideoDecoder::for_wire_codec("av1").err().expect("unknown");
-        assert!(matches!(e, DecoderError::UnknownCodec(_)));
+        match e {
+            DecoderError::UnknownCodec(label) => assert_eq!(label, "av1"),
+            other => panic!("an unrecognised label must be UnknownCodec, got {other:?}"),
+        }
+    }
+
+    /// `"hevc-main10"` is a label this build *knows*, so the two legal
+    /// answers are the HEVC decoder or a backend failure — never
+    /// `UnknownCodec` (the arm was dropped from the match) and never
+    /// `FeatureDisabled` (the feature is compiled in). Both legal
+    /// answers really happen: whether libavcodec carries an HEVC decoder
+    /// is the distro's choice, and Fedora's `libavcodec-free` — what
+    /// qOS builds against and ships — is configured
+    /// `--disable-decoder='h264,hevc,vc1,vvc'`.
+    ///
+    /// Asserting success here would assert a property of whoever's
+    /// ffmpeg happened to be installed, not a property of qOS. The
+    /// promise qOS actually makes about an HEVC stream is asserted on
+    /// the production receive path in
+    /// `shell::shell::peer_view::tests`, which holds either way.
+    #[cfg(feature = "hdr-decode")]
+    #[test]
+    fn hevc_label_is_known_and_never_misreports_why_it_failed() {
+        match VideoDecoder::for_wire_codec("hevc-main10") {
+            Ok(d) => assert!(
+                matches!(d, VideoDecoder::Hevc(_)),
+                "the hevc label must build the HEVC decoder, not some other variant"
+            ),
+            Err(DecoderError::Backend(msg)) => assert!(
+                !msg.is_empty(),
+                "a backend failure has to say what libavcodec reported"
+            ),
+            Err(other) => panic!(
+                "with `hdr-decode` compiled, hevc-main10 is a known label \
+                 backed by a real attempt; got {other:?}"
+            ),
+        }
+    }
+
+    /// Without `hdr-decode` the label is still recognised — it just is
+    /// not built. The receiver has to be able to tell a peer using a
+    /// codec this build omitted from a peer talking nonsense, because
+    /// only the first is worth reporting as a capability gap.
+    #[cfg(not(feature = "hdr-decode"))]
+    #[test]
+    fn hevc_label_reports_the_missing_feature_rather_than_an_unknown_codec() {
+        let err = VideoDecoder::for_wire_codec("hevc-main10")
+            .err()
+            .expect("a build without `hdr-decode` cannot produce an HEVC decoder");
+        match err {
+            DecoderError::FeatureDisabled { codec, reason } => {
+                assert_eq!(codec, "hevc-main10");
+                assert!(!reason.is_empty(), "the gap has to name itself");
+            }
+            other => panic!("expected FeatureDisabled without `hdr-decode`, got {other:?}"),
+        }
     }
 
     #[test]
