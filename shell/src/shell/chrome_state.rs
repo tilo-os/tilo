@@ -33,6 +33,67 @@ use crate::shell::state::{
 // as a typed field — see `ChromeState::ws_settings_tab`.
 pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 
+/// One capability request waiting for the user to answer it.
+///
+/// Two things raise these, and the difference is the `reply` field. A
+/// portal method call is *blocked* on the answer — its D-Bus caller is
+/// sitting in `flow::resolve` awaiting the oneshot, so the answer has
+/// to travel back or the app hangs. A prompt the shell raised on its
+/// own behalf (a dropped file, a menu action) has nobody waiting, so
+/// there is no channel to carry.
+///
+/// Dropping a `PendingPrompt` without answering drops the sender, which
+/// the portal side reads as deny — the failure mode is a refusal, not a
+/// hang.
+pub struct PendingPrompt {
+    pub app_id: AppId,
+    pub capability: Capability,
+    /// Reply channel back to the blocked portal request, when there is
+    /// one. `None` for shell-originated prompts.
+    pub reply: Option<tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>>,
+}
+
+impl PendingPrompt {
+    /// A prompt nobody is blocked on — the shell asking on its own behalf.
+    pub fn new(app_id: AppId, capability: Capability) -> Self {
+        Self {
+            app_id,
+            capability,
+            reply: None,
+        }
+    }
+
+    /// A prompt a portal request is awaiting the answer to.
+    pub fn with_reply(
+        app_id: AppId,
+        capability: Capability,
+        reply: tokio::sync::oneshot::Sender<crate::portal::PromptOutcome>,
+    ) -> Self {
+        Self {
+            app_id,
+            capability,
+            reply: Some(reply),
+        }
+    }
+
+    /// Answer the blocked portal request, if one is waiting.
+    pub fn answer(&mut self, outcome: crate::portal::PromptOutcome) {
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(outcome);
+        }
+    }
+}
+
+impl std::fmt::Debug for PendingPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingPrompt")
+            .field("app_id", &self.app_id)
+            .field("capability", &self.capability)
+            .field("awaiting_portal_reply", &self.reply.is_some())
+            .finish()
+    }
+}
+
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OverlayFlags {
@@ -290,16 +351,17 @@ pub struct ChromeState {
     /// diff logic and easier than an event bus.
     pub revision: u64,
     /// Queue of pending capability grants the user must respond to.
-    /// Phase 4 Task 4.3 (the portal D-Bus backend) pushes onto the back
-    /// of this queue when a sandboxed app calls one of the portal's
-    /// request methods; the overlay host renders a [`PermissionPrompt`]
-    /// for `front()` and drains the entry once the user clicks an
-    /// action button. v1 stores pairs of `(app_id, capability)` —
-    /// the capability's `scope` is set by the portal layer before
-    /// pushing (typically `GRANT_ONCE`, since the prompt
-    /// itself escalates to `Session`/`Always` based on the user's
-    /// click). Empty by default.
-    pub pending_grants: VecDeque<(AppId, Capability)>,
+    ///
+    /// The portal D-Bus backend's prompt queue is drained onto the back
+    /// of this every frame; the overlay host renders a
+    /// [`PermissionPrompt`] for `front()` and drains the entry once the
+    /// user clicks an action button. The capability's `scope` is set by
+    /// whoever pushes (typically `GRANT_ONCE`, since the prompt itself
+    /// escalates to `Session`/`Always` based on the user's click).
+    ///
+    /// Entries carry the portal's reply channel when a D-Bus caller is
+    /// blocked on the answer — see [`PendingPrompt`]. Empty by default.
+    pub pending_grants: VecDeque<PendingPrompt>,
     /// Test-only override for the `is_active_workspace_owner` helper
     /// in `overlay_host.rs`. `None` (the default) keeps production
     /// behaviour: the helper returns `true` unconditionally because
