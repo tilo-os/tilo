@@ -92,18 +92,20 @@ impl Widget for OverviewPane {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         if *handled {
             return;
         }
-        if self.core.borrow_mut().handle_overview_event(event, scale_factor) {
+        if self.core.borrow_mut().handle_overview_event(
+            event, scale_factor, modifiers, state, path, focus_target, node_id, taffy,
+        ) {
             *handled = true;
         }
     }
