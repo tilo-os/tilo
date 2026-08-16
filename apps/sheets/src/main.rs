@@ -43,22 +43,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut app = sheets::SheetsApp::new();
         app.shots_mode();
         // The scenario hook runs after the document is seeded (in
-        // `render_shot_to_png`, post-`sync`), because opening a menu / starting
-        // an edit operates on the live state.
-        let setup: Box<dyn FnOnce(&mut sheets::SheetsApp)> = match scenario.as_deref() {
-            Some("file") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_file_menu()),
-            Some("format") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_format_menu()),
-            Some("docsettings") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_doc_settings()),
-            Some("editing") => Box::new(|a: &mut sheets::SheetsApp| a.shots_begin_edit()),
-            Some("pointmode") => Box::new(|a: &mut sheets::SheetsApp| a.shots_build_formula()),
-            Some("summary") => Box::new(|a: &mut sheets::SheetsApp| a.shots_select_summary_range()),
-            Some("multiselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_multi_select()),
-            Some("tabmenu") => Box::new(|a: &mut sheets::SheetsApp| a.shots_open_tab_menu()),
-            Some("fbarselect") => Box::new(|a: &mut sheets::SheetsApp| a.shots_formula_bar_select()),
-            Some("commandpalette") => {
-                Box::new(|a: &mut sheets::SheetsApp| a.shots_open_command_palette())
-            }
-            _ => Box::new(|_: &mut sheets::SheetsApp| {}),
+        // `render_shot_to_png`, post-`sync`), because opening a menu, starting
+        // an edit, or driving a fill/paste operates on the live state. It
+        // receives the document so a scenario can dispatch real actions.
+        type Setup = Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>;
+        let setup: Setup = match scenario.as_deref() {
+            Some("file") => Box::new(|a, _d| a.shots_open_file_menu()),
+            Some("format") => Box::new(|a, _d| a.shots_open_format_menu()),
+            Some("docsettings") => Box::new(|a, _d| a.shots_open_doc_settings()),
+            Some("editing") => Box::new(|a, _d| a.shots_begin_edit()),
+            Some("pointmode") => Box::new(|a, _d| a.shots_build_formula()),
+            Some("summary") => Box::new(|a, _d| a.shots_select_summary_range()),
+            Some("multiselect") => Box::new(|a, _d| a.shots_multi_select()),
+            Some("tabmenu") => Box::new(|a, _d| a.shots_open_tab_menu()),
+            Some("fbarselect") => Box::new(|a, _d| a.shots_formula_bar_select()),
+            Some("commandpalette") => Box::new(|a, _d| a.shots_open_command_palette()),
+            Some("fillseries") => Box::new(|a, d| a.shots_fill_series(d)),
+            Some("pasteformula") => Box::new(|a, d| a.shots_paste_formula(d)),
+            _ => Box::new(|_a, _d| {}),
         };
         render_shot_to_png(app, viewport, &out, setup)?;
         return Ok(());
@@ -131,7 +133,7 @@ fn render_shot_to_png(
     mut app: sheets::SheetsApp,
     viewport: (u32, u32),
     out: &std::path::Path,
-    setup: Box<dyn FnOnce(&mut sheets::SheetsApp)>,
+    setup: Box<dyn FnOnce(&mut sheets::SheetsApp, &mut automerge::AutoCommit)>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     // `QOS_SHOTS_THEME=light|high-contrast` renders the shot under that theme so
@@ -149,8 +151,9 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
     app.sync(&mut state.doc, &state.root);
-    // Apply the scenario hook now that the document is seeded.
-    setup(&mut app);
+    // Apply the scenario hook now that the document is seeded; it may dispatch
+    // real actions against the document (the fill/paste scenarios do).
+    setup(&mut app, &mut state.doc);
     let widget: &mut dyn Widget = &mut app;
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
