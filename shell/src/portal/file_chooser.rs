@@ -33,9 +33,9 @@ use zbus::names::OwnedUniqueName;
 use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
 
-use super::{CapabilityKind, PortalCaller, PortalContext, PromptOutcome, WorkspaceId, flow};
+use super::{FilePickerOptions, PortalCaller, PortalContext, WorkspaceId};
 
 /// D-Bus interface impl. One instance per [`super::serve`] call; held
 /// by the zbus `ObjectServer` for the lifetime of the connection.
@@ -95,24 +95,11 @@ impl FileChooserBackend {
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Filesystem {
-            // The portal protocol doesn't surface a target path here —
-            // the dialog selects one. For the grant model we tag the
-            // "any path" workspace-root sentinel so the grant store
-            // knows this is a filesystem capability.
-            path: PathBuf::from("/"),
-            mode: FsMode::Read,
-            scope: GRANT_ONCE,
-        };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::FilesystemRead,
-            cap_template,
-        )
-        .await;
-        self.open_response_via_picker(outcome, caller, title, /*save=*/ false)
-            .await
+        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ false)
+            .multiple(opt_bool(&options, "multiple").unwrap_or(false))
+            .accept_label(opt_string(&options, "accept_label"))
+            .filters(filters_from_options(&options));
+        self.pick_and_grant(opts, FsMode::Read).await
     }
 
     /// `SaveFile` — request a destination for one new file.
@@ -132,20 +119,11 @@ impl FileChooserBackend {
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Filesystem {
-            path: PathBuf::from("/"),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ONCE,
-        };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::FilesystemReadWrite,
-            cap_template,
-        )
-        .await;
-        self.open_response_via_picker(outcome, caller, title, /*save=*/ true)
-            .await
+        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+            .accept_label(opt_string(&options, "accept_label"))
+            .current_name(opt_string(&options, "current_name"))
+            .filters(filters_from_options(&options));
+        self.pick_and_grant(opts, FsMode::ReadWrite).await
     }
 
     /// `SaveFiles` — request a folder + multiple destination filenames.
@@ -165,50 +143,116 @@ impl FileChooserBackend {
         );
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = Self::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Filesystem {
-            path: PathBuf::from("/"),
-            mode: FsMode::ReadWrite,
-            scope: GRANT_ONCE,
-        };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::FilesystemReadWrite,
-            cap_template,
-        )
-        .await;
-        self.open_response_via_picker(outcome, caller, title, /*save=*/ true)
-            .await
+        let opts = FilePickerOptions::new(caller.clone(), title, /*save=*/ true)
+            .accept_label(opt_string(&options, "accept_label"))
+            .filters(filters_from_options(&options));
+        self.pick_and_grant(opts, FsMode::ReadWrite).await
     }
 }
 
 impl FileChooserBackend {
-    /// Bridge from a `PromptOutcome` to the FileChooser response.
-    /// On Allow*, spawns a real file-picker dialog via the
-    /// `FilePickerSpawner` handle and awaits the user's selection.
-    /// On Deny, returns response=1 + empty results.
-    pub(super) async fn open_response_via_picker(
+    /// Raise the dialog, and turn what the user picked into both a
+    /// grant and a response.
+    ///
+    /// ## The dialog is the prompt
+    ///
+    /// There used to be a permission prompt in front of this: a
+    /// `flow::resolve` on a `Capability::Filesystem { path: "/" }`
+    /// sentinel, asking "may this app read the filesystem?", and only
+    /// then a dialog asking which file. Two things were wrong with it.
+    ///
+    /// The first is that it asks the user a question they cannot
+    /// answer. "May Notes read your files?" has no good answer in the
+    /// abstract; "open which file?" does, and it is the same decision
+    /// with the ambiguity removed.
+    ///
+    /// The second is what the answer meant. Answering *Always* stored a
+    /// capability on `"/"`, and `Scope::FsPath` covers its whole
+    /// subtree — so one Always click on one Open dialog granted that app
+    /// the entire filesystem, permanently, and every later `OpenFile`
+    /// took `flow::resolve`'s fast path and never showed a dialog again.
+    ///
+    /// So the consent is the pick. The user browsing a
+    /// compositor-owned dialog and choosing a file is an act of
+    /// authorisation that names exactly one path, and that path is what
+    /// gets granted — nothing wider, and nothing the app chose.
+    async fn pick_and_grant(
         &self,
-        outcome: PromptOutcome,
-        caller: PortalCaller,
-        title: String,
-        save: bool,
+        opts: FilePickerOptions,
+        mode: FsMode,
     ) -> (u32, HashMap<String, OwnedValue>) {
-        if !outcome.is_allowed() {
-            return (1, HashMap::new());
-        }
-        let rx = self.ctx.file_picker.request(caller, title, save);
+        let caller = opts.caller.clone();
+        let save = opts.save;
+        let rx = self.ctx.file_picker.request_with(opts);
         let picked = match rx.await {
             Ok(p) => p,
             Err(_) => {
-                // Spawner dropped the reply — treat as cancel. Defensive
-                // posture mirrors `flow::resolve`'s
-                // "channel-closed-without-reply ≡ deny" branch.
+                // Spawner dropped the reply — treat as cancel. Same
+                // defensive posture as `flow::resolve`'s
+                // "channel-closed-without-reply ≡ deny" branch: a
+                // request nobody answered is not an approved one.
                 None
             }
         };
-        paths_to_open_response(picked, save)
+        let Some(paths) = picked.filter(|p| !p.is_empty()) else {
+            return (1, HashMap::new());
+        };
+
+        // Record what the user just authorised, per path. This is what
+        // survives into `Workspace::capabilities`, what the launcher
+        // turns into a bind on the app's next start, and what the
+        // workspace's Permissions tab shows the user so they can take it
+        // back.
+        for path in &paths {
+            self.ctx.grants.insert(
+                &caller,
+                Capability::Filesystem {
+                    path: path.clone(),
+                    mode: mode.clone(),
+                    scope: GRANT_SESSION,
+                },
+            );
+        }
+
+        // Publish each path into the caller's document store, so the
+        // running app can actually reach it. For an app that is already
+        // confined the grant above is not enough on its own — its mount
+        // namespace was fixed at launch — so the store is what turns a
+        // recorded grant into a readable path *now*.
+        let published = self.ctx.documents.publish(&caller, &paths, mode);
+        paths_to_open_response(Some(published), save)
     }
+}
+
+/// Decode the portal's `filters` option: `a(sa(us))`.
+///
+/// A malformed entry is skipped rather than failing the call — the
+/// filters are a display convenience, and refusing to open a dialog
+/// because one filter did not decode would turn a cosmetic problem into
+/// an unusable Open menu.
+pub(super) fn filters_from_options(
+    options: &HashMap<String, OwnedValue>,
+) -> Vec<super::PickerFilter> {
+    let Some(value) = options.get("filters").and_then(|v| v.try_clone().ok()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = <Vec<(String, Vec<(u32, String)>)>>::try_from(value) else {
+        return Vec::new();
+    };
+    entries
+        .into_iter()
+        .map(|(label, pairs)| super::PickerFilter::from_pairs(label, &pairs))
+        .collect()
+}
+
+fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
+    let v = options.get(key)?.try_clone().ok()?;
+    bool::try_from(v).ok()
+}
+
+fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let v = options.get(key)?.try_clone().ok()?;
+    String::try_from(v).ok().filter(|s| !s.is_empty())
 }
 
 /// Translate a real user-selected path list into the
