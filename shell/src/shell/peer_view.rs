@@ -777,6 +777,82 @@ mod tests {
         );
     }
 
+    /// A stream-start label the receiver cannot honour must never cost
+    /// the viewer the share.
+    ///
+    /// This is the promise the codec plumbing actually makes, and it is
+    /// the one worth pinning: a peer can announce a codec this build
+    /// does not know (a newer sender), or one it knows but whose backend
+    /// is absent at runtime. The `"hevc-main10"` case is not
+    /// hypothetical — Fedora's `libavcodec-free`, which qOS images ship,
+    /// is built `--disable-decoder='h264,hevc,vc1,vvc'`, so
+    /// `HevcDecoder::new` fails on a stock image even though
+    /// `hdr-decode` is compiled in.
+    ///
+    /// Both labels are driven through the real constructor, and the
+    /// resulting view is made to decode a real H.264 frame, because
+    /// "constructed something" is not the same as "the share works".
+    #[test]
+    fn an_unsupported_stream_label_still_yields_a_working_peer_view() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
+        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
+
+        // "av1" is unknown in every build, so this arm of the fallback is
+        // exercised on every host, with no dependency on what libavcodec
+        // was compiled with.
+        let mut unknown = PeerView::new_for_stream(
+            42,
+            7,
+            "av1",
+            PeerSurfaceMetrics::default(),
+            &caps,
+            None,
+        );
+        assert!(
+            matches!(unknown.decoder, VideoDecoder::H264(_)),
+            "an unknown codec label must degrade to the SDR decoder"
+        );
+        assert!(
+            unknown.push_encoded(&nalus),
+            "the fallback decoder has to actually decode the SDR stream"
+        );
+
+        // "hevc-main10" is known, and resolves to whichever of the two
+        // legal outcomes this host allows. Either way the view is usable:
+        // when the HEVC backend is missing it degrades to H.264 exactly
+        // like the unknown label, and when it is present it runs HDR.
+        let mut hevc = PeerView::new_for_stream(
+            43,
+            7,
+            "hevc-main10",
+            PeerSurfaceMetrics::default(),
+            &caps,
+            None,
+        );
+        if matches!(hevc.decoder, VideoDecoder::H264(_)) {
+            // Degraded path — this is what a stock qOS image does. Prove
+            // it decodes, so the viewer sees the share rather than a
+            // dead surface.
+            assert!(
+                hevc.push_encoded(&nalus),
+                "the degraded HEVC view must still decode the SDR stream \
+                 the sender is really emitting"
+            );
+        } else {
+            // Host has a real HEVC decoder, so the view is on the HDR
+            // path. It must have got there because the backend genuinely
+            // builds, not because something mislabelled itself.
+            assert!(
+                VideoDecoder::for_wire_codec("hevc-main10").is_ok(),
+                "the HDR path is only reachable when the backend builds"
+            );
+        }
+    }
+
     /// The metrics handle is [`Clone`]-shared — an OSD overlay can
     /// hold a copy and see counters advance without touching the widget.
     #[test]
