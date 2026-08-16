@@ -263,10 +263,18 @@ impl ShareRegistry {
         revoked
     }
 
-    /// Convenience: route an inbound `InputEvent` to `sink` only if the
-    /// registry permits it. Returns whether the event was applied. The
-    /// owner's actor loop calls this from its `NeighbourMsg::RemoteInput`
-    /// handler.
+    /// Route an inbound `InputEvent` to `sink` if — and only as far as —
+    /// the registry permits it. Returns whether the event was applied.
+    ///
+    /// **This is not the injection path.** It applies the share gate and
+    /// nothing else: an event routed through here has not been checked
+    /// against the surface's rect, against what is on top of it, against
+    /// the chord table, or against the peer's rate budget. Anything
+    /// whose sink is the compositor's seat must go through
+    /// [`crate::compositor::state::State::review_remote_input`] instead.
+    /// This exists for sinks that are not the seat — recorders in tests,
+    /// and adapters that only need to know whether a peer holds write
+    /// access.
     pub fn route_to<S: RemoteInputSink>(
         &self,
         peer: PeerId,
