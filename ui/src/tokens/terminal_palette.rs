@@ -1,4 +1,6 @@
 use vello::peniko::Color;
+use crate::color_compat::ColorCompat;
+use super::colors::{Colors, ACCENT_PRIMARY_IDX};
 
 /// Palette used by terminal-style widgets. Exposes default fg/bg and a 16-slot
 /// ANSI base palette. Higher-index colors (256/truecolor) are out of scope —
@@ -11,63 +13,93 @@ pub struct TerminalPalette {
     pub ansi: [Color; 16],
 }
 
-impl TerminalPalette {
-    /// Dark palette tuned to match `nirios-concept/src/components/apps/TerminalApp.tsx`:
-    /// pure-black background, green-400 default text (Tailwind `#4ade80`),
-    /// and Tailwind's `-400` ramp for the ANSI anchors so the 8-color ANSI
-    /// output harmonises with the rest of the concept's UI (slate-300
-    /// neutrals, cyan-400 links, purple-400 paths, yellow-400 warnings).
-    pub fn dark() -> Self {
-        // Tailwind-400 ramp so the terminal's ANSI colors sit in the same
-        // perceptual band as the concept's JSX classes. Bright variants use
-        // the `-300` ramp for a softer but clearly distinct tier.
-        let red_400 = Color::from_rgb8(0xf8, 0x71, 0x71);
-        let green_400 = Color::from_rgb8(0x4a, 0xde, 0x80);
-        let yellow_400 = Color::from_rgb8(0xfa, 0xcc, 0x15);
-        let blue_400 = Color::from_rgb8(0x60, 0xa5, 0xfa);
-        let purple_400 = Color::from_rgb8(0xc0, 0x84, 0xfc);
-        let cyan_400 = Color::from_rgb8(0x22, 0xd3, 0xee);
-        let slate_300 = Color::from_rgb8(0xcb, 0xd5, 0xe1);
-        let slate_500 = Color::from_rgb8(0x64, 0x74, 0x8b);
+/// Mix two colours in straight (non-premultiplied) 8-bit sRGB. `t = 0` → `a`.
+fn mix8(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
+    Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
+}
 
-        let red_300 = Color::from_rgb8(0xfc, 0xa5, 0xa5);
-        let green_300 = Color::from_rgb8(0x86, 0xef, 0xac);
-        let yellow_300 = Color::from_rgb8(0xfd, 0xe0, 0x47);
-        let blue_300 = Color::from_rgb8(0x93, 0xc5, 0xfd);
-        let purple_300 = Color::from_rgb8(0xd8, 0xb4, 0xfe);
-        let cyan_300 = Color::from_rgb8(0x67, 0xe8, 0xf9);
-        let slate_100 = Color::from_rgb8(0xf1, 0xf5, 0xf9);
+/// Perceptual luminance in 0..=1 (Rec. 709 coefficients).
+fn luma(c: Color) -> f32 {
+    (0.2126 * c.r() as f32 + 0.7152 * c.g() as f32 + 0.0722 * c.b() as f32) / 255.0
+}
+
+impl TerminalPalette {
+    /// Derive the terminal palette from the OS theme's colour tokens.
+    ///
+    /// The terminal must not carry its own colour scheme — per-app colour
+    /// customisation belongs at the shell/theme level, so the default fg/bg and
+    /// the ANSI ramp are read from the active [`Colors`] here. The result tracks
+    /// whatever theme the OS applies (graphite dark, paper light, Dracula, …)
+    /// instead of a fixed palette.
+    ///
+    /// * `fg_default` / `bg_default` come straight from the theme's primary text
+    ///   and ground, so a blank terminal is indistinguishable from any other
+    ///   surface of the OS.
+    /// * The six chromatic ANSI hues anchor to the theme's semantic colours —
+    ///   every qOS theme defines these on-brand (danger→red, success→green,
+    ///   warning→yellow, info→cyan) — with the accent supplying blue and magenta
+    ///   derived from red+blue. Cyan is nudged toward green so it stays visibly
+    ///   distinct from the (often blue-ish) accent.
+    /// * The neutral anchors (ANSI black / white and their bright tiers) blend
+    ///   from the ground toward the foreground, so both ends stay legible whether
+    ///   the theme is light or dark.
+    pub fn from_colors(c: &Colors) -> Self {
+        let bg = c.surfaces.base;
+        let fg = c.text_primary;
+        let dark = luma(bg) < 0.5;
+
+        // "Bright" tier of a chromatic anchor: toward white on a dark ground,
+        // toward black on a light ground, so brights gain (not lose) contrast.
+        let bright = |col: Color| {
+            if dark { mix8(col, Color::WHITE, 0.25) } else { mix8(col, Color::BLACK, 0.22) }
+        };
+        // A grey anchored on the ground→foreground axis; both ends are known
+        // legible against the ground because the foreground is.
+        let grey = |t: f32| mix8(bg, fg, t);
+
+        let red = c.semantic.danger;
+        let green = c.semantic.success;
+        let yellow = c.semantic.warning;
+        let blue = c.accent[ACCENT_PRIMARY_IDX];
+        // Keep cyan distinct from a blue-leaning accent by pulling the theme's
+        // "info" hue toward green.
+        let cyan = mix8(c.semantic.info, green, 0.35);
+        // The theme has no magenta; red + blue lands on a tasteful one.
+        let magenta = mix8(red, blue, 0.5);
 
         Self {
-            fg_default: green_400,
-            bg_default: Color::BLACK,
+            fg_default: fg,
+            bg_default: bg,
             ansi: [
-                Color::BLACK,
-                red_400,
-                green_400,
-                yellow_400,
-                blue_400,
-                purple_400,
-                cyan_400,
-                slate_300,
-                // Bright tier (intensities 8..=15).
-                slate_500,
-                red_300,
-                green_300,
-                yellow_300,
-                blue_300,
-                purple_300,
-                cyan_300,
-                slate_100,
+                grey(0.20),      // 0  black — a hair lifted from the ground
+                red,             // 1  red
+                green,           // 2  green
+                yellow,          // 3  yellow
+                blue,            // 4  blue
+                magenta,         // 5  magenta
+                cyan,            // 6  cyan
+                grey(0.85),      // 7  white — light grey near the foreground
+                grey(0.45),      // 8  bright black — mid grey
+                bright(red),     // 9  bright red
+                bright(green),   // 10 bright green
+                bright(yellow),  // 11 bright yellow
+                bright(blue),    // 12 bright blue (also the link hue)
+                bright(magenta), // 13 bright magenta
+                bright(cyan),    // 14 bright cyan
+                fg,              // 15 bright white — the foreground itself
             ],
         }
     }
 
+    /// The terminal palette for the default dark theme, derived from its colours.
+    pub fn dark() -> Self {
+        Self::from_colors(&Colors::dark())
+    }
+
+    /// The terminal palette for the default light theme, derived from its colours.
     pub fn light() -> Self {
-        // Same ANSI colors; default fg/bg flipped for light surfaces.
-        let mut p = Self::dark();
-        p.fg_default = Color::from_rgb8(20, 20, 20);
-        p.bg_default = Color::from_rgb8(245, 245, 245);
-        p
+        Self::from_colors(&Colors::light())
     }
 }
