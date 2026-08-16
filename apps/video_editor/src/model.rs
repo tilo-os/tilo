@@ -56,6 +56,83 @@ impl Filters {
     }
 }
 
+/// A stackable per-clip image effect, applied to the frame *after* the base
+/// colour grade ([`Filters`]). Unlike the grade (three fixed axes), effects are
+/// an ordered list the user builds: add, remove and reorder. `amount` is the
+/// effect's intensity in 0..1 (1 = full).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClipEffect {
+    pub kind: EffectKind,
+    pub amount: f64,
+}
+
+impl ClipEffect {
+    pub fn new(kind: EffectKind) -> Self {
+        Self { kind, amount: kind.default_amount() }
+    }
+}
+
+/// The kinds of stackable effect a clip can carry. Each transforms the graded
+/// colour; the preview and the (gated) export apply them in list order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectKind {
+    Grayscale,
+    Sepia,
+    Invert,
+    Warm,
+    Cool,
+    Vignette,
+}
+
+impl EffectKind {
+    pub const ALL: [EffectKind; 6] = [
+        EffectKind::Grayscale,
+        EffectKind::Sepia,
+        EffectKind::Invert,
+        EffectKind::Warm,
+        EffectKind::Cool,
+        EffectKind::Vignette,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EffectKind::Grayscale => "grayscale",
+            EffectKind::Sepia => "sepia",
+            EffectKind::Invert => "invert",
+            EffectKind::Warm => "warm",
+            EffectKind::Cool => "cool",
+            EffectKind::Vignette => "vignette",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            EffectKind::Grayscale => "Grayscale",
+            EffectKind::Sepia => "Sepia",
+            EffectKind::Invert => "Invert",
+            EffectKind::Warm => "Warm",
+            EffectKind::Cool => "Cool",
+            EffectKind::Vignette => "Vignette",
+        }
+    }
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s.trim().to_lowercase().as_str() {
+            "grayscale" | "greyscale" | "grey" | "gray" | "b&w" => EffectKind::Grayscale,
+            "sepia" => EffectKind::Sepia,
+            "invert" | "negative" => EffectKind::Invert,
+            "warm" => EffectKind::Warm,
+            "cool" => EffectKind::Cool,
+            "vignette" => EffectKind::Vignette,
+            _ => return None,
+        })
+    }
+    /// A sensible default intensity when the effect is first added.
+    pub fn default_amount(self) -> f64 {
+        match self {
+            EffectKind::Vignette => 0.5,
+            _ => 0.8,
+        }
+    }
+}
+
 /// What a piece of source media is. Drives the bin icon, whether it
 /// lands on a video or audio track by default, and which inspector
 /// controls (opacity vs. volume) apply.
@@ -247,6 +324,10 @@ pub struct Clip {
     /// Fade-out length in seconds at the tail. 0 = no fade.
     #[serde(default)]
     pub fade_out: f64,
+    /// Ordered stack of image effects applied after the base grade. Empty by
+    /// default; the user adds / removes / reorders them.
+    #[serde(default)]
+    pub effects: Vec<ClipEffect>,
 }
 
 impl Clip {
@@ -261,6 +342,30 @@ impl Clip {
     /// True if timeline time `t` falls within this clip's span.
     pub fn covers(&self, t: f64) -> bool {
         t >= self.start && t < self.end()
+    }
+
+    /// Append an effect of `kind` (at its default intensity) to the stack.
+    pub fn add_effect(&mut self, kind: EffectKind) {
+        self.effects.push(ClipEffect::new(kind));
+    }
+    /// Remove the effect at `idx` (no-op if out of range).
+    pub fn remove_effect(&mut self, idx: usize) {
+        if idx < self.effects.len() {
+            self.effects.remove(idx);
+        }
+    }
+    /// Move the effect at `idx` one slot earlier (toward the start of the
+    /// stack), changing the order it's applied. No-op at the top / out of range.
+    pub fn move_effect_up(&mut self, idx: usize) {
+        if idx > 0 && idx < self.effects.len() {
+            self.effects.swap(idx, idx - 1);
+        }
+    }
+    /// Move the effect at `idx` one slot later. No-op at the bottom / out of range.
+    pub fn move_effect_down(&mut self, idx: usize) {
+        if idx + 1 < self.effects.len() {
+            self.effects.swap(idx, idx + 1);
+        }
     }
 
     /// Envelope gain in 0..1 from the fade-in / fade-out ramps at timeline
@@ -395,6 +500,7 @@ impl Project {
             filters: Filters::default(),
             fade_in: 0.0,
             fade_out: 0.0,
+            effects: Vec::new(),
         });
         Some(id)
     }
@@ -743,6 +849,31 @@ mod tests {
         assert_eq!(left.fade_out, 0.0, "head loses tail fade");
         assert_eq!(right.fade_in, 0.0, "tail loses head fade");
         assert!((right.fade_out - 3.0).abs() < 1e-9, "tail keeps fade-out");
+    }
+
+    #[test]
+    fn effects_stack_add_remove_and_reorder() {
+        let (mut p, _m, _t, cid) = project_with_clip();
+        let c = p.clip_mut(cid).unwrap();
+        assert!(c.effects.is_empty(), "a fresh clip has no effects");
+        c.add_effect(EffectKind::Grayscale);
+        c.add_effect(EffectKind::Sepia);
+        c.add_effect(EffectKind::Invert);
+        let kinds = |c: &Clip| c.effects.iter().map(|e| e.kind).collect::<Vec<_>>();
+        assert_eq!(kinds(c), vec![EffectKind::Grayscale, EffectKind::Sepia, EffectKind::Invert]);
+        // A fresh effect carries its kind's default intensity.
+        assert!((c.effects[0].amount - EffectKind::Grayscale.default_amount()).abs() < 1e-9);
+        // Reorder: move Invert (idx 2) up.
+        c.move_effect_up(2);
+        assert_eq!(kinds(c), vec![EffectKind::Grayscale, EffectKind::Invert, EffectKind::Sepia]);
+        // Remove the head.
+        c.remove_effect(0);
+        assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
+        // Out-of-range moves / removes are no-ops.
+        c.move_effect_up(0);
+        c.move_effect_down(1);
+        c.remove_effect(9);
+        assert_eq!(kinds(c), vec![EffectKind::Invert, EffectKind::Sepia]);
     }
 
     #[test]
