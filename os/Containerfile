@@ -341,19 +341,44 @@ RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
 
+# ---- Drop SQLite's WAL sidecars after every rpm transaction -----------------
+# rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
+# than letting SQLite delete them when the last connection closes. `-shm` is the
+# WAL *index*: pure derived state, valid only for the processes that mapped it,
+# and meaningless once the transaction's processes are gone. `-wal` is left at
+# zero bytes, i.e. already checkpointed into the database — so neither file
+# carries data, and neither survives correctly across a container layer.
+#
+# Every layer boundary is where that bites. The fedora-bootc base ships neither
+# file; every qOS image built so far shipped both, and every dnf step here left
+# a fresh pair in its layer. Reading such a layer back in the following RUN
+# yields a structurally corrupt database — duplicate b-tree page references and
+# wrong index entry counts under `pragma integrity_check`, with `rpm -qa` and
+# `rpm -ql` still fine because the Packages blob is intact while Basenames and
+# Dirnames are not. That surfaces as dnf refusing to resolve file dependencies
+# the base plainly satisfies ("/usr/bin/basename is needed by distrobox") and
+# `rpm -qf` reporting that no package owns files it just installed.
+#
+# So this is not a workaround for the corruption; it is not shipping derived
+# state that was never valid to ship. Only this stage needs it: the wpe-builder
+# and builder stages are thrown away and nothing in them reads the rpmdb after
+# their one transaction, and touching their dnf layers would invalidate a
+# ~45-minute engine build for nothing.
+ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
+
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     mesa-dri-drivers \
     mesa-vulkan-drivers \
     libglvnd-egl \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Audio/Video
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     pipewire \
     pipewire-pulseaudio \
     wireplumber \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # GStreamer — the Music app plays audio through a `playbin` whose sink chain
 # ends in `autoaudiosink` (→ `pulsesink`, from -plugins-good, over the PipeWire
@@ -365,7 +390,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
     gstreamer1-plugin-libav \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).
@@ -380,7 +405,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     fprintd \
     fprintd-pam \
     polkit \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # System utilities.
 #
@@ -408,14 +433,14 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     NetworkManager \
     fuse3 \
     cage \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
 # qOS backend (Sandbox Phase 4.3).
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     xdg-desktop-portal \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # ---------------------------------------------------------------------------
 # OS infrastructure (C2-C8)
@@ -430,7 +455,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     firewalld \
     bluez \
     power-profiles-daemon \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Ensure system groups exist in /etc/group and add greetd to them
 RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
@@ -442,14 +467,14 @@ RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     google-noto-sans-fonts \
     google-noto-sans-mono-fonts \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # Wayland runtime libraries (needed by compositor)
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     wayland-devel \
     libxkbcommon-devel \
     libinput-devel \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # ---------------------------------------------------------------------------
 # Compiled qOS binaries (built in the `builder` stage above)
@@ -547,7 +572,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     at-spi2-atk \
     libmanette \
     libxslt \
-    && dnf clean all \
+    && dnf clean all && ${DROP_RPMDB_WAL} \
     && ldconfig
 
 # ---- Baked signed runtime bundle -------------------------------------------
@@ -747,7 +772,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # The signing tools, in their own transaction and allowed to be absent.
 #
@@ -768,7 +793,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --skip-
         sbsigntools \
         efitools \
         systemd-ukify \
-    && dnf clean all
+    && dnf clean all && ${DROP_RPMDB_WAL}
 
 # The install-config drop-in that flips bootc's bootloader choice to
 # systemd-boot. Lives at /usr/lib/bootc/install/*.toml — a drop-in dir bootc
@@ -898,7 +923,7 @@ RUN case "${QOS_GENERATION}" in \
 # it when automatic unlock has failed.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         tpm2-tools \
-    && dnf clean all && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+    && dnf clean all && ${DROP_RPMDB_WAL} && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
 
 COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
 COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
@@ -994,7 +1019,7 @@ RUN chmod 0755 /usr/libexec/qos-deployment /usr/libexec/qos-boot-health \
 # compiler-rt also has to be present for qos-launcher's scoped hardening, which
 # preloads the same library into the packages listed in
 # /usr/lib/qos/untrusted-parsers.conf.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && ${DROP_RPMDB_WAL} && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
@@ -1214,7 +1239,26 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \
-    dnf clean all
+    dnf clean all && ${DROP_RPMDB_WAL}
+
+# The rpm database this image ships is intact and carries no WAL sidecars.
+#
+# Asserted positively rather than by absence of an error, because that is how
+# this failed before: `rpm -qa` kept working off the Packages blob while the
+# Basenames/Dirnames indexes were structurally corrupt, so every step still
+# "succeeded" until a dnf resolve needed a file dependency and claimed the base
+# image did not provide /usr/bin/basename. `rpm -qf` on a file the base owns is
+# the cheapest query that actually reads those indexes.
+RUN test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-wal \
+        || { echo "rpmdb.sqlite-wal is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
+ && test ! -e /usr/lib/sysimage/rpm/rpmdb.sqlite-shm \
+        || { echo "rpmdb.sqlite-shm is in the image; see DROP_RPMDB_WAL" >&2; exit 1; } \
+ && owner="$(rpm -qf /usr/bin/basename 2>&1 || true)" \
+ && case "$owner" in \
+      coreutils-*) echo "rpmdb file index intact: /usr/bin/basename -> $owner" ;; \
+      *) echo "rpmdb file index is corrupt: /usr/bin/basename -> $owner" >&2; exit 1 ;; \
+    esac \
+ && rpm --verifydb
 
 # Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
 # state it once did: offering `qos-install --encrypt` while carrying no
