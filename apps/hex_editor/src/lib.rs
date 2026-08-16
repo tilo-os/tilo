@@ -39,7 +39,12 @@ pub fn app_root() -> Box<dyn Widget> {
     // A `--shots`-only hook to capture the empty state deterministically.
     let want_empty = std::env::var("QOS_HEX_DEMO").as_deref() == Ok("empty");
     let view = if shots_mode && !want_empty {
-        app::sample_view()
+        // Arm the transient floating status bubble so the single headless frame
+        // captures the floating cursor read-out chip (it otherwise appears on a
+        // change / hover and fades, so a still frame would miss it).
+        let mut v = app::sample_view();
+        v.arm_status_bubble_for_shots();
+        v
     } else {
         HexView::empty()
     };
