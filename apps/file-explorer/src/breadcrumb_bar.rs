@@ -74,6 +74,11 @@ pub struct BreadcrumbBar {
     /// Index into `laid` the cursor currently hovers (clickable only).
     hover: Option<usize>,
     last_cursor: Point,
+    /// Set when a press landed on the trail but not on a navigable ancestor
+    /// (the current segment, or the empty space after the trail) — the owner
+    /// reads it via [`take_edit_requested`](Self::take_edit_requested) to switch
+    /// the path bar into its editable-text mode.
+    edit_requested: bool,
 }
 
 impl BreadcrumbBar {
@@ -85,7 +90,26 @@ impl BreadcrumbBar {
             laid: Vec::new(),
             hover: None,
             last_cursor: Point::ZERO,
+            edit_requested: false,
         }
+    }
+
+    /// Replace the trail's segments (the owner calls this each frame with the
+    /// current directory's components so a persistent bar tracks navigation).
+    pub fn set_segments(&mut self, segments: Vec<(String, PathBuf)>) {
+        self.segments = segments;
+    }
+
+    /// Place the bar at `rect` without a taffy pass — for an owner compositing
+    /// the bar in its own immediate-mode chrome (the path bar).
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    /// Rising-edge read of whether the last press asked to edit the path (a
+    /// click on the current location or the empty trail area).
+    pub fn take_edit_requested(&mut self) -> bool {
+        std::mem::take(&mut self.edit_requested)
     }
 
     /// Root glyph: a house for `$HOME`, a hard-drive for the filesystem root.
@@ -359,6 +383,12 @@ impl Widget for BreadcrumbBar {
                         push(&self.sink, FileCommand::Navigate(target));
                         *handled = true;
                     }
+                } else if self.rect.contains(self.last_cursor) {
+                    // A press on the trail that isn't a navigable ancestor — the
+                    // current location or the empty area after it — asks to edit
+                    // the path (Finder/Nautilus: click the path to type one).
+                    self.edit_requested = true;
+                    *handled = true;
                 }
             }
             _ => {}
@@ -373,6 +403,11 @@ impl Widget for BreadcrumbBar {
                     return Some(winit::window::CursorIcon::Pointer);
                 }
             }
+        }
+        // Over the rest of the trail (current location / empty area): a text
+        // caret, hinting that a click opens the editable path field.
+        if self.rect.contains(point) {
+            return Some(winit::window::CursorIcon::Text);
         }
         None
     }
