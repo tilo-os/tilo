@@ -398,6 +398,18 @@ pub struct ChromeState {
     /// palette should offer the invite / connect commands at all.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
+    /// Why this session has no CRDT fan-out broker, when it has none.
+    ///
+    /// `None` is the working case. `Some(reason)` means every app in
+    /// the session is running alone: edits are local, nobody else's
+    /// changes arrive, and presence is empty. That is the one failure
+    /// in the collaboration stack that an app cannot report for
+    /// itself — it asks for the `collab` service, is told the service
+    /// is absent, and carries on looking exactly like an app whose
+    /// collaborators happen to be idle. So the chrome says it instead,
+    /// which is also where it belongs: who else is here is a fact
+    /// about the session, not about any one app.
+    pub collab_unavailable: Option<String>,
     /// The documents the open tabs are showing, one record each.
     ///
     /// Held here because the chrome is what everything outside the widget
@@ -464,6 +476,7 @@ impl ChromeState {
             peer_sync_connect_input: None,
             peer_sync_status: None,
             peer_sync_enabled: false,
+            collab_unavailable: None,
             peer_sync_requests: Vec::new(),
             strip_viewport: None,
             records: RecordStore::in_memory(),
@@ -1038,6 +1051,35 @@ impl ChromeState {
                 .with_severity(NotificationSeverity::Error)
                 .with_icon_kind(NotificationIconKind::Generic),
         )
+    }
+
+    /// Record that this session has no CRDT fan-out, and say so.
+    ///
+    /// Both halves matter. The flag is what the collaborator surfaces
+    /// read so they stop claiming an empty roster means "nobody else
+    /// is here", and the notification is what makes the user aware at
+    /// the moment it happens rather than after an afternoon of edits
+    /// that reached nobody.
+    pub fn set_collab_unavailable(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        if self.collab_unavailable.as_deref() == Some(reason.as_str()) {
+            return;
+        }
+        self.push_error_notification(
+            "Collaboration unavailable",
+            format!("Apps in this session cannot share edits. {reason}"),
+        );
+        self.collab_unavailable = Some(reason);
+    }
+
+    /// The broker is up; clear any standing unavailable state.
+    pub fn clear_collab_unavailable(&mut self) {
+        self.collab_unavailable = None;
+    }
+
+    /// Is collaboration working in this session?
+    pub fn collab_available(&self) -> bool {
+        self.collab_unavailable.is_none()
     }
 
     /// Dismiss a notification by its internal id. No-op if the id has
