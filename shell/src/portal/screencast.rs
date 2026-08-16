@@ -594,6 +594,7 @@ mod tests {
             file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: sc_handle,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
