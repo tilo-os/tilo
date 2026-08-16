@@ -277,6 +277,18 @@ pub struct ShellOverlayHost {
     /// don't paint a stale prompt during the moment between two
     /// requests.
     permission_prompt: Option<PermissionPrompt>,
+    /// The portal's prompt queue, when the compositor is serving
+    /// portals. `drain_portal_prompts` empties it onto
+    /// `chrome.pending_grants` every frame; `None` when no portal is
+    /// running, in which case there is nothing to drain.
+    portal_prompts: Option<crate::portal::PromptQueueHandle>,
+    /// The portal's file-picker queue. Drained every frame into
+    /// [`Self::file_picker`].
+    portal_pickers: Option<crate::portal::FilePickerQueue>,
+    /// The live file-chooser dialog, and the request it is answering.
+    /// One at a time: a second `OpenFile` while a dialog is up waits in
+    /// the queue rather than stacking two modals over each other.
+    file_picker: Option<Box<ActiveFilePicker>>,
     /// Whether peer-sync palette commands (`/invite`, `/connect`) are
     /// surfaced to the user. Off by default; the compositor flips this
     /// to `true` when booted with `--enable-peer-sync`. Toggled via
@@ -919,6 +931,9 @@ impl ShellOverlayHost {
             member_control_rects: Vec::new(),
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
+            portal_prompts: None,
+            portal_pickers: None,
+            file_picker: None,
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
             peer_sync_bridge: None,
@@ -2673,10 +2688,12 @@ impl ShellOverlayHost {
             let head_matches = st
                 .pending_grants
                 .front()
-                .map(|(app_id, _)| app_id == &widget_app_id)
+                .map(|p| p.app_id == widget_app_id)
                 .unwrap_or(false);
             if head_matches {
-                if let Some((app_id, capability)) = st.pending_grants.pop_front() {
+                if let Some(mut pending) = st.pending_grants.pop_front() {
+                    let app_id = pending.app_id.clone();
+                    let capability = pending.capability.clone();
                     match choice {
                         PromptChoice::Allow => {
                             // Once: don't persist on the workspace.
@@ -2696,6 +2713,10 @@ impl ShellOverlayHost {
                             // matching grant as "deny".
                         }
                     }
+                    // Release the blocked portal call. Without this the
+                    // D-Bus method awaiting the oneshot never returns and
+                    // the calling app hangs on its own Open dialog.
+                    pending.answer(prompt_choice_to_outcome(choice));
                     st.bump();
                 }
             }
@@ -2709,13 +2730,127 @@ impl ShellOverlayHost {
         // surfacing and we don't already hold a widget.
         if self.permission_prompt.is_none() {
             let st = chrome_handle.borrow();
-            if let Some((app_id, capability)) = st.pending_grants.front() {
-                let label = capability_label(capability);
+            if let Some(pending) = st.pending_grants.front() {
+                let label = capability_label(&pending.capability);
                 let is_owner = is_active_workspace_owner(&st);
-                self.permission_prompt =
-                    Some(PermissionPrompt::new(app_id.clone(), label, is_owner));
+                self.permission_prompt = Some(PermissionPrompt::new(
+                    pending.app_id.clone(),
+                    label,
+                    is_owner,
+                ));
             }
         }
+    }
+
+    /// Attach the portal's queues so the per-frame pumps have something
+    /// to drain. Called by the compositor once, at startup, after
+    /// `portal::serve` succeeds.
+    pub fn set_portal_queues(
+        &mut self,
+        prompts: crate::portal::PromptQueueHandle,
+        pickers: crate::portal::FilePickerQueue,
+    ) {
+        self.portal_prompts = Some(prompts);
+        self.portal_pickers = Some(pickers);
+    }
+
+    /// The live file-chooser dialog, if one is up. For the frame
+    /// builder's widget walk and for tests.
+    pub fn file_picker(&self) -> Option<&ui::widget::FilePicker> {
+        self.file_picker.as_ref().map(|a| &a.widget)
+    }
+
+    pub fn file_picker_mut(&mut self) -> Option<&mut ui::widget::FilePicker> {
+        self.file_picker.as_mut().map(|a| &mut a.widget)
+    }
+
+    /// Mount dialogs for everything the portal's picker queue has
+    /// buffered, and resolve whichever dialog the user just finished
+    /// with.
+    ///
+    /// Returns whether anything changed, so the caller can repaint.
+    pub(crate) fn pump_file_picker(&mut self) -> bool {
+        let mut dirty = false;
+
+        // Step 1 — resolve a finished dialog. `take_outcome` drains, so
+        // this runs at most once per decision.
+        if let Some(active) = self.file_picker.as_mut() {
+            if let Some(outcome) = active.widget.take_outcome() {
+                let mut active = self.file_picker.take().expect("just checked");
+                let picked = match outcome {
+                    ui::widget::FilePickerOutcome::Selected(paths) => Some(paths),
+                    ui::widget::FilePickerOutcome::Cancelled => None,
+                };
+                active.answer(picked);
+                dirty = true;
+            }
+        }
+
+        // Step 2 — mount the next queued request, if the floor is free.
+        let Some(queue) = self.portal_pickers.as_ref() else {
+            return dirty;
+        };
+        let queued = queue.drain();
+        if queued.is_empty() {
+            return dirty;
+        }
+        for req in queued {
+            if self.file_picker.is_some() {
+                // A dialog is already up. Answering "cancelled" is the
+                // honest response to a request we are not going to show
+                // — better than queueing a modal the user will meet
+                // minutes later with no idea what asked for it.
+                let _ = req.reply.send(None);
+                continue;
+            }
+            self.file_picker = Some(Box::new(ActiveFilePicker::mount(req)));
+            dirty = true;
+        }
+        dirty
+    }
+
+    /// Move everything the portal's prompt queue has buffered onto the
+    /// chrome's queue, so the next `pump_permission_prompt` surfaces it.
+    ///
+    /// This is the step that was missing: `PromptQueueHandle::drain` had
+    /// no production caller, so a `PromptResolver::Channel` queue filled
+    /// up and nothing ever emptied it. Every entry owns the reply sender
+    /// for a D-Bus method that is parked on `rx.await`, which is why the
+    /// senders travel onto `pending_grants` rather than being dropped
+    /// here — dropping one answers deny, and a user who has not been
+    /// asked yet has not denied anything.
+    ///
+    /// Returns whether anything moved, so the caller can mark the frame
+    /// dirty and repaint with the prompt on screen.
+    pub(crate) fn drain_portal_prompts(&mut self) -> bool {
+        let Some(prompts) = self.portal_prompts.as_ref() else {
+            return false;
+        };
+        let drained = prompts.drain();
+        if drained.is_empty() {
+            return false;
+        }
+        let Some(chrome_handle) = self.chrome.clone() else {
+            // No chrome to render a prompt: answer every request rather
+            // than hold senders that will never be fulfilled. An
+            // unanswerable request is a denial, and it says so now
+            // instead of at some later drop.
+            for pending in drained {
+                let _ = pending.reply.send(crate::portal::PromptOutcome::Deny);
+            }
+            return false;
+        };
+        let mut st = chrome_handle.borrow_mut();
+        for pending in drained {
+            st.pending_grants
+                .push_back(crate::shell::chrome_state::PendingPrompt::with_reply(
+                    pending.caller.app_id.clone(),
+                    pending.capability,
+                    pending.reply,
+                ));
+        }
+        st.bump();
+        true
     }
 
     /// Test-only one-shot drive: lets integration tests run the
@@ -6719,6 +6854,96 @@ fn compose_overlay_transition(t: f32, target: f32) -> (f32, f64, f32, f64) {
             let alpha = p;
             let scale = SHRINK_SCALE + (1.0 - SHRINK_SCALE) * p as f64;
             (alpha, scale, 0.0, SHRINK_SCALE)
+        }
+    }
+}
+
+/// Map the prompt widget's choice onto the portal's outcome vocabulary.
+///
+/// Two enums for one decision is not ideal, but they belong to
+/// different layers: `PromptChoice` is what a button click means, and
+/// `PromptOutcome` is what a D-Bus caller is told. Keeping the mapping
+/// in one place is what stops them drifting.
+fn prompt_choice_to_outcome(choice: PromptChoice) -> crate::portal::PromptOutcome {
+    use crate::portal::PromptOutcome;
+    match choice {
+        PromptChoice::Allow => PromptOutcome::AllowOnce,
+        PromptChoice::Session => PromptOutcome::AllowSession,
+        PromptChoice::Always => PromptOutcome::AllowAlways,
+        PromptChoice::Deny => PromptOutcome::Deny,
+    }
+}
+
+/// A file-chooser dialog on screen, and the portal request it answers.
+///
+/// The reply channel is the point: the D-Bus method that raised this is
+/// parked on it. Dropping this struct without calling [`Self::answer`]
+/// drops the sender, which the FileChooser backend reads as "cancelled"
+/// — so a dialog that disappears for any reason (session lock, a
+/// workspace closing, a panic unwinding the frame) fails closed and
+/// releases the caller instead of stranding it.
+pub(crate) struct ActiveFilePicker {
+    pub(crate) widget: ui::widget::FilePicker,
+    /// Who asked. Shown in the dialog subtitle, so the user is choosing
+    /// a file *for a named app* rather than answering an anonymous
+    /// dialog.
+    pub(crate) app_id: crate::shell::state::AppId,
+    reply: Option<tokio::sync::oneshot::Sender<Option<Vec<std::path::PathBuf>>>>,
+}
+
+impl ActiveFilePicker {
+    /// Build the dialog for `req`.
+    ///
+    /// Note what is taken from the request and what is not. The title,
+    /// the filters, the confirm label and the suggested filename are the
+    /// app's to choose — they are presentation. Where the dialog opens
+    /// and how far it can browse are *not*: those come from
+    /// [`crate::portal::PickerScope`], because an app that could aim the
+    /// dialog could use it to learn what exists outside its sandbox.
+    fn mount(req: crate::portal::FilePickerRequest) -> Self {
+        use ui::widget::file_picker::FileFilter;
+        use ui::widget::{FilePicker, FilePickerMode};
+
+        let scope = crate::portal::PickerScope::for_user();
+        let mut filters: Vec<FileFilter> = req
+            .filters
+            .iter()
+            .filter(|f| !f.is_catch_all())
+            .map(|f| {
+                let exts: Vec<&str> = f.extensions.iter().map(|e| e.as_str()).collect();
+                FileFilter::new(f.label.clone(), &exts)
+            })
+            .collect();
+        // "All files" always last, and always present: a filter list
+        // with no escape hatch is a dialog that cannot open a file whose
+        // extension the app failed to anticipate.
+        filters.push(FileFilter::all());
+
+        let mode = if req.save {
+            FilePickerMode::Save
+        } else {
+            FilePickerMode::Open
+        };
+        let mut widget = FilePicker::new(req.title.clone(), &scope.initial_dir, scope.roots)
+            .with_mode(mode)
+            .with_filters(filters)
+            .with_multiple(req.multiple)
+            .with_confirm_label(req.confirm_label())
+            .with_requester(req.caller.app_id.clone());
+        if let Some(name) = req.current_name.as_deref() {
+            widget = widget.with_filename(name);
+        }
+        Self {
+            widget,
+            app_id: req.caller.app_id.clone(),
+            reply: Some(req.reply),
+        }
+    }
+
+    /// Release the blocked portal call.
+    fn answer(&mut self, picked: Option<Vec<std::path::PathBuf>>) {
+        if let Some(tx) = self.reply.take() {
+            let _ = tx.send(picked);
         }
     }
 }

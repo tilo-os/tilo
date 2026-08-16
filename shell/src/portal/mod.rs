@@ -47,8 +47,10 @@
 //! bus the upstream `xdg-desktop-portal` test fixtures use.
 
 pub mod camera;
+pub mod doc_store;
 pub mod file_chooser;
 pub mod file_picker_spawner;
+pub mod picker_queue;
 pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
@@ -59,11 +61,13 @@ pub mod screencast_pipewire;
 // hood; tests need it inline so the server- and client-side
 // handshake can join concurrently (see `tests/portal_test.rs`).
 pub use camera::AccessBackend;
+pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
 pub use file_chooser::FileChooserBackend;
 pub use file_picker_spawner::{
-    FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle, MockFilePickerSpawner,
-    NullFilePickerSpawner,
+    FilePickerOptions, FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle,
+    MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
+pub use picker_queue::{FilePickerQueue, PickerScope};
 pub use remote_desktop::{
     ChannelInjector, RecordingInjector, RemoteDesktopBackend, RemoteInputInjector,
     RemoteInputInjectorHandle,
@@ -468,6 +472,10 @@ pub struct PortalContext {
     /// [`ChannelInjector`] the compositor loop drains into the seat, and
     /// `--portal-server-only` mode (no live seat) uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
+    /// How a picked path is made reachable by the app that asked for
+    /// it. See [`doc_store`] for why recording the grant is not enough
+    /// on its own for an app that is already running.
+    pub documents: DocumentStoreHandle,
 }
 
 impl PortalContext {
@@ -491,6 +499,7 @@ impl PortalContext {
                 MockScreenCastProvisioner::new_with_node(1, "default"),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
+            documents: DocumentStoreHandle::host_paths(),
         }
     }
 }
