@@ -12,8 +12,14 @@ name = "ebook"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+# `portal` pulls in the host XDG file-chooser so "Open a book…" goes through the
+# desktop's own picker (the HIG's file-access boundary) instead of a magic folder.
+ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
+# Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
+# so annotations + reading progress follow the file across paths, devices and
+# peers. Same hash family the qOS filesystem uses.
+blake3.workspace = true
 # The qOS ACTION model: Books' `actions` module exports its annotation-store
 # operations as replayable actions the host's Ctrl+K palette dispatches.
 qos-actions = { path = "../../crates/collab/actions" }
