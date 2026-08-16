@@ -21,4 +21,4 @@ pub use app::WELCOME_BODY;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use shortcuts_overlay::ShortcutsOverlay;
-pub use status_bar::{StatusBar, StatusBarState};
+pub use status_bar::{StatusBarState, StatusModel};
