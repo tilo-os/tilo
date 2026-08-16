@@ -1361,6 +1361,12 @@ impl CodeApp {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
             }
+            Command::GoToLine => self.palette.open_goto(),
+            Command::DuplicateLine => self.editor.duplicate_lines(doc, true),
+            Command::MoveLineUp => self.editor.move_lines(doc, true),
+            Command::MoveLineDown => self.editor.move_lines(doc, false),
+            Command::DeleteLine => self.editor.delete_lines(doc),
+            Command::ToggleComment => self.editor.toggle_line_comment(doc),
             Command::GoToSearch => {
                 self.panel_visible = true;
                 self.panel.set_tab(PanelTab::Search);
@@ -1408,6 +1414,7 @@ impl CodeApp {
             match kind {
                 PaletteKind::File(id) => self.open_node(id),
                 PaletteKind::Command(cmd) => self.apply_command(cmd, doc),
+                PaletteKind::LineJump(n) => self.go_to_line(n),
             }
         }
         if let Some(index) = self.panel.take_activated_hit() {
@@ -1558,6 +1565,17 @@ impl CodeApp {
         let seed = self.editor.selected_text_public();
         self.find.open(replace, seed.as_deref());
         self.refresh_find(doc);
+    }
+
+    /// Move the caret to a 1-based line number (the go-to-line target). Clamped
+    /// to the buffer; a no-op with a clear note when nothing is open.
+    pub fn go_to_line(&mut self, line_1based: usize) {
+        if !self.editor.is_bound() {
+            self.note("Open a file to jump to a line", true);
+            return;
+        }
+        let target = line_1based.saturating_sub(1).min(self.editor.line_count().saturating_sub(1));
+        self.editor.move_caret_to(target, 0);
     }
 
     // ---- project-wide search ----------------------------------------------
@@ -2659,6 +2677,7 @@ impl Widget for CodeApp {
                     "f" if shift => Some(Command::SearchProject),
                     "f" => Some(Command::Find),
                     "h" => Some(Command::Replace),
+                    "g" => Some(Command::GoToLine),
                     "w" => Some(Command::CloseTab),
                     _ => None,
                 };
@@ -3346,6 +3365,198 @@ mod tests {
             !app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
             "the scanner's guess yields to the compiler's answer: {:?}",
             app.panel.problems().iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    /// Bring up the sample project and get the editor's line cache in sync with
+    /// the document, so line operations read real line contents.
+    fn synced_sample() -> (CodeApp, AutoCommit) {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        app.editor.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    fn buffer_lines(doc: &AutoCommit, node: TreeId) -> Vec<String> {
+        EditorDoc::read_buffer(doc, node)
+            .unwrap()
+            .split('\n')
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A real file picked from disk loads its bytes into a tab.
+    #[test]
+    fn open_file_from_path_loads_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("greet.rs");
+        std::fs::write(&file, "fn greet() { let x = 1; }\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+
+        let node = app.session.active_buffer().expect("a tab opened").node;
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("fn greet() { let x = 1; }\n"),
+            "the file's real bytes were read into the buffer"
+        );
+    }
+
+    /// Open a real file, edit it through the CRDT, save, and prove the new bytes
+    /// reached disk.
+    #[test]
+    fn edit_and_save_round_trips_to_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, "first line\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc); // reads the file + stamps it
+
+        let node = app.session.active_buffer().expect("a tab opened").node;
+        // Edit through the same CRDT splice path the editor uses.
+        let obj = EditorDoc::buffer_text(&doc, node).unwrap();
+        let at = "first line".chars().count();
+        EditorDoc::splice(&mut doc, &obj, at, 0, " EDITED");
+
+        let snapshot = doc.clone();
+        assert!(
+            app.save_buffer(&snapshot, node, false),
+            "the save reported success"
+        );
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            on_disk, "first line EDITED\n",
+            "the edited bytes were written back to the real file"
+        );
+    }
+
+    /// Find populates real matches over the active buffer, hands them to the
+    /// editor's highlight layer, and stepping to a match selects it.
+    #[test]
+    fn find_highlights_and_navigates_matches() {
+        let (mut app, doc) = synced_sample();
+        app.open_find(false, &doc);
+        app.find.set_query("primes");
+        app.refresh_find(&doc);
+
+        assert!(
+            app.find_matches.len() >= 2,
+            "'primes' occurs several times in main.rs, got {}",
+            app.find_matches.len()
+        );
+        // The matches are handed to the editor's highlight layer.
+        assert_eq!(
+            app.editor.find_match_count_for_test(),
+            app.find_matches.len(),
+            "the editor received every match to highlight"
+        );
+
+        // Stepping to the second match navigates the caret onto it and marks it
+        // as the current (filled) highlight.
+        app.focus_match(Some(1));
+        let m = app.find_matches[1];
+        assert_eq!(app.find_current, Some(1), "the second match is now current");
+        assert_eq!(
+            app.editor.primary_caret(),
+            (m.line, m.col),
+            "the caret navigated onto the match"
+        );
+    }
+
+    /// Go-to-line moves the caret to the requested 1-based line and clamps past
+    /// the end of the buffer.
+    #[test]
+    fn go_to_line_moves_the_caret() {
+        let (mut app, _doc) = synced_sample();
+        assert!(app.editor.line_count() > 5);
+
+        app.go_to_line(5);
+        assert_eq!(app.editor.primary_caret(), (4, 0), "1-based line 5 → row 4");
+
+        let last = app.editor.line_count();
+        app.go_to_line(99_999);
+        assert_eq!(
+            app.editor.primary_caret().0,
+            last - 1,
+            "a line past the end clamps to the last row"
+        );
+    }
+
+    #[test]
+    fn duplicate_line_repeats_it_below() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.duplicate_lines(&mut doc, true);
+
+        let after = buffer_lines(&doc, node);
+        assert_eq!(after.len(), before.len() + 1, "one line added");
+        assert_eq!(after[0], before[0]);
+        assert_eq!(after[1], before[0], "the copy sits directly below");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret rode onto the copy");
+    }
+
+    #[test]
+    fn move_line_down_swaps_with_the_next() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.move_lines(&mut doc, false);
+
+        let after = buffer_lines(&doc, node);
+        assert_eq!(after.len(), before.len(), "no lines gained or lost");
+        assert_eq!(after[0], before[1], "line 1 moved up");
+        assert_eq!(after[1], before[0], "line 0 moved down");
+        assert_eq!(app.editor.primary_caret().0, 1, "caret followed the line");
+    }
+
+    #[test]
+    fn delete_line_removes_it() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        let before = buffer_lines(&doc, node);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.delete_lines(&mut doc);
+
+        let after = buffer_lines(&doc, node);
+        assert_eq!(after.len(), before.len() - 1, "one line removed");
+        assert_eq!(after[0], before[1], "the following line is now first");
+    }
+
+    #[test]
+    fn toggle_comment_comments_then_uncomments() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        // Replace the buffer with a content-stable single line of Rust.
+        let obj = EditorDoc::buffer_text(&doc, node).unwrap();
+        let len = doc.text(&obj).unwrap().chars().count();
+        EditorDoc::splice(&mut doc, &obj, 0, len, "let x = 1;\n");
+        app.editor.sync(&mut doc, &automerge::ROOT);
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(&mut doc);
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("// let x = 1;\n"),
+            "the line gained a Rust line comment"
+        );
+
+        app.editor.move_caret_to(0, 0);
+        app.editor.toggle_line_comment(&mut doc);
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("let x = 1;\n"),
+            "toggling again removed it"
         );
     }
 }
