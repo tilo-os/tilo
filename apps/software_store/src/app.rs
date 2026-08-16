@@ -1312,11 +1312,8 @@ impl SoftwareStore {
         let x = drawer.x0 + pad;
         let w = NAV_DRAWER_W - pad * 2.0;
 
-        // Wordmark at the top of the drawer.
-        let tile = Rect::new(x, drawer.y0 + 22.0, x + 30.0, drawer.y0 + 52.0);
-        draw::fill_round(scene, t, tile, 8.0, c.accent[5]);
-        draw::text_w(scene, tr, t, "◍", 17.0, TextWeight::Bold, Color::WHITE, tile.center().x - 6.0, tile.center().y - 9.0, None);
-        draw::text_w(scene, tr, t, "Software", ty.lg, TextWeight::Bold, c.text_primary, tile.x1 + 12.0, tile.center().y - 11.0, None);
+        // No app-name wordmark or brand tile: the OS titlebar shows "Software".
+        // The drawer leads straight with its nav rows, reclaiming the space.
 
         // Vertical nav rows.
         let up_count = self.catalog.updatable(&self.snapshot).len();
@@ -1328,7 +1325,7 @@ impl SoftwareStore {
             (Tab::Remotes, "Remotes".into()),
         ];
         let row_h = 44.0;
-        let mut ry = drawer.y0 + 80.0;
+        let mut ry = drawer.y0 + 22.0;
         for (tab, label) in &rows {
             let r = Rect::new(x, ry, x + w, ry + row_h);
             let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
