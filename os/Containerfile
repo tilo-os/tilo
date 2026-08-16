@@ -642,18 +642,21 @@ COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
 RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 
-# xdg-desktop-portal backend registration (Sandbox Phase 4.3 follow-up).
-# Three files cooperate:
-#   1. qos.portal — tells xdg-desktop-portal which interfaces we
-#      provide and what `UseIn` desktop string activates us.
-#   2. The .service file — D-Bus auto-activation pointing at the
-#      systemd user unit below.
-#   3. shell-portal.service — runs `shell
-#      --portal-server-only`, owning the backend bus name without
-#      starting a compositor (the compositor session runs separately).
+# xdg-desktop-portal backend registration.
+#
+# One file now: qos.portal, which tells xdg-desktop-portal which
+# interfaces we provide and what `UseIn` desktop string activates us.
+# The compositor itself owns `org.freedesktop.impl.portal.desktop.qos`
+# on the session bus — see `compositor::native::start_portal_backend`.
+#
+# The D-Bus activation file and shell-portal.service used to start a
+# separate `shell --portal-server-only` process to own that name. They
+# are gone, for two reasons. That process built its portal context on an
+# empty WorkspaceTree, so it could not answer a single question about
+# the running session; and D-Bus allows one owner per name, so with the
+# compositor also serving, whichever lost the race left a portal that
+# answered nothing while looking healthy.
 COPY os/usr/share/xdg-desktop-portal/portals/qos.portal /usr/share/xdg-desktop-portal/portals/qos.portal
-COPY os/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
-COPY os/usr/lib/systemd/user/shell-portal.service /usr/lib/systemd/user/shell-portal.service
 
 # Opt-in peer-sync user service. NOT enabled by default — users opt
 # in via `systemctl --user enable shell-peer-sync` or by
@@ -1003,8 +1006,9 @@ RUN cp -a /etc/selinux/targeted /var/tmp/qos-sestore \
 # ---------------------------------------------------------------------------
 # Enable services
 # ---------------------------------------------------------------------------
-# `shell-portal.service` is `--global` enabled so it lights up for every user
-# account; `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
+# The portal backend needs no unit: the compositor serves it in-process,
+# so it starts and stops with the session it answers for.
+# `shell-peer-sync.service` is pointedly **NOT** enabled — that's the
 # user-opt-in part.
 #
 # C6 audio: enable the PipeWire user stack for every account (socket-activated
@@ -1013,7 +1017,6 @@ RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
     systemctl enable fs.service && \
-    systemctl --global enable shell-portal.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.

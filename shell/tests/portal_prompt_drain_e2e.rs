@@ -1,0 +1,302 @@
+//! End-to-end for the prompt queue: a portal request that needs the
+//! user's answer gets one, instead of waiting forever.
+//!
+//! `PromptQueueHandle::drain()` had exactly one caller in the tree, and
+//! it was inside `#[cfg(test)]`. In production nothing emptied the
+//! queue, so `flow::resolve` enqueued a `PendingGrant`, awaited its
+//! oneshot, and never woke: the request hung. The "channel closed ≡
+//! deny" defence could not fire either, because the sender was parked
+//! in a `Vec` that stayed alive for the life of the process — so the
+//! failure was an indefinite hang rather than a refusal.
+//!
+//! `FileChooser` no longer uses the prompt queue at all (the dialog is
+//! the consent), which means the file-chooser tests do not cover this.
+//! `Access` still does, and it is the interface `xdg-desktop-portal`
+//! routes `Camera.AccessCamera` through, so it is the honest subject.
+//!
+//! The chain under test, all production code:
+//!
+//! ```text
+//!   D-Bus AccessDialog
+//!     → flow::resolve            enqueues + awaits
+//!     → PromptQueueHandle        the queue that was never drained
+//!     → drain_portal_prompts     per-frame, on the compositor
+//!     → ChromeState::pending_grants
+//!     → pump_permission_prompt   latches the widget
+//!     → PermissionPrompt         the user clicks
+//!     → PendingPrompt::answer    releases the parked D-Bus call
+//! ```
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use shell::portal::{
+    self, CallerMap, FilePickerQueue, FilePickerSpawnerHandle, GrantStoreHandle,
+    MockScreenCastProvisioner, NullFilePickerSpawner, PortalCaller, PortalContext,
+    PromptQueueHandle, PromptResolver, RemoteInputInjectorHandle,
+    ScreenCastStreamProvisionerHandle, OBJECT_PATH,
+};
+use shell::shell::overlay_host::ShellOverlayHost;
+use shell::shell::state::{Capability, Workspace, WorkspaceId, WorkspaceTree};
+use tokio::net::UnixStream;
+use ui::widget::PromptChoice;
+use zbus::connection::Builder;
+use zbus::zvariant::{ObjectPath, OwnedValue};
+use zbus::{Connection, Proxy};
+
+const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
+const APP: &str = "dev.qos.camera";
+
+fn host_with_portal(
+    prompts: PromptQueueHandle,
+) -> (ShellOverlayHost, GrantStoreHandle, WorkspaceId) {
+    let mut tree = WorkspaceTree::default();
+    let id = WorkspaceId::from(1);
+    tree.workspaces.push(Workspace::new(id, "demo"));
+    tree.set_active(id);
+    let handle = tree.shared();
+    {
+        let mut t = handle.write();
+        let owner = shell::shell::state::local_user_id();
+        t.adopt_ownerless_workspaces(&owner);
+    }
+    let (host, _chrome) =
+        shell::shell::build_nirios_overlay_host_with_handle(handle.clone(), false);
+    let mut host = host;
+    host.set_portal_queues(prompts, FilePickerQueue::new());
+    (host, GrantStoreHandle::new(handle), id)
+}
+
+async fn access_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'static>) {
+    let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
+    let server_builder = Builder::unix_stream(server_sock)
+        .server(TEST_GUID)
+        .expect("guid")
+        .p2p()
+        .serve_at(OBJECT_PATH, portal::AccessBackend::new(ctx))
+        .expect("serve_at");
+    let client_builder = Builder::unix_stream(client_sock).p2p();
+    let (server, client) =
+        futures_util::try_join!(server_builder.build(), client_builder.build())
+            .expect("p2p connection pair");
+    let proxy = Proxy::new(
+        &client,
+        "org.freedesktop.impl.portal.desktop.qos",
+        OBJECT_PATH,
+        "org.freedesktop.impl.portal.Access",
+    )
+    .await
+    .expect("proxy");
+    (server, client, proxy)
+}
+
+fn context(grants: GrantStoreHandle, prompts: PromptQueueHandle, ws: WorkspaceId) -> PortalContext {
+    let caller_map = CallerMap::new();
+    caller_map.force_caller_for_tests(PortalCaller::new(ws, APP));
+    PortalContext {
+        grants,
+        prompts,
+        caller_map,
+        file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        )),
+        remote_input_injector: RemoteInputInjectorHandle::null(),
+        documents: portal::documents_for_session(),
+    }
+}
+
+/// Spawn a camera-shaped `AccessDialog` call.
+fn spawn_access(
+    proxy: Proxy<'static>,
+) -> tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)> {
+    tokio::spawn(async move {
+        let handle = ObjectPath::try_from("/org/freedesktop/portal/desktop/request/1").unwrap();
+        proxy
+            .call::<_, _, (u32, HashMap<String, OwnedValue>)>(
+                "AccessDialog",
+                &(
+                    handle,
+                    APP.to_string(),
+                    String::new(),
+                    "Camera".to_string(),
+                    "Allow access to your camera?".to_string(),
+                    String::new(),
+                    HashMap::<String, OwnedValue>::new(),
+                ),
+            )
+            .await
+            .expect("AccessDialog")
+    })
+}
+
+/// Turn the compositor's per-frame pumps once.
+fn tick(host: &mut ShellOverlayHost) {
+    host.drain_portal_prompts();
+    host.pump_permission_prompt();
+}
+
+/// Wait for the prompt widget to appear, turning the pumps as the
+/// compositor would.
+async fn pump_until_prompt(host: &mut ShellOverlayHost) {
+    for _ in 0..1000 {
+        tick(host);
+        if host.permission_prompt_mut_for_tests().is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!(
+        "no permission prompt ever appeared — the portal's queue is not \
+         being drained, which is the hang this test exists for"
+    );
+}
+
+/// Await the parked D-Bus call while still turning the pumps.
+async fn await_response(
+    host: &mut ShellOverlayHost,
+    handle: tokio::task::JoinHandle<(u32, HashMap<String, OwnedValue>)>,
+) -> (u32, HashMap<String, OwnedValue>) {
+    for _ in 0..1000 {
+        tick(host);
+        if handle.is_finished() {
+            return handle.await.expect("join");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("the portal call never answered — the caller is hung");
+}
+
+/// Answer the live prompt with `choice`, the way a click does.
+fn answer(host: &mut ShellOverlayHost, choice: PromptChoice) {
+    let prompt = host
+        .permission_prompt_mut_for_tests()
+        .expect("a prompt must be up");
+    prompt.pending_choice = Some(choice);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn allowing_a_prompt_releases_the_portal_call() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
+
+    let call = spawn_access(proxy);
+    pump_until_prompt(&mut host).await;
+
+    // The queue handed its entry over rather than keeping it.
+    assert_eq!(
+        prompts.queued_len(),
+        0,
+        "the portal queue must be emptied by the drain, not merely read"
+    );
+
+    answer(&mut host, PromptChoice::Allow);
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 0, "Allow must resolve the request as granted");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn denying_a_prompt_releases_the_portal_call_too() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
+
+    let call = spawn_access(proxy);
+    pump_until_prompt(&mut host).await;
+    answer(&mut host, PromptChoice::Deny);
+
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 1, "Deny must answer, not strand, the caller");
+
+    // And nothing was recorded for an app the user said no to.
+    let tree = grants.tree_handle();
+    let guard = tree.read();
+    let caps = guard
+        .workspaces
+        .iter()
+        .find(|w| w.id == ws)
+        .expect("workspace")
+        .app_capabilities(&APP.to_string());
+    assert!(
+        caps.is_empty(),
+        "a denied prompt must record nothing; got {caps:?}"
+    );
+}
+
+/// Session-scoped approval both answers the call and persists, so the
+/// next request for the same capability does not ask again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_grant_answers_and_persists() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let (mut host, grants, ws) = host_with_portal(prompts.clone());
+    let (_s, _c, proxy) = access_proxy(context(grants.clone(), prompts, ws)).await;
+
+    let call = spawn_access(proxy);
+    pump_until_prompt(&mut host).await;
+    answer(&mut host, PromptChoice::Session);
+    let (code, _) = await_response(&mut host, call).await;
+    assert_eq!(code, 0);
+
+    let tree = grants.tree_handle();
+    let guard = tree.read();
+    let has_camera = guard
+        .workspaces
+        .iter()
+        .find(|w| w.id == ws)
+        .expect("workspace")
+        .app_capabilities(&APP.to_string())
+        .into_iter()
+        .any(|c| matches!(Capability::from_capability(c), Some(Capability::Camera { .. })));
+    assert!(
+        has_camera,
+        "a Session answer must persist the capability on the workspace"
+    );
+}
+
+/// The compositor with no chrome cannot show a prompt. It must say so by
+/// answering, rather than holding a sender nobody will ever fulfil —
+/// that is the shape of the original bug, and it must not be
+/// reintroduced by a code path that simply has nowhere to draw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_that_cannot_be_shown_is_denied_rather_than_parked() {
+    let prompts = PromptQueueHandle::new(PromptResolver::Channel);
+    let grants = {
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::from(1);
+        tree.workspaces.push(Workspace::new(id, "demo"));
+        tree.set_active(id);
+        GrantStoreHandle::new(tree.shared())
+    };
+    let ws = WorkspaceId::from(1);
+    let (_s, _c, proxy) = access_proxy(context(grants, prompts.clone(), ws)).await;
+
+    let call = spawn_access(proxy);
+
+    // Wait for the request to reach the queue, then drop the queue's
+    // contents the way a compositor with no chrome does.
+    for _ in 0..1000 {
+        if prompts.queued_len() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(prompts.queued_len() > 0, "the request must reach the queue");
+    for pending in prompts.drain() {
+        drop(pending);
+    }
+
+    for _ in 0..1000 {
+        if call.is_finished() {
+            let (code, _) = call.await.expect("join");
+            assert_eq!(
+                code, 1,
+                "a dropped prompt must read as deny, not as a pending request"
+            );
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("dropping the prompt left the caller hung — the sender was not released");
+}
