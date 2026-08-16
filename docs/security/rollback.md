@@ -248,6 +248,27 @@ Either way the check must fail on the generation assertions specifically, not on
 "nothing was measured" — those two look identical from inside the guest, and telling
 them apart is the only thing that makes a pass mean something.
 
+## The other half: getting off a bad generation
+
+This document is about which generations may *unseal the disk*. What notices that
+a generation is bad and gets the machine off it is separate, and lives in
+[../recovery.md](../recovery.md): systemd-boot try counters, a health check
+before `boot-complete.target`, and a repair-mode boot entry.
+
+The two meet at one point, and it is the reason confirmation is late rather than
+at update time. An automatic rollback is only survivable because the floor has
+not moved yet — `qos-rollback-confirm.timer` fires ten minutes in, and an update
+that boots and then fails never reaches its own confirmation. So the generation
+the boot loader falls back to is still able to unseal.
+
+They also disagree about strictness, deliberately.
+`rollback_system_is_healthy` here requires `systemctl is-system-running` =
+`running`, because it gates **destroying** the fallback and refusing costs
+nothing. `qos-boot-health` requires only that the session came up, because it
+gates **keeping the current generation**, and the same strictness there would
+fail every boot of every generation over one unrelated broken unit and walk the
+retention window down to nothing.
+
 ## Recovery
 
 The recovery key is an independent path and nothing here ever touches its keyslot.

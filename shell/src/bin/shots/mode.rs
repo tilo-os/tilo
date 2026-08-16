@@ -306,7 +306,13 @@ pub mod window {
         if let Some(scenario) = pre_roll {
             println!("shots: window-mode pre-roll scenario '{}'", scenario.name);
             let path = persist::state_json_path();
-            let tree = persist::load_or_default(&path);
+            // Printed rather than shown: this pre-roll has no chrome yet, and a
+            // screenshot run that silently started from a bootstrapped tree
+            // would produce images of the wrong desktop.
+            let (tree, notice) = persist::load_or_default(&path);
+            if let Some(n) = &notice {
+                eprintln!("shots: {}", n.one_line());
+            }
             let mut driver = ShellDriver::with_tree(tree, (1600, 900));
             let mut sink = NullSink;
             scenario::run(&mut driver, scenario, &mut sink);
@@ -318,7 +324,10 @@ pub mod window {
 
         // Live binary boilerplate — mirror of `shell/src/main.rs`.
         let path = persist::state_json_path();
-        let tree = persist::load_or_default(&path);
+        let (tree, notice) = persist::load_or_default(&path);
+        if let Some(n) = &notice {
+            eprintln!("shots: {}", n.one_line());
+        }
         let state = State::new();
         let root = build_nirios_root(&tree);
         let mut app = App::new(state, root);
