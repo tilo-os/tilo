@@ -204,7 +204,7 @@ impl MailApp {
     /// The hermetic constructor used by `--shots` and tests: the bundled
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
-        let shared = MailState::shared(MailState::new_sample(avatar_store()));
+        let shared = MailState::shared(MailState::new_sample(avatar_store_offline()));
         Self::assemble(shared, None, AccountsPersist::sandbox())
     }
 
@@ -223,7 +223,7 @@ impl MailApp {
     /// Persists to a throwaway sandbox (never the real store) so a driven
     /// add-account in this mode stays hermetic.
     pub fn new_first_run() -> Self {
-        let shared = MailState::shared(MailState::new_live(AccountStore::new(), avatar_store()));
+        let shared = MailState::shared(MailState::new_live(AccountStore::new(), avatar_store_offline()));
         Self::assemble(shared, None, AccountsPersist::sandbox())
     }
 
@@ -1620,13 +1620,29 @@ fn load_account_store() -> AccountStore {
     AccountStore::load()
 }
 
-/// The shared image store used for sender avatars.
+/// The shared image store used for sender avatars in the **live** app: fetches
+/// real Gravatar images over HTTP when built with `live` (the default).
 pub fn avatar_store() -> ImageStore {
     ImageStore::new(avatar_fetcher())
 }
 
-/// Real Gravatar HTTP under `--features live`; a no-op otherwise so the default
-/// build and `--shots` never open a socket (avatars then render as initials).
+/// The avatar store for the hermetic paths — `--shots`, the sample corpus, and
+/// tests. It is wired to a no-op fetcher **regardless of the `live` feature**,
+/// so a headless render never opens a socket to gravatar.com even though the
+/// live fetcher is now compiled in by default; avatars render as initials. This
+/// is the runtime half of "features compile the live code in; the runtime mode
+/// decides live vs sample".
+pub fn avatar_store_offline() -> ImageStore {
+    ImageStore::new(noop_avatar_fetcher())
+}
+
+/// A fetcher that never touches the network — the hermetic default.
+fn noop_avatar_fetcher() -> ui::Fetcher {
+    std::sync::Arc::new(|_url: &str| None)
+}
+
+/// Real Gravatar HTTP under `--features live` (default); a no-op otherwise so a
+/// build without `live` never opens a socket (avatars then render as initials).
 #[cfg(feature = "live")]
 fn avatar_fetcher() -> ui::Fetcher {
     use std::sync::{Arc, OnceLock};
@@ -1653,7 +1669,7 @@ fn avatar_fetcher() -> ui::Fetcher {
 
 #[cfg(not(feature = "live"))]
 fn avatar_fetcher() -> ui::Fetcher {
-    std::sync::Arc::new(|_url: &str| None)
+    noop_avatar_fetcher()
 }
 
 /// The account-verification probe used on save. A real IMAP login + SMTP
