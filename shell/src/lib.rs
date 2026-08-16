@@ -18,6 +18,7 @@ pub mod notifications;
 // `quick-desktop --firstboot`. See `src/firstboot.rs`.
 pub mod firstboot;
 pub mod onboarding;
+pub mod onboarding_view;
 // Observability counters aggregated per peer surface — read by the OSD
 // overlay and by the flatpak-share e2e test. See `src/diagnostics.rs`.
 pub mod diagnostics;
