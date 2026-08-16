@@ -80,3 +80,13 @@ pub fn app_root_for_shot_empty(width: f64) -> Box<dyn Widget> {
     app.snap_flap_for_width(width);
     Box::new(app)
 }
+
+/// Like [`app_root_for_shot`] but with the floating status bubble armed fully
+/// visible, so the chip that replaced the old bottom status strip can be
+/// screenshotted at the bottom-right of the populated demo.
+pub fn app_root_for_shot_status(width: f64) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new_demo();
+    app.snap_flap_for_width(width);
+    app.arm_status_bubble_for_shots();
+    Box::new(app)
+}
