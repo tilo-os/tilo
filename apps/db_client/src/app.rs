@@ -1,7 +1,9 @@
 //! Root widget for the database client. Owns the [`Session`] (connections,
 //! engine, schema, results) and the [`SqlEditor`] (CRDT-backed buffer), lays
-//! out the three regions (connections+schema sidebar, main panel, status
-//! bar) itself, and draws everything directly into the Vello scene.
+//! out the two regions (connections+schema sidebar, main panel) itself, and
+//! draws everything directly into the Vello scene. Status is surfaced as a
+//! transient floating bubble rather than a permanent strip, so the content
+//! spans to the window bottom.
 //!
 //! Layout is hand-rolled rather than delegated to Taffy because the panes are
 //! a fixed split that responds to the viewport rect — a single full-bleed
@@ -45,7 +47,6 @@ use crate::session::{MainTab, RunStatus, Session};
 use crate::theme_ext::ThemeExt;
 
 const SIDEBAR_W: f64 = 268.0;
-const STATUS_H: f64 = 28.0;
 const TABBAR_H: f64 = 38.0;
 const TOOLBAR_H: f64 = 40.0;
 /// Below this allocated width (logical px) the sidebar stops being a docked
@@ -119,6 +120,17 @@ pub struct DbClientApp {
     bound_data_gen: usize,
     /// Drives a one-shot redraw request flag.
     dirty: bool,
+    /// Transient floating status bubble, in place of the old permanent bottom
+    /// status strip. Poked when the summary label changes (a connect, a query
+    /// completing, a table-count tick) and revealed while the pointer hovers
+    /// the bottom-right corner, then fades — so the editor/results region can
+    /// span all the way to the window bottom.
+    status_bubble: ui::StatusBubble,
+    /// The last summary the bubble showed, so it is poked only on a real change
+    /// rather than every frame (draw recomputes the label unconditionally).
+    last_status_label: Option<String>,
+    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    shots_status: bool,
 }
 
 impl DbClientApp {
@@ -160,7 +172,7 @@ impl DbClientApp {
     }
 
     fn build(session: Session, demo: bool) -> Self {
-        Self {
+        let mut app = Self {
             session,
             demo,
             editor: SqlEditor::new(),
@@ -193,7 +205,14 @@ impl DbClientApp {
             bound_query_gen: usize::MAX,
             bound_data_gen: usize::MAX,
             dirty: true,
-        }
+            status_bubble: ui::StatusBubble::new(),
+            last_status_label: None,
+            shots_status: false,
+        };
+        // Seed the last-shown summary so a fresh app doesn't flash the bubble on
+        // its first frame; it surfaces only when the status actually changes.
+        app.last_status_label = Some(app.status_bubble_label());
+        app
     }
 
     fn run_current_query(&mut self) {
@@ -259,6 +278,13 @@ impl DbClientApp {
         }
     }
 
+    /// `--shots`: force the floating status bubble fully visible so a single
+    /// headless frame captures the chip that replaced the old status strip.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(Instant::now());
+    }
+
     /// Recompute every region rect from the root rect, honouring the flap's
     /// resolved layout and eased reveal.
     ///
@@ -270,7 +296,10 @@ impl DbClientApp {
     ///   slides in from the left edge over a scrim by the eased reveal.
     fn relayout(&mut self) {
         let r = self.rect;
-        let body_bottom = r.y1 - STATUS_H;
+        // The content spans to the window bottom: the status now floats as a
+        // transient bubble (see `draw_status_bubble`) rather than a permanent
+        // full-width strip, so no vertical space is reserved for it.
+        let body_bottom = r.y1;
         let layout = self.split_layout();
         let sw = SIDEBAR_W.min(r.width());
 
@@ -345,14 +374,14 @@ impl DbClientApp {
 
     fn connections_panel_height(&self) -> f64 {
         // Matches the sidebar layout in `draw_sidebar`: the connection rows
-        // begin 56px below the sidebar top, advance 44px each, then the
-        // "New connection" button (30px) is drawn directly below, with a
-        // 16px gap before the schema browser begins.
+        // begin 32px below the sidebar top (just under the CONNECTIONS label),
+        // advance 44px each, then the "New connection" button (30px) is drawn
+        // directly below, with a 16px gap before the schema browser begins.
         let rows = self.session.connections.len() as f64;
         // When there are no connections the sidebar shows a two-line "No
         // connections yet" hint (52px) in place of the rows.
         let empty_hint = if self.session.connections.is_empty() { 52.0 } else { 0.0 };
-        56.0 + rows * 44.0 + empty_hint + 30.0 + 16.0
+        32.0 + rows * 44.0 + empty_hint + 30.0 + 16.0
     }
 
     /// Whether the sidebar pane should be painted this frame. Once the overlay
@@ -515,7 +544,7 @@ impl Widget for DbClientApp {
         // docked-open (collapsed-docked or overlay), so it can be summoned.
         self.draw_sidebar_toggle(scene, transform, tr, theme);
 
-        self.draw_status(scene, transform, tr, theme);
+        self.draw_status_bubble(scene, transform, tr, theme);
 
         // Modal overlay drawn last (top layer).
         if self.modal.is_open() {
@@ -702,10 +731,13 @@ impl Widget for DbClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the sidebar flap is sliding OR the worker
-        // has a connect/query in flight, so its result lands without any
-        // further user input.
-        self.flap_animating() || self.session.busy()
+        // Keep frames coming while the sidebar flap is sliding, the worker has
+        // a connect/query in flight (so its result lands without further input),
+        // OR the floating status bubble is still lingering/fading (so it hides
+        // itself without a stray pointer event).
+        self.flap_animating()
+            || self.session.busy()
+            || self.status_bubble.needs_frame(Instant::now())
     }
 
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
@@ -905,28 +937,22 @@ impl DbClientApp {
             &Line::new(Point::new(r.x1, r.y0), Point::new(r.x1, r.y1)),
         );
 
-        // App title.
-        tr.draw_text(
-            scene,
-            "Database",
-            16.0,
-            theme.text_primary,
-            t * Affine::translate((r.x0 + 14.0, r.y0 + 12.0)),
-            None,
-        );
+        // Section label. The OS draws the window/app chrome, so the sidebar no
+        // longer repeats an app-name wordmark here — the connection list sits at
+        // the top behind this functional heading.
         tr.draw_text(
             scene,
             "CONNECTIONS",
             10.0,
             theme.text_dim,
-            t * Affine::translate((r.x0 + 14.0, r.y0 + 38.0)),
+            t * Affine::translate((r.x0 + 14.0, r.y0 + 14.0)),
             None,
         );
 
         // Connection rows.
         self.conn_rects.clear();
         self.conn_delete_rects.clear();
-        let mut y = r.y0 + 56.0;
+        let mut y = r.y0 + 32.0;
         let active = self.session.active;
         for (idx, conn) in self.session.connections.iter().enumerate() {
             let row = Rect::new(r.x0 + 6.0, y, r.x1 - 6.0, y + 40.0);
@@ -1467,19 +1493,12 @@ impl DbClientApp {
         crate::structure::draw_structure(scene, t, tr, theme, content, &table);
     }
 
-    fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let p = theme.db();
-        let bar = Rect::new(self.rect.x0, self.rect.y1 - STATUS_H, self.rect.x1, self.rect.y1);
-        scene.fill(Fill::NonZero, t, p.header_bg, None, &bar);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.border_standard,
-            None,
-            &Line::new(Point::new(bar.x0, bar.y0), Point::new(bar.x1, bar.y0)),
-        );
-
-        let left = match self.session.active_connection() {
+    /// Compact one-line summary for the floating status bubble: the active
+    /// connection (engine · name · table count, or "No connection") followed by
+    /// the current run status ("ready" / "working…" / "error" / the last Ok
+    /// message). Combines what the old two-ended status strip showed.
+    fn status_bubble_label(&self) -> String {
+        let conn = match self.session.active_connection() {
             Some(conn) => format!(
                 "{}  ·  {}  ·  {} tables",
                 conn.engine.label(),
@@ -1488,31 +1507,56 @@ impl DbClientApp {
             ),
             None => "No connection".to_string(),
         };
-        tr.draw_text(
-            scene,
-            &left,
-            11.5,
-            theme.text_dim,
-            t * Affine::translate((bar.x0 + 12.0, bar.y0 + 7.0)),
-            None,
-        );
-
-        // Right-aligned status message.
-        let (msg, color) = match &self.session.status {
-            RunStatus::Ok(m) => (m.clone(), theme.tokens.colors.semantic.success),
-            RunStatus::Error(_) => ("error".to_string(), theme.tokens.colors.semantic.danger),
-            RunStatus::Busy(_) => ("working…".to_string(), theme.accent_primary),
-            RunStatus::Idle => ("ready".to_string(), theme.text_dim),
+        let run = match &self.session.status {
+            RunStatus::Ok(m) => m.clone(),
+            RunStatus::Error(_) => "error".to_string(),
+            RunStatus::Busy(_) => "working…".to_string(),
+            RunStatus::Idle => "ready".to_string(),
         };
-        let (mw, _) = tr.measure(&msg, 11.5, None);
-        tr.draw_text(
-            scene,
-            &msg,
-            11.5,
-            color,
-            t * Affine::translate((bar.x1 - mw as f64 - 12.0, bar.y0 + 7.0)),
-            None,
+        format!("{conn}  ·  {run}")
+    }
+
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// window — the reclaimed home of the old permanent bottom status strip. It
+    /// shows on a status change or while the pointer hovers the bottom-right
+    /// band, then fades. All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let now = Instant::now();
+        let label = self.status_bubble_label();
+        // Poke only when the summary actually changes (a connect, a query
+        // completing, a table-count tick) — draw runs every frame, so poking
+        // unconditionally would pin the bubble open forever.
+        if self.last_status_label.as_deref() != Some(label.as_str()) {
+            self.status_bubble.poke(now);
+            self.last_status_label = Some(label.clone());
+        }
+        let text_size = 11.5f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 12.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
         );
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.cursor);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            t,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 }
 
