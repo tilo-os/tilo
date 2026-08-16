@@ -773,18 +773,23 @@ impl TerminalWidget {
     fn pump(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
         self.init_crdt(state, root);
 
-        // Collect queued messages first so the `output_rx` borrow is dropped
-        // before `feed` takes `&mut self`.
-        let mut msgs = Vec::new();
+        // Drain every queued read and coalesce them into one buffer, then feed
+        // the parser once. The reader thread hands over one `Vec` per ~8 KB
+        // `read`, and a burst (`cat` of a big file, a full-screen redraw)
+        // queues many; parsing them as a single slice constructs one performer,
+        // commits the cursor once, and flushes one query-reply batch instead of
+        // repeating that per read. The vte parser is stateful across the drain,
+        // so an escape sequence split across two reads still parses correctly.
+        // Draining first also drops the `output_rx` borrow before `feed` takes
+        // `&mut self`.
+        let mut batch = Vec::new();
         while let Ok(bytes) = self.output_rx.try_recv() {
-            msgs.push(bytes);
+            batch.extend_from_slice(&bytes);
         }
-        let activity = !msgs.is_empty();
-        for bytes in &msgs {
-            self.feed(state, root, bytes);
-        }
-        // Fresh output snaps the viewport back to the live bottom.
+        let activity = !batch.is_empty();
         if activity {
+            self.feed(state, root, &batch);
+            // Fresh output snaps the viewport back to the live bottom.
             self.scroll_offset = 0;
         }
         activity
@@ -804,6 +809,10 @@ impl TerminalWidget {
 
         let was_alt = self.alt_active;
         let mut title_out: Option<String> = None;
+        // Reply bytes for any capability query in this batch (DA1/DA2, DSR,
+        // XTVERSION, DECRQM). Written back to the PTY after the parse — the
+        // vte performer only reads, so it stages answers here.
+        let mut responses: Vec<u8> = Vec::new();
         let mut performer = TerminalPerformer {
             state,
             main_grid_id: self.grid_id.clone().unwrap(),
@@ -827,6 +836,7 @@ impl TerminalWidget {
             next_link_id: &mut self.next_link_id,
             current_link_id: self.current_link_id,
             title_out: &mut title_out,
+            responses: &mut responses,
             print_buf: None,
         };
         // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
@@ -842,6 +852,14 @@ impl TerminalWidget {
         self.scroll_top = performer.scroll_top;
         self.scroll_bottom = performer.scroll_bottom;
         self.current_link_id = performer.current_link_id;
+
+        // Answer any capability queries this batch raised. The performer's
+        // borrow of `self` has ended, so we can take the PTY writer lock and
+        // send the reply back on the shell's stdin — the same wire keystrokes
+        // use, which is where the shell expects to read a query response.
+        if !responses.is_empty() {
+            self.write_input(&responses);
+        }
 
         // Persist an OSC 0/2 title change into the CRDT so a collaborator sees
         // it, and reflect it locally for `app_title`.
@@ -2300,6 +2318,15 @@ pub struct TerminalPerformer<'a> {
     /// Out-param for an OSC 0/2 window-title change parsed this feed; the
     /// widget writes it into the CRDT and its own `title` field afterwards.
     pub title_out: &'a mut Option<String>,
+    /// Reply bytes accumulated for terminal capability queries (Device
+    /// Attributes, Device Status Report, XTVERSION, DECRQM, …). A real
+    /// terminal answers these on the same wire the keyboard writes to; the
+    /// vte parser only *reads*, so the performer stages the answer here and
+    /// [`feed`](TerminalWidget::feed) flushes it through `write_input` after
+    /// the parse. This is what stops fish (and any terminfo-probing program)
+    /// from blocking for 10s on a Primary Device Attributes query that never
+    /// gets answered.
+    pub responses: &'a mut Vec<u8>,
     /// Batches consecutive `print`s to the same line so a run of characters is
     /// written to the CRDT once (a diffed text splice + one `attrs` put) rather
     /// than once per cell. Per-cell `splice_text` + full-`attrs`-`put` is an
@@ -2319,6 +2346,21 @@ pub struct PrintBuf {
     text_id: ObjId,
     text: String,
     attrs: Vec<u8>,
+}
+
+/// Name this emulator reports for itself in the XTVERSION reply
+/// (`CSI > 0 q` → `DCS > | qos-terminal(<version>) ST`).
+pub const TERMINAL_NAME: &str = "qos-terminal";
+
+/// Numeric build version reported in the Secondary Device Attributes (DA2)
+/// reply `CSI > 1 ; Pv ; 0 c`. Encoded `major*10000 + minor*100 + patch` so a
+/// program keying off it sees the real build as a single integer (xterm's
+/// "patch level" convention). Derived from the crate version at compile time.
+pub fn terminal_da2_version() -> u32 {
+    let major: u32 = env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0);
+    let minor: u32 = env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0);
+    let patch: u32 = env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0);
+    major * 10000 + minor * 100 + patch
 }
 
 impl<'a> Perform for TerminalPerformer<'a> {
@@ -2445,6 +2487,7 @@ impl<'a> Perform for TerminalPerformer<'a> {
                     self.cursor_y -= 1;
                 }
             }
+            b'Z' => self.reply_da1(), // DECID — deprecated primary-DA request
             _ => {}
         }
         self.update_cursor();
@@ -2464,6 +2507,13 @@ impl<'a> Perform for TerminalPerformer<'a> {
             match c {
                 'h' => self.set_dec_modes(params, true),
                 'l' => self.set_dec_modes(params, false),
+                // DECRQM — request the setting of a DEC-private mode
+                // (`CSI ? Pm $ p`). Answered with DECRPM so terminfo probes
+                // that ask "is bracketed paste / alt-screen on?" get a reply
+                // instead of stalling.
+                'p' if intermediates.contains(&b'$') => self.reply_decrqm(first(params)),
+                // DECXCPR — DEC-private cursor position report (`CSI ? 6 n`).
+                'n' => self.reply_dsr_private(first(params)),
                 _ => {}
             }
             self.update_cursor();
@@ -2515,6 +2565,28 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 }
             }
             'm' => self.apply_sgr(params),
+            // Device Attributes. `CSI c` / `CSI 0 c` is the Primary request
+            // (DA1); `CSI > c` / `CSI > 0 c` is the Secondary (DA2). fish
+            // blocks on the DA1 reply for up to 10s at startup.
+            'c' => match intermediates.first() {
+                None => self.reply_da1(),
+                Some(&b'>') => self.reply_da2(),
+                _ => {}
+            },
+            // Device Status Report. `CSI 5 n` → terminal OK; `CSI 6 n` →
+            // cursor position (CPR). Only the plain (non-`>`) form replies.
+            'n' if intermediates.is_empty() => self.reply_dsr(first(params)),
+            // XTVERSION — `CSI > 0 q` → the terminal's name + version.
+            'q' if intermediates.first() == Some(&b'>') && first(params) == 0 => {
+                self.reply_xtversion()
+            }
+            // DECRQM for ANSI (non-private) modes, `CSI Pm $ p`. We do not
+            // track ANSI modes, so answer "mode not recognised" (0) rather
+            // than leave the requester waiting.
+            'p' if intermediates.contains(&b'$') => {
+                let m = first(params);
+                self.respond(format!("\x1b[{};0$y", m).as_bytes());
+            }
             _ => {}
         }
         self.update_cursor();
@@ -3008,6 +3080,82 @@ impl<'a> TerminalPerformer<'a> {
         let _ = self.state.put(&self.cursor_id, "x", x);
         let _ = self.state.put(&self.cursor_id, "y", y);
     }
+
+    /// Stage `bytes` to be written back to the PTY once this feed's parse
+    /// finishes. The bytes travel the same path a keystroke does
+    /// ([`write_input`](TerminalWidget::write_input)), so the shell reads a
+    /// query reply exactly as a real terminal's would arrive.
+    fn respond(&mut self, bytes: &[u8]) {
+        self.responses.extend_from_slice(bytes);
+    }
+
+    /// Primary Device Attributes (DA1) reply. We identify as a VT220-class
+    /// terminal (`62`) that supports ANSI colour (`22`) — the honest set for an
+    /// `xterm-256color` emulator with SGR/truecolor. fish waits on this reply
+    /// for up to 10s at startup and disables optional features if it never
+    /// arrives.
+    fn reply_da1(&mut self) {
+        self.respond(b"\x1b[?62;22c");
+    }
+
+    /// Secondary Device Attributes (DA2) reply: `CSI > 1 ; Pv ; 0 c`. Terminal
+    /// type `1` = VT220, `Pv` = this build's version, trailing `0` = no ROM
+    /// cartridge.
+    fn reply_da2(&mut self) {
+        self.respond(format!("\x1b[>1;{};0c", terminal_da2_version()).as_bytes());
+    }
+
+    /// Device Status Report. `Ps == 5` → "terminal OK" (`CSI 0 n`); `Ps == 6`
+    /// → Cursor Position Report (`CSI row ; col R`, 1-based, viewport-relative).
+    fn reply_dsr(&mut self, ps: u16) {
+        match ps {
+            5 => self.respond(b"\x1b[0n"),
+            6 => {
+                let row = self.cursor_y + 1;
+                let col = self.cursor_x + 1;
+                self.respond(format!("\x1b[{};{}R", row, col).as_bytes());
+            }
+            _ => {}
+        }
+    }
+
+    /// DEC-private DSR. `?6n` (DECXCPR) → `CSI ? row ; col ; 1 R` (the trailing
+    /// `1` is the page number).
+    fn reply_dsr_private(&mut self, ps: u16) {
+        if ps == 6 {
+            let row = self.cursor_y + 1;
+            let col = self.cursor_x + 1;
+            self.respond(format!("\x1b[?{};{};1R", row, col).as_bytes());
+        }
+    }
+
+    /// XTVERSION reply — DCS `> | qos-terminal(<version>) ST`.
+    fn reply_xtversion(&mut self) {
+        self.respond(
+            format!("\x1bP>|{}({})\x1b\\", TERMINAL_NAME, env!("CARGO_PKG_VERSION")).as_bytes(),
+        );
+    }
+
+    /// DECRQM reply (DECRPM) for a DEC-private mode: `CSI ? Pm ; Pv $ y`, where
+    /// `Pv` is `1` (set), `2` (reset) or `0` (mode not recognised). We answer
+    /// for the modes this emulator actually tracks so a probe gets the truth.
+    fn reply_decrqm(&mut self, mode: u16) {
+        let state = match mode {
+            1 => Some(self.modes.app_cursor_keys),
+            25 => Some(self.modes.cursor_visible),
+            1000 | 1002 | 1003 => Some(self.modes.mouse_report),
+            1006 => Some(self.modes.mouse_sgr),
+            2004 => Some(self.modes.bracketed_paste),
+            47 | 1047 | 1049 => Some(*self.alt_active),
+            _ => None,
+        };
+        let pv = match state {
+            Some(true) => 1,
+            Some(false) => 2,
+            None => 0,
+        };
+        self.respond(format!("\x1b[?{};{}$y", mode, pv).as_bytes());
+    }
 }
 
 /// Decode a truecolor / indexed color from the subparams following a `38`
@@ -3170,6 +3318,59 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
     palette.fg_default.with_alpha_factor(230.0 / 255.0)
 }
 
+/// Resolve the user's login shell for the unconfined `$SHELL` fallback path.
+///
+/// Order:
+/// 1. **`$SHELL`** when set and non-empty — the user's explicit preference
+///    (this is how fish, when it is the login shell, gets launched here).
+/// 2. **The passwd database** (`getpwuid(getuid()).pw_shell`) — the login
+///    shell the system records for this account. A login session that spawned
+///    the terminal through a path that does not export `$SHELL` still lands on
+///    the right shell instead of a hardcoded `/bin/sh`.
+/// 3. **`/bin/sh`** — last resort so a session never fails to start.
+pub fn resolve_login_shell() -> String {
+    resolve_login_shell_with(std::env::var("SHELL").ok(), login_shell_from_passwd())
+}
+
+/// Pure core of [`resolve_login_shell`], with the two environment lookups
+/// injected so the precedence is testable without mutating process-global
+/// state (which would race parallel tests).
+pub(crate) fn resolve_login_shell_with(shell_env: Option<String>, passwd_shell: Option<String>) -> String {
+    if let Some(s) = shell_env {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    if let Some(s) = passwd_shell {
+        if !s.is_empty() {
+            return s;
+        }
+    }
+    "/bin/sh".into()
+}
+
+/// The login shell recorded for the current real user in the passwd database
+/// (`pw_shell`). `None` if the entry is missing or has an empty shell field.
+pub(crate) fn login_shell_from_passwd() -> Option<String> {
+    use std::ffi::CStr;
+    // SAFETY: `getpwuid` returns a pointer into a static buffer owned by libc
+    // (valid until the next passwd/`getpwuid` call, of which we make none
+    // before copying out). We null-check before dereferencing, and copy the
+    // `pw_shell` C string into an owned `String` while the pointer is live.
+    unsafe {
+        let uid = libc::getuid();
+        let pw = libc::getpwuid(uid);
+        if pw.is_null() {
+            return None;
+        }
+        let shell = (*pw).pw_shell;
+        if shell.is_null() {
+            return None;
+        }
+        Some(CStr::from_ptr(shell).to_string_lossy().into_owned())
+    }
+}
+
 pub struct TerminalBackend { pub writer: Box<dyn Write + Send>, pub reader: Box<dyn Read + Send>, pub master: Box<dyn MasterPty + Send>, pub shell_name: String }
 impl TerminalBackend {
     /// Open a PTY running a shell.
@@ -3214,7 +3415,7 @@ impl TerminalBackend {
                  not confined and will fail inside an app sandbox"
             ),
         }
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        let shell = resolve_login_shell();
         let cmd = CommandBuilder::new(&shell);
         Self::with_command(cmd)
     }
