@@ -53,6 +53,9 @@ Requires:       libglvnd-egl
 # its ICD from the proprietary or nvidia-open driver package instead, and
 # depending on Mesa there would be wrong.
 Recommends:     mesa-vulkan-drivers
+# The frontend our backend registers against. Recommends, not Requires: the
+# session runs without it, sandboxed apps just lose their file chooser.
+Recommends:     xdg-desktop-portal
 # The session is only reachable through a login manager that scans
 # /usr/share/wayland-sessions. Not a hard Requires — greetd, SDDM and GDM all
 # qualify and the package should not pick one for the host.
@@ -105,6 +108,16 @@ install -Dpm 0644 pam/qos-unlock            %{buildroot}%{_sysconfdir}/pam.d/qos
 install -Dpm 0644 wayland-sessions/qos.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/qos.desktop
 
+# Portal backend. `UseIn=nirios` in qos.portal is what makes
+# xdg-desktop-portal route a sandboxed app's file chooser here, and only
+# inside a qOS session — under any other desktop these files sit inert.
+install -Dpm 0644 portal/qos.portal \
+                  %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
+install -Dpm 0644 dbus/org.freedesktop.impl.portal.desktop.qos.service \
+                  %{buildroot}%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+install -Dpm 0644 systemd-user/qos-portal.service \
+                  %{buildroot}%{_userunitdir}/qos-portal.service
+
 install -Dpm 0755 libexec/qos-session-dev   %{buildroot}%{_libexecdir}/qos-session-dev
 install -Dpm 0644 wayland-sessions/qos-dev.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/qos-dev.desktop
@@ -132,6 +145,17 @@ for wrapper in qos-session qos-session-dev; do
         exit 1
     }
 done
+# No *executable* line may name /usr/bin/shell: this package installs the
+# compositor as /usr/bin/qos-shell, and a portal unit pointing at a binary
+# that is not there fails at activation time with nothing to explain it.
+# Comments are allowed to mention the name — several explain the rename.
+if grep -rIn '/usr/bin/shell\b' %{buildroot} | grep -v ':[0-9]*:[[:space:]]*#'; then
+    echo "the lines above name /usr/bin/shell, which this package does not install" >&2
+    exit 1
+fi
+# The portal backend is only reachable if something claims the session's name.
+grep -q '^UseIn=nirios$' %{buildroot}%{_datadir}/xdg-desktop-portal/portals/qos.portal
+grep -q '^DesktopNames=nirios$' %{buildroot}%{_datadir}/wayland-sessions/qos.desktop
 
 %files
 %{_bindir}/qos-shell
@@ -140,6 +164,9 @@ done
 %{_libexecdir}/qos-session
 %config(noreplace) %{_sysconfdir}/pam.d/qos-unlock
 %{_datadir}/wayland-sessions/qos.desktop
+%{_datadir}/xdg-desktop-portal/portals/qos.portal
+%{_datadir}/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+%{_userunitdir}/qos-portal.service
 
 %files devel
 %{_libexecdir}/qos-session-dev

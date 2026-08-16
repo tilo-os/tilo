@@ -63,7 +63,8 @@ fi
 say "staging $name-$version"
 stage=$out/stage/$name-$version
 rm -rf "$out/stage" "$out/SOURCES"
-mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions} "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
+mkdir -p "$stage"/{bin,libexec,pam,wayland-sessions,portal,dbus,systemd-user} \
+         "$out"/{SOURCES,SPECS,BUILD,RPMS,SRPMS}
 
 # /usr/bin/qos-shell, not /usr/bin/shell: the OS image owns its whole
 # filesystem and can call it what it likes, a package layered onto someone
@@ -80,6 +81,37 @@ install -pm 0644 "$repo_root/dist/session/qos-dev.desktop" "$stage/wayland-sessi
 # factors a login on this host does. Sourced from os/ rather than copied, so
 # the two cannot drift.
 install -pm 0644 "$repo_root/os/etc/pam.d/qos-unlock"      "$stage/pam/qos-unlock"
+
+# ---------------------------------------------------------------------------
+# 3b. xdg-desktop-portal backend registration.
+# ---------------------------------------------------------------------------
+# Without this, a sandboxed app in the session has no file chooser, no screen
+# cast and no camera: xdg-desktop-portal matches a backend by UseIn= against
+# XDG_CURRENT_DESKTOP, and nothing would claim `nirios`.
+#
+# The three files come from os/, so the interface list cannot drift from the
+# image's — but two of them name the binary, and this package installs it as
+# /usr/bin/qos-shell. Rewrite that one path rather than keeping a second copy,
+# and fail loudly if the text being rewritten is not there any more.
+portal_src=$repo_root/os/usr/share/xdg-desktop-portal/portals/qos.portal
+dbus_src=$repo_root/os/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.qos.service
+unit_src=$repo_root/os/usr/lib/systemd/user/shell-portal.service
+
+for f in "$dbus_src" "$unit_src"; do
+    grep -q '/usr/bin/shell ' "$f" || {
+        echo "$f no longer names /usr/bin/shell — the rewrite below is stale" >&2
+        exit 1
+    }
+done
+
+install -pm 0644 "$portal_src" "$stage/portal/qos.portal"
+sed -e 's|/usr/bin/shell |/usr/bin/qos-shell |' \
+    -e 's|^SystemdService=shell-portal\.service$|SystemdService=qos-portal.service|' \
+    "$dbus_src" > "$stage/dbus/org.freedesktop.impl.portal.desktop.qos.service"
+sed -e 's|/usr/bin/shell |/usr/bin/qos-shell |' \
+    "$unit_src" > "$stage/systemd-user/qos-portal.service"
+chmod 0644 "$stage/dbus/org.freedesktop.impl.portal.desktop.qos.service" \
+           "$stage/systemd-user/qos-portal.service"
 
 tar -C "$out/stage" -czf "$out/SOURCES/$name-$version.tar.gz" "$name-$version"
 cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"
