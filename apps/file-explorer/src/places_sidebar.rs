@@ -121,6 +121,15 @@ impl PlacesSidebar {
     /// locations, above Root. Each root the FUSE driver mounts (e.g.
     /// `/var/workspace`) becomes a clickable place with a cloud emblem, so the
     /// user reaches their synced workspace without typing a path.
+    /// Seed the pointer position the host last saw. Like the file view, this
+    /// widget is rebuilt every frame and hit-tests presses against its own
+    /// `last_cursor`; without seeding, a press arriving with no `CursorMoved`
+    /// since the rebuild would test against `(0, 0)` and miss the row.
+    pub fn with_cursor(mut self, cursor: Point) -> Self {
+        self.last_cursor = cursor;
+        self
+    }
+
     pub fn with_workspaces(mut self, roots: Vec<PathBuf>) -> Self {
         let mut entries: Vec<(Icon, String, PathBuf)> = roots
             .into_iter()

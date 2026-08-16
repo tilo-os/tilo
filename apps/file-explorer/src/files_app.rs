@@ -332,6 +332,7 @@ impl FileExplorerWidget {
     fn build_places_pane(&self) -> Box<dyn Widget> {
         Box::new(
             PlacesSidebar::new(self.favs.clone(), self.current_path.clone(), self.cmds.clone())
+                .with_cursor(self.last_cursor)
                 .with_workspaces(self.workspace_roots.clone()),
         )
     }
@@ -351,6 +352,7 @@ impl FileExplorerWidget {
                 self.sort_order,
                 self.renaming,
                 self.rename_rect.clone(),
+                self.last_cursor,
             ),
             ViewMode::Grid => crate::views::grid_view::build_grid(
                 &displayed,
@@ -359,6 +361,7 @@ impl FileExplorerWidget {
                 scale,
                 self.renaming,
                 self.rename_rect.clone(),
+                self.last_cursor,
             ),
         };
         let sp = &theme.tokens.spacing;

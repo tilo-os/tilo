@@ -144,6 +144,17 @@ impl FileView {
         self.scale = scale.clamp(0.5, 3.0);
         self
     }
+
+    /// Seed the pointer position the host last saw. The host rebuilds this view
+    /// from scratch every frame, so without this a fresh view starts with the
+    /// cursor at the origin — and a press that arrives with no `CursorMoved`
+    /// since the rebuild (a *still* double-click's second press) would hit-test
+    /// against `(0, 0)` and miss the row, so the folder never opens. Seeding the
+    /// real position makes press hit-testing correct from the first event.
+    pub fn with_cursor(mut self, cursor: Point) -> Self {
+        self.last_cursor = cursor;
+        self
+    }
     pub fn with_sort(mut self, by: SortBy, order: SortOrder) -> Self {
         self.sort_by = by;
         self.sort_order = order;
