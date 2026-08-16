@@ -3172,9 +3172,48 @@ pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Colo
 
 pub struct TerminalBackend { pub writer: Box<dyn Write + Send>, pub reader: Box<dyn Read + Send>, pub master: Box<dyn MasterPty + Send>, pub shell_name: String }
 impl TerminalBackend {
-    /// Open a PTY running the user's login shell (`$SHELL`, falling back to
-    /// `/bin/sh`).
+    /// Open a PTY running a shell.
+    ///
+    /// **Not `$SHELL` directly.** Inside a qOS app sandbox there is no `/bin`
+    /// at all: `launcher::profile` binds the loader, fonts, `/sys` and the CA
+    /// bundle, and deliberately binds no executable directory — so `exec`ing
+    /// `$SHELL` fails with `ENOENT`, and would still leave `vim` and `less`
+    /// broken (no terminfo) and the prompt printing `I have no name!` (no
+    /// `/etc/passwd`) even if it did not.
+    ///
+    /// What runs instead is an `ush` guest: a root filesystem composed of the
+    /// host's, read-only, plus a layer belonging to the user. That gives
+    /// `/usr/bin`, terminfo and `/etc/passwd` by construction rather than as
+    /// grants. See `crates/runtime/ush`.
+    ///
+    /// Three routes, in order, and the order is the trust boundary:
+    ///
+    /// 1. **The service socket.** A sandboxed app cannot build a namespace —
+    ///    its seccomp filter denies `unshare` and `mount`. So it asks the
+    ///    session's supervisor and receives a pty master over `SCM_RIGHTS`.
+    ///    This is the production path inside qOS.
+    /// 2. **Spawning the runtime.** Outside a sandbox — a development tree, a
+    ///    plain login — there is no supervisor to ask and no filter to stop
+    ///    us, so the terminal starts a guest itself.
+    /// 3. **`$SHELL`.** No runtime on this machine at all. Honest fallback for
+    ///    a build of the terminal running on a normal distribution, and the
+    ///    one case where the shell is unconfined.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        match ush_service_backend() {
+            Ok(backend) => return Ok(backend),
+            Err(e) => tracing::debug!("terminal: no ush service ({e}); trying to spawn one"),
+        }
+        match ush_binary() {
+            Some(bin) => {
+                let mut cmd = CommandBuilder::new(&bin);
+                cmd.arg("run");
+                return Self::with_command(cmd);
+            }
+            None => tracing::warn!(
+                "terminal: no ush runtime found; falling back to $SHELL, which is \
+                 not confined and will fail inside an app sandbox"
+            ),
+        }
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let cmd = CommandBuilder::new(&shell);
         Self::with_command(cmd)
@@ -3199,6 +3238,150 @@ impl TerminalBackend {
         let reader = pair.master.try_clone_reader()?;
         let writer = pair.master.take_writer()?;
         Ok(Self { writer, reader, master: pair.master, shell_name })
+    }
+}
+
+/// The environment variable the launcher sets when it has opened the `ush`
+/// service socket on this app's behalf, per `[sandbox.services]`.
+pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
+
+/// Where the runtime binary is when the terminal has to start one itself.
+///
+/// `$QOS_USH_BIN` first so a development tree can point at `target/debug`,
+/// then the installed location, then `PATH`. Absent from all three means this
+/// machine has no runtime and the caller falls back to `$SHELL`.
+pub fn ush_binary() -> Option<std::path::PathBuf> {
+    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+        let path = std::path::PathBuf::from(explicit);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    let installed = std::path::PathBuf::from("/usr/libexec/qos-ush");
+    if installed.exists() {
+        return Some(installed);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("qos-ush"))
+        .find(|candidate| candidate.exists())
+}
+
+/// Ask the session supervisor for a guest and wrap the pty it hands back.
+///
+/// The whole exchange is one line of JSON out and one line plus a descriptor
+/// back. What crosses the sandbox boundary is a terminal, not a namespace: the
+/// guest is built on the supervisor's side, by the supervisor's rules, and this
+/// app never learns where its layer is or what it was granted.
+fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+    use std::os::fd::{FromRawFd, RawFd};
+    use std::os::unix::net::UnixStream;
+
+    let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)?.parse()?;
+    // SAFETY: the launcher passed this descriptor as a connected socket and
+    // documents it in `QOS_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
+    // is correct — nothing else in this process refers to it.
+    let stream = unsafe { UnixStream::from_raw_fd(raw) };
+    let mut request = serde_json::to_vec(&serde_json::json!({
+        "op": "open-session",
+        "profile": "ush",
+        "cols": 80,
+        "rows": 24,
+        "term": "xterm-256color",
+    }))?;
+    request.push(b'\n');
+    {
+        let mut w = &stream;
+        w.write_all(&request)?;
+        w.flush()?;
+    }
+
+    let (payload, fd) = ush::supervisor::recv_with_fd(raw)?;
+    let text = String::from_utf8_lossy(&payload);
+    let fd = fd.ok_or_else(|| {
+        format!("the ush service refused this session: {}", text.trim())
+    })?;
+
+    // SAFETY: `fd` arrived over `SCM_RIGHTS` and this process now owns it. The
+    // supervisor sends a pty master and nothing else.
+    let master = unsafe { std::fs::File::from_raw_fd(fd) };
+    let reader = Box::new(master.try_clone()?) as Box<dyn Read + Send>;
+    let writer = Box::new(master.try_clone()?) as Box<dyn Write + Send>;
+    Ok(TerminalBackend {
+        writer,
+        reader,
+        master: Box::new(FdMaster { file: master }),
+        shell_name: "ush".into(),
+    })
+}
+
+/// A [`MasterPty`] over a descriptor someone else opened.
+///
+/// `portable-pty` can only hand out a master it created itself, and the one
+/// that matters here was created by the supervisor and passed over a socket.
+/// Resizing has to keep working — the grid reflows on every window change — so
+/// this is a real `TIOCSWINSZ`, not a stub.
+struct FdMaster {
+    file: std::fs::File,
+}
+
+impl MasterPty for FdMaster {
+    fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `winsize` is fully written by the ioctl; `self.file` is a
+        // live pty master.
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(PtySize {
+            rows: ws.ws_row,
+            cols: ws.ws_col,
+            pixel_width: ws.ws_xpixel,
+            pixel_height: ws.ws_ypixel,
+        })
+    }
+
+    fn resize(&self, size: PtySize) -> Result<(), anyhow::Error> {
+        use std::os::fd::AsRawFd;
+        let ws = libc::winsize {
+            ws_row: size.rows,
+            ws_col: size.cols,
+            ws_xpixel: size.pixel_width,
+            ws_ypixel: size.pixel_height,
+        };
+        // SAFETY: as above.
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCSWINSZ, &ws) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+
+    fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+        Ok(Box::new(self.file.try_clone()?))
+    }
+
+    fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+        Ok(Box::new(self.file.try_clone()?))
+    }
+
+    fn process_group_leader(&self) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        let mut pgrp: i32 = -1;
+        // SAFETY: `TIOCGPGRP` writes one `pid_t`; the file is a pty master.
+        let rc = unsafe { libc::ioctl(self.file.as_raw_fd(), libc::TIOCGPGRP, &mut pgrp) };
+        (rc == 0 && pgrp > 0).then_some(pgrp)
+    }
+
+    fn as_raw_fd(&self) -> Option<i32> {
+        use std::os::fd::AsRawFd;
+        Some(self.file.as_raw_fd())
+    }
+
+    fn tty_name(&self) -> Option<std::path::PathBuf> {
+        None
     }
 }
 
