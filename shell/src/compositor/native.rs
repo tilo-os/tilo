@@ -410,6 +410,17 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "connect_input": chrome.peer_sync_connect_input,
                 "status": chrome.peer_sync_status,
             },
+            // Whether apps in this session can share edits at all, and
+            // why not when they cannot. Exposed because "collaboration
+            // is silently off" is precisely the state that used to be
+            // indistinguishable from "collaboration is on and idle" —
+            // a harness that cannot tell those apart cannot prove
+            // either one.
+            "collab": {
+                "available": chrome.collab_available(),
+                "unavailable_reason": chrome.collab_unavailable,
+                "socket": launcher::services::collab_socket().display().to_string(),
+            },
             // What the Permissions tab's grant composer is composing.
             // A harness driving the pickers by click has no other way to
             // see which subject or capability it has landed on, and
@@ -1236,6 +1247,95 @@ fn load_session_tree(
     (tree.shared(), peer_sync_possible, state_notice)
 }
 
+/// Is something already listening on `path`?
+///
+/// `collab_broker::spawn_full` unlinks before it binds, so without
+/// this check a second compositor started against the same
+/// `XDG_RUNTIME_DIR` would take the socket away from the running
+/// session — apps launched earlier keep a connection to a broker
+/// nothing new can reach, and apps launched later talk to a broker the
+/// first session's apps cannot see. A successful connect means a live
+/// listener; `ECONNREFUSED` means a stale inode from a session that
+/// did not shut down cleanly, which is the case we do want to clear.
+fn collab_socket_is_live(path: &std::path::Path) -> bool {
+    path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok()
+}
+
+/// Bind the session's CRDT fan-out broker on the service socket the
+/// launcher hands to apps.
+///
+/// Returns `None` when the broker could not be bound. That is a
+/// degraded session, not a normal one — every app manifest in the tree
+/// declares `collab`, so nothing collaborates until this succeeds. It
+/// is reported at `error!` and surfaced to the user through the
+/// chrome; see `chrome_state::set_collab_unavailable`.
+fn spawn_session_collab_broker(
+    chrome: &crate::shell::chrome_state::Chrome,
+    peer_sync: Option<Arc<crate::shell::network::ShellNetwork>>,
+) -> Option<crate::shell::collab_broker::BrokerHandle> {
+    if let Err(e) = launcher::services::ensure_services_root() {
+        tracing::error!(
+            "collab: cannot create {} ({e}); apps will start without collaboration",
+            launcher::services::services_root().display()
+        );
+        chrome
+            .borrow_mut()
+            .set_collab_unavailable(format!("The service directory could not be created: {e}"));
+        return None;
+    }
+
+    let capnp_path = launcher::services::collab_socket();
+    if collab_socket_is_live(&capnp_path) {
+        tracing::error!(
+            "collab: {} already has a live listener — another session is using this \
+             XDG_RUNTIME_DIR; refusing to take its socket. Apps will start without \
+             collaboration.",
+            capnp_path.display()
+        );
+        chrome.borrow_mut().set_collab_unavailable(
+            "Another session on this machine already owns the collaboration socket.",
+        );
+        return None;
+    }
+
+    // The legacy JSON socket `spawn_full` binds unconditionally. In a
+    // real session nothing dials it — apps take the capnp descriptor —
+    // so it goes beside the service socket rather than at whatever
+    // `QUICK_COLLAB_SOCK` names, keeping it inside the session's own
+    // runtime directory. Honour the env var when set so in-tree tools
+    // and the legacy two-peer tests keep working.
+    let json_path = std::env::var_os("QUICK_COLLAB_SOCK")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| launcher::services::services_root().join("collab-json.sock"));
+
+    match crate::shell::collab_broker::spawn_full(
+        json_path.clone(),
+        Some(capnp_path.clone()),
+        peer_sync.clone(),
+    ) {
+        Ok(handle) => {
+            tracing::info!(
+                "collab: broker listening on {} (apps) + {} (legacy) — peer_sync={}",
+                capnp_path.display(),
+                json_path.display(),
+                peer_sync.is_some()
+            );
+            chrome.borrow_mut().clear_collab_unavailable();
+            Some(handle)
+        }
+        Err(e) => {
+            tracing::error!(
+                "collab: bind {} failed ({e}); apps will start without collaboration",
+                capnp_path.display()
+            );
+            chrome
+                .borrow_mut()
+                .set_collab_unavailable(format!("The broker could not start: {e}"));
+            None
+        }
+    }
+}
+
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
@@ -1394,6 +1494,27 @@ pub fn run() -> ! {
     } else {
         None
     };
+    // The session's CRDT fan-out broker. Bound here, before the
+    // wayland socket is published and therefore before any app can be
+    // launched, because an app resolves its collab descriptor once at
+    // spawn: a broker that arrives later is a broker that app never
+    // gets.
+    //
+    // It lives in this process rather than in a unit of its own. The
+    // broker is a listener plus a fanout table over `ShellNetwork` —
+    // the libp2p handle built directly above — and the shell is where
+    // the network stack, the identity and the permission decisions
+    // already live (`plan/collaboration.md` §1). Moving it out of
+    // process would mean re-exporting all three across an IPC boundary
+    // to reach the same decisions, and would put session ordering in
+    // the hands of a unit manager that does not know when this
+    // compositor has published its socket.
+    //
+    // Held to the end of `run()` so the socket outlives every app and
+    // is unlinked with the session.
+    let collab_broker =
+        spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
+
     // Seed the size used for fullscreen configures so an early
     // `set_fullscreen` request fills the output even before the first resize.
     state.output_size = (initial_size.0 as i32, initial_size.1 as i32);
@@ -2579,6 +2700,11 @@ pub fn run() -> ! {
     // `process::exit` (which skips destructors). On the panic path
     // the unwind already runs `Drop` so we get cleanup either way.
     drop(_test_control_unlink);
+    // Same reasoning for the collab broker: its `Drop` quiesces the
+    // drain thread and unlinks both sockets, and `process::exit`
+    // would skip it — leaving a socket file behind that the next
+    // session has to tell apart from a live one.
+    drop(collab_broker);
     std::process::exit(0)
 }
 
