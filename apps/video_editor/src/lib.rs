@@ -69,3 +69,18 @@ pub fn app_root_filters() -> Box<dyn Widget> {
 pub fn app_root_split() -> Box<dyn Widget> {
     Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::JustSplit))
 }
+
+/// Root configured to capture a bin item's context menu (Add / Rename / Delete).
+pub fn app_root_menu() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::BinMenu))
+}
+
+/// Root configured to capture a bin item being renamed in place.
+pub fn app_root_rename() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::BinRename))
+}
+
+/// Root configured to capture a bin clip mid-drag over a timeline lane.
+pub fn app_root_drag() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::DragToTimeline))
+}
