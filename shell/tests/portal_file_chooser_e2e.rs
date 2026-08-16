@@ -171,23 +171,42 @@ fn layout(host: &mut ShellOverlayHost, w: f32, h: f32) {
     host.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
 }
 
+/// A scratch directory the picker is actually allowed to browse.
+///
+/// `PickerScope::for_user` roots the dialog at the user's own
+/// directories and refuses to navigate outside them. That gating is the
+/// thing under test, not an obstacle to route around — a test working
+/// in `/tmp` would be driving a dialog that correctly shows nothing. So
+/// the scratch directory goes where a real pick happens.
+fn user_dir() -> tempfile::TempDir {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .expect("HOME must be set: it is what the picker scopes the dialog to");
+    assert!(
+        home.is_dir(),
+        "HOME ({}) must exist, or the dialog has no root to open in",
+        home.display()
+    );
+    tempfile::TempDir::new_in(&home).expect("scratch dir under HOME")
+}
+
 /// Register the FileChooser backend on a p2p pair and hand back a proxy.
 async fn portal_proxy(ctx: PortalContext) -> (Connection, Connection, Proxy<'static>) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
-    let server = Builder::unix_stream(server_sock)
+    let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
         .expect("guid")
         .p2p()
         .serve_at(OBJECT_PATH, portal::FileChooserBackend::new(ctx))
-        .unwrap()
-        .build()
-        .await
-        .expect("server connection");
-    let client = Builder::unix_stream(client_sock)
-        .p2p()
-        .build()
-        .await
-        .expect("client connection");
+        .expect("serve_at");
+    let client_builder = Builder::unix_stream(client_sock).p2p();
+    // Both sides of a p2p handshake have to be driven at once. Awaiting
+    // the server's `build()` first parks it waiting for a client that
+    // this function has not created yet, and the test hangs before it
+    // has tested anything.
+    let (server, client) =
+        futures_util::try_join!(server_builder.build(), client_builder.build())
+            .expect("p2p connection pair");
     let proxy = Proxy::new(
         &client,
         "org.freedesktop.impl.portal.desktop.qos",
@@ -286,7 +305,7 @@ fn path_of_uri(uri: &str) -> PathBuf {
 async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
     const BYTES: &str = "the bytes the app must be able to read\n";
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = user_dir();
     let target = dir.path().join("report.txt");
     std::fs::write(&target, BYTES).expect("seed file");
     std::fs::write(dir.path().join("other.txt"), "not this one").expect("seed decoy");
@@ -396,7 +415,7 @@ async fn an_app_opens_a_file_the_user_picked_and_reads_it() {
 async fn an_app_saves_into_a_directory_it_did_not_previously_have() {
     const BYTES: &str = "saved from the app\n";
 
-    let dir = tempfile::tempdir().expect("tempdir");
+    let dir = user_dir();
     let fresh = dir.path().join("untouched");
     std::fs::create_dir(&fresh).expect("mkdir");
 
