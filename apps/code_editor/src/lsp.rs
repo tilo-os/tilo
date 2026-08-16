@@ -670,6 +670,18 @@ impl LspClient {
         );
     }
 
+    /// Notify the server the document was written to disk.
+    ///
+    /// This is not bookkeeping: rust-analyzer runs `cargo check` on save, and
+    /// the compiler errors that make the Problems panel worth reading arrive in
+    /// response to this notification and nothing else.
+    pub fn did_save(&mut self, uri: &str) {
+        self.send_notification(
+            "textDocument/didSave",
+            json!({ "textDocument": { "uri": uri } }),
+        );
+    }
+
     /// Request completions at a position (result arrives as an `LspEvent`).
     pub fn request_completion(&mut self, uri: &str, pos: Position) {
         self.send_request(
@@ -1006,7 +1018,10 @@ mod tests {
         // while looking like a working editor.
         let d = tempfile::tempdir().unwrap();
         let missing = d.path().join("does-not-exist");
-        let err = LspClient::start(Language::Rust, &missing).unwrap_err();
+        let err = match LspClient::start(Language::Rust, &missing) {
+            Err(e) => e,
+            Ok(_) => panic!("a non-directory root must be refused"),
+        };
         assert!(
             err.contains("not a directory"),
             "a bogus root must be refused up front, got: {err}"
@@ -1211,7 +1226,7 @@ mod tests {
         let pending: Arc<Mutex<HashMap<i64, Pending>>> = Arc::new(Mutex::new(HashMap::new()));
         pending.lock().unwrap().insert(7, Pending::Completion);
         let resp = json!({ "jsonrpc": "2.0", "id": 7, "result": [ { "label": "x" } ] });
-        match route_message(&resp, &pending) {
+        match route_message(&resp, &pending).event {
             Some(LspEvent::Completion(items)) => assert_eq!(items.len(), 1),
             other => panic!("expected completion event, got {other:?}"),
         }
@@ -1223,7 +1238,7 @@ mod tests {
             "method": "textDocument/publishDiagnostics",
             "params": { "uri": "file:///x.rs", "diagnostics": [] }
         });
-        match route_message(&note, &pending) {
+        match route_message(&note, &pending).event {
             Some(LspEvent::Diagnostics { uri, diagnostics }) => {
                 assert_eq!(uri, "file:///x.rs");
                 assert!(diagnostics.is_empty());

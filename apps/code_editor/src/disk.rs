@@ -97,6 +97,7 @@ impl std::fmt::Display for SaveError {
 }
 
 /// A file's bytes as text, plus the stamp they were read at.
+#[derive(Debug)]
 pub struct Loaded {
     pub text: String,
     pub stamp: Stamp,

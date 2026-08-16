@@ -20,6 +20,19 @@ use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
+/// Every `--scenario` name `--shots` knows how to stage. Keeping the list here
+/// rather than only in the `match` arms is what lets an unknown name be an
+/// error instead of a silently ordinary screenshot.
+const SCENARIOS: &[&str] = &[
+    "terminal",
+    "selection",
+    "completion",
+    "find",
+    "search",
+    "conflict",
+    "indexing",
+];
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
@@ -34,7 +47,24 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
         let scenario = parse_scenario_arg(&args);
-        let mut app = code_editor::CodeApp::new();
+        if let Some(name) = scenario.as_deref() {
+            // An unknown scenario used to fall through silently and render the
+            // plain cold-start frame — a check that cannot observe its subject
+            // but reports success. Refuse it instead.
+            if !SCENARIOS.contains(&name) {
+                eprintln!(
+                    "code_editor: unknown scenario '{name}'. Known scenarios: {}",
+                    SCENARIOS.join(", ")
+                );
+                std::process::exit(2);
+            }
+        }
+        // `--shots` with a path captures that real project; without one it
+        // captures the bundled demo, which is the only place the demo is used.
+        let mut app = match code_editor::parse_path_arg(&args) {
+            Some(path) => code_editor::CodeApp::open_path(&path),
+            None => code_editor::CodeApp::with_sample(),
+        };
         // Seed the width up front so this single offscreen frame resolves the
         // responsive layout (docked vs. overlay) correctly — `build_layout`
         // runs before `apply_layout` would otherwise measure the window.
@@ -49,12 +79,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
+    let open_path = code_editor::parse_path_arg(&args);
     if let Some(spec) = ui::headless::spec_from_args(&args) {
-        std::process::exit(ui::headless::run(spec, code_editor::app_root(), "dev.qos.code-editor"));
+        std::process::exit(ui::headless::run(
+            spec,
+            code_editor::app_root_at(open_path.as_deref()),
+            "dev.qos.code-editor",
+        ));
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.code-editor");
-    let mut app = ui::App::new(state, code_editor::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, code_editor::app_root_at(open_path.as_deref()))
+        .with_autosave(autosave);
     // Register Code's action so the shell's Ctrl+K palette can decode + replay the
     // same buffer-creation the on-screen "New file" command dispatches.
     code_editor::actions::register(app.action_registry_mut());
