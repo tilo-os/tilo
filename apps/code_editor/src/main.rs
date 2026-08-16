@@ -31,6 +31,8 @@ const SCENARIOS: &[&str] = &[
     "search",
     "conflict",
     "indexing",
+    "goto",
+    "close-prompt",
 ];
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -176,7 +178,10 @@ fn render_scenario_to_png(
     // Scenarios that need a buffer open before the first sync so its text is
     // seeded and the editor is bound. On a real project this opens a real file
     // from the tree; on the demo tree `main.rs` is already open.
-    if matches!(scenario, Some("find") | Some("conflict") | Some("indexing")) {
+    if matches!(
+        scenario,
+        Some("find") | Some("conflict") | Some("indexing") | Some("goto") | Some("close-prompt")
+    ) {
         if let Some(path) = std::env::var_os("QOS_SHOTS_OPEN") {
             app.shots_open_path(std::path::Path::new(&path));
         } else if app.project_root().is_some() {
@@ -261,6 +266,11 @@ fn render_scenario_to_png(
             app.sync(&mut state.doc, &state.root);
         }
         Some("conflict") => app.shots_conflict(),
+        Some("goto") => {
+            let n = std::env::var("QOS_SHOTS_GOTO").unwrap_or_else(|_| "42".to_string());
+            app.shots_open_goto(&n);
+        }
+        Some("close-prompt") => app.shots_close_prompt(),
         Some("indexing") => {
             app.shots_indexing();
             // The status bar and the Problems panel read the server state

@@ -2194,6 +2194,22 @@ impl CodeApp {
         }
     }
 
+    /// Stage the go-to-line palette with a query, for a screenshot.
+    pub fn shots_open_goto(&mut self, query: &str) {
+        self.palette.open_goto();
+        self.palette.seed_query(query);
+    }
+
+    /// Stage the "save changes before closing?" prompt for the active buffer.
+    pub fn shots_close_prompt(&mut self) {
+        if let Some(buf) = self.session.active_buffer() {
+            self.close_prompt = Some(ClosePrompt {
+                node: buf.node,
+                name: buf.name.clone(),
+            });
+        }
+    }
+
     /// Stage the language-server indexing readout.
     pub fn shots_indexing(&mut self) {
         self.lsp_status = LspStatus::Busy {
