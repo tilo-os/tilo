@@ -365,35 +365,157 @@ mod tests {
         assert_eq!(actor_handle("610062"), None, "control bytes are rejected");
     }
 
-    /// A real on-disk identity file is read and turned into an author. This
-    /// exercises the same `runtime_identity` parse the launcher uses, on the
-    /// exact JSON shape `shell::firstboot` writes.
+    /// Seed for the minted test identities. Any fixed value works — it is
+    /// pinned only so the derived public key, and therefore the expected
+    /// short id, is the same on every run.
+    const FIXTURE_SEED: [u8; 32] = [0x5a; 32];
+
+    /// Mint an identity record through the **real writer**, exactly as
+    /// `shell::firstboot::ensure_primary_identity` does: build a
+    /// single-device `ThresholdIdentity`, hand it to
+    /// `IdentityRecord::from_threshold_identity`, and encode with
+    /// `to_json_bytes`.
+    ///
+    /// Returns the JSON bytes alongside the public key the seed *actually*
+    /// derives — computed here straight from `ed25519-dalek`, independently
+    /// of anything the writer or the reader reports, so a test asserting on
+    /// it is checking the whole chain rather than echoing one side of it.
+    fn firstboot_identity_bytes(display_name: &str, avatar_color: [u8; 3]) -> (Vec<u8>, [u8; 32]) {
+        let identity = threshold_identity::ThresholdIdentity::from_single_device_seed(&FIXTURE_SEED);
+        let record = crate::widget::identity_flow::IdentityRecord::from_threshold_identity(
+            &identity,
+            display_name,
+            avatar_color,
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_785_000_000),
+        )
+        .expect("a single-device identity is persistable");
+        let bytes = record.to_json_bytes().expect("record encodes to JSON");
+        let derived = ed25519_dalek::SigningKey::from_bytes(&FIXTURE_SEED)
+            .verifying_key()
+            .to_bytes();
+        (bytes, derived)
+    }
+
+    /// Bound every source `local_identity_author` consults to the test's own
+    /// temp dir, and put the environment back afterwards, panic or not.
+    ///
+    /// Both variables matter. `QOS_USER_IDENTITY` is the launcher-provided
+    /// path the function tries first; `XDG_CONFIG_HOME` is the fallback it
+    /// tries second, and leaving that one alone would let a developer's real
+    /// `~/.config/qos/identity/primary.json` decide the result — the test
+    /// would pass or fail on whose machine it ran.
+    struct IdentityEnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl IdentityEnvGuard {
+        fn pointing_at(identity_path: &std::path::Path, config_home: &std::path::Path) -> Self {
+            let vars = [
+                (runtime_identity::IDENTITY_ENV_VAR, identity_path),
+                ("XDG_CONFIG_HOME", config_home),
+            ];
+            let saved = vars
+                .iter()
+                .map(|(name, value)| {
+                    let previous = std::env::var(name).ok();
+                    // SAFETY: every test that touches these variables is
+                    // serialised on the `qos_user_identity` key, so no other
+                    // thread reads them between here and the restore in
+                    // `drop`.
+                    unsafe { std::env::set_var(name, value) };
+                    (*name, previous)
+                })
+                .collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for IdentityEnvGuard {
+        fn drop(&mut self) {
+            for (name, previous) in self.saved.drain(..) {
+                // SAFETY: as above — the serial key bounds the window.
+                unsafe {
+                    match previous {
+                        Some(v) => std::env::set_var(name, v),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+    }
+
+    /// A real on-disk identity file is read and turned into an author.
+    ///
+    /// The record is minted by the writer `shell::firstboot` actually calls,
+    /// not hand-typed, because the two sides of this schema are declared
+    /// twice on purpose: `ui::widget::identity_flow::IdentityRecord`
+    /// serialises it, and `runtime_identity` re-declares it rather than
+    /// depending on `ui` (that edge would close a cycle). Only a fixture
+    /// that came out of the writer can prove the reader still accepts what
+    /// the writer emits — a hand-written literal proves the test author
+    /// remembered the shape on the day they typed it, and silently rots
+    /// afterwards, which is exactly what happened to the previous version of
+    /// this fixture when the loader began rejecting records whose secret
+    /// does not derive their recorded public key.
     #[test]
+    #[serial_test::serial(qos_user_identity)]
     fn local_identity_is_read_from_the_firstboot_json_shape() {
-        let record = serde_json::json!({
-            "display_name": "ada",
-            "avatar_color": [0u8, 255u8, 0u8],
-            "threshold_identity": {
-                "single_device": true,
-                "group_public_key": vec![7u8; 32],
-                "threshold": 1u16,
-                "total_shares": 1u16,
-                "share_index": 1u16,
-                "secret_bytes": vec![9u8; 32],
-            },
-            "created_at": "2026-07-28T00:00:00Z",
-            "schema_version": 1u32,
-        });
-        let bytes = serde_json::to_vec(&record).unwrap();
+        let (bytes, public_key) = firstboot_identity_bytes("ada", [0, 255, 0]);
+
+        // The reader accepts what the writer produced, field for field.
         let id = runtime_identity::load_from_bytes(&bytes).expect("firstboot shape parses");
         assert_eq!(id.display_name(), "ada");
-        let author = HistoryAuthor::new(
-            id.display_name(),
-            rgb_to_hue(id.avatar_color()),
-            short_id(&hex_lower(&id.group_public_key())),
+        assert_eq!(id.avatar_color(), [0, 255, 0]);
+        assert_eq!(
+            id.group_public_key(),
+            public_key,
+            "the record must carry the key its own secret derives"
         );
+
+        // ...and the production entry point turns that file into the row the
+        // timeline renders. This is the function the chrome calls; asserting
+        // on a locally reassembled `HistoryAuthor` instead would only restate
+        // its body.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("primary.json");
+        std::fs::write(&path, &bytes).expect("write identity");
+        let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
+
+        let author = local_identity_author().expect("an identity on disk resolves to an author");
         assert_eq!(author.name, "ada");
         assert!((author.avatar_hue - 120.0).abs() < 0.5, "green avatar colour");
-        assert_eq!(author.identity_short, "07070707");
+        assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
+        assert_eq!(author.identity_short.len(), SHORT_LEN);
+    }
+
+    /// First boot writes an empty display name and neutral grey — the user
+    /// names and colours themselves later. That record must still load, and
+    /// must render as the honest unknown-participant label rather than as a
+    /// blank row.
+    #[test]
+    #[serial_test::serial(qos_user_identity)]
+    fn a_freshly_provisioned_identity_renders_as_unknown_rather_than_blank() {
+        let (bytes, public_key) = firstboot_identity_bytes("", [128, 128, 128]);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("primary.json");
+        std::fs::write(&path, &bytes).expect("write identity");
+        let _env = IdentityEnvGuard::pointing_at(&path, dir.path());
+
+        let author = local_identity_author().expect("a provisioned identity resolves to an author");
+        assert_eq!(author.name, UNKNOWN_AUTHOR_NAME);
+        assert_eq!(author.avatar_hue, 0.0, "neutral grey has no hue");
+        assert_eq!(author.identity_short, short_id(&hex_lower(&public_key)));
+    }
+
+    /// With no identity anywhere, the chrome gets `None` and falls through to
+    /// the handle/unknown ladder — an app run outside a qOS session is not an
+    /// error.
+    #[test]
+    #[serial_test::serial(qos_user_identity)]
+    fn a_missing_identity_file_is_not_an_author() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let _env = IdentityEnvGuard::pointing_at(&dir.path().join("absent.json"), dir.path());
+        assert!(local_identity_author().is_none());
     }
 }
