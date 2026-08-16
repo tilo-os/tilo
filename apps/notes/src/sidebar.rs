@@ -40,18 +40,26 @@ use ui::widget::TextInput;
 
 use crate::model::{PageId, Workspace};
 
-/// Per-row height; matches `TreeView::ROW_HEIGHT` so the visual cadence
-/// reads as part of the same widget family.
-const ROW_HEIGHT: f64 = 24.0;
+/// Per-row height. Comfortable rather than cramped — a page row breathes
+/// with vertical air above and below its label instead of butting rows
+/// edge to edge.
+const ROW_HEIGHT: f64 = 30.0;
 /// Height of the sidebar header strip that hosts the "Pages" label and
 /// the "+" new-page button. Rows start below it.
-const HEADER_HEIGHT: f64 = 32.0;
+const HEADER_HEIGHT: f64 = 42.0;
 /// Side length of the square "+" new-page button in the header.
-const NEW_BTN_SIZE: f64 = 22.0;
+const NEW_BTN_SIZE: f64 = 26.0;
 /// Right/vertical inset of the "+" button inside the header strip.
-const NEW_BTN_MARGIN: f64 = 6.0;
+const NEW_BTN_MARGIN: f64 = 8.0;
+/// Left content inset: rows, the header label and the selection pill all
+/// start this far in from the sidebar's left edge so nothing is jammed
+/// against the window frame.
+const ROW_INSET_X: f64 = 12.0;
+/// Horizontal margin the selection pill leaves on each side of a row, so
+/// the highlight reads as an inset rounded chip, not an edge-to-edge bar.
+const ROW_PILL_MARGIN: f64 = 6.0;
 /// Horizontal indent per tree depth level.
-const INDENT_PX: f64 = 16.0;
+const INDENT_PX: f64 = 18.0;
 /// Glyph hit-area width — the expand/collapse triangle on the left of
 /// a branch row.
 const GLYPH_WIDTH: f64 = 16.0;
@@ -624,7 +632,8 @@ impl Widget for NoteTreeView {
                 .position(|row| row.id == r.page)
             {
                 let row_rect = self.row_rects[idx];
-                let glyph_x = row_rect.x0 + (self.flat_rows[idx].depth as f64) * INDENT_PX;
+                let glyph_x =
+                    row_rect.x0 + ROW_INSET_X + (self.flat_rows[idx].depth as f64) * INDENT_PX;
                 let editor_rect = Rect::new(
                     glyph_x + GLYPH_WIDTH,
                     row_rect.y0,
@@ -666,8 +675,8 @@ impl Widget for NoteTreeView {
             "PAGES",
             ROW_TEXT_SIZE - 2.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((self.rect.x0 + 8.0, header_text_y)),
-            Some((self.new_page_btn_rect.x0 - self.rect.x0 - 12.0).max(0.0) as f32),
+            transform * Affine::translate((self.rect.x0 + ROW_INSET_X, header_text_y)),
+            Some((self.new_page_btn_rect.x0 - self.rect.x0 - ROW_INSET_X - 6.0).max(0.0) as f32),
         );
         // Button chip — brighter when hovered so it reads as clickable.
         let btn_bg = if self.new_page_btn_hover {
@@ -739,12 +748,21 @@ impl Widget for NoteTreeView {
                 base_rect.y1 + shift,
             );
             if self.selected == Some(row.id) {
+                // An inset rounded pill rather than an edge-to-edge bar, so
+                // the selection reads as a chip with breathing room.
+                let pill = RoundedRect::new(
+                    row_rect.x0 + ROW_PILL_MARGIN,
+                    row_rect.y0 + 1.0,
+                    row_rect.x1 - ROW_PILL_MARGIN,
+                    row_rect.y1 - 1.0,
+                    tokens.radii.md as f64,
+                );
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    theme.accent_primary.with_alpha_factor(0.25),
+                    theme.accent_primary.with_alpha_factor(0.22),
                     None,
-                    &row_rect,
+                    &pill,
                 );
             }
             // Indicative mist: glow this row in a peer's color when that
@@ -760,7 +778,7 @@ impl Widget for NoteTreeView {
                     presence.draw_peer_mist(scene, theme, user, mist_rect);
                 }
             }
-            let glyph_x = row_rect.x0 + (row.depth as f64) * INDENT_PX;
+            let glyph_x = row_rect.x0 + ROW_INSET_X + (row.depth as f64) * INDENT_PX;
             let label_x = glyph_x + GLYPH_WIDTH;
             let text_y = row_rect.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
 
@@ -768,7 +786,7 @@ impl Widget for NoteTreeView {
             // so the tree structure reads at a glance — this is what makes
             // an indented child obviously nested under its parent.
             for level in 0..row.depth {
-                let gx = row_rect.x0 + (level as f64) * INDENT_PX + GLYPH_WIDTH / 2.0;
+                let gx = row_rect.x0 + ROW_INSET_X + (level as f64) * INDENT_PX + GLYPH_WIDTH / 2.0;
                 let guide = Rect::new(gx - 0.5, row_rect.y0, gx + 0.5, row_rect.y1);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -837,7 +855,7 @@ impl Widget for NoteTreeView {
                 // Reorder: an accent caret between rows, indented to the
                 // depth the page would land at (so nesting is visible).
                 let y = metrics.slot_lead(*to);
-                let x0 = self.rect.x0 + (*depth as f64) * INDENT_PX + 6.0;
+                let x0 = self.rect.x0 + ROW_INSET_X + (*depth as f64) * INDENT_PX + 6.0;
                 let caret = RoundedRect::new(x0, y - 1.5, self.rect.x1 - 6.0, y + 1.5, 1.5);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
@@ -878,7 +896,7 @@ impl Widget for NoteTreeView {
                         None,
                         &shape,
                     );
-                    let label_x = ghost.x0 + GLYPH_WIDTH;
+                    let label_x = ghost.x0 + ROW_INSET_X + GLYPH_WIDTH;
                     let text_y = ghost.y0 + (ROW_HEIGHT - ROW_TEXT_SIZE as f64) / 2.0;
                     text_renderer.draw_text(
                         scene,
@@ -892,18 +910,19 @@ impl Widget for NoteTreeView {
             }
         }
 
-        // Focus ring around the whole sidebar when the panel itself
-        // has keyboard focus — a small accessibility win for the
-        // Cmd-N / Delete shortcuts that target the selected page.
-        if self.is_focused {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                tokens.colors.border_focus,
-                None,
-                &self.rect,
-            );
-        }
+        // A single hairline down the sidebar's inner edge separates the
+        // page tree from the editor. This replaces the old full-rectangle
+        // focus ring (a jarring blue box around the whole pane): pane focus
+        // is already legible from the selected row's accent fill, so the
+        // divider is all the chrome the split needs.
+        let divider = Rect::new(self.rect.x1 - 1.0, self.rect.y0, self.rect.x1, self.rect.y1);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            tokens.colors.border_standard,
+            None,
+            &divider,
+        );
 
         // Context menu paints last so it sits above every row.
         self.menu.draw(scene, transform, text_renderer, theme, presence);
@@ -1169,7 +1188,7 @@ impl Widget for NoteTreeView {
                     let row_id = self.flat_rows[i].id;
                     let depth = self.flat_rows[i].depth;
                     let has_children = self.flat_rows[i].has_children;
-                    let glyph_x0 = row_rect.x0 + (depth as f64) * INDENT_PX;
+                    let glyph_x0 = row_rect.x0 + ROW_INSET_X + (depth as f64) * INDENT_PX;
                     let glyph_x1 = glyph_x0 + GLYPH_WIDTH;
                     if has_children && pt.x >= glyph_x0 && pt.x < glyph_x1 {
                         if !self.expanded.insert(row_id) {
@@ -1392,6 +1411,16 @@ impl NoteTreeView {
     #[doc(hidden)]
     pub fn row_center_for_test(&self, idx: usize) -> Option<Point> {
         self.row_rects.get(idx).map(|r| r.center())
+    }
+
+    /// Test hook: the x of the disclosure-triangle hit centre for row `idx`,
+    /// so tests click the real glyph instead of a hard-coded pixel that the
+    /// row inset would shift out from under.
+    #[doc(hidden)]
+    pub fn row_disclosure_x_for_test(&self, idx: usize) -> Option<f64> {
+        let row = self.row_rects.get(idx)?;
+        let depth = self.flat_rows.get(idx)?.depth;
+        Some(row.x0 + ROW_INSET_X + depth as f64 * INDENT_PX + GLYPH_WIDTH / 2.0)
     }
 
     /// Test hook: the tree depth of visible row `idx` (0 = root), so a test
