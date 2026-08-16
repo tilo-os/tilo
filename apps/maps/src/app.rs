@@ -203,6 +203,10 @@ pub struct MapsApp {
 
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
+    /// Hover tooltips for the immediate-mode map controls (zoom / locate /
+    /// traffic / menu / overflow). Reuses the toolkit's shared controller — no
+    /// bespoke per-app timer — driven by this app's own control hit-testing.
+    tooltip_host: ui::widget::TooltipHost,
     search_focused: bool,
     /// The top search field — a shared single-line [`TextInput`] (Enter runs
     /// the search) so it gets real caret, selection, clipboard, focus ring,
@@ -365,6 +369,7 @@ impl MapsApp {
             node: None,
             actions: ui::ActionHost::new(),
             last_mouse: Point::ZERO,
+            tooltip_host: ui::widget::TooltipHost::new(),
             search_focused: false,
             search_input: {
                 let mut t = TextInput::local().with_enter_submits(true).with_font_size(15.0);
@@ -743,6 +748,33 @@ impl MapsApp {
         let x1 = self.rect.x1 - MARGIN;
         let y1 = self.rect.y1 - MARGIN;
         Rect::new(x1 - 40.0, y1 - 30.0, x1, y1)
+    }
+
+    /// The hover tooltip `(anchor_rect, label)` for the map control under `p`,
+    /// or `None`. The controls are painted immediate-mode, so this app owns
+    /// their hit-testing; the shared [`ui::widget::TooltipHost`] then handles the
+    /// dwell + rendering, so there is no bespoke per-app tooltip timer.
+    fn control_tooltip_at(&self, p: Point) -> Option<(Rect, &'static str)> {
+        for (r, label) in [
+            (self.zoom_in_rect(), "Zoom in"),
+            (self.zoom_out_rect(), "Zoom out"),
+            (self.locate_rect(), "My location"),
+            (self.traffic_rect(), "Traffic"),
+        ] {
+            if r.contains(p) {
+                return Some((r, label));
+            }
+        }
+        if let Some(mr) = self.menu_rect() {
+            if mr.contains(p) {
+                return Some((mr, "Menu"));
+            }
+        }
+        let of = self.overflow_rect();
+        if of.contains(p) {
+            return Some((of, "More"));
+        }
+        None
     }
 
     /// The geographic bounds currently visible in the map viewport.
@@ -2417,6 +2449,16 @@ impl MapsApp {
         if self.overflow.is_open() {
             self.overflow.draw(scene, t, tr, theme, &PresenceCtx::empty());
         }
+
+        // Hover tooltip for the map controls — painted last so the single chip
+        // sits above all chrome. The shared controller measures, positions
+        // (flip/clamp into the window) and paints it; this app only fed it the
+        // control under the pointer.
+        self.tooltip_host.tick(Instant::now());
+        if let Some((text, anchor)) = self.tooltip_host.visible().map(|(l, a)| (l.to_string(), a)) {
+            let vp = self.rect;
+            ui::widget::tooltip::draw_hover_tooltip(scene, t, tr, theme, anchor, &text, vp);
+        }
     }
 
     /// The bottom-right ⋯ button. When the overflow menu is open (or a download
@@ -3942,6 +3984,15 @@ impl Widget for MapsApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // A click, scroll or keypress dismisses any shown control tooltip.
+        if matches!(
+            event,
+            WindowEvent::MouseInput { state: ElementState::Pressed, .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+        ) {
+            self.tooltip_host.dismiss();
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3972,6 +4023,18 @@ impl Widget for MapsApp {
                         *handled = true;
                     }
                     self.drag_last = p;
+                }
+                // Retarget the control hover tooltip. Suppressed while dragging
+                // (the pointer is panning, not resting on a control). A state
+                // change marks the move handled so the `ui` App repaints it,
+                // clearing or updating the chip promptly.
+                let target = if self.left_down {
+                    None
+                } else {
+                    self.control_tooltip_at(p).map(|(r, l)| (r, l.to_string()))
+                };
+                if self.tooltip_host.on_pointer(target, Instant::now()) {
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
@@ -4175,6 +4238,9 @@ impl Widget for MapsApp {
             || self.location_rx.is_some()
             || self.tiles.has_inflight()
             || self.tiles.progress().is_active()
+            // Keep pumping frames while a control tooltip counts toward its
+            // reveal, so the dwell elapses even when the map is otherwise idle.
+            || self.tooltip_host.needs_frame()
     }
 
     fn draw_with_presence(
@@ -4638,6 +4704,35 @@ mod tests {
         assert!(a.traffic_on, "overlay is on");
         assert!(a.traffic.is_empty(), "no data is invented on the live path");
         assert!(a.traffic.source.is_none(), "no provenance when there is nothing to show");
+    }
+
+    #[test]
+    fn map_controls_expose_hover_tooltips() {
+        use std::time::{Duration, Instant};
+        let a = app_at(1280.0, 800.0);
+        // Each immediate-mode control resolves to its label at its own rect —
+        // the app-owned hit-test the shared TooltipHost is fed from.
+        assert_eq!(a.control_tooltip_at(a.zoom_in_rect().center()).map(|(_, l)| l), Some("Zoom in"));
+        assert_eq!(a.control_tooltip_at(a.zoom_out_rect().center()).map(|(_, l)| l), Some("Zoom out"));
+        assert_eq!(a.control_tooltip_at(a.locate_rect().center()).map(|(_, l)| l), Some("My location"));
+        assert_eq!(a.control_tooltip_at(a.traffic_rect().center()).map(|(_, l)| l), Some("Traffic"));
+        // The open map has no control tooltip (the pointer is over the map).
+        assert!(a.control_tooltip_at(Point::new(640.0, 400.0)).is_none());
+
+        // Feeding the shared host reveals after the dwell, anchored to the
+        // hovered control's own rect.
+        let mut a = a;
+        let zi = a.zoom_in_rect();
+        let target = a.control_tooltip_at(zi.center()).map(|(r, l)| (r, l.to_string()));
+        let t0 = Instant::now();
+        a.tooltip_host.on_pointer(target, t0);
+        assert!(a.tooltip_host.visible().is_none(), "hidden before the dwell elapses");
+        a.tooltip_host.tick(t0 + Duration::from_millis(600));
+        assert_eq!(
+            a.tooltip_host.visible().map(|(l, r)| (l.to_string(), r)),
+            Some(("Zoom in".to_string(), zi)),
+            "revealed after the dwell, anchored to the zoom-in control",
+        );
     }
 
     #[test]
