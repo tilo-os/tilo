@@ -7,8 +7,11 @@
 //! - `settings.png` — the wide two-pane layout, opened on a rich panel
 //!   (External Accounts), so the category sidebar and a populated content
 //!   pane are both visible.
-//! - `settings-narrow.png` — the narrow list screen: the full-screen category
-//!   list with the search field on top.
+//! - `settings-narrow.png` — the narrow collapse default: the selected panel
+//!   full-screen with a back-arrow affordance (a collapse keeps the content,
+//!   never the category list).
+//! - `settings-narrow-list.png` — the narrow list screen: the full-screen
+//!   category list with the search field on top (the back-tap-away state).
 //! - `settings-narrow-content.png` — the narrow content screen: the selected
 //!   panel full-screen with the back-arrow affordance.
 
@@ -40,7 +43,8 @@ pub const NARROW_SHOTS_VIEWPORT: (u32, u32) = (440, 820);
 pub enum Scenario {
     /// Wide two-pane, opened on External Accounts.
     Wide,
-    /// Narrow single-pane, drilled into Region & Formats.
+    /// Narrow single-pane collapse default — the content screen for Region &
+    /// Formats, full-screen with the back arrow (never the category list).
     Narrow,
 }
 
@@ -76,9 +80,9 @@ impl Scenario {
             // the still proves selection drives the content pane.
             Scenario::Wide => SettingsApp::with_selected(Category::ExternalAccounts)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32),
-            // Narrow: the standalone list screen — the full-screen category
-            // list with the search field pinned on top. (Region & Formats is
-            // the pre-selected row, highlighted in the list.)
+            // Narrow: the collapse default — Region & Formats' content
+            // full-screen with a back arrow to the list. A collapse keeps the
+            // content, never the category list.
             Scenario::Narrow => SettingsApp::with_selected(Category::RegionFormats)
                 .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32),
         }
@@ -182,6 +186,15 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+
+    // `…narrow-list.png` proves the narrow list screen: the full-screen
+    // category list (the back-tap-away state a collapse no longer defaults to).
+    if fname.contains("narrow") && fname.contains("list") {
+        let app = SettingsApp::with_selected(Category::RegionFormats)
+            .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+            .with_narrow_list_shot();
+        return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
+    }
 
     // `…narrow-content.png` proves the narrow content screen: the selected
     // panel full-screen with the back-arrow affordance in the top-left.
