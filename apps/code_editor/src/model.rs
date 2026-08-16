@@ -122,6 +122,27 @@ impl Language {
             _ => 4,
         }
     }
+
+    /// The token that begins a line comment in this language, if it has one.
+    /// Drives the toggle-comment line operation. Languages without a line
+    /// comment (JSON, HTML, CSS, plain text) return `None` and toggle is a
+    /// no-op for them.
+    pub fn line_comment(self) -> Option<&'static str> {
+        match self {
+            Language::Rust
+            | Language::JavaScript
+            | Language::TypeScript
+            | Language::C
+            | Language::Cpp
+            | Language::Go => Some("//"),
+            Language::Python
+            | Language::Shell
+            | Language::Toml
+            | Language::Yaml => Some("#"),
+            Language::Markdown | Language::Html | Language::Css | Language::Json
+            | Language::PlainText => None,
+        }
+    }
 }
 
 /// One node in the project tree. Folders own an ordered list of children;

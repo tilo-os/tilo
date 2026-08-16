@@ -18,6 +18,8 @@ use crate::model::NodeId as TreeId;
 pub enum PaletteKind {
     File(TreeId),
     Command(Command),
+    /// Jump the caret to a 1-based line number (go-to-line mode).
+    LineJump(usize),
 }
 
 /// Commands the palette can dispatch.
@@ -34,6 +36,12 @@ pub enum Command {
     Find,
     Replace,
     SearchProject,
+    GoToLine,
+    DuplicateLine,
+    MoveLineUp,
+    MoveLineDown,
+    DeleteLine,
+    ToggleComment,
     ToggleBottomPanel,
     NextTheme,
     GoToProblems,
@@ -66,6 +74,12 @@ impl Command {
             (Command::Find, "Edit: Find in File", "Ctrl+F"),
             (Command::Replace, "Edit: Replace in File", "Ctrl+H"),
             (Command::SearchProject, "Edit: Search Project", "Ctrl+Shift+F"),
+            (Command::GoToLine, "Go: Go to Line\u{2026}", "Ctrl+G"),
+            (Command::DuplicateLine, "Selection: Duplicate Line", "Shift+Alt+Down"),
+            (Command::MoveLineUp, "Selection: Move Line Up", "Alt+Up"),
+            (Command::MoveLineDown, "Selection: Move Line Down", "Alt+Down"),
+            (Command::DeleteLine, "Selection: Delete Line", "Ctrl+Shift+K"),
+            (Command::ToggleComment, "Edit: Toggle Line Comment", "Ctrl+/"),
             (Command::ToggleBottomPanel, "View: Toggle Bottom Panel", "Ctrl+J"),
             (Command::ToggleSidebar, "View: Toggle Sidebar", "Ctrl+B"),
             (Command::NextTheme, "Preferences: Cycle Color Theme", ""),
@@ -89,6 +103,9 @@ pub struct CommandPalette {
     visible: bool,
     /// Whether we're in command mode (`>` prefix) vs file mode.
     command_mode: bool,
+    /// Go-to-line mode: the query is a line number, not a fuzzy filter. Takes
+    /// precedence over `command_mode` when set.
+    goto_mode: bool,
     query: String,
     all_entries: Vec<Entry>,
     filtered: Vec<usize>,
@@ -108,6 +125,7 @@ impl CommandPalette {
         CommandPalette {
             visible: false,
             command_mode: false,
+            goto_mode: false,
             query: String::new(),
             all_entries: Vec::new(),
             filtered: Vec::new(),
@@ -135,6 +153,7 @@ impl CommandPalette {
     pub fn open_files(&mut self) {
         self.visible = true;
         self.command_mode = false;
+        self.goto_mode = false;
         self.query.clear();
         self.selected = 0;
         self.refilter();
@@ -144,6 +163,18 @@ impl CommandPalette {
     pub fn open_commands(&mut self) {
         self.visible = true;
         self.command_mode = true;
+        self.goto_mode = false;
+        self.query.clear();
+        self.selected = 0;
+        self.refilter();
+    }
+
+    /// Open in go-to-line mode: the query is typed as a line number and Enter
+    /// jumps the caret there.
+    pub fn open_goto(&mut self) {
+        self.visible = true;
+        self.command_mode = false;
+        self.goto_mode = true;
         self.query.clear();
         self.selected = 0;
         self.refilter();
@@ -185,6 +216,12 @@ impl CommandPalette {
     }
 
     fn refilter(&mut self) {
+        if self.goto_mode {
+            // No list to filter — the query is a line number.
+            self.filtered.clear();
+            self.selected = 0;
+            return;
+        }
         let want_command = self.command_mode;
         let mut scored: Vec<(usize, i32)> = self
             .all_entries
@@ -236,7 +273,11 @@ impl CommandPalette {
                 true
             }
             Key::Named(NamedKey::Enter) => {
-                if let Some(&idx) = self.filtered.get(self.selected) {
+                if self.goto_mode {
+                    if let Ok(n) = self.query.trim().parse::<usize>() {
+                        self.chosen = Some(PaletteKind::LineJump(n.max(1)));
+                    }
+                } else if let Some(&idx) = self.filtered.get(self.selected) {
                     self.chosen = Some(self.all_entries[idx].kind.clone());
                 }
                 self.close();
@@ -250,7 +291,14 @@ impl CommandPalette {
             _ => {
                 if let Some(t) = text {
                     let s = t.as_str();
-                    if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
+                    // Go-to-line only accepts digits, so a stray letter can't
+                    // wedge the field into an unparseable state.
+                    let acceptable = if self.goto_mode {
+                        !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+                    } else {
+                        !s.is_empty() && !s.chars().any(|c| c.is_control())
+                    };
+                    if acceptable {
                         self.query.push_str(s);
                         self.refilter();
                         return true;
@@ -287,9 +335,17 @@ impl CommandPalette {
         scene.stroke(&Stroke::new(1.0), transform, c.border_white_20, None, &panel);
 
         // Input row.
-        let prompt = if self.command_mode { "> " } else { "" };
+        let prompt = if self.goto_mode {
+            ": "
+        } else if self.command_mode {
+            "> "
+        } else {
+            ""
+        };
         let shown = format!("{}{}", prompt, self.query);
-        let placeholder = if self.command_mode {
+        let placeholder = if self.goto_mode {
+            "Go to line..."
+        } else if self.command_mode {
             "Type a command..."
         } else {
             "Go to file..."
@@ -346,6 +402,9 @@ impl CommandPalette {
             let glyph = match entry.kind {
                 PaletteKind::Command(_) => "\u{2699}",
                 PaletteKind::File(_) => "\u{1F5CB}",
+                // Never listed as a row (goto-line has no entries), but the
+                // match must stay exhaustive.
+                PaletteKind::LineJump(_) => "\u{2192}",
             };
             text_renderer.draw_text(
                 scene,
@@ -379,9 +438,14 @@ impl CommandPalette {
         }
 
         if self.filtered.is_empty() {
+            let hint = if self.goto_mode {
+                "Type a line number, then Enter"
+            } else {
+                "No matching results"
+            };
             text_renderer.draw_text(
                 scene,
-                "No matching results",
+                hint,
                 14.0,
                 c.text_dim,
                 transform * Affine::translate((x0 + 16.0, y0 + INPUT_H + 12.0)),
