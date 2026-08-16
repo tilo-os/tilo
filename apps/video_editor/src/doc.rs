@@ -146,6 +146,11 @@ impl VideoDoc {
         let _ = doc.delete(&clips, id.to_string().as_str());
     }
 
+    pub fn remove_media(doc: &mut AutoCommit, id: Uuid) {
+        let media = Self::map(doc, "media");
+        let _ = doc.delete(&media, id.to_string().as_str());
+    }
+
     pub fn remove_track(doc: &mut AutoCommit, id: Uuid) {
         let tracks = Self::map(doc, "tracks");
         let _ = doc.delete(&tracks, id.to_string().as_str());
