@@ -1,0 +1,48 @@
+[Unit]
+Description=qOS signing identity for this user
+Documentation=man:shell(1)
+# A signing identity is personal. It has to be minted by the person it
+# belongs to, in their own session, so the key lands in their home, owned by
+# them, mode 0600. The system-wide first-boot unit runs as root before anyone
+# has logged in; anything it wrote would be root's.
+#
+# Ordered before the graphical session so the compositor and every app it
+# launches can find an identity on the very first login rather than starting
+# a session without one.
+Before=graphical-session-pre.target
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: exits immediately when an identity is already present, so this
+# is safe to leave enabled for every login rather than guarded by a stamp
+# file that could drift out of sync with the actual key.
+ExecStart=/usr/bin/shell --provision-identity
+# Never block login. A machine that cannot mint an identity should still let
+# its owner in and say so, rather than failing the session.
+SuccessExitStatus=0 1
+TimeoutStartSec=30s
+
+# The identity file is the most sensitive thing this user owns. Keep the
+# minting process away from everything it does not need.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# Minting is local key generation. It has no reason to touch the network.
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @debug @swap
+
+[Install]
+WantedBy=graphical-session-pre.target
