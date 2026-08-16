@@ -26,6 +26,7 @@ pub mod epub;
 pub mod model;
 pub mod paginate;
 pub mod paint;
+pub mod portal;
 pub mod reader_theme;
 pub mod xhtml;
 
