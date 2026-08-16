@@ -11,8 +11,9 @@
 //! - `ContextMenu` with `open_at([x, y])`, `close()`, `is_open`, `position`,
 //!   `click_item(idx)` — action items close the menu after invoking the
 //!   callback, separators are no-ops.
-//! - `Widget` impl that renders at the stored position when open using the
-//!   `Theme::tokens` raised-surface + border tokens (no hard-coded styling).
+//! - `Widget` impl that renders at the stored position when open on the
+//!   `Theme::tokens` overlay surface — the solid, near-black "menu tier" — with
+//!   a hairline border and a subtle hover veneer (no hard-coded styling).
 //!
 //! Callers (shell chrome / file-explorer) push `MenuItem::action(label, fn)`
 //! and optional `MenuItem::separator()` entries, then call `open_at` on
@@ -313,10 +314,12 @@ impl Widget for ContextMenu {
         if !self.open { return; }
 
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+        // The solid, near-black overlay tier — the "menu surface" — so the menu
+        // reads as an opaque raised sheet, never bleeding the content beneath.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.overlay,
             None,
             &shape,
         );
@@ -342,10 +345,13 @@ impl Widget for ContextMenu {
                             y + ROW_HEIGHT - 1.0,
                         );
                         let hl_shape = RoundedRect::from_rect(hl, theme.tokens.radii.sm as f64);
+                        // A subtle light veneer for the hovered row — visible on
+                        // the near-black menu surface (matching the dropdown /
+                        // autocomplete row hover).
                         scene.fill(
                             vello::peniko::Fill::NonZero,
                             transform,
-                            theme.tokens.colors.surfaces.overlay,
+                            theme.tokens.colors.surface_white_10,
                             None,
                             &hl_shape,
                         );
