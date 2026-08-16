@@ -96,8 +96,8 @@ refuse "target carries no dev-session build marker"
 echo "$marked" >"$conf"
 err=$scratch/accept.err
 out=$("$wrapper" 2>"$err"); rc=$?
-if (( rc == 0 )) && [[ $out == "started --backend drm" ]]; then
-    echo "ok: a marked, privately-owned build starts, with --backend drm"
+if (( rc == 0 )) && [[ $out == "started --firstboot --backend drm" ]]; then
+    echo "ok: a marked, privately-owned build starts, with --firstboot --backend drm"
     pass=$((pass + 1))
 else
     echo "FAIL: expected the marked build to start; rc=$rc out=<$out>"

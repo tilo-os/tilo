@@ -95,4 +95,7 @@ XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 
 echo "qos-session-dev: starting $TARGET_REAL" >&2
-exec "$TARGET_REAL" --backend drm "$@"
+# --firstboot for the same reason as the production wrapper: a host has no
+# unit that runs the one-time setup, and it is a no-op once the identity
+# record exists.
+exec "$TARGET_REAL" --firstboot --backend drm "$@"

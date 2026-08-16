@@ -125,6 +125,13 @@ done
 test -x %{buildroot}%{_libexecdir}/qos-unlock-helper
 # And the production session wrapper must not be redirectable.
 grep -q '^QOS_SHELL=/usr/bin/qos-shell$' %{buildroot}%{_libexecdir}/qos-session
+# A host has no unit that runs the one-time setup, so the wrappers have to.
+for wrapper in qos-session qos-session-dev; do
+    grep -q -- '--firstboot' "%{buildroot}%{_libexecdir}/$wrapper" || {
+        echo "$wrapper does not pass --firstboot; the identity would never be provisioned" >&2
+        exit 1
+    }
+done
 
 %files
 %{_bindir}/qos-shell
