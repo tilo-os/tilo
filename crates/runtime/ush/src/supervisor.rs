@@ -206,6 +206,10 @@ impl Session {
 
     fn run_once(&self) -> anyhow::Result<(i32, bool)> {
         let layer = self.layer();
+        // Before anything is written: a store on tmpfs mounts every bind and
+        // then dies at the overlay with nothing but `Invalid argument`, which
+        // is a long way from the store location that caused it.
+        crate::layer::upper_filesystem_supported(layer.path())?;
         layer.create(&self.opts.base)?;
         seed_guest_home(&self.store.guest_home())?;
 
@@ -461,15 +465,33 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
     };
     opts.command.clear();
 
-    let mut session = Session::new(store.clone(), opts);
+    let session = Session::new(store.clone(), opts);
     let id = session.session_id.clone();
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, profile.as_str(), "open-session", true),
     );
 
     // The guest gets the slave as its stdio; the app gets the master.
+    //
+    // A *child process*, not a thread. Attaching a pty means `dup2` onto file
+    // descriptors 0, 1 and 2 and `setsid` — both are process-wide, so doing it
+    // on a thread would take the supervisor's own stdio and controlling
+    // terminal with it. That is not a subtle failure: under a test harness it
+    // hijacks the harness.
+    let child = spawn_attached(&session, slave)?;
+    let audit = AuditLog::at(store.audit_dir());
+    let done_id = id.clone();
     std::thread::spawn(move || {
-        let _ = attach_and_run(&mut session, slave);
+        let mut child = child;
+        let status = child.wait();
+        audit.append(
+            &crate::audit::AuditRecord::new(&done_id, "ush", "close-session", true).because(
+                match status {
+                    Ok(s) => format!("exit {}", s.code().unwrap_or(-1)),
+                    Err(e) => format!("wait failed: {e}"),
+                },
+            ),
+        );
     });
 
     reply(
@@ -486,22 +508,43 @@ fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<
     Ok(())
 }
 
-fn attach_and_run(session: &mut Session, slave: std::fs::File) -> anyhow::Result<i32> {
-    use std::os::fd::IntoRawFd;
-    let fd = slave.into_raw_fd();
-    // SAFETY: `fd` is a live pty slave this thread owns; `dup2` onto the three
-    // stdio descriptors of the process is the standard way to attach one.
+/// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
+/// pty as its controlling terminal.
+fn spawn_attached(
+    session: &Session,
+    slave: std::fs::File,
+) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let exe = runtime_binary()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("run");
+    cmd.env(crate::store::STORE_ENV, session.store.root());
+    cmd.env("TERM", &session.opts.term);
+    cmd.env("QOS_USH_BASE", &session.opts.base);
+    cmd.stdin(Stdio::from(slave.try_clone()?));
+    cmd.stdout(Stdio::from(slave.try_clone()?));
+    cmd.stderr(Stdio::from(slave.try_clone()?));
+
+    let slave_fd = slave.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec in the child. Both calls
+    // are async-signal-safe and neither allocates. `setsid` is what makes the
+    // child a session leader so `TIOCSCTTY` can hand it the pty; without a
+    // controlling terminal the shell has no job control.
     unsafe {
-        libc::dup2(fd, 0);
-        libc::dup2(fd, 1);
-        libc::dup2(fd, 2);
-        if fd > 2 {
-            libc::close(fd);
-        }
-        libc::setsid();
-        libc::ioctl(0, libc::TIOCSCTTY, 0);
+        cmd.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
     }
-    session.run()
+    cmd.spawn()
 }
 
 /// Open a pty pair sized for the caller's grid.

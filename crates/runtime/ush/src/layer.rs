@@ -89,6 +89,63 @@ pub enum LayerError {
     },
     #[error("refusing to destroy {0}: it is not a layer (no .ush-layer marker)")]
     NotALayer(PathBuf),
+    #[error(
+        "{path} is on a filesystem that cannot hold a layer ({fs}). overlayfs \
+         refuses it as an upper directory, so the guest's root cannot be built \
+         there. Point {env} at a directory on ordinary disk."
+    )]
+    UnusableFilesystem {
+        path: PathBuf,
+        fs: &'static str,
+        env: &'static str,
+    },
+}
+
+/// `f_type` values for the filesystems overlayfs will not take as an upper.
+///
+/// `tmpfs` is the one that bites in practice: a store under `/tmp`, or a
+/// `tempfile::tempdir()` in a test, mounts and then fails at the overlay with
+/// nothing but `Invalid argument` to go on. Naming it costs one `statfs` and
+/// turns a dead end into a sentence.
+const UNUSABLE_FS: &[(i64, &str)] = &[
+    (0x0102_1994, "tmpfs"),
+    (0x8584_58f6, "ramfs"),
+    (0x6969, "nfs"),
+];
+
+/// Can a layer live here?
+///
+/// Checked before anything is written, so a store on the wrong filesystem fails
+/// with an explanation rather than after mirroring 22 000 directories.
+pub fn upper_filesystem_supported(path: &Path) -> Result<(), LayerError> {
+    // Walk up to the nearest existing ancestor: the layer itself may not exist
+    // yet, and `statfs` needs a path that does.
+    let mut probe = path;
+    while !probe.exists() {
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => return Ok(()),
+        }
+    }
+    let Ok(c_path) = std::ffi::CString::new(probe.as_os_str().as_encoded_bytes()) else {
+        return Ok(());
+    };
+    // SAFETY: `buf` is fully written by a successful `statfs`; `c_path` is a
+    // valid NUL-terminated path that outlives the call.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
+        // Unable to tell is not the same as unusable. Let the mount decide.
+        return Ok(());
+    }
+    let ty = buf.f_type as i64;
+    match UNUSABLE_FS.iter().find(|(magic, _)| *magic == ty) {
+        Some((_, fs)) => Err(LayerError::UnusableFilesystem {
+            path: path.to_path_buf(),
+            fs,
+            env: crate::store::STORE_ENV,
+        }),
+        None => Ok(()),
+    }
 }
 
 fn io(path: &Path, source: std::io::Error) -> LayerError {
@@ -143,6 +200,11 @@ impl Layer {
     /// a fixture in tests. Idempotent: an existing layer is left alone, so this
     /// is safe to call at the start of every session.
     pub fn create(&self, base: &Path) -> Result<(), LayerError> {
+        // Deliberately no filesystem check here. Creating a layer is an
+        // ordinary directory operation and is useful anywhere — `pkg diff` on a
+        // copied store, a test fixture. What constrains the filesystem is
+        // *mounting* it, so [`upper_filesystem_supported`] is called where the
+        // overlay is built.
         if self.exists() {
             return Ok(());
         }
@@ -485,6 +547,42 @@ mod tests {
             ChangeKind::Shadowed,
             "a path that exists in the base is shadowed, not added"
         );
+    }
+
+    /// The failure that cost the most to diagnose: a store on `/tmp` mounts
+    /// everything and then dies at the overlay with `Invalid argument`. Saying
+    /// which filesystem and which variable moves it costs one `statfs`.
+    #[test]
+    fn a_layer_on_tmpfs_is_refused_with_an_explanation() {
+        // `/dev/shm` is tmpfs on every Linux this runs on.
+        let shm = Path::new("/dev/shm");
+        if !shm.is_dir() {
+            eprintln!("no /dev/shm on this machine; tmpfs rejection not exercised");
+            return;
+        }
+        let layer = Layer::new(shm.join("ush-fs-probe"), LayerKind::Persistent);
+        match upper_filesystem_supported(layer.path()) {
+            Err(LayerError::UnusableFilesystem { fs, env, .. }) => {
+                assert_eq!(fs, "tmpfs");
+                assert_eq!(env, crate::store::STORE_ENV);
+            }
+            other => panic!("tmpfs must be refused as a layer location: {other:?}"),
+        }
+        assert!(
+            !layer.path().exists(),
+            "the check must run before anything is written"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_directory_is_accepted() {
+        let dir = tempfile::TempDir::with_prefix_in(
+            "ush-fs-",
+            dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")),
+        )
+        .expect("tempdir on disk");
+        upper_filesystem_supported(&dir.path().join("layers/persistent"))
+            .expect("an ordinary data directory must be usable");
     }
 
     #[test]
