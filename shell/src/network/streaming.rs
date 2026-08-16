@@ -376,6 +376,21 @@ mod tests {
     use crate::network::streaming::test_support::RecordingSink;
     use std::time::Duration;
 
+    /// Put `surface` on screen, focused, with nothing over it, so the
+    /// firewall's region / z-order / focus checks have something to
+    /// answer from. Without this a bare `State` has observed no screen at
+    /// all and — correctly — refuses every remote event.
+    fn stage_shared_surface(state: &mut crate::compositor::state::State, surface: SurfaceId) {
+        use crate::network::input_firewall::ShellView;
+        use vello::kurbo::Rect;
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![(surface, Rect::new(0.0, 0.0, 1920.0, 1080.0))],
+            Some(surface),
+            false,
+            false,
+        ));
+    }
+
     // The `StreamingThrottle` unit tests (30-fps cap, first-call-accepts,
     // rejects-back-to-back) moved with the type into the `qos_callstream`
     // crate's `throttle` module.
