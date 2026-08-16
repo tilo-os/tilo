@@ -850,6 +850,17 @@ impl VideoEditorApp {
     /// build carries no decoder; the decode build seeks + decodes the frame.
     #[cfg(feature = "decode")]
     fn pump_preview_decode(&mut self) {
+        // The bundled demo/shots project references placeholder sample-media,
+        // not real bytes, so decoding it would spin a real GStreamer pipeline
+        // for no usable frame and make a headless render depend on the gst
+        // runtime. Keep the demo preview on its deterministic representative
+        // composite. `decode` stays compiled in: the live app and the
+        // `--import` real-decode capture (which loads genuine files) still
+        // decode. This is the runtime half of "features compile the code in;
+        // the runtime mode decides live vs sample".
+        if self.seed_demo {
+            return;
+        }
         self.preview_decoder.update(&self.project, self.playhead);
     }
 
