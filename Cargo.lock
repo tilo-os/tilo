@@ -13180,6 +13180,7 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
+ "qos-bluez",
  "qos-callstream",
  "qos-desktop-entry",
  "qos-power-mgmt",
