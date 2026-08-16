@@ -969,10 +969,9 @@ impl MusicApp {
             &Rect::new(r.x1 - 1.0, r.y0, r.x1, r.y1),
         );
 
-        // Brand.
-        let bx = r.x0 + 24.0;
-        icon::draw(scene, t, Icon::Disc, Point::new(bx + 10.0, r.y0 + 34.0), 24.0, c.accent);
-        draw_text(tr, scene, t, "Music", bx + 30.0, r.y0 + 22.0, 20.0, c.text, TextWeight::Bold, None);
+        // No app-name wordmark or brand mark: the OS owns window chrome and
+        // shows "Music" in the titlebar. The sidebar keeps only its collapse
+        // affordance on this row and flows the nav up into the reclaimed space.
 
         // Docked-collapse affordance: a left-chevron button at the brand row's
         // right edge, shown only when the sidebar is docked + open (so there's
@@ -988,7 +987,7 @@ impl MusicApp {
             icon::draw(scene, t, Icon::ChevronLeft, cb.center(), 16.0, if hover { c.text } else { c.dim });
         }
 
-        let mut y = r.y0 + 70.0;
+        let mut y = r.y0 + 56.0;
         let nav = [
             (Icon::Home, "Home", View::Home),
             (Icon::Search, "Search", View::Search),
