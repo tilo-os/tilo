@@ -12,12 +12,18 @@ name = "disks"
 path = "src/main.rs"
 
 [features]
-default = []
+# The real udisks2 transport ships on by default: `live` links udisks2 over
+# D-Bus (zbus) for privileged mount / unmount / format, so a normally-built
+# `disks` performs real operations. The system-bus connection is opened only
+# when `DISKS_LIVE` is set at runtime (and only on an explicit device action) —
+# `--shots`, unit tests and any headless render seed the curated sample topology
+# and never set DISKS_LIVE, so the feature compiles the udisks2 path in while
+# the runtime env decides whether it touches the bus.
+default = ["live"]
 # `live` links udisks2 over D-Bus (zbus) for privileged mount / unmount /
-# format. OFF by default so the standard build, unit tests and `--shots`
-# never pull in zbus and never touch the system bus. The CLI fallback
-# (`udisksctl`, `mount`/`umount`/`mkfs.<fs>`) and the read benchmark compile
-# unconditionally but only run when `DISKS_LIVE` is set at runtime.
+# format. The CLI fallback (`udisksctl`, `mount`/`umount`/`mkfs.<fs>`) and the
+# read benchmark compile unconditionally; the zbus path runs only when
+# `DISKS_LIVE` is set at runtime.
 live = ["dep:zbus"]
 
 [dependencies]
