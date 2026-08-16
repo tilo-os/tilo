@@ -42,6 +42,24 @@ struct ToolbarLayout {
     toggle_sidebar: Rect,
 }
 
+/// The find bar's keyboard hint, dropped first when the bar gets narrow.
+const SEARCH_HINT: &str = "Enter ▸ next  ·  Esc ▸ close";
+
+/// Non-overlapping layout of the find bar. Computed once as pure geometry from
+/// the measured label widths, then shared by the draw pass and the layout test —
+/// so the field, counter, toggles and hint provably never collide and reflow
+/// gracefully as the window narrows (hint drops first, then the counter
+/// compacts to `n/m`, then drops).
+struct SearchBarLayout {
+    field: Rect,
+    /// The match-counter rect + its already-chosen (full or compact) text.
+    /// `None` when there is nothing to report or no room for it.
+    counter: Option<(Rect, String)>,
+    case: Rect,
+    whole_word: Rect,
+    hint: Option<Rect>,
+}
+
 fn vcenter(rect: Rect, size: f32) -> f64 {
     rect.y0 + (rect.height() - size as f64) / 2.0
 }
@@ -185,6 +203,96 @@ impl PdfApp {
             lay.toggle_sidebar,
         ));
         out
+    }
+
+    /// The match-counter text, full (`"3 of 12 matches"`) or compact
+    /// (`"3/12"`). Empty when there is no query. `"No matches"` / `"0"` when a
+    /// query finds nothing.
+    fn counter_text(&self, compact: bool) -> String {
+        let n = self.match_count();
+        if n == 0 {
+            return if self.query.is_empty() {
+                String::new()
+            } else if compact {
+                "0".to_string()
+            } else {
+                "No matches".to_string()
+            };
+        }
+        if compact {
+            format!("{}/{}", self.active_match + 1, n)
+        } else {
+            format!("{} of {} matches", self.active_match + 1, n)
+        }
+    }
+
+    /// Lay the find bar out so nothing overlaps at any width. The toggles pack
+    /// against the right edge; the hint sits just left of them (and is dropped
+    /// first as space runs out); the field is left-most and capped, and the
+    /// match counter sits just right of the field, compacting then dropping
+    /// before it would collide with the hint/toggles.
+    fn search_layout(&self, tr: &mut TextRenderer) -> SearchBarLayout {
+        let s = self.search_rect;
+        let pad = 16.0;
+        let gap = 8.0;
+        let cy = (s.y0 + s.y1) / 2.0;
+        let field_top = s.y0 + 8.0;
+        let field_bot = s.y1 - 8.0;
+        let field_left = s.x0 + pad;
+        const FIELD_MIN: f64 = 150.0;
+        const FIELD_MAX: f64 = 520.0;
+        let chip_h = 22.0;
+        let chip = |w: f64, x1: f64| Rect::new(x1 - w, cy - chip_h / 2.0, x1, cy + chip_h / 2.0);
+
+        // Right cluster: [Case] [Whole word], packed against the right edge.
+        let case_w = tr.measure("Case", 11.0, None).0 as f64 + 22.0;
+        let ww_w = tr.measure("Whole word", 11.0, None).0 as f64 + 22.0;
+        let whole_word = chip(ww_w, s.x1 - pad);
+        let case = chip(case_w, whole_word.x0 - gap);
+        let chips_left = case.x0;
+
+        // Counter (full/compact) + hint measurements.
+        let full = self.counter_text(false);
+        let short = self.counter_text(true);
+        let counter_full_w = if full.is_empty() { 0.0 } else { tr.measure(&full, 12.0, None).0 as f64 };
+        let counter_short_w = if short.is_empty() { 0.0 } else { tr.measure(&short, 12.0, None).0 as f64 };
+        let hint_w = tr.measure(SEARCH_HINT, 10.5, None).0 as f64;
+
+        // Show the hint only when the field + full counter still clear the
+        // toggles with room to spare.
+        let block_min = FIELD_MIN + if counter_full_w > 0.0 { gap + counter_full_w } else { 0.0 };
+        let avail_no_hint = (chips_left - 12.0) - field_left;
+        let show_hint = avail_no_hint - block_min >= hint_w + 26.0;
+        let (hint, right_cluster_left) = if show_hint {
+            let hx1 = chips_left - 14.0;
+            let hx0 = hx1 - hint_w;
+            (Some(Rect::new(hx0, s.y0, hx1, s.y1)), hx0 - 12.0)
+        } else {
+            (None, chips_left - 12.0)
+        };
+
+        // Field (left, capped) + counter (just right of it). Reflow the counter
+        // full → compact → dropped as the shared span shrinks.
+        let span_right = right_cluster_left;
+        let room = (span_right - field_left).max(0.0);
+        let (counter_w, counter_str) = if counter_full_w > 0.0 && room >= FIELD_MIN + gap + counter_full_w {
+            (counter_full_w, Some(full))
+        } else if counter_short_w > 0.0 && room >= FIELD_MIN + gap + counter_short_w {
+            (counter_short_w, Some(short))
+        } else {
+            (0.0, None)
+        };
+        let reserve = if counter_str.is_some() { counter_w + gap } else { 0.0 };
+        let field_right = (field_left + FIELD_MAX)
+            .min(span_right - reserve)
+            .max(field_left + FIELD_MIN.min(room));
+        let field = Rect::new(field_left, field_top, field_right, field_bot);
+        let counter = counter_str.map(|t| {
+            let cx0 = field.x1 + gap;
+            (Rect::new(cx0, s.y0, cx0 + counter_w, s.y1), t)
+        });
+
+        SearchBarLayout { field, counter, case, whole_word, hint }
     }
 
     /// Resolve the tooltip for the current pointer position and advance its
@@ -1067,9 +1175,11 @@ impl PdfApp {
         let hair = Rect::new(s.x0, s.y1 - 1.0, s.x1, s.y1);
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
-        let field = Rect::new(s.x0 + 16.0, s.y0 + 8.0, s.x0 + 460.0, s.y1 - 8.0);
-        scene.fill(Fill::NonZero, base, c.surfaces.base, None, &RoundedRect::from_rect(field, theme.tokens.radii.md as f64));
-        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(field, theme.tokens.radii.md as f64));
+        let lay = self.search_layout(tr);
+        let field = lay.field;
+        let field_shape = RoundedRect::from_rect(field, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, base, c.surfaces.base, None, &field_shape);
+        scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &field_shape);
         draw_search_glyph(scene, base, Rect::new(field.x0, field.y0, field.x0 + 30.0, field.y1), theme.text_dim);
 
         let shown = if self.query.is_empty() { "Search document…".to_string() } else { self.query.clone() };
@@ -1082,48 +1192,34 @@ impl PdfApp {
             base * Affine::translate((field.x0 + 32.0, vcenter(field, 13.0))),
             Some((field.width() - 40.0) as f32),
         );
-        // blinking-less caret indicator after text
+        // blinking-less caret indicator after the query text (clamped inside the
+        // field so a long query never paints the caret over the counter).
         if !self.query.is_empty() {
             let (qw, _) = tr.measure(&self.query, 13.0, None);
-            let cx = field.x0 + 32.0 + qw as f64 + 1.0;
+            let cx = (field.x0 + 32.0 + qw as f64 + 1.0).min(field.x1 - 4.0);
             let caret = Rect::new(cx, field.y0 + 6.0, cx + 1.5, field.y1 - 6.0);
             scene.fill(Fill::NonZero, base, theme.accent_primary, None, &caret);
         }
 
-        // Match counter (spans whichever backend's hits are live).
-        let counter = if self.match_count() == 0 {
-            if self.query.is_empty() { String::new() } else { "No matches".to_string() }
-        } else {
-            format!("{} of {} matches", self.active_match + 1, self.match_count())
-        };
-        tr.draw_text(
-            scene,
-            &counter,
-            12.0,
-            theme.text_dim,
-            base * Affine::translate((field.x1 + 18.0, vcenter(s, 12.0))),
-            None,
-        );
+        // Match counter, left-aligned just right of the field (already chosen
+        // full/compact and sized to fit by the layout).
+        if let Some((rect, text)) = &lay.counter {
+            tr.draw_text(
+                scene,
+                text,
+                12.0,
+                theme.text_dim,
+                base * Affine::translate((rect.x0, vcenter(s, 12.0))),
+                None,
+            );
+        }
 
-        // Find-bar option toggles: Whole word + Case sensitive. Each is a
-        // pill the user clicks to flip; the matcher honours both live.
-        let chip_h = 22.0;
-        let chip_y = (s.y0 + s.y1) / 2.0 - chip_h / 2.0;
-        let mk_chip = |label: &str, right: f64, tr: &mut TextRenderer| -> (Rect, f64) {
-            let (tw, _) = tr.measure(label, 11.0, None);
-            let w = tw as f64 + 22.0;
-            let r = Rect::new(right - w, chip_y, right, chip_y + chip_h);
-            (r, w)
-        };
-        let hint = "Enter ▸ next  ·  Esc ▸ close";
-        let (hw, _) = tr.measure(hint, 10.5, None);
-        let mut right = s.x1 - 16.0 - hw as f64 - 14.0;
-
-        for (label, active, hit) in [
-            ("Case", self.search_case_sensitive, SearchHit::ToggleCaseSensitive),
-            ("Whole word", self.search_whole_word, SearchHit::ToggleWholeWord),
+        // Find-bar option toggles: Case + Whole word. Each is a pill the user
+        // clicks to flip; the matcher honours both live.
+        for (label, active, hit, r) in [
+            ("Case", self.search_case_sensitive, SearchHit::ToggleCaseSensitive, lay.case),
+            ("Whole word", self.search_whole_word, SearchHit::ToggleWholeWord, lay.whole_word),
         ] {
-            let (r, w) = mk_chip(label, right, tr);
             let fill = if active { theme.accent_primary } else { c.surface_white_10 };
             let txt = if active { Color::WHITE } else { theme.text_dim };
             scene.fill(Fill::NonZero, base, fill, None, &RoundedRect::from_rect(r, theme.tokens.radii.full as f64));
@@ -1137,17 +1233,18 @@ impl PdfApp {
                 None,
             );
             hits.push((hit, r));
-            right -= w + 8.0;
         }
 
-        tr.draw_text(
-            scene,
-            hint,
-            10.5,
-            theme.text_dim,
-            base * Affine::translate((s.x1 - 16.0 - hw as f64, vcenter(s, 10.5))),
-            None,
-        );
+        if let Some(hint) = lay.hint {
+            tr.draw_text(
+                scene,
+                SEARCH_HINT,
+                10.5,
+                theme.text_dim,
+                base * Affine::translate((hint.x0, vcenter(s, 10.5))),
+                None,
+            );
+        }
         hits
     }
 
