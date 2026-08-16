@@ -18,20 +18,14 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
-    Column, Container, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput,
-    Widget,
+    Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 
-/// CRDT map key holding the toolbar search field's `Text` object. The
-/// widget seeds this object in `sync` (the toolkit's `TextInput` only writes
-/// into an existing `Text`, never lazily creates one), so keystrokes in the
-/// search box splice here and `sync` reads the query back out to filter.
-const SEARCH_QUERY_PATH: &str = "files.search_query";
 /// CRDT map key holding the inline-rename field's `Text` object. Seeded with
-/// the current name when a rename begins; the rename bar's `TextInput` edits
-/// it and `commit_rename` reads the chosen name back out.
+/// the current name when a rename begins; the in-place editor's `TextInput`
+/// edits it and `commit_rename` reads the chosen name back out.
 const RENAME_QUERY_PATH: &str = "files.rename_query";
 
 /// Width (logical px) at/above which the places list docks beside the file
@@ -64,9 +58,8 @@ pub struct FileExplorerWidget {
     current_path: PathBuf,
     home_path: Option<PathBuf>,
     entries: Vec<Entry>,
-    /// Multi-selection over the *displayed* (filtered) entry list.
+    /// Multi-selection over the displayed entry list.
     selection: SelectionModel,
-    search_query: String,
     error: Option<String>,
     is_loading: bool,
     last_click: Option<(usize, Instant)>,
@@ -82,8 +75,8 @@ pub struct FileExplorerWidget {
     /// Transient status line (operation results), shown in the footer.
     status: Option<String>,
     /// When `Some(i)`, an inline rename of displayed entry `i` is in
-    /// progress: the rename bar is shown and its `TextInput` edits
-    /// [`RENAME_QUERY_PATH`]. `None` = not renaming.
+    /// progress: the in-place editor is drawn over row/cell `i` and its
+    /// `TextInput` edits [`RENAME_QUERY_PATH`]. `None` = not renaming.
     renaming: Option<usize>,
     /// Editable name mirrored from the rename field's `Text` object each
     /// `sync` while renaming; `commit_rename` renames the file to this.
@@ -92,6 +85,19 @@ pub struct FileExplorerWidget {
     /// `Text` object with `rename_buffer` (the current name) before the
     /// input reads it back.
     rename_seed_pending: bool,
+    /// The in-place rename editor: a persistent, CRDT-bound `TextInput` the
+    /// app owns (so its caret/focus survive the per-frame rebuild) and draws
+    /// **over the selected row/cell** — not in a bottom bar. It binds to
+    /// [`RENAME_QUERY_PATH`], so keystrokes splice into the same `Text` object
+    /// `rename_buffer` mirrors.
+    rename_input: TextInput,
+    /// Where the file view wants the rename editor drawn: the on-screen rect of
+    /// the renaming row's name (list) or label (grid), published by `FileView`
+    /// each paint. `None` when not renaming or the row is scrolled off-screen.
+    rename_rect: Rc<Cell<Option<vello::kurbo::Rect>>>,
+    /// Set on `begin_rename` so the first `sync` after the seed selects the
+    /// whole name (typing then replaces it, Finder-style).
+    rename_select_pending: bool,
     rect: vello::kurbo::Rect,
     /// The responsive body: `[ places | file view ]`. Held persistently (NOT
     /// rebuilt inside `build_layout`) so its docked/push state and eased
@@ -101,9 +107,11 @@ pub struct FileExplorerWidget {
     /// one at a time (places → tap a place → the file view pushes in with a
     /// Back arrow). See the module note on live child swap in `ui::NavShell`.
     nav: NavShell,
-    /// Chrome above the body (toolbar + breadcrumb), rebuilt each structure
-    /// change; spans the full width in every layout.
-    chrome_above: Option<Box<dyn Widget>>,
+    /// The single top bar: nav cluster + the editable path bar + view/sort/menu
+    /// controls. Held **persistently** (not rebuilt each frame) because the path
+    /// bar carries live edit state — the in-progress typed path and its
+    /// completion popover — that must survive the per-structure-change rebuild.
+    toolbar: crate::toolbar::FileToolbar,
     /// Chrome below the body (rename bar + footer), rebuilt each structure
     /// change; spans the full width.
     chrome_below: Option<Box<dyn Widget>>,
@@ -121,6 +129,10 @@ pub struct FileExplorerWidget {
     /// the main menu opens; empty (and closed) when there are no templates.
     submenu: ContextMenu,
     submenu_commands: Vec<Option<FileCommand>>,
+    /// Set while draining commands from a right-press when the press landed on
+    /// a sidebar favourite, so the right-press handler opens the favourite menu
+    /// (not the file context menu) at the cursor. Consumed each right-press.
+    pending_fav_menu: Option<PathBuf>,
     /// Last cursor position in logical coords (for menu placement + the
     /// context-menu hit-test).
     last_cursor: Point,
@@ -141,6 +153,10 @@ pub struct FileExplorerWidget {
     /// The qOS collaborative-workspace roots the FUSE driver mounts, surfaced as
     /// first-class System locations in the sidebar. Resolved once at startup.
     workspace_roots: Vec<PathBuf>,
+    /// A folder being dragged out of the file list toward the sidebar to pin it
+    /// to Favourites. `Some(path)` while the drag is live; a floating ghost
+    /// tracks the cursor and a drop over the sidebar pins it. `None` otherwise.
+    pin_drag: Option<PathBuf>,
     /// The content pane's live scroll position, owned here so it survives the
     /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
     /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
@@ -196,12 +212,12 @@ impl FileExplorerWidget {
             entries.retain(|e| !e.name.starts_with('.'));
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
+        let cmds = new_sink();
         Self {
             current_path: cwd,
             home_path: home,
             entries,
             selection: SelectionModel::new(),
-            search_query: String::new(),
             error: None,
             is_loading: false,
             last_click: None,
@@ -216,6 +232,12 @@ impl FileExplorerWidget {
             renaming: None,
             rename_buffer: String::new(),
             rename_seed_pending: false,
+            rename_input: TextInput::new(vec![])
+                .with_id("files.rename_input")
+                .with_on_change_path(RENAME_QUERY_PATH)
+                .with_placeholder("New name"),
+            rename_rect: Rc::new(Cell::new(None)),
+            rename_select_pending: false,
             rect: vello::kurbo::Rect::ZERO,
             // Placeholder panes; the real places list + file view are swapped
             // in on the first `build_layout`. The places list is the shell's
@@ -228,15 +250,19 @@ impl FileExplorerWidget {
                 Box::new(Text::new("")),
             )
             .with_sidebar_width(places_sidebar::SIDEBAR_WIDTH)
-            .with_breakpoint(BODY_BREAKPOINT_PX),
-            chrome_above: None,
+            .with_breakpoint(BODY_BREAKPOINT_PX)
+            // The docked places list is permanent — no in-sidebar collapse chip;
+            // the hamburger still summons the drawer when narrow.
+            .hide_toggle_when_docked(),
+            toolbar: crate::toolbar::FileToolbar::new(cmds.clone()),
             chrome_below: None,
-            cmds: new_sink(),
+            cmds,
             structure_dirty: false,
             context_menu: ContextMenu::new(),
             menu_commands: Vec::new(),
             submenu: ContextMenu::new(),
             submenu_commands: Vec::new(),
+            pending_fav_menu: None,
             last_cursor: Point::ZERO,
             favs: places_sidebar::new_store(favorites),
             config_dir,
@@ -244,6 +270,7 @@ impl FileExplorerWidget {
             show_hidden,
             user_dirs,
             workspace_roots: crate::model::workspace_roots(),
+            pin_drag: None,
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -260,18 +287,11 @@ impl FileExplorerWidget {
         }
     }
 
-    /// The entries actually shown — `entries` filtered by the search query.
+    /// The entries currently shown. (There is no in-app search field — search
+    /// is OS-owned per `ui/HIG.md` §5 — so this is the sorted directory
+    /// listing as-is.)
     pub fn displayed_entries(&self) -> Vec<Entry> {
-        if self.search_query.trim().is_empty() {
-            self.entries.clone()
-        } else {
-            let q = self.search_query.to_lowercase();
-            self.entries
-                .iter()
-                .filter(|e| e.name.to_lowercase().contains(&q))
-                .cloned()
-                .collect()
-        }
+        self.entries.clone()
     }
 
     /// Wrap `child` in a full-width chrome band with a consistent horizontal
@@ -289,36 +309,20 @@ impl FileExplorerWidget {
         )
     }
 
-    /// The chrome above the responsive body: the toolbar (nav + view + sort +
-    /// search + terminal) and the clickable breadcrumb trail. Spans the full
-    /// width in every layout, so the file-browsing controls stay put whether
-    /// the body is showing the places list or the file view.
-    fn build_chrome_above(&self, theme: &ui::Theme) -> Box<dyn Widget> {
-        let sp = &theme.tokens.spacing;
-        let toolbar = crate::toolbar::build_toolbar(
-            crate::toolbar::ToolbarSnapshot {
-                search_query: &self.search_query,
-                view_mode: self.view_mode,
-                sort_order: self.sort_order,
-                can_back: !self.history.is_empty(),
-                can_forward: !self.forward.is_empty(),
-                can_up: self.current_path.parent().is_some(),
-            },
-            &self.cmds,
+    /// Refresh the persistent top bar with the current navigation context
+    /// (path, history availability, view mode) before it is laid out.
+    fn update_toolbar(&mut self) {
+        let can_back = !self.history.is_empty();
+        let can_forward = !self.forward.is_empty();
+        let can_up = self.current_path.parent().is_some();
+        self.toolbar.set_context(
+            self.current_path.clone(),
+            self.home_path.clone(),
+            can_back,
+            can_forward,
+            can_up,
+            self.view_mode,
         );
-        let crumbs = crate::breadcrumbs::breadcrumb_components(
-            &self.current_path,
-            self.home_path.as_deref(),
-        );
-        let breadcrumb = crate::breadcrumb_bar::BreadcrumbBar::new(crumbs, self.cmds.clone());
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_gap(sp.s0)
-                .push(Self::band(theme, toolbar, sp.s2))
-                .push(Self::band(theme, Box::new(breadcrumb), sp.s0)),
-        )
     }
 
     /// The **places** pane (the responsive body's master / overview): the
@@ -345,10 +349,17 @@ impl FileExplorerWidget {
                 scale,
                 self.sort_by,
                 self.sort_order,
+                self.renaming,
+                self.rename_rect.clone(),
             ),
-            ViewMode::Grid => {
-                crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds, scale)
-            }
+            ViewMode::Grid => crate::views::grid_view::build_grid(
+                &displayed,
+                &self.selection,
+                &self.cmds,
+                scale,
+                self.renaming,
+                self.rename_rect.clone(),
+            ),
         };
         let sp = &theme.tokens.spacing;
         // In the narrow layout the shell paints the hamburger chip over the
@@ -398,53 +409,30 @@ impl FileExplorerWidget {
     /// a rename is active) and the footer. Spans the full width.
     fn build_chrome_below(&self, theme: &ui::Theme) -> Box<dyn Widget> {
         let sp = &theme.tokens.spacing;
-        // Footer: status (if any) else item count + path summary (dimmed).
-        let (count, path_str) = self.footer_text();
+        // Footer: an operation status, else the item count. The current path is
+        // shown ONCE — in the path bar at the top — so it is deliberately not
+        // repeated here. The right side summarises the selection when there is
+        // one (a live-state readout, not a path).
+        let count = self.entries.len();
         let left = self
             .status
             .clone()
-            .unwrap_or_else(|| format!("{count} items"));
+            .unwrap_or_else(|| format!("{count} {}", if count == 1 { "item" } else { "items" }));
+        let sel = self.selection.selected().len();
+        let right = if sel > 0 { format!("{sel} selected") } else { String::new() };
         let footer = Row::new()
             .push(Box::new(Text::new(&left).with_size(12.0).with_color(theme.tokens.colors.text_dim)))
             .push(Box::new(Spacer::new()))
-            .push(Box::new(Text::new(&path_str).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
+            .push(Box::new(Text::new(&right).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
 
-        let mut col = Column::new().with_intrinsic_height().with_no_padding().with_gap(sp.s0);
-        if self.renaming.is_some() {
-            col = col.push(Self::band(theme, self.build_rename_bar(), sp.s1));
-        }
-        col = col.push(Self::band(theme, Box::new(footer), sp.s2));
+        // The rename editor is drawn in place over the row (see `draw`), not in a
+        // bottom bar — so the footer is the only chrome below the body.
+        let col = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_gap(sp.s0)
+            .push(Self::band(theme, Box::new(footer), sp.s2));
         Box::new(col)
-    }
-
-    /// The inline-rename editor row: a label, a CRDT-bound name field, and
-    /// confirm/cancel buttons. Shown only while [`renaming`](Self::renaming)
-    /// is set. Enter/Escape (handled in `handle_event`) mirror the buttons.
-    fn build_rename_bar(&self) -> Box<dyn Widget> {
-        let commit = self.cmds.clone();
-        let cancel = self.cmds.clone();
-        let input = TextInput::new(vec![])
-            .with_id("files.rename_input")
-            .with_on_change_path(RENAME_QUERY_PATH)
-            .with_placeholder("New name");
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .push(Box::new(Text::new("Rename:")))
-                .push(Box::new(
-                    Container::new()
-                        .with_width(260.0)
-                        .with_child(Box::new(input)),
-                ))
-                .push(Box::new(
-                    ui::widget::Button::new("files.rename_confirm", "Rename", None)
-                        .on_click(move || crate::command::push(&commit, FileCommand::RenameCommit)),
-                ))
-                .push(Box::new(
-                    ui::widget::Button::new("files.rename_cancel", "Cancel", None)
-                        .on_click(move || crate::command::push(&cancel, FileCommand::RenameCancel)),
-                )),
-        )
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -462,9 +450,6 @@ impl FileExplorerWidget {
     /// All currently-selected displayed-entry indices.
     pub fn selected_indices(&self) -> Vec<usize> {
         self.selection.selected()
-    }
-    pub fn search_query(&self) -> &str {
-        &self.search_query
     }
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
@@ -579,9 +564,6 @@ impl FileExplorerWidget {
         None
     }
 
-    pub fn set_search_query(&mut self, q: String) {
-        self.search_query = q;
-    }
     pub fn set_sort_by(&mut self, s: SortBy) {
         self.sort_by = s;
         sort_entries(self.sort_by, self.sort_order, &mut self.entries);
@@ -785,6 +767,12 @@ impl FileExplorerWidget {
                 }
                 true
             }
+            FileCommand::BeginDrag(path) => {
+                // Start carrying the folder toward the sidebar; the ghost + the
+                // drop are owned by `handle_event`.
+                self.pin_drag = Some(path);
+                true
+            }
             FileCommand::AddFavorite(path) => {
                 let added = {
                     let home = self.home_path.clone().unwrap_or_else(|| PathBuf::from("/"));
@@ -828,6 +816,37 @@ impl FileExplorerWidget {
                 self.show_hidden = !self.show_hidden;
                 self.refresh();
                 true
+            }
+            FileCommand::OpenPath(p) => {
+                // A typed/accepted path from the editable path bar: open a file,
+                // navigate into a directory (or a not-yet-existing path, so the
+                // error affordance surfaces rather than silently doing nothing).
+                if p.is_file() {
+                    self.open_path(p);
+                } else {
+                    self.navigate(p);
+                }
+                true
+            }
+            FileCommand::OpenViewMenu => {
+                self.open_view_menu();
+                true
+            }
+            FileCommand::OpenSortMenu => {
+                self.open_sort_menu();
+                true
+            }
+            FileCommand::SetSortOrder(order) => {
+                if self.sort_order != order {
+                    self.toggle_sort_order();
+                }
+                true
+            }
+            FileCommand::OpenFavoriteMenu(path) => {
+                // Remember the target; the right-press handler opens the menu at
+                // the cursor once this event's commands are drained.
+                self.pending_fav_menu = Some(path);
+                false
             }
         }
     }
@@ -906,6 +925,27 @@ impl FileExplorerWidget {
     #[doc(hidden)]
     pub fn debug_content_rect(&self) -> vello::kurbo::Rect {
         self.nav.overview_rect()
+    }
+
+    /// The docked sidebar's resolved rect — the drag-to-pin drop target.
+    #[doc(hidden)]
+    pub fn debug_sidebar_rect(&self) -> vello::kurbo::Rect {
+        self.nav.sidebar_rect()
+    }
+
+    /// Whether a drag-to-pin is currently in flight (a folder is being carried
+    /// toward the sidebar).
+    #[doc(hidden)]
+    pub fn debug_pin_dragging(&self) -> bool {
+        self.pin_drag.is_some()
+    }
+
+    /// Start a drag-to-pin ghost carrying `path`, with the cursor at `at` — for
+    /// a mid-drag screenshot.
+    #[doc(hidden)]
+    pub fn debug_begin_pin_drag(&mut self, path: PathBuf, at: Point) {
+        self.pin_drag = Some(path);
+        self.last_cursor = at;
     }
 
     /// The responsive body's current mode (docked-wide vs push-narrow) — for
@@ -1043,8 +1083,9 @@ impl FileExplorerWidget {
         self.rename_seed_pending = true;
     }
 
-    /// Begin an inline rename of the primary selection: open the rename bar
-    /// seeded with the entry's current name. No-op without a selection.
+    /// Begin an inline rename of the primary selection: open the in-place editor
+    /// over the row, seeded with the entry's current name. No-op without a
+    /// selection.
     pub fn begin_rename(&mut self) {
         let disp = self.displayed_entries();
         if let Some(i) = self.selection.primary() {
@@ -1052,15 +1093,26 @@ impl FileExplorerWidget {
                 self.renaming = Some(i);
                 self.rename_buffer = e.name.clone();
                 self.rename_seed_pending = true;
+                self.rename_select_pending = true;
+                self.rename_input.set_focus(true);
                 self.status = None;
             }
         }
     }
 
-    /// Abandon the in-progress rename, leaving the file untouched.
-    pub fn cancel_rename(&mut self) {
+    /// Tear down the in-place editor: drop focus and clear its published rect so
+    /// no stale field is drawn after a rename ends.
+    fn end_rename_editor(&mut self) {
         self.renaming = None;
         self.rename_seed_pending = false;
+        self.rename_select_pending = false;
+        self.rename_input.set_focus(false);
+        self.rename_rect.set(None);
+    }
+
+    /// Abandon the in-progress rename, leaving the file untouched.
+    pub fn cancel_rename(&mut self) {
+        self.end_rename_editor();
     }
 
     /// Paint the app background and lazily build the composition if it is
@@ -1090,9 +1142,80 @@ impl FileExplorerWidget {
         // full rebuild (which populates the chrome + swaps the real panes into
         // the persistent `nav`) on the next frame.
         let _ = theme;
-        if self.chrome_above.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+        if self.chrome_below.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             self.structure_dirty = true;
         }
+    }
+
+    /// Draw the in-place rename editor over the row/cell being renamed. The
+    /// file view publishes the target rect (in on-screen coords) during its own
+    /// paint and omits that row's label, so the field slots exactly where the
+    /// name was. Nothing is drawn when not renaming or when the row is scrolled
+    /// out of view (the published rect is then `None`).
+    fn draw_rename_editor(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if self.renaming.is_none() {
+            return;
+        }
+        if let Some(rect) = self.rename_rect.get() {
+            self.rename_input.apply_layout_external(rect);
+            self.rename_input.draw(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    /// Draw the floating folder ghost that tracks the cursor during a
+    /// drag-to-pin, so the drag reads as carrying the folder toward the sidebar.
+    fn draw_pin_ghost(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+    ) {
+        use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
+        use vello::peniko::Fill;
+        let Some(path) = &self.pin_drag else { return };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let tokens = &theme.tokens;
+        let size = tokens.typography.scale.base;
+        let (tw, _) = text_renderer.measure(&name, size, None);
+        let (pad, icon, gap, h) = (10.0_f64, 16.0_f64, 8.0_f64, 30.0_f64);
+        let w = pad + icon + gap + tw as f64 + pad;
+        // Offset from the cursor so the ghost sits beside, not under, the pointer.
+        let x0 = self.last_cursor.x + 14.0;
+        let y0 = self.last_cursor.y + 6.0;
+        let rect = Rect::new(x0, y0, x0 + w, y0 + h);
+        let shape = RoundedRect::from_rect(rect, tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &shape);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &shape);
+        let accent = tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+        let iy = y0 + (h - icon) / 2.0;
+        ui::icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(x0 + pad, iy, x0 + pad + icon, iy + icon),
+            ui::icons::Icon::Folder,
+            accent,
+            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        let ty = y0 + (h - size as f64) / 2.0;
+        text_renderer.draw_text(
+            scene,
+            &name,
+            size,
+            tokens.colors.text_primary,
+            transform * Affine::translate((x0 + pad + icon + gap, ty)),
+            None,
+        );
     }
 
     /// Commit the in-progress rename: rename the target file to
@@ -1103,7 +1226,7 @@ impl FileExplorerWidget {
         let Some(idx) = self.renaming else { return false };
         let disp = self.displayed_entries();
         let Some(entry) = disp.get(idx) else {
-            self.renaming = None;
+            self.end_rename_editor();
             return false;
         };
         let path = entry.path.clone();
@@ -1113,14 +1236,12 @@ impl FileExplorerWidget {
             .and_then(|n| n.to_str())
             .is_some_and(|cur| cur == new_name);
         if new_name.is_empty() || unchanged {
-            self.renaming = None;
-            self.rename_seed_pending = false;
+            self.end_rename_editor();
             return false;
         }
         match fileops::rename(&path, &new_name) {
             Ok(_) => {
-                self.renaming = None;
-                self.rename_seed_pending = false;
+                self.end_rename_editor();
                 self.refresh();
                 self.status = Some("Renamed".to_string());
                 true
@@ -1132,13 +1253,6 @@ impl FileExplorerWidget {
             }
         }
     }
-}
-
-/// Lowercase-contains filter used by the toolbar search. Returns entries in
-/// their current order.
-pub fn filter_entries<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
-    let q = query.to_lowercase();
-    entries.iter().filter(|e| e.name.to_lowercase().contains(&q)).collect()
 }
 
 /// Resolve a standalone [`ContextMenu`]'s rect from its anchor (it isn't part
@@ -1397,6 +1511,134 @@ impl FileExplorerWidget {
         layout_menu_widget(&mut self.submenu);
     }
 
+    /// Open `self.context_menu` from a `(label, command)` spec, right-aligned so
+    /// its right edge sits at `anchor` (a toolbar control's bottom-right). Used
+    /// by the labelled View / Sort menus, whose triggers hug the window's right
+    /// edge where a left-anchored menu would spill off-screen. A `None` command
+    /// with an empty label is a separator.
+    fn open_menu_right_aligned(
+        &mut self,
+        spec: Vec<(String, Option<FileCommand>)>,
+        anchor: Point,
+    ) {
+        self.submenu.close();
+        let mut menu = ContextMenu::new();
+        let mut cmds = Vec::with_capacity(spec.len());
+        for (label, cmd) in spec {
+            if cmd.is_none() && label.is_empty() {
+                menu.push(MenuItem::separator());
+                cmds.push(None);
+            } else {
+                menu.push(MenuItem::action(label, || {}));
+                cmds.push(cmd);
+            }
+        }
+        // Right-align: lay out once to learn the menu width, then re-anchor so
+        // the right edge lands on `anchor.x`, clamped to the window's left edge.
+        menu.open_at([anchor.x as f32, anchor.y as f32]);
+        layout_menu_widget(&mut menu);
+        let w = menu.get_rect().width();
+        let x = (anchor.x - w).max(0.0);
+        menu.open_at([x as f32, anchor.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = cmds;
+        layout_menu_widget(&mut self.context_menu);
+    }
+
+    /// The labelled "View options" overflow menu (the ⋯ button): new folder /
+    /// file, a clearly-labelled show-hidden toggle with a check, and a terminal.
+    /// Everything here is spelled out in words — no mystery symbolic controls.
+    fn open_view_menu(&mut self) {
+        let anchor = self.toolbar.view_menu_anchor();
+        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+        spec.push(("New Folder".into(), Some(FileCommand::NewFolder)));
+        if !self.available_templates().is_empty() {
+            spec.push(("New File  \u{203A}".into(), Some(FileCommand::OpenTemplatesMenu)));
+        }
+        spec.push((String::new(), None));
+        spec.push((
+            if self.show_hidden {
+                "\u{2713} Show Hidden Files".into()
+            } else {
+                "Show Hidden Files".into()
+            },
+            Some(FileCommand::ToggleHidden),
+        ));
+        spec.push((String::new(), None));
+        spec.push(("Open Terminal Here".into(), Some(FileCommand::OpenTerminal)));
+        self.open_menu_right_aligned(spec, anchor);
+    }
+
+    /// The labelled "Sort by" menu (the grid-mode Sort button): the sort key,
+    /// then the direction, each with a check on the active choice. This is the
+    /// grid's equivalent of clicking a list column header.
+    fn open_sort_menu(&mut self) {
+        let anchor = self.toolbar.sort_menu_anchor();
+        let check = |on: bool| if on { "\u{2713} " } else { "     " };
+        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+        for (label, by) in [
+            ("Name", SortBy::Name),
+            ("Size", SortBy::Size),
+            ("Type", SortBy::Type),
+            ("Date", SortBy::Modified),
+        ] {
+            spec.push((
+                format!("{}{label}", check(self.sort_by == by)),
+                Some(FileCommand::SetSort(by)),
+            ));
+        }
+        spec.push((String::new(), None));
+        let asc = self.sort_order == SortOrder::Ascending;
+        spec.push((
+            format!("{}Ascending", check(asc)),
+            Some(FileCommand::SetSortOrder(SortOrder::Ascending)),
+        ));
+        spec.push((
+            format!("{}Descending", check(!asc)),
+            Some(FileCommand::SetSortOrder(SortOrder::Descending)),
+        ));
+        self.open_menu_right_aligned(spec, anchor);
+    }
+
+    /// The right-click menu for a sidebar favourite `path`: open it, plus the
+    /// standard "Remove from Favourites" (suppressed for the pinned Home entry,
+    /// which cannot be removed). Anchored at the cursor like any context menu.
+    fn open_favorite_menu(&mut self, path: PathBuf, at: Point) {
+        let is_home = self
+            .favs
+            .borrow()
+            .favorites
+            .iter()
+            .any(|f| f.is_home && f.path == path);
+        let mut spec: Vec<(String, Option<FileCommand>)> = Vec::new();
+        spec.push(("Open".into(), Some(FileCommand::Navigate(path.clone()))));
+        if !is_home {
+            spec.push((String::new(), None));
+            spec.push((
+                "Remove from Favourites".into(),
+                Some(FileCommand::RemoveFavorite(path)),
+            ));
+        }
+        // A favourite menu opens at the cursor (left-anchored is fine — the
+        // sidebar sits at the window's left edge).
+        self.submenu.close();
+        let mut menu = ContextMenu::new();
+        let mut cmds = Vec::with_capacity(spec.len());
+        for (label, cmd) in spec {
+            if cmd.is_none() && label.is_empty() {
+                menu.push(MenuItem::separator());
+                cmds.push(None);
+            } else {
+                menu.push(MenuItem::action(label, || {}));
+                cmds.push(cmd);
+            }
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.context_menu = menu;
+        self.menu_commands = cmds;
+        layout_menu_widget(&mut self.context_menu);
+    }
+
     /// If either menu is open, route a left-press to it. Returns true when the
     /// press was consumed (item fired, submenu opened, or a menu dismissed).
     fn route_menu_click(&mut self, p: Point) -> bool {
@@ -1474,12 +1716,9 @@ impl FileExplorerWidget {
             return;
         };
         if !*handled {
-            if let Some(c) = &mut self.chrome_above {
-                c.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, above_n,
-                    taffy,
-                );
-            }
+            self.toolbar.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, above_n, taffy,
+            );
         }
         if !*handled {
             self.nav.handle_event(
@@ -1513,6 +1752,11 @@ impl FileExplorerWidget {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
         let len = self.displayed_entries().len();
         match &ke.logical_key {
+            // F2 renames the current selection in place.
+            Key::Named(NamedKey::F2) => {
+                self.begin_rename();
+                true
+            }
             Key::Named(NamedKey::ArrowDown) if len > 0 => {
                 let next = self.selection.primary().map(|i| (i + 1).min(len - 1)).unwrap_or(0);
                 self.selection.move_to(next, shift);
@@ -1570,13 +1814,11 @@ impl FileExplorerWidget {
 
 impl Widget for FileExplorerWidget {
     fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        use automerge::{transaction::Transactable, ReadDoc};
-        // Seed the backing Text objects *before* the children sync so the
-        // search + rename inputs resolve a real object to write into. The
-        // toolkit's TextInput binds to an existing Text but never lazily
-        // creates one — the missing seed is exactly why the search box was
-        // previously dead (keystrokes mutated only the input's local string).
-        let search_obj = ensure_text_obj(state, path, SEARCH_QUERY_PATH);
+        use automerge::ReadDoc;
+        // Seed the inline-rename field's backing Text object *before* the
+        // children sync so the rename input resolves a real object to write
+        // into (the toolkit's TextInput binds to an existing Text but never
+        // lazily creates one).
         let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
 
         // A just-started rename seeds the field with the entry's current name.
@@ -1585,23 +1827,21 @@ impl Widget for FileExplorerWidget {
             self.rename_seed_pending = false;
         }
 
-        if let Some(c) = &mut self.chrome_above {
-            c.sync(state, path);
+        // Keep the persistent in-place rename editor reading from the seeded
+        // object; select the whole name on the first sync after a rename begins
+        // so the first keystroke replaces it (Finder-style).
+        self.rename_input.sync(state, path);
+        if self.rename_select_pending {
+            self.rename_input.select_all();
+            self.rename_select_pending = false;
         }
+
+        self.toolbar.sync(state, path);
         self.nav.sync(state, path);
         if let Some(c) = &mut self.chrome_below {
             c.sync(state, path);
         }
 
-        // Pull the search query out of its Text object; a change re-filters
-        // the displayed list, which is a structural change (rebuild).
-        if let Ok(text) = state.text(&search_obj) {
-            if text != self.search_query {
-                self.search_query = text;
-                self.selection.clear();
-                self.structure_dirty = true;
-            }
-        }
         // While renaming, mirror the field's live text into our buffer so a
         // commit renames to what the user actually typed.
         if self.renaming.is_some() {
@@ -1617,20 +1857,19 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        // Rebuild the spanning chrome + swap the freshly-built body panes into
-        // the persistent `nav`. `nav` keeps its docked/push state across the
-        // swap (see `NavShell::set_sidebar`/`set_content`), so a rebuild
-        // triggered by navigation/sort/search doesn't snap the body back to the
-        // places list mid-interaction.
-        let mut above = self.build_chrome_above(theme);
+        // Refresh the persistent top bar, then rebuild the footer + swap the
+        // freshly-built body panes into the persistent `nav`. `nav` and the
+        // `toolbar` keep their state across the swap (docked/push state; the
+        // path bar's in-progress edit), so a rebuild triggered by navigation /
+        // sort doesn't snap the body or the path bar back mid-interaction.
+        self.update_toolbar();
         let mut below = self.build_chrome_below(theme);
         self.nav.set_sidebar(Some(self.build_places_pane()));
         self.nav.set_content(self.build_content_pane(theme));
 
-        let above_node = above.build_layout(taffy, theme, node_map);
+        let above_node = self.toolbar.build_layout(taffy, theme, node_map);
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
         let below_node = below.build_layout(taffy, theme, node_map);
-        self.chrome_above = Some(above);
         self.chrome_below = Some(below);
 
         // The body fills the height left between the intrinsic-height chrome
@@ -1692,9 +1931,7 @@ impl Widget for FileExplorerWidget {
             if let (Some(&above_n), Some(&nav_n), Some(&below_n)) =
                 (children.first(), children.get(1), children.get(2))
             {
-                if let Some(c) = &mut self.chrome_above {
-                    c.apply_layout(taffy, above_n, base);
-                }
+                self.toolbar.apply_layout(taffy, above_n, base);
                 self.nav.apply_layout(taffy, nav_n, base);
                 if let Some(c) = &mut self.chrome_below {
                     c.apply_layout(taffy, below_n, base);
@@ -1712,13 +1949,12 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.paint_background(scene, transform, theme);
-        if let Some(c) = &mut self.chrome_above {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.toolbar.draw(scene, transform, text_renderer, theme, presence);
         self.nav.draw(scene, transform, text_renderer, theme, presence);
         if let Some(c) = &mut self.chrome_below {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_with_presence(
@@ -1736,14 +1972,14 @@ impl Widget for FileExplorerWidget {
         // rows outside it. The default trait impl would call our own `draw`,
         // which breaks that chain — a long directory would then emit every
         // row's glyphs every frame regardless of what's visible.
-        if let Some(c) = &mut self.chrome_above {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        }
+        self.toolbar
+            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         self.nav
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         if let Some(c) = &mut self.chrome_below {
             c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
+        self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(
@@ -1754,11 +1990,10 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        // Child overlays (dropdowns/popovers) first, then our top-layer
-        // context menu (and its flyout) so they composite above everything.
-        if let Some(c) = &mut self.chrome_above {
-            c.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        // Child overlays (the path bar's completion popover, dropdowns) first,
+        // then our top-layer context menu (and its flyout) so they composite
+        // above everything.
+        self.toolbar.draw_overlay(scene, transform, text_renderer, theme, presence);
         self.nav.draw_overlay(scene, transform, text_renderer, theme, presence);
         if let Some(c) = &mut self.chrome_below {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
@@ -1771,6 +2006,8 @@ impl Widget for FileExplorerWidget {
             layout_menu_widget(&mut self.submenu);
             self.submenu.draw(scene, transform, text_renderer, theme, presence);
         }
+        // The drag-to-pin ghost floats above everything else.
+        self.draw_pin_ghost(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -1789,6 +2026,35 @@ impl Widget for FileExplorerWidget {
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        // A live drag-to-pin owns the pointer: the ghost follows the cursor and
+        // a release over the sidebar pins the folder to Favourites.
+        if self.pin_drag.is_some() {
+            match event {
+                WindowEvent::CursorMoved { .. } => {
+                    *handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    let over_sidebar = self.nav.is_sidebar_open()
+                        && self.nav.sidebar_rect().contains(self.last_cursor);
+                    if let Some(path) = self.pin_drag.take() {
+                        if over_sidebar {
+                            self.apply_command(FileCommand::AddFavorite(path));
+                        }
+                    }
+                    *handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                _ => {}
+            }
         }
 
         // The open context menu (or its flyout) gets first dibs on clicks + Escape.
@@ -1828,7 +2094,14 @@ impl Widget for FileExplorerWidget {
                 node_id, taffy,
             );
             self.drain_commands();
-            self.open_context_menu(self.last_cursor);
+            // A right-press over a sidebar favourite pushes `OpenFavoriteMenu`,
+            // which the drain records here; open the favourite's own menu at the
+            // cursor rather than the file-view context menu.
+            if let Some(fav) = self.pending_fav_menu.take() {
+                self.open_favorite_menu(fav, self.last_cursor);
+            } else {
+                self.open_context_menu(self.last_cursor);
+            }
             *handled = true;
             self.structure_dirty = true;
             return;
@@ -1853,39 +2126,79 @@ impl Widget for FileExplorerWidget {
             }
         }
 
-        // While an inline rename is active, Enter commits and Escape cancels
-        // — intercepted before the keystroke reaches the rename field so it
-        // never falls through to app-level nav (Enter-open / Escape). Typed
-        // characters are NOT intercepted here; they fall through to the field.
+        // While an inline rename is active the in-place editor (drawn over the
+        // row, not in a bottom bar) owns input: Enter commits, Escape cancels,
+        // every other keystroke edits the field, and a press outside the field
+        // commits. Handled before the event reaches app-level nav / the file
+        // view so typing never leaks into list navigation or Enter-opens a row.
         if self.renaming.is_some() {
-            if let WindowEvent::KeyboardInput { event: ke, .. } = event {
-                use winit::keyboard::{Key, NamedKey};
-                if ke.state == ElementState::Pressed {
-                    match &ke.logical_key {
-                        Key::Named(NamedKey::Enter) => {
-                            // Pull the freshest field text from the CRDT, then
-                            // commit — the last keystroke may not have synced.
-                            let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
-                            if let Ok(text) = {
-                                use automerge::ReadDoc;
-                                state.text(&rename_obj)
-                            } {
-                                self.rename_buffer = text;
+            if let Some(rect) = self.rename_rect.get() {
+                self.rename_input.apply_layout_external(rect);
+            }
+            match event {
+                WindowEvent::KeyboardInput { event: ke, .. } => {
+                    use winit::keyboard::{Key, NamedKey};
+                    if ke.state == ElementState::Pressed {
+                        match &ke.logical_key {
+                            Key::Named(NamedKey::Enter) => {
+                                // Pull the freshest field text from the CRDT, then
+                                // commit — the last keystroke may not have synced.
+                                let rename_obj = ensure_text_obj(state, path, RENAME_QUERY_PATH);
+                                if let Ok(text) = {
+                                    use automerge::ReadDoc;
+                                    state.text(&rename_obj)
+                                } {
+                                    self.rename_buffer = text;
+                                }
+                                self.commit_rename();
+                                *handled = true;
+                                self.structure_dirty = true;
+                                return;
                             }
-                            self.commit_rename();
-                            *handled = true;
-                            self.structure_dirty = true;
-                            return;
+                            Key::Named(NamedKey::Escape) => {
+                                self.cancel_rename();
+                                *handled = true;
+                                self.structure_dirty = true;
+                                return;
+                            }
+                            _ => {}
                         }
-                        Key::Named(NamedKey::Escape) => {
-                            self.cancel_rename();
-                            *handled = true;
-                            self.structure_dirty = true;
-                            return;
-                        }
-                        _ => {}
                     }
+                    // Typing / editing keys go to the field (it splices the CRDT).
+                    self.rename_input.handle_event(
+                        event, scale_factor, modifiers, state, path, handled, focus_target,
+                        node_id, taffy,
+                    );
+                    *handled = true;
+                    self.structure_dirty = true;
+                    return;
                 }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    let inside = self
+                        .rename_rect
+                        .get()
+                        .map(|r| r.contains(self.last_cursor))
+                        .unwrap_or(false);
+                    if inside {
+                        // Reposition the caret within the field.
+                        self.rename_input.handle_event(
+                            event, scale_factor, modifiers, state, path, handled, focus_target,
+                            node_id, taffy,
+                        );
+                    } else {
+                        // A click away commits the rename (then this click is
+                        // consumed; a second click acts on its target).
+                        self.commit_rename();
+                    }
+                    *handled = true;
+                    self.structure_dirty = true;
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -1925,9 +2238,7 @@ impl Widget for FileExplorerWidget {
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = std::mem::take(&mut self.structure_dirty);
-        if let Some(c) = &mut self.chrome_above {
-            d |= c.take_structure_dirty();
-        }
+        d |= self.toolbar.take_structure_dirty();
         d |= self.nav.take_structure_dirty();
         if let Some(c) = &mut self.chrome_below {
             d |= c.take_structure_dirty();
@@ -1939,11 +2250,7 @@ impl Widget for FileExplorerWidget {
         // The body's docked→push / reveal slide must keep the host pumping
         // frames while it settles.
         self.nav.needs_animation_frame()
-            || self
-                .chrome_above
-                .as_ref()
-                .map(|c| c.needs_animation_frame())
-                .unwrap_or(false)
+            || self.toolbar.needs_animation_frame()
             || self
                 .chrome_below
                 .as_ref()
@@ -1953,11 +2260,7 @@ impl Widget for FileExplorerWidget {
 
     fn needs_idle_sync(&self) -> bool {
         self.nav.needs_idle_sync()
-            || self
-                .chrome_above
-                .as_ref()
-                .map(|c| c.needs_idle_sync())
-                .unwrap_or(false)
+            || self.toolbar.needs_idle_sync()
             || self
                 .chrome_below
                 .as_ref()
@@ -1967,9 +2270,7 @@ impl Widget for FileExplorerWidget {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = Vec::new();
-        if let Some(c) = &self.chrome_above {
-            v.push(c.as_ref());
-        }
+        v.push(&self.toolbar);
         v.push(&self.nav);
         if let Some(c) = &self.chrome_below {
             v.push(c.as_ref());
@@ -1979,9 +2280,7 @@ impl Widget for FileExplorerWidget {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        if let Some(c) = &mut self.chrome_above {
-            v.push(c.as_mut());
-        }
+        v.push(&mut self.toolbar);
         v.push(&mut self.nav);
         if let Some(c) = &mut self.chrome_below {
             v.push(c.as_mut());
@@ -2208,42 +2507,6 @@ mod command_path_tests {
             mime: mime.into(),
             sync_state: None,
         }
-    }
-
-    #[test]
-    fn search_box_filters_through_the_crdt_text_object() {
-        use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
-
-        let mut w = FileExplorerWidget::new();
-        w.entries = vec![
-            ent("README.md", false, "text/markdown"),
-            ent("Cargo.toml", false, "text/plain"),
-            ent("src", true, "inode/directory"),
-        ];
-        let mut st = ui::State::new();
-
-        // The first sync MUST create the backing Text object the search input
-        // writes into — the toolkit's TextInput never lazily creates one, so
-        // without this seed the search box was completely dead.
-        w.sync(&mut st.doc, &st.root);
-        let obj = match st.doc.get(&st.root, SEARCH_QUERY_PATH) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            other => panic!("search must be backed by a Text object, got {other:?}"),
-        };
-        assert_eq!(w.displayed_entries().len(), 3, "no query → nothing filtered");
-
-        // Type "argo" the way the input does: splice into the shared object.
-        st.doc.splice_text(&obj, 0, 0, "argo").unwrap();
-        w.sync(&mut st.doc, &st.root);
-        assert_eq!(w.search_query(), "argo", "sync reads the query back from the Text object");
-        let shown = w.displayed_entries();
-        assert_eq!(shown.len(), 1, "only Cargo.toml contains 'argo'");
-        assert_eq!(shown[0].name, "Cargo.toml");
-
-        // Clearing the field restores the full list.
-        st.doc.splice_text(&obj, 0, 4, "").unwrap();
-        w.sync(&mut st.doc, &st.root);
-        assert_eq!(w.displayed_entries().len(), 3);
     }
 
     #[test]
@@ -2604,11 +2867,13 @@ mod command_path_tests {
         let home = PathBuf::from("/home/tester");
         // A German desktop: the XDG user dirs resolve to localized folder names.
         let dirs = UserDirs {
+            home: Some(home.clone()),
             documents: Some(home.join("Dokumente")),
             downloads: Some(home.join("Downloads")),
             pictures: Some(home.join("Bilder")),
             music: Some(home.join("Musik")),
             videos: Some(home.join("Videos")),
+            ..Default::default()
         };
         let w = FileExplorerWidget::with_persistence_dirs(
             Some(cfg.path().to_path_buf()),
@@ -2779,6 +3044,12 @@ mod responsive_body_tests {
             if let Some(d) = dir {
                 w.navigate(d.to_path_buf());
             }
+            Self::from_widget(w, width, height)
+        }
+
+        /// Lay out a pre-built widget (e.g. one with persisted favourites, which
+        /// `new`'s home-less widget lacks).
+        fn from_widget(w: FileExplorerWidget, width: f32, height: f32) -> Self {
             let mut h = H {
                 w,
                 taffy: TaffyTree::new(),
@@ -2842,6 +3113,35 @@ mod responsive_body_tests {
             });
         }
 
+        fn right_press(&mut self) {
+            self.dispatch(&winit::event::WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Right,
+            });
+        }
+
+        fn left_release(&mut self) {
+            self.dispatch(&winit::event::WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            });
+        }
+
+        /// The labels of the currently-open context/favourite menu, if any.
+        fn open_menu_labels(&self) -> Vec<String> {
+            if !self.w.context_menu.is_open() {
+                return Vec::new();
+            }
+            self.w
+                .context_menu
+                .items()
+                .iter()
+                .filter_map(|i| i.label().map(str::to_string))
+                .collect()
+        }
+
         /// The laid-out rect of a named widget in the live tree. Asserting on
         /// the *file view's* own rect is what makes the narrow test about the
         /// files rather than about whichever pane happens to be full-width.
@@ -2860,9 +3160,27 @@ mod responsive_body_tests {
             find(&self.w, name)
         }
 
-        fn escape(&mut self) {
+        /// Run a real draw pass so immediate-mode children (the file view)
+        /// publish their per-frame geometry — e.g. the in-place rename field's
+        /// rect.
+        fn draw(&mut self) {
+            let theme = Theme::dark();
+            let presence = ui::presence::PresenceCtx::empty();
+            let permissions = ui::permissions::PermissionContext::permissive();
+            let mut scene = vello::Scene::new();
+            self.w.draw_with_presence(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut self.tr,
+                &theme,
+                &presence,
+                &permissions,
+            );
+        }
+
+        fn press_named(&mut self, key: winit::keyboard::NamedKey) {
             let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-            ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+            ev.logical_key = winit::keyboard::Key::Named(key);
             ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
                 winit::keyboard::NativeKeyCode::Unidentified,
             );
@@ -2870,6 +3188,27 @@ mod responsive_body_tests {
             ev.state = winit::event::ElementState::Pressed;
             ev.repeat = false;
             ev.text = None;
+            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            });
+        }
+
+        fn escape(&mut self) {
+            self.press_named(winit::keyboard::NamedKey::Escape);
+        }
+
+        fn type_char(&mut self, s: &str) {
+            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = winit::keyboard::Key::Character(winit::keyboard::SmolStr::new(s));
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = winit::event::ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = Some(winit::keyboard::SmolStr::new(s));
             self.dispatch(&winit::event::WindowEvent::KeyboardInput {
                 device_id: unsafe { std::mem::zeroed() },
                 event: ev,
@@ -2983,6 +3322,151 @@ mod responsive_body_tests {
             h.w.debug_content_rect().width(),
             520.0,
             "and the file view still owns the whole window",
+        );
+    }
+
+    /// An inline rename is edited *in place* — a field placed over the row's
+    /// name inside the file view — not in a bottom bar. The file view publishes
+    /// the field rect during paint; it must sit within the file rows.
+    #[test]
+    fn rename_is_edited_in_place_over_the_row() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("old.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        let idx = h.w.displayed_entries().iter().position(|e| e.name == "old.txt").unwrap();
+        h.w.select(Some(idx));
+        assert!(h.w.apply_command(FileCommand::Rename));
+        assert!(h.w.is_renaming());
+
+        // Rebuild with the rename active, then paint so the file view publishes
+        // the editor's on-screen rect.
+        h.lay_out(1000.0, 720.0);
+        h.draw();
+
+        let field = h.w.rename_rect.get().expect("the in-place editor is placed over the row");
+        let files = h.rect_of("FileView").expect("the file view is present");
+        assert!(
+            field.y0 >= files.y0 - 1.0 && field.y1 <= files.y1 + 1.0,
+            "the rename field sits within the file rows (in place), not a bottom bar: \
+             field={field:?} files={files:?}",
+        );
+        assert!(field.width() > 40.0, "the field spans the name column: {field:?}");
+
+        // Cancelling clears the published rect (nothing left drawn).
+        h.w.cancel_rename();
+        h.lay_out(1000.0, 720.0);
+        h.draw();
+        assert!(h.w.rename_rect.get().is_none(), "cancel removes the in-place editor");
+    }
+
+    /// Typing into the in-place editor and pressing Enter renames the file on
+    /// disk — driving the real keystroke path through the app into the shared
+    /// `TextInput` and its CRDT-backed field. F2 opens the editor.
+    #[test]
+    fn typing_in_the_in_place_editor_renames_on_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
+        let idx = h.w.displayed_entries().iter().position(|e| e.name == "a.txt").unwrap();
+        h.w.select(Some(idx));
+
+        // F2 begins the rename; rebuild + paint places + seeds the editor.
+        h.press_named(winit::keyboard::NamedKey::F2);
+        assert!(h.w.is_renaming(), "F2 starts an inline rename");
+        h.lay_out(1000.0, 720.0);
+        h.draw();
+
+        // The seed selected the whole name, so typing replaces it.
+        for ch in ["b", ".", "m", "d"] {
+            h.type_char(ch);
+        }
+        h.press_named(winit::keyboard::NamedKey::Enter);
+
+        assert!(!h.w.is_renaming(), "Enter commits and closes the editor");
+        assert!(dir.path().join("b.md").exists(), "the typed name renamed the file on disk");
+        assert!(!dir.path().join("a.txt").exists(), "the old name is gone");
+    }
+
+    /// Dragging a folder out of the list and dropping it on the docked sidebar
+    /// pins it to Favourites; a release off the sidebar pins nothing.
+    #[test]
+    fn dropping_a_folder_on_the_sidebar_pins_it() {
+        let cfg = tempfile::tempdir().unwrap();
+        let w = FileExplorerWidget::with_persistence(
+            Some(cfg.path().to_path_buf()),
+            Some(PathBuf::from("/home/tester")),
+        );
+        let mut h = H::from_widget(w, 1200.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        let before = h.w.favorites().len();
+        let folder = PathBuf::from("/home/tester/Projects/qos");
+
+        // Begin the drag (what the file view emits once a folder press travels).
+        assert!(h.w.apply_command(FileCommand::BeginDrag(folder.clone())));
+        assert!(h.w.debug_pin_dragging(), "the drag is in flight");
+
+        // Move over the sidebar, then release → pin.
+        let sb = h.w.debug_sidebar_rect();
+        h.cursor(sb.center().x, sb.center().y);
+        h.left_release();
+        assert!(!h.w.debug_pin_dragging(), "the drop ends the drag");
+        assert_eq!(h.w.favorites().len(), before + 1, "the folder was pinned");
+        assert!(h.w.favorites().iter().any(|f| f.path == folder), "and it is the dropped folder");
+    }
+
+    #[test]
+    fn releasing_a_pin_drag_off_the_sidebar_pins_nothing() {
+        let cfg = tempfile::tempdir().unwrap();
+        let w = FileExplorerWidget::with_persistence(
+            Some(cfg.path().to_path_buf()),
+            Some(PathBuf::from("/home/tester")),
+        );
+        let mut h = H::from_widget(w, 1200.0, 720.0);
+        let before = h.w.favorites().len();
+        h.w.apply_command(FileCommand::BeginDrag(PathBuf::from("/home/tester/Downloads/tmp")));
+        // Release over the content pane (not the sidebar).
+        let content = h.w.debug_content_rect();
+        h.cursor(content.center().x, content.center().y);
+        h.left_release();
+        assert!(!h.w.debug_pin_dragging());
+        assert_eq!(h.w.favorites().len(), before, "a drop off the sidebar pins nothing");
+    }
+
+    /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from
+    /// Favourites), not the file-view context menu. The pinned Home entry offers
+    /// no Remove. Drives the real right-press path end to end.
+    #[test]
+    fn right_clicking_a_favourite_opens_its_menu() {
+        let cfg = tempfile::tempdir().unwrap();
+        let w = FileExplorerWidget::with_persistence(
+            Some(cfg.path().to_path_buf()),
+            Some(PathBuf::from("/home/tester")),
+        );
+        let mut h = H::from_widget(w, 1200.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide, "wide docks the sidebar");
+
+        let band = h.w.favorites_store().borrow().band.expect("sidebar laid out");
+        // Row 1 is a removable favourite (row 0 is the pinned Home).
+        let (x, y) = (band.center_x(), band.row_center_y(1));
+        h.cursor(x, y);
+        h.right_press();
+        let labels = h.open_menu_labels();
+        assert!(
+            labels.iter().any(|l| l == "Remove from Favourites"),
+            "the favourite's own menu is shown: {labels:?}",
+        );
+        assert!(labels.iter().any(|l| l == "Open"), "with the Open folder action: {labels:?}");
+        // It is NOT the file-view context menu (which would offer New Folder).
+        assert!(!labels.iter().any(|l| l == "New Folder"), "not the file menu: {labels:?}");
+
+        // The pinned Home favourite (row 0) has no Remove.
+        let (hx, hy) = (band.center_x(), band.row_center_y(0));
+        h.cursor(hx, hy);
+        h.right_press();
+        let home = h.open_menu_labels();
+        assert!(
+            !home.iter().any(|l| l == "Remove from Favourites"),
+            "Home is pinned and cannot be removed: {home:?}",
         );
     }
 

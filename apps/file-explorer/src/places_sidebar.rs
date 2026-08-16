@@ -426,6 +426,18 @@ impl Widget for PlacesSidebar {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // A right-press over a favourite asks for its own menu (Open +
+                // Remove from Favourites). The app opens it at the cursor once it
+                // drains this command. System rows have no menu.
+                if let Some(i) = self.favorite_at(self.last_cursor) {
+                    let path = self.favs.borrow().favorites.get(i).map(|f| f.path.clone());
+                    if let Some(p) = path {
+                        push(&self.sink, FileCommand::OpenFavoriteMenu(p));
+                        *handled = true;
+                    }
+                }
+            }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 let mut favs = self.favs.borrow_mut();
                 if !favs.drag.is_pending() {
@@ -582,6 +594,27 @@ mod tests {
         let cmds = sink.borrow();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")), "click navigates: {:?}", cmds[0]);
+    }
+
+    #[test]
+    fn right_pressing_a_favourite_requests_its_menu() {
+        let sink = new_sink();
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let mut sb = PlacesSidebar::new(store.clone(), PathBuf::from("/home/u"), sink.clone());
+        let (tree, node) = lay_out(&mut sb);
+        let band = store.borrow().band.unwrap();
+        // Right-press over favourite row 1 (Documents).
+        let y = band.row_center_y(1);
+        let x = band.center_x();
+        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, y).into() });
+        let handled = dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Right });
+        assert!(handled, "a right-press over a favourite is consumed");
+        let cmds = sink.borrow();
+        assert_eq!(cmds.len(), 1);
+        assert!(
+            matches!(&cmds[0], FileCommand::OpenFavoriteMenu(p) if p.ends_with("Documents")),
+            "right-press asks for the favourite's menu: {:?}", cmds[0],
+        );
     }
 
     #[test]

@@ -18,6 +18,13 @@
 
 use std::path::{Path, PathBuf};
 use ui::icons::Icon;
+use ui::sysdirs::UserDir;
+
+/// The user's resolved, **localized** XDG user directories — shared with every
+/// other "Places" surface (file pickers) so nobody re-hardcodes English folder
+/// names. Resolved once at startup via [`UserDirs::from_system`]; tests inject
+/// an explicit set so the classification + labels are deterministic.
+pub use ui::sysdirs::UserDirs;
 
 /// Which standard place a favourite represents. Drives the evocative glyph
 /// independently of the (possibly localized) label, and survives the
@@ -48,56 +55,31 @@ impl FavKind {
             FavKind::Folder => Icon::Folder,
         }
     }
-}
 
-/// The user's resolved XDG user directories, each localized to their desktop
-/// language (or `None` when the platform / `user-dirs.dirs` doesn't define
-/// one). Resolved once at startup via [`UserDirs::from_system`]; tests inject
-/// an explicit set so the classification + labels are deterministic.
-#[derive(Clone, Debug, Default)]
-pub struct UserDirs {
-    pub documents: Option<PathBuf>,
-    pub downloads: Option<PathBuf>,
-    pub pictures: Option<PathBuf>,
-    pub music: Option<PathBuf>,
-    pub videos: Option<PathBuf>,
-}
-
-impl UserDirs {
-    /// Read the real, localized XDG user directories from the environment.
-    /// The `dirs` crate honours `~/.config/user-dirs.dirs`, so on a German
-    /// desktop `documents` resolves to `~/Dokumente`, `pictures` to
-    /// `~/Bilder`, and so on.
-    pub fn from_system() -> Self {
-        Self {
-            documents: dirs::document_dir(),
-            downloads: dirs::download_dir(),
-            pictures: dirs::picture_dir(),
-            music: dirs::audio_dir(),
-            videos: dirs::video_dir(),
+    /// Map a shared [`UserDir`] kind to this app's favourite kind. Desktop (and
+    /// anything without an evocative glyph here) reads as a plain folder.
+    fn from_user_dir(dir: UserDir) -> FavKind {
+        match dir {
+            UserDir::Home => FavKind::Home,
+            UserDir::Documents => FavKind::Documents,
+            UserDir::Downloads => FavKind::Downloads,
+            UserDir::Pictures => FavKind::Pictures,
+            UserDir::Music => FavKind::Music,
+            UserDir::Videos => FavKind::Videos,
+            UserDir::Desktop => FavKind::Folder,
         }
     }
+}
 
-    /// Classify `path` as one of the known standard places (else `Folder`,
-    /// or `Home` when it is exactly the home directory).
-    fn kind_of(&self, path: &Path, home: &Path) -> FavKind {
-        if path == home {
-            return FavKind::Home;
-        }
-        let is = |d: &Option<PathBuf>| d.as_deref() == Some(path);
-        if is(&self.documents) {
-            FavKind::Documents
-        } else if is(&self.downloads) {
-            FavKind::Downloads
-        } else if is(&self.pictures) {
-            FavKind::Pictures
-        } else if is(&self.music) {
-            FavKind::Music
-        } else if is(&self.videos) {
-            FavKind::Videos
-        } else {
-            FavKind::Folder
-        }
+/// Classify `path` against the live [`UserDirs`] (else `Folder`, or `Home`
+/// when it is exactly the home directory).
+fn kind_of(dirs: &UserDirs, path: &Path, home: &Path) -> FavKind {
+    if path == home {
+        return FavKind::Home;
+    }
+    match dirs.classify(path) {
+        Some(dir) => FavKind::from_user_dir(dir),
+        None => FavKind::Folder,
     }
 }
 
@@ -123,7 +105,7 @@ impl Favorite {
 /// Derive a display label, home-ness, and kind for `path`. The label is the
 /// folder's own (localized) name; `Home` is special-cased.
 fn describe(path: &Path, home: &Path, dirs: &UserDirs) -> (String, bool, FavKind) {
-    let kind = dirs.kind_of(path, home);
+    let kind = kind_of(dirs, path, home);
     if kind == FavKind::Home {
         return ("Home".to_string(), true, kind);
     }
@@ -145,20 +127,11 @@ pub fn defaults(home: &Path, dirs: &UserDirs) -> Vec<Favorite> {
         is_home: true,
         kind: FavKind::Home,
     }];
-    let standard: [(FavKind, &Option<PathBuf>, &str); 5] = [
-        (FavKind::Documents, &dirs.documents, "Documents"),
-        (FavKind::Downloads, &dirs.downloads, "Downloads"),
-        (FavKind::Pictures, &dirs.pictures, "Pictures"),
-        (FavKind::Music, &dirs.music, "Music"),
-        (FavKind::Videos, &dirs.videos, "Videos"),
-    ];
-    for (kind, resolved, fallback) in standard {
-        let path = resolved.clone().unwrap_or_else(|| home.join(fallback));
-        let label = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| fallback.to_string());
-        favs.push(Favorite { label, path, is_home: false, kind });
+    // The standard content places, resolved to the user's real localized
+    // folder names via the shared helper (a German desktop yields
+    // Dokumente / Bilder / Musik).
+    for (dir, label, path) in dirs.content_places(home) {
+        favs.push(Favorite { label, path, is_home: false, kind: FavKind::from_user_dir(dir) });
     }
     favs
 }
@@ -234,11 +207,13 @@ mod tests {
     /// A German-localized set of XDG user dirs under `/home/u`.
     fn german_dirs() -> UserDirs {
         UserDirs {
+            home: Some(PathBuf::from("/home/u")),
             documents: Some(PathBuf::from("/home/u/Dokumente")),
             downloads: Some(PathBuf::from("/home/u/Downloads")),
             pictures: Some(PathBuf::from("/home/u/Bilder")),
             music: Some(PathBuf::from("/home/u/Musik")),
             videos: Some(PathBuf::from("/home/u/Videos")),
+            ..Default::default()
         }
     }
 

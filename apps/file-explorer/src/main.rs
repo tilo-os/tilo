@@ -48,6 +48,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         match scenario.as_deref() {
             Some("grid") => widget.set_view_mode(file_explorer::model::ViewMode::Grid),
             Some("select") => widget.debug_select(&[7, 8]),
+            // Begin an inline rename before the seeding sync so the in-place
+            // editor is drawn over the row (with the name selected).
+            Some("rename") => {
+                widget.debug_select(&[3]);
+                widget.begin_rename();
+            }
             // Summon the places drawer over the file view (the narrow
             // layout's hamburger action). Set BEFORE layout so `apply_layout`
             // places the revealed drawer — snapping post-layout would leave
@@ -237,6 +243,12 @@ fn render_shot_to_png(
         Some("reorder") => {
             // Grab a favourite and lift it two rows up — mid-drag.
             widget.debug_begin_favorite_drag(4, 1);
+        }
+        Some("pindrag") => {
+            // Carry a folder out of the list toward the sidebar — mid-drag, so
+            // the floating ghost shows over the Favourites section.
+            let folder = widget.current_path().join("Development");
+            widget.debug_begin_pin_drag(folder, Point::new(150.0, 300.0));
         }
         Some("select") => {
             // Move the cursor over a (different) row so the hover veneer shows
