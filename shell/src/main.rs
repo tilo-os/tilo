@@ -235,17 +235,15 @@ fn main() {
             enable_peer_sync,
             enable_portals,
         }),
-        // `--mode native` doesn't take the portal flag yet — Sandbox
-        // Phase 4.3 only wires the hosted-mode boot path. Surface a
-        // warning so users who pass `--enable-portals --mode native`
-        // don't silently get nothing.
+        // Native mode serves portals unconditionally. The shipped
+        // session (`os/usr/share/wayland-sessions/shell.desktop`) runs
+        // `shell --backend drm` with no flags, so gating file open/save
+        // behind an opt-in flag meant the desktop everybody actually
+        // boots had no working file dialog. `--enable-portals` is still
+        // accepted so existing units and scripts keep working; it is
+        // simply the default here.
         Mode::Native => {
-            if enable_portals {
-                tracing::warn!(
-                    "--enable-portals is hosted-mode only in v1 of Sandbox Phase 4.3; \
-                     native mode currently ignores it"
-                );
-            }
+            let _ = enable_portals;
             qos_startup_metrics::mark("compositor-native-run-start");
             compositor::native::run();
         }

@@ -382,6 +382,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
         assert_eq!(caller.app_id, "org.example");
@@ -405,6 +406,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let name: OwnedUniqueName = ":1.7".try_into().unwrap();
         let caller = FileChooserBackend::resolve_caller(&ctx, Some(&name), "ignored");
@@ -435,6 +437,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -442,11 +445,9 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (code, results) = rt.block_on(backend.open_response_via_picker(
-            PromptOutcome::AllowOnce,
-            caller.clone(),
-            "Open file".into(),
-            /*save=*/ false,
+        let (code, results) = rt.block_on(backend.pick_and_grant(
+            FilePickerOptions::new(caller.clone(), "Open file", /*save=*/ false),
+            FsMode::Read,
         ));
         assert_eq!(code, 0);
         let uris_v = results.get("uris").expect("uris");
@@ -459,6 +460,132 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].1, "Open file");
         assert!(!seen[0].2);
+    }
+
+    /// The regression this whole change exists for.
+    ///
+    /// The backend used to raise a permission prompt on a
+    /// `Capability::Filesystem { path: "/" }` sentinel and persist it
+    /// verbatim on Session/Always. `Scope::FsPath` covers its subtree,
+    /// and the launcher turns a read grant into `--ro-bind-try <p> <p>`,
+    /// so one Always click read-only mounted the whole host filesystem
+    /// into the app at its next launch — while the file the user
+    /// actually chose was never granted at all.
+    ///
+    /// Asserted on the production path (`pick_and_grant` is what every
+    /// FileChooser method calls), against the real grant store.
+    #[test]
+    fn the_grant_names_the_picked_path_and_never_the_filesystem_root() {
+        use crate::shell::state::Capability;
+
+        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(36));
+        let picked = PathBuf::from("/tmp/only-this-one.txt");
+        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+            picked.clone(),
+        ])));
+        let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        ));
+        let ctx = PortalContext {
+            grants: store.clone(),
+            prompts: PromptQueueHandle::new(PromptResolver::Channel),
+            caller_map: CallerMap::new(),
+            file_picker: fp,
+            screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
+        };
+        let backend = FileChooserBackend::new(ctx);
+        let caller = PortalCaller::new(ws_id, "org.example");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (code, _) = rt.block_on(backend.pick_and_grant(
+            FilePickerOptions::new(caller.clone(), "Open", false),
+            FsMode::Read,
+        ));
+        assert_eq!(code, 0);
+
+        // Read the capabilities back out of the workspace the store
+        // wrote to, not out of anything this test built.
+        let tree = store.tree_handle();
+        let guard = tree.read();
+        let ws = guard
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws_id)
+            .expect("workspace");
+        let fs_paths: Vec<PathBuf> = ws
+            .app_capabilities(&caller.app_id)
+            .into_iter()
+            .filter_map(|c| match Capability::from_capability(c) {
+                Some(Capability::Filesystem { path, .. }) => Some(path),
+                _ => None,
+            })
+            .collect();
+
+        assert!(
+            fs_paths.contains(&picked),
+            "the path the user picked must be granted; got {fs_paths:?}"
+        );
+        assert!(
+            !fs_paths.iter().any(|p| p == std::path::Path::new("/")),
+            "a file-open must never grant the filesystem root; got {fs_paths:?}"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_dialog_grants_nothing() {
+        use crate::shell::state::Capability;
+
+        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(37));
+        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
+        let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        ));
+        let ctx = PortalContext {
+            grants: store.clone(),
+            prompts: PromptQueueHandle::new(PromptResolver::Channel),
+            caller_map: CallerMap::new(),
+            file_picker: fp,
+            screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
+        };
+        let backend = FileChooserBackend::new(ctx);
+        let caller = PortalCaller::new(ws_id, "org.example");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (code, _) = rt.block_on(backend.pick_and_grant(
+            FilePickerOptions::new(caller.clone(), "Open", false),
+            FsMode::Read,
+        ));
+        assert_eq!(code, 1, "a cancelled dialog is response=1");
+
+        let tree = store.tree_handle();
+        let guard = tree.read();
+        let ws = guard
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws_id)
+            .expect("workspace");
+        let granted_fs = ws
+            .app_capabilities(&caller.app_id)
+            .into_iter()
+            .filter(|c| {
+                matches!(
+                    Capability::from_capability(c),
+                    Some(Capability::Filesystem { .. })
+                )
+            })
+            .count();
+        assert_eq!(
+            granted_fs, 0,
+            "declining the dialog must not hand the app any filesystem access"
+        );
     }
 
     #[test]
@@ -476,6 +603,7 @@ mod tests {
             file_picker: fp,
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            documents: crate::portal::DocumentStoreHandle::host_paths(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -483,52 +611,72 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let (code, results) = rt.block_on(backend.open_response_via_picker(
-            PromptOutcome::AllowOnce,
-            caller,
-            "Open".into(),
-            false,
+        let (code, results) = rt.block_on(backend.pick_and_grant(
+            FilePickerOptions::new(caller, "Open", false),
+            FsMode::Read,
         ));
         assert_eq!(code, 1);
         assert!(results.is_empty());
     }
 
     #[test]
-    fn deny_outcome_skips_spawner_and_returns_one() {
-        // Even with a paths-returning spawner, a Deny outcome must
-        // short-circuit before the dialog spawns.
-        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(35));
-        let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
-        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
-            "/tmp/never.txt",
-        )]));
-        let fp = FilePickerSpawnerHandle::new(mock.clone());
-        let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "t"),
-        ));
-        let ctx = PortalContext {
-            grants: store,
-            prompts: queue,
-            caller_map: CallerMap::new(),
-            file_picker: fp,
-            screencast_provisioner: sc,
-            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
-        };
-        let backend = FileChooserBackend::new(ctx);
-        let caller = PortalCaller::new(ws_id, "org.example");
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let (code, _) = rt.block_on(backend.open_response_via_picker(
-            PromptOutcome::Deny,
-            caller,
-            "Open".into(),
-            false,
-        ));
-        assert_eq!(code, 1);
-        // The spawner must not have been called at all — Deny
-        // short-circuits before the dialog.
-        assert!(mock.requests().is_empty());
+    fn a_save_grant_is_writable_and_an_open_grant_is_not() {
+        use crate::shell::state::Capability;
+
+        for (save, mode, expect_write) in [
+            (false, FsMode::Read, false),
+            (true, FsMode::ReadWrite, true),
+        ] {
+            let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(38));
+            let picked = PathBuf::from("/tmp/target.txt");
+            let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(
+                vec![picked.clone()],
+            )));
+            let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
+                MockScreenCastProvisioner::new_with_node(1, "t"),
+            ));
+            let ctx = PortalContext {
+                grants: store.clone(),
+                prompts: PromptQueueHandle::new(PromptResolver::Channel),
+                caller_map: CallerMap::new(),
+                file_picker: fp,
+                screencast_provisioner: sc,
+                remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+                documents: crate::portal::DocumentStoreHandle::host_paths(),
+            };
+            let backend = FileChooserBackend::new(ctx);
+            let caller = PortalCaller::new(ws_id, "org.example");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (code, _) = rt.block_on(backend.pick_and_grant(
+                FilePickerOptions::new(caller.clone(), "t", save),
+                mode,
+            ));
+            assert_eq!(code, 0);
+
+            let tree = store.tree_handle();
+            let guard = tree.read();
+            let ws = guard
+                .workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .expect("workspace");
+            let writable = ws
+                .app_capabilities(&caller.app_id)
+                .into_iter()
+                .filter_map(|c| match Capability::from_capability(c) {
+                    Some(Capability::Filesystem { path, mode, .. }) if path == picked => Some(mode),
+                    _ => None,
+                })
+                .any(|m| matches!(m, FsMode::ReadWrite));
+            assert_eq!(
+                writable, expect_write,
+                "save={save}: an Open must not hand out write access, and a \
+                 Save must — otherwise the app's first write raises a second \
+                 prompt for the file the user just chose to save to"
+            );
+        }
     }
 }
