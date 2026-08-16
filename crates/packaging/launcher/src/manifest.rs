@@ -68,6 +68,12 @@ pub struct MinimalManifest {
     pub name: Option<String>,
     /// `[package].category` — freedesktop-style menu category.
     pub category: Option<String>,
+    /// `[package].icon` — payload-relative path to the app's icon image
+    /// (a raster file: PNG/JPEG/WebP). The launcher resolves it to the
+    /// in-sandbox payload mount and exports it as `QOS_APP_ICON`, which
+    /// the toolkit loads into the window icon. `None` when the manifest
+    /// ships no icon art — the toolkit then draws a generated default.
+    pub icon: Option<String>,
     pub version: String,
     /// `[package].kind` — what the package *is*, as distinct from how it
     /// starts. `app` is something a user opens; `service`, `plugin`,
@@ -160,6 +166,8 @@ struct PackageBlock {
     #[serde(default)]
     category: Option<String>,
     #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     kind: Option<String>,
@@ -204,10 +212,17 @@ impl From<RawManifest> for MinimalManifest {
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
         let category = raw.package.as_ref().and_then(|p| p.category.clone());
+        let icon = raw
+            .package
+            .as_ref()
+            .and_then(|p| p.icon.clone())
+            .map(|i| i.trim().to_string())
+            .filter(|i| !i.is_empty());
         MinimalManifest {
             package_id,
             name,
             category,
+            icon,
             version,
             kind,
             runtime,
@@ -745,6 +760,54 @@ type = "gui"
             checked += 1;
         }
         assert!(checked > 0, "found no manifests under {}", root.display());
+    }
+
+    #[test]
+    fn parses_name_and_icon_from_package_block() {
+        // The human name and the icon path both come off `[package]`;
+        // the launcher forwards them to the app as QOS_APP_NAME /
+        // QOS_APP_ICON.
+        let toml_text = r#"
+[package]
+id      = "dev.qos.notes"
+name    = "Notes"
+icon    = "assets/notes.png"
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/notes"
+"#;
+        let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+        assert_eq!(m.name.as_deref(), Some("Notes"));
+        assert_eq!(m.icon.as_deref(), Some("assets/notes.png"));
+    }
+
+    #[test]
+    fn icon_is_none_when_absent_or_blank() {
+        // Omitted or whitespace-only means "no icon" — the toolkit then
+        // draws its generated default rather than pointing at nothing.
+        let without = r#"
+[package]
+id      = "dev.qos.notes"
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/notes"
+"#;
+        let m: MinimalManifest = toml::from_str(without).expect("parse");
+        assert_eq!(m.icon, None);
+
+        let blank = r#"
+[package]
+id      = "dev.qos.notes"
+icon    = "   "
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/notes"
+"#;
+        let m: MinimalManifest = toml::from_str(blank).expect("parse");
+        assert_eq!(m.icon, None, "a blank icon path is treated as absent");
     }
 
     #[test]
