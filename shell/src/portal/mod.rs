@@ -674,13 +674,26 @@ pub async fn serve(
         .await?;
 
     // `request_name` only makes sense on a real bus — p2p test
-    // connections have no broker. Try it but downgrade name-acquisition
-    // errors to a warning so the tests don't need to spin a broker.
-    if let Err(e) = connection.request_name(BUS_NAME).await {
-        tracing::debug!("portal: request_name skipped/failed: {e}");
-    }
+    // connections have no broker, and failing there would mean every
+    // hermetic test needed one. So the result is *recorded* rather than
+    // swallowed: `ServerHandle::owns_name` is what the caller checks.
+    //
+    // This used to be a `tracing::debug!` and nothing else, which is the
+    // worst shape available: on a real bus, losing the name to another
+    // claimant left a portal that answered nothing, logged at a level
+    // nobody runs, and looked exactly like a portal that was working.
+    let owns_name = match connection.request_name(BUS_NAME).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::debug!("portal: request_name did not succeed: {e}");
+            false
+        }
+    };
 
-    Ok(ServerHandle { connection })
+    Ok(ServerHandle {
+        connection,
+        owns_name,
+    })
 }
 
 /// RAII handle keeping the portal D-Bus connection alive. Drop releases
