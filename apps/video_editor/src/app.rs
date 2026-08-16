@@ -41,7 +41,7 @@ use crate::doc::VideoDoc;
 use crate::export::{
     begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
 };
-use crate::model::{Clip, ClipId, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::model::{Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::preview::{self, CompositedFrame, Rgb};
 use crate::probe;
@@ -116,6 +116,8 @@ enum Drag {
     Saturation,
     FadeIn,
     FadeOut,
+    /// Dragging the intensity slider of the effect at `idx` on the selected clip.
+    EffectAmount { idx: usize },
 }
 
 /// Which inspector slider a drag is editing. Brightness/contrast/saturation
@@ -145,14 +147,22 @@ pub enum ShotScenario {
     BinRename,
     /// A bin clip mid-drag over a timeline lane, with the ghost + drop marker.
     DragToTimeline,
+    /// The graded drone selected with its effects stack scrolled into view.
+    Effects,
 }
 
 impl ShotScenario {
     /// Scenarios arranged from a rect-dependent interaction (menu / rename /
-    /// drag), applied in `draw` once the layout rect is known rather than during
-    /// `sync` (where the rect is still zero).
+    /// drag / effects), applied in `draw` once the layout rect is known rather
+    /// than during `sync` (where the rect is still zero).
     fn is_interaction(self) -> bool {
-        matches!(self, ShotScenario::BinMenu | ShotScenario::BinRename | ShotScenario::DragToTimeline)
+        matches!(
+            self,
+            ShotScenario::BinMenu
+                | ShotScenario::BinRename
+                | ShotScenario::DragToTimeline
+                | ShotScenario::Effects
+        )
     }
 }
 
@@ -249,6 +259,9 @@ pub struct VideoEditorApp {
     /// `true` while the OS is hovering a file over the window (an external
     /// drag-and-drop), so the bin can invite the drop. Dropping imports it.
     file_hovering: bool,
+    /// Vertical scroll offset of the inspector body (px), so the effects stack
+    /// can grow past the pane without clipping the actions.
+    inspector_scroll: f64,
     /// Real audio waveform peaks per source, computed off-thread and cached.
     waveforms: crate::waveform::WaveformCache,
     /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
@@ -278,6 +291,8 @@ enum MenuTarget {
     Media(MediaId),
     /// A timeline track header: Add video/audio track / Delete track.
     Track(TrackId),
+    /// The inspector's "Add effect" picker for the selected clip.
+    AddEffect,
 }
 
 impl Default for VideoEditorApp {
@@ -331,6 +346,7 @@ impl VideoEditorApp {
             bin_rename: None,
             bin_drag: None,
             file_hovering: false,
+            inspector_scroll: 0.0,
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
         }
@@ -788,6 +804,31 @@ impl VideoEditorApp {
     fn set_transition(&mut self, doc: &mut AutoCommit, t: Transition) {
         self.edit_selected(doc, move |c| c.transition = t);
     }
+    fn add_effect_to_selected(&mut self, doc: &mut AutoCommit, kind: EffectKind) {
+        self.edit_selected(doc, move |c| c.add_effect(kind));
+    }
+    fn remove_effect_from_selected(&mut self, doc: &mut AutoCommit, idx: usize) {
+        self.edit_selected(doc, move |c| c.remove_effect(idx));
+    }
+    fn move_effect_selected(&mut self, doc: &mut AutoCommit, idx: usize, up: bool) {
+        self.edit_selected(doc, move |c| {
+            if up {
+                c.move_effect_up(idx)
+            } else {
+                c.move_effect_down(idx)
+            }
+        });
+    }
+    /// Open the "Add effect" picker (the shared context menu) at `at`.
+    fn open_effect_menu(&mut self, at: Point) {
+        let mut menu = ContextMenu::new();
+        for k in EffectKind::ALL {
+            menu.push(MenuItem::action(k.label(), || {}));
+        }
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.bin_menu = menu;
+        self.menu_target = Some(MenuTarget::AddEffect);
+    }
     fn set_palette(&mut self, doc: &mut AutoCommit, p: u8) {
         self.edit_selected(doc, move |c| c.palette = p);
     }
@@ -1005,6 +1046,11 @@ impl VideoEditorApp {
                 3 => self.delete_track(doc, tid),
                 _ => {}
             },
+            Some(MenuTarget::AddEffect) => {
+                if let Some(&kind) = EffectKind::ALL.get(idx) {
+                    self.add_effect_to_selected(doc, kind);
+                }
+            }
             None => {}
         }
     }
@@ -1260,9 +1306,11 @@ impl VideoEditorApp {
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
         // Static header + four property rows consume a fixed block; the
-        // editable controls start below it. A compact 36px pitch fits a
-        // grade stack + fades + transition + label + actions in the pane.
-        let mut y = r.inspector.y0 + 146.0;
+        // editable controls start below it. Everything scrolls together by
+        // `inspector_scroll` (the pane clips + is wheel-scrollable) so the
+        // effects stack can grow without clipping the actions.
+        let top = r.inspector.y0 - self.inspector_scroll;
+        let mut y = top + 146.0;
         let row = 34.0; // label sits at y, the 9px track at y+19
         let track_at = |y: f64| Rect::new(x0, y + 19.0, x1, y + 28.0);
 
@@ -1297,10 +1345,42 @@ impl VideoEditorApp {
             l.colors.push((i, Rect::new(sx0, y + 15.0, sx0 + sw, y + 15.0 + sw)));
         }
         y += 44.0;
+        // Effects stack (video only): a label, one row per effect, then an
+        // "Add effect" button.
+        if is_video {
+            l.effects_label_y = y + 6.0;
+            y += 26.0;
+            for _ in 0..clip.effects.len() {
+                l.effect_rows.push(Rect::new(x0, y, x1, y + 24.0));
+                y += 28.0;
+            }
+            l.add_effect = Rect::new(x0, y, x0 + 132.0, y + 24.0);
+            y += 34.0;
+        }
+        // Actions.
         l.split = Rect::new(x0, y, (x0 + x1) / 2.0 - 4.0, y + 28.0);
         l.delete = Rect::new((x0 + x1) / 2.0 + 4.0, y, x1, y + 28.0);
+        y += 34.0;
+        l.content_height = y - top;
         l.valid = true;
         l
+    }
+
+    /// Sub-rects of one effect row: `(reorder-up, reorder-down, slider, remove)`.
+    fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
+        let cy = row.center().y;
+        let up = Rect::new(row.x0, cy - 9.0, row.x0 + 16.0, cy + 9.0);
+        let down = Rect::new(row.x0 + 18.0, cy - 9.0, row.x0 + 34.0, cy + 9.0);
+        let remove = Rect::new(row.x1 - 20.0, cy - 9.0, row.x1, cy + 9.0);
+        let slider = Rect::new(row.x1 - 92.0, cy - 4.0, row.x1 - 28.0, cy + 4.0);
+        (up, down, slider, remove)
+    }
+
+    /// The maximum inspector scroll offset for the current selection.
+    /// `content_height` is scroll-independent (the scroll is a pure translation),
+    /// so the current layout's extent is the intrinsic content height.
+    fn inspector_max_scroll(&self, r: &Regions) -> f64 {
+        (self.inspector_layout(r).content_height - r.inspector.height()).max(0.0)
     }
 
     fn export_layout(&self, r: &Regions) -> ExportLayout {
@@ -1365,7 +1445,10 @@ impl VideoEditorApp {
             }
             // Rect-dependent interactions are arranged in `draw` (the layout
             // rect is still zero here in `sync`).
-            ShotScenario::BinMenu | ShotScenario::BinRename | ShotScenario::DragToTimeline => {}
+            ShotScenario::BinMenu
+            | ShotScenario::BinRename
+            | ShotScenario::DragToTimeline
+            | ShotScenario::Effects => {}
         }
     }
 
@@ -1404,6 +1487,15 @@ impl VideoEditorApp {
                     });
                     self.last_mouse = Point::new(lane.x0 + 470.0, lane.center().y);
                 }
+            }
+            ShotScenario::Effects => {
+                if let Some(c) = self.project.top_video_clip_at(6.0) {
+                    self.selected = Some(c.id);
+                    self.selected_media = Some(c.media);
+                }
+                self.playhead = 6.0;
+                // Scroll the inspector so the effects stack + actions are in view.
+                self.inspector_scroll = self.inspector_max_scroll(r);
             }
             _ => {}
         }
@@ -1451,8 +1543,14 @@ struct InspectorLayout {
     transitions: Vec<(Transition, Rect)>,
     colors_y: f64,
     colors: Vec<(u8, Rect)>,
+    /// y of the "EFFECTS" label; each row rect is a full-width effect row.
+    effects_label_y: f64,
+    effect_rows: Vec<Rect>,
+    add_effect: Rect,
     split: Rect,
     delete: Rect,
+    /// Total content extent (px) from the inspector top, for scroll clamping.
+    content_height: f64,
 }
 
 #[derive(Default)]
@@ -1617,6 +1715,9 @@ impl Widget for VideoEditorApp {
             self.apply_shot_interaction(&r);
             self.shot_interaction_applied = true;
         }
+        // Keep the inspector scroll within the current selection's content.
+        let max_scroll = self.inspector_max_scroll(&r);
+        self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
@@ -1777,7 +1878,13 @@ impl Widget for VideoEditorApp {
                     MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
                 };
                 if dy.abs() > 0.0 {
-                    self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 });
+                    if r.inspector.contains(self.last_mouse) {
+                        // Scroll the inspector body (its content can exceed the pane).
+                        let max = self.inspector_max_scroll(&r);
+                        self.inspector_scroll = (self.inspector_scroll - dy * 28.0).clamp(0.0, max);
+                    } else {
+                        self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 });
+                    }
                     *handled = true;
                 }
             }
@@ -2193,6 +2300,36 @@ impl VideoEditorApp {
                 return;
             }
         }
+        // Effect rows: reorder / intensity slider / remove.
+        for (i, row) in l.effect_rows.iter().enumerate() {
+            let (up, down, slider, remove) = Self::effect_row_parts(*row);
+            if up.contains(p) {
+                self.move_effect_selected(state, i, true);
+                return;
+            }
+            if down.contains(p) {
+                self.move_effect_selected(state, i, false);
+                return;
+            }
+            if remove.contains(p) {
+                self.remove_effect_from_selected(state, i);
+                return;
+            }
+            if hit_slider(slider, p) {
+                self.drag = Some(Drag::EffectAmount { idx: i });
+                let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
+                self.preview_edit(move |c| {
+                    if let Some(e) = c.effects.get_mut(i) {
+                        e.amount = v;
+                    }
+                });
+                return;
+            }
+        }
+        if l.add_effect.width() > 0.0 && l.add_effect.contains(p) {
+            self.open_effect_menu(p);
+            return;
+        }
         if l.split.contains(p) {
             self.split_selected(state);
             return;
@@ -2328,6 +2465,16 @@ impl VideoEditorApp {
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
+            Drag::EffectAmount { idx } => {
+                if let Some(slider) = self.inspector_layout(r).effect_rows.get(idx).map(|row| Self::effect_row_parts(*row).2) {
+                    let v = ((p.x - slider.x0) / slider.width()).clamp(0.0, 1.0);
+                    self.preview_edit(move |c| {
+                        if let Some(e) = c.effects.get_mut(idx) {
+                            e.amount = v;
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -2348,7 +2495,8 @@ impl VideoEditorApp {
             | Drag::Contrast
             | Drag::Saturation
             | Drag::FadeIn
-            | Drag::FadeOut => {
+            | Drag::FadeOut
+            | Drag::EffectAmount { .. } => {
                 if let Some(id) = self.selected {
                     self.dispatch_clip(doc, id);
                 }
@@ -2373,6 +2521,7 @@ impl VideoEditorApp {
                     | Drag::Saturation
                     | Drag::FadeIn
                     | Drag::FadeOut
+                    | Drag::EffectAmount { .. }
             )
         )
     }
@@ -2813,17 +2962,31 @@ impl VideoEditorApp {
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.inspector);
         self.draw_inspector_body(scene, tf, tr, theme, r);
         scene.pop_layer();
+        // Scroll indicator on the right edge when the content overflows the pane.
+        let max_scroll = self.inspector_max_scroll(r);
+        if max_scroll > 0.5 {
+            let content = r.inspector.height() + max_scroll;
+            let track_h = r.inspector.height() - 8.0;
+            let thumb_h = (track_h * r.inspector.height() / content).max(24.0);
+            let t = (self.inspector_scroll / max_scroll).clamp(0.0, 1.0);
+            let ty = r.inspector.y0 + 4.0 + t * (track_h - thumb_h);
+            let thumb = Rect::new(r.inspector.x1 - 5.0, ty, r.inspector.x1 - 2.0, ty + thumb_h);
+            fill_rrect(scene, tf, with_alpha(c.text_dim, 0.5), thumb, 1.5);
+        }
     }
 
     fn draw_inspector_body(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
         let c = &theme.tokens.colors;
         let x0 = r.inspector.x0 + PAD;
         let x1 = r.inspector.x1 - PAD;
-        text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, r.inspector.y0 + 14.0, TextWeight::Semibold);
+        // The whole body scrolls together by `inspector_scroll` (clamped to 0
+        // when nothing is selected, so the empty state stays put).
+        let top = r.inspector.y0 - self.inspector_scroll;
+        text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, top + 14.0, TextWeight::Semibold);
 
         let Some(id) = self.selected else {
-            text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, r.inspector.y0 + 60.0);
-            text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, r.inspector.y0 + 82.0);
+            text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
+            text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, top + 82.0);
             return;
         };
         let Some(clip) = self.project.clip(id).cloned() else { return };
@@ -2831,15 +2994,15 @@ impl VideoEditorApp {
         let is_video = media.as_ref().map(|m| m.kind.is_visual()).unwrap_or(true);
         let track_name = self.project.track(clip.track).map(|t| t.name.clone()).unwrap_or_default();
 
-        // Header card with color tag + name.
-        let tag = Rect::new(x0, r.inspector.y0 + 36.0, x0 + 6.0, r.inspector.y0 + 64.0);
+        // Header card with color tag + name (scrolls with the body).
+        let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
         let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
-        text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, r.inspector.y0 + 38.0, TextWeight::Semibold);
-        text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, r.inspector.y0 + 58.0);
+        text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
+        text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, top + 58.0);
 
         // Property rows.
-        let mut y = r.inspector.y0 + 78.0;
+        let mut y = top + 78.0;
         let fps = self.project.fps;
         let prop = |scene: &mut Scene, tr: &mut TextRenderer, label: &str, value: &str, y: f64| {
             text(scene, tr, tf, label, 12.0, c.text_dim, x0, y);
@@ -2918,13 +3081,37 @@ impl VideoEditorApp {
                 }
             }
         }
+        // Effects stack (video only).
+        if is_video {
+        text_w(scene, tr, tf, "EFFECTS", 11.0, c.text_dim, x0, l.effects_label_y, TextWeight::Semibold);
+        for (i, row) in l.effect_rows.iter().enumerate() {
+            let Some(e) = clip.effects.get(i) else { continue };
+            let (up, down, slider, remove) = Self::effect_row_parts(*row);
+            fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
+            // Reorder arrows (dim at the ends where they're inert).
+            let up_col = if i > 0 { c.text_primary } else { c.text_dim };
+            let down_col = if i + 1 < clip.effects.len() { c.text_primary } else { c.text_dim };
+            let (uw, _) = tr.measure("▲", 9.0, None);
+            text(scene, tr, tf, "▲", 9.0, up_col, up.center().x - uw as f64 / 2.0, up.center().y - 6.0);
+            text(scene, tr, tf, "▼", 9.0, down_col, down.center().x - uw as f64 / 2.0, down.center().y - 6.0);
+            // Name.
+            text_w(scene, tr, tf, e.kind.label(), 12.0, c.text_primary, down.x1 + 8.0, row.center().y - 8.0, TextWeight::Medium);
+            // Intensity slider.
+            draw_track(scene, tf, theme, slider, e.amount);
+            // Remove.
+            let (xw, _) = tr.measure("✕", 11.0, None);
+            text(scene, tr, tf, "✕", 11.0, c.semantic.danger, remove.center().x - xw as f64 / 2.0, remove.center().y - 7.0);
+        }
+        // Add-effect button.
+        let add_hover = l.add_effect.contains(self.last_mouse);
+        fill_rrect(scene, tf, if add_hover { c.surface_white_10 } else { c.neutral[3] }, l.add_effect, 6.0);
+        stroke_rrect(scene, tf, c.border_standard, l.add_effect, 6.0, 1.0);
+        text(scene, tr, tf, "+ Add effect", 12.0, c.text_primary, l.add_effect.x0 + 12.0, l.add_effect.center().y - 8.0);
+        }
+
         if l.valid {
             draw_button(scene, tf, tr, theme, l.split, "Split", false);
             draw_button(scene, tf, tr, theme, l.delete, "Delete", false);
-        }
-        if !is_video {
-            // a small note for audio clips
-            text(scene, tr, tf, "Audio clip", 10.5, c.text_dim, x0, r.inspector.y1 - 22.0);
         }
     }
 
@@ -4073,6 +4260,76 @@ mod tests {
         for cid in clip_ids {
             assert!(after.clip(cid).is_none(), "the track's clips were removed too");
         }
+    }
+
+    #[test]
+    fn inspector_add_effect_button_adds_via_the_picker() {
+        let (mut app, mut doc) = app_and_doc();
+        // A video clip with no effects (the market cutaway around t=23).
+        let id = app.project.top_video_clip_at(23.0).unwrap().id;
+        app.selected = Some(id);
+        let r = app.regions();
+        // The effects controls sit below the fold; scroll to reveal them.
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let l = app.inspector_layout(&r);
+        assert!(
+            l.add_effect.width() > 0.0 && r.inspector.contains(l.add_effect.center()),
+            "the add-effect button is visible when scrolled",
+        );
+        let before = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
+        click(&mut app, &mut doc, l.add_effect.center().x, l.add_effect.center().y);
+        assert!(app.bin_menu.is_open(), "add-effect opens the picker");
+        assert!(matches!(app.menu_target, Some(MenuTarget::AddEffect)));
+        // Choose the first effect kind (Grayscale, idx 0).
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let ry = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(0))
+            .unwrap();
+        move_to(&mut app, &mut doc, cx, ry);
+        press(&mut app, &mut doc);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.clone();
+        assert_eq!(after.len(), before + 1, "an effect was added through the inspector");
+        assert_eq!(after.last().unwrap().kind, EffectKind::Grayscale);
+    }
+
+    #[test]
+    fn inspector_remove_and_reorder_effects() {
+        let (mut app, mut doc) = app_and_doc();
+        // The drone clip carries two seeded effects.
+        let id = app.project.top_video_clip_at(6.0).unwrap().id;
+        app.selected = Some(id);
+        let kinds0: Vec<_> = VideoDoc::load_project(&doc)
+            .clip(id)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.kind)
+            .collect();
+        assert!(kinds0.len() >= 2, "the drone has seeded effects");
+        let r = app.regions();
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let l = app.inspector_layout(&r);
+        // Move the second effect up via its ▲.
+        let (up, _d, _s, _x) = VideoEditorApp::effect_row_parts(l.effect_rows[1]);
+        assert!(r.inspector.contains(up.center()), "the reorder control is visible");
+        click(&mut app, &mut doc, up.center().x, up.center().y);
+        let kinds1: Vec<_> = VideoDoc::load_project(&doc)
+            .clip(id)
+            .unwrap()
+            .effects
+            .iter()
+            .map(|e| e.kind)
+            .collect();
+        assert_eq!(kinds1[0], kinds0[1], "the second effect moved to the front");
+        assert_eq!(kinds1[1], kinds0[0]);
+        // Remove the head via its ✕.
+        let l = app.inspector_layout(&r);
+        let (_u, _dn, _sl, remove) = VideoEditorApp::effect_row_parts(l.effect_rows[0]);
+        click(&mut app, &mut doc, remove.center().x, remove.center().y);
+        let after = VideoDoc::load_project(&doc).clip(id).unwrap().effects.len();
+        assert_eq!(after, kinds0.len() - 1, "the ✕ removed one effect from the CRDT");
     }
 
     #[test]
