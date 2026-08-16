@@ -1,0 +1,354 @@
+//! Real filesystem I/O for the editor: reading a file into a buffer, writing a
+//! buffer back atomically, and noticing when a file changed underneath us.
+//!
+//! Two rules shape this module.
+//!
+//! **Writes are atomic.** A save goes through [`atomic_file::write`], which
+//! writes a sibling temp file, fsyncs it, and renames it over the target. A
+//! crash or a full disk therefore leaves either the old file or the new one,
+//! never a half-written source file. An editor that can truncate your code on a
+//! bad day is worse than one that cannot save at all.
+//!
+//! **A save never silently clobbers.** Every buffer carries the [`Stamp`] its
+//! bytes were read at. [`save`] re-stats the file first and refuses with
+//! [`SaveError::Conflict`] when the stamp moved — the file was rewritten by
+//! `git checkout`, a formatter, or another editor since we read it. The app
+//! turns that into a choice (overwrite / reload / cancel) rather than deciding
+//! for the user.
+
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+/// Files larger than this are not opened as text buffers. The editor holds the
+/// whole body in the CRDT as a character-addressed `Text`, so a hundred-megabyte
+/// blob is not a slow editor, it is an unusable one.
+pub const MAX_TEXT_BYTES: u64 = 8 * 1024 * 1024;
+
+/// What we know about a file on disk at the moment we last agreed with it.
+///
+/// Modification time plus length is what every editor uses for this, and it is
+/// the right trade: it costs one `stat`, whereas hashing costs a full read of
+/// every open file on every save. `mtime` is `None` on the filesystems that do
+/// not report one, in which case length alone still catches the common case.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Stamp {
+    pub mtime: Option<SystemTime>,
+    pub len: u64,
+}
+
+impl Stamp {
+    /// Read the current stamp of `path`. A missing file has no stamp.
+    pub fn of(path: &Path) -> io::Result<Stamp> {
+        let md = std::fs::metadata(path)?;
+        Ok(Stamp {
+            mtime: md.modified().ok(),
+            len: md.len(),
+        })
+    }
+}
+
+/// Why a load failed, in terms the user can act on.
+#[derive(Debug)]
+pub enum LoadError {
+    Io(io::Error),
+    /// The file is larger than [`MAX_TEXT_BYTES`].
+    TooLarge(u64),
+    /// The bytes are not UTF-8 text (or contain NULs) — opening it as a text
+    /// buffer would corrupt it on the next save.
+    NotText,
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Io(e) => write!(f, "{e}"),
+            LoadError::TooLarge(n) => write!(
+                f,
+                "file is {} — too large to open as text (limit {})",
+                human_bytes(*n),
+                human_bytes(MAX_TEXT_BYTES)
+            ),
+            LoadError::NotText => write!(f, "not a text file"),
+        }
+    }
+}
+
+/// Why a save failed.
+#[derive(Debug)]
+pub enum SaveError {
+    Io(io::Error),
+    /// The file changed on disk since the buffer was read. Carries the stamp
+    /// found there now, so the caller can adopt it after an explicit overwrite.
+    Conflict(Stamp),
+    /// The buffer has never been given a path (an unsaved scratch file), so
+    /// there is nowhere to write it without asking the user first.
+    NoPath,
+}
+
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SaveError::Io(e) => write!(f, "{e}"),
+            SaveError::Conflict(_) => write!(f, "the file changed on disk since it was opened"),
+            SaveError::NoPath => write!(f, "this buffer has no file yet"),
+        }
+    }
+}
+
+/// A file's bytes as text, plus the stamp they were read at.
+pub struct Loaded {
+    pub text: String,
+    pub stamp: Stamp,
+}
+
+/// Read `path` as a text buffer, refusing what must not become one.
+///
+/// The size check happens against the metadata *before* the read, so opening a
+/// huge file costs a `stat` rather than a full slurp into memory.
+pub fn load(path: &Path) -> Result<Loaded, LoadError> {
+    let md = std::fs::metadata(path).map_err(LoadError::Io)?;
+    if md.len() > MAX_TEXT_BYTES {
+        return Err(LoadError::TooLarge(md.len()));
+    }
+    let bytes = std::fs::read(path).map_err(LoadError::Io)?;
+    if !looks_like_text(&bytes) {
+        return Err(LoadError::NotText);
+    }
+    let text = String::from_utf8(bytes).map_err(|_| LoadError::NotText)?;
+    Ok(Loaded {
+        text,
+        stamp: Stamp {
+            mtime: md.modified().ok(),
+            len: md.len(),
+        },
+    })
+}
+
+/// Write `text` to `path` atomically, refusing if the file moved on underneath.
+///
+/// `expected` is the stamp the buffer was last in agreement with. Pass `None`
+/// to write unconditionally — that is the "overwrite anyway" the user chose
+/// after seeing the conflict, and the only way to reach this function without a
+/// freshness check.
+///
+/// A file that does not exist yet cannot conflict: creating it is the save.
+pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, SaveError> {
+    if let Some(expected) = expected {
+        match Stamp::of(path) {
+            Ok(current) if &current != expected => return Err(SaveError::Conflict(current)),
+            Ok(_) => {}
+            // Not existing yet is not a conflict — the save creates it.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(SaveError::Io(e)),
+        }
+    }
+    atomic_file::write_creating_parent(path, text.as_bytes()).map_err(SaveError::Io)?;
+    Stamp::of(path).map_err(SaveError::Io)
+}
+
+/// Whether a file changed on disk relative to `stamp`. A file that vanished
+/// counts as changed — saving over it would recreate something the user may
+/// have deliberately deleted.
+pub fn changed_on_disk(path: &Path, stamp: &Stamp) -> bool {
+    match Stamp::of(path) {
+        Ok(current) => &current != stamp,
+        Err(_) => true,
+    }
+}
+
+/// A cheap, conventional binary sniff: a NUL byte in the first 8 KiB. Real
+/// source files do not contain NUL; ELF objects, images and archives do, within
+/// the first few bytes.
+fn looks_like_text(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(8192)];
+    !head.contains(&0)
+}
+
+/// Directory names never worth walking or listing in a source project: build
+/// output and VCS internals. On this repository `target/` alone is 150+ GB, so
+/// this is the difference between a project tree that opens and one that does
+/// not.
+pub const IGNORED_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    ".jj",
+    "target",
+    "node_modules",
+    ".venv",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".cargo",
+    ".direnv",
+    "dist",
+    ".next",
+];
+
+/// Whether a directory entry name should be skipped when listing or searching a
+/// project tree.
+pub fn is_ignored_dir(name: &str) -> bool {
+    IGNORED_DIRS.contains(&name)
+}
+
+/// Format a byte count for a message a person reads.
+pub fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} {}", UNITS[0])
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+/// The absolute, symlink-resolved form of `path`, falling back to the input
+/// when it cannot be canonicalised (a path that does not exist yet).
+pub fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("create tempdir")
+    }
+
+    #[test]
+    fn save_writes_the_bytes_and_load_reads_them_back() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stamp = save(&p, "fn main() {}\n", None).expect("first save creates the file");
+        // The bytes are really on disk, read back through the filesystem and
+        // not through any cache of ours.
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "fn main() {}\n");
+        assert_eq!(stamp.len, 13);
+
+        let loaded = load(&p).expect("load the file we just wrote");
+        assert_eq!(loaded.text, "fn main() {}\n");
+        assert_eq!(loaded.stamp, stamp);
+    }
+
+    #[test]
+    fn save_creates_missing_parent_directories() {
+        let d = tmpdir();
+        let p = d.path().join("nested/deeper/new.rs");
+        save(&p, "x", None).expect("save creates the parent chain");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_second_save_against_a_current_stamp_succeeds() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let s1 = save(&p, "one", None).unwrap();
+        let s2 = save(&p, "two", Some(&s1)).expect("we are still in agreement with the file");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "two");
+        assert_ne!(s1, s2, "the stamp advances with the content");
+    }
+
+    #[test]
+    fn a_file_changed_underneath_refuses_to_be_clobbered() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stale = save(&p, "original", None).unwrap();
+
+        // Something else rewrites the file — `git checkout`, rustfmt, a peer.
+        std::fs::write(&p, "rewritten by someone else").unwrap();
+
+        match save(&p, "my edit", Some(&stale)) {
+            Err(SaveError::Conflict(found)) => {
+                assert_ne!(found, stale);
+                // Crucially, the other writer's bytes are still there.
+                assert_eq!(
+                    std::fs::read_to_string(&p).unwrap(),
+                    "rewritten by someone else",
+                    "a refused save must not have written anything"
+                );
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+
+        // And `changed_on_disk` agrees, which is what drives the tab indicator.
+        assert!(changed_on_disk(&p, &stale));
+    }
+
+    #[test]
+    fn an_explicit_overwrite_after_a_conflict_wins() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stale = save(&p, "original", None).unwrap();
+        std::fs::write(&p, "theirs").unwrap();
+        assert!(matches!(
+            save(&p, "mine", Some(&stale)),
+            Err(SaveError::Conflict(_))
+        ));
+        // Passing no expectation is the user having said "overwrite anyway".
+        save(&p, "mine", None).expect("an unconditional save always writes");
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "mine");
+    }
+
+    #[test]
+    fn a_deleted_file_counts_as_changed() {
+        let d = tmpdir();
+        let p = d.path().join("a.rs");
+        let stamp = save(&p, "x", None).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        assert!(changed_on_disk(&p, &stamp));
+        // Saving it back is then a fresh create, not a conflict.
+        save(&p, "x", Some(&stamp)).expect("recreating a deleted file is not a conflict");
+    }
+
+    #[test]
+    fn binary_files_are_refused_rather_than_opened_as_text() {
+        let d = tmpdir();
+        let p = d.path().join("thing.bin");
+        std::fs::write(&p, [0x7f, b'E', b'L', b'F', 0x00, 0x01, 0x02]).unwrap();
+        assert!(matches!(load(&p), Err(LoadError::NotText)));
+    }
+
+    #[test]
+    fn oversized_files_are_refused_before_being_read() {
+        let d = tmpdir();
+        let p = d.path().join("huge.log");
+        let big = vec![b'a'; (MAX_TEXT_BYTES + 1) as usize];
+        std::fs::write(&p, &big).unwrap();
+        match load(&p) {
+            Err(LoadError::TooLarge(n)) => assert_eq!(n, MAX_TEXT_BYTES + 1),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn utf8_survives_a_save_load_round_trip() {
+        let d = tmpdir();
+        let p = d.path().join("é.rs");
+        let body = "// héllo wörld — 日本語\nfn main() {}\n";
+        save(&p, body, None).unwrap();
+        assert_eq!(load(&p).unwrap().text, body);
+    }
+
+    #[test]
+    fn build_output_and_vcs_dirs_are_ignored() {
+        assert!(is_ignored_dir("target"));
+        assert!(is_ignored_dir(".git"));
+        assert!(is_ignored_dir("node_modules"));
+        assert!(!is_ignored_dir("src"));
+        assert!(!is_ignored_dir("targets"));
+    }
+
+    #[test]
+    fn human_bytes_reads_naturally() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(2048), "2.0 KB");
+        assert_eq!(human_bytes(8 * 1024 * 1024), "8.0 MB");
+    }
+}
