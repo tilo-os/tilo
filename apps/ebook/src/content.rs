@@ -1,19 +1,25 @@
-//! Library sourcing.
+//! The library: the reader's own collection of books.
 //!
-//! At runtime the shelf is the reader's *own* books: every `.epub` found under
-//! their library directories is parsed by the real container reader. When no
-//! books are present yet the shelf is genuinely empty — the app opens onto the
-//! "no books yet" onboarding rather than a book the reader never added.
+//! The shelf is **app-managed and persisted**, not re-derived from a magic
+//! folder every launch. A book enters the library when the reader opens it
+//! (from anywhere, through the host file picker) or when it turns up in a folder
+//! they explicitly asked to watch; from then on it lives in the CRDT
+//! ([`crate::doc`]) keyed by its content hash, so the shelf survives a restart
+//! and follows the reader across devices. [`load_library`] hydrates those
+//! recorded books from disk each launch and auto-imports anything new in a
+//! watched folder.
 //!
-//! The bundled EPUB + the multi-book **sample** library (bundled EPUB + two
-//! authored volumes) are reserved for the hermetic `--shots`/test path, so
-//! screenshots exercise a populated shelf without fabricating content into a
-//! real user's library.
+//! The bundled EPUB + the multi-book **sample** library are reserved for the
+//! hermetic `--shots`/test path, so screenshots exercise a populated shelf
+//! without fabricating content into a real reader's library.
 
 use std::path::{Path, PathBuf};
 
+use automerge::AutoCommit;
+
+use crate::doc::BooksDoc;
 use crate::epub::parse_epub;
-use crate::model::{Book, Chapter};
+use crate::model::{now_ms, Book, Chapter, LibraryEntry};
 use crate::xhtml::parse_xhtml;
 
 /// The bundled EPUB, parsed by the real container reader. Used only by the
@@ -21,37 +27,133 @@ use crate::xhtml::parse_xhtml;
 /// onto the live shelf.
 pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 
-/// Environment override (`:`-separated absolute paths) for the directories
-/// scanned for `.epub` files. Lets the OS point the reader at a synced library
-/// (e.g. a `/var/workspace` share) and lets tests pin a fixture directory.
+/// Environment override (`:`-separated absolute paths) for extra folders to
+/// watch. Lets the OS point the reader at a synced library (e.g. a
+/// `/var/workspace` share) and lets tests pin a fixture directory.
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
 
-/// The runtime library: the reader's real `.epub` files, discovered on disk.
-/// Returns an empty shelf when none are found — the app must never present a
-/// bundled sample book as if the user owned it. The empty case is handled by
-/// the library view's "no books yet" onboarding.
-pub fn load_library() -> Vec<Book> {
-    discover_epubs(&library_roots())
+/// Override for the collaborative-workspace mount root (tests point it at a temp
+/// directory); production is the real qOS FUSE mount.
+const WORKSPACE_DIR_ENV: &str = "QOS_WORKSPACE_DIR";
+const DEFAULT_WORKSPACE: &str = "/var/workspace";
+
+/// Upper bound on library size, so a pathological watched directory can't stall
+/// startup parsing thousands of files.
+const MAX_LIBRARY: usize = 200;
+
+/// A book hydrated from disk together with where its file lives — enough for the
+/// shelf to open it again and to tell a workspace-shared book from a local one.
+pub struct LoadedBook {
+    pub book: Book,
+    pub path: PathBuf,
 }
 
-/// Parse the bundled sample EPUB. `None` only if the embedded asset ever fails
-/// to parse (a build-time invariant, not a runtime condition). Used only by the
-/// `--shots`/test sample library, never on the live shelf.
-pub fn bundled_sample() -> Option<Book> {
-    match parse_epub(SAMPLE_EPUB, 5, "Fable") {
-        Ok(b) => Some(b),
+/// The collaborative-workspace mount root. A book under here is shared with the
+/// workspace's peers; a book anywhere else is local to this device.
+pub fn workspace_root() -> PathBuf {
+    std::env::var(WORKSPACE_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE))
+}
+
+/// Where a book copied into the workspace lands.
+pub fn workspace_books_dir() -> PathBuf {
+    workspace_root().join("Books")
+}
+
+/// Whether a path lives on the collaborative workspace (shared with peers).
+pub fn is_shared(path: &Path) -> bool {
+    let root = workspace_root();
+    // An empty/degenerate root must never make every path look "shared".
+    !root.as_os_str().is_empty() && path.starts_with(&root)
+}
+
+/// A stable, pleasant cover tint derived from the content id, so a book without
+/// cover art always gets the same generated spine colour.
+fn tint_for(id: &str) -> usize {
+    id.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % 5
+}
+
+/// Parse the `.epub` at `path` and record it in the library, returning the
+/// parsed book. The entry is keyed by the book's content hash, so importing the
+/// same file again (from any path) updates one entry rather than duplicating it.
+pub fn import_path(doc: &mut AutoCommit, path: &Path) -> Option<Book> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut book = match parse_epub(&bytes, 0, "") {
+        Ok(b) => b,
         Err(e) => {
-            tracing::error!(error = %e, "ebook: failed to parse bundled epub");
-            None
+            tracing::warn!(error = %e, path = %path.display(), "ebook: import skipped");
+            return None;
+        }
+    };
+    book.cover_tint = tint_for(&book.id);
+    BooksDoc::upsert_library_entry(
+        doc,
+        &LibraryEntry {
+            id: book.id.clone(),
+            path: path.to_path_buf(),
+            title: book.title.clone(),
+            author: book.author.clone(),
+            subject: book.subject.clone(),
+            added: now_ms(),
+        },
+    );
+    Some(book)
+}
+
+/// Copy a local book into the workspace so the reader's peers get it, record the
+/// new (shared) location, and return the re-hydrated book + its workspace path.
+/// A book already on the workspace is returned unchanged.
+pub fn share_to_workspace(doc: &mut AutoCommit, src: &Path) -> Option<(Book, PathBuf)> {
+    if is_shared(src) {
+        return None;
+    }
+    let dir = workspace_books_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let name = src.file_name()?;
+    let dest = dir.join(name);
+    // The content is identical, so the book keeps its id (and all its
+    // annotations + progress) — only its home changes from local to shared.
+    std::fs::copy(src, &dest).ok()?;
+    let book = import_path(doc, &dest)?;
+    Some((book, dest))
+}
+
+/// Load the reader's library: auto-import any new books found in a watched
+/// folder, then hydrate every recorded book from disk. A recorded book whose
+/// file can't be read right now (e.g. an as-yet-unhydrated workspace book) is
+/// skipped from the shelf but kept in the registry, so it reappears once its
+/// bytes are available.
+pub fn load_library(doc: &mut AutoCommit) -> Vec<LoadedBook> {
+    // 1. Pull in anything new from the folders the reader watches (and the env
+    //    override the OS/tests use to point at a synced library).
+    let watched = scan_watched(doc);
+    for path in watched {
+        import_path(doc, &path);
+    }
+
+    // 2. Hydrate the recorded library. Prefer a shared copy over a local one when
+    //    the same content is recorded twice, so the shelf shows it as shared.
+    let mut out: Vec<LoadedBook> = Vec::new();
+    for entry in BooksDoc::read_library_entries(doc) {
+        let Some(mut book) = open_epub_path(&entry.path) else {
+            continue;
+        };
+        book.cover_tint = tint_for(&book.id);
+        out.push(LoadedBook { book, path: entry.path });
+        if out.len() >= MAX_LIBRARY {
+            break;
         }
     }
+    out
 }
 
 /// Open a single `.epub` file by path — the entry point used when the OS hands
-/// the reader a book to open (file association / "Open with").
+/// the reader a book to open (file association / "Open with"), and when
+/// hydrating a recorded library entry.
 pub fn open_epub_path(path: &Path) -> Option<Book> {
     let bytes = std::fs::read(path).ok()?;
-    match parse_epub(&bytes, 5, "EPUB") {
+    match parse_epub(&bytes, 0, "EPUB") {
         Ok(b) => Some(b),
         Err(e) => {
             tracing::warn!(error = %e, path = %path.display(), "ebook: failed to open epub");
@@ -60,35 +162,23 @@ pub fn open_epub_path(path: &Path) -> Option<Book> {
     }
 }
 
-/// The directories scanned for the user's books. The `EBOOK_LIBRARY_DIR`
-/// override wins outright; otherwise a small set of conventional locations
-/// (including the qOS P2P workspace) is probed.
-fn library_roots() -> Vec<PathBuf> {
-    if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
-        return v
-            .split(':')
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .collect();
-    }
-    let mut roots = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        let home = PathBuf::from(home);
-        roots.push(home.join("Books"));
-        roots.push(home.join("Documents"));
-        roots.push(home.join("Downloads"));
-    }
-    roots.push(PathBuf::from("/var/workspace"));
-    roots.push(PathBuf::from("/var/workspace/Books"));
-    roots
+/// The `.epub` files under the reader's watched folders (and any
+/// `EBOOK_LIBRARY_DIR` override). Used both by the launch load and by the
+/// on-focus rescan, which imports only the ones not already on the shelf.
+pub fn watched_epub_paths(doc: &AutoCommit) -> Vec<PathBuf> {
+    scan_watched(doc)
 }
 
-/// Walk each root (shallow — two levels) collecting `.epub` files, parse them,
-/// and return the books sorted by title. Unreadable files are skipped.
-fn discover_epubs(roots: &[PathBuf]) -> Vec<Book> {
+/// The watched folders to scan this launch: the reader's explicit set plus any
+/// `EBOOK_LIBRARY_DIR` override, walked shallowly for `.epub` files.
+fn scan_watched(doc: &AutoCommit) -> Vec<PathBuf> {
+    let mut roots = BooksDoc::read_watched_folders(doc);
+    if let Ok(v) = std::env::var(LIBRARY_DIR_ENV) {
+        roots.extend(v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from));
+    }
     let mut paths: Vec<PathBuf> = Vec::new();
     for root in roots {
-        collect_epubs(root, 2, &mut paths);
+        collect_epubs(&root, 2, &mut paths);
         if paths.len() >= MAX_LIBRARY {
             break;
         }
@@ -96,22 +186,8 @@ fn discover_epubs(roots: &[PathBuf]) -> Vec<Book> {
     paths.sort();
     paths.dedup();
     paths.truncate(MAX_LIBRARY);
-
-    let mut books: Vec<Book> = Vec::new();
-    for (i, path) in paths.iter().enumerate() {
-        let Ok(bytes) = std::fs::read(path) else { continue };
-        match parse_epub(&bytes, i, "EPUB") {
-            Ok(b) => books.push(b),
-            Err(e) => tracing::warn!(error = %e, path = %path.display(), "ebook: skipping epub"),
-        }
-    }
-    books.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
-    books
+    paths
 }
-
-/// Upper bound on discovered books, so a pathological directory can't stall
-/// startup parsing thousands of files.
-const MAX_LIBRARY: usize = 80;
 
 /// Recursively (bounded `depth`) collect `*.epub` file paths under `dir`.
 fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -135,6 +211,19 @@ fn collect_epubs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         }
         if out.len() >= MAX_LIBRARY {
             return;
+        }
+    }
+}
+
+/// Parse the bundled sample EPUB. `None` only if the embedded asset ever fails
+/// to parse (a build-time invariant, not a runtime condition). Used only by the
+/// `--shots`/test sample library, never on the live shelf.
+pub fn bundled_sample() -> Option<Book> {
+    match parse_epub(SAMPLE_EPUB, 5, "Fable") {
+        Ok(b) => Some(b),
+        Err(e) => {
+            tracing::error!(error = %e, "ebook: failed to parse bundled epub");
+            None
         }
     }
 }
@@ -249,9 +338,9 @@ const TIDEGLASS: &[(&str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    //! Discovery is exercised against a real temp directory via the
-    //! `EBOOK_LIBRARY_DIR` override. The env-var tests are `#[serial]` because
-    //! the variable is process-global.
+    //! Discovery + import run against real temp directories. The tests that set
+    //! the process-global `EBOOK_LIBRARY_DIR` / `QOS_WORKSPACE_DIR` env vars are
+    //! `#[serial]` so cargo's default parallel runner can't race them.
 
     use super::*;
     use serial_test::serial;
@@ -266,48 +355,97 @@ mod tests {
 
     #[test]
     #[serial]
-    fn empty_library_dir_yields_an_empty_shelf() {
-        // The live shelf must never fabricate a book: with no epubs on disk the
-        // library is genuinely empty and the app shows its onboarding state.
+    fn a_fresh_library_is_empty() {
+        // No recorded books and nothing watched → a genuinely empty shelf. The
+        // app never fabricates a starter book.
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
-        let lib = load_library();
+        let mut doc = AutoCommit::new();
+        let lib = load_library(&mut doc);
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
-        assert!(lib.is_empty(), "no epubs on disk -> an empty shelf, no bundled book");
+        assert!(lib.is_empty(), "no epubs anywhere -> an empty shelf");
     }
 
     #[test]
     #[serial]
-    fn discovers_epubs_recursively_and_ignores_non_epubs() {
+    fn importing_a_path_adds_one_recorded_book() {
         let tmp = tempfile::tempdir().unwrap();
-        // Two real epubs, one nested one level down; plus a decoy non-epub.
-        std::fs::write(tmp.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
-        let sub = tmp.path().join("shelf");
+        let path = tmp.path().join("book.epub");
+        std::fs::write(&path, SAMPLE_EPUB).unwrap();
+        let mut doc = AutoCommit::new();
+
+        let book = import_path(&mut doc, &path).expect("a real epub imports");
+        assert!(book.id.starts_with("book:"), "the import produced a content id");
+        // Recorded once, and hydrating the library yields exactly that book.
+        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
+        let lib = load_library(&mut doc);
+        assert_eq!(lib.len(), 1, "the imported book is on the shelf");
+        assert_eq!(lib[0].book.id, book.id);
+        assert_eq!(lib[0].path, path);
+
+        // Importing the very same file again does not duplicate the shelf entry.
+        import_path(&mut doc, &path).unwrap();
+        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1, "same file → one entry");
+    }
+
+    #[test]
+    #[serial]
+    fn a_watched_folder_auto_imports_new_books() {
+        let watched = tempfile::tempdir().unwrap();
+        std::fs::write(watched.path().join("alpha.epub"), SAMPLE_EPUB).unwrap();
+        let sub = watched.path().join("nested");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("beta.EPUB"), SAMPLE_EPUB).unwrap();
-        std::fs::write(tmp.path().join("readme.txt"), b"not a book").unwrap();
+        std::fs::write(watched.path().join("readme.txt"), b"not a book").unwrap();
 
-        unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
-        let lib = load_library();
-        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
-
-        // Both epubs found (case-insensitive extension, shallow recursion); the
-        // .txt is skipped; and since epubs were found there is no starter added.
-        assert_eq!(lib.len(), 2, "both epubs discovered, non-epub ignored");
+        let mut doc = AutoCommit::new();
+        BooksDoc::write_watched_folders(&mut doc, &[watched.path().to_path_buf()]);
+        let lib = load_library(&mut doc);
+        // Both epubs are the *same bytes*, so they share a content id and collapse
+        // to a single library entry — the non-epub is ignored.
+        assert_eq!(lib.len(), 1, "watched epubs imported (deduped by content), .txt ignored");
     }
 
     #[test]
     #[serial]
-    fn multiple_roots_are_all_scanned() {
-        let a = tempfile::tempdir().unwrap();
-        let b = tempfile::tempdir().unwrap();
-        std::fs::write(a.path().join("one.epub"), SAMPLE_EPUB).unwrap();
-        std::fs::write(b.path().join("two.epub"), SAMPLE_EPUB).unwrap();
-        let joined = format!("{}:{}", a.path().display(), b.path().display());
-        unsafe { std::env::set_var(LIBRARY_DIR_ENV, &joined) };
-        let lib = load_library();
-        unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
-        assert_eq!(lib.len(), 2, "both colon-separated roots scanned");
+    fn a_book_on_the_workspace_is_shared_others_are_local() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let books_dir = workspace_books_dir();
+        std::fs::create_dir_all(&books_dir).unwrap();
+        let shared = books_dir.join("shared.epub");
+        std::fs::write(&shared, SAMPLE_EPUB).unwrap();
+
+        let local = tempfile::tempdir().unwrap();
+        let local_path = local.path().join("local.epub");
+
+        assert!(is_shared(&shared), "a /workspace/Books path is shared");
+        assert!(!is_shared(&local_path), "a book elsewhere is device-local");
+        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
+    }
+
+    #[test]
+    #[serial]
+    fn sharing_copies_the_book_onto_the_workspace_keeping_its_identity() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var(WORKSPACE_DIR_ENV, ws.path()) };
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("mine.epub");
+        std::fs::write(&src, SAMPLE_EPUB).unwrap();
+
+        let mut doc = AutoCommit::new();
+        let before = import_path(&mut doc, &src).unwrap();
+        assert!(!is_shared(&src));
+
+        let (after, dest) = share_to_workspace(&mut doc, &src).expect("share succeeds");
+        assert!(is_shared(&dest), "the copy lands on the workspace");
+        assert!(dest.exists(), "the file was actually copied");
+        assert_eq!(after.id, before.id, "identity (and thus annotations/progress) is preserved");
+        // The library now points at the shared copy — one entry, shared home.
+        let entries = BooksDoc::read_library_entries(&doc);
+        assert_eq!(entries.len(), 1);
+        assert!(is_shared(&entries[0].path), "the recorded home is now the workspace");
+        unsafe { std::env::remove_var(WORKSPACE_DIR_ENV) };
     }
 
     #[test]

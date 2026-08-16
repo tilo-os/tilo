@@ -23,6 +23,7 @@
 //!   out of the document so two readers can browse independently.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -45,7 +46,7 @@ use ui::theme::Theme;
 use ui::widget::{EditableLabel, EditOutcome, FlapState, SplitLayout, Widget};
 use ui::ColorCompat;
 
-use crate::content::load_library;
+use crate::content::{self, is_shared};
 use crate::doc::BooksDoc;
 use crate::model::{
     default_fonts, default_schemes, now_ms, AnnoKind, Annotation, Book, ColorScheme, FontEntry,
@@ -102,6 +103,8 @@ enum View {
 enum SettingsTab {
     Fonts,
     Colours,
+    /// Library management: the folders watched for new books.
+    Library,
 }
 
 /// An in-progress inline rename (font display name or scheme name), backed by
@@ -322,9 +325,17 @@ enum Action {
     EditComment(Uuid),
     /// Delete one comment from a highlight.
     DeleteComment(Uuid),
-    /// Re-scan the on-disk library directories (the empty-shelf affordance —
-    /// picks up `.epub` files added to the Books folder without a restart).
-    ReloadLibrary,
+    /// Open a book from anywhere through the host file picker. The chosen book
+    /// opens immediately and is added to the library. This is the primary way in.
+    OpenViaPortal,
+    /// Copy a local book (by library index) into the collaborative workspace so
+    /// the workspace's peers can read it too.
+    ShareToWorkspace(usize),
+    /// Remove a book (by library index) from the shelf. Its annotations +
+    /// progress are kept, keyed by content id, so re-adding the file restores them.
+    RemoveFromLibrary(usize),
+    /// Start / stop watching a folder for new books (Library settings pane).
+    ToggleWatchFolder(PathBuf),
 
     // --- settings screen: navigation -------------------------------------
     OpenSettings,
@@ -450,6 +461,23 @@ impl BooksApp {
 pub struct BooksApp {
     // --- parsed content (render cache, regenerable; not in the CRDT) -------
     library: Vec<Book>,
+    /// Where each book's `.epub` lives, keyed by content id. Drives the
+    /// shared-vs-local badge and the "share to workspace" / re-open paths. The
+    /// durable record is the CRDT library ([`BooksDoc`]); this is its cache.
+    library_paths: HashMap<String, PathBuf>,
+    /// Whether the persisted library has been hydrated from the document yet.
+    /// The live app starts empty and loads on the first `sync` (when the document
+    /// is available); shot/test builds pass an explicit library and skip this.
+    library_loaded: bool,
+    /// A book handed to the app by the OS (file association) to open + import on
+    /// the first `sync`.
+    pending_open_path: Option<PathBuf>,
+    /// An in-flight host file-picker request, drained once per frame in `sync`.
+    /// `None` when no picker is open — the app never draws its own picker (HIG §5).
+    portal_rx: Option<crate::portal::PortalChannel>,
+    /// A message to surface on the empty state when opening a book failed (a
+    /// dismissed/unavailable picker, or a file that wasn't a readable book).
+    load_error: Option<String>,
 
     // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
@@ -615,6 +643,8 @@ pub struct BooksApp {
     default_font_menu: bool,
     /// Persisted shelf preferences (sort order + hide-read) and the sort menu.
     library_prefs: crate::model::LibraryPrefs,
+    /// Cache of the folders watched for new books (edited in Settings › Library).
+    watched_folders: Vec<PathBuf>,
     sort_menu: bool,
     /// Scheme id currently open in the colour editor, if any.
     editing_scheme: Option<String>,
@@ -644,6 +674,9 @@ pub struct BooksApp {
     /// lived-in registry (a custom font, a custom scheme). Shot-only.
     shot_fonts: Option<Vec<FontEntry>>,
     shot_schemes: Option<Vec<ColorScheme>>,
+    /// Watched folders a `--shots` scenario seeds through the real document path
+    /// so the Library settings pane shows a folder already being watched.
+    shot_watched: Option<Vec<PathBuf>>,
     /// A `--shots` scenario that wants the on-page note composer open: seed a
     /// note anchored to the staged selection on the next sync. Shot-only.
     shot_compose: bool,
@@ -676,8 +709,14 @@ pub struct BooksApp {
 }
 
 impl BooksApp {
+    /// The live app. Starts on an empty shelf and hydrates the reader's persisted
+    /// library from the document on the first `sync` — the shelf, not a book, is
+    /// home.
     pub fn new() -> Self {
-        Self::with_library(load_library())
+        let mut app = Self::with_library(Vec::new());
+        app.library_loaded = false;
+        app.view = View::Library;
+        app
     }
 
     pub(crate) fn with_library(library: Vec<Book>) -> Self {
@@ -687,6 +726,13 @@ impl BooksApp {
         let view = if library.is_empty() { View::Library } else { View::Reader };
         Self {
             library,
+            library_paths: HashMap::new(),
+            // A caller-supplied library (tests / shots) is authoritative; the live
+            // `new()` clears this so the document load runs.
+            library_loaded: true,
+            pending_open_path: None,
+            portal_rx: None,
+            load_error: None,
             rect: Rect::ZERO,
             dirty: true,
             view,
@@ -749,6 +795,7 @@ impl BooksApp {
             pick_hue: Rect::ZERO,
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
+            watched_folders: Vec::new(),
             sort_menu: false,
             editing_scheme: None,
             font_picker: false,
@@ -766,6 +813,7 @@ impl BooksApp {
             shot_settings: None,
             shot_fonts: None,
             shot_schemes: None,
+            shot_watched: None,
             shot_compose: false,
             shot_comments: false,
             settled_toc: None,
@@ -778,13 +826,13 @@ impl BooksApp {
     }
 
     /// Build the reader pointed at a single opened `.epub` (OS file
-    /// association). Falls back to the normal library if the file can't be
-    /// parsed, so a bad hand-off still opens something usable.
+    /// association). The book is imported into the library and opened on the
+    /// first `sync`; the rest of the reader's shelf loads alongside it.
     pub fn open_path(path: &std::path::Path) -> Self {
-        match crate::content::open_epub_path(path) {
-            Some(book) => Self::with_library(vec![book]),
-            None => Self::new(),
-        }
+        let mut app = Self::new();
+        app.pending_open_path = Some(path.to_path_buf());
+        app.view = View::Reader;
+        app
     }
 
     fn num_chapters(&self) -> usize {
@@ -866,24 +914,47 @@ impl BooksApp {
     /// * `select`  — a paragraph selected, floating the selection toolbar.
     /// * anything else — the reader on the first sample book (clean page).
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
-        // The shelf/read scenarios render the *real* disk-discovered library
-        // (used to verify discovery + cover decoding + a clean first-open with
-        // no fabricated marks), so they deliberately do not enter demo mode.
-        if scenario == "shelf" {
+        // Shot builds pass an explicit (sample) library and must never have the
+        // document-load path overwrite it.
+        self.library_loaded = true;
+
+        // The onboarding scenario is the one that stays genuinely empty, so the
+        // "open your first book" zero-state can be captured.
+        if scenario == "onboarding" {
             self.view = View::Library;
             return;
         }
-        if scenario == "read" {
-            self.view = View::Reader;
-            return;
-        }
+
         self.demo = true;
         self.library = crate::content::load_sample_library();
         self.book_idx = 0;
         self.chapter = 0;
         self.page = 0;
+        // Give the sample shelf a lived-in mix of homes: one book on the shared
+        // workspace (so the shelf shot proves the "Shared" badge), the rest local.
+        self.library_paths.clear();
+        for (i, b) in self.library.iter().enumerate() {
+            let path = if i == 1 {
+                content::workspace_books_dir().join("field-notes.epub")
+            } else {
+                PathBuf::from(format!("/home/reader/Books/book-{i}.epub"))
+            };
+            self.library_paths.insert(b.id.clone(), path);
+        }
         match scenario {
-            "library" => self.view = View::Library,
+            "shelf" | "library" => self.view = View::Library,
+            "read" => self.view = View::Reader,
+            "settings-library" => {
+                // The Library settings pane: the folders books were opened from,
+                // one already being watched for new additions.
+                self.view = View::Settings;
+                self.settings_tab = SettingsTab::Library;
+                self.shot_watched = Some(vec![PathBuf::from("/home/reader/Books")]);
+                self.library_paths.clear();
+                self.library_paths.insert("book:a".into(), PathBuf::from("/home/reader/Books/one.epub"));
+                self.library_paths.insert("book:b".into(), PathBuf::from("/home/reader/Downloads/two.epub"));
+                self.library_paths.insert("book:c".into(), PathBuf::from("/var/workspace/Books/shared.epub"));
+            }
             "serif" => {
                 // The reader with a serif body face applied — through the real
                 // settings path, so it exercises serif shaping end to end.
@@ -1141,6 +1212,25 @@ impl BooksApp {
         }
         self.seeded = true;
 
+        // Seed a spread of reading progress across the sample shelf so the
+        // library shot shows real progress bars, a "recently opened" ordering,
+        // and a couple of finished books. Demo-only, like every seed here.
+        let fracs = [0.34_f32, 0.72, 0.08, 0.5, 1.0];
+        let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let f = fracs[i % fracs.len()];
+            BooksDoc::write_progress(
+                doc,
+                id,
+                &Progress {
+                    chapter: 0,
+                    page: (f * 6.0) as usize,
+                    fraction: f,
+                    opened: now_ms() - (i as u64) * 3_600_000,
+                },
+            );
+        }
+
         if !BooksDoc::list_annotations(doc).is_empty() {
             return;
         }
@@ -1209,6 +1299,7 @@ impl BooksApp {
         }
         self.schemes = BooksDoc::read_schemes(doc);
         self.library_prefs = BooksDoc::read_library_prefs(doc);
+        self.watched_folders = BooksDoc::read_watched_folders(doc);
 
         let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
         let cur_id = ids.get(self.book_idx).cloned().unwrap_or_default();
@@ -1282,27 +1373,166 @@ impl BooksApp {
     }
 
     // ======================================================================
+    // Library loading + the host file picker
+    // ======================================================================
+
+    /// Whether the book at library index `i` lives on the shared workspace. The
+    /// shelf draw resolves this inline (it takes `self.library` for the frame);
+    /// this is the by-index form the tests assert through.
+    #[cfg(test)]
+    fn book_is_shared(&self, i: usize) -> bool {
+        self.library
+            .get(i)
+            .and_then(|b| self.library_paths.get(&b.id))
+            .map(|p| is_shared(p))
+            .unwrap_or(false)
+    }
+
+    /// Hydrate the reader's persisted library from the document on first sync.
+    /// A book handed over by the OS is imported + opened; otherwise the shelf is
+    /// home. Shot/test builds pass an explicit library and never reach this.
+    fn ensure_library_loaded(&mut self, doc: &mut AutoCommit) {
+        if self.library_loaded || self.demo {
+            return;
+        }
+        self.library_loaded = true;
+
+        // Import a handed-over book first, so it is part of the loaded set.
+        let open_id = self
+            .pending_open_path
+            .take()
+            .and_then(|p| content::import_path(doc, &p).map(|b| b.id));
+
+        self.library.clear();
+        self.library_paths.clear();
+        for lb in content::load_library(doc) {
+            self.library_paths.insert(lb.book.id.clone(), lb.path);
+            self.library.push(lb.book);
+        }
+
+        match open_id.and_then(|id| self.library.iter().position(|b| b.id == id)) {
+            Some(i) => self.open_book_at(doc, i),
+            None => self.view = View::Library,
+        }
+    }
+
+    /// Open the book at library index `i` in the reader, restoring where the
+    /// reader left off and stamping the open time for the "recently opened" sort.
+    fn open_book_at(&mut self, doc: &mut AutoCommit, i: usize) {
+        if self.library.is_empty() {
+            return;
+        }
+        self.book_idx = i.min(self.library.len() - 1);
+        self.view = View::Reader;
+        let id = self.library[self.book_idx].id.clone();
+        let mut p = BooksDoc::read_progress(doc, &id);
+        let nchap = self.num_chapters().saturating_sub(1);
+        self.chapter = p.chapter.min(nchap);
+        self.page = p.page;
+        p.opened = now_ms();
+        BooksDoc::write_progress(doc, &id, &p);
+        self.clear_selection();
+        self.composing = None;
+        self.comment_group = None;
+        self.layout = None;
+        self.last_persisted = None;
+    }
+
+    /// Ask the host to choose a book to open. The round-trip runs on a worker
+    /// thread; the chosen path comes back over a channel drained each frame in
+    /// [`Self::drain_portal`]. A second request while one is in flight is ignored,
+    /// so a double-click can't stack two host dialogs.
+    fn request_open_via_portal(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.portal_rx = Some(crate::portal::request_open());
+        self.load_error = None;
+        self.dirty = true;
+    }
+
+    /// Drain a completed picker request, if any. Imports + opens the chosen book,
+    /// records a failure on the empty state, and clears the in-flight channel.
+    /// Never blocks — a still-pending picker stays installed for the next frame.
+    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = self.portal_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => self.import_and_open(doc, &path),
+                    // A cancel is not an error — leave the current view intact.
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+            }
+        }
+    }
+
+    /// Import the `.epub` at `path` into the library and open it in the reader.
+    /// Re-opening a book already on the shelf just re-opens it (no duplicate).
+    fn import_and_open(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        match content::import_path(doc, path) {
+            Some(book) => {
+                let id = book.id.clone();
+                self.library_paths.insert(id.clone(), path.to_path_buf());
+                let i = match self.library.iter().position(|b| b.id == id) {
+                    Some(i) => i,
+                    None => {
+                        self.library.push(book);
+                        self.library.len() - 1
+                    }
+                };
+                self.load_error = None;
+                self.open_book_at(doc, i);
+            }
+            None => {
+                self.load_error = Some("That file couldn't be opened as a book.".into());
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Re-scan the reader's watched folders and pull in any book not already on
+    /// the shelf. Cheap when nothing is new (already-known files are skipped) and
+    /// a no-op when no folders are watched, so it is safe to run on window focus.
+    fn rescan_watched(&mut self, doc: &mut AutoCommit) {
+        let known: std::collections::HashSet<PathBuf> =
+            self.library_paths.values().cloned().collect();
+        let mut changed = false;
+        for path in content::watched_epub_paths(doc) {
+            if known.contains(&path) {
+                continue;
+            }
+            if let Some(book) = content::import_path(doc, &path) {
+                let id = book.id.clone();
+                if !self.library.iter().any(|b| b.id == id) {
+                    self.library.push(book);
+                    changed = true;
+                }
+                self.library_paths.insert(id, path);
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    // ======================================================================
     // Action dispatch (event side — has the document)
     // ======================================================================
 
     fn dispatch(&mut self, action: Action, doc: &mut AutoCommit) {
         match action {
             Action::OpenBook(i) => {
-                self.book_idx = i.min(self.library.len().saturating_sub(1));
-                self.view = View::Reader;
-                let id = self.library[self.book_idx].id.clone();
-                let mut p = BooksDoc::read_progress(doc, &id);
-                let nchap = self.num_chapters().saturating_sub(1);
-                self.chapter = p.chapter.min(nchap);
-                self.page = p.page;
-                // Stamp the open time so the shelf's "recently opened" sort works.
-                p.opened = now_ms();
-                BooksDoc::write_progress(doc, &id, &p);
-                self.clear_selection();
-                self.composing = None;
-                self.comment_group = None;
-                self.layout = None;
-                self.last_persisted = None;
+                self.open_book_at(doc, i);
             }
             Action::Back => {
                 self.view = View::Library;
@@ -1559,19 +1789,46 @@ impl BooksApp {
                 }
                 self.perform_action(doc, crate::actions::delete_annotation_action(id));
             }
-            Action::ReloadLibrary => {
-                // Re-scan the on-disk library directories. If the reader has
-                // since dropped `.epub` files into their Books folder (as the
-                // empty-shelf hint suggests), this picks them up live. Stays on
-                // the shelf so the freshly discovered books are visible; only an
-                // explicit tap on a card enters the reader.
-                self.library = load_library();
-                self.cover_cache.clear();
-                self.book_idx = 0;
-                self.shelf_cursor = 0;
-                self.shelf_scroll = 0.0;
-                self.scroll_to_cursor = false;
+            Action::OpenViaPortal => {
+                self.request_open_via_portal();
+            }
+            Action::ShareToWorkspace(i) => {
+                let Some(book) = self.library.get(i) else { return };
+                let id = book.id.clone();
+                let Some(src) = self.library_paths.get(&id).cloned() else { return };
+                if let Some((_, dest)) = content::share_to_workspace(doc, &src) {
+                    // Same content id, new (shared) home: the shelf now reads it
+                    // as shared and its annotations/progress carry over untouched.
+                    self.library_paths.insert(id, dest);
+                    self.dirty = true;
+                }
+            }
+            Action::RemoveFromLibrary(i) => {
+                if i >= self.library.len() {
+                    return;
+                }
+                let removed = self.library.remove(i);
+                self.library_paths.remove(&removed.id);
+                self.cover_cache.remove(&removed.id);
+                BooksDoc::remove_library_entry(doc, &removed.id);
+                // Keep the reader pointed at a valid book after the shelf shrinks.
+                self.book_idx = self.book_idx.min(self.library.len().saturating_sub(1));
+                self.shelf_cursor = self.shelf_cursor.min(self.library.len().saturating_sub(1));
+                if self.library.is_empty() {
+                    self.view = View::Library;
+                }
                 self.layout = None;
+            }
+            Action::ToggleWatchFolder(folder) => {
+                let mut watched = BooksDoc::read_watched_folders(doc);
+                if let Some(pos) = watched.iter().position(|f| f == &folder) {
+                    watched.remove(pos);
+                } else {
+                    watched.push(folder);
+                }
+                BooksDoc::write_watched_folders(doc, &watched);
+                // Watching a folder pulls in any books already sitting in it.
+                self.rescan_watched(doc);
             }
 
             // --- settings screen: navigation -----------------------------
@@ -2627,6 +2884,10 @@ impl Widget for BooksApp {
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        // Hydrate the persisted library on the first frame (when the document is
+        // finally available), then pull in any book the host picker returned.
+        self.ensure_library_loaded(doc);
+        self.drain_portal(doc);
         if let Some(s) = self.shot_settings.take() {
             BooksDoc::write_settings(doc, &s);
         }
@@ -2635,6 +2896,9 @@ impl Widget for BooksApp {
         }
         if let Some(sc) = self.shot_schemes.take() {
             BooksDoc::write_schemes(doc, &sc);
+        }
+        if let Some(wf) = self.shot_watched.take() {
+            BooksDoc::write_watched_folders(doc, &wf);
         }
         self.seed_if_needed(doc);
         if self.shot_compose && self.composing.is_none() {
@@ -2800,6 +3064,12 @@ impl Widget for BooksApp {
         }
 
         match event {
+            // Regaining focus is a natural moment to notice books that appeared
+            // in a watched folder while the reader was elsewhere — no manual
+            // "reload". A no-op when nothing is watched or nothing is new.
+            WindowEvent::Focused(true) => {
+                self.rescan_watched(doc);
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 if p != self.cursor {
@@ -3524,6 +3794,47 @@ impl BooksApp {
         s
     }
 
+    /// A filled accent button with a centred label (and an optional leading `+`),
+    /// the single primary action on a screen. Pushes a hit for `action`.
+    #[allow(clippy::too_many_arguments)]
+    fn accent_button(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        label: &str,
+        with_plus: bool,
+        action: Action,
+    ) {
+        let radius = (rect.height() / 2.0).min(theme.tokens.radii.lg as f64 + 4.0);
+        paint::fill_round(scene, t, rect, radius, theme.accent_primary);
+        if self.is_hover(rect) {
+            // A soft white veil is the hover state on a filled accent surface.
+            paint::fill_round(scene, t, rect, radius, Color::from_rgba8(255, 255, 255, 26));
+        }
+        let ink = Color::from_rgb8(250, 250, 252);
+        let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
+        let glyph = if with_plus { 16.0 + 9.0 } else { 0.0 };
+        let group_w = glyph + lw as f64;
+        let gx = rect.x0 + (rect.width() - group_w) / 2.0;
+        let cy = (rect.y0 + rect.y1) / 2.0;
+        if with_plus {
+            paint::plus(scene, t, Rect::new(gx, cy - 8.0, gx + 16.0, cy + 8.0), ink, 2.0);
+        }
+        tr.draw_text_weighted(
+            scene,
+            label,
+            14.0,
+            ink,
+            t * Affine::translate((gx + glyph, cy - 9.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        self.push_hit(rect, action);
+    }
+
     /// A toggle switch (track + knob). `w`/`h` are the track size. Pushes a hit
     /// for `action` and returns the track rect.
     #[allow(clippy::too_many_arguments)]
@@ -3677,17 +3988,40 @@ impl BooksApp {
             None,
             TextWeight::Bold,
         );
-        let sub = match lib.len() {
-            1 => "1 book".to_string(),
-            n => format!("{n} books"),
-        };
-        tr.draw_text(scene, &sub, 12.0, c.text_dim, t * Affine::translate((r.x0 + 29.0, r.y0 + 32.0)), None);
+        // The count reads under the title only once there's something to count —
+        // on the empty state the onboarding speaks for itself.
+        if !lib.is_empty() {
+            let sub = match lib.len() {
+                1 => "1 book".to_string(),
+                n => format!("{n} books"),
+            };
+            tr.draw_text(scene, &sub, 12.0, c.text_dim, t * Affine::translate((r.x0 + 29.0, r.y0 + 32.0)), None);
+        }
 
-        // --- shelf controls (sort + hide-read), right of the top bar ------
+        // --- top-bar actions ---------------------------------------------
+        // The primary "Open book" action is always present, so there is always a
+        // way in that doesn't depend on any folder — right-aligned, accent-filled.
         let mut sort_btn = Rect::ZERO;
+        let btn_cy = r.y0 + (TOP_BAR - 34.0) / 2.0;
+        let open_label = "Open book";
+        let (olw, _) = tr.measure_weighted(open_label, 14.0, None, TextWeight::Semibold);
+        let open_w = olw as f64 + 25.0 + 32.0;
+        let open_x = r.x1 - 22.0 - open_w;
+        self.accent_button(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(open_x, btn_cy, open_x + open_w, btn_cy + 34.0),
+            open_label,
+            true,
+            Action::OpenViaPortal,
+        );
+
+        // --- shelf controls (sort + hide-read), left of the Open button ---
         if !lib.is_empty() {
             let cy = r.y0 + (TOP_BAR - 30.0) / 2.0;
-            let mut rx = r.x1 - 24.0;
+            let mut rx = open_x - 16.0;
             // Sort dropdown.
             let sort_label = format!("Sort · {}", self.library_prefs.sort.label());
             let (slw, _) = tr.measure_weighted(&sort_label, 13.0, None, TextWeight::Medium);
@@ -3713,60 +4047,9 @@ impl BooksApp {
             tr.draw_text_weighted(scene, hl, 13.0, c.text_dim, t * Affine::translate((rx, cy + 8.0)), None, TextWeight::Medium);
         }
 
-        // --- empty shelf --------------------------------------------------
+        // --- empty shelf: a composed, inviting onboarding -----------------
         if lib.is_empty() {
-            let cx = (r.x0 + r.x1) / 2.0;
-            let cy = (r.y0 + TOP_BAR + r.y1) / 2.0;
-            let head = "No books yet";
-            let (hw, _) = tr.measure_weighted(head, 18.0, None, TextWeight::Semibold);
-            tr.draw_text_weighted(
-                scene,
-                head,
-                18.0,
-                c.text_primary,
-                t * Affine::translate((cx - hw as f64 / 2.0, cy - 24.0)),
-                None,
-                TextWeight::Semibold,
-            );
-            let hint = "Add .epub files to your Books folder, then reload.";
-            let (tw2, _) = tr.measure(hint, 13.0, None);
-            tr.draw_text(
-                scene,
-                hint,
-                13.0,
-                c.text_dim,
-                t * Affine::translate((cx - tw2 as f64 / 2.0, cy + 4.0)),
-                None,
-            );
-            // A real, in-app action: re-scan the library directories so books
-            // dropped in after launch appear without restarting. (Browsing for a
-            // file needs a shell file-picker portal, which lives outside the app.)
-            let label = "Reload library";
-            let (bw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
-            let bh = 34.0;
-            let bwidth = bw as f64 + 34.0;
-            let bx = cx - bwidth / 2.0;
-            let by = cy + 30.0;
-            let brect = Rect::new(bx, by, bx + bwidth, by + bh);
-            let bhover = self.is_hover(brect);
-            paint::fill_round(
-                scene,
-                t,
-                brect,
-                bh / 2.0,
-                if bhover { theme.bg_hover } else { c.surfaces.overlay },
-            );
-            paint::stroke_round(scene, t, brect, bh / 2.0, c.border_standard, 1.0);
-            tr.draw_text_weighted(
-                scene,
-                label,
-                13.0,
-                c.text_primary,
-                t * Affine::translate((bx + 17.0, by + (bh - 13.0) / 2.0)),
-                None,
-                TextWeight::Medium,
-            );
-            self.push_hit(brect, Action::ReloadLibrary);
+            self.draw_empty_library(scene, t, tr, theme, &c);
             self.library = lib;
             return;
         }
@@ -3853,7 +4136,10 @@ impl BooksApp {
                 continue;
             }
             let focused = i == self.shelf_cursor;
-            self.draw_book_card(scene, t, tr, theme, book, orig, x, y, card_w, cover_h, focused);
+            // `self.library` is taken for the duration of the draw, so resolve
+            // shared-vs-local from the book's id + the path cache directly.
+            let shared = self.library_paths.get(&book.id).map(|p| is_shared(p)).unwrap_or(false);
+            self.draw_book_card(scene, t, tr, theme, book, orig, x, y, card_w, cover_h, focused, shared);
         }
         // Trailing "Add books" tile in the next free grid cell.
         {
@@ -3887,6 +4173,78 @@ impl BooksApp {
         }
 
         self.library = lib;
+    }
+
+    /// The onboarding shown when the library is empty: an emblem, a warm
+    /// headline, a plain-language explanation, and one primary action — open a
+    /// book from anywhere. No magic folder, no "reload"; the shelf fills itself
+    /// the moment the reader opens their first book.
+    fn draw_empty_library(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+    ) {
+        let r = self.rect;
+        let cx = (r.x0 + r.x1) / 2.0;
+        // Compose the block around a comfortable optical centre (a touch above
+        // true centre reads better for a stacked call-to-action).
+        let cy = r.y0 + TOP_BAR + (r.y1 - r.y0 - TOP_BAR) * 0.42;
+
+        // Emblem: a soft accent disc with an open-book mark and a small plus.
+        let disc_r = 40.0;
+        let disc_cy = cy - 96.0;
+        paint::circle(scene, t, Point::new(cx, disc_cy), disc_r, theme.accent_primary.with_alpha_factor(0.14));
+        paint::book(scene, t, Rect::new(cx - 20.0, disc_cy - 15.0, cx + 20.0, disc_cy + 15.0), theme.accent_primary, 2.0);
+        paint::circle(scene, t, Point::new(cx + 26.0, disc_cy + 24.0), 11.0, theme.accent_primary);
+        paint::plus(scene, t, Rect::new(cx + 18.0, disc_cy + 16.0, cx + 34.0, disc_cy + 32.0), Color::from_rgb8(250, 250, 252), 1.9);
+
+        let head = "Your library is empty";
+        let (hw, _) = tr.measure_weighted(head, 24.0, None, TextWeight::Bold);
+        tr.draw_text_weighted(scene, head, 24.0, c.text_primary, t * Affine::translate((cx - hw as f64 / 2.0, cy - 34.0)), None, TextWeight::Bold);
+
+        let body = "Open a book from anywhere — your device or a shared workspace. It's added to your library, so it's waiting here next time.";
+        let body_w = (r.width() * 0.6).clamp(280.0, 460.0);
+        let (_bw, _) = tr.measure(body, 14.0, Some(body_w as f32));
+        tr.draw_text(
+            scene,
+            body,
+            14.0,
+            c.text_dim,
+            t * Affine::translate((cx - body_w / 2.0, cy + 2.0)),
+            Some(body_w as f32),
+        );
+
+        // Primary call to action.
+        let cta_label = "Open a book…";
+        let (clw, _) = tr.measure_weighted(cta_label, 14.0, None, TextWeight::Semibold);
+        let cta_w = clw as f64 + 25.0 + 44.0;
+        let cta_h = 44.0;
+        let cta_y = cy + 62.0;
+        self.accent_button(
+            scene,
+            t,
+            tr,
+            theme,
+            Rect::new(cx - cta_w / 2.0, cta_y, cx + cta_w / 2.0, cta_y + cta_h),
+            cta_label,
+            true,
+            Action::OpenViaPortal,
+        );
+
+        // A quiet pointer to where watched folders are managed (secondary, never
+        // the only way in).
+        let hint = "Tip: add folders to watch in Settings › Library.";
+        let (thw, _) = tr.measure(hint, 12.5, None);
+        tr.draw_text(scene, hint, 12.5, c.text_dim.with_alpha_factor(0.75), t * Affine::translate((cx - thw as f64 / 2.0, cta_y + cta_h + 20.0)), None);
+
+        // Surface a picker failure (dismissed/unavailable) right under the CTA.
+        if let Some(err) = &self.load_error {
+            let (ew, _) = tr.measure(err, 12.5, Some((body_w) as f32));
+            tr.draw_text(scene, err, 12.5, c.semantic.danger, t * Affine::translate((cx - ew.min(body_w as f32) as f64 / 2.0, cta_y + cta_h + 44.0)), Some(body_w as f32));
+        }
     }
 
     /// The filtered + sorted display order of the shelf: original library
@@ -3979,6 +4337,7 @@ impl BooksApp {
         w: f64,
         cover_h: f64,
         focused: bool,
+        shared: bool,
     ) {
         let c = &theme.tokens.colors;
         let cover = Rect::new(x, y, x + w, y + cover_h);
@@ -4027,7 +4386,6 @@ impl BooksApp {
                     None,
                 );
             }
-            paint::spark(scene, t, Point::new(x + w - 26.0, y + 26.0), 7.0, ink.with_alpha_factor(0.8), 1.6);
 
             // Title in a serif display face (a book-cover convention), wrapped.
             let title_w = w - 32.0;
@@ -4060,6 +4418,29 @@ impl BooksApp {
                 Some(title_w as f32),
             );
         }
+        // Shared-vs-local badge, overlaid at the cover's top-right. A book on the
+        // workspace is available to everyone there; a local one lives only on
+        // this device. Both are labelled so the state reads at a glance.
+        {
+            let (label, bg, ink, glyph) = if shared {
+                ("Shared", theme.accent_primary, Color::from_rgb8(250, 250, 252), true)
+            } else {
+                ("Local", Color::from_rgba8(0, 0, 0, 150), Color::from_rgb8(235, 235, 240), false)
+            };
+            let (lw, _) = tr.measure_weighted(label, 11.0, None, TextWeight::Semibold);
+            let gly = if glyph { 16.0 } else { 0.0 };
+            let pw = 16.0 + gly + lw as f64;
+            let py = y + 14.0;
+            let pill = Rect::new(x + w - 14.0 - pw, py, x + w - 14.0, py + 20.0);
+            paint::fill_round(scene, t, pill, 10.0, bg);
+            let mut tx = pill.x0 + 8.0;
+            if glyph {
+                paint::people(scene, t, Rect::new(tx, py + 4.0, tx + 13.0, py + 16.0), ink, 1.4);
+                tx += 16.0;
+            }
+            tr.draw_text_weighted(scene, label, 11.0, ink, t * Affine::translate((tx, py + 4.0)), None, TextWeight::Semibold);
+        }
+
         // Keyboard focus draws a ring even without a pointer over the card, so
         // arrow-key navigation is visible; hover uses the same treatment.
         if focused {
@@ -4120,6 +4501,34 @@ impl BooksApp {
         if hit_bot > hit_top {
             self.push_hit(Rect::new(x, hit_top, x + w, hit_bot), Action::OpenBook(idx));
         }
+
+        // On hover, offer the two management actions the shelf owns for a book —
+        // as a bottom-right cluster over the cover foot. Share is only meaningful
+        // for a book not already on the workspace. Pushed AFTER the whole-card hit
+        // so they win the click where they overlap.
+        if hover && y >= self.rect.y0 + TOP_BAR {
+            let sh = 26.0;
+            let by = y + cover_h - sh - 8.0;
+            let mut right = x + w - 10.0;
+            if !shared {
+                let sl = "Share";
+                let (slw, _) = tr.measure_weighted(sl, 12.0, None, TextWeight::Semibold);
+                let sw = slw as f64 + 16.0 + 22.0;
+                let sx = right - sw;
+                let sr = Rect::new(sx, by, sx + sw, by + sh);
+                paint::fill_round(scene, t, sr, sh / 2.0, theme.accent_primary);
+                paint::people(scene, t, Rect::new(sx + 8.0, by + 6.0, sx + 22.0, by + 20.0), Color::from_rgb8(250, 250, 252), 1.4);
+                tr.draw_text_weighted(scene, sl, 12.0, Color::from_rgb8(250, 250, 252), t * Affine::translate((sx + 26.0, by + 6.0)), None, TextWeight::Semibold);
+                self.push_hit(sr, Action::ShareToWorkspace(idx));
+                right = sx - 8.0;
+            }
+            // Remove — a small dark disc with a trash glyph.
+            let rr = sh / 2.0;
+            let rc = Point::new(right - rr, by + rr);
+            paint::circle(scene, t, rc, rr, Color::from_rgba8(0, 0, 0, 180));
+            paint::trash(scene, t, Rect::new(rc.x - 8.0, rc.y - 8.0, rc.x + 8.0, rc.y + 8.0), Color::from_rgb8(240, 240, 244), 1.5);
+            self.push_hit(Rect::new(rc.x - rr, rc.y - rr, rc.x + rr, rc.y + rr), Action::RemoveFromLibrary(idx));
+        }
     }
 
     /// The trailing "Add books" tile — a standing affordance to bring more
@@ -4177,40 +4586,30 @@ impl BooksApp {
             2.2,
         );
 
-        // Title + drop-target hint, centred under the mark.
-        let title = "Add books";
+        // Title + hint, centred under the mark.
+        let title = "Add a book";
         let (tw, _) = tr.measure_weighted(title, 15.0, None, TextWeight::Semibold);
         tr.draw_text_weighted(
             scene,
             title,
             15.0,
             c.text_primary,
-            t * Affine::translate((cx - tw as f64 / 2.0, disc_cy + disc_r + 14.0)),
+            t * Affine::translate((cx - tw as f64 / 2.0, disc_cy + disc_r + 16.0)),
             None,
             TextWeight::Semibold,
         );
-        let hint = "Drop EPUB files here";
+        let hint = "Open from anywhere";
         let (hw, _) = tr.measure(hint, 12.0, None);
         tr.draw_text(
             scene,
             hint,
             12.0,
             c.text_dim,
-            t * Affine::translate((cx - hw as f64 / 2.0, disc_cy + disc_r + 36.0)),
-            None,
-        );
-        let hint2 = "or tap to reload your library";
-        let (h2w, _) = tr.measure(hint2, 12.0, None);
-        tr.draw_text(
-            scene,
-            hint2,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((cx - h2w as f64 / 2.0, disc_cy + disc_r + 54.0)),
+            t * Affine::translate((cx - hw as f64 / 2.0, disc_cy + disc_r + 38.0)),
             None,
         );
 
-        self.push_hit(tile, Action::ReloadLibrary);
+        self.push_hit(tile, Action::OpenViaPortal);
     }
 }
 
@@ -5854,7 +6253,11 @@ impl BooksApp {
         let tabs_y = r.y0 + TOP_BAR + 10.0;
         let tab_h = 38.0;
         let mut tx = r.x0 + 26.0;
-        for (tab, label) in [(SettingsTab::Fonts, "Fonts"), (SettingsTab::Colours, "Colour schemes")] {
+        for (tab, label) in [
+            (SettingsTab::Library, "Library"),
+            (SettingsTab::Fonts, "Fonts"),
+            (SettingsTab::Colours, "Colour schemes"),
+        ] {
             let active = self.settings_tab == tab;
             let (lw, _) = tr.measure_weighted(label, 14.0, None, TextWeight::Semibold);
             let tab_rect = Rect::new(tx, tabs_y, tx + lw as f64 + 24.0, tabs_y + tab_h);
@@ -5896,6 +6299,7 @@ impl BooksApp {
         let col_x = r.x0 + (r.width() - col_w) / 2.0;
         let start_y = content_top - self.settings_scroll;
         let end_y = match self.settings_tab {
+            SettingsTab::Library => self.draw_library_settings(scene, t, tr, theme, &c, col_x, col_w, start_y),
             SettingsTab::Fonts => self.draw_fonts_manager(scene, t, tr, theme, &c, col_x, col_w, start_y),
             SettingsTab::Colours => self.draw_schemes_manager(scene, t, tr, theme, &c, col_x, col_w, start_y),
         };
@@ -5916,6 +6320,113 @@ impl BooksApp {
         if self.picker.is_some() {
             self.draw_color_picker(scene, t, tr, theme, &c);
         }
+    }
+
+    /// The Library settings pane: manage the folders watched for new books.
+    /// Watched folders are the *secondary* way books enter the library —
+    /// explicit and listed here, never a hidden magic folder — while "Open a
+    /// book" stays the primary way in.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_library_settings(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        c: &ui::tokens::colors::Colors,
+        x: f64,
+        w: f64,
+        mut y: f64,
+    ) -> f64 {
+        let radii_md = theme.tokens.radii.md as f64;
+        let home = std::env::var("HOME").ok();
+        let ws = content::workspace_root();
+        // Present folders in human terms — never a raw internal mount (HIG §4):
+        // the workspace reads as "Workspace", the reader's home as "~".
+        let pretty = |p: &std::path::Path| -> String {
+            if let Ok(rest) = p.strip_prefix(&ws) {
+                let rest = rest.to_string_lossy();
+                return if rest.is_empty() { "Workspace".to_string() } else { format!("Workspace / {rest}") };
+            }
+            let s = p.to_string_lossy().to_string();
+            match &home {
+                Some(h) if !h.is_empty() && s.starts_with(h.as_str()) => {
+                    format!("~{}", &s[h.len()..])
+                }
+                _ => s,
+            }
+        };
+
+        // A short read on where books come from — no leaked internal paths, no
+        // "magic folder": the primary way in is opening a book.
+        tr.draw_text_weighted(scene, "WATCHED FOLDERS", 11.0, c.text_dim, t * Affine::translate((x, y)), None, TextWeight::Semibold);
+        y += 20.0;
+        tr.draw_text(
+            scene,
+            "Turn a folder on to add its books to your library automatically, and to keep noticing new ones. Everything you open is added to your library either way.",
+            12.5,
+            c.text_dim,
+            t * Affine::translate((x, y)),
+            Some(w as f32),
+        );
+        y += 40.0;
+
+        // Candidate folders: the ones already watched, plus the folders the
+        // reader has actually opened books from — so there is always something
+        // concrete to toggle, with no folder picker required.
+        let mut folders: Vec<PathBuf> = self.watched_folders.clone();
+        for p in self.library_paths.values() {
+            if let Some(parent) = p.parent() {
+                let parent = parent.to_path_buf();
+                if !folders.contains(&parent) {
+                    folders.push(parent);
+                }
+            }
+        }
+        folders.sort();
+        folders.dedup();
+
+        if folders.is_empty() {
+            let card = Rect::new(x, y, x + w, y + 84.0);
+            paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
+            tr.draw_text_weighted(scene, "No folders yet", 14.0, c.text_primary, t * Affine::translate((x + 18.0, y + 18.0)), None, TextWeight::Semibold);
+            tr.draw_text(scene, "Open a book from a folder and it will appear here, ready to watch.", 12.5, c.text_dim, t * Affine::translate((x + 18.0, y + 42.0)), Some((w - 36.0) as f32));
+            y += 84.0 + 16.0;
+            let bw = 150.0;
+            self.accent_button(scene, t, tr, theme, Rect::new(x, y, x + bw, y + 40.0), "Open a book…", true, Action::OpenViaPortal);
+            y += 40.0;
+            return y;
+        }
+
+        for folder in &folders {
+            let row_h = 60.0;
+            let card = Rect::new(x, y, x + w, y + row_h);
+            paint::fill_round(scene, t, card, radii_md, c.surfaces.raised);
+
+            let watched = self.watched_folders.iter().any(|f| f == folder);
+            let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| pretty(folder));
+            tr.draw_text_weighted(scene, &name, 15.0, c.text_primary, t * Affine::translate((x + 18.0, y + 12.0)), Some((w - 100.0) as f32), TextWeight::Semibold);
+            tr.draw_text(scene, &pretty(folder), 12.0, c.text_dim, t * Affine::translate((x + 18.0, y + 34.0)), Some((w - 100.0) as f32));
+
+            // Watch toggle at the row's right edge.
+            let tog_w = 44.0;
+            let tog_h = 24.0;
+            self.switch(
+                scene,
+                t,
+                theme,
+                c,
+                x + w - 18.0 - tog_w,
+                y + (row_h - tog_h) / 2.0,
+                tog_w,
+                tog_h,
+                watched,
+                Action::ToggleWatchFolder(folder.clone()),
+            );
+            y += row_h + 12.0;
+        }
+
+        y
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7685,67 +8196,183 @@ mod interaction_tests {
         assert_eq!(app.shelf_cursor, 1, "down stepped one row (one book) in a single column");
     }
 
-    // ---- empty-shelf reload (was a static dead end) -------------------------
+    // ---- library: open-from-anywhere, import, share ------------------------
 
     #[test]
-    #[serial]
-    fn live_constructor_starts_on_an_empty_shelf() {
-        // With no epubs discoverable, the live app opens onto the empty library
-        // onboarding — never a fabricated starter book.
-        let tmp = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", tmp.path()) };
+    fn live_constructor_starts_empty_on_the_library() {
+        // The live app opens onto the shelf (its home), empty until the document
+        // load on the first sync — never a fabricated starter book.
         let app = BooksApp::new();
-        unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
-        assert!(app.library.is_empty(), "live shelf is empty when no epubs are present");
-        assert_eq!(app.view, View::Library, "empty shelf opens the library view, not a book");
+        assert!(app.library.is_empty(), "no books before the document is loaded");
+        assert_eq!(app.view, View::Library, "the shelf is home, not a book");
+        assert!(!app.library_loaded, "the persisted library loads on first sync");
     }
 
     #[test]
-    #[serial]
-    fn empty_shelf_reload_button_repopulates_via_the_real_load_path() {
-        // Start on a genuinely empty shelf (discovery finds nothing)…
-        let empty = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", empty.path()) };
+    fn the_empty_shelf_onboards_with_open_book_not_a_reload() {
+        // The empty state offers the primary way in — open a book from anywhere —
+        // and never asks the reader to drop files in a magic folder and reload.
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
-        frame(&mut app, &mut doc, 900.0, 640.0);
-        assert!(app.library.is_empty(), "starts on a genuinely empty shelf");
-        assert_eq!(app.view, View::Library);
-
-        // …then place a real epub where discovery looks, so a reload has an
-        // observable effect through the real load path (no fabricated fallback).
-        let full = tempfile::tempdir().unwrap();
-        std::fs::write(full.path().join("book.epub"), crate::content::SAMPLE_EPUB).unwrap();
-        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", full.path()) };
-
-        let reload = find_hit(&app, |a| matches!(a, Action::ReloadLibrary))
-            .expect("empty shelf offers a Reload button");
-        assert!(click(&mut app, &mut doc, reload), "reload click handled");
-        assert!(!app.library.is_empty(), "reload discovered books through the real load path");
-
-        unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        assert!(app.library.is_empty());
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::OpenViaPortal)).is_some(),
+            "the empty shelf offers an Open-book action"
+        );
     }
 
-    /// The OS file-association entry point: handing the reader a single `.epub`
-    /// path (as the compositor / default-app routing does, including a
-    /// `/var/workspace` FUSE path) opens straight into that book — no shelf
-    /// detour — with the real file parsed by the real loader.
+    /// The core of the redesign: opening a book by path imports it into the
+    /// library (so it's there next time) AND opens it. Exercised through the OS
+    /// file-association entry point, which drains on the first sync.
     #[test]
-    fn opening_a_book_by_path_lands_in_the_reader() {
+    fn opening_a_book_by_path_imports_it_and_opens_it() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("handed-off.epub");
         std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
-        let app = BooksApp::open_path(&path);
-        assert_eq!(app.view, View::Reader, "a handed-off book opens directly in the reader");
-        assert_eq!(app.library.len(), 1, "the reader holds exactly the opened book");
+
+        let mut app = BooksApp::open_path(&path);
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+
+        assert_eq!(app.view, View::Reader, "the handed-off book opens in the reader");
+        assert_eq!(app.library.len(), 1, "and is now on the shelf");
         assert!(!app.library[0].title.is_empty(), "the real epub parsed a title");
+        // Persisted, so it is there on the next launch.
+        assert_eq!(
+            BooksDoc::read_library_entries(&doc).len(),
+            1,
+            "the opened book is recorded in the library"
+        );
+    }
+
+    /// A book chosen through the host file picker loads through the per-frame
+    /// portal drain (the result is injected — no real dialog).
+    #[test]
+    fn a_picked_book_is_imported_and_opened_via_the_frame_drain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("picked.epub");
+        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        assert!(app.library.is_empty(), "starts empty");
+
+        app.portal_rx = Some(crate::portal::inject_for_test(
+            crate::portal::PortalOutcome::Opened(path),
+        ));
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.library.len(), 1, "the picked book joined the library");
+        assert_eq!(app.view, View::Reader, "and opened in the reader");
+        assert!(app.portal_rx.is_none(), "the portal channel clears after delivering");
+    }
+
+    /// The same file opened from two different paths resolves to one content-hash
+    /// identity, so its highlights and progress are shared — the whole point of
+    /// keying resources to the book, not the path or the device.
+    #[test]
+    fn the_same_book_from_two_paths_shares_one_identity() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let pa = a.path().join("from-downloads.epub");
+        let pb = b.path().join("from-usb-stick.epub");
+        std::fs::write(&pa, crate::content::SAMPLE_EPUB).unwrap();
+        std::fs::write(&pb, crate::content::SAMPLE_EPUB).unwrap();
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+
+        app.import_and_open(&mut doc, &pa);
+        let id = app.library[0].id.clone();
+        // A highlight made while reading the first copy.
+        BooksDoc::upsert_annotation(&mut doc, &Annotation::new(&id, AnnoKind::Highlight, 0, 1));
+        assert_eq!(BooksDoc::annotations_for(&doc, &id).len(), 1);
+
+        // Open the *same bytes* from a completely different path.
+        app.import_and_open(&mut doc, &pb);
+        assert_eq!(app.library.len(), 1, "same content → one book, not a duplicate");
+        assert_eq!(app.library[0].id, id, "identity is the content hash, not the path");
+        assert_eq!(
+            BooksDoc::annotations_for(&doc, &app.library[0].id).len(),
+            1,
+            "the highlight follows the book to the new path"
+        );
+    }
+
+    /// A book living on the collaborative workspace is surfaced as shared; a book
+    /// anywhere else is local.
+    #[test]
+    #[serial]
+    fn a_workspace_book_is_surfaced_as_shared() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", ws.path()) };
+        let books = crate::content::workspace_books_dir();
+        std::fs::create_dir_all(&books).unwrap();
+        let shared_path = books.join("shared.epub");
+        std::fs::write(&shared_path, crate::content::SAMPLE_EPUB).unwrap();
+
+        let local = tempfile::tempdir().unwrap();
+        let local_path = local.path().join("local.epub");
+        std::fs::write(&local_path, crate::content::SAMPLE_EPUB).unwrap();
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+
+        app.import_and_open(&mut doc, &shared_path);
+        let shared_idx = app.library.iter().position(|b| b.id == app.library[0].id).unwrap();
+        assert!(app.book_is_shared(shared_idx), "a /workspace/Books book reads as shared");
+
+        // The badge is drawn on the shelf: the shared pill's people-glyph action
+        // is absent (no Share button on an already-shared book).
+        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
+        let _ = local_path;
     }
 
     #[test]
-    fn populated_shelf_offers_an_add_books_affordance() {
-        // A shelf that already has books still shows the trailing "Add books"
-        // tile, so there is always a way to bring in more titles. Its hit target
-        // is ReloadLibrary — the same real re-scan path the empty shelf uses.
+    #[serial]
+    fn sharing_a_local_book_moves_it_onto_the_workspace() {
+        let ws = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_WORKSPACE_DIR", ws.path()) };
+        let home = tempfile::tempdir().unwrap();
+        let src = home.path().join("mine.epub");
+        std::fs::write(&src, crate::content::SAMPLE_EPUB).unwrap();
+
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        app.import_and_open(&mut doc, &src);
+        assert!(!app.book_is_shared(0), "starts local");
+
+        app.dispatch(Action::ShareToWorkspace(0), &mut doc);
+        assert!(app.book_is_shared(0), "sharing puts the book on the workspace");
+        unsafe { std::env::remove_var("QOS_WORKSPACE_DIR") };
+    }
+
+    #[test]
+    fn removing_a_book_takes_it_off_the_shelf_and_out_of_the_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("book.epub");
+        std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
+        let mut app = BooksApp::with_library(Vec::new());
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 720.0);
+        app.import_and_open(&mut doc, &path);
+        assert_eq!(app.library.len(), 1);
+        assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
+
+        app.dispatch(Action::RemoveFromLibrary(0), &mut doc);
+        assert!(app.library.is_empty(), "removed from the shelf");
+        assert!(BooksDoc::read_library_entries(&doc).is_empty(), "and from the registry");
+    }
+
+    #[test]
+    fn populated_shelf_offers_an_open_book_affordance() {
+        // A shelf that already has books still offers the trailing "Add a book"
+        // tile plus the top-bar Open action, so there is always a way in.
         let mut app = app_with_sample();
         app.view = View::Library;
         let mut doc = AutoCommit::new();
@@ -7756,8 +8383,8 @@ mod interaction_tests {
             "book cards are present on the shelf"
         );
         assert!(
-            find_hit(&app, |a| matches!(a, Action::ReloadLibrary)).is_some(),
-            "a populated shelf still offers an Add books / import affordance"
+            find_hit(&app, |a| matches!(a, Action::OpenViaPortal)).is_some(),
+            "a populated shelf still offers a way to add more books"
         );
     }
 
