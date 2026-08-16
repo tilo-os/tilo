@@ -35,7 +35,6 @@ use crate::merge_view::MergeView;
 use crate::samples;
 
 const TOOLBAR_H: f64 = 48.0;
-const STATUS_H: f64 = 26.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -89,6 +88,17 @@ pub struct DiffMergeApp {
     /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
     actions: ui::ActionHost,
+    /// The diff/merge summary, surfaced as a transient floating bubble
+    /// (see [`Self::draw_status_bubble`]) instead of a permanent bottom strip.
+    /// Poked only when the summary text actually changes, or held open while
+    /// the pointer hovers the bottom-right reveal zone; fades otherwise.
+    status_bubble: ui::StatusBubble,
+    /// The last summary string shown in the bubble. The bubble is poked only on
+    /// the transition to a *different* string, never every frame.
+    last_status: String,
+    /// `--shots`: forces the status bubble fully visible for the one headless
+    /// frame (there is no live pointer to hover the reveal zone).
+    shots_status: bool,
 }
 
 impl DiffMergeApp {
@@ -147,15 +157,27 @@ impl DiffMergeApp {
             dirty: true,
             structure_dirty: false,
             actions: ui::ActionHost::new(),
+            status_bubble: ui::StatusBubble::new(),
+            last_status: String::new(),
+            shots_status: false,
         }
     }
 
+    /// `--shots`: force the floating status bubble fully visible so a single
+    /// headless frame captures it (no live pointer hovers the reveal zone).
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
     fn content_rect(&self) -> Rect {
+        // No bottom status strip: the summary floats as a transient bubble
+        // (see `draw_status_bubble`), so the content spans to the window bottom.
         Rect::new(
             self.rect.x0,
             self.rect.y0 + TOOLBAR_H,
             self.rect.x1,
-            self.rect.y1 - STATUS_H,
+            self.rect.y1,
         )
     }
 
@@ -340,24 +362,16 @@ impl DiffMergeApp {
             &Line::new(Point::new(r.x0, r.y0 + TOOLBAR_H), Point::new(r.x1, r.y0 + TOOLBAR_H)),
         );
 
-        // App title.
-        tr.draw_text(
-            scene,
-            "Diff",
-            17.0,
-            c.text_primary,
-            transform * Affine::translate((r.x0 + 16.0, r.y0 + 14.0)),
-            None,
-        );
-
-        // Mode segmented control (shared pill-style segmented control).
+        // Mode segmented control (shared pill-style segmented control). The OS
+        // titlebar carries the app name, so no self-drawn wordmark here — the
+        // mode control claims the reclaimed left slot.
         let seg_y = r.y0 + 10.0;
         let seg_h = 28.0;
         let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
         let mode_actions = [Action::ModeDiff, Action::ModeMerge];
         let selected = if self.mode == Mode::Merge { 1 } else { 0 };
         let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
-        let mut x = r.x0 + 70.0;
+        let mut x = r.x0 + 16.0;
         for label in mode_labels {
             let w = label.len() as f64 * 7.4 + 22.0;
             mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
@@ -404,62 +418,77 @@ impl DiffMergeApp {
         }
     }
 
-    fn draw_status(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let r = self.rect;
-        let bar = Rect::new(r.x0, r.y1 - STATUS_H, r.x1, r.y1);
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &Line::new(Point::new(r.x0, r.y1 - STATUS_H), Point::new(r.x1, r.y1 - STATUS_H)),
-        );
+    /// The one-line summary the status bubble shows: a host-portal load error
+    /// takes over until the next successful open clears it, otherwise the
+    /// diff-mode change counts or the merge-mode hunk/conflict counts.
+    fn status_text(&self) -> String {
+        if let Some(err) = &self.load_error {
+            return err.clone();
+        }
+        match self.mode {
+            Mode::Diff => {
+                let m = self.diff.model();
+                let active = self
+                    .diff
+                    .active_block()
+                    .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
+                    .unwrap_or_default();
+                format!(
+                    "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
+                    m.added, m.removed, m.modified, m.blocks.len(), active
+                )
+            }
+            Mode::Merge => {
+                let m = self.merge.model();
+                format!(
+                    "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
+                    m.change_count(),
+                    m.resolved_count(),
+                    m.conflict_count(),
+                )
+            }
+        }
+    }
 
-        // A host-portal failure takes over the status line until the next
-        // successful open clears it.
-        let (text, tcol) = if let Some(err) = &self.load_error {
-            (err.clone(), c.semantic.danger)
-        } else {
-            let text = match self.mode {
-                Mode::Diff => {
-                    let m = self.diff.model();
-                    let active = self
-                        .diff
-                        .active_block()
-                        .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
-                        .unwrap_or_default();
-                    format!(
-                        "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
-                        m.added, m.removed, m.modified, m.blocks.len(), active
-                    )
-                }
-                Mode::Merge => {
-                    let m = self.merge.model();
-                    format!(
-                        "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
-                        m.change_count(),
-                        m.resolved_count(),
-                        m.conflict_count(),
-                    )
-                }
-            };
-            let tcol = match self.mode {
-                Mode::Merge if self.merge.model().conflict_count() > 0 => c.semantic.danger,
-                Mode::Merge => c.semantic.success,
-                _ => c.text_dim,
-            };
-            (text, tcol)
-        };
-        tr.draw_text(
-            scene,
-            &text,
-            12.0,
-            tcol,
-            transform * Affine::translate((r.x0 + 16.0, r.y1 - STATUS_H + 6.0)),
-            None,
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// window — the reclaimed home of the old full-width bottom status strip.
+    /// It surfaces on a real change to the summary (poked only when the string
+    /// differs) or while the pointer hovers the bottom-right reveal band, then
+    /// fades. All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let now = std::time::Instant::now();
+        let label = self.status_text();
+        // Poke only on a genuine change to the summary, never every frame.
+        if label != self.last_status {
+            self.status_bubble.poke(now);
+            self.last_status = label.clone();
+        }
+
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let r = self.rect;
+        let rect = Rect::new(r.x1 - margin - w, r.y1 - margin - h, r.x1 - margin, r.y1 - margin);
+
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the summary on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, r.x1, r.y1);
+        let over = self.shots_status || zone.contains(self.cursor);
+        self.status_bubble.set_hover(over, now);
+
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
         );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 }
 
@@ -568,7 +597,7 @@ impl Widget for DiffMergeApp {
         }
 
         self.draw_toolbar(scene, transform, tr, theme);
-        self.draw_status(scene, transform, tr, theme);
+        self.draw_status_bubble(scene, transform, tr, theme);
         self.dirty = false;
     }
 
@@ -711,7 +740,11 @@ impl Widget for DiffMergeApp {
     /// / offscreen path never has a picker pending, so it settles to zero
     /// frames).
     fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming while a host-portal open is in flight, and while
+        // the floating status bubble is lingering / fading (so it animates out
+        // and hides on its own). Idle otherwise.
         self.portal_rx.is_some()
+            || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn mark_drawn(&mut self) {
