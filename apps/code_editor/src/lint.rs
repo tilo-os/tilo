@@ -1,18 +1,81 @@
 //! A lightweight, language-agnostic linter that powers the Problems panel.
 //!
-//! This is intentionally *not* a language server — real diagnostics from an
-//! LSP are deferred (see the TODO in `app.rs`). Instead it runs a handful of
-//! cheap, genuinely-useful textual checks that hold for most code: trailing
+//! This is intentionally *not* a language server. It runs a handful of cheap,
+//! genuinely-useful textual checks that hold for most code: trailing
 //! whitespace, tab/space mixing, over-long lines, lonely `TODO`/`FIXME`
 //! markers, and unbalanced brackets. The result is real, position-accurate
-//! feedback the user can click through, with zero external process.
+//! feedback the user can click through, with zero external process — which is
+//! what makes it the right thing to show in the seconds or minutes before a
+//! language server has finished indexing, and for the many file types no
+//! language server covers.
 
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;
 
+/// Whether `language` writes lifetimes with `'`.
+///
+/// This gate matters more than it looks. In Python, JavaScript, TypeScript,
+/// shell, YAML and CSS a single quote *opens a string*, so treating a lone `'`
+/// as a lifetime would make the scanner read a string's contents as code and
+/// report the brackets inside it. Rust is the only language here where a lone
+/// `'` is ordinary and correct.
+fn has_lifetimes(language: Language) -> bool {
+    matches!(language, Language::Rust)
+}
+
+/// Whether the `'` at byte offset `at` in `line` opens a Rust lifetime rather
+/// than a character literal.
+///
+/// A char literal is `'x'` or an escape like `'\n'` — the quote has a partner
+/// within a couple of characters. A lifetime (`'a`, `'_`, `'static`) is a lone
+/// quote followed by an identifier. Deciding by looking for the partner is what
+/// distinguishes them without a real lexer.
+fn is_lifetime_tick(line: &str, at: usize) -> bool {
+    let rest = &line[at + 1..];
+    let mut it = rest.chars();
+    let Some(first) = it.next() else {
+        // A trailing quote at end of line closes nothing.
+        return true;
+    };
+    // `'\n'`, `'\''` — an escape is always a char literal.
+    if first == '\\' {
+        return false;
+    }
+    // `'x'` — a single character then its closing quote.
+    if it.next() == Some('\'') {
+        return false;
+    }
+    // Otherwise: a lone quote followed by an identifier character is a
+    // lifetime. Anything else (e.g. a quote inside prose) is treated as a
+    // lifetime too, since assuming "string" is the reading that corrupts the
+    // rest of the line.
+    first.is_alphanumeric() || first == '_'
+}
+
+/// How much of the linter to run.
+///
+/// The split is between checks that are *facts about the text* and checks that
+/// are *guesses about program structure*. Trailing whitespace, mixed
+/// indentation, line length and `TODO` markers are the first kind: a compiler
+/// never contradicts them, so they are worth showing at all times. Bracket
+/// balance is the second kind — it has no type information, no macro expansion
+/// and no crate graph, so wherever it disagrees with a real language server it
+/// is the scanner that is wrong. It is therefore only shown while no server has
+/// answered for the buffer. See [`crate::app::CodeApp::refresh_diagnostics`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Every check, structural scan included. What to show when there is no
+    /// better answer available — no server for this language, or one that has
+    /// not reported yet.
+    Full,
+    /// Textual checks only. Used once a language server has published
+    /// diagnostics for the buffer.
+    TextualOnly,
+}
+
 /// Run the linter over `text` for a given language. Returns diagnostics sorted
 /// by (line, col).
-pub fn lint(text: &str, language: Language) -> Vec<Diagnostic> {
+pub fn lint(text: &str, language: Language, scope: Scope) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let max_len = match language {
         Language::Rust => 100,
@@ -70,6 +133,10 @@ pub fn lint(text: &str, language: Language) -> Vec<Diagnostic> {
             });
         }
 
+        if scope == Scope::TextualOnly {
+            continue;
+        }
+
         // Bracket balance, skipping string/char/comment-ish content crudely.
         // Toggle a naive block-comment tracker for C-family languages.
         let mut chars = line.char_indices().peekable();
@@ -94,6 +161,14 @@ pub fn lint(text: &str, language: Language) -> Vec<Diagnostic> {
                 continue;
             }
             match ch {
+                // A single quote is not always a string. In Rust `<'_>`,
+                // `&'a str` and `'static` are lifetimes: one quote with no
+                // partner. Treating one as an unterminated char literal makes
+                // the scanner swallow the rest of the line — including the
+                // bracket that closes the signature — and report "Unclosed '('"
+                // on code that is perfectly valid. Opening real qOS sources
+                // produced eight such warnings on the first file.
+                '\'' if has_lifetimes(language) && is_lifetime_tick(line, bi) => {}
                 '"' | '\'' => {
                     in_string = true;
                     string_delim = ch;
@@ -164,38 +239,151 @@ mod tests {
 
     #[test]
     fn detects_trailing_whitespace() {
-        let d = lint("let x = 1;   \n", Language::Rust);
+        let d = lint("let x = 1;   \n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("Trailing whitespace")));
     }
 
     #[test]
     fn detects_unclosed_bracket() {
-        let d = lint("fn main() {\n", Language::Rust);
+        let d = lint("fn main() {\n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("Unclosed '{'")));
     }
 
     #[test]
     fn balanced_brackets_have_no_bracket_diagnostics() {
-        let d = lint("fn main() {}\n", Language::Rust);
+        let d = lint("fn main() {}\n", Language::Rust, Scope::Full);
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
         assert!(!d.iter().any(|x| x.message.contains("Unmatched")));
     }
 
     #[test]
     fn ignores_brackets_in_strings() {
-        let d = lint("let s = \"{[(\";\n", Language::Rust);
+        let d = lint("let s = \"{[(\";\n", Language::Rust, Scope::Full);
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
     }
 
     #[test]
     fn detects_todo_marker() {
-        let d = lint("// TODO: fix this\n", Language::Rust);
+        let d = lint("// TODO: fix this\n", Language::Rust, Scope::Full);
         assert!(d.iter().any(|x| x.message.contains("TODO")));
     }
 
     #[test]
     fn ignores_brackets_after_line_comment() {
-        let d = lint("let x = 1; // a comment with ( unbalanced\n", Language::Rust);
+        let d = lint("let x = 1; // a comment with ( unbalanced\n", Language::Rust, Scope::Full);
         assert!(!d.iter().any(|x| x.message.contains("Unclosed")));
+    }
+
+    /// The failure this exists to prevent: a lifetime is one quote with no
+    /// partner, so reading it as an unterminated char literal makes the scanner
+    /// swallow the rest of the line — including the `)` that closes the
+    /// signature — and report "Unclosed '('" on code that compiles.
+    #[test]
+    fn rust_lifetimes_are_not_read_as_char_literals() {
+        for src in [
+            "fn f<'a>(s: &'a str) -> &'a str { s }\n",
+            "impl<'a> Trait for Wrap<'a> {}\n",
+            "fn g(s: &'static str) { drop(s); }\n",
+            "fn h<'_a>(x: &'_ i32) { let _ = (x,); }\n",
+        ] {
+            let d = lint(src, Language::Rust, Scope::Full);
+            let noise: Vec<_> = d
+                .iter()
+                .filter(|x| x.message.contains("Unclosed") || x.message.contains("Unmatched"))
+                .map(|x| &x.message)
+                .collect();
+            assert!(noise.is_empty(), "{src:?} produced bracket noise: {noise:?}");
+        }
+    }
+
+    /// Char literals still close: the lifetime rule must not make the scanner
+    /// blind to a genuine `'x'`, or brackets inside one would be counted.
+    #[test]
+    fn rust_char_literals_still_hide_their_contents() {
+        let d = lint("fn main() { let c = '('; drop(c); }\n", Language::Rust, Scope::Full);
+        assert!(
+            !d.iter()
+                .any(|x| x.message.contains("Unclosed") || x.message.contains("Unmatched")),
+            "a '(' inside a char literal is not an unbalanced bracket: {:?}",
+            d.iter().map(|x| &x.message).collect::<Vec<_>>()
+        );
+        let esc = lint("fn main() { let c = '\\''; drop(c); }\n", Language::Rust, Scope::Full);
+        assert!(!esc.iter().any(|x| x.message.contains("Unclosed")));
+    }
+
+    /// The reason the lifetime rule is gated on the language. A single quote
+    /// opens a *string* in Python, so applying Rust's rule here would read the
+    /// string's contents as code and report the bracket inside it.
+    #[test]
+    fn single_quoted_strings_still_hide_brackets_in_other_languages() {
+        for (lang, src) in [
+            (Language::Python, "x = 'a) b'\nprint(x)\n"),
+            (Language::JavaScript, "const x = 'a) b';\n"),
+            (Language::Shell, "x='a) b'\n"),
+        ] {
+            let d = lint(src, lang, Scope::Full);
+            let noise: Vec<_> = d
+                .iter()
+                .filter(|x| x.message.contains("Unclosed") || x.message.contains("Unmatched"))
+                .map(|x| &x.message)
+                .collect();
+            assert!(
+                noise.is_empty(),
+                "{lang:?} {src:?} produced bracket noise: {noise:?}"
+            );
+        }
+    }
+
+    /// The linter is what the editor shows while a language server is still
+    /// indexing, so it must stay useful on a real source file: this is a
+    /// verbatim slice of qOS code, and it must lint clean.
+    #[test]
+    fn real_rust_source_lints_clean() {
+        let src = "\
+use std::path::Path;
+
+/// Resolve a path against a root.
+pub fn resolve<'a>(root: &'a Path, rel: &str) -> Option<&'a Path> {
+    if rel.is_empty() { return Some(root); }
+    let _ = (root, rel);
+    None
+}
+";
+        let d = lint(src, Language::Rust, Scope::Full);
+        assert!(
+            d.is_empty(),
+            "clean Rust should produce no diagnostics, got: {:?}",
+            d.iter().map(|x| (&x.message, x.line)).collect::<Vec<_>>()
+        );
+    }
+
+    /// `TextualOnly` drops the structural guess and keeps the textual facts.
+    /// Both halves are asserted: a scope that dropped everything would satisfy
+    /// the first assertion alone.
+    #[test]
+    fn textual_only_drops_structure_and_keeps_facts() {
+        let src = "fn main( {   \n    // TODO: later\n";
+        let full = lint(src, Language::Rust, Scope::Full);
+        assert!(
+            full.iter().any(|d| d.message.contains("Unclosed")),
+            "the full scan reports the unbalanced bracket"
+        );
+
+        let textual = lint(src, Language::Rust, Scope::TextualOnly);
+        assert!(
+            !textual
+                .iter()
+                .any(|d| d.message.contains("Unclosed") || d.message.contains("Unmatched")),
+            "structural guesses yield to the language server: {:?}",
+            textual.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+        assert!(
+            textual.iter().any(|d| d.message.contains("Trailing whitespace")),
+            "trailing whitespace is a fact about the text, not a guess"
+        );
+        assert!(
+            textual.iter().any(|d| d.message.contains("TODO")),
+            "a TODO marker is a fact about the text, not a guess"
+        );
     }
 }
