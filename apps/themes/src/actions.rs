@@ -374,8 +374,8 @@ mod tests {
         let builtin = lib
             .children
             .iter()
-            .find(|r| r.id.as_str() == "themes.theme:midnight")
-            .expect("the midnight preset resource");
+            .find(|r| r.id.as_str() == "themes.theme:qos-blue")
+            .expect("the qos-blue preset resource");
         let b_actions: Vec<&str> = builtin.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(b_actions.contains(&"apply"), "{b_actions:?}");
         assert!(b_actions.contains(&"duplicate"), "{b_actions:?}");
@@ -484,7 +484,7 @@ mod tests {
         let before_heads = doc.get_heads();
         let before = catalog(&doc);
 
-        let action = delete_custom_theme_action("midnight");
+        let action = delete_custom_theme_action("qos-blue");
         let encoded = encode(&action);
         let mut tx = LocalTransport::new();
         qos_actions::dispatch(&mut doc, &action, encoded, &mut tx).unwrap();
@@ -500,7 +500,7 @@ mod tests {
         let mut doc = seeded_doc();
         doc.commit();
         let before = catalog(&doc);
-        // Try to overwrite the midnight preset (claiming custom).
+        // Try to overwrite the qos-blue preset (claiming custom).
         let mut sneaky = presets()[0].clone();
         sneaky.builtin = false;
         sneaky.name = "Hijacked".into();
@@ -546,11 +546,11 @@ mod tests {
         let builtin = lib
             .children
             .iter()
-            .find(|r| r.id.as_str() == "themes.theme:midnight")
+            .find(|r| r.id.as_str() == "themes.theme:qos-blue")
             .unwrap();
         let apply_spec = builtin.actions.iter().find(|a| a.id == "apply").unwrap();
         let from_spec = immediate_encode(apply_spec);
-        let from_builder = encode(&set_active_theme_action("midnight"));
+        let from_builder = encode(&set_active_theme_action("qos-blue"));
         assert_eq!(from_spec.payload, from_builder.payload, "apply is one source of truth");
 
         // The rename spec == the rename builder for the same name.
