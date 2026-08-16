@@ -666,6 +666,21 @@ pub enum Capability {
     /// separately so a user can grant "let them watch" without also
     /// granting "let them type".
     RemoteDesktop { scope: GrantScope },
+    /// Submit a document to a printer via portal `Print`.
+    ///
+    /// Deliberately its own variant rather than a filesystem or device
+    /// grant reused. CUPS is an IPP daemon that enumerates
+    /// destinations and manages other users' jobs, so "may print" and
+    /// "may reach the print system" are not the same permission, and
+    /// folding printing into an existing variant would mean a grant
+    /// the user gave for something else silently authorised it.
+    ///
+    /// Note what granting this does **not** do: there is no arm for it
+    /// in `SandboxProfile::apply_grants`, so no bind mount is added and
+    /// `/run/cups/cups.sock` never appears inside the sandbox no
+    /// matter how broadly the capability is granted. The app hands the
+    /// compositor a file descriptor; the compositor talks to CUPS.
+    Print { scope: GrantScope },
     /// Outbound network access. `hosts: None` = "any host"; `hosts:
     /// Some(allowlist)` = "only these hosts".
     ///
@@ -831,6 +846,11 @@ impl Capability {
             Capability::RemoteDesktop { .. } => {
                 vec![(Scope::Device("remote-desktop".into()), Verb::Write)]
             }
+            // Printing is an *output* action — it produces a physical
+            // artifact somewhere the user may not be standing — so it
+            // asks for the write verb, not the read one a device probe
+            // would use.
+            Capability::Print { .. } => vec![(Scope::Device("printer".into()), Verb::Write)],
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts. `None` is the
                 // explicit "any host" request and is the only thing
@@ -854,6 +874,7 @@ impl Capability {
             | Capability::Microphone { scope }
             | Capability::Screencast { scope }
             | Capability::RemoteDesktop { scope }
+            | Capability::Print { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -876,6 +897,12 @@ impl Capability {
             Scope::Device(d) if d == "camera" => Some(Capability::Camera { scope }),
             Scope::Device(d) if d == "microphone" => Some(Capability::Microphone { scope }),
             Scope::Device(d) if d == "screencast" => Some(Capability::Screencast { scope }),
+            // Without this arm a stored print grant would not read back
+            // as one, so `GrantStoreHandle::lookup` would never see it
+            // and an `Always` grant would re-prompt on every job — the
+            // permission would look granted in the Permissions tab and
+            // behave as if it were not.
+            Scope::Device(d) if d == "printer" => Some(Capability::Print { scope }),
             Scope::NetHost(h) => Some(Capability::Network {
                 hosts: if h == "*" {
                     None

@@ -1516,6 +1516,10 @@ fn start_portal_backend(
         )),
         remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         documents: documents.clone(),
+        // The real spooler. Unlike the picker it needs no chrome and no
+        // live seat — it is a process invocation — and on a machine with
+        // no CUPS it reports no destinations rather than a fabricated one.
+        print_spooler: crate::portal::PrintSpoolerHandle::cups(),
     };
 
     let served = runtime.block_on(async {
