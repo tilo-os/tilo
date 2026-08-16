@@ -14,6 +14,7 @@
 //! | Check | Refuses |
 //! |---|---|
 //! | Kill switch | everything, until the host clears it |
+//! | Session lock | everything, until the host authenticates |
 //! | Physical priority | everything for [`PHYSICAL_PRIORITY_WINDOW`] after any local input |
 //! | Region | a coordinate outside the shared surface's content rect |
 //! | Z-order | a coordinate where that surface is not the topmost thing on screen |
@@ -99,6 +100,9 @@ mod keycode {
 pub enum Denial {
     /// The host hit the kill switch.
     KillSwitch,
+    /// The session is locked. Nobody drives this seat, least of all
+    /// someone who is not in the room.
+    SessionLocked,
     /// The host used their own keyboard or mouse within the last
     /// [`PHYSICAL_PRIORITY_WINDOW`].
     PhysicalPriority,
@@ -136,6 +140,7 @@ impl Denial {
     pub fn reason(self) -> &'static str {
         match self {
             Denial::KillSwitch => "kill-switch",
+            Denial::SessionLocked => "session-locked",
             Denial::PhysicalPriority => "physical-priority",
             Denial::ReadOnly => "read-only",
             Denial::NotShared => "not-shared",
@@ -172,6 +177,9 @@ pub struct ShellView {
     chrome_captures: bool,
     /// An overlay is open, so the shell grabs `Escape`.
     overlay_open: bool,
+    /// The session lock is up. Nothing on this screen belongs to anyone
+    /// until the host authenticates.
+    session_locked: bool,
     /// Set by every real publish. Distinguishes "nothing is on screen"
     /// from "nobody has looked".
     observed: bool,
@@ -190,8 +198,23 @@ impl ShellView {
             keyboard_focus,
             chrome_captures,
             overlay_open,
+            session_locked: false,
             observed: true,
         }
+    }
+
+    /// Mark the session locked. The lock surface covers the output and
+    /// takes every local keystroke; a remote peer must not be able to
+    /// drive what is underneath it, and the tile list says nothing about
+    /// the lock because the lock is not part of the tiled tree.
+    pub fn locked(mut self, locked: bool) -> Self {
+        self.session_locked = locked;
+        self
+    }
+
+    /// Whether the session lock is up.
+    pub fn session_locked(&self) -> bool {
+        self.session_locked
     }
 
     /// Whether the compositor has published anything at all.
@@ -348,6 +371,13 @@ impl RemoteInputFirewall {
     pub fn host_override(&self, now: Instant) -> Option<Denial> {
         if self.kill_switch {
             return Some(Denial::KillSwitch);
+        }
+        // The lock surface takes every local keystroke and covers the
+        // output, but it is not part of the tiled tree, so the tile list
+        // alone would still name a client as topmost underneath it.
+        // Refused here instead — a locked machine has no driver at all.
+        if self.view.session_locked {
+            return Some(Denial::SessionLocked);
         }
         if let Some(last) = self.last_local_input {
             if now.saturating_duration_since(last) < PHYSICAL_PRIORITY_WINDOW {
@@ -1484,6 +1514,36 @@ mod production_path {
         assert!(
             !key_is_down(&state, LEFT_META),
             "the compositor modifier reached the seat",
+        );
+    }
+
+    /// A locked session has no driver, remote least of all.
+    ///
+    /// The lock surface is not part of the tiled tree: the tiles under
+    /// it stay laid out and stay topmost as far as the tree knows, so
+    /// this is not covered by the z-order check and would otherwise be a
+    /// guest typing into a window the host needs a password to reach.
+    #[test]
+    fn a_locked_session_refuses_remote_input_that_would_otherwise_pass() {
+        let mut state = staged();
+
+        // Exactly the event the unlocked staging accepts.
+        state
+            .review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 10.0, y: 10.0 })
+            .expect("the same event is accepted while the session is unlocked");
+
+        state.remote_input_firewall.publish_view(
+            ShellView::new(vec![(SHARED, TILE)], Some(SHARED), false, false).locked(true),
+        );
+
+        let verdict =
+            state.review_remote_input(PEER, SHARED, InputEvent::PointerMotion { x: 20.0, y: 20.0 });
+
+        assert_eq!(verdict, Err(Denial::SessionLocked));
+        assert_eq!(
+            pointer_at(&state),
+            (110.0, 60.0),
+            "the pointer is still where the accepted event left it; the refused one moved it",
         );
     }
 

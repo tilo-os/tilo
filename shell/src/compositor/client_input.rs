@@ -1434,7 +1434,13 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
 /// is the point: a clickjacking check that walked the tree separately
 /// would eventually disagree with where a click really lands, and the
 /// disagreement would be the hole.
-pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder) {
+///
+/// `session_locked` has to be passed in because the lock surface is not
+/// part of the tiled tree: the tiles underneath it are still laid out
+/// and still topmost as far as the tree is concerned, so without this
+/// the firewall would clear a guest's click on a window the local user
+/// cannot reach without a password.
+pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_locked: bool) {
     let tiles: Vec<(u64, Rect)> = {
         let chrome = fb.chrome();
         let tree = chrome.tree();
@@ -1451,7 +1457,8 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder) {
         state.client_input.keyboard_focus(),
         chrome_captures_input(fb),
         fb.host().palette_visible(),
-    );
+    )
+    .locked(session_locked);
     state.remote_input_firewall.publish_view(view);
 }
 
@@ -2269,7 +2276,7 @@ mod tests {
         state
             .share_registry
             .insert(KILL_PEER, ORPHAN_SURFACE, StreamingShare::new());
-        publish_remote_input_view(&mut state, &fb);
+        publish_remote_input_view(&mut state, &fb, false);
 
         let view = state.remote_input_firewall.view();
         assert!(view.observed(), "the publisher has to publish something");
@@ -2288,6 +2295,34 @@ mod tests {
     }
 
     const ORPHAN_SURFACE: u64 = 900_003;
+
+    /// The lock surface is drawn by the session, not by the tiled tree,
+    /// so the tiles beneath it stay laid out and stay topmost as far as
+    /// the tree knows. The publisher has to carry the lock across, or a
+    /// guest keeps driving a window the host needs a password to reach.
+    #[test]
+    fn a_locked_session_is_carried_into_the_published_view() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, ORPHAN_SURFACE, Some("org.example.locked"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        let mut state = state_sharing(ORPHAN_SURFACE);
+        publish_remote_input_view(&mut state, &fb, false);
+        assert!(
+            !state.remote_input_firewall.view().session_locked(),
+            "an unlocked session must not publish itself as locked",
+        );
+
+        publish_remote_input_view(&mut state, &fb, true);
+        assert!(state.remote_input_firewall.view().session_locked());
+    }
 
     /// A `State` with a live seat, one peer holding write access to
     /// `surface`, and that surface on screen with the keyboard.
