@@ -396,36 +396,184 @@ pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
     true
 }
 
-/// Is this key event a compositor-level binding that must be handled by the
-/// shell *before* a focused client ever sees it?
+/// A key reduced to the shape chord classification cares about.
+///
+/// Exists so the chord table can be consulted from two directions. Local
+/// input arrives as a winit [`Key`]; input injected by a remote peer
+/// arrives as a bare evdev keycode off the wire. Both narrow to this enum
+/// and ask [`shell_owns_chord`], so the shell's list of grabbed chords and
+/// the list a guest is refused cannot drift apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChordKey {
+    Space,
+    Tab,
+    ArrowUp,
+    ArrowDown,
+    Escape,
+    Delete,
+    /// `F1`..`F12`, numbered from 1.
+    Function(u8),
+    /// A single printable character, already lowercased.
+    Char(char),
+    /// A bare modifier. Never a chord on its own — a client's xkb state
+    /// has to see modifier transitions or it desynchronises from the seat.
+    Modifier,
+    /// Anything the chord table has no opinion about.
+    Other,
+}
+
+/// The modifier mask a chord is evaluated against.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChordMods {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub logo: bool,
+}
+
+impl ChordMods {
+    /// The mask carried by an xkbcommon-style bitfield — the encoding the
+    /// peer-sync wire protocol uses for
+    /// [`crate::network::streaming::InputEvent::Key`].
+    pub fn from_xkb_bits(bits: u32) -> Self {
+        Self {
+            shift: bits & 0x1 != 0,
+            ctrl: bits & 0x4 != 0,
+            alt: bits & 0x8 != 0,
+            logo: bits & 0x40 != 0,
+        }
+    }
+
+    /// Union of two masks. Used where a mask is assembled from more than
+    /// one source and any bit set in either has to count.
+    pub fn union(self, other: Self) -> Self {
+        Self {
+            shift: self.shift || other.shift,
+            ctrl: self.ctrl || other.ctrl,
+            alt: self.alt || other.alt,
+            logo: self.logo || other.logo,
+        }
+    }
+}
+
+impl From<&Modifiers> for ChordMods {
+    fn from(m: &Modifiers) -> Self {
+        let s = m.state();
+        Self {
+            shift: s.shift_key(),
+            ctrl: s.control_key(),
+            alt: s.alt_key(),
+            logo: s.super_key(),
+        }
+    }
+}
+
+/// The shell's chord table, expressed once.
 ///
 /// Covers the shell's whole chord set: every `Super` chord (Super is the
 /// compositor modifier — `Super+L` lock, `Super+K` / `Super+Space` search,
-/// `Super+Tab` overview, `Super+Arrow` workspace switch), `Ctrl+K` /
-/// `Alt+Space` search, `Ctrl+Tab` overview, `Ctrl+Arrow` workspace switch,
-/// and `Escape` *only while an overlay is open* (an unconditional Escape
-/// grab would break every modal editor running as a client).
+/// `Super+Tab` overview, `Super+Arrow` workspace switch, `Super+Esc` the
+/// remote-input kill switch), `Ctrl+K` / `Alt+Space` search, `Ctrl+Tab`
+/// overview, `Ctrl+Arrow` workspace switch, and `Escape` *only while an
+/// overlay is open* (an unconditional Escape grab would break every modal
+/// editor running as a client).
+pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> bool {
+    if key == ChordKey::Modifier {
+        return false;
+    }
+    if mods.logo {
+        return true;
+    }
+    match key {
+        ChordKey::Space => mods.alt,
+        ChordKey::Tab => mods.ctrl,
+        ChordKey::ArrowUp | ChordKey::ArrowDown => mods.ctrl,
+        ChordKey::Escape => overlay_open,
+        ChordKey::Char(c) => mods.ctrl && c == 'k',
+        ChordKey::Delete | ChordKey::Function(_) | ChordKey::Other | ChordKey::Modifier => false,
+    }
+}
+
+/// Narrow a winit logical key to its [`ChordKey`].
+pub fn chord_key_for_logical(key: &Key) -> ChordKey {
+    if is_modifier_key(key) {
+        return ChordKey::Modifier;
+    }
+    match key {
+        Key::Named(NamedKey::Space) => ChordKey::Space,
+        Key::Named(NamedKey::Tab) => ChordKey::Tab,
+        Key::Named(NamedKey::ArrowUp) => ChordKey::ArrowUp,
+        Key::Named(NamedKey::ArrowDown) => ChordKey::ArrowDown,
+        Key::Named(NamedKey::Escape) => ChordKey::Escape,
+        Key::Named(NamedKey::Delete) => ChordKey::Delete,
+        Key::Named(NamedKey::F1) => ChordKey::Function(1),
+        Key::Named(NamedKey::F2) => ChordKey::Function(2),
+        Key::Named(NamedKey::F3) => ChordKey::Function(3),
+        Key::Named(NamedKey::F4) => ChordKey::Function(4),
+        Key::Named(NamedKey::F5) => ChordKey::Function(5),
+        Key::Named(NamedKey::F6) => ChordKey::Function(6),
+        Key::Named(NamedKey::F7) => ChordKey::Function(7),
+        Key::Named(NamedKey::F8) => ChordKey::Function(8),
+        Key::Named(NamedKey::F9) => ChordKey::Function(9),
+        Key::Named(NamedKey::F10) => ChordKey::Function(10),
+        Key::Named(NamedKey::F11) => ChordKey::Function(11),
+        Key::Named(NamedKey::F12) => ChordKey::Function(12),
+        Key::Character(s) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                // A layout that delivers the space bar as text rather than
+                // `NamedKey::Space` must still reach the `Alt+Space` arm.
+                (Some(' '), None) => ChordKey::Space,
+                (Some(c), None) => ChordKey::Char(c.to_ascii_lowercase()),
+                _ => ChordKey::Other,
+            }
+        }
+        _ => ChordKey::Other,
+    }
+}
+
+/// Narrow an evdev keycode to its [`ChordKey`].
+///
+/// The inverse of [`evdev_from_logical`] over the range that table covers;
+/// `chord_key_agrees_across_both_directions` in this module's tests pins
+/// the two together so a key added to one is not missed by the other.
+pub fn chord_key_for_evdev(code: u32) -> ChordKey {
+    match code {
+        1 => ChordKey::Escape,
+        15 => ChordKey::Tab,
+        29 | 97 => ChordKey::Modifier,  // left / right Ctrl
+        42 | 54 => ChordKey::Modifier,  // left / right Shift
+        56 | 100 => ChordKey::Modifier, // Alt / AltGr
+        57 => ChordKey::Space,
+        58 => ChordKey::Modifier, // CapsLock
+        59..=68 => ChordKey::Function((code - 58) as u8),
+        69 => ChordKey::Modifier, // NumLock
+        87 => ChordKey::Function(11),
+        88 => ChordKey::Function(12),
+        103 => ChordKey::ArrowUp,
+        108 => ChordKey::ArrowDown,
+        111 => ChordKey::Delete,
+        125 | 126 => ChordKey::Modifier, // left / right Super
+        _ => match char_from_evdev(code) {
+            Some(c) => ChordKey::Char(c),
+            None => ChordKey::Other,
+        },
+    }
+}
+
+/// Is this key event a compositor-level binding that must be handled by the
+/// shell *before* a focused client ever sees it?
+///
+/// Thin winit adapter over [`shell_owns_chord`] — see there for the table.
 pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: bool) -> bool {
     let WindowEvent::KeyboardInput { event: key, .. } = event else {
         return false;
     };
-    if is_modifier_key(&key.logical_key) {
-        return false;
-    }
-    let m = modifiers.state();
-    if m.super_key() {
-        return true;
-    }
-    let ctrl = m.control_key();
-    let alt = m.alt_key();
-    match &key.logical_key {
-        Key::Named(NamedKey::Space) => alt,
-        Key::Named(NamedKey::Tab) => ctrl,
-        Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => ctrl,
-        Key::Named(NamedKey::Escape) => overlay_open,
-        Key::Character(s) => ctrl && s.eq_ignore_ascii_case("k"),
-        _ => false,
-    }
+    shell_owns_chord(
+        chord_key_for_logical(&key.logical_key),
+        ChordMods::from(modifiers),
+        overlay_open,
+    )
 }
 
 /// The evdev keycode for a winit key event.
@@ -556,6 +704,61 @@ fn evdev_from_char(c: char) -> Option<u32> {
         _ => return None,
     };
     Some(code)
+}
+
+/// evdev keycode → the single character [`evdev_from_char`] would have
+/// mapped to it, in lowercase. `None` for codes that carry no character.
+fn char_from_evdev(code: u32) -> Option<char> {
+    Some(match code {
+        30 => 'a',
+        48 => 'b',
+        46 => 'c',
+        32 => 'd',
+        18 => 'e',
+        33 => 'f',
+        34 => 'g',
+        35 => 'h',
+        23 => 'i',
+        36 => 'j',
+        37 => 'k',
+        38 => 'l',
+        50 => 'm',
+        49 => 'n',
+        24 => 'o',
+        25 => 'p',
+        16 => 'q',
+        19 => 'r',
+        31 => 's',
+        20 => 't',
+        22 => 'u',
+        47 => 'v',
+        17 => 'w',
+        45 => 'x',
+        21 => 'y',
+        44 => 'z',
+        2 => '1',
+        3 => '2',
+        4 => '3',
+        5 => '4',
+        6 => '5',
+        7 => '6',
+        8 => '7',
+        9 => '8',
+        10 => '9',
+        11 => '0',
+        12 => '-',
+        13 => '=',
+        26 => '[',
+        27 => ']',
+        39 => ';',
+        40 => '\'',
+        41 => '`',
+        43 => '\\',
+        51 => ',',
+        52 => '.',
+        53 => '/',
+        _ => return None,
+    })
 }
 
 /// evdev button code for a winit mouse button.
