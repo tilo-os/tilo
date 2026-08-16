@@ -290,6 +290,16 @@ RUN /build/os/scripts/verify-elf-hardening.sh /out
 # /usr/lib/qos-runtime/<version>/ and refuses to start the app when it is not
 # there. Baking "1" while the fleet asked for 2026.07 meant every packaged app
 # failed at launch with RuntimeBundleMissing.
+#
+# Baked at /usr/lib/qos-runtime/<version>/ — the path it will occupy on the
+# booted system — and not into a staging directory, for the same reason the app
+# store below is written at its final path. `qos-install` refuses to install a
+# package whose declared runtime is absent, and it looks for exactly two places:
+# the per-user bundle dir and this system one (runtime_status ->
+# runtime_bundle::system_bundle_path). Staging the bake somewhere else and
+# relocating it in the rootfs stage left that lookup failing during pack-apps,
+# so every packaged app was refused at *install* time with the message telling
+# the operator to run `qos-install runtime install` — 46 of them, and no image.
 ARG RUNTIME_VERSION=2026.07
 ENV RUNTIME_VERSION=${RUNTIME_VERSION}
 RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json \
@@ -299,12 +309,12 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
         --arch "${ARCH}" \
         --from / \
         --identity /out/runtime-bundle-identity.json \
-        --out "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+        --out "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
     && /out/qos-runtime-bundle key pubkey \
         --identity /out/runtime-bundle-identity.json \
         > /out/runtime-bundle-publisher.hex \
     && /out/qos-runtime-bundle verify \
-        "/out/qos-runtime-bundle-tree/${RUNTIME_VERSION}" \
+        "/usr/lib/qos-runtime/${RUNTIME_VERSION}" \
         --require-publisher "$(cat /out/runtime-bundle-publisher.hex)" \
     && rm -f /out/runtime-bundle-identity.json
 
@@ -528,15 +538,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 
 # ---- Baked signed runtime bundle -------------------------------------------
 # The builder stage produced a signed content-addressed bundle from THIS
-# image's own rootfs at /out/qos-runtime-bundle-tree/${RUNTIME_VERSION}
-# and wrote its publisher pubkey to /out/runtime-bundle-publisher.hex.
-# Install both here so:
+# image's own rootfs at /usr/lib/qos-runtime/${RUNTIME_VERSION} — the same
+# path it takes here, because `qos-install` had to find it there while
+# packing the app store — and wrote its publisher pubkey to
+# /out/runtime-bundle-publisher.hex. Install both here so:
 #   * The launcher's `/usr/lib/qos-runtime/<v>/` lookup succeeds out
 #     of the box — no `qos-install runtime install --from-host` needed
 #     after first boot.
 #   * The signature check the launcher performs before every mount
 #     accepts this bake (the pubkey is the trust root).
-COPY --from=builder /out/qos-runtime-bundle-tree/ /usr/lib/qos-runtime/
+COPY --from=builder /usr/lib/qos-runtime/ /usr/lib/qos-runtime/
 COPY --from=builder /out/runtime-bundle-publisher.hex /usr/share/qos/runtime-bundle-publisher.hex
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators

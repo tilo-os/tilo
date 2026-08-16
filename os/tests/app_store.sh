@@ -127,4 +127,49 @@ else
       store nothing reads."
 fi
 
+# --- 6. the runtime bundle is baked where qos-install looks for it ------------
+# pack-apps.sh installs each package with `qos-install install`, and that refuses
+# any package whose declared runtime is absent (satisfy_runtime ->
+# RuntimeDependencyMissing). It only ever consults two directories: the per-user
+# one, which does not exist in a container build, and the system one from
+# runtime_bundle::system_bundle_path. So the bake has to land on the system path
+# during the *builder* stage — not merely be copied there afterwards, which is a
+# stage too late and left all 46 packages refused at install time.
+#
+# Checked against the constant rather than against a repeated literal, so moving
+# system_bundle_path fails here instead of at the next image build.
+BUNDLE_LIB="$REPO/crates/packaging/runtime-bundle/src/lib.rs"
+INSTALL_MAIN="$REPO/crates/packaging/install/src/main.rs"
+sysroot="$(sed -n 's|^ *PathBuf::from("\(/usr/lib/qos-runtime\)").join(version)$|\1|p' \
+             "$BUNDLE_LIB" | head -1)"
+if [ ! -r "$BUNDLE_LIB" ] || [ ! -r "$INSTALL_MAIN" ]; then
+  bad "missing $BUNDLE_LIB or $INSTALL_MAIN — cannot check where the bundle is looked up"
+elif [ -z "$sysroot" ]; then
+  bad "could not read the system bundle root out of runtime_bundle::system_bundle_path
+      ($BUNDLE_LIB) — the declaration it is parsed out of moved, so this check
+      cannot see its subject and must not pass."
+else
+  if grep -q 'system_bundle_path' "$INSTALL_MAIN"; then
+    ok "qos-install resolves a declared runtime against $sysroot"
+  else
+    bad "$INSTALL_MAIN no longer consults system_bundle_path, so baking into
+        $sysroot would no longer satisfy the install-time runtime check."
+  fi
+  if grep -q "^ *--out \"$sysroot/\${RUNTIME_VERSION}\" \\\\\?\$" "$CONTAINERFILE"; then
+    ok "os/Containerfile bakes the runtime bundle into $sysroot/\${RUNTIME_VERSION}"
+  else
+    bad "os/Containerfile does not bake the runtime bundle into $sysroot/\${RUNTIME_VERSION}
+      qos-install looks there and nowhere else that exists during a container
+      build, so every packaged app is refused at install time with
+      RuntimeDependencyMissing and the image never builds."
+  fi
+  if grep -q "^COPY --from=builder $sysroot/ $sysroot/\$" "$CONTAINERFILE"; then
+    ok "the image copies the runtime bundle from and to $sysroot"
+  else
+    bad "os/Containerfile does not copy $sysroot/ to $sysroot/ — the booted system
+      would have no bundle at the path the launcher resolves, and every app would
+      fail at launch with RuntimeBundleMissing."
+  fi
+fi
+
 exit "$fail"
