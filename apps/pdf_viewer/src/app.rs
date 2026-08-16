@@ -332,6 +332,9 @@ pub struct PdfApp {
     /// Screenshot-only: pin the floating page bubble open so a still frame shows
     /// the transient page-info overlay. Never set at runtime.
     shots_page_bubble: bool,
+    /// Screenshot-only: land on the Signatures panel (which the demo seed would
+    /// otherwise override to Comments) so a still frame shows the composer.
+    shots_sign: bool,
 
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -608,6 +611,26 @@ impl PdfApp {
         self.page_bubble.poke(std::time::Instant::now());
     }
 
+    /// Screenshot-only: open the find bar with a query and live matches so a
+    /// still frame shows the (non-overlapping) find bar.
+    pub fn arm_shots_search(&mut self) {
+        self.search_active = true;
+        self.query = "the".to_string();
+        self.recompute_matches();
+        self.active_match = 2;
+    }
+
+    /// Screenshot-only: open the Signatures panel in Draw mode with a signature
+    /// already drawn on the pad and the Sign tool armed, so a still frame shows
+    /// the real signature-composer workflow.
+    pub fn arm_shots_sign_compose(&mut self) {
+        self.show_sidebar = true;
+        self.shots_sign = true;
+        self.tool = Tool::Sign;
+        self.sig_mode = SigMode::Draw;
+        self.sig_strokes = sample_drawn_signature();
+    }
+
     /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
     /// glyph layer so it needs no native pdfium) so a still frame shows the
     /// shared selection HUD — highlight swatches + Copy + Note — over the page.
@@ -622,9 +645,15 @@ impl PdfApp {
                 (c, PtRect::new(70.0 + col as f64 * 12.5, 150.0 + row as f64 * 22.0, 10.5, 15.0))
             })
             .collect();
-        let n = glyphs.len();
-        self.raster_text.insert(1, std::sync::Arc::new(PageText::from_glyphs(glyphs)));
-        self.selection = Some(TextSelection { page: 1, anchor: 0, caret: n.saturating_sub(1), dragging: false });
+        let layer = std::sync::Arc::new(PageText::from_glyphs(glyphs));
+        self.raster_text.insert(1, layer.clone());
+        // Select a single word ("keeper") exactly as a double-click would — via
+        // the shared word_range — so the still frame shows a word selection + HUD.
+        let idx = text.find("keeper").map(|b| b + 2).unwrap_or(6);
+        let (s, e) = layer.word_range(idx);
+        self.selection = Some(TextSelection { page: 1, anchor: s, caret: e.saturating_sub(1), dragging: false });
+        self.sel_gran = Granularity::Word;
+        self.sel_anchor_range = (s, e);
         self.show_sidebar = true;
     }
 
@@ -670,6 +699,7 @@ impl PdfApp {
             shots_edit_first_comment: false,
             shots_rail_drag: false,
             shots_page_bubble: false,
+            shots_sign: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
@@ -2366,6 +2396,11 @@ impl Widget for PdfApp {
                 self.begin_edit(EditTarget::CommentBody(id), body);
             }
             self.shots_edit_first_comment = false;
+        }
+        // Screenshot hook: land on the Signatures composer (the demo seed lands
+        // on Comments, so re-assert it after the seed).
+        if self.shots_sign {
+            self.sidebar_tab = SidebarTab::Signatures;
         }
     }
 
