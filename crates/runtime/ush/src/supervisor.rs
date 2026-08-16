@@ -1,0 +1,850 @@
+//! The supervisor: one session, from `ush` to the shell exiting.
+//!
+//! It runs on the host, in the user's session, outside every app sandbox. It is
+//! the only thing here that holds `unshare` and `mount` — it needs them because
+//! it is what builds the confinement — and it hands none of that to the guest;
+//! see the trust boundary in [`crate::lib`](crate).
+//!
+//! ```text
+//! ush
+//!  ├─ ensure the store and the layer                       (crate::layer)
+//!  ├─ compile the guest's seccomp filter                   (crate::profile)
+//!  ├─ start the broker on a socket in the session dir      (crate::broker)
+//!  ├─ exec bwrap ─┬─ unshare, mount the overlays, pivot
+//!  │              ├─ install the seccomp filter        ← the boundary
+//!  │              └─ exec qos-ush guest-init ─┬─ install Landlock
+//!  │                                          └─ exec the shell
+//!  ├─ wait
+//!  └─ undo one-time installs, burn if asked, restart if asked
+//! ```
+//!
+//! # `serve` — how an app reaches a guest
+//!
+//! A qOS app cannot build a namespace: its seccomp filter denies the syscalls
+//! and its sandbox contains no path to this binary. So `apps/terminal` does not
+//! start a guest, it asks for one. `qos-ush serve` listens on
+//! `$XDG_RUNTIME_DIR/qos/services/ush.sock`, which `qos-launcher` opens and
+//! passes to the app as a connected descriptor (`QOS_SVC_USH_FD`) exactly as it
+//! does for every other qOS service. The app sends one line of JSON and gets
+//! back a pty master over `SCM_RIGHTS`. What crosses the boundary is a file
+//! descriptor for a terminal — not a namespace, not a capability, and never a
+//! `dsh` session: [`crate::profile::Profile::reachable_from_app_launch`] is
+//! checked on every request.
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+
+use crate::audit::AuditLog;
+use crate::broker::{Broker, BrokerState};
+use crate::guest::GuestPlan;
+use crate::layer::Layer;
+use crate::policy::Policy;
+use crate::profile::Profile;
+use crate::store::Store;
+
+/// What the user asked for on the command line.
+#[derive(Debug, Clone)]
+pub struct SessionOptions {
+    pub profile: Profile,
+    /// `--ephemeral`: a layer of this session's own, destroyed on the way out.
+    pub ephemeral: bool,
+    /// `ush -c "…"`. Empty means an interactive shell.
+    pub command: Vec<String>,
+    pub term: String,
+    /// The host root to shadow. `/` outside tests.
+    pub base: PathBuf,
+    pub verbose: bool,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            profile: Profile::Ush,
+            ephemeral: false,
+            command: Vec::new(),
+            term: std::env::var("TERM").unwrap_or_else(|_| "xterm-256color".into()),
+            base: PathBuf::from("/"),
+            verbose: false,
+        }
+    }
+}
+
+/// Where the runtime's own binary is, as the supervisor sees it.
+///
+/// `current_exe` rather than a constant: the guest must run the *same* build
+/// that built its confinement, and in a development tree that is a path in
+/// `target/`, not `/usr/libexec`.
+pub fn runtime_binary() -> std::io::Result<PathBuf> {
+    if let Some(explicit) = std::env::var_os("QOS_USH_BIN") {
+        return Ok(PathBuf::from(explicit));
+    }
+    std::env::current_exe()
+}
+
+/// The shell a guest hosts.
+///
+/// The *host's* `$SHELL` is a hint about taste, not a path that has to exist in
+/// the guest — though it usually does, because the base is the host's `/usr`.
+/// A shell that is not in the guest falls back to `/usr/bin/bash` and then
+/// `/bin/sh`, so a session never fails to start over a preference.
+pub fn guest_shell(base_visible: &Path) -> PathBuf {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(s) = std::env::var_os("SHELL") {
+        candidates.push(PathBuf::from(s));
+    }
+    candidates.push(PathBuf::from("/usr/bin/bash"));
+    candidates.push(PathBuf::from("/bin/sh"));
+    for c in &candidates {
+        let on_host = base_visible.join(c.strip_prefix("/").unwrap_or(c));
+        if on_host.exists() {
+            return c.clone();
+        }
+    }
+    PathBuf::from("/bin/sh")
+}
+
+/// One session, built and torn down.
+pub struct Session {
+    pub store: Store,
+    pub opts: SessionOptions,
+    pub session_id: String,
+}
+
+impl Session {
+    pub fn new(store: Store, opts: SessionOptions) -> Self {
+        Self {
+            store,
+            opts,
+            session_id: uuid::Uuid::new_v4().simple().to_string(),
+        }
+    }
+
+    fn layer(&self) -> Layer {
+        if self.opts.ephemeral {
+            self.store.ephemeral_layer(&self.session_id)
+        } else {
+            self.store.persistent_layer()
+        }
+    }
+
+    fn lower_layers(&self) -> Vec<PathBuf> {
+        if self.opts.ephemeral {
+            let persistent = self.store.persistent_layer();
+            if persistent.exists() {
+                return vec![persistent.path().to_path_buf()];
+            }
+        }
+        Vec::new()
+    }
+
+    /// Build the plan for this session. Everything the guest will be is
+    /// decided here, from the store and the policy — never from anything the
+    /// guest said.
+    pub fn plan(&self, broker_socket: PathBuf, seccomp_blob: PathBuf) -> std::io::Result<GuestPlan> {
+        let policy = Policy::load(&self.store.policy_path());
+        let now = Some(crate::audit::now_unix());
+        // Resolved, not as `$HOME` spells it. On an ostree system `/home` is a
+        // symlink to `var/home`, and `bwrap` refuses to create a mount point
+        // through a symlink — mounting `/home/you` fails with "can't mkdir"
+        // even though the guest root has the link. `/var/home/you` is a real
+        // path, the link the base ships still points at it, so both spellings
+        // work inside.
+        let home_mountpoint = dirs::home_dir()
+            .map(|h| h.canonicalize().unwrap_or(h))
+            .unwrap_or_else(|| PathBuf::from("/root"));
+
+        Ok(GuestPlan {
+            profile: self.opts.profile,
+            base: self.opts.base.clone(),
+            upper: self.layer().path().to_path_buf(),
+            lower_layers: self.lower_layers(),
+            workdir_root: self.store.session_dir(&self.session_id),
+            guest_home: self.store.guest_home(),
+            home_mountpoint,
+            trusted_dirs: policy.trusted_dirs(now),
+            readable_dirs: policy.readable_dirs(now),
+            runtime_bin: runtime_binary()?,
+            broker_socket,
+            seccomp_blob,
+            command: self.opts.command.clone(),
+            shell: guest_shell(&self.opts.base),
+            term: self.opts.term.clone(),
+            env: Vec::new(),
+        })
+    }
+
+    /// May a restart request rebuild this session, or is it a one-shot?
+    ///
+    /// Only an interactive session restarts. `ush -c "…"` has a command with
+    /// side effects, and rebuilding would run it again: `pkg burn` asks for a
+    /// restart, so `ush -c 'pkg burn'` would burn, rebuild, burn, forever. It
+    /// did, and the audit log is where that showed up.
+    pub fn restarts_in_place(&self) -> bool {
+        self.opts.command.is_empty()
+    }
+
+    /// Run the session to completion, restarting in place as many times as the
+    /// guest asks. Returns the guest's exit code.
+    pub fn run(&mut self) -> anyhow::Result<i32> {
+        self.store.ensure()?;
+        let code;
+        loop {
+            let (exit, again) = self.run_once()?;
+            if !again || !self.restarts_in_place() {
+                code = exit;
+                break;
+            }
+            // A restart is a new namespace, so it is a new session directory
+            // and a new broker socket. Reusing the old ids would leave a stale
+            // overlay workdir behind and the next mount would refuse it.
+            self.session_id = uuid::Uuid::new_v4().simple().to_string();
+        }
+        Ok(code)
+    }
+
+    fn run_once(&self) -> anyhow::Result<(i32, bool)> {
+        let layer = self.layer();
+        // Before anything is written: a store on tmpfs mounts every bind and
+        // then dies at the overlay with nothing but `Invalid argument`, which
+        // is a long way from the store location that caused it.
+        crate::layer::upper_filesystem_supported(layer.path())?;
+        layer.create(&self.opts.base)?;
+        seed_guest_home(&self.store.guest_home())?;
+
+        let session_dir = self.store.session_dir(&self.session_id);
+        std::fs::create_dir_all(&session_dir)?;
+        let seccomp_blob = crate::profile::write_guest_filter(&session_dir, self.opts.profile)?;
+        let broker_socket = session_dir.join("broker.sock");
+
+        let broker = Broker::start(
+            broker_socket.clone(),
+            BrokerState {
+                session_id: self.session_id.clone(),
+                profile: self.opts.profile,
+                policy_path: self.store.policy_path(),
+                policy: Policy::load(&self.store.policy_path()),
+                audit: AuditLog::at(self.store.audit_dir()),
+                one_time: Vec::new(),
+                restart_requested: false,
+                burn_requested: false,
+                base: self.opts.base.clone(),
+                layer: layer.path().to_path_buf(),
+                layer_kind: layer.kind().as_str().to_string(),
+                landlock: "installed by the guest at startup".into(),
+            },
+        )?;
+
+        let plan = self.plan(broker_socket, seccomp_blob)?;
+        plan.prepare()?;
+
+        if self.opts.verbose {
+            let argv = crate::guest::build_argv(&plan, None, None);
+            eprintln!(
+                "ush: {}",
+                argv.iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+
+        // The guest's first process is this binary again, so it can install
+        // Landlock inside the namespace — where the paths of the rules are the
+        // paths the guest will use — before the shell exists.
+        let mut plan = plan;
+        let shell = plan.shell.clone();
+        let user_command = std::mem::take(&mut plan.command);
+        let mut command = vec![
+            format!("{}/qos-ush", crate::GUEST_BIN_DIR),
+            "guest-init".into(),
+            "--".into(),
+        ];
+        if user_command.is_empty() {
+            command.push(shell.to_string_lossy().into_owned());
+            command.push("-i".into());
+        } else {
+            command.extend(user_command);
+        }
+        plan.command = command;
+
+        let mut child = crate::guest::spawn(&plan)?;
+        let status = child.wait()?;
+        let code = status.code().unwrap_or(1);
+
+        let restart = broker.restart_requested();
+        let burn = broker.burn_requested();
+        let one_time = broker.one_time_packages();
+        drop(broker);
+
+        // The overlay is unmounted now, so the layer is an ordinary directory
+        // again and both of these are safe.
+        if !one_time.is_empty() && !burn {
+            self.undo_one_time(&one_time)?;
+        }
+        if burn {
+            layer.burn()?;
+        }
+        crate::guest::remove_dir_all_forced(&session_dir);
+        if self.opts.ephemeral && !restart {
+            layer.burn()?;
+        }
+        Ok((code, restart))
+    }
+
+    /// Remove the packages a `--one-time` install put in the layer.
+    ///
+    /// Done by starting a throwaway non-interactive guest against the same
+    /// layer, because removing an rpm means running rpm, and rpm has to see the
+    /// base to run its scriptlets. It is the same mechanism as the install,
+    /// pointed the other way.
+    fn undo_one_time(&self, packages: &[String]) -> anyhow::Result<()> {
+        let releasever = crate::pkg::releasever();
+        let argv = crate::pkg::remove_argv(packages, &releasever);
+        let mut opts = self.opts.clone();
+        opts.command = argv;
+        opts.ephemeral = false;
+        opts.verbose = false;
+        let cleanup = Session {
+            store: self.store.clone(),
+            opts,
+            session_id: format!("{}-cleanup", self.session_id),
+        };
+        // A failure here leaves the package in the layer, which is visible in
+        // `pkg list` and removable by hand. It is not a reason to fail the
+        // session the user has already finished.
+        if let Err(e) = cleanup.run_once() {
+            tracing::warn!(error = %e, "could not undo the session's one-time installs");
+        }
+        let manifest = self
+            .layer()
+            .path()
+            .join(crate::pkg::MANIFEST_PATH.trim_start_matches('/'));
+        let mut m = crate::pkg::Manifest::load(&manifest);
+        for p in packages {
+            m.forget(p);
+        }
+        let _ = m.save(&manifest);
+        Ok(())
+    }
+}
+
+/// Give a fresh guest home the dotfiles that make a shell usable.
+///
+/// Deliberately minimal, and deliberately *not* a copy of the user's own: the
+/// home directory is write-isolated by default, and seeding it from the real
+/// one would quietly undo that on the first session.
+fn seed_guest_home(home: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(home)?;
+    let bashrc = home.join(".bashrc");
+    if bashrc.exists() {
+        return Ok(());
+    }
+    std::fs::write(
+        &bashrc,
+        "# ush guest shell\n\
+         [ -f /etc/bashrc ] && . /etc/bashrc\n\
+         PS1='[\\[\\e[36m\\]${QOS_USH_PROFILE:-ush}\\[\\e[0m\\] \\W]\\$ '\n\
+         alias ls='ls --color=auto'\n",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// serve — handing a guest to an app
+// ---------------------------------------------------------------------------
+
+/// What an app asks for over the service socket.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+pub enum ServeRequest {
+    /// Open a guest and hand back its pty master.
+    OpenSession {
+        #[serde(default)]
+        profile: String,
+        #[serde(default = "default_cols")]
+        cols: u16,
+        #[serde(default = "default_rows")]
+        rows: u16,
+        #[serde(default)]
+        term: Option<String>,
+    },
+}
+
+fn default_cols() -> u16 {
+    80
+}
+fn default_rows() -> u16 {
+    24
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "result", rename_all = "kebab-case")]
+pub enum ServeResponse {
+    /// The pty master follows as an `SCM_RIGHTS` descriptor on this message.
+    Session { session: String, profile: String },
+    Denied { reason: String },
+}
+
+/// Decide one request. Pure, so the gate on `dsh` can be tested without a pty.
+pub fn decide_serve(req: &ServeRequest) -> Result<Profile, String> {
+    match req {
+        ServeRequest::OpenSession { profile, .. } => {
+            let requested = Profile::parse(profile);
+            if !requested.reachable_from_app_launch() {
+                return Err(format!(
+                    "`{}` is the developer profile and is not a sandbox; it is \
+                     reachable only by running it yourself, never from an app \
+                     launch",
+                    requested.as_str()
+                ));
+            }
+            Ok(requested)
+        }
+    }
+}
+
+/// Listen for apps and hand out guests.
+pub fn serve(socket: &Path, store: Store, base: PathBuf) -> anyhow::Result<()> {
+    store.ensure()?;
+    if let Some(parent) = socket.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(socket);
+    let listener = UnixListener::bind(socket)?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+    }
+    tracing::info!(socket = %socket.display(), "ush: serving guests");
+
+    for conn in listener.incoming() {
+        let Ok(stream) = conn else { continue };
+        let store = store.clone();
+        let base = base.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = serve_one(stream, store, base) {
+                tracing::warn!(error = %e, "ush: serve failed");
+            }
+        });
+    }
+    Ok(())
+}
+
+fn serve_one(stream: UnixStream, store: Store, base: PathBuf) -> anyhow::Result<()> {
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+
+    let req: ServeRequest = match serde_json::from_str(&line) {
+        Ok(r) => r,
+        Err(e) => return reply(&mut writer, &ServeResponse::Denied {
+            reason: format!("malformed request: {e}"),
+        }, None),
+    };
+    let profile = match decide_serve(&req) {
+        Ok(p) => p,
+        Err(reason) => {
+            AuditLog::at(store.audit_dir()).append(
+                &crate::audit::AuditRecord::new("serve", "ush", "open-session", false)
+                    .because(&reason),
+            );
+            return reply(&mut writer, &ServeResponse::Denied { reason }, None);
+        }
+    };
+
+    let ServeRequest::OpenSession { cols, rows, term, .. } = req;
+    let (master, slave) = open_pty(cols, rows)?;
+
+    let mut opts = SessionOptions {
+        profile,
+        base,
+        term: term.unwrap_or_else(|| "xterm-256color".into()),
+        ..SessionOptions::default()
+    };
+    opts.command.clear();
+
+    let session = Session::new(store.clone(), opts);
+    let id = session.session_id.clone();
+    AuditLog::at(store.audit_dir()).append(
+        &crate::audit::AuditRecord::new(&id, profile.as_str(), "open-session", true),
+    );
+
+    // The guest gets the slave as its stdio; the app gets the master.
+    //
+    // A *child process*, not a thread. Attaching a pty means `dup2` onto file
+    // descriptors 0, 1 and 2 and `setsid` — both are process-wide, so doing it
+    // on a thread would take the supervisor's own stdio and controlling
+    // terminal with it. That is not a subtle failure: under a test harness it
+    // hijacks the harness.
+    let child = spawn_attached(&session, slave)?;
+    let audit = AuditLog::at(store.audit_dir());
+    let done_id = id.clone();
+    std::thread::spawn(move || {
+        let mut child = child;
+        let status = child.wait();
+        audit.append(
+            &crate::audit::AuditRecord::new(&done_id, "ush", "close-session", true).because(
+                match status {
+                    Ok(s) => format!("exit {}", s.code().unwrap_or(-1)),
+                    Err(e) => format!("wait failed: {e}"),
+                },
+            ),
+        );
+    });
+
+    reply(
+        &mut writer,
+        &ServeResponse::Session {
+            session: id,
+            profile: profile.as_str().to_string(),
+        },
+        Some(master.as_raw_fd()),
+    )?;
+    // Hold the master open until the app has it: closing before the descriptor
+    // is received would hand over a dead terminal.
+    drop(master);
+    Ok(())
+}
+
+/// Start `qos-ush run` with `slave` as its stdio, in its own session, with the
+/// pty as its controlling terminal.
+fn spawn_attached(
+    session: &Session,
+    slave: std::fs::File,
+) -> std::io::Result<std::process::Child> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+
+    let exe = runtime_binary()?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("run");
+    cmd.env(crate::store::STORE_ENV, session.store.root());
+    cmd.env("TERM", &session.opts.term);
+    cmd.env("QOS_USH_BASE", &session.opts.base);
+    cmd.stdin(Stdio::from(slave.try_clone()?));
+    cmd.stdout(Stdio::from(slave.try_clone()?));
+    cmd.stderr(Stdio::from(slave.try_clone()?));
+
+    let slave_fd = slave.as_raw_fd();
+    // SAFETY: `pre_exec` runs between fork and exec in the child. Both calls
+    // are async-signal-safe and neither allocates. `setsid` is what makes the
+    // child a session leader so `TIOCSCTTY` can hand it the pty; without a
+    // controlling terminal the shell has no job control.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd.spawn()
+}
+
+/// Open a pty pair sized for the caller's grid.
+fn open_pty(cols: u16, rows: u16) -> std::io::Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+    let mut master: RawFd = -1;
+    let mut slave: RawFd = -1;
+    let mut size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: both fds are out-parameters `openpty` fills in; `size` is a
+    // properly initialised `winsize`.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `openpty` succeeded, so both are owned, open descriptors.
+    Ok(unsafe {
+        (
+            std::fs::File::from_raw_fd(master),
+            std::fs::File::from_raw_fd(slave),
+        )
+    })
+}
+
+/// Write a reply, optionally carrying one descriptor.
+fn reply(
+    stream: &mut UnixStream,
+    response: &ServeResponse,
+    fd: Option<RawFd>,
+) -> anyhow::Result<()> {
+    let mut bytes = serde_json::to_vec(response)?;
+    bytes.push(b'\n');
+    match fd {
+        None => {
+            stream.write_all(&bytes)?;
+            stream.flush()?;
+        }
+        Some(fd) => send_with_fd(stream.as_raw_fd(), &bytes, fd)?,
+    }
+    Ok(())
+}
+
+/// `sendmsg` with a single-descriptor `SCM_RIGHTS` control message.
+fn send_with_fd(sock: RawFd, payload: &[u8], fd: RawFd) -> std::io::Result<()> {
+    let mut iov = libc::iovec {
+        iov_base: payload.as_ptr() as *mut libc::c_void,
+        iov_len: payload.len(),
+    };
+    // CMSG_SPACE for one int.
+    let mut control = [0u8; 32];
+    // SAFETY: `msghdr` is zeroed and then fully initialised below; every
+    // pointer it holds refers to a local that outlives the `sendmsg` call.
+    unsafe {
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as _;
+
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        (*cmsg).cmsg_level = libc::SOL_SOCKET;
+        (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as _;
+        std::ptr::copy_nonoverlapping(
+            &fd as *const RawFd,
+            libc::CMSG_DATA(cmsg) as *mut RawFd,
+            1,
+        );
+
+        if libc::sendmsg(sock, &msg, 0) < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Receive a reply that carries one descriptor. The app side of
+/// [`send_with_fd`].
+pub fn recv_with_fd(sock: RawFd) -> std::io::Result<(Vec<u8>, Option<RawFd>)> {
+    let mut buf = [0u8; 4096];
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+        iov_len: buf.len(),
+    };
+    let mut control = [0u8; 32];
+    // SAFETY: as in `send_with_fd`; all pointers refer to locals that outlive
+    // the call, and the control buffer is large enough for one `SCM_RIGHTS`.
+    unsafe {
+        let mut msg: libc::msghdr = std::mem::zeroed();
+        msg.msg_iov = &mut iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+        msg.msg_controllen = control.len() as _;
+
+        let n = libc::recvmsg(sock, &mut msg, 0);
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut fd = None;
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if !cmsg.is_null()
+            && (*cmsg).cmsg_level == libc::SOL_SOCKET
+            && (*cmsg).cmsg_type == libc::SCM_RIGHTS
+        {
+            let mut got: RawFd = -1;
+            std::ptr::copy_nonoverlapping(libc::CMSG_DATA(cmsg) as *const RawFd, &mut got, 1);
+            fd = Some(got);
+        }
+        Ok((buf[..n as usize].to_vec(), fd))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layer::LayerKind;
+
+    /// The gate on the deliberate exception, at the place an app would hit it.
+    #[test]
+    fn serve_refuses_a_dsh_session() {
+        let req = ServeRequest::OpenSession {
+            profile: "dsh".into(),
+            cols: 80,
+            rows: 24,
+            term: None,
+        };
+        let err = decide_serve(&req).unwrap_err();
+        assert!(err.contains("not a sandbox"), "{err}");
+    }
+
+    #[test]
+    fn serve_allows_a_ush_session_and_defaults_to_one() {
+        for name in ["ush", "", "nonsense"] {
+            let req = ServeRequest::OpenSession {
+                profile: name.into(),
+                cols: 80,
+                rows: 24,
+                term: None,
+            };
+            assert_eq!(decide_serve(&req).unwrap(), Profile::Ush, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn an_ephemeral_session_stacks_the_persistent_layer_and_a_normal_one_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        // A persistent layer has to exist to be stacked.
+        std::fs::create_dir_all(store.persistent_dir()).unwrap();
+        std::fs::write(store.persistent_dir().join(".ush-layer"), b"persistent\n").unwrap();
+
+        let normal = Session::new(store.clone(), SessionOptions::default());
+        assert!(normal.lower_layers().is_empty());
+        assert_eq!(normal.layer().kind(), LayerKind::Persistent);
+
+        let ephemeral = Session::new(
+            store.clone(),
+            SessionOptions {
+                ephemeral: true,
+                ..SessionOptions::default()
+            },
+        );
+        assert_eq!(
+            ephemeral.lower_layers(),
+            vec![store.persistent_dir()],
+            "an ephemeral session must still see what you installed for good"
+        );
+        assert_eq!(ephemeral.layer().kind(), LayerKind::Ephemeral);
+    }
+
+    /// `pkg burn` asks for a restart so the guest comes back on a fresh layer.
+    /// Under `ush -c` that would re-run the command that asked, which burns
+    /// again — an unbounded loop, and one that really happened.
+    #[test]
+    fn a_one_shot_command_never_restarts_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+
+        let interactive = Session::new(store.clone(), SessionOptions::default());
+        assert!(interactive.restarts_in_place());
+
+        let one_shot = Session::new(
+            store,
+            SessionOptions {
+                command: vec!["/bin/sh".into(), "-c".into(), "pkg burn".into()],
+                ..SessionOptions::default()
+            },
+        );
+        assert!(
+            !one_shot.restarts_in_place(),
+            "restarting a session that was given a command re-runs the command"
+        );
+    }
+
+    #[test]
+    fn the_plan_takes_its_grants_from_the_policy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let trusted = dir.path().join("src");
+        std::fs::create_dir_all(&trusted).unwrap();
+
+        let mut policy = Policy::default();
+        policy.trust_dir(&trusted).unwrap();
+        policy.save(&store.policy_path()).unwrap();
+
+        let session = Session::new(store, SessionOptions::default());
+        let plan = session
+            .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
+            .unwrap();
+        assert_eq!(plan.trusted_dirs, vec![trusted]);
+    }
+
+    /// A guest with an empty policy sees no host directory. The plan is where
+    /// that is decided, so it is where it is asserted.
+    #[test]
+    fn a_session_with_no_policy_grants_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::at(dir.path().join("ush"));
+        store.ensure().unwrap();
+        let session = Session::new(store, SessionOptions::default());
+        let plan = session
+            .plan(PathBuf::from("/tmp/b.sock"), PathBuf::from("/tmp/f.bpf"))
+            .unwrap();
+        assert!(plan.trusted_dirs.is_empty());
+        assert!(plan.readable_dirs.is_empty());
+    }
+
+    #[test]
+    fn the_guest_home_is_seeded_once_and_not_from_the_real_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        seed_guest_home(&home).unwrap();
+        let rc = home.join(".bashrc");
+        assert!(rc.is_file());
+        std::fs::write(&rc, b"# edited by the user\n").unwrap();
+        seed_guest_home(&home).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&rc).unwrap(),
+            "# edited by the user\n",
+            "re-seeding must not overwrite what the user put in their guest home"
+        );
+    }
+
+    #[test]
+    fn a_pty_pair_opens_at_the_requested_size() {
+        let (master, _slave) = open_pty(120, 40).unwrap();
+        let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+        // SAFETY: `master` is a live pty master descriptor.
+        let rc = unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCGWINSZ, &mut size) };
+        assert_eq!(rc, 0);
+        assert_eq!((size.ws_col, size.ws_row), (120, 40));
+    }
+
+    /// The descriptor really crosses the socket — this is the whole mechanism
+    /// by which a sandboxed app gets a terminal without getting a namespace.
+    #[test]
+    fn a_descriptor_survives_the_socket() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let (master, mut slave) = open_pty(80, 24).unwrap();
+
+        send_with_fd(a.as_raw_fd(), b"{\"result\":\"session\"}\n", master.as_raw_fd()).unwrap();
+        let (payload, fd) = recv_with_fd(b.as_raw_fd()).unwrap();
+        assert!(String::from_utf8_lossy(&payload).contains("session"));
+        let fd = fd.expect("no descriptor arrived");
+
+        // Write on the slave, read it back through the received master. If the
+        // descriptor were not the same terminal this would block or fail.
+        slave.write_all(b"hello\n").unwrap();
+        slave.flush().unwrap();
+        let mut buf = [0u8; 32];
+        // SAFETY: `fd` is the descriptor just received and still open.
+        let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        assert!(n > 0, "nothing came back through the received descriptor");
+        assert!(String::from_utf8_lossy(&buf[..n as usize]).contains("hello"));
+        // SAFETY: we own `fd` now.
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn the_guest_shell_falls_back_rather_than_failing_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+        std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
+        // SAFETY: single-threaded test setup; no other thread reads the env here.
+        unsafe { std::env::set_var("SHELL", "/usr/bin/definitely-not-here") };
+        assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
+        unsafe { std::env::remove_var("SHELL") };
+    }
+}
