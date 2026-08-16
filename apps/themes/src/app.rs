@@ -1143,10 +1143,10 @@ mod tests {
     fn duplicate_command_adds_editable_copy_and_selects_it() {
         let (mut app, mut st) = seeded();
         let before = catalog(&st).len();
-        run(&mut app, &mut st, "duplicate:midnight");
+        run(&mut app, &mut st, "duplicate:qos-blue");
         let cat = catalog(&st);
         assert_eq!(cat.len(), before + 1, "one theme added");
-        let copy = cat.iter().find(|s| s.name == "Midnight copy").expect("named copy exists");
+        let copy = cat.iter().find(|s| s.name == "qOS Blue copy").expect("named copy exists");
         assert!(!copy.builtin, "the copy is editable");
         assert_eq!(selected(&st), copy.id, "the copy becomes the selection");
     }
@@ -1176,9 +1176,9 @@ mod tests {
     fn delete_command_refuses_builtin_presets() {
         let (mut app, mut st) = seeded();
         let before = catalog(&st).len();
-        run(&mut app, &mut st, "delete:midnight");
+        run(&mut app, &mut st, "delete:qos-blue");
         assert_eq!(catalog(&st).len(), before, "a builtin preset is protected");
-        assert!(catalog(&st).iter().any(|s| s.id == "midnight"));
+        assert!(catalog(&st).iter().any(|s| s.id == "qos-blue"));
     }
 
     #[test]
@@ -1198,7 +1198,7 @@ mod tests {
         let (mut app, mut st) = seeded();
         run(&mut app, &mut st, "duplicate:nord");
         let copy_id = catalog(&st).iter().find(|s| s.name == "Nord copy").unwrap().id.clone();
-        run(&mut app, &mut st, "select:midnight");
+        run(&mut app, &mut st, "select:qos-blue");
         run(&mut app, &mut st, &format!("rename:{copy_id}"));
         assert_eq!(selected(&st), copy_id, "rename selects the target so its name is editable");
     }
