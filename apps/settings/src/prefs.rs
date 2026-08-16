@@ -302,8 +302,20 @@ impl Default for AppearancePrefs {
 impl AppearancePrefs {
     /// The named theme presets the Appearance pane offers, in display order.
     /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
-    pub const THEMES: &'static [&'static str] =
-        &["Dark", "Light", "Dracula", "Nord", "Gruvbox", "Solarized"];
+    pub const THEMES: &'static [&'static str] = &[
+        "Dark",
+        "Light",
+        "qOS Blue",
+        "Catppuccin Mocha",
+        "Catppuccin Latte",
+        "Dracula",
+        "Nord",
+        "Gruvbox",
+        "Gruvbox Light",
+        "Solarized",
+        "OLED",
+        "Beige",
+    ];
 
     /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
     /// apply: the named preset (or the high-contrast track when requested),
@@ -329,14 +341,7 @@ impl AppearancePrefs {
 /// dark theme for an unrecognised name so a stray value never leaves the UI
 /// unthemed.
 pub fn theme_by_name(name: &str) -> ui::Theme {
-    match name {
-        "Light" => ui::Theme::light(),
-        "Dracula" => ui::Theme::dracula(),
-        "Nord" => ui::Theme::nord(),
-        "Gruvbox" => ui::Theme::gruvbox(),
-        "Solarized" => ui::Theme::solarized(),
-        _ => ui::Theme::dark(),
-    }
+    ui::Theme::named(name).unwrap_or_else(ui::Theme::dark)
 }
 
 /// Notification-delivery policy the compositor's notification layer reads
