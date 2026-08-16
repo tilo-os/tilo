@@ -64,17 +64,27 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             || screen.as_deref() == Some("new-event");
         let date_popover = args.iter().any(|a| a == "--date-popover");
         let calendar_popover = args.iter().any(|a| a == "--calendar-popover");
+        // `--scroll-hour N` pins the week/day timeline scroll to hour N (0 = top
+        // of the day, 24 = bottom) so a shot can prove the full 24h scrolls.
+        let scroll_hour = parse_flag_value(&args, "--scroll-hour")
+            .and_then(|p| p.to_str().and_then(|s| s.trim().parse::<f64>().ok()));
         let build = || {
             if empty {
                 let mut app = CalendarApp::new();
                 if let Some(v) = view {
                     app.shots_set_view(v);
                 }
+                if let Some(hr) = scroll_hour {
+                    app.shots_scroll_timeline(hr);
+                }
                 return Box::new(app) as Box<dyn Widget>;
             }
             let mut app = CalendarApp::new_demo();
             if let Some(v) = view {
                 app.shots_set_view(v);
+            }
+            if let Some(hr) = scroll_hour {
+                app.shots_scroll_timeline(hr);
             }
             if screen.as_deref() == Some("calendar") {
                 app.shots_show_calendar();
