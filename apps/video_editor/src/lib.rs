@@ -84,3 +84,8 @@ pub fn app_root_rename() -> Box<dyn Widget> {
 pub fn app_root_drag() -> Box<dyn Widget> {
     Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::DragToTimeline))
 }
+
+/// Root configured to capture the per-clip effects stack in the inspector.
+pub fn app_root_effects() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_for_shot(app::ShotScenario::Effects))
+}

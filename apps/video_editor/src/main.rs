@@ -79,6 +79,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some("menu") => render_shot_to_png(video_editor::app_root_menu(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
                 Some("rename") => render_shot_to_png(video_editor::app_root_rename(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
                 Some("drag") => render_shot_to_png(video_editor::app_root_drag(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("effects") => render_shot_to_png(video_editor::app_root_effects(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
                 _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
             }
         }
