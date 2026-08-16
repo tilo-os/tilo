@@ -73,6 +73,22 @@ pub fn app_root_page_bubble() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: the sample document with the find bar open (query + live
+/// matches) so a still frame shows the non-overlapping find bar.
+pub fn app_root_search() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_search();
+    Box::new(app)
+}
+
+/// Screenshot-only: the Signatures panel in Draw mode with a drawn signature and
+/// the Sign tool armed, so a still frame shows the signature-composer workflow.
+pub fn app_root_sign() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_sign_compose();
+    Box::new(app)
+}
+
 /// Screenshot-only: open `path` (a real PDF) with a live page-rail reorder drag
 /// staged, so a still frame shows the left sidebar mid-reorder.
 pub fn app_root_reorder_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
