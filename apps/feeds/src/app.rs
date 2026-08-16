@@ -1504,17 +1504,6 @@ impl FeedsApp {
     /// the sidebar header. In that case (and only then) push the wordmark right
     /// past the toggle's right edge. Returns 0 when the toggle can't reach the
     /// sidebar header (docked-open, or sidebar slid off-screen).
-    fn sidebar_title_inset(&self) -> f64 {
-        let toggle_over_header = self.hamburger_rect.area() > 0.0
-            && self.hamburger_rect.x0 < self.sidebar_rect.x1
-            && self.hamburger_rect.x1 > self.sidebar_rect.x0;
-        if toggle_over_header {
-            (self.hamburger_rect.x1 - self.sidebar_rect.x0 + 12.0).max(0.0)
-        } else {
-            0.0
-        }
-    }
-
     /// The hamburger / close toggle rect, pinned to the top-left of the
     /// content's toolbar so it never collides with the right-aligned action
     /// buttons.
@@ -1826,8 +1815,7 @@ impl FeedsApp {
             // open sidebar (overlay mode). Inset the wordmark past the toggle
             // footprint so the title and the toggle never overlap — keeping the
             // praised sidebar look otherwise untouched.
-            let title_inset = self.sidebar_title_inset();
-            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows, title_inset);
+            draw_sidebar(scene, t, tr, theme, &self.sidebar_rect, &self.sidebar_rows);
         }
 
         // The hamburger / close toggle sits over the content's top-left, drawn
@@ -2251,24 +2239,14 @@ fn draw_sidebar(
     theme: &Theme,
     rect: &Rect,
     rows: &[SidebarRow],
-    // Extra left margin for the wordmark so it clears the expand/collapse
-    // toggle when the toggle can sit over the open sidebar header.
-    title_inset: f64,
 ) {
     let c = &theme.tokens.colors;
     // The sidebar's own fill (see `paint`), used for the label fade-out band.
     let sidebar_bg = c.neutral[0];
-    // Header / wordmark.
+    // No app-name wordmark: the OS titlebar shows "Feeds". The header band is
+    // kept only to align the sidebar's first section with the content toolbar
+    // (and to clear the overlay collapse toggle) — its divider stays.
     let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + HEADER_H);
-    tr.draw_text_weighted(
-        scene,
-        "Feeds",
-        20.0,
-        c.text_primary,
-        t * Affine::translate((rect.x0 + 18.0 + title_inset, rect.y0 + 18.0)),
-        None,
-        TextWeight::Bold,
-    );
     hline(scene, t, rect.x0, rect.x1, header.y1, alpha(c.border_standard, 120));
 
     for row in rows {
@@ -4065,41 +4043,6 @@ mod tests {
         let p = Point::new(a.rect.x1 - 20.0, 400.0);
         assert!(a.click(p, &mut doc), "scrim click is consumed");
         assert!(!a.sidebar.is_open(SplitLayout::Overlay), "scrim click closes the flap");
-    }
-
-    #[test]
-    fn sidebar_title_clears_the_toggle_when_overlay_open() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        lay_out(&mut a, 560.0, 800.0);
-        // Open the overlay sidebar so it slides flush to the left edge — the
-        // toggle now sits over the sidebar header (this was the overlap).
-        let p = a.hamburger_rect.center();
-        assert!(a.click(p, &mut doc));
-        a.snap_sidebar_open(true);
-        lay_out_keep(&mut a, 560.0, 800.0);
-
-        // The toggle overlaps the sidebar header band horizontally...
-        assert!(a.hamburger_rect.x0 < a.sidebar_rect.x1);
-        assert!(a.hamburger_rect.x1 > a.sidebar_rect.x0);
-        // ...so the wordmark must be inset past the toggle's right edge.
-        let inset = a.sidebar_title_inset();
-        let title_x = a.sidebar_rect.x0 + 18.0 + inset;
-        assert!(
-            title_x >= a.hamburger_rect.x1,
-            "the 'Feeds' wordmark (x={title_x}) must start at/after the toggle's right edge (x={})",
-            a.hamburger_rect.x1
-        );
-    }
-
-    #[test]
-    fn sidebar_title_not_inset_when_docked_open() {
-        let mut a = app();
-        lay_out(&mut a, 1280.0, 800.0);
-        // Docked-open: no toggle is shown over the sidebar, so no inset is
-        // needed and the praised look is unchanged.
-        assert_eq!(a.hamburger_rect.area(), 0.0);
-        assert_eq!(a.sidebar_title_inset(), 0.0);
     }
 
     #[test]
