@@ -111,22 +111,32 @@ impl FileToolbar {
         self.path_bar.is_editing()
     }
 
-    fn nav_button(&self, id: &str, icon: Icon, cmd: FileCommand, enabled: bool) -> Box<dyn Widget> {
+    fn nav_button(
+        &self,
+        id: &str,
+        icon: Icon,
+        cmd: FileCommand,
+        enabled: bool,
+        tip: &str,
+    ) -> Box<dyn Widget> {
         let sink = self.sink.clone();
         Box::new(
             Button::new(id, "", None)
                 .with_icon(icon)
                 .with_size(NAV_W, NAV_H)
                 .with_enabled(enabled)
+                // The glyph alone is ambiguous; the tooltip labels it on hover
+                // and doubles as the button's accessible name.
+                .tooltip(tip)
                 .on_click(move || push(&sink, cmd.clone())),
         )
     }
 
     fn build_left(&self) -> Vec<Box<dyn Widget>> {
         vec![
-            self.nav_button("files.back", Icon::ArrowLeft, FileCommand::Back, self.can_back),
-            self.nav_button("files.forward", Icon::ArrowRight, FileCommand::Forward, self.can_forward),
-            self.nav_button("files.up", Icon::ArrowUp, FileCommand::Up, self.can_up),
+            self.nav_button("files.back", Icon::ArrowLeft, FileCommand::Back, self.can_back, "Back"),
+            self.nav_button("files.forward", Icon::ArrowRight, FileCommand::Forward, self.can_forward, "Forward"),
+            self.nav_button("files.up", Icon::ArrowUp, FileCommand::Up, self.can_up, "Up one folder"),
         ]
     }
 
@@ -169,6 +179,7 @@ impl FileToolbar {
                 .with_icon(Icon::MoreHorizontal)
                 .with_size(NAV_W, NAV_H)
                 .with_accessible_name("View options")
+                .tooltip("View options")
                 .on_click(move || push(&sink, FileCommand::OpenViewMenu)),
         ));
         out
