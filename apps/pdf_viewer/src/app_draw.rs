@@ -329,21 +329,6 @@ impl PdfApp {
         self.tooltip_pending = hovering && !self.tooltip.is_visible();
     }
 
-    fn status_layout(&self) -> (Rect, Rect, Rect) {
-        let s = self.status_rect;
-        let cy = (s.y0 + s.y1) / 2.0;
-        let bw = 22.0;
-        let label_w = 132.0;
-        let total = bw + label_w + bw;
-        let cx = (s.x0 + s.x1) / 2.0;
-        let mut x = cx - total / 2.0;
-        let prev = Rect::new(x, cy - 9.0, x + bw, cy + 9.0);
-        x += bw;
-        let label = Rect::new(x, s.y0, x + label_w, s.y1);
-        x += label_w;
-        let next = Rect::new(x, cy - 9.0, x + bw, cy + 9.0);
-        (prev, label, next)
-    }
 
     fn sidebar_tab_rects(&self) -> [(SidebarTab, Rect); 3] {
         let sb = self.sidebar_rect;
@@ -371,6 +356,11 @@ impl PdfApp {
 
     fn draw_all(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.current_page = self.nearest_page();
+        // A page change (not the initial open) briefly floats the page bubble.
+        if self.has_document && self.bubble_shown_page != 0 && self.current_page != self.bubble_shown_page {
+            self.page_bubble.poke(std::time::Instant::now());
+        }
+        self.bubble_shown_page = self.current_page;
         let c = &theme.tokens.colors;
 
         // Whole-window backdrop.
@@ -440,7 +430,7 @@ impl PdfApp {
         } else {
             self.search_hits.clear();
         }
-        self.draw_status(scene, base, tr, theme);
+        self.draw_page_bubble(scene, base, tr, theme);
         // Context menu + tooltip composite above everything else. File
         // open/save is the host desktop's portal picker (HIG §5), so there is
         // no in-app dialog to draw here.
@@ -1774,62 +1764,58 @@ impl PdfApp {
         }
     }
 
-    // ---- status bar -------------------------------------------------
+    // ---- floating page bubble ---------------------------------------
 
-    fn draw_status(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let s = self.status_rect;
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &s);
-        let hair = Rect::new(s.x0, s.y0, s.x1, s.y0 + 1.0);
-        scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
-
-        // Nothing to report until a document is open.
+    /// The floating page-info overlay: a small `[‹] Page X of Y [›]` pill that
+    /// floats over the bottom-centre of the canvas. It appears on a page change
+    /// (poked from `draw_all`) or while the pointer hovers the bottom-centre
+    /// band, then fades — replacing the old always-on bottom status strip
+    /// (the shared [`ui::StatusBubble`] pattern; markup counts already live in
+    /// the sidebar tabs, so only the page indicator remains here). The pill's
+    /// chevrons step pages; its rects are captured for hover + click.
+    fn draw_page_bubble(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.bubble_rect = Rect::ZERO;
+        self.bubble_prev = Rect::ZERO;
+        self.bubble_next = Rect::ZERO;
         if !self.has_document {
             return;
         }
+        let now = std::time::Instant::now();
+        let canvas = self.canvas_rect;
+        let label = format!("Page {} of {}", self.current_page, self.doc.page_count());
+        let text_size = 12.5f32;
+        let chev = 26.0;
+        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
+        let cx = (canvas.x0 + canvas.x1) / 2.0;
+        let by = canvas.y1 - 16.0 - pill_h;
+        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
 
-        let pad = 14.0;
-        let size = 11.5f32;
-        let ty = vcenter(s, size);
+        // Reveal zone: a band across the bottom-centre of the canvas (plus the
+        // pill itself), so approaching the bottom edge surfaces the indicator.
+        let zone = Rect::new(rect.x0 - 40.0, canvas.y1 - (pill_h + 32.0), rect.x1 + 40.0, canvas.y1);
+        let over = self.shots_page_bubble || zone.contains(self.last_mouse) || rect.contains(self.last_mouse);
+        self.page_bubble.set_hover(over, now);
 
-        // Center: page nav (always shown, it is the priority element).
-        let (prev, label, next) = self.status_layout();
-        draw_chevron(scene, base, prev, theme.text_dim, true);
-        draw_chevron(scene, base, next, theme.text_dim, false);
-        let lbl = format!("Page {} of {}", self.current_page, self.doc.page_count());
-        let (lw, _) = tr.measure(&lbl, size, None);
-        tr.draw_text(
-            scene,
-            &lbl,
-            size,
-            theme.text_primary,
-            base * Affine::translate(((label.x0 + label.x1) / 2.0 - lw as f64 / 2.0, ty)),
-            None,
-        );
-
-        // Left: active tool + hint — only when it clears the page chevrons.
-        let left = format!("{}  ·  {} key", self.tool.label(), self.tool.hotkey());
-        let (llw, _) = tr.measure(&left, size, None);
-        if s.x0 + pad + llw as f64 + 12.0 < prev.x0 {
-            tr.draw_text(scene, &left, size, theme.text_dim, base * Affine::translate((s.x0 + pad, ty)), None);
+        let alpha = self.page_bubble.alpha(now) as f32;
+        if alpha <= 0.0 {
+            return;
         }
 
-        // Right: markup counts — abbreviate as the bar narrows, and drop
-        // entirely if even the short form would collide with the page label.
-        let (a, cm, sg) = (self.annotations.len(), self.comments.len(), self.signatures.len());
-        let full = format!("{a} annotations · {cm} comments · {sg} signatures");
-        let (fw, _) = tr.measure(&full, size, None);
-        let right = if s.x1 - pad - fw as f64 > next.x1 + 12.0 {
-            Some(full)
-        } else {
-            let short = format!("{a} · {cm} · {sg}");
-            let (sw, _) = tr.measure(&short, size, None);
-            (s.x1 - pad - sw as f64 > next.x1 + 12.0).then_some(short)
-        };
-        if let Some(txt) = right {
-            let (rw, _) = tr.measure(&txt, size, None);
-            tr.draw_text(scene, &txt, size, theme.text_dim, base * Affine::translate((s.x1 - pad - rw as f64, ty)), None);
-        }
+        // Capture geometry for hover + click hit-testing (the chevron slots).
+        self.bubble_rect = rect;
+        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + chev + 8.0, rect.y1);
+        self.bubble_next = Rect::new(rect.x1 - chev - 8.0, rect.y0, rect.x1, rect.y1);
+
+        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, base, &rect.inflate(12.0, 14.0));
+        ui::status_bubble::draw_pill(scene, base, tr, theme, rect, &label, text_size);
+        let prev_hot = self.bubble_prev.contains(self.last_mouse);
+        let next_hot = self.bubble_next.contains(self.last_mouse);
+        let cyy = (rect.y0 + rect.y1) / 2.0;
+        let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
+        let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
+        ui::status_bubble::draw_chevron(scene, base, pc, if prev_hot { theme.text_primary } else { theme.text_dim }, true);
+        ui::status_bubble::draw_chevron(scene, base, nc, if next_hot { theme.text_primary } else { theme.text_dim }, false);
+        scene.pop_layer();
     }
 }
 
@@ -1993,23 +1979,6 @@ fn draw_rail_glyph(scene: &mut Scene, base: Affine, btn: Rect, color: Color) {
     scene.stroke(&Stroke::new(1.6), base, color, None, &RoundedRect::from_rect(r, 2.0));
     let divx = r.x0 + r.width() * 0.38;
     scene.stroke(&Stroke::new(1.6), base, color, None, &Line::new((divx, r.y0), (divx, r.y1)));
-}
-
-fn draw_chevron(scene: &mut Scene, base: Affine, btn: Rect, color: Color, left: bool) {
-    let c = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
-    let w = 4.0;
-    let h = 6.0;
-    let mut p = BezPath::new();
-    if left {
-        p.move_to((c.x + w, c.y - h));
-        p.line_to((c.x - w, c.y));
-        p.line_to((c.x + w, c.y + h));
-    } else {
-        p.move_to((c.x - w, c.y - h));
-        p.line_to((c.x + w, c.y));
-        p.line_to((c.x - w, c.y + h));
-    }
-    scene.stroke(&Stroke::new(2.0), base, color, None, &p);
 }
 
 /// Draw the active inline-editor [`TextInput`] so its wrapped text lands at
