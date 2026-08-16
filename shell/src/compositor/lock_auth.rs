@@ -19,6 +19,12 @@
 //!   display-less dev sessions, selected by `QOS_LOCK_TEST_PASSWORD`. It
 //!   compares against a known constant with no I/O, so the lock/unlock state
 //!   machine is exercised on the real code path without a PAM/greetd socket.
+//!   It is a developer-build affordance: `QOS_LOCK_TEST_PASSWORD` and
+//!   `QOS_UNLOCK_HELPER` are both read only when
+//!   [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`] is set, so a shipped
+//!   `--release` binary cannot be talked into accepting a password of the
+//!   caller's choosing. See that module for why the environment is not a
+//!   trust boundary here.
 //!
 //! [`verifier_from_env`] picks between them. The default when neither is
 //! configured is **fail-closed** ([`UnavailableVerifier`]): if there is no
@@ -119,12 +125,16 @@ impl PasswordVerifier for FixedVerifier {
 }
 
 /// Env var pointing at the in-session verify helper binary
-/// ([`HelperVerifier`]). When set it takes precedence over the default
-/// install path.
+/// ([`HelperVerifier`]). In a **developer build** it takes precedence over
+/// the default install path; a `--release` build never reads it (see
+/// [`crate::compositor::dev_env`]), because "name the program that decides
+/// whether this password unlocks the screen" is not a decision the process
+/// environment gets to make on a machine someone actually uses.
 pub const UNLOCK_HELPER_ENV: &str = "QOS_UNLOCK_HELPER";
 
-/// Where the helper is installed on the OS image; used when
-/// [`UNLOCK_HELPER_ENV`] is unset.
+/// Where the helper is installed — by the OS image, and by the host session
+/// RPM (`dist/rpm/qos-session.spec`), which puts it at exactly this path so
+/// no override is needed to unlock a session on a non-qOS host.
 pub const DEFAULT_UNLOCK_HELPER: &str = "/usr/libexec/qos-unlock-helper";
 
 /// Upper bound on a single verify. Generous enough for a slow PAM stack
@@ -251,43 +261,198 @@ impl PasswordVerifier for UnavailableVerifier {
 }
 
 /// Env var injecting a fixed unlock password ([`FixedVerifier`]) for the
-/// headless harness / display-less dev. Unset in production.
+/// headless harness / display-less dev. Read only in developer builds — a
+/// `--release` binary ignores it entirely, so a shipped session cannot be
+/// handed a password to accept. See [`crate::compositor::dev_env`].
 pub const LOCK_TEST_PASSWORD_ENV: &str = "QOS_LOCK_TEST_PASSWORD";
 
-/// Select a verifier from the environment, in priority order:
+/// Which verifier [`select_verifier`] picked. Named so the selection policy
+/// can be asserted on directly, without having to introspect a
+/// `dyn PasswordVerifier`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifierChoice {
+    /// [`FixedVerifier`] on the given password. Developer builds only.
+    Fixed(String),
+    /// [`HelperVerifier`] on the given program path.
+    Helper(String),
+    /// [`GreetdVerifier`] on the given socket path.
+    Greetd(String),
+    /// [`UnavailableVerifier`] — nothing can verify, so nothing unlocks.
+    Unavailable,
+}
+
+/// The verifier selection policy, as a pure function of its inputs.
 ///
-/// 1. `QOS_LOCK_TEST_PASSWORD` set → [`FixedVerifier`] (injected/test).
-/// 2. `QOS_UNLOCK_HELPER` set → [`HelperVerifier`] on that path (real,
-///    in-session — the override for a non-default install location).
-/// 3. [`DEFAULT_UNLOCK_HELPER`] exists on disk → [`HelperVerifier`] (the
-///    **real in-session PAM path** on the OS image).
-/// 4. `GREETD_SOCK` set → [`GreetdVerifier`] (login-time greetd path; a live
-///    session has no such socket, so this is effectively login-only/legacy).
-/// 5. else → [`UnavailableVerifier`] (fail-closed).
+/// `dev_overrides` is [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`]:
+/// when it is `false` the two developer variables are not consulted at all,
+/// whatever they contain. Passing it in rather than reading the `cfg` here
+/// is what lets the release-build behaviour be tested from a debug test run.
+///
+/// Priority order:
+///
+/// 1. (dev builds only) `QOS_LOCK_TEST_PASSWORD` set → [`VerifierChoice::Fixed`].
+/// 2. (dev builds only) `QOS_UNLOCK_HELPER` set → [`VerifierChoice::Helper`]
+///    on that path, for a helper installed somewhere other than the default.
+/// 3. [`DEFAULT_UNLOCK_HELPER`] exists on disk → [`VerifierChoice::Helper`]
+///    (the **real in-session PAM path**, on the OS image and on a host that
+///    installed the session RPM).
+/// 4. `GREETD_SOCK` set → [`VerifierChoice::Greetd`] (login-time greetd path;
+///    a live session has no such socket, so this is effectively login-only).
+/// 5. else → [`VerifierChoice::Unavailable`] (fail-closed).
+pub fn select_verifier(
+    dev_overrides: bool,
+    test_password: Option<String>,
+    helper_override: Option<String>,
+    helper_installed: bool,
+    greetd_sock: Option<String>,
+) -> VerifierChoice {
+    if dev_overrides {
+        if let Some(pw) = test_password {
+            return VerifierChoice::Fixed(pw);
+        }
+        if let Some(prog) = helper_override {
+            if !prog.trim().is_empty() {
+                return VerifierChoice::Helper(prog);
+            }
+        }
+    }
+    if helper_installed {
+        return VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.to_string());
+    }
+    if let Some(sock) = greetd_sock {
+        return VerifierChoice::Greetd(sock);
+    }
+    VerifierChoice::Unavailable
+}
+
+/// Select a verifier from the environment via [`select_verifier`].
 ///
 /// Returned behind an `Arc` so the run loop and the verify worker thread can
 /// share one verifier.
 pub fn verifier_from_env() -> Arc<dyn PasswordVerifier> {
-    if let Ok(pw) = std::env::var(LOCK_TEST_PASSWORD_ENV) {
-        return Arc::new(FixedVerifier::new(pw));
+    let dev = crate::compositor::dev_env::DEV_ENV_OVERRIDES;
+    // Reading the two developer variables is itself skipped in a shipped
+    // build, so they cannot influence anything — not even by being present.
+    let (test_password, helper_override) = if dev {
+        (
+            std::env::var(LOCK_TEST_PASSWORD_ENV).ok(),
+            std::env::var(UNLOCK_HELPER_ENV).ok(),
+        )
+    } else {
+        (None, None)
+    };
+    let choice = select_verifier(
+        dev,
+        test_password,
+        helper_override,
+        Path::new(DEFAULT_UNLOCK_HELPER).exists(),
+        std::env::var("GREETD_SOCK").ok(),
+    );
+    match choice {
+        VerifierChoice::Fixed(pw) => Arc::new(FixedVerifier::new(pw)),
+        VerifierChoice::Helper(prog) => Arc::new(HelperVerifier::new(vec![prog])),
+        VerifierChoice::Greetd(sock) => Arc::new(GreetdVerifier::new(sock)),
+        VerifierChoice::Unavailable => Arc::new(UnavailableVerifier),
     }
-    if let Ok(prog) = std::env::var(UNLOCK_HELPER_ENV) {
-        if !prog.trim().is_empty() {
-            return Arc::new(HelperVerifier::new(vec![prog]));
-        }
-    }
-    if Path::new(DEFAULT_UNLOCK_HELPER).exists() {
-        return Arc::new(HelperVerifier::new(vec![DEFAULT_UNLOCK_HELPER.to_string()]));
-    }
-    if let Ok(sock) = std::env::var("GREETD_SOCK") {
-        return Arc::new(GreetdVerifier::new(sock));
-    }
-    Arc::new(UnavailableVerifier)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- select_verifier: the developer-override gate -----------------
+    //
+    // These drive the policy function with `dev_overrides` explicitly, so
+    // the *shipped* behaviour is exercised from an ordinary debug test run
+    // instead of only being reachable in a build the suite never runs.
+
+    #[test]
+    fn dev_build_lets_the_test_password_win() {
+        assert_eq!(
+            select_verifier(
+                true,
+                Some("letmein".into()),
+                Some("/tmp/helper".into()),
+                true,
+                Some("/run/greetd.sock".into()),
+            ),
+            VerifierChoice::Fixed("letmein".into()),
+        );
+    }
+
+    #[test]
+    fn shipped_build_ignores_the_test_password_entirely() {
+        // Same inputs, gate closed. The injected password must not be able
+        // to displace the real helper — this is the whole point of the gate.
+        assert_eq!(
+            select_verifier(
+                false,
+                Some("letmein".into()),
+                None,
+                true,
+                Some("/run/greetd.sock".into()),
+            ),
+            VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
+        );
+    }
+
+    #[test]
+    fn shipped_build_ignores_the_helper_override_entirely() {
+        assert_eq!(
+            select_verifier(false, None, Some("/tmp/evil".into()), true, None),
+            VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
+        );
+    }
+
+    #[test]
+    fn shipped_build_with_no_helper_installed_falls_closed_not_to_the_override() {
+        // With nothing real to verify against, an ignored override must
+        // leave the session unverifiable rather than becoming the fallback.
+        assert_eq!(
+            select_verifier(
+                false,
+                Some("letmein".into()),
+                Some("/tmp/evil".into()),
+                false,
+                None,
+            ),
+            VerifierChoice::Unavailable,
+        );
+    }
+
+    #[test]
+    fn dev_helper_override_beats_the_installed_helper() {
+        assert_eq!(
+            select_verifier(true, None, Some("/tmp/helper".into()), true, None),
+            VerifierChoice::Helper("/tmp/helper".into()),
+        );
+    }
+
+    #[test]
+    fn blank_helper_override_is_not_a_path() {
+        // An empty or whitespace-only override would otherwise spawn "" and
+        // fail closed on every attempt; fall through to the real helper.
+        assert_eq!(
+            select_verifier(true, None, Some("   ".into()), true, None),
+            VerifierChoice::Helper(DEFAULT_UNLOCK_HELPER.into()),
+        );
+    }
+
+    #[test]
+    fn greetd_is_the_login_time_fallback_when_no_helper_is_installed() {
+        assert_eq!(
+            select_verifier(false, None, None, false, Some("/run/greetd.sock".into())),
+            VerifierChoice::Greetd("/run/greetd.sock".into()),
+        );
+    }
+
+    #[test]
+    fn nothing_configured_is_fail_closed() {
+        assert_eq!(
+            select_verifier(false, None, None, false, None),
+            VerifierChoice::Unavailable,
+        );
+    }
 
     #[test]
     fn fixed_verifier_accepts_only_the_configured_password() {

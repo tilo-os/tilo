@@ -71,8 +71,11 @@ const TEST_STATE_DUMP_ENV: &str = "NIRIOS_TEST_STATE_DUMP";
 /// Env-var name for the real-input e2e control protocol. When set to a
 /// writable path, [`run`] binds a unix socket at that path that accepts
 /// newline-delimited JSON commands (see
-/// `compositor::test_control::Command` for the schema). Production
-/// runs never set the env var; the socket is opt-in for test harnesses.
+/// `compositor::test_control::Command` for the schema). The socket is a
+/// **developer-build** surface: it types, clicks and reads back state as if
+/// it were the person at the keyboard, including while the session is
+/// locked, so a shipped binary must not be able to open one. Reading the
+/// variable is gated on [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 ///
 /// Spec: `docs/superpowers/specs/2026-05-16-real-input-e2e-design.md`.
 const TEST_CONTROL_ENV: &str = "QOS_TEST_CONTROL";
@@ -109,9 +112,40 @@ impl Drop for UnlinkOnDrop {
 ///
 /// On success, returns the listener plus an `UnlinkOnDrop` guard that
 /// removes the socket file on teardown (D-3).
+/// Resolve the path the test-control socket should be bound at, as a pure
+/// function of the gate and the raw variable.
+///
+/// `dev_overrides` is [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
+/// Taking it as an argument (instead of testing the `cfg` inline) is what
+/// lets the shipped answer — always `None` — be asserted from a debug test
+/// run, where it would otherwise be unobservable.
+pub(crate) fn test_control_path(
+    dev_overrides: bool,
+    raw: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if !dev_overrides {
+        return None;
+    }
+    raw.map(PathBuf::from)
+}
+
+/// Same, for the per-frame `WorkspaceTree` dump. A shipped session has no
+/// business serialising its window tree to a path the environment names.
+pub(crate) fn test_state_dump_path(
+    dev_overrides: bool,
+    raw: Option<std::ffi::OsString>,
+) -> Option<std::ffi::OsString> {
+    if !dev_overrides {
+        return None;
+    }
+    raw
+}
+
 fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
-    let path = std::env::var_os(TEST_CONTROL_ENV)?;
-    let path = PathBuf::from(path);
+    let path = test_control_path(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os(TEST_CONTROL_ENV),
+    )?;
     // Best-effort cleanup of a stale socket file from a previous run —
     // `bind` would otherwise fail with EADDRINUSE.
     let _ = std::fs::remove_file(&path);
@@ -127,6 +161,62 @@ fn bind_test_control_socket() -> Option<(UnixListener, UnlinkOnDrop)> {
         }
         Err(e) => {
             eprintln!("nirios compositor: test_control bind {path:?}: {e}");
+            None
+        }
+    }
+}
+
+/// Directory under `$XDG_RUNTIME_DIR` where a running compositor publishes
+/// facts about itself that the *next* command in a developer's terminal
+/// needs. Sibling to the Wayland sockets themselves, and torn down with the
+/// session.
+pub const SESSION_RUNTIME_SUBDIR: &str = "qos-session";
+
+/// File inside [`SESSION_RUNTIME_SUBDIR`] holding the bare socket name (e.g.
+/// `wayland-2`) of the most recently started compositor, no trailing
+/// newline, so `WAYLAND_DISPLAY=$(cat …)` is exactly right.
+pub const WAYLAND_DISPLAY_FILE: &str = "wayland-display";
+
+/// Where [`publish_wayland_display`] writes, given the value of
+/// `$XDG_RUNTIME_DIR`. Split out so the path policy is testable without a
+/// live session.
+///
+/// Returns `None` when the variable is unset or not absolute: this is a
+/// convenience, and guessing at `/tmp` for it would put a session-scoped
+/// file somewhere world-writable.
+pub(crate) fn session_display_path(runtime_dir: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let dir = PathBuf::from(runtime_dir?);
+    if !dir.is_absolute() {
+        return None;
+    }
+    Some(dir.join(SESSION_RUNTIME_SUBDIR).join(WAYLAND_DISPLAY_FILE))
+}
+
+/// Publish the compositor's Wayland socket name to
+/// `$XDG_RUNTIME_DIR/qos-session/wayland-display`.
+///
+/// Last writer wins: nesting a second compositor inside the first overwrites
+/// the file, which is the behaviour you want when the file's job is "what do
+/// I connect to *now*". The printed line stays authoritative for a specific
+/// compositor. Failure is never fatal — the socket is already up and the
+/// name is already on stderr.
+///
+/// Returns the unlink guard so the file disappears with the process.
+fn publish_wayland_display(socket_name: &std::ffi::OsStr) -> Option<UnlinkOnDrop> {
+    let path = session_display_path(std::env::var_os("XDG_RUNTIME_DIR"))?;
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("nirios compositor: publishing {}: {e}", path.display());
+            return None;
+        }
+    }
+    // 0600: the name is not a secret, but nothing else has a reason to write
+    // it, and the connect-path it names is the session's own. Applied before
+    // the rename so the file is never briefly visible wider than intended.
+    match atomic_file::write_with_mode(&path, socket_name.as_encoded_bytes(), 0o600) {
+        Ok(()) => Some(UnlinkOnDrop(path)),
+        Err(e) => {
+            eprintln!("nirios compositor: publishing {}: {e}", path.display());
             None
         }
     }
@@ -1405,6 +1495,19 @@ pub fn run() -> ! {
         ListeningSocketSource::new_auto().expect("bind listening wayland socket");
     let socket_name = listening_socket.socket_name().to_os_string();
     eprintln!("nirios compositor listening on {socket_name:?}");
+    // The line above is the contract; the two below are for the person who
+    // just ran `cargo run -p shell` and now wants to point something at it.
+    // Publishing the name to a file as well means the next command can read
+    // it instead of the human copying it out of a log.
+    let _display_file = publish_wayland_display(&socket_name);
+    eprintln!(
+        "  WAYLAND_DISPLAY={} — e.g. `WAYLAND_DISPLAY={} cargo run -p terminal`",
+        socket_name.to_string_lossy(),
+        socket_name.to_string_lossy(),
+    );
+    if let Some(guard) = _display_file.as_ref() {
+        eprintln!("  also written to {}", guard.0.display());
+    }
     // Publish it to the app launcher: every app we start is pointed at
     // this socket explicitly (`qos-launcher --wayland-socket`), never at
     // whatever display the compositor's own environment happens to name.
@@ -1464,7 +1567,10 @@ pub fn run() -> ! {
     // tick. The integration test in `tests/compositor_test.rs` reads this
     // file to assert foreign-tab adoption + reaping. Production runs never
     // set the env var, so the dump is a true zero-cost noop there.
-    let test_dump_path = std::env::var_os(TEST_STATE_DUMP_ENV);
+    let test_dump_path = test_state_dump_path(
+        crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+        std::env::var_os(TEST_STATE_DUMP_ENV),
+    );
 
     // Real-input e2e Phase 1b: opt-in unix socket that accepts
     // newline-delimited JSON commands (see `compositor::test_control`).
@@ -2592,6 +2698,92 @@ mod tests {
     //! wire without spinning up a process, so a CI run that can't open
     //! winit still gates against regressions here.
     use super::*;
+
+    // ---- developer surfaces are absent from a shipped build ------------
+
+    #[test]
+    fn shipped_build_never_binds_a_test_control_socket() {
+        assert_eq!(
+            test_control_path(false, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
+            None,
+            "a release compositor must not open a remote-control socket"
+        );
+    }
+
+    #[test]
+    fn dev_build_binds_the_test_control_socket_the_harness_asks_for() {
+        assert_eq!(
+            test_control_path(true, Some(std::ffi::OsString::from("/tmp/ctl.sock"))),
+            Some(PathBuf::from("/tmp/ctl.sock")),
+        );
+        assert_eq!(test_control_path(true, None), None);
+    }
+
+    #[test]
+    fn shipped_build_never_dumps_its_workspace_tree() {
+        assert_eq!(
+            test_state_dump_path(false, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            None,
+        );
+        assert_eq!(
+            test_state_dump_path(true, Some(std::ffi::OsString::from("/tmp/tree.json"))),
+            Some(std::ffi::OsString::from("/tmp/tree.json")),
+        );
+    }
+
+    #[test]
+    fn the_gate_the_compositor_actually_uses_is_the_build_profile() {
+        // The two functions above are only meaningful if `run` passes the
+        // real constant to them. Tie the assertions to it so flipping the
+        // production call site to a literal `true` fails here.
+        assert_eq!(
+            crate::compositor::dev_env::DEV_ENV_OVERRIDES,
+            cfg!(debug_assertions)
+        );
+    }
+
+    // ---- publishing the socket name for the nested dev loop ------------
+
+    #[test]
+    fn display_path_lands_under_the_runtime_dir() {
+        assert_eq!(
+            session_display_path(Some(std::ffi::OsString::from("/run/user/1000"))),
+            Some(PathBuf::from("/run/user/1000/qos-session/wayland-display")),
+        );
+    }
+
+    #[test]
+    fn display_path_declines_an_unset_or_relative_runtime_dir() {
+        assert_eq!(session_display_path(None), None);
+        assert_eq!(
+            session_display_path(Some(std::ffi::OsString::from("relative/dir"))),
+            None,
+            "a session-scoped file must not be placed by a relative path"
+        );
+    }
+
+    #[test]
+    fn published_display_file_is_exactly_the_socket_name() {
+        // Round-trip through the real writer: what lands on disk has to be
+        // usable as `WAYLAND_DISPLAY=$(cat …)`, i.e. no trailing newline
+        // and no quoting.
+        let dir = std::env::temp_dir().join(format!("qos-display-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp runtime dir");
+        let path = session_display_path(Some(dir.clone().into_os_string()))
+            .expect("absolute temp dir yields a path");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create qos-session dir");
+        atomic_file::write_with_mode(&path, b"wayland-7", 0o600).expect("write display file");
+
+        let read = std::fs::read_to_string(&path).expect("read back");
+        assert_eq!(read, "wayland-7");
+
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "session file must not be readable by others");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// These unit tests exercise the *chrome* half of the executor with no
     /// compositor `State` attached — building one needs a live wayland
