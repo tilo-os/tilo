@@ -582,28 +582,33 @@ impl Core {
         let x = rect.x0 + RP;
         let w = (rect.width() - 2.0 * RP).max(80.0);
 
-        // Title.
-        text_left(scene, tr, "Weather", x, rect.y0 + 20.0, 22.0, TextWeight::Bold, c.text_primary);
+        // The compositor owns the window title / chrome, so this panel opens
+        // straight into its content: the search field, then the saved places.
+        // No self-drawn app-name header.
+        let sy = rect.y0 + 16.0;
+        let sh = 38.0;
+        let mut field_w = w;
 
         // Collapse chip (side-by-side only) — tucks the list into a rail so
-        // the forecast can use the full width.
+        // the forecast can use the full width. It sits at the search field's
+        // right edge, which the field leaves room for.
         if self.overview_collapsible {
             let cb = 30.0;
-            let chip = Rect::new(x + w - cb, rect.y0 + 13.0, x + w, rect.y0 + 13.0 + cb);
+            let cy = sy + (sh - cb) / 2.0;
+            let chip = Rect::new(x + w - cb, cy, x + w, cy + cb);
             let hovered = chip.contains(self.last_mouse);
             let shape = RoundedRect::from_rect(chip, theme.tokens.radii.md as f64);
             scene.fill(Fill::NonZero, t, if hovered { c.neutral[2] } else { c.surfaces.raised }, None, &shape);
             scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
             Icon::ChevronLeft.draw(scene, t, chip.inset(-8.0), c.text_primary);
             hot.push(Hotspot { rect: chip, action: OverAction::ToggleCollapse });
+            field_w = (w - cb - 10.0).max(80.0);
         }
 
         // Search field — the shared Autocomplete (a real text field, its
         // suggestion overlay floats last). No hand-rolled buffer / caret / hit
         // rect here; the widget owns selection, clipboard, IME and theming.
-        let sy = rect.y0 + 56.0;
-        let sh = 38.0;
-        let field_rect = Rect::new(x, sy, x + w, sy + sh);
+        let field_rect = Rect::new(x, sy, x + field_w, sy + sh);
         self.search_field_rect = field_rect;
         self.search.apply_layout_external(field_rect);
         let presence = PresenceCtx::empty();
