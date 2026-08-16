@@ -180,7 +180,7 @@ fn decode_real_frame(path: &std::path::Path, at: f64) -> Option<Thumb> {
             return Some(Thumb {
                 width: frame.width,
                 height: frame.height,
-                rgba: frame.rgba,
+                rgba: frame.rgba.as_ref().clone(),
                 real: true,
             });
         }
