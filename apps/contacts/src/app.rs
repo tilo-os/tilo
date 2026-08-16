@@ -42,7 +42,7 @@ use crate::vcard::{self, VCardVersion};
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
 
-const TOOLBAR_H: f64 = 56.0;
+const TOOLBAR_H: f64 = 48.0;
 const ROW_H: f64 = 62.0;
 
 /// How long an action toast ("Saved", "Contact deleted", …) stays on screen
@@ -1527,34 +1527,27 @@ impl ContactsApp {
             None,
             &Line::new((bar.x0, bar.y1), (bar.x1, bar.y1)),
         );
-        // App title + count.
-        tr.draw_text_weighted(
-            scene,
-            "Contacts",
-            20.0,
-            c.text_primary,
-            t * Affine::translate((self.rect.x0 + PAD, self.rect.y0 + 16.0)),
-            None,
-            TextWeight::Bold,
-        );
+        // No app-name wordmark — the OS titlebar shows "Contacts". The toolbar's
+        // left slot carries the functional people-count instead.
         let count = match self.store.len() {
             0 => "No contacts".to_string(),
             1 => "1 person".to_string(),
             n => format!("{n} people"),
         };
-        // Draw the count subtitle only when it clears the right-aligned toolbar
-        // buttons — on a narrow window the buttons crowd in and it would
-        // otherwise bleed under the Import button.
-        let count_x = self.rect.x0 + PAD + 110.0;
-        let count_w = tr.measure(&count, 12.0, None).0 as f64;
+        // Draw the count only when it clears the right-aligned toolbar buttons —
+        // on a narrow window the buttons crowd in and it would otherwise bleed
+        // under the Import button.
+        let count_x = self.rect.x0 + PAD;
+        let count_w = tr.measure_weighted(&count, 14.0, None, TextWeight::Semibold).0 as f64;
         if count_x + count_w < self.hit.import.x0 - 12.0 {
-            tr.draw_text(
+            tr.draw_text_weighted(
                 scene,
                 &count,
-                12.0,
-                c.text_dim,
-                t * Affine::translate((count_x, self.rect.y0 + 21.0)),
+                14.0,
+                c.text_primary,
+                t * Affine::translate((count_x, self.rect.y0 + (TOOLBAR_H - 14.0) / 2.0)),
                 None,
+                TextWeight::Semibold,
             );
         }
 
