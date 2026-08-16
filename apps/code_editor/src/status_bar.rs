@@ -130,11 +130,14 @@ impl Widget for StatusBar {
             x += w as f64 + 18.0;
         }
 
-        // Problems indicator.
-        let problems = if self.state.problems == 0 {
-            "\u{2713} No problems".to_string()
-        } else {
-            format!("\u{26A0} {} problems", self.state.problems)
+        // Problems indicator. Zero problems is only a clean bill of health once
+        // something has looked: while the language server is still working it
+        // means "not analysed yet", and a tick here would contradict the panel
+        // two rows above, which says exactly that.
+        let problems = match (self.state.problems, self.state.lsp_working) {
+            (0, true) => "\u{2026} No problems yet".to_string(),
+            (0, false) => "\u{2713} No problems".to_string(),
+            (n, _) => format!("\u{26A0} {n} problems"),
         };
         text_renderer.draw_text(
             scene,
