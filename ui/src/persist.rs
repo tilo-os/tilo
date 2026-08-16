@@ -160,7 +160,7 @@ mod tests {
     /// creates the directory before the first open and drives two opens against
     /// it, asserting persistence stays enabled and state round-trips.
     #[test]
-    #[serial_test::serial(app_state_dir)]
+    #[serial_test::serial(state_dir_env)]
     fn open_keeps_autosave_enabled_when_the_state_dir_already_exists() {
         let tmp = tempfile::tempdir().expect("temp dir");
         let pkg = "dev.qos.persist-open-twice";
@@ -203,6 +203,58 @@ mod tests {
             note(&state).as_deref(),
             Some("survives"),
             "state written on the first run must load on the second open"
+        );
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    /// The actual field failure: an older app layout wrote the document as a
+    /// zero-byte *file* at the per-package state path. `open` has to recover and
+    /// come up with persistence enabled — not swallow the `EEXIST` and hand back
+    /// the disabled in-memory fallback, which is what left `maps`, `weather` and
+    /// friends unable to save on every launch.
+    #[test]
+    #[serial_test::serial(state_dir_env)]
+    fn open_recovers_when_the_state_path_is_a_stale_file() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let pkg = "dev.qos.stale-file-open";
+
+        // The old layout's leftover: a zero-byte file where the new layout wants
+        // a directory.
+        let path = tmp.path().join(pkg);
+        std::fs::write(&path, b"").unwrap();
+        assert!(path.is_file(), "the leftover is a file, not a directory");
+        // SAFETY: serialised on `app_state_dir`.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+
+        // Run 1: `open` — the swallow-and-log entry apps use — must recover to
+        // enabled persistence, then persist a value.
+        {
+            let (mut state, mut autosave) = open(pkg);
+            assert!(
+                autosave.is_enabled(),
+                "opening over a stale file must recover to enabled persistence, \
+                 not drop to the in-memory fallback"
+            );
+            state
+                .doc
+                .put(&ROOT, "note", ScalarValue::Str("recovered".into()))
+                .unwrap();
+            autosave.request(&mut state.doc);
+            autosave.flush();
+            assert_eq!(autosave.last_error(), None, "no write may have failed");
+        }
+
+        // Run 2: the path is a directory now, and the value survives.
+        let (state, autosave) = open(pkg);
+        assert!(autosave.is_enabled(), "persistence stays enabled after recovery");
+        assert_eq!(
+            note(&state).as_deref(),
+            Some("recovered"),
+            "state written after recovery must load on the next open"
         );
 
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
