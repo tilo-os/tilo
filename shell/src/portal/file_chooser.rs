@@ -383,6 +383,7 @@ mod tests {
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
         assert_eq!(caller.app_id, "org.example");
@@ -407,6 +408,7 @@ mod tests {
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
         };
         let name: OwnedUniqueName = ":1.7".try_into().unwrap();
         let caller = FileChooserBackend::resolve_caller(&ctx, Some(&name), "ignored");
@@ -438,6 +440,7 @@ mod tests {
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -604,6 +607,7 @@ mod tests {
             screencast_provisioner: sc,
             remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
             documents: crate::portal::DocumentStoreHandle::host_paths(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -678,5 +682,42 @@ mod tests {
                  prompt for the file the user just chose to save to"
             );
         }
+    fn deny_outcome_skips_spawner_and_returns_one() {
+        // Even with a paths-returning spawner, a Deny outcome must
+        // short-circuit before the dialog spawns.
+        let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(35));
+        let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
+        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
+            "/tmp/never.txt",
+        )]));
+        let fp = FilePickerSpawnerHandle::new(mock.clone());
+        let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        ));
+        let ctx = PortalContext {
+            grants: store,
+            prompts: queue,
+            caller_map: CallerMap::new(),
+            file_picker: fp,
+            screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
+            print_spooler: crate::portal::PrintSpoolerHandle::null(),
+        };
+        let backend = FileChooserBackend::new(ctx);
+        let caller = PortalCaller::new(ws_id, "org.example");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (code, _) = rt.block_on(backend.open_response_via_picker(
+            PromptOutcome::Deny,
+            caller,
+            "Open".into(),
+            false,
+        ));
+        assert_eq!(code, 1);
+        // The spawner must not have been called at all — Deny
+        // short-circuits before the dialog.
+        assert!(mock.requests().is_empty());
     }
 }
