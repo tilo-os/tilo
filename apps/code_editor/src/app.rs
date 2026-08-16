@@ -629,7 +629,25 @@ impl CodeApp {
         let mut failed: Vec<(TreeId, String)> = Vec::new();
         for i in 0..self.session.open.len() {
             let node = self.session.open[i].node;
-            if EditorDoc::buffer_text(doc, node).is_some() {
+            // The document already carrying text for this node is *not* proof
+            // that the file has been read. The document is persisted across
+            // launches, so on the next run it hands back the buffer while this
+            // session has taken no stamp — and `disk::save` treats a missing
+            // stamp as "no check requested" and writes unconditionally. That
+            // combination silently overwrote a real file with a previous
+            // session's contents: the exact clobber the stamp exists to refuse.
+            //
+            // So the condition to skip is having reconciled *in this session*,
+            // which is what holding a stamp means. When the document's text is
+            // already there it is kept — a peer's or a previous session's
+            // unsaved edits are not ours to discard — but the stamp and the
+            // on-disk comparison text come from the file, so the buffer shows
+            // as modified and the next save goes through the conflict check
+            // like any other.
+            let has_text = EditorDoc::buffer_text(doc, node).is_some();
+            let reconciled = self.session.open[i].stamp.is_some();
+            let disk_backed = self.session.project.disk_path_of(node).is_some();
+            if has_text && (reconciled || !disk_backed) {
                 continue;
             }
             match self.session.project.file_seed(node) {
@@ -3242,6 +3260,63 @@ mod tests {
             app.panel.analysis(),
             None,
             "the note clears once the server has settled"
+        );
+    }
+
+    /// A persisted document handing back a buffer must not let a save skip the
+    /// conflict check.
+    ///
+    /// The document outlives the process. On the next launch it already holds
+    /// text for the node, which used to be read as "this file is loaded" — so
+    /// the file was never stat'ed, the buffer carried no stamp, and
+    /// [`crate::disk::save`] takes a missing stamp as "no check requested" and
+    /// writes unconditionally. Driving the real editor over a real file with a
+    /// document from an earlier run overwrote 203 bytes of it without a word.
+    #[test]
+    fn a_document_from_a_previous_session_still_stats_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() { on_disk() }\n").unwrap();
+
+        let mut app = CodeApp::open_path(&file);
+        let node = app.session.active_buffer().expect("a tab is open").node;
+
+        // A document that already carries this buffer, as a restored one does,
+        // holding text that is not what the file says.
+        let mut doc = AutoCommit::new();
+        EditorDoc::ensure_buffer(&mut doc, node, "fn main() { from_last_session() }\n");
+
+        app.ensure_buffers(&mut doc);
+
+        let buf = app
+            .session
+            .open
+            .iter()
+            .find(|b| b.node == node)
+            .expect("still open");
+        assert!(
+            buf.stamp.is_some(),
+            "the file was stat'ed, so a save has something to check against"
+        );
+        assert_eq!(
+            buf.path.as_deref(),
+            Some(crate::disk::canonical(&file).as_path()),
+            "and the buffer knows which file it writes back to"
+        );
+        assert_eq!(
+            buf.saved_text, "fn main() { on_disk() }\n",
+            "what counts as 'unmodified' is the bytes on disk, not the document"
+        );
+        assert!(
+            buf.dirty,
+            "the restored text differs from the file, so it reads as unsaved \
+             edits rather than as agreement"
+        );
+        // The restored text is kept — a previous session's unsaved work, or a
+        // peer's in-flight edits, are not ours to throw away.
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("fn main() { from_last_session() }\n")
         );
     }
 
