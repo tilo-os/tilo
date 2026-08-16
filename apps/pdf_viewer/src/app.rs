@@ -2887,6 +2887,68 @@ mod tests {
         );
     }
 
+    /// The find bar must never overlap its own pieces, and must reflow (drop
+    /// the hint, compact then drop the counter) as the window narrows. Asserts
+    /// on the real `search_layout` the draw pass hit-tests, at three widths.
+    #[test]
+    fn find_bar_layout_never_overlaps_and_reflows() {
+        let (mut app, _st) = app_with_state();
+        app.search_active = true;
+        app.query = "the".to_string();
+        app.matches = (0..12).map(|i| Match { page: 1, block: 0, start: i, len: 3 }).collect();
+        app.active_match = 2;
+        let mut tr = TextRenderer::new();
+
+        fn check(app: &PdfApp, tr: &mut TextRenderer, width: f64) -> SearchBarLayout {
+            let lay = app.search_layout(tr);
+            // Visible pieces in on-screen (left→right) order.
+            let mut rects: Vec<(&str, Rect)> = vec![("field", lay.field)];
+            if let Some((r, _)) = &lay.counter {
+                rects.push(("counter", *r));
+            }
+            if let Some(r) = lay.hint {
+                rects.push(("hint", r));
+            }
+            rects.push(("case", lay.case));
+            rects.push(("whole_word", lay.whole_word));
+            for w in rects.windows(2) {
+                assert!(
+                    w[0].1.x1 <= w[1].1.x0 + 0.5,
+                    "at width {width}: {} (x1={}) overlaps {} (x0={})",
+                    w[0].0,
+                    w[0].1.x1,
+                    w[1].0,
+                    w[1].1.x0
+                );
+            }
+            for (name, r) in &rects {
+                assert!(
+                    r.x0 >= app.search_rect.x0 - 0.5 && r.x1 <= app.search_rect.x1 + 0.5,
+                    "at width {width}: {name} escapes the bar ({r:?})"
+                );
+            }
+            lay
+        }
+
+        // Wide: everything shown, counter full, hint present.
+        app.search_rect = Rect::new(0.0, 56.0, 1200.0, 56.0 + 46.0);
+        let wide = check(&app, &mut tr, 1200.0);
+        assert!(wide.hint.is_some(), "the hint shows on a wide bar");
+        assert!(
+            matches!(&wide.counter, Some((_, t)) if t.contains("of")),
+            "a wide bar shows the full '3 of 12 matches' counter"
+        );
+
+        // Narrow: no overlap; the hint drops.
+        app.search_rect = Rect::new(0.0, 56.0, 520.0, 56.0 + 46.0);
+        let narrow = check(&app, &mut tr, 520.0);
+        assert!(narrow.hint.is_none(), "the hint drops on a narrow bar");
+
+        // Very narrow: the toggles still fit and nothing overlaps.
+        app.search_rect = Rect::new(0.0, 56.0, 380.0, 56.0 + 46.0);
+        check(&app, &mut tr, 380.0);
+    }
+
     #[test]
     fn dragging_a_note_marker_repositions_and_persists() {
         let (mut app, mut st) = app_with_state();
