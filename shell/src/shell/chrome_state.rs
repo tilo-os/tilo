@@ -1057,10 +1057,12 @@ impl ChromeState {
     /// history log and the id is returned as usual. The caller (and the
     /// originating D-Bus app) still gets a valid id; the toast is simply
     /// held back from the display surface, honouring "suppress display
-    /// but keep history".
+    /// but keep history". A notification carrying
+    /// [`Notification::bypass_dnd`] is shown anyway; that flag is the
+    /// shell's alone and nothing on the D-Bus path can set it.
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
-        if self.dnd {
+        if self.dnd && !n.bypass_dnd {
             self.record_history(n);
             self.bump();
             return id;
