@@ -45,6 +45,13 @@ hdr-decode = ["ffmpeg-next"]
 # is built, and the dispatch contract that holds on every host is
 # asserted in the always-compiled unit tests.
 hevc-codec-tests = ["hdr-decode"]
+# Stamps a build marker into the binary (see `compositor::dev_env`) so the
+# host session RPM's *developer* entry can tell a deliberately-built dev
+# compositor from any other executable before logging into it. Non-default,
+# and inert unless `debug_assertions` is also on, so a `--release` build never
+# carries the marker whatever features it was given. It enables no behaviour
+# on its own — the marker is the entire content of the feature.
+dev-session = []
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
