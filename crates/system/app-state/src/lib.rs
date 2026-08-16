@@ -402,17 +402,12 @@ impl DocStore {
     }
 
     fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
-        // Idempotent by design. The state directory already exists on every
-        // launch after the first, so "the directory is already there" is
-        // success, not an error — `create_dir_all` returns `Ok` in that case
-        // while still surfacing a genuinely unwritable path. A plain
-        // `create_dir` here would fail with `EEXIST` on the second run and drop
-        // every app to an in-memory document, silently breaking the
-        // survive-a-restart guarantee. Fresh-XDG CI never sees the pre-existing
-        // directory, so the invariant is pinned by
-        // `opening_twice_against_an_existing_dir_keeps_persistence_enabled`.
-        fs::create_dir_all(&dir)
-            .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))?;
+        // The state directory already exists on every launch after the first,
+        // and — for apps that ran under an older layout — the path may exist as
+        // a *file* rather than a directory. Both cases must come up with
+        // persistence enabled, not drop the app to an in-memory document; see
+        // `ensure_state_dir`.
+        ensure_state_dir(&dir)?;
 
         let lock = acquire_writer_lock(&dir.join(LOCK_FILE));
         let actor = if lock.is_some() {
@@ -697,6 +692,90 @@ impl DocStore {
         atomic_file::write(&self.document, bytes)
             .map_err(|e| io_err(format!("writing {}", self.document.display()), e))
     }
+}
+
+/// Make `dir` an existing, writable directory, recovering from a state path a
+/// previous app layout left as a *file* where this layout wants a directory.
+///
+/// The current layout keeps a package's document in `<dir>/state.automerge`. A
+/// predecessor wrote the document straight to `<dir>` itself — a regular file.
+/// `create_dir_all` fails with `EEXIST` on a path that already exists as a
+/// non-directory, and [`open`](crate::persist::open) swallows that into a
+/// disabled, in-memory session — so every app that ever ran under the old
+/// layout lost persistence on *every* launch, not just the first. This is the
+/// real second-run failure, and a directory-only fixture never reproduces it.
+/// Recover rather than fail:
+///
+/// * a directory is already what we want;
+/// * a zero-byte leftover (the observed case) carries nothing, so it is removed;
+/// * a non-empty file might be an old-format document, so it is moved aside to
+///   a `<dir>.stale` sibling — never deleted — and, best effort, seeded as the
+///   new `state.automerge`, so a genuine old document migrates in and loads.
+///
+/// A real filesystem failure (an unwritable parent, a rename that cannot
+/// complete) still surfaces as an error, so persistence is disabled only when
+/// the disk genuinely cannot hold it — the idempotent/recovering create never
+/// masks a true failure, and never blindly deletes a user's bytes.
+fn ensure_state_dir(dir: &Path) -> Result<(), StoreError> {
+    match fs::metadata(dir) {
+        // Already a directory (or a symlink to one): nothing to do.
+        Ok(meta) if meta.is_dir() => return Ok(()),
+        // Exists, but not as a directory — the old-layout leftover.
+        Ok(meta) => {
+            if meta.len() == 0 {
+                fs::remove_file(dir).map_err(|e| {
+                    io_err(format!("removing stale state file {}", dir.display()), e)
+                })?;
+            } else {
+                let aside = stale_sibling(dir);
+                fs::rename(dir, &aside).map_err(|e| {
+                    io_err(
+                        format!(
+                            "moving aside stale state file {} to {}",
+                            dir.display(),
+                            aside.display()
+                        ),
+                        e,
+                    )
+                })?;
+                fs::create_dir_all(dir).map_err(|e| {
+                    io_err(format!("creating state directory {}", dir.display()), e)
+                })?;
+                // Best effort: a genuine old-format document migrates in and
+                // loads on the next `load`; anything else leaves the store
+                // empty while the bytes stay safe at `<dir>.stale`.
+                let _ = fs::copy(&aside, dir.join(DOCUMENT_FILE));
+                return Ok(());
+            }
+        }
+        // First run: nothing there yet.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        // A real failure inspecting the path (e.g. a non-directory parent).
+        Err(e) => {
+            return Err(io_err(format!("inspecting state path {}", dir.display()), e));
+        }
+    }
+    fs::create_dir_all(dir)
+        .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))
+}
+
+/// A sibling path `<dir>.stale`, then `<dir>.stale.1`, `<dir>.stale.2`, … —
+/// the first that does not yet exist, so preserving one leftover never
+/// clobbers another that an earlier recovery already set aside.
+fn stale_sibling(dir: &Path) -> PathBuf {
+    // Append rather than replace the extension: package ids contain dots
+    // (`dev.qos.maps`), so `with_extension` would eat the last id segment.
+    let mut base = dir.as_os_str().to_owned();
+    base.push(".stale");
+    let mut candidate = PathBuf::from(&base);
+    let mut n = 0u32;
+    while candidate.exists() {
+        n += 1;
+        let mut next = base.clone();
+        next.push(format!(".{n}"));
+        candidate = PathBuf::from(next);
+    }
+    candidate
 }
 
 /// Take an exclusive, non-blocking `flock` on `path`. `None` when another
@@ -1249,6 +1328,90 @@ mod tests {
         // The reopened store is still writable end-to-end.
         doc2.put(&ROOT, "note", ScalarValue::Str("again".into())).unwrap();
         autosave2.flush();
+    }
+
+    /// The real second-run failure: an older app layout wrote the document as a
+    /// zero-byte *file* at the directory's path. `create_dir_all` fails EEXIST
+    /// on a non-directory, so every such app came up without persistence on
+    /// every launch. Opening must recover — remove the empty leftover, create
+    /// the directory, come up ENABLED — and stay recovered on the next launch.
+    #[test]
+    #[serial_test::serial]
+    fn opening_when_the_state_path_is_a_stale_empty_file_recovers_persistence() {
+        let _tmp = scratch_home();
+        let pkg = "dev.qos.stale-empty";
+        let path = cli::standalone_state_dir(pkg);
+
+        // The old layout's leftover: a zero-byte regular file *at* the path the
+        // new layout wants to be a directory.
+        fs::write(&path, b"").unwrap();
+        assert!(path.is_file(), "the leftover is a file, not a directory");
+
+        // Run 1: open must recover and enable persistence, then write a value.
+        let mut run1 = DocStore::open_for(pkg).expect("open must recover from a stale file");
+        assert!(path.is_dir(), "the stale file must have become a directory");
+        let mut doc = run1.load_or_new();
+        let mut autosave1 = Autosave::spawn(run1, DEFAULT_DEBOUNCE);
+        assert!(
+            autosave1.is_enabled(),
+            "recovering from a stale file must enable persistence, not fall back"
+        );
+        autosave1.seed(&mut doc);
+        doc.put(&ROOT, "note", ScalarValue::Str("recovered".into())).unwrap();
+        autosave1.request(&mut doc);
+        autosave1.flush();
+        assert_eq!(autosave1.last_error(), None, "no write may have failed");
+        drop(autosave1);
+
+        // Run 2: the path is a directory now — the ordinary second-run path —
+        // and the value written after recovery must be there.
+        let mut run2 = DocStore::open_for(pkg).expect("second open after recovery");
+        let doc2 = run2.load_or_new();
+        assert_eq!(
+            text_of(&doc2, "note").as_deref(),
+            Some("recovered"),
+            "state written after recovery must round-trip across the re-open"
+        );
+    }
+
+    /// A *non-empty* file at the state path might be an old-format document, so
+    /// recovery must not delete it: it is moved aside to a `.stale` sibling and,
+    /// when it is a real document, migrated into the new store so its contents
+    /// survive — and persistence still comes up enabled either way.
+    #[test]
+    #[serial_test::serial]
+    fn opening_when_the_state_path_is_a_nonempty_file_preserves_and_migrates_it() {
+        let _tmp = scratch_home();
+        let pkg = "dev.qos.stale-doc";
+        let path = cli::standalone_state_dir(pkg);
+
+        // The old layout wrote a real Automerge document straight to the path.
+        let mut old = AutoCommit::new();
+        old.put(&ROOT, "note", ScalarValue::Str("from-old-layout".into())).unwrap();
+        let original = old.save();
+        fs::write(&path, &original).unwrap();
+
+        let mut store = DocStore::open_for(pkg).expect("open must recover from a stale document");
+        assert!(path.is_dir(), "the stale document must have become a directory");
+
+        // The old bytes are preserved beside the directory, never deleted.
+        let aside = PathBuf::from({
+            let mut s = path.as_os_str().to_owned();
+            s.push(".stale");
+            s
+        });
+        assert!(aside.exists(), "the old document must be preserved at {}", aside.display());
+        assert_eq!(fs::read(&aside).unwrap(), original, "preserved bytes must be intact");
+
+        // And, being a genuine document, it migrated in and loads.
+        let doc = store.load_or_new();
+        assert_eq!(
+            text_of(&doc, "note").as_deref(),
+            Some("from-old-layout"),
+            "an old-format document must migrate into the recovered store"
+        );
+        let autosave = Autosave::spawn(store, DEFAULT_DEBOUNCE);
+        assert!(autosave.is_enabled(), "persistence must be enabled after migration");
     }
 
     /// A state directory that genuinely cannot be created must still surface as
