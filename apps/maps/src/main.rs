@@ -47,6 +47,8 @@ struct ShotArgs {
     traffic: bool,
     /// Demo the offline-maps overlay with saved, manageable downloaded areas.
     offline: bool,
+    /// Demo the ⋯ overflow menu expanded (attribution / offline / licenses).
+    menu: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,6 +98,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shot.offline {
             app.set_demo_offline();
         }
+        if shot.menu {
+            app.set_demo_overflow();
+        }
         render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
         return Ok(());
     }
@@ -130,6 +135,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut pois = false;
     let mut traffic = false;
     let mut offline = false;
+    let mut menu = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -160,6 +166,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             traffic = true;
         } else if arg == "--offline" {
             offline = true;
+        } else if arg == "--menu" {
+            menu = true;
         } else if arg == "--panel" {
             if let Some(s) = iter.next() {
                 apply_panel(s, &mut panel, &mut transit_mode);
@@ -181,6 +189,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         pois,
         traffic,
         offline,
+        menu,
     })
 }
 

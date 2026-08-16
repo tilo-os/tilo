@@ -80,6 +80,17 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], width: f64, color: 
     scene.stroke(&stroke, t, color, None, &path);
 }
 
+/// Fill a prebuilt path (non-zero winding).
+pub fn fill_path(scene: &mut Scene, t: Affine, path: &BezPath, color: Color) {
+    scene.fill(Fill::NonZero, t, color, None, path);
+}
+
+/// Stroke a prebuilt path with round caps/joins.
+pub fn stroke_path(scene: &mut Scene, t: Affine, path: &BezPath, width: f64, color: Color) {
+    let stroke = Stroke::new(width).with_caps(Cap::Round).with_join(Join::Round);
+    scene.stroke(&stroke, t, color, None, path);
+}
+
 /// Fill a closed polygon ring.
 pub fn polygon(scene: &mut Scene, t: Affine, pts: &[Point], color: Color) {
     if pts.len() < 3 {

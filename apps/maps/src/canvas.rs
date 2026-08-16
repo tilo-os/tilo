@@ -60,20 +60,30 @@ pub struct MapPalette {
 }
 
 impl MapPalette {
+    /// Resolve the cartographic palette from the active theme. The map tracks
+    /// the OS theme — a light map under a light theme, a dark map under a dark
+    /// theme — so the vector fallback, the tile land underlay and the loading
+    /// substrate all share the basemap's tone and a view is never a mix of light
+    /// and dark tiles (the reported light-centre/dark-edge bug). The style
+    /// decision is the *same* one the raster layer uses
+    /// ([`crate::tiles::TileStyle::from_theme`]), so the drawn colours and the
+    /// fetched CARTO tiles always agree.
     pub fn from_theme(theme: &Theme) -> Self {
-        // The map is its own light cartographic surface, independent of the
-        // (possibly dark) OS chrome — exactly like the light raster OSM tiles it
-        // underlays, whose on-map labels/pills already assume a light backdrop.
-        // Lightness is fixed light so the default map never reads murky under a
-        // dark OS theme; hues still track the theme (water = info, parks =
-        // success) and the route/markers track the accent. A genuinely dark map
-        // would be a separate cartography variant keyed off a map-style
-        // preference — not something a dark chrome theme forces on the map.
+        use crate::tiles::TileStyle;
+        if TileStyle::from_theme(theme) == TileStyle::Dark {
+            Self::dark(theme)
+        } else {
+            Self::light(theme)
+        }
+    }
+
+    /// The light cartography: a warm near-white paper land, matching the CARTO
+    /// `light_nolabels` basemap it underlays. Hues track the theme (water = info,
+    /// parks = success); the route/markers track the accent.
+    fn light(theme: &Theme) -> Self {
         let sem = &theme.tokens.colors.semantic;
         let w = Color::WHITE;
         let k = Color::BLACK;
-        // Warm near-white land: nudged off the theme surface toward white so it
-        // stays essentially paper-coloured whatever the surface hue is.
         let land = draw::mix(theme.tokens.colors.surfaces.base, w, 0.94);
         Self {
             land,
@@ -90,23 +100,55 @@ impl MapPalette {
             route: theme.accent_primary,
             route_casing: draw::mix(theme.accent_primary, w, 0.5),
             marker_ring: w,
-            // The loading substrate is a theme surface, not the paper land: dark
-            // under a dark theme so a first-run map is a quiet surface, not a
-            // bright flash. The grid is a faint step off it toward the raised
-            // surface, so it reads as texture without glowing.
-            substrate: theme.tokens.colors.surfaces.base,
-            substrate_grid: draw::mix(
-                theme.tokens.colors.surfaces.base,
-                theme.tokens.colors.surfaces.raised,
-                0.9,
-            ),
-            // Saturated signal colours (not white-mixed like the roads) so they
-            // pop as an overlay over the light land.
+            // The loading substrate shares the land tone (a faint step darker for
+            // the reference grid) so a first-run/mid-load view never seams.
+            substrate: draw::mix(land, k, 0.05),
+            substrate_grid: draw::mix(land, k, 0.14),
             traffic_free: sem.success,
             traffic_moderate: sem.warning,
             traffic_heavy: draw::mix(sem.warning, sem.danger, 0.55),
             traffic_severe: sem.danger,
             traffic_casing: draw::mix(land, k, 0.42),
+        }
+    }
+
+    /// The dark cartography: a deep neutral land matching the CARTO
+    /// `dark_nolabels` basemap, with light-grey road ribbons and dark-tinted
+    /// water/parks so the map reads coherently dark — not a light map dimmed.
+    fn dark(theme: &Theme) -> Self {
+        let sem = &theme.tokens.colors.semantic;
+        let w = Color::WHITE;
+        let k = Color::BLACK;
+        // Deep land, nudged off the chrome surface toward black so the basemap is
+        // its own quiet ground beneath the chrome.
+        let land = draw::mix(theme.tokens.colors.surfaces.base, k, 0.28);
+        Self {
+            land,
+            building: draw::mix(land, w, 0.07),
+            building_edge: draw::mix(land, w, 0.14),
+            park: draw::mix(land, sem.success, 0.22),
+            park_edge: draw::mix(land, sem.success, 0.36),
+            water: draw::mix(land, sem.info, 0.30),
+            // Roads read as light ribbons on the dark land.
+            road_res: draw::mix(land, w, 0.22),
+            road_res_casing: draw::mix(land, k, 0.5),
+            road_secondary: draw::mix(land, sem.warning, 0.34),
+            road_primary: draw::mix(land, sem.warning, 0.52),
+            road_label: draw::mix(land, w, 0.72),
+            route: theme.accent_primary,
+            // A darker casing under the accent route so it reads on dark land.
+            route_casing: draw::mix(theme.accent_primary, k, 0.45),
+            // A near-white ring keeps pins crisp on the dark basemap.
+            marker_ring: draw::mix(land, w, 0.9),
+            // Substrate shares the land tone, one faint step darker for the grid.
+            substrate: draw::mix(land, k, 0.18),
+            substrate_grid: draw::mix(land, w, 0.10),
+            traffic_free: sem.success,
+            traffic_moderate: sem.warning,
+            traffic_heavy: draw::mix(sem.warning, sem.danger, 0.55),
+            traffic_severe: sem.danger,
+            // A light casing so the signal ribbons separate on the dark land.
+            traffic_casing: draw::mix(land, w, 0.22),
         }
     }
 }
@@ -825,56 +867,85 @@ pub fn draw_category_icon(
     }
 }
 
-/// Draw a teardrop pin anchored at `anchor`.
+/// Build a crisp teardrop "map pin" path: a circular head of radius `head_r`
+/// centred `height` above `anchor`, its two sides running tangent down to a
+/// point exactly at `anchor`. One closed path (no circle-plus-triangle seam), so
+/// the fill and its outline read clean at any size.
+fn pin_path(anchor: Point, head_r: f64, height: f64) -> vello::kurbo::BezPath {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let cx = anchor.x;
+    let cy = anchor.y - height;
+    // Angle from the (downward) tip direction to each tangent point on the head.
+    let alpha = (head_r / height).clamp(-1.0, 1.0).acos();
+    let theta_r = FRAC_PI_2 - alpha; // lower-right tangent point
+    let sweep = -(2.0 * PI - 2.0 * alpha); // the major arc, up and over the top
+    let pt = |phi: f64| Point::new(cx + head_r * phi.cos(), cy + head_r * phi.sin());
+    let mut p = vello::kurbo::BezPath::new();
+    p.move_to(anchor);
+    p.line_to(pt(theta_r));
+    let n = 32;
+    for i in 1..=n {
+        p.line_to(pt(theta_r + sweep * (i as f64 / n as f64)));
+    }
+    p.line_to(anchor);
+    p.close_path();
+    p
+}
+
+/// Draw a themed teardrop pin anchored at `anchor`: a soft ground shadow, a
+/// category-coloured drop with a crisp light outline (so it reads on any basemap
+/// tone), and a light "eye". The selected pin is larger and wears a soft accent
+/// halo. All colours come from the `Theme`-derived palette / category colour.
 fn draw_pin(scene: &mut Scene, t: Affine, anchor: Point, color: Color, pal: &MapPalette, selected: bool) {
-    let r = if selected { 13.0 } else { 9.0 };
+    let r = if selected { 11.0 } else { 8.0 };
     let h = if selected { 30.0 } else { 22.0 };
     let center = Point::new(anchor.x, anchor.y - h);
 
-    // Ground shadow.
-    let shadow = vello::kurbo::Ellipse::new(anchor, (r * 0.5, r * 0.22), 0.0);
+    // Soft ground shadow at the tip, so the pin stands on the map rather than
+    // being pasted onto it.
+    let shadow = vello::kurbo::Ellipse::new(anchor, (r * 0.62, r * 0.24), 0.0);
     scene.fill(
         vello::peniko::Fill::NonZero,
         t,
-        Color::from_rgba8(0, 0, 0, 70),
+        draw::alpha(Color::BLACK, 0.28),
         None,
         &shadow,
     );
 
-    // Stem: a triangle from the circle down to the anchor.
-    let mut stem = vello::kurbo::BezPath::new();
-    stem.move_to(Point::new(center.x - r * 0.55, center.y + r * 0.55));
-    stem.line_to(Point::new(center.x + r * 0.55, center.y + r * 0.55));
-    stem.line_to(anchor);
-    stem.close_path();
-    scene.fill(vello::peniko::Fill::NonZero, t, color, None, &stem);
-
-    // Head.
-    draw::fill_circle(scene, t, center, r, color);
-    draw::stroke_circle(scene, t, center, r, if selected { 3.0 } else { 2.0 }, pal.marker_ring);
-    // Inner dot.
-    draw::fill_circle(scene, t, center, r * 0.34, pal.marker_ring);
-
+    // Selected: a soft accent halo behind the head.
     if selected {
-        // Outer accent halo.
-        draw::stroke_circle(scene, t, center, r + 4.0, 2.0, draw::alpha(color, 0.5));
+        draw::fill_circle(scene, t, center, r + 6.0, draw::alpha(color, 0.20));
     }
+
+    // The teardrop: stroke the light outline first, then fill the colour over
+    // its inner half — leaving a clean light ring around the drop on any tone.
+    let body = pin_path(anchor, r, h);
+    draw::stroke_path(scene, t, &body, if selected { 3.0 } else { 2.4 }, pal.marker_ring);
+    draw::fill_path(scene, t, &body, color);
+
+    // The classic pin "eye": a light disc with a small tinted centre.
+    draw::fill_circle(scene, t, center, r * 0.40, pal.marker_ring);
+    draw::fill_circle(scene, t, center, r * 0.20, draw::alpha(color, 0.9));
 }
 
-/// Draw the bottom-right scale bar + attribution into `clip`.
-pub fn draw_scale_and_attribution(
+/// Draw the bottom-right scale bar into `clip`, its right end at `right_x`
+/// (kept left of the ⋯ overflow button). Attribution + licenses now live behind
+/// that overflow menu — OSM's attribution requirement is met by being reachable,
+/// not by pasting a permanent copyright line across the scale bar — so the scale
+/// bar no longer shares its row with a fixed credit that overlapped it.
+pub fn draw_scale_bar(
     scene: &mut Scene,
     t: Affine,
     tr: &mut TextRenderer,
     clip: Rect,
+    right_x: f64,
     model: &MapModel,
     theme: &Theme,
 ) {
-    // Scale bar.
     let (label, px) = geo::scale_bar(model.center, model.zoom, 110.0);
     let y = clip.y1 - 26.0;
-    let x0 = clip.x1 - 24.0 - px;
-    let x1 = clip.x1 - 24.0;
+    let x1 = right_x;
+    let x0 = x1 - px;
     let bar_bg = draw::alpha(theme.tokens.colors.surfaces.base, 0.7);
     draw::fill_rrect(
         scene,
@@ -887,25 +958,6 @@ pub fn draw_scale_and_attribution(
     draw::line(scene, t, Point::new(x0, y - 3.0), Point::new(x0, y + 3.0), 2.0, theme.text_primary);
     draw::line(scene, t, Point::new(x1, y - 3.0), Point::new(x1, y + 3.0), 2.0, theme.text_primary);
     draw::text_center(scene, tr, t, &label, x0, x1, y + 2.0, 10.0, theme.text_dim);
-
-    // Attribution — right-aligned, just above the scale bar. Anchoring it to
-    // the right edge keeps it clear of the left-hand panel/drawer (which would
-    // otherwise cover a bottom-left credit); the map data + basemap credits
-    // must stay visible. Data is OpenStreetMap; the label-free raster style is
-    // served by CARTO, so both are credited.
-    let attr = "© OpenStreetMap contributors © CARTO";
-    let aw = draw::measure_w(tr, attr, 10.0) + 14.0;
-    let ax1 = clip.x1 - 24.0;
-    let ax = ax1 - aw;
-    let ay = clip.y1 - 46.0;
-    draw::fill_rrect(
-        scene,
-        t,
-        Rect::new(ax, ay, ax1, ay + 17.0),
-        4.0,
-        bar_bg,
-    );
-    draw::text(scene, tr, t, attr, ax + 7.0, ay + 3.0, 10.0, theme.text_dim);
 }
 
 #[cfg(test)]
@@ -966,48 +1018,99 @@ mod tests {
         assert!(ids_sel.contains(&"shop"), "the selected POI is always kept: {ids_sel:?}");
     }
 
-    /// The default map cartography reads as a light map even under the dark OS
-    /// theme (the theme the shots and the default live session use). This is the
-    /// fix for the "map too dark" murk: the map is its own light surface, not
-    /// tinted down by the dark chrome. A genuinely dark map would be a separate
-    /// cartography style, never forced onto the map by a dark chrome theme.
+    /// The cartography follows the theme: a light map under a light theme, a
+    /// dark map under a dark theme — never a light map forced under dark chrome
+    /// (which read as a mixed light/dark view). This is the fix for the tile-tone
+    /// bug: the drawn colours agree with the CARTO style the raster layer fetches.
     #[test]
-    fn default_map_palette_is_light() {
+    fn map_palette_follows_theme() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
             0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
         };
         let dark = MapPalette::from_theme(&Theme::dark());
-        assert!(lum(dark.land) > 220.0, "land near-white under a dark theme: {}", lum(dark.land));
-        assert!(lum(dark.road_res) > 220.0, "residential roads read light");
-        assert!(lum(dark.water) > 170.0, "water is a light tint, not a dark slab");
-        // Light theme stays light too.
+        assert!(lum(dark.land) < 70.0, "dark theme => a dark basemap land, got {}", lum(dark.land));
         let light = MapPalette::from_theme(&Theme::light());
-        assert!(lum(light.land) > 220.0, "land near-white under a light theme too");
+        assert!(lum(light.land) > 220.0, "light theme => near-white land, got {}", lum(light.land));
+        // Roads stay legible against the land in either theme (real contrast):
+        // dark uses light ribbons on dark land; light uses coloured arterials.
+        assert!(
+            (lum(dark.road_res) - lum(dark.land)).abs() > 30.0,
+            "dark residential roads must read against the dark land"
+        );
+        assert!(
+            (lum(light.road_primary) - lum(light.land)).abs() > 15.0,
+            "light arterials must read against the paper land"
+        );
     }
 
-    /// The pre-tiles loading substrate is a calm DARK neutral surface under the
-    /// dark theme — NOT the near-white cartographic land — so a first-run map
-    /// never flashes bright before imagery arrives. It must read clearly darker
-    /// than the (still-light) tile land underlay.
+    /// The pre-tiles loading substrate shares the land tone in *each* theme, so a
+    /// first-run or mid-load view is never a light centre with dark edges (or the
+    /// reverse) — the exact seam the user reported. It differs from the land only
+    /// faintly (for the reference grid), never by a light/dark jump.
     #[test]
-    fn loading_substrate_is_dark_and_not_white() {
+    fn loading_substrate_matches_land_tone() {
         let lum = |c: Color| {
             let c = c.to_rgba8();
             0.2126 * c.r as f64 + 0.7152 * c.g as f64 + 0.0722 * c.b as f64
         };
-        let dark = MapPalette::from_theme(&Theme::dark());
+        for theme in [Theme::dark(), Theme::light()] {
+            let p = MapPalette::from_theme(&theme);
+            assert!(
+                (lum(p.substrate) - lum(p.land)).abs() < 45.0,
+                "substrate ({}) must share the land tone ({}) — no light/dark seam",
+                lum(p.substrate),
+                lum(p.land)
+            );
+        }
+    }
+
+    /// The redesigned pin is a single closed teardrop whose tip sits exactly on
+    /// the anchor and whose head is a circle of radius `r` centred `h` above it —
+    /// so it points at the right coordinate and encloses a proper head (not a
+    /// disjoint circle + triangle).
+    #[test]
+    fn pin_path_is_anchored_and_encloses_head() {
+        use vello::kurbo::Shape as _;
+        let anchor = Point::new(100.0, 200.0);
+        let (r, h) = (8.0, 22.0);
+        let bb = pin_path(anchor, r, h).bounding_box();
+        // The tip is the lowest point, at the anchor.
+        assert!((bb.y1 - anchor.y).abs() < 0.5, "pin tip on the anchor, got y1={}", bb.y1);
+        // The head reaches up to about anchor.y - h - r.
         assert!(
-            lum(dark.substrate) < 90.0,
-            "loading substrate is a dark surface, not a bright flash: {}",
-            lum(dark.substrate)
+            (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
+            "head top near anchor.y-h-r, got y0={}",
+            bb.y0
         );
+        // Width is about the head diameter, centred on the anchor x.
+        assert!((bb.width() - 2.0 * r).abs() < 2.0, "width ~ head diameter, got {}", bb.width());
         assert!(
-            lum(dark.substrate) + 100.0 < lum(dark.land),
-            "substrate ({}) is much darker than the tile land underlay ({})",
-            lum(dark.substrate),
-            lum(dark.land)
+            (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
+            "the pin is centred on the anchor x"
         );
+    }
+
+    /// The selected place marker renders through the real `draw_markers` path
+    /// (teardrop pin + halo + floating label) without panicking, under the theme
+    /// palette — the production render path the shots exercise.
+    #[test]
+    fn selected_marker_renders_via_draw_markers() {
+        use crate::model::Place;
+        let theme = Theme::dark();
+        let pal = MapPalette::from_theme(&theme);
+        let mut tr = TextRenderer::new();
+        let mut model = MapModel::default();
+        model.center = LatLon::new(48.14, 11.58);
+        model.zoom = 16.0;
+        model.places = vec![Place::new("a", "Alpha", Category::Cafe, "1 Main St", model.center)];
+        model.selected = Some("a".to_string());
+        let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
+        let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut scene = Scene::new();
+        draw_markers(&mut scene, Affine::IDENTITY, &mut tr, &proj, &model, &theme, &pal, clip);
+        // The selected place projects into the clip, so the pin path was emitted.
+        assert!(clip.contains(proj.project(model.center)), "the marker is on screen");
     }
 
     /// `draw_tiles` must NOT fetch or decode synchronously: when given an
