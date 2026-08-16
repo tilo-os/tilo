@@ -70,13 +70,21 @@ image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # gstreamer 0.24 collapses onto the copy `apps/camera` / `apps/tube` /
 # `crates/media` already resolve; iroh 1.0 matches `fs`; openh264 0.9 (source)
 # matches `ui` / `shell` (the same decoder `ui::VideoPlayer::feed_frame` uses);
-# ashpd 0.9 matches the copy the other portal-using apps resolve.
+# ashpd 0.9 matches the copy the other portal-using apps resolve — which means
+# taking the workspace pin whole, defaults included. ashpd's own default is
+# `async-std`, and it refuses to compile with async-std and tokio both on
+# (`compile_error!("You can't enable both async-std & tokio features at once")`).
+# So `default-features = true` here did not add a backend to chat's copy, it
+# added one to *everybody's*: cargo unions features across the graph, and every
+# other portal user resolves the workspace's `default-features = false,
+# features = ["tokio"]`. Nothing caught it because `live-media` is off by
+# default, so chat's ashpd was never built until the OS image asked for it.
 gstreamer = { workspace = true, optional = true }
 gstreamer-app = { workspace = true, optional = true }
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
 openh264 = { workspace = true, optional = true }
-ashpd = { workspace = true, optional = true, default-features = true }
+ashpd = { workspace = true, optional = true }
 qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
 
 [dev-dependencies]
