@@ -21,21 +21,30 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Brush, Color, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{DragController, ListMetrics};
+use ui::widget::{
+    Autocomplete, AutocompleteOutcome, DragController, ListMetrics, PressOutcome, ScrollMetrics,
+    Scrollbar, Suggestion, Widget,
+};
 
-use crate::chart::{self, ChartPoint};
+use crate::api;
+use crate::chart;
 use crate::icon;
 use crate::interaction::{ContextMenu, EntryAction, PointerPress, SWIPE_COMMIT_DX};
-use crate::model::{DayForecast, LocationId, SavedLocation, WeatherModel, WeatherSnapshot};
+use crate::model::{
+    AirQuality, DayForecast, LocationId, SavedLocation, WeatherModel, WeatherSnapshot,
+};
 use crate::net::{Request, Response};
 use crate::units::{self, Units};
 use crate::wxcode::Sky;
@@ -47,7 +56,14 @@ const CHIP_GAP: f64 = 8.0;
 const HERO_H: f64 = 168.0;
 const TILE_H: f64 = 78.0;
 const TILE_MIN_W: f64 = 118.0;
-const CHART_H: f64 = 152.0;
+/// Height of the hourly-strip card (header + the fixed-height column band +
+/// the horizontal scrollbar gutter).
+const HOURLY_CARD_H: f64 = 190.0;
+/// Minimum width of one hour column; below this the strip scrolls horizontally
+/// rather than squeezing all 24 hours into the card width.
+const HOUR_COL_MIN_W: f64 = 58.0;
+/// Height of one air-quality pollutant tile.
+const AQ_TILE_H: f64 = 66.0;
 const DAY_ROW_H: f64 = 42.0;
 const SECTION_GAP: f64 = 12.0;
 /// Extra top padding reserved in the detail header for the shell's Back
@@ -80,24 +96,11 @@ struct Hotspot {
 #[derive(Clone)]
 enum OverAction {
     SelectLocation(usize),
-    FocusSearch,
-    PickResult(usize),
     MenuItem(usize, EntryAction),
     /// Begin a potential press on a chip (click / reorder / swipe).
     PressChip(usize),
     /// Collapse the full city list to a rail, or expand the rail back.
     ToggleCollapse,
-}
-
-/// What the search dropdown shows this frame, derived from the query +
-/// in-flight/result state.
-enum SearchView {
-    /// A geocode is being fetched (or is about to be).
-    Loading,
-    /// The geocode returned nothing for a non-empty query.
-    Empty,
-    /// One or more matches to pick from.
-    Results,
 }
 
 /// All mutable weather state shared by the two panes and the root widget.
@@ -124,9 +127,18 @@ pub struct Core {
     over_max_scroll: f64,
     over_hotspots: Vec<Hotspot>,
 
-    // --- overview: search ---
+    // --- overview: search (shared Autocomplete widget) ---
+    /// The shared type-ahead field + suggestion overlay. Owns the query text,
+    /// caret / selection / clipboard, and the arrow-key / Enter / Esc
+    /// navigation of the geocoded matches. Weather feeds it results reactively
+    /// (the geocode is a debounced network side effect), never a synchronous
+    /// suggester closure.
+    search: Autocomplete,
+    /// The field's on-screen rect (set each draw) so a press can begin an edit.
+    search_field_rect: Rect,
+    /// The last query text folded into the geocode machinery, for change
+    /// detection against the field's live text.
     search_query: String,
-    search_focused: bool,
     search_results: Vec<SavedLocation>,
     search_seq: u64,
     pending_query_at: Option<Instant>,
@@ -139,6 +151,18 @@ pub struct Core {
     refresh_btn: Rect,
     scroll: f64,
     max_scroll: f64,
+
+    // --- detail: the horizontally-scrollable 24h strip ---
+    hourly_scroll_x: f64,
+    hourly_max_scroll: f64,
+    /// The strip's visible band (absolute coords, updated each draw).
+    hourly_viewport: Rect,
+    /// The strip's scrollbar track (absolute coords, updated each draw).
+    hourly_track: Rect,
+    /// Full width of all 24 columns (for the scrollbar metrics).
+    hourly_content_w: f64,
+    /// Shared scrollbar interaction model for the strip's horizontal axis.
+    hourly_bar: Scrollbar,
 
     // --- network coordination (drained by the app's net pump) ---
     outbox: Vec<Request>,
@@ -173,8 +197,12 @@ impl Core {
             over_scroll: 0.0,
             over_max_scroll: 0.0,
             over_hotspots: Vec::new(),
+            search: Autocomplete::new()
+                .with_id("weather.city_search")
+                .with_placeholder("Search city…")
+                .with_font_size(13.0),
+            search_field_rect: Rect::ZERO,
             search_query: String::new(),
-            search_focused: false,
             search_results: Vec::new(),
             search_seq: 0,
             pending_query_at: None,
@@ -185,6 +213,12 @@ impl Core {
             refresh_btn: Rect::ZERO,
             scroll: 0.0,
             max_scroll: 0.0,
+            hourly_scroll_x: 0.0,
+            hourly_max_scroll: 0.0,
+            hourly_viewport: Rect::ZERO,
+            hourly_track: Rect::ZERO,
+            hourly_content_w: 0.0,
+            hourly_bar: Scrollbar::horizontal(),
             outbox: Vec::new(),
             inflight: 0,
             status: String::new(),
@@ -237,19 +271,23 @@ impl Core {
         self.pending_query_at.is_some()
     }
 
-    /// Queue a forecast fetch for every saved location.
+    /// Queue a forecast + air-quality fetch for every saved location.
     pub fn refresh_all(&mut self) {
-        let reqs: Vec<Request> = self
-            .model
-            .locations
-            .iter()
-            .map(|loc| Request::Forecast {
+        let units = self.units;
+        let mut reqs: Vec<Request> = Vec::new();
+        for loc in &self.model.locations {
+            reqs.push(Request::Forecast {
                 location_id: loc.id,
                 lat: loc.latitude,
                 lon: loc.longitude,
-                units: self.units,
-            })
-            .collect();
+                units,
+            });
+            reqs.push(Request::AirQuality {
+                location_id: loc.id,
+                lat: loc.latitude,
+                lon: loc.longitude,
+            });
+        }
         self.inflight += reqs.len();
         self.outbox.extend(reqs);
         if !self.model.locations.is_empty() {
@@ -259,13 +297,11 @@ impl Core {
 
     fn refresh_selected(&mut self) {
         if let Some(loc) = self.model.selected_location() {
-            self.outbox.push(Request::Forecast {
-                location_id: loc.id,
-                lat: loc.latitude,
-                lon: loc.longitude,
-                units: self.units,
-            });
-            self.inflight += 1;
+            let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
+            self.outbox
+                .push(Request::Forecast { location_id: id, lat, lon, units: self.units });
+            self.outbox.push(Request::AirQuality { location_id: id, lat, lon });
+            self.inflight += 2;
             self.status = "Updating…".to_string();
         }
     }
@@ -290,13 +326,11 @@ impl Core {
 
     fn refresh_location(&mut self, idx: usize) {
         if let Some(loc) = self.model.locations.get(idx) {
-            self.outbox.push(Request::Forecast {
-                location_id: loc.id,
-                lat: loc.latitude,
-                lon: loc.longitude,
-                units: self.units,
-            });
-            self.inflight += 1;
+            let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
+            self.outbox
+                .push(Request::Forecast { location_id: id, lat, lon, units: self.units });
+            self.outbox.push(Request::AirQuality { location_id: id, lat, lon });
+            self.inflight += 2;
             self.status = "Updating…".to_string();
         }
     }
@@ -310,6 +344,11 @@ impl Core {
                 self.pending_doc_write = true;
                 self.status = "Updated just now".to_string();
             }
+            Response::AirQuality(aq) => {
+                self.inflight = self.inflight.saturating_sub(1);
+                self.model.air_quality.insert(aq.location_id, aq);
+                self.pending_doc_write = true;
+            }
             Response::Geocode { seq, results } => {
                 if seq == self.search_seq {
                     self.geocode_inflight = false;
@@ -320,23 +359,65 @@ impl Core {
                     // The dropdown surfaces match/no-match state; the forecast
                     // status line is reserved for the forecast itself.
                     self.search_results = results;
+                    self.sync_search_view();
                 }
             }
             Response::Error(e) => {
                 self.inflight = self.inflight.saturating_sub(1);
                 self.geocode_inflight = false;
                 self.status = format!("Offline · {e}");
+                // A failed geocode must resolve the dropdown's spinner into an
+                // honest state rather than spin forever.
+                self.sync_search_view();
             }
         }
     }
 
+    /// Push the current search state into the shared [`Autocomplete`]: real
+    /// suggestion rows when there are matches, else an honest loading or
+    /// "no matches" status line — all inside the shared overlay.
+    fn sync_search_view(&mut self) {
+        if !self.search.is_editing() {
+            return;
+        }
+        let q = self.search_query.trim().to_string();
+        if q.is_empty() {
+            self.search.set_suggestions(Vec::new());
+            self.search.set_status(None);
+            self.search.close();
+            return;
+        }
+        if !self.search_results.is_empty() {
+            let sugg: Vec<Suggestion> = self
+                .search_results
+                .iter()
+                .map(|r| {
+                    Suggestion::labelled(result_value(r), r.name.clone()).with_detail(r.subtitle())
+                })
+                .collect();
+            self.search.set_suggestions(sugg);
+            self.search.set_status(None);
+        } else if self.search_pending() {
+            self.search.set_suggestions(Vec::new());
+            self.search.set_status(Some("Searching…".to_string()));
+        } else {
+            self.search.set_suggestions(Vec::new());
+            self.search.set_status(Some(format!("No matches for “{q}”")));
+        }
+        self.search.open();
+    }
+
     // ---- geocoding (debounced + cached) -----------------------------
 
-    fn on_query_changed(&mut self) {
-        let key = self.search_query.trim().to_lowercase();
+    /// React to the search field's text changing: cache lookup for instant
+    /// matches, arm the debounce, and refresh the dropdown's view.
+    fn on_query_changed(&mut self, text: &str) {
+        self.search_query = text.to_string();
+        let key = text.trim().to_lowercase();
         if key.is_empty() {
             self.search_results.clear();
             self.pending_query_at = None;
+            self.sync_search_view();
             return;
         }
         // Show cached matches instantly; otherwise the dropdown shows its
@@ -347,6 +428,7 @@ impl Core {
             self.search_results.clear();
         }
         self.pending_query_at = Some(Instant::now());
+        self.sync_search_view();
     }
 
     /// If the debounce window elapsed, queue the geocode request now. Called
@@ -370,6 +452,60 @@ impl Core {
         self.search_seq += 1;
         self.geocode_inflight = true;
         self.outbox.push(Request::Geocode { seq: self.search_seq, query: q });
+        // The spinner in the dropdown reflects the now-in-flight geocode.
+        self.sync_search_view();
+    }
+
+    // ---- search lifecycle (begin / commit / end) --------------------
+
+    /// Focus the shared search field and open an empty edit. Called from a
+    /// press on the field or the `/` shortcut.
+    fn begin_search(&mut self) {
+        self.search.set_text("");
+        self.search.begin_edit();
+        self.search_query.clear();
+        self.search_results.clear();
+        self.pending_query_at = None;
+        self.geocode_inflight = false;
+    }
+
+    /// Blur the search field and clear its transient state.
+    fn end_search(&mut self) {
+        self.search.close();
+        self.search.set_focus(false);
+        self.search.set_text("");
+        self.search_query.clear();
+        self.search_results.clear();
+        self.pending_query_at = None;
+        self.geocode_inflight = false;
+    }
+
+    /// Resolve an accepted autocomplete value back to a geocoded place and add
+    /// it. The encoded "Name, Region, Country" value identifies the exact match
+    /// (so arrowing to the second "Paris" adds the right one); a bare typed
+    /// query (Enter with no highlight) falls back to the top match. Returns
+    /// true when a place was actually added.
+    fn commit_search_pick(&mut self, value: String) -> bool {
+        let picked = self
+            .search_results
+            .iter()
+            .find(|r| result_value(r) == value)
+            .cloned()
+            .or_else(|| self.search_results.first().cloned());
+        if let Some(loc) = picked {
+            self.model.add_location(loc);
+            self.scroll = 0.0;
+            self.refresh_selected();
+            self.nav_request = Some(NavIntent::ShowDetail);
+            self.pending_doc_write = true;
+            return true;
+        }
+        // Enter while still loading: arm an immediate geocode so the field
+        // resolves to real matches rather than doing nothing.
+        if !self.search_query.trim().is_empty() {
+            self.pending_query_at = Some(Instant::now() - GEOCODE_DEBOUNCE);
+        }
+        false
     }
 
     // ---- per-entry actions (swipe ⇔ menu parity) --------------------
@@ -462,46 +598,16 @@ impl Core {
             hot.push(Hotspot { rect: chip, action: OverAction::ToggleCollapse });
         }
 
-        // Search field.
+        // Search field — the shared Autocomplete (a real text field, its
+        // suggestion overlay floats last). No hand-rolled buffer / caret / hit
+        // rect here; the widget owns selection, clipboard, IME and theming.
         let sy = rect.y0 + 56.0;
         let sh = 38.0;
-        let field = RoundedRect::new(x, sy, x + w, sy + sh, theme.tokens.radii.md as f64);
-        let field_bg = if self.search_focused { c.neutral[2] } else { c.surfaces.raised };
-        scene.fill(Fill::NonZero, t, field_bg, None, &field);
-        scene.stroke(
-            &Stroke::new(if self.search_focused { 1.5 } else { 1.0 }),
-            t,
-            if self.search_focused { c.border_focus } else { c.border_standard },
-            None,
-            &field,
-        );
-        let mg = Point::new(x + 16.0, sy + sh / 2.0);
-        scene.stroke(&Stroke::new(1.6), t, c.text_dim, None, &Circle::new(mg, 5.0));
-        scene.stroke(
-            &Stroke::new(1.6),
-            t,
-            c.text_dim,
-            None,
-            &Line::new(Point::new(mg.x + 4.0, mg.y + 4.0), Point::new(mg.x + 9.0, mg.y + 9.0)),
-        );
-        let (qtext, qcolor) = if self.search_query.is_empty() {
-            ("Search city…".to_string(), c.text_dim)
-        } else {
-            (self.search_query.clone(), c.text_primary)
-        };
-        text_left(scene, tr, &qtext, x + 30.0, sy + sh / 2.0 - 8.0, 13.0, TextWeight::Regular, qcolor);
-        if self.search_focused {
-            let (tw, _) = tr.measure(&self.search_query, 13.0, None);
-            let cx = x + 30.0 + tw as f64 + 1.0;
-            scene.fill(
-                Fill::NonZero,
-                t,
-                c.border_focus,
-                None,
-                &Rect::new(cx, sy + 10.0, cx + 1.5, sy + sh - 10.0),
-            );
-        }
-        hot.push(Hotspot { rect: field.rect(), action: OverAction::FocusSearch });
+        let field_rect = Rect::new(x, sy, x + w, sy + sh);
+        self.search_field_rect = field_rect;
+        self.search.apply_layout_external(field_rect);
+        let presence = PresenceCtx::empty();
+        self.search.draw(scene, t, tr, theme, &presence);
 
         // The saved-place list keeps a fixed position — the live search
         // matches render as a floating dropdown over it (drawn last), so the
@@ -562,9 +668,9 @@ impl Core {
             self.draw_context_menu(scene, t, tr, theme, &mut hot);
         }
 
-        // Live-search dropdown floats over the list, topmost.
-        if self.search_focused && !self.search_query.trim().is_empty() {
-            self.draw_search_dropdown(scene, t, tr, theme, x, w, sy + sh + 6.0, &mut hot);
+        // The shared suggestion overlay floats over the list, topmost.
+        if self.search.is_editing() {
+            self.search.draw_overlay(scene, t, tr, theme, &presence);
         }
 
         self.over_hotspots = hot;
@@ -585,6 +691,9 @@ impl Core {
         let c = &theme.tokens.colors;
         let mut hot: Vec<Hotspot> = Vec::new();
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &rect);
+        // The rail has no search field; drop any stale rect so a press can't
+        // land on a phantom field from the previous (wide) layout.
+        self.search_field_rect = Rect::ZERO;
         let cx = (rect.x0 + rect.x1) / 2.0;
 
         // Expand chip.
@@ -647,86 +756,6 @@ impl Core {
         }
 
         self.over_hotspots = hot;
-    }
-
-    /// The floating live-search results panel, anchored under the search
-    /// field. Three states: a loading indicator while a geocode is armed or
-    /// in flight, a "no matches" message, or the pickable result rows.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_search_dropdown(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        w: f64,
-        top_y: f64,
-        hot: &mut Vec<Hotspot>,
-    ) {
-        let c = &theme.tokens.colors;
-        let view = if !self.search_results.is_empty() {
-            SearchView::Results
-        } else if self.search_pending() {
-            SearchView::Loading
-        } else {
-            SearchView::Empty
-        };
-
-        let row_h = 46.0;
-        let pad = 6.0;
-        let shown = self.search_results.len().min(6);
-        let content_h = match view {
-            SearchView::Results => shown as f64 * row_h,
-            SearchView::Loading => 46.0,
-            SearchView::Empty => 60.0,
-        };
-        let panel = Rect::new(x, top_y, x + w, top_y + pad * 2.0 + content_h);
-        let radius = theme.tokens.radii.md as f64;
-
-        // Drop shadow + raised panel so it reads as floating above the list.
-        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 90), None, &RoundedRect::from_rect(panel.inset(-4.0), radius + 4.0));
-        let shape = RoundedRect::from_rect(panel, radius);
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &shape);
-        scene.stroke(&Stroke::new(1.0), t, c.border_standard, None, &shape);
-
-        // Absorb clicks anywhere on the panel (keeps focus) so a press in a
-        // gap or on the loading/empty message never falls through to a chip
-        // behind the dropdown. Result rows pushed after this win the hit-test.
-        hot.push(Hotspot { rect: panel, action: OverAction::FocusSearch });
-
-        match view {
-            SearchView::Results => {
-                for (i, r) in self.search_results.iter().take(6).enumerate() {
-                    let ry = top_y + pad + i as f64 * row_h;
-                    let row = Rect::new(x + pad, ry, x + w - pad, ry + row_h);
-                    let hovered = row.contains(self.last_mouse);
-                    if hovered {
-                        scene.fill(Fill::NonZero, t, c.neutral[2], None, &RoundedRect::from_rect(row, 8.0));
-                    }
-                    text_left(scene, tr, &r.name, row.x0 + 12.0, ry + 8.0, 14.0, TextWeight::Medium, c.text_primary);
-                    text_left(scene, tr, &r.subtitle(), row.x0 + 12.0, ry + 27.0, 11.5, TextWeight::Regular, c.text_dim);
-                    // Trailing "add" affordance.
-                    let ad = 22.0;
-                    let addc = Point::new(row.x1 - 8.0 - ad / 2.0, ry + row_h / 2.0);
-                    let add_rect = Rect::new(addc.x - ad / 2.0, addc.y - ad / 2.0, addc.x + ad / 2.0, addc.y + ad / 2.0);
-                    let tint = if hovered { self.accent(theme) } else { c.text_dim };
-                    scene.stroke(&Stroke::new(1.2), t, tint.with_alpha_factor(0.7), None, &Circle::new(addc, ad / 2.0));
-                    Icon::Plus.draw(scene, t, add_rect.inset(-5.0), tint);
-                    hot.push(Hotspot { rect: row, action: OverAction::PickResult(i) });
-                }
-            }
-            SearchView::Loading => {
-                let sc = Point::new(x + pad + 18.0, top_y + pad + 23.0);
-                draw_spinner(scene, t, sc, 8.0, self.accent(theme), c.border_standard);
-                text_left(scene, tr, "Searching…", x + pad + 38.0, top_y + pad + 15.0, 13.0, TextWeight::Regular, c.text_dim);
-            }
-            SearchView::Empty => {
-                let q = self.search_query.trim();
-                text_left(scene, tr, &format!("No matches for “{q}”"), x + pad + 12.0, top_y + pad + 12.0, 13.5, TextWeight::Medium, c.text_primary);
-                text_left(scene, tr, "Check the spelling or try a nearby city", x + pad + 12.0, top_y + pad + 34.0, 11.5, TextWeight::Regular, c.text_dim);
-            }
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -969,24 +998,6 @@ impl Core {
                 self.nav_request = Some(NavIntent::ShowDetail);
                 true
             }
-            OverAction::FocusSearch => {
-                self.search_focused = true;
-                false
-            }
-            OverAction::PickResult(i) => {
-                if let Some(loc) = self.search_results.get(i).cloned() {
-                    self.model.add_location(loc);
-                    self.scroll = 0.0;
-                    self.refresh_selected();
-                    self.search_focused = false;
-                    self.search_query.clear();
-                    self.search_results.clear();
-                    self.pending_query_at = None;
-                    self.nav_request = Some(NavIntent::ShowDetail);
-                    return true;
-                }
-                false
-            }
             OverAction::MenuItem(index, action) => {
                 self.menu = None;
                 self.apply_entry_action(index, action)
@@ -1002,9 +1013,76 @@ impl Core {
     }
 
     /// Handle an event routed to the overview pane. Returns true if consumed.
-    pub fn handle_overview_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+    #[allow(clippy::too_many_arguments)]
+    pub fn handle_overview_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
         use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
         use winit::keyboard::{Key, NamedKey};
+
+        // Keep the shared field placed so its overlay hit-tests correctly.
+        self.search.apply_layout_external(self.search_field_rect);
+
+        // A press over the field while not editing begins an edit.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if !self.search.is_editing() && self.search_field_rect.contains(self.last_mouse) {
+                self.begin_search();
+                return true;
+            }
+        }
+
+        // While editing, the shared Autocomplete owns typing + arrow/Enter/Esc
+        // navigation of the geocoded matches.
+        if self.search.is_editing() {
+            let before = self.search.text().to_string();
+            let mut ac_handled = false;
+            self.search.handle_event(
+                event, scale_factor, modifiers, state, path, &mut ac_handled, focus_target,
+                node_id, taffy,
+            );
+            match self.search.take_outcome() {
+                AutocompleteOutcome::Accepted(value) => {
+                    if self.commit_search_pick(value) {
+                        self.end_search();
+                    } else {
+                        // Nothing to pick yet (Enter while loading): keep the
+                        // edit open and show the honest loading state.
+                        self.search.open();
+                        self.sync_search_view();
+                    }
+                    return true;
+                }
+                AutocompleteOutcome::Cancelled => {
+                    // A click-outside cancel is not consumed — fall through so
+                    // the same press can still engage a chip beneath the field.
+                    self.end_search();
+                }
+                AutocompleteOutcome::None => {}
+            }
+            let after = self.search.text().to_string();
+            let text_changed = after != before;
+            if text_changed {
+                self.on_query_changed(&after);
+            }
+            // Consume anything the field acted on — a handled key/click or a
+            // text edit — so a keystroke never leaks past the focused field.
+            if ac_handled || text_changed {
+                return true;
+            }
+        }
 
         let mut handled = false;
         let mut changed = false;
@@ -1084,12 +1162,10 @@ impl Core {
                             changed = self.apply_over_action(action);
                             handled = true;
                         }
-                        None => {
-                            if self.search_focused && self.over_rect.contains(self.last_mouse) {
-                                self.search_focused = false;
-                                handled = true;
-                            }
-                        }
+                        // A press on empty list space (the search field's own
+                        // click-outside blur is handled by the Autocomplete
+                        // routing above).
+                        None => {}
                     }
                 }
             }
@@ -1118,82 +1194,54 @@ impl Core {
                 }
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
+                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } => {
-                if self.search_focused {
-                    match logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            self.search_focused = false;
-                            self.search_query.clear();
-                            self.search_results.clear();
-                            self.pending_query_at = None;
+                // Typing / arrow / Enter / Esc while the search field is
+                // focused is owned by the shared Autocomplete above; this arm
+                // only runs when the list itself has focus.
+                match logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        // Escape abandons an in-flight reorder, snapping the
+                        // list back to its original order (the model was
+                        // never touched — the drag is purely visual until
+                        // drop).
+                        if self.reorder.cancel() {
+                            self.press = None;
                             handled = true;
-                        }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.search_query.pop();
-                            self.on_query_changed();
+                        } else if self.menu.is_some() {
+                            self.menu = None;
                             handled = true;
-                        }
-                        Key::Named(NamedKey::Enter) => {
-                            self.pending_query_at = Some(Instant::now() - GEOCODE_DEBOUNCE);
-                            handled = true;
-                        }
-                        _ => {
-                            if let Some(txt) = text {
-                                let s = txt.as_str();
-                                if !s.is_empty() && !s.chars().any(|ch| ch.is_control()) {
-                                    self.search_query.push_str(s);
-                                    self.on_query_changed();
-                                    handled = true;
-                                }
-                            }
                         }
                     }
-                } else {
-                    match logical_key {
-                        Key::Named(NamedKey::Escape) => {
-                            // Escape abandons an in-flight reorder, snapping the
-                            // list back to its original order (the model was
-                            // never touched — the drag is purely visual until
-                            // drop).
-                            if self.reorder.cancel() {
-                                self.press = None;
-                                handled = true;
-                            } else if self.menu.is_some() {
-                                self.menu = None;
-                                handled = true;
-                            }
-                        }
-                        // Arrow up/down move the highlighted city; the detail
-                        // pane follows the selection live (side-by-side) and a
-                        // fresh forecast is fetched for it.
-                        Key::Named(NamedKey::ArrowDown) => {
-                            self.menu = None;
-                            changed = self.move_selection(1);
-                            handled = true;
-                        }
-                        Key::Named(NamedKey::ArrowUp) => {
-                            self.menu = None;
-                            changed = self.move_selection(-1);
-                            handled = true;
-                        }
-                        // Enter opens the forecast for the highlighted city —
-                        // the only way to reach the detail by keyboard in the
-                        // narrow push layout, where it isn't shown yet.
-                        Key::Named(NamedKey::Enter) => {
-                            if self.model.selected_location().is_some() {
-                                self.refresh_selected();
-                                self.nav_request = Some(NavIntent::ShowDetail);
-                                handled = true;
-                            }
-                        }
-                        Key::Character(ch) if ch.as_str() == "/" => {
-                            self.search_focused = true;
-                            handled = true;
-                        }
-                        _ => {}
+                    // Arrow up/down move the highlighted city; the detail
+                    // pane follows the selection live (side-by-side) and a
+                    // fresh forecast is fetched for it.
+                    Key::Named(NamedKey::ArrowDown) => {
+                        self.menu = None;
+                        changed = self.move_selection(1);
+                        handled = true;
                     }
+                    Key::Named(NamedKey::ArrowUp) => {
+                        self.menu = None;
+                        changed = self.move_selection(-1);
+                        handled = true;
+                    }
+                    // Enter opens the forecast for the highlighted city —
+                    // the only way to reach the detail by keyboard in the
+                    // narrow push layout, where it isn't shown yet.
+                    Key::Named(NamedKey::Enter) => {
+                        if self.model.selected_location().is_some() {
+                            self.refresh_selected();
+                            self.nav_request = Some(NavIntent::ShowDetail);
+                            handled = true;
+                        }
+                    }
+                    Key::Character(ch) if ch.as_str() == "/" => {
+                        self.begin_search();
+                        handled = true;
+                    }
+                    _ => {}
                 }
             }
             _ => {}
@@ -1299,7 +1347,23 @@ impl Core {
         let tiles_block_h = tile_rows as f64 * TILE_H + (tile_rows as f64 - 1.0) * gap;
         let n_days = snap.daily.len().max(1);
         let days_block_h = 40.0 + n_days as f64 * DAY_ROW_H + 12.0;
-        let body_h = HERO_H + SECTION_GAP + tiles_block_h + SECTION_GAP + CHART_H + SECTION_GAP + days_block_h;
+        // Air-quality block: header + AQI hero + a row (or two) of pollutant
+        // tiles. Reserved whether or not a reading is available yet, so the
+        // scroll geometry stays stable while it loads.
+        let aq = self.model.selected_air_quality().cloned();
+        let aq_cols = if mw >= 560.0 { 4 } else { 2 };
+        let aq_rows = 4usize.div_ceil(aq_cols);
+        let aq_tiles_h = aq_rows as f64 * AQ_TILE_H + (aq_rows as f64 - 1.0) * gap;
+        let aq_block_h = 40.0 + 64.0 + 12.0 + aq_tiles_h + 14.0;
+        let body_h = HERO_H
+            + SECTION_GAP
+            + tiles_block_h
+            + SECTION_GAP
+            + HOURLY_CARD_H
+            + SECTION_GAP
+            + days_block_h
+            + SECTION_GAP
+            + aq_block_h;
         let view_h = (rect.y1 - PAD) - body_top;
         self.max_scroll = (body_h - view_h).max(0.0);
         self.scroll = self.scroll.clamp(0.0, self.max_scroll);
@@ -1369,24 +1433,58 @@ impl Core {
 
         y += tiles_block_h + SECTION_GAP;
 
-        // ---- Hourly chart ----
-        let hcard = Rect::new(mx, y, mx + mw, y + CHART_H);
+        // ---- Hourly strip (24 fixed-width columns; scrolls horizontally) ----
+        let hcard = Rect::new(mx, y, mx + mw, y + HOURLY_CARD_H);
         card(scene, t, hcard, theme);
         text_left(scene, tr, "Next 24 hours", hcard.x0 + 16.0, hcard.y0 + 12.0, 14.0, TextWeight::Semibold, c.text_primary);
-        let points: Vec<ChartPoint> = snap
+        if self.hourly_max_scroll > 1.0 {
+            text_right(scene, tr, "scroll →", hcard.x1 - 16.0, hcard.y0 + 14.0, 11.0, TextWeight::Regular, c.text_dim);
+        }
+
+        let cols: Vec<chart::HourColumn> = snap
             .hourly
             .iter()
             .enumerate()
-            .map(|(i, h)| ChartPoint {
-                label: h.hour_label(),
+            .map(|(i, h)| chart::HourColumn {
+                hour: h.hour_label(),
                 temp: snap.temp_in(h.temperature, units),
                 precip: h.precip_probability,
+                code: h.weather_code,
+                is_day: h.is_day,
                 is_now: i == 0,
             })
             .collect();
-        chart::draw_temp_curve(scene, t, Rect::new(hcard.x0 + 20.0, hcard.y0 + 34.0, hcard.x1 - 20.0, hcard.y1 - 8.0), &points, accent, theme, tr, "°");
 
-        y += CHART_H + SECTION_GAP;
+        // Each hour gets at least HOUR_COL_MIN_W; the strip scrolls when the 24
+        // columns are wider than the band rather than squeezing them.
+        let band = Rect::new(hcard.x0 + 14.0, hcard.y0 + 32.0, hcard.x1 - 14.0, hcard.y1 - 20.0);
+        let n = cols.len().max(1);
+        let col_w = (band.width() / n as f64).max(HOUR_COL_MIN_W);
+        let content_w = col_w * n as f64;
+        self.hourly_viewport = band;
+        self.hourly_content_w = content_w;
+        self.hourly_max_scroll = (content_w - band.width()).max(0.0);
+        self.hourly_scroll_x = self.hourly_scroll_x.clamp(0.0, self.hourly_max_scroll);
+
+        chart::draw_hourly_strip(scene, t, band, &cols, col_w, self.hourly_scroll_x, accent, theme, tr, "°");
+
+        // Shared horizontal scrollbar when the strip overflows the band.
+        let hmetrics = ScrollMetrics::new(content_w, band.width(), self.hourly_scroll_x);
+        let track = Rect::new(band.x0, hcard.y1 - 12.0, band.x1, hcard.y1 - 6.0);
+        self.hourly_track = track;
+        if hmetrics.overflows() {
+            if let Some(thumb) = self.hourly_bar.thumb_rect(track, hmetrics) {
+                scene.fill(Fill::NonZero, t, c.neutral[2].with_alpha_factor(0.5), None, &RoundedRect::from_rect(track, 3.0));
+                let thumb_color = if self.hourly_bar.is_active() {
+                    c.text_dim
+                } else {
+                    c.text_dim.with_alpha_factor(0.7)
+                };
+                scene.fill(Fill::NonZero, t, thumb_color, None, &RoundedRect::from_rect(thumb, 3.0));
+            }
+        }
+
+        y += HOURLY_CARD_H + SECTION_GAP;
 
         // ---- 7-day forecast ----
         let dcard = Rect::new(mx, y, mx + mw, y + days_block_h);
@@ -1484,6 +1582,14 @@ impl Core {
             text_left(scene, tr, &format!("{hi}°"), bar_x1 + 8.0, cy - 8.0, 14.0, TextWeight::Semibold, c.text_primary);
         }
 
+        y += days_block_h + SECTION_GAP;
+
+        // ---- Air quality ----
+        let acard = Rect::new(mx, y, mx + mw, y + aq_block_h);
+        card(scene, t, acard, theme);
+        text_left(scene, tr, "Air quality", acard.x0 + 16.0, acard.y0 + 12.0, 14.0, TextWeight::Semibold, c.text_primary);
+        self.draw_air_quality(scene, t, tr, theme, acard, aq.as_ref(), aq_cols, gap);
+
         scene.pop_layer();
 
         // Status line + scroll indicator.
@@ -1569,6 +1675,98 @@ impl Core {
         text_right(scene, tr, sunset, area.x1 - 4.0, baseline + 20.0, 13.0, TextWeight::Medium, c.text_primary);
     }
 
+    /// The air-quality section: an AQI severity hero + a row (or two) of key
+    /// pollutant tiles, or an honest loading / unavailable message when there
+    /// is no reading yet. Real data only — a missing value shows an em-dash,
+    /// never a fabricated zero.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_air_quality(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        aq: Option<&AirQuality>,
+        cols: usize,
+        gap: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let ix = area.x0 + 16.0;
+        let iw = area.width() - 32.0;
+        let hero_top = area.y0 + 40.0;
+
+        let Some(aq) = aq.filter(|a| a.has_any()) else {
+            let msg = if self.is_fetching() {
+                "Loading air quality…"
+            } else {
+                "Air quality unavailable"
+            };
+            text_center(scene, tr, msg, area.center().x, hero_top + 22.0, 14.0, TextWeight::Medium, c.text_dim);
+            return;
+        };
+
+        // AQI hero: a severity-tinted chip with the big index number, the band
+        // word, and a caption naming the scale.
+        let hero = Rect::new(ix, hero_top, area.x1 - 16.0, hero_top + 64.0);
+        if let Some(aqi) = aq.european_aqi {
+            let sev = aqi_band_color(aqi, theme);
+            let chip = RoundedRect::from_rect(
+                Rect::new(hero.x0, hero.y0, hero.x0 + 116.0, hero.y1),
+                theme.tokens.radii.lg as f64,
+            );
+            scene.fill(Fill::NonZero, t, sev.with_alpha_factor(0.16), None, &chip);
+            scene.stroke(&Stroke::new(1.0), t, sev.with_alpha_factor(0.55), None, &chip);
+            let num = format!("{}", aqi.round() as i64);
+            tr.draw_text_weighted(scene, &num, 34.0, c.text_primary, t * Affine::translate((hero.x0 + 16.0, hero.y0 + 12.0)), None, TextWeight::Bold);
+            let (nw, _) = tr.measure_weighted(&num, 34.0, None, TextWeight::Bold);
+            text_left(scene, tr, "AQI", hero.x0 + 24.0 + nw as f64, hero.y0 + 30.0, 12.0, TextWeight::Semibold, c.text_dim);
+            text_left(scene, tr, api::european_aqi_band(aqi), hero.x0 + 132.0, hero.y0 + 12.0, 19.0, TextWeight::Semibold, sev);
+            text_left(scene, tr, "European AQI · now", hero.x0 + 132.0, hero.y0 + 40.0, 12.0, TextWeight::Regular, c.text_dim);
+        } else if let Some(us) = aq.us_aqi {
+            let sev = aqi_band_color(us / 2.0, theme); // rough EU-equivalent tint
+            text_left(scene, tr, &format!("{} US AQI", us.round() as i64), hero.x0, hero.y0 + 18.0, 20.0, TextWeight::Bold, sev);
+        }
+
+        // Key pollutant tiles (µg/m³).
+        let tiles: [(&str, Option<f64>); 4] = [
+            ("PM2.5", aq.pm2_5),
+            ("PM10", aq.pm10),
+            ("NO₂", aq.nitrogen_dioxide),
+            ("O₃", aq.ozone),
+        ];
+        let tiles_top = hero.y1 + 12.0;
+        let cols = cols.max(1);
+        let tw = (iw - (cols as f64 - 1.0) * gap) / cols as f64;
+        for (i, (label, val)) in tiles.iter().enumerate() {
+            let col = i % cols;
+            let row = i / cols;
+            let tx = ix + col as f64 * (tw + gap);
+            let ty = tiles_top + row as f64 * (AQ_TILE_H + gap);
+            let tile = Rect::new(tx, ty, tx + tw, ty + AQ_TILE_H);
+            card(scene, t, tile, theme);
+            text_left(scene, tr, label, tile.x0 + 12.0, tile.y0 + 10.0, 10.0, TextWeight::Semibold, c.text_dim);
+            match val {
+                Some(v) => {
+                    text_left(scene, tr, &format!("{}", v.round() as i64), tile.x0 + 12.0, tile.y0 + 26.0, 22.0, TextWeight::Bold, c.text_primary);
+                    text_left(scene, tr, "µg/m³", tile.x0 + 12.0, tile.y1 - 18.0, 10.0, TextWeight::Regular, c.text_dim);
+                }
+                None => {
+                    text_left(scene, tr, "—", tile.x0 + 12.0, tile.y0 + 26.0, 20.0, TextWeight::Regular, c.text_dim);
+                }
+            }
+        }
+    }
+
+    /// Whether the strip's shared scrollbar is mid-drag (for pointer capture).
+    pub fn hourly_scrollbar_dragging(&self) -> bool {
+        self.hourly_bar.is_dragging()
+    }
+
+    fn hourly_metrics(&self) -> ScrollMetrics {
+        ScrollMetrics::new(self.hourly_content_w, self.hourly_viewport.width(), self.hourly_scroll_x)
+    }
+
     /// Handle an event routed to the detail pane. Returns true if consumed.
     pub fn handle_detail_event(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         use winit::event::{ElementState, MouseButton, MouseScrollDelta};
@@ -1576,27 +1774,61 @@ impl Core {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // A live scrollbar drag tracks the cursor.
+                if let Some(off) =
+                    self.hourly_bar.drag_to(self.hourly_track, self.hourly_metrics(), self.last_mouse)
+                {
+                    self.hourly_scroll_x = off;
+                    return true;
+                }
+                self.hourly_bar
+                    .update_hover(self.hourly_track, self.hourly_metrics(), self.last_mouse);
                 false
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if self.detail_rect.contains(self.last_mouse) && self.max_scroll > 0.0 {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => *y as f64 * 48.0,
-                        MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                    };
-                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
-                    true
-                } else {
-                    false
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 48.0, *y as f64 * 48.0),
+                    MouseScrollDelta::PixelDelta(p) => (p.x / scale_factor, p.y / scale_factor),
+                };
+                // Over the strip: scroll it horizontally. A horizontal delta
+                // maps directly; a vertical wheel nudges it too, falling
+                // through to the page scroll once it reaches an end.
+                if self.hourly_viewport.contains(self.last_mouse) && self.hourly_max_scroll > 0.0 {
+                    let want = if dx.abs() > f64::EPSILON { -dx } else { -dy };
+                    let before = self.hourly_scroll_x;
+                    self.hourly_scroll_x =
+                        (self.hourly_scroll_x + want).clamp(0.0, self.hourly_max_scroll);
+                    if (self.hourly_scroll_x - before).abs() > f64::EPSILON {
+                        return true;
+                    }
                 }
+                if self.detail_rect.contains(self.last_mouse) && self.max_scroll > 0.0 {
+                    self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll);
+                    return true;
+                }
+                false
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                // The strip's scrollbar wins the press when it overflows.
+                if self.hourly_max_scroll > 0.0 {
+                    match self.hourly_bar.press(self.hourly_track, self.hourly_metrics(), self.last_mouse) {
+                        PressOutcome::Thumb => return true,
+                        PressOutcome::Page(off) => {
+                            self.hourly_scroll_x = off;
+                            return true;
+                        }
+                        PressOutcome::Miss => {}
+                    }
+                }
                 if self.refresh_btn.contains(self.last_mouse) {
                     self.refresh_selected();
                     true
                 } else {
                     false
                 }
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                self.hourly_bar.release()
             }
             _ => false,
         }
@@ -1636,32 +1868,46 @@ impl Core {
         self.scroll = f64::MAX;
     }
 
-    /// Stage the search dropdown with a query + a set of geocoded matches
-    /// (headless shot / test — the offscreen path can't await a live geocode).
+    /// Stage the search field + suggestion overlay with a query and a set of
+    /// geocoded matches (headless shot / test — the offscreen path can't await
+    /// a live geocode). Drives the real shared [`Autocomplete`].
     pub fn seed_search(&mut self, query: &str, results: Vec<SavedLocation>) {
-        self.search_focused = true;
+        self.search.begin_edit();
+        self.search.set_text(query); // after begin_edit: caret at end, no select
         self.search_query = query.to_string();
         self.search_results = results;
         self.geocode_inflight = false;
         self.pending_query_at = None;
+        self.sync_search_view();
     }
 
-    /// Stage the search dropdown's loading state (a geocode in flight).
+    /// Like [`seed_search`](Self::seed_search) but with the top match already
+    /// highlighted — for a headless shot of the overlay mid-navigation.
+    pub fn seed_search_highlighted(&mut self, query: &str, results: Vec<SavedLocation>) {
+        self.seed_search(query, results);
+        self.search.set_highlight(Some(0));
+    }
+
+    /// Stage the overlay's loading state (a geocode in flight).
     pub fn seed_search_loading(&mut self, query: &str) {
-        self.search_focused = true;
+        self.search.begin_edit();
+        self.search.set_text(query);
         self.search_query = query.to_string();
         self.search_results.clear();
         self.geocode_inflight = true;
         self.pending_query_at = None;
+        self.sync_search_view();
     }
 
-    /// Stage the search dropdown's "no matches" state.
+    /// Stage the overlay's "no matches" state.
     pub fn seed_search_empty(&mut self, query: &str) {
-        self.search_focused = true;
+        self.search.begin_edit();
+        self.search.set_text(query);
         self.search_query = query.to_string();
         self.search_results.clear();
         self.geocode_inflight = false;
         self.pending_query_at = None;
+        self.sync_search_view();
     }
 
     #[cfg(test)]
@@ -1696,11 +1942,34 @@ impl Core {
     }
     #[cfg(test)]
     pub fn search_is_focused(&self) -> bool {
-        self.search_focused
+        self.search.is_editing()
     }
     #[cfg(test)]
     pub fn search_query(&self) -> &str {
-        &self.search_query
+        self.search.text()
+    }
+    /// Test seam: the number of suggestion rows the shared overlay currently
+    /// offers (proves the autocomplete is populated from real geocode data).
+    #[cfg(test)]
+    pub fn search_suggestion_count(&self) -> usize {
+        self.search.suggestions().len()
+    }
+    /// Test seam: the keyboard-highlighted suggestion's display label, if any.
+    #[cfg(test)]
+    pub fn search_highlight_label(&self) -> Option<String> {
+        self.search.highlighted().map(|s| s.label.clone())
+    }
+    #[cfg(test)]
+    pub fn hourly_max_scroll(&self) -> f64 {
+        self.hourly_max_scroll
+    }
+    #[cfg(test)]
+    pub fn hourly_scroll_x(&self) -> f64 {
+        self.hourly_scroll_x
+    }
+    #[cfg(test)]
+    pub fn hourly_viewport_rect(&self) -> Rect {
+        self.hourly_viewport
     }
     #[cfg(test)]
     pub fn delete_zone_rect_test(&self) -> Rect {
@@ -1744,25 +2013,6 @@ fn tile_columns(mw: f64) -> usize {
 fn balanced_tile_columns(mw: f64, n: usize) -> usize {
     let cols = tile_columns(mw);
     if cols > 2 && n % cols == 1 { cols - 1 } else { cols }
-}
-
-/// A small loading indicator: a faint full ring with a brighter leading arc,
-/// drawn as a short polyline so it renders identically headless (no clock).
-fn draw_spinner(scene: &mut Scene, t: Affine, center: Point, r: f64, accent: Color, track: Color) {
-    scene.stroke(&Stroke::new(2.2), t, track.with_alpha_factor(0.6), None, &Circle::new(center, r));
-    let mut arc = BezPath::new();
-    let steps = 16;
-    let sweep = std::f64::consts::PI * 1.5; // 270°
-    for i in 0..=steps {
-        let a = -std::f64::consts::FRAC_PI_2 + sweep * (i as f64 / steps as f64);
-        let p = Point::new(center.x + r * a.cos(), center.y + r * a.sin());
-        if i == 0 {
-            arc.move_to(p);
-        } else {
-            arc.line_to(p);
-        }
-    }
-    scene.stroke(&Stroke::new(2.2).with_caps(vello::kurbo::Cap::Round), t, accent, None, &arc);
 }
 
 fn card(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme) {
@@ -1859,6 +2109,25 @@ fn uv_word(uv: f64) -> &'static str {
         8..=10 => "Very high",
         _ => "Extreme",
     }
+}
+
+/// Severity tint for a European AQI value, drawn from the theme's semantic
+/// palette so it tracks light/dark and high-contrast.
+fn aqi_band_color(aqi: f64, theme: &Theme) -> Color {
+    let c = &theme.tokens.colors;
+    match aqi.round() as i64 {
+        i64::MIN..=20 => c.semantic.success,
+        21..=40 => c.semantic.info,
+        41..=60 => c.semantic.warning,
+        _ => c.semantic.danger,
+    }
+}
+
+/// The encoded, unambiguous value for a geocoded search result — its display
+/// name plus subtitle — so the accepted [`Autocomplete`] value maps back to the
+/// exact place (two cities named "Paris" stay distinct).
+fn result_value(loc: &SavedLocation) -> String {
+    format!("{}, {}", loc.name, loc.subtitle())
 }
 
 #[cfg(test)]
