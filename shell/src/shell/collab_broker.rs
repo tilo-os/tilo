@@ -1191,6 +1191,18 @@ impl BrokerHandle {
     /// Tests use this to install a [`ChannelState`] *before* sending
     /// signed envelopes through the broker. The eventual Phase 3.5
     /// bootstrap path is the production caller.
+    /// The bound Cap'n Proto socket, or `None` if this broker has no
+    /// app-facing transport.
+    ///
+    /// `None` after asking for one means the bind failed: the legacy
+    /// JSON listener is up but no launcher-injected app can reach it,
+    /// which is a session with collaboration switched off. Callers
+    /// that requested a capnp path are expected to check, because
+    /// `spawn_full` returning `Ok` only speaks for the JSON socket.
+    pub fn capnp_socket(&self) -> Option<&std::path::Path> {
+        self.capnp_socket_path.as_deref()
+    }
+
     pub fn channels(&self) -> Arc<Mutex<BrokerChannels>> {
         Arc::clone(&self.channels)
     }

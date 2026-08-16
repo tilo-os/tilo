@@ -1314,6 +1314,20 @@ fn spawn_session_collab_broker(
         peer_sync.clone(),
     ) {
         Ok(handle) => {
+            // `spawn_full` answers for the legacy JSON listener; the
+            // capnp socket is the one apps are handed, so ask about it
+            // separately rather than reading success into silence.
+            if handle.capnp_socket().is_none() {
+                tracing::error!(
+                    "collab: the app-facing socket {} did not bind; apps will start \
+                     without collaboration",
+                    capnp_path.display()
+                );
+                chrome
+                    .borrow_mut()
+                    .set_collab_unavailable("The app-facing broker socket could not be bound.");
+                return None;
+            }
             tracing::info!(
                 "collab: broker listening on {} (apps) + {} (legacy) — peer_sync={}",
                 capnp_path.display(),
@@ -2718,6 +2732,114 @@ mod tests {
     //! wire without spinning up a process, so a CI run that can't open
     //! winit still gates against regressions here.
     use super::*;
+
+    /// The compositor binds the socket the launcher dials.
+    ///
+    /// This is the check that was missing when the two sides drifted:
+    /// the broker bound whatever `QUICK_COLLAB_SOCK` happened to name
+    /// while the launcher resolved `$XDG_RUNTIME_DIR/qos/services/
+    /// collab.sock`, and because every manifest asks for `collab` as
+    /// `optional`, the mismatch surfaced as a log line and an app that
+    /// quietly never collaborated.
+    ///
+    /// So assert across both production paths rather than on either
+    /// one's idea of the path: bind with the compositor's own spawn
+    /// function, then resolve with the launcher's own resolver, and
+    /// require it to come back with an open descriptor. Declaring the
+    /// requirement `required@1` here is what makes a divergence an
+    /// error instead of the skip an optional service is entitled to —
+    /// a test that cannot observe its subject must fail.
+    #[test]
+    #[serial_test::serial]
+    fn compositor_binds_the_socket_the_launcher_dials() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        // SAFETY: `serial` keeps this off any other test's env.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        // Do not let an inherited value pick the legacy socket's home.
+        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
+
+        let fb = FrameBuilder::new((800, 600));
+        let chrome = fb.chrome_handle();
+        let broker = spawn_session_collab_broker(&chrome, None)
+            .expect("the compositor must be able to bind its own collab socket");
+
+        assert!(
+            chrome.borrow().collab_available(),
+            "a session that bound its broker must not report collaboration unavailable: {:?}",
+            chrome.borrow().collab_unavailable
+        );
+
+        // The launcher's real resolver, on a manifest that demands the
+        // service. `resolve_service_binds` returns `RequiredMissing` if
+        // it looks somewhere the compositor did not bind.
+        let mut services = std::collections::BTreeMap::new();
+        services.insert(
+            launcher::services::COLLAB_SERVICE.to_string(),
+            "required@1".to_string(),
+        );
+        let resolved = launcher::services::resolve_service_binds(&services, false)
+            .expect("the launcher must find the socket the compositor just bound");
+
+        assert_eq!(
+            resolved.len(),
+            1,
+            "expected exactly one resolved service, got {resolved:?}"
+        );
+        assert_eq!(resolved[0].name, launcher::services::COLLAB_SERVICE);
+        assert!(
+            resolved[0].host_fd >= 0,
+            "the launcher must hand the app a real connected descriptor"
+        );
+
+        drop(broker);
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    }
+
+    /// A live socket is not taken away from the session that owns it.
+    ///
+    /// Two compositors against one `XDG_RUNTIME_DIR` is the shape a
+    /// second login (or a stray test) produces, and `spawn_full`
+    /// unlinks before it binds — so without the liveness probe the
+    /// newcomer would silently strand the first session's apps on a
+    /// broker nothing can reach any more. Refusing loudly is the
+    /// correct outcome, and the refusal has to reach the chrome.
+    #[test]
+    #[serial_test::serial]
+    fn a_second_session_refuses_to_take_a_live_collab_socket() {
+        let runtime = tempfile::tempdir().expect("tempdir");
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
+        unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
+
+        let first_fb = FrameBuilder::new((800, 600));
+        let first_chrome = first_fb.chrome_handle();
+        let first = spawn_session_collab_broker(&first_chrome, None).expect("first broker binds");
+
+        let second_fb = FrameBuilder::new((800, 600));
+        let second_chrome = second_fb.chrome_handle();
+        let second = spawn_session_collab_broker(&second_chrome, None);
+
+        assert!(
+            second.is_none(),
+            "a second session must not bind over a live collab socket"
+        );
+        assert!(
+            !second_chrome.borrow().collab_available(),
+            "the refused session must report collaboration as unavailable"
+        );
+        assert!(
+            first_chrome.borrow().collab_available(),
+            "the session that owns the socket must be left working"
+        );
+        // And the first broker still answers — the point of refusing.
+        assert!(
+            collab_socket_is_live(&launcher::services::collab_socket()),
+            "the original broker must still be listening after the refusal"
+        );
+
+        drop(second);
+        drop(first);
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    }
 
     /// These unit tests exercise the *chrome* half of the executor with no
     /// compositor `State` attached — building one needs a live wayland
