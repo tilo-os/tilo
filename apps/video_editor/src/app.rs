@@ -139,6 +139,21 @@ pub enum ShotScenario {
     SelectedFilters,
     /// A split performed at the playhead, leaving two contiguous clips.
     JustSplit,
+    /// A bin item's context menu open (Add to timeline / Rename / Delete).
+    BinMenu,
+    /// A bin item being renamed in place through the shared editable label.
+    BinRename,
+    /// A bin clip mid-drag over a timeline lane, with the ghost + drop marker.
+    DragToTimeline,
+}
+
+impl ShotScenario {
+    /// Scenarios arranged from a rect-dependent interaction (menu / rename /
+    /// drag), applied in `draw` once the layout rect is known rather than during
+    /// `sync` (where the rect is still zero).
+    fn is_interaction(self) -> bool {
+        matches!(self, ShotScenario::BinMenu | ShotScenario::BinRename | ShotScenario::DragToTimeline)
+    }
 }
 
 pub struct VideoEditorApp {
@@ -147,6 +162,9 @@ pub struct VideoEditorApp {
     shot_scenario: ShotScenario,
     /// Guards the one-time scenario setup so it doesn't re-run every sync.
     shot_applied: bool,
+    /// Guards the one-time rect-dependent interaction scenario setup (applied in
+    /// `draw` once the layout rect is known).
+    shot_interaction_applied: bool,
     // --- view state (per-peer, never in the CRDT) ---
     playhead: f64,
     zoom: f64,  // pixels per second
@@ -274,6 +292,7 @@ impl VideoEditorApp {
             project: Project::new("Untitled"),
             shot_scenario: ShotScenario::Live,
             shot_applied: false,
+            shot_interaction_applied: false,
             playhead: 10.0,
             zoom: 34.0,
             scroll: 0.0,
@@ -1344,6 +1363,49 @@ impl VideoEditorApp {
                 self.split_selected(state);
                 self.zoom = 40.0;
             }
+            // Rect-dependent interactions are arranged in `draw` (the layout
+            // rect is still zero here in `sync`).
+            ShotScenario::BinMenu | ShotScenario::BinRename | ShotScenario::DragToTimeline => {}
+        }
+    }
+
+    /// Arrange a rect-dependent interaction scenario for a `--shots` capture,
+    /// once, from `draw` where the layout rect is known. Uses the same
+    /// production affordances a live interaction drives.
+    fn apply_shot_interaction(&mut self, r: &Regions) {
+        match self.shot_scenario {
+            ShotScenario::BinMenu => {
+                if let Some((mid, row)) = self.bin_item_rects(r).into_iter().nth(2) {
+                    let at = Point::new(row.center().x, row.center().y);
+                    self.open_bin_menu(mid, at);
+                }
+            }
+            ShotScenario::BinRename => {
+                if let Some((mid, _row)) = self.bin_item_rects(r).into_iter().nth(2) {
+                    self.begin_rename(mid);
+                }
+            }
+            ShotScenario::DragToTimeline => {
+                // A video bin item mid-drag over the V1 lane.
+                let item = self
+                    .bin_item_rects(r)
+                    .into_iter()
+                    .find(|(m, _)| self.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false));
+                let lane = self
+                    .lane_rects(r)
+                    .into_iter()
+                    .find(|(_, k, _)| *k == TrackKind::Video);
+                if let (Some((mid, row)), Some((_, _, lane))) = (item, lane) {
+                    self.selected_media = Some(mid);
+                    self.bin_drag = Some(BinDrag {
+                        media: mid,
+                        origin: row.center(),
+                        active: true,
+                    });
+                    self.last_mouse = Point::new(lane.x0 + 470.0, lane.center().y);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1547,6 +1609,14 @@ impl Widget for VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
         let r = self.regions();
+        // Arrange a rect-dependent interaction scenario once (for --shots).
+        if !self.shot_interaction_applied
+            && self.shot_scenario.is_interaction()
+            && self.rect.width() > 1.0
+        {
+            self.apply_shot_interaction(&r);
+            self.shot_interaction_applied = true;
+        }
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
