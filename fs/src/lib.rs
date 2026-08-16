@@ -12,6 +12,7 @@ pub mod identity;
 pub mod smart;
 pub mod sync;
 pub mod syncstate;
+pub mod thumbs;
 
 #[cfg(test)]
 mod tests;
@@ -26,4 +27,5 @@ pub use hydration::Hydrator;
 pub use identity::{MountIdentity, identity_paths, load_mount_identity};
 pub use smart::Heuristics;
 pub use sync::{Ticket, Workspace};
-pub use syncstate::{SyncState, SYNC_XATTR};
+pub use syncstate::{SyncState, SYNC_XATTR, THUMB_XATTR};
+pub use thumbs::ThumbProvider;

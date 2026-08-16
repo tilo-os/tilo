@@ -4310,6 +4310,7 @@ dependencies = [
  "fuser",
  "futures-lite",
  "hex",
+ "image",
  "iroh",
  "iroh-base",
  "iroh-blobs",
@@ -4323,6 +4324,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "thumbnail",
  "tokio",
 ]
 
