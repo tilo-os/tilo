@@ -1935,7 +1935,18 @@ impl App {
         // the undo stack is anonymous, and `undo_for_author` — the thing that
         // stops one collaborator reverting another's work — has nothing to
         // match on.
-        self.state.commit_action_authored(
+        //
+        // `commit_action_authored` reports whether the transaction actually
+        // changed the document. The App calls `commit_action` after *every*
+        // handled event, and many handled events mutate only ephemeral widget
+        // state, not the CRDT — a text-selection drag in the terminal is the
+        // motivating case: it fires a `CursorMoved` per frame, each marked
+        // handled, with nothing committed. Serialising the whole document
+        // (`state.save()`) and broadcasting it on each of those was a per-frame
+        // cost proportional to the document size, which is what made selection
+        // feel laggy over a large scrollback. When nothing changed there is
+        // nothing to persist or sync, so skip both.
+        let changed = self.state.commit_action_authored(
             self.last_stable_focus_idx,
             self.last_stable_metadata.clone(),
             Some(self.local_author.clone()),
@@ -1945,9 +1956,11 @@ impl App {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
 
-        // Broadcast CRDT state
-        let data = self.state.save();
-        self.collab_manager.send(CollabRequest::SyncCRDT { data });
+        // Broadcast CRDT state — only when the commit produced a real change.
+        if changed {
+            let data = self.state.save();
+            self.collab_manager.send(CollabRequest::SyncCRDT { data });
+        }
     }
 
     fn set_focused_node(&mut self, new_id: Option<NodeId>) {

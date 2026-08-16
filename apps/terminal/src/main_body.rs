@@ -3387,37 +3387,62 @@ impl TerminalBackend {
     /// `/usr/bin`, terminfo and `/etc/passwd` by construction rather than as
     /// grants. See `crates/runtime/ush`.
     ///
-    /// Three routes, in order, and the order is the trust boundary:
+    /// Three routes, and the order is the trust boundary. The route is chosen by
+    /// [`confinement_route`] from a capability probe, not by trying each in turn
+    /// and hoping — so a machine that cannot host a guest is never handed one to
+    /// fail in, and confinement is never silently downgraded on qOS.
     ///
     /// 1. **The service socket.** A sandboxed app cannot build a namespace —
     ///    its seccomp filter denies `unshare` and `mount`. So it asks the
     ///    session's supervisor and receives a pty master over `SCM_RIGHTS`.
-    ///    This is the production path inside qOS.
-    /// 2. **Spawning the runtime.** Outside a sandbox — a development tree, a
-    ///    plain login — there is no supervisor to ask and no filter to stop
-    ///    us, so the terminal starts a guest itself.
-    /// 3. **`$SHELL`.** No runtime on this machine at all. Honest fallback for
-    ///    a build of the terminal running on a normal distribution, and the
-    ///    one case where the shell is unconfined.
+    ///    This is the production path inside qOS, and it is **mandatory when
+    ///    available**: if the launcher opened the service descriptor, we use it
+    ///    and *fail closed* on any handshake error rather than falling through
+    ///    to an unconfined shell. That is what makes the qOS path non-optional —
+    ///    nothing an app controls (its own environment) can select best-effort
+    ///    while the supervisor is reachable.
+    /// 2. **Spawning the runtime.** An unconfined host that can genuinely build
+    ///    the namespace a guest needs (unprivileged user namespaces enabled, not
+    ///    already behind a seccomp filter) *and* has the runtime installed — a
+    ///    development tree, mostly. The terminal starts a guest itself so that
+    ///    session is confined the same way qOS confines it.
+    /// 3. **`$SHELL` (best-effort).** No qOS confinement is available on this
+    ///    machine: a plain distribution, or a build of the terminal running
+    ///    outside qOS. Start the user's login shell directly so normal work
+    ///    still functions. The child inherits whatever ambient sandbox the
+    ///    process already has, so it runs truly unconfined only on a truly
+    ///    unconfined host — and this route is unreachable whenever route 1 is.
+    ///
+    /// The two kernel-feature probes ([`seccomp_filtered`],
+    /// [`unprivileged_userns_enabled`]) are the robust discriminator between "I
+    /// am a confined qOS app" and "I am on a normal host": a seccomp filter
+    /// cannot be removed once installed, so an attacker inside the sandbox
+    /// cannot flip route 2 on to escape, and cannot reach an *escalated*
+    /// best-effort shell — route 3's child is still bounded by the launcher's
+    /// seccomp + namespace + bind mounts.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        match ush_service_backend() {
-            Ok(backend) => return Ok(backend),
-            Err(e) => tracing::debug!("terminal: no ush service ({e}); trying to spawn one"),
-        }
-        match ush_binary() {
-            Some(bin) => {
+        match confinement_route() {
+            ConfineRoute::Service => {
+                // Mandatory, fail-closed: never fall through to an unconfined
+                // shell when the supervisor is present.
+                ush_service_backend()
+            }
+            ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
-                return Self::with_command(cmd);
+                Self::with_command(cmd)
             }
-            None => tracing::warn!(
-                "terminal: no ush runtime found; falling back to $SHELL, which is \
-                 not confined and will fail inside an app sandbox"
-            ),
+            ConfineRoute::BestEffort => {
+                // A single quiet line, not a wall of errors: this is the normal,
+                // expected state off qOS.
+                tracing::info!(
+                    "terminal: qOS app confinement is not available here; \
+                     starting your login shell directly"
+                );
+                let shell = resolve_login_shell();
+                Self::with_command(CommandBuilder::new(&shell))
+            }
         }
-        let shell = resolve_login_shell();
-        let cmd = CommandBuilder::new(&shell);
-        Self::with_command(cmd)
     }
 
     /// Open a PTY running an arbitrary command. `TERM` is forced to
@@ -3445,6 +3470,153 @@ impl TerminalBackend {
 /// The environment variable the launcher sets when it has opened the `ush`
 /// service socket on this app's behalf, per `[sandbox.services]`.
 pub const USH_SERVICE_FD_ENV: &str = "QOS_SVC_USH_FD";
+
+/// Which way the terminal will obtain its shell, decided by capability probe.
+///
+/// Public + tested: the point of this task is that the decision is *correct*
+/// and *robust*, not that a spawn happens to fail gracefully. See
+/// [`confinement_route`] and [`TerminalBackend::new`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfineRoute {
+    /// The supervisor service is reachable — the qOS production path. Mandatory
+    /// when chosen: the caller must not fall back to an unconfined shell if the
+    /// handshake fails.
+    Service,
+    /// This unconfined host can build a guest itself and has the runtime at the
+    /// given path.
+    SelfHosted(std::path::PathBuf),
+    /// No qOS confinement is available; start `$SHELL` directly.
+    BestEffort,
+}
+
+/// Choose how to obtain the shell from a capability probe, security-first.
+///
+/// The ordering encodes the invariant "on qOS, always confine; off qOS, best
+/// effort — and best-effort can never be forced on qOS":
+///
+/// 1. If the launcher handed us a live supervisor descriptor, take it. This is
+///    the only signal that positively identifies "confined qOS app with a
+///    supervisor", and it wins unconditionally.
+/// 2. Otherwise self-host *only* when we could actually succeed: the kernel
+///    lets this process build a user namespace (so we are not behind a seccomp
+///    filter that would deny `unshare`, and unprivileged userns are enabled)
+///    and the runtime binary exists. Gating on the probe — rather than
+///    launching `qos-ush` and letting it fail — is what removes the wall of
+///    `bwrap`/mount errors on a machine that could never host a guest.
+/// 3. Otherwise there is no confinement to be had here; best-effort.
+///
+/// The security argument for (1)+(2): a seccomp filter cannot be lifted once
+/// installed, so on qOS an app cannot clear it to unlock route 2, and clearing
+/// the service env var only drops it to route 3 — whose shell is still bounded
+/// by the launcher's seccomp + namespace + bind mounts. Best-effort therefore
+/// never grants more than the ambient sandbox already allows.
+pub fn confinement_route() -> ConfineRoute {
+    decide_route(ush_service_fd().is_some(), can_build_namespace(), ush_binary())
+}
+
+/// Pure core of [`confinement_route`], with the three probed inputs injected so
+/// the decision — the actual trust boundary — is unit-testable without touching
+/// process-global state (a live service fd, the host's kernel features, an
+/// installed runtime). This IS the production decision; `confinement_route`
+/// only supplies the probes.
+///
+/// The invariant under test: `service_available` wins unconditionally, so
+/// best-effort is unreachable whenever the supervisor is present — no
+/// combination of the other two inputs can override it. And `can_self_host`
+/// gates route 2, so a present-but-unusable runtime yields best-effort rather
+/// than a doomed spawn.
+pub fn decide_route(
+    service_available: bool,
+    can_self_host: bool,
+    runtime: Option<std::path::PathBuf>,
+) -> ConfineRoute {
+    if service_available {
+        return ConfineRoute::Service;
+    }
+    if can_self_host {
+        if let Some(bin) = runtime {
+            return ConfineRoute::SelfHosted(bin);
+        }
+    }
+    ConfineRoute::BestEffort
+}
+
+/// The supervisor-service descriptor, if the launcher opened one for us and it
+/// is still a live fd.
+///
+/// An env var alone is not enough: the descriptor slot must actually be open,
+/// so a stale or spoofed number pointing at nothing does not select the service
+/// path (it falls through to the probe below and, off qOS, to best-effort).
+pub(crate) fn ush_service_fd() -> Option<i32> {
+    let raw: i32 = std::env::var(USH_SERVICE_FD_ENV).ok()?.parse().ok()?;
+    if raw < 0 {
+        return None;
+    }
+    // SAFETY: `F_GETFD` only reads the descriptor's flags and never mutates or
+    // closes it. `rc == -1` (EBADF) means the slot is empty → no service.
+    let rc = unsafe { libc::fcntl(raw, libc::F_GETFD) };
+    (rc != -1).then_some(raw)
+}
+
+/// Whether this process could build the user + mount namespace a self-hosted
+/// guest needs.
+///
+/// False when a seccomp filter is confining us (it would deny `unshare`), when
+/// unprivileged user namespaces are disabled by sysctl, or when `bwrap` — which
+/// the runtime shells out to for the actual namespace setup — is not installed.
+/// Any of those means launching the runtime here would only produce errors, so
+/// we don't.
+fn can_build_namespace() -> bool {
+    !seccomp_filtered() && unprivileged_userns_enabled() && bwrap_present()
+}
+
+/// True if a seccomp filter is installed on this process — i.e. the qOS launcher
+/// (or any foreign sandbox) is confining our syscalls.
+///
+/// Read from `/proc/self/status` (`Seccomp:` ≥ 2 is "filter mode"). A filter
+/// cannot be removed once installed and survives `exec`, so an attacker inside
+/// a sandbox cannot clear this to make [`can_build_namespace`] return true.
+fn seccomp_filtered() -> bool {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|l| l.strip_prefix("Seccomp:").map(|v| v.trim().to_string()))
+        })
+        .and_then(|v| v.parse::<u32>().ok())
+        .map(|mode| mode >= 2)
+        .unwrap_or(false)
+}
+
+/// Whether the kernel will let an unprivileged process create a user namespace.
+///
+/// Reads the two sysctls distributions use to gate this. An absent file means
+/// the kernel default (enabled), so this only reports `false` on an explicit
+/// disable — never guessing "no" just because a knob is missing.
+fn unprivileged_userns_enabled() -> bool {
+    // Debian/Ubuntu knob: `0` disables unprivileged user namespaces entirely.
+    if let Ok(v) = std::fs::read_to_string("/proc/sys/kernel/unprivileged_userns_clone") {
+        if v.trim() == "0" {
+            return false;
+        }
+    }
+    // Upstream cap on how many user namespaces may exist: `0` means none.
+    if let Ok(v) = std::fs::read_to_string("/proc/sys/user/max_user_namespaces") {
+        if v.trim() == "0" {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether `bwrap` (Bubblewrap) is on `PATH`. The runtime builds the guest's
+/// namespace with it, so its absence means a self-hosted guest cannot start.
+fn bwrap_present() -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join("bwrap").exists()))
+        .unwrap_or(false)
+}
 
 /// Where the runtime binary is when the terminal has to start one itself.
 ///

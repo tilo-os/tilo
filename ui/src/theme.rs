@@ -93,7 +93,14 @@ pub struct AppearanceIntent {
 }
 
 impl Theme {
-    fn from_tokens(name: &str, tokens: Tokens) -> Self {
+    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
+        // Keep the terminal palette coherent with whatever colour set this theme
+        // ended up with. Presets replace `tokens.colors` wholesale (via
+        // `Colors::themed`) after the base tokens are built, so deriving the
+        // terminal palette here — the single funnel every constructor passes
+        // through — is what stops the terminal from carrying its own hard-coded
+        // scheme and makes it track the OS theme instead.
+        tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
         let c = &tokens.colors;
         Self {
             name: name.into(),
