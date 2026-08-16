@@ -2099,6 +2099,160 @@ mod tests {
         );
     }
 
+    /// The remote-input firewall's z-order check and local pointer
+    /// routing must never disagree about what is on top, because the
+    /// disagreement *is* the clickjacking hole: a point local input would
+    /// deliver to one surface, the firewall would clear for another.
+    ///
+    /// They share [`foreign_tiles`], so this asserts the property that
+    /// sharing is supposed to buy, on the real laid-out tree.
+    #[test]
+    fn the_firewall_view_and_local_hit_testing_resolve_the_same_surface() {
+        use crate::network::input_firewall::ShellView;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                insert_foreign_group(&mut tree, 900_001, Some("org.example.one"));
+                insert_foreign_group(&mut tree, 900_002, Some("org.example.two"));
+            }
+            chrome.bump();
+        });
+        let _ = fb.paint_settled();
+
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let tiles = foreign_tiles(&tree, fb.host());
+        assert_eq!(
+            tiles.len(),
+            2,
+            "both mirrored clients must be laid out; got {tiles:?}"
+        );
+
+        let view = ShellView::new(
+            tiles.iter().map(|h| (h.surface_id, h.rect)).collect(),
+            None,
+            false,
+            false,
+        );
+
+        // Sweep the output. Wherever local input would land on a client,
+        // the firewall must name that same client; wherever local input
+        // lands on chrome, the firewall must name nothing.
+        let mut hits = 0;
+        for gx in 0..80 {
+            for gy in 0..45 {
+                let p = (gx as f64 * 20.0 + 10.0, gy as f64 * 20.0 + 10.0);
+                let local = foreign_tile_at(&tree, fb.host(), p).map(|h| h.surface_id);
+                assert_eq!(
+                    view.topmost_at(p),
+                    local,
+                    "at {p:?} the firewall and the pointer router disagree",
+                );
+                if local.is_some() {
+                    hits += 1;
+                }
+            }
+        }
+        assert!(
+            hits > 0,
+            "the sweep never crossed a client tile, so it proved nothing",
+        );
+    }
+
+    /// The scrubber reads evdev keycodes off the wire; local input reads
+    /// winit logical keys. Both narrow to a [`ChordKey`], and a key that
+    /// narrowed differently on the two sides would be a chord the shell
+    /// grabs from its own user and hands to a guest.
+    #[test]
+    fn chord_key_agrees_across_both_directions() {
+        let named = [
+            NamedKey::Escape,
+            NamedKey::Backspace,
+            NamedKey::Tab,
+            NamedKey::Enter,
+            NamedKey::Control,
+            NamedKey::Shift,
+            NamedKey::Alt,
+            NamedKey::Space,
+            NamedKey::CapsLock,
+            NamedKey::F1,
+            NamedKey::F2,
+            NamedKey::F3,
+            NamedKey::F4,
+            NamedKey::F5,
+            NamedKey::F6,
+            NamedKey::F7,
+            NamedKey::F8,
+            NamedKey::F9,
+            NamedKey::F10,
+            NamedKey::F11,
+            NamedKey::F12,
+            NamedKey::Home,
+            NamedKey::ArrowUp,
+            NamedKey::PageUp,
+            NamedKey::ArrowLeft,
+            NamedKey::ArrowRight,
+            NamedKey::End,
+            NamedKey::ArrowDown,
+            NamedKey::PageDown,
+            NamedKey::Insert,
+            NamedKey::Delete,
+            NamedKey::Super,
+        ];
+        let mut checked = 0;
+        for n in named {
+            let key = Key::Named(n);
+            let code = evdev_from_logical(&key)
+                .unwrap_or_else(|| panic!("{n:?} is in the forward keycode table"));
+            assert_eq!(
+                chord_key_for_evdev(code),
+                chord_key_for_logical(&key),
+                "{n:?} (evdev {code}) narrows differently from each side",
+            );
+            checked += 1;
+        }
+        for c in "abcdefghijklmnopqrstuvwxyz0123456789-=[];'`\\,./ ".chars() {
+            let key = Key::Character(SmolStr::new(c.to_string()));
+            let code = evdev_from_logical(&key)
+                .unwrap_or_else(|| panic!("{c:?} is in the forward keycode table"));
+            assert_eq!(
+                chord_key_for_evdev(code),
+                chord_key_for_logical(&key),
+                "{c:?} (evdev {code}) narrows differently from each side",
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked,
+            named.len() + 47,
+            "the round-trip sweep skipped keys",
+        );
+    }
+
+    /// Function keys carry no chord on their own — the compositor hands
+    /// `F2` to a focused client. It is the `Ctrl+Alt` combination that
+    /// the kernel takes, which is why the scrubber names that pair
+    /// itself rather than expecting the shell's table to cover it.
+    #[test]
+    fn function_keys_are_not_shell_chords_on_their_own() {
+        assert!(!shell_owns_chord(
+            ChordKey::Function(2),
+            ChordMods::default(),
+            false
+        ));
+        assert!(shell_owns_chord(
+            ChordKey::Function(2),
+            ChordMods {
+                logo: true,
+                ..Default::default()
+            },
+            false
+        ));
+    }
+
     #[test]
     fn client_input_registry_tracks_lifecycle_without_a_surface() {
         // The registry half that doesn't need a live `WlSurface`: pending
