@@ -383,6 +383,31 @@ FROM ${BASE_REF} AS rootfs
 # and builder stages are thrown away and nothing in them reads the rpmdb after
 # their one transaction, and touching their dnf layers would invalidate a
 # ~45-minute engine build for nothing.
+#
+# What is established, and what is not — because the next person will need to
+# know which half to trust:
+#
+#   Established. The damage is real and structural, not a stale cache: `rpm
+#   --verifydb` reports duplicate b-tree page references and wrong entry counts
+#   in Basenames_key_idx and Dirnames_key_idx. It appears only across a layer
+#   boundary — the same two dnf transactions run back to back inside ONE
+#   container leave the database clean, and a freshly pulled base is byte
+#   identical to the cached one (same digest), so neither a stale base nor a
+#   stale layer explains it. Removing the sidecars made it stop in every trial.
+#
+#   NOT established. Why carrying a zero-byte -wal and a 32 KiB -shm across a
+#   layer should damage the main database file. The -wal has no frames to
+#   replay, and the corruption is in rpmdb.sqlite itself, so "the next
+#   transaction replays a stale log" is the wrong shape for it — the bytes are
+#   already inconsistent when the layer is read back. The likelier story is that
+#   the capture of a large, just-checkpointed file mixes pages from before and
+#   after, which is a storage-stack behaviour: this host builds rootless through
+#   fuse-overlayfs ("Native Overlay Diff: false"), and CI, which builds the same
+#   Containerfile under buildkit, has never reproduced it.
+#
+# Treat the diagnosis as strong but open. The assertion below is what actually
+# closes the loop, because it fails the build the moment the indexes are damaged
+# again, whatever the mechanism turns out to be.
 ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
 
 # Graphics stack
@@ -440,12 +465,19 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # shipped system had none, so a developer on this machine could not clone the
 # repository the machine is built from. The Git client app does not need it —
 # it links a vendored libgit2 — so this is for the command line only.
+#
+# `cups` brings cups-client with it, which is what apps/settings' printers pane
+# actually calls: `lpstat -p -d` for the printer list, `lpstat -o` for the queue
+# and `cancel` per job. The pane already degrades honestly when lpstat is absent,
+# so the image shipped a printers pane that was permanently empty and correct
+# about it. The socket below is what makes those calls reach a daemon.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
     distrobox \
     git \
+    cups \
     podman \
     foot \
     wl-clipboard \
@@ -1091,6 +1123,11 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
+# Printing is socket-activated rather than always-on: cupsd starts when
+# something first talks to it (the settings pane's lpstat, or a print dialog)
+# and costs nothing on a machine that never prints.
+RUN systemctl enable cups.socket
+
 RUN systemctl enable chronyd.service && \
     systemctl enable firewalld.service && \
     systemctl enable bluetooth.service && \
