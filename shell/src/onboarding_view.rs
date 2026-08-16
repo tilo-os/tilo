@@ -117,7 +117,7 @@ impl OnboardingView {
         )
     }
 
-    fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn no_recovery(&self, _theme: &Theme) -> Box<dyn Widget> {
         let mut list = Column::new().with_no_padding().with_gap(14.0);
         for point in NO_RECOVERY_POINTS {
             list = list.push(bullet(point));
