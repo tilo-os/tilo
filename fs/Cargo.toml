@@ -17,6 +17,12 @@ iroh-gossip.workspace = true
 automerge.workspace = true
 qdoc = { path = "../crates/doc/qdoc" }
 collab-types = { path = "../crates/collab/collab-types" }
+# The shared thumbnail generator + content-addressed cache. Default features
+# only (raster images + EPUB covers — pure Rust, no native deps): the OS
+# filesystem daemon host-generates the light preview types and never pulls
+# pdfium or the gstreamer stack into the image. PDF/video previews are the
+# client's job (the file manager builds this crate with those features on).
+thumbnail = { path = "../crates/thumbnail" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
@@ -31,3 +37,8 @@ hex.workspace = true
 blake3.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 futures-lite.workspace = true
+
+[dev-dependencies]
+# Encode PNG fixtures for the thumbnail tests (the crate itself never decodes
+# images — that is the `thumbnail` crate's job).
+image = { workspace = true, features = ["png"] }

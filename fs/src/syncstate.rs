@@ -18,6 +18,16 @@
 /// state. Read it with `getxattr(path, "user.qos.sync")`.
 pub const SYNC_XATTR: &str = "user.qos.sync";
 
+/// The extended-attribute name the FUSE driver answers with a file's
+/// **thumbnail**: a small PNG preview the host generates as metadata, served
+/// (and cached) ahead of — and independent of — the file's content bytes. Read
+/// it with `getxattr(path, "user.qos.thumb")`; `ENODATA` when the file is not a
+/// previewable type, its content is not local to generate from, and no peer has
+/// gossiped one. Same rationale as [`SYNC_XATTR`]: it rides the existing mount,
+/// needs no bespoke client, and any process that can `stat` the file can read
+/// it. See [`crate::fs::QuickFS::getxattr`].
+pub const THUMB_XATTR: &str = "user.qos.thumb";
+
 /// The hydration state of one filesystem entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncState {

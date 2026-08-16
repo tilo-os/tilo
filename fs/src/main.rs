@@ -265,6 +265,7 @@ async fn serve(
     acl_args: AclArgs,
 ) -> Result<()> {
     let np = namespace_path(&cache_dir);
+    let thumb_dir = thumb_path(&cache_dir);
     let device = load_mount_identity(&identity_paths())?;
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     // This device's own key is the mount's identity unless one is named.
@@ -312,6 +313,7 @@ async fn serve(
         hydrator,
         workspace.sync.clone(),
         acl,
+        thumb_dir,
     )
     .await?;
     if let Some(p) = &np {
@@ -333,6 +335,7 @@ async fn mount(
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
     let np = namespace_path(&cache_dir);
+    let thumb_dir = thumb_path(&cache_dir);
     let device = load_mount_identity(&identity_paths())?;
     let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
     let caps = resolve_acl(&acl_args, device.public)?;
@@ -367,6 +370,7 @@ async fn mount(
         hydrator,
         workspace.sync.clone(),
         acl,
+        thumb_dir,
     )
     .await?;
     if let Some(p) = &np {
@@ -381,6 +385,14 @@ async fn mount(
 
 fn namespace_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
     cache_dir.as_ref().map(|d| d.join("namespace.bin"))
+}
+
+/// Where host-generated thumbnails are cached — a `thumbs/` subdir of the
+/// content cache, so previews survive a remount and the read-only root stays
+/// read-only. `None` for an in-memory mount (no persistent cache), which then
+/// serves no thumbnails.
+fn thumb_path(cache_dir: &Option<PathBuf>) -> Option<PathBuf> {
+    cache_dir.as_ref().map(|d| d.join("thumbs"))
 }
 
 /// Atomically persist the namespace document to `path` (write-temp + rename).
@@ -443,6 +455,7 @@ async fn run_mount(
     hydrator: Arc<Hydrator>,
     sync: Arc<SyncHandle>,
     acl: Option<(AclHandle, IdentityKey)>,
+    thumb_dir: Option<PathBuf>,
 ) -> Result<()> {
     if !mount_point.exists() {
         std::fs::create_dir_all(&mount_point)?;
@@ -455,6 +468,18 @@ async fn run_mount(
     // bound identity.
     let fs = match acl {
         Some((acl, identity)) => fs.with_acl(acl, identity),
+        None => fs,
+    };
+    // Host-side thumbnails: when the mount has a persistent cache dir, generate
+    // previews as metadata and serve them through the `user.qos.thumb` xattr.
+    let fs = match thumb_dir {
+        Some(dir) => match fs::ThumbProvider::open(&dir) {
+            Ok(provider) => fs.with_thumbs(provider),
+            Err(e) => {
+                eprintln!("thumbnail cache unavailable at {dir:?} ({e}); previews disabled");
+                fs
+            }
+        },
         None => fs,
     };
 
