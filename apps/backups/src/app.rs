@@ -42,8 +42,7 @@ use crate::model::{
 };
 use crate::paint;
 
-const BAR_H: f64 = 60.0;
-const STATUS_H: f64 = 28.0;
+const BAR_H: f64 = 52.0;
 const PAD: f64 = 20.0;
 const RAIL_W: f64 = 256.0;
 const TAB_W: f64 = 132.0;
@@ -140,6 +139,17 @@ pub struct BackupsApp {
     /// here so it brackets one undo boundary, encodes under [`BACKUPS_ACTION_TYPE`],
     /// and replays byte-identically on peers — the same path Ctrl+K takes.
     actions: ui::ActionHost,
+    /// Transient floating status bubble: the health + snapshot tally surfaced as
+    /// a bottom-right pill instead of a permanent bottom strip, so the dashboard
+    /// spans to the window bottom. Poked when the tally/health changes and shown
+    /// while the pointer hovers the bottom-right corner, then fades.
+    status_bubble: ui::StatusBubble,
+    /// The label last shown in the bubble, so a poke fires only on a real change
+    /// (`draw` runs every frame; poking unconditionally would pin it open).
+    status_shown: String,
+    /// `--shots` / `--scenario status` forces the bubble fully visible so a still
+    /// frame captures the floating pill.
+    shots_status: bool,
 }
 
 impl Default for BackupsApp {
@@ -186,6 +196,9 @@ impl BackupsApp {
                 .breakpoint(RAIL_BREAKPOINT),
             force_rail_open: std::env::var("QOS_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
             actions: ui::ActionHost::new(),
+            status_bubble: ui::StatusBubble::new(),
+            status_shown: String::new(),
+            shots_status: false,
         }
     }
 
@@ -279,11 +292,13 @@ impl BackupsApp {
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
+        // The content spans to the window bottom now that the permanent status
+        // strip is gone (its tally lives in the floating bubble instead).
         let content = Rect::new(
             self.rect.x0 + PAD,
             self.rect.y0 + BAR_H + 14.0,
             self.rect.x1 - PAD,
-            self.rect.y1 - STATUS_H - 12.0,
+            self.rect.y1 - 12.0,
         );
 
         // Advance + resolve the Timeline source rail. Ticking eases the reveal
@@ -314,8 +329,6 @@ impl BackupsApp {
             }
         }
 
-        self.draw_status_bar(scene, t, tr, theme);
-
         // The Timeline source rail draws last so an overlay drawer floats over
         // the snapshot list (with a dismiss scrim); docked, it simply sits beside.
         if !self.is_empty() && self.ui.view == View::Timeline {
@@ -329,6 +342,10 @@ impl BackupsApp {
                 self.draw_rail(scene, t, tr, theme, side);
             }
         }
+
+        // The transient status pill floats over the bottom-right, beneath the
+        // restore modal + toast so those still overlay it.
+        self.draw_status_bubble(scene, t, tr, theme);
 
         if self.ui.restore_open {
             self.draw_restore_modal(scene, t, tr, theme);
@@ -344,7 +361,6 @@ impl BackupsApp {
 
         let cy = bar.y0 + BAR_H / 2.0;
         let narrow = self.rect.width() < NARROW_BREAKPOINT;
-        let compact = self.rect.width() < 1000.0;
 
         // Left cluster. A hamburger leads it whenever the Timeline rail isn't
         // fully docked-open (overlay, or a collapsed dock), so the source rail
@@ -360,22 +376,19 @@ impl BackupsApp {
             self.hits.push((hb, Hit::ToggleRail));
             lx = hb.x1 + 12.0;
         }
-        // Brand: shield + title (+ subtitle when there's room). The wordmark is
-        // dropped entirely at narrow so the tabs + primary action fit.
-        self.draw_shield(scene, t, Point::new(lx + 9.0, cy), 11.0, theme.accent_primary);
-        lx += 20.0;
+        // Left label: the contextual source/destination tally. The compositor
+        // owns window chrome, so the app draws no wordmark or logo here (per the
+        // HIG) — this reads as the dashboard's scope, not a brand. Dropped at
+        // narrow so the tabs + primary action fit.
         if !narrow {
-            paint::text_bold(scene, tr, t, "Backups", 18.0, c.text_primary, lx + 8.0, cy - 9.0);
-            if !compact {
-                let sub = format!(
-                    "{} sources · {} destinations",
-                    self.catalog.sources.len(),
-                    self.catalog.destinations.len()
-                );
-                paint::text(scene, tr, t, &sub, 11.5, c.text_dim, lx + 8.0, cy + 9.0);
-            }
-            let (tw, _) = tr.measure("Backups", 18.0, None);
-            lx += 8.0 + tw as f64;
+            let sub = format!(
+                "{} sources · {} destinations",
+                self.catalog.sources.len(),
+                self.catalog.destinations.len()
+            );
+            paint::text(scene, tr, t, &sub, 13.0, c.text_dim, lx, cy - 7.0);
+            let (tw, _) = tr.measure(&sub, 13.0, None);
+            lx += tw as f64;
         }
         let brand_right = lx;
 
@@ -470,33 +483,70 @@ impl BackupsApp {
         );
     }
 
-    fn draw_status_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let bar = Rect::new(self.rect.x0, self.rect.y1 - STATUS_H, self.rect.x1, self.rect.y1);
-        paint::fill_rect(scene, t, bar, c.neutral[0]);
-        paint::hline(scene, t, bar.x0, bar.x1, bar.y0, c.border_white_10, 1.0);
-        let cy = bar.y0 + STATUS_H / 2.0;
-
-        let failed = self.catalog.snapshots.iter().filter(|s| s.status == SnapStatus::Failed).count();
-        let (dotc, msg) = if failed > 0 {
-            (c.semantic.warning, format!("{failed} backup needs attention"))
+    /// Compose the bubble's label from the live catalog: the health signal
+    /// (kept as text so the pill needs no bespoke tint) followed by the snapshot
+    /// tally and protected size — the two contextual pieces the old strip showed.
+    fn status_label(&self) -> String {
+        let failed = self
+            .catalog
+            .snapshots
+            .iter()
+            .filter(|s| s.status == SnapStatus::Failed)
+            .count();
+        let health = if failed > 0 {
+            format!("{failed} backup needs attention")
         } else {
-            (c.semantic.success, "All backups healthy".to_string())
+            "All backups healthy".to_string()
         };
-        paint::dot(scene, t, Point::new(bar.x0 + PAD + 4.0, cy), 4.0, dotc);
-        paint::text(scene, tr, t, &msg, 12.0, c.text_dim, bar.x0 + PAD + 16.0, cy - 6.0);
-
-        // The snapshot/size tally on the right; the centred wordmark is dropped
-        // on tight windows so the three status texts never overlap.
-        let right = format!(
-            "{} snapshots · {} protected",
+        format!(
+            "{health}  ·  {} snapshots · {} protected",
             self.catalog.total_snapshots(),
-            ui::format::bytes(self.catalog.total_protected())
-        );
-        paint::text_right(scene, tr, t, &right, 12.0, c.text_dim, bar.x1 - PAD, cy - 6.0);
-        if self.rect.width() >= 900.0 {
-            paint::text_center(scene, tr, t, "qOS Backups 1.0", 11.0, c.text_dim.with_alpha_factor(0.7), bar.x0, bar.x1, cy - 5.5);
+            ui::format::bytes(self.catalog.total_protected()),
+        )
+    }
+
+    /// Draw the transient floating status bubble at the window's bottom-right —
+    /// the reclaimed home of the old bottom status strip. It surfaces on a status
+    /// change (a completed job shifts the tally/health) or while the pointer
+    /// hovers the bottom-right corner, then fades. All colours come from the
+    /// theme (via `draw_pill`).
+    fn draw_status_bubble(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let now = Instant::now();
+        let label = self.status_label();
+        // Poke only on a genuine change — draw runs every frame, so an
+        // unconditional poke would pin the bubble open forever.
+        if label != self.status_shown {
+            self.status_bubble.poke(now);
+            self.status_shown = label.clone();
         }
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_mouse);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, t, &rect.inflate(12.0, 14.0));
+        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
+    }
+
+    /// `--shots`: force the status bubble fully visible so a single headless
+    /// frame captures the floating pill.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(Instant::now());
     }
 
     // ---- EMPTY onboarding -----------------------------------------------
@@ -1422,9 +1472,9 @@ impl BackupsApp {
         let w = tw as f64 + 56.0;
         let toast = Rect::new(
             self.rect.center().x - w / 2.0,
-            self.rect.y1 - STATUS_H - 56.0,
+            self.rect.y1 - 56.0,
             self.rect.center().x + w / 2.0,
-            self.rect.y1 - STATUS_H - 20.0,
+            self.rect.y1 - 20.0,
         );
         paint::fill_rrect(scene, t, toast, 10.0, c.neutral[0].with_alpha_factor(0.92 * alpha));
         paint::stroke_rrect(scene, t, toast, 10.0, theme.accent_primary.with_alpha_factor(0.6 * alpha), 1.0);
@@ -1434,19 +1484,6 @@ impl BackupsApp {
 
     // ---- little vector icons -------------------------------------------
 
-    fn draw_shield(&self, scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color) {
-        let (x, y) = (center.x, center.y);
-        let pts = [
-            (x, y - r),
-            (x + r * 0.85, y - r * 0.55),
-            (x + r * 0.85, y + r * 0.25),
-            (x, y + r),
-            (x - r * 0.85, y + r * 0.25),
-            (x - r * 0.85, y - r * 0.55),
-        ];
-        paint::poly(scene, t, &pts, color, 2.0, true);
-        paint::poly(scene, t, &[(x - r * 0.4, y), (x - r * 0.05, y + r * 0.4), (x + r * 0.45, y - r * 0.35)], color, 2.0, false);
-    }
 
     fn draw_source_icon(&self, scene: &mut Scene, t: Affine, kind: SourceKind, center: Point, r: f64, color: Color) {
         let (x, y) = (center.x, center.y);
@@ -1790,7 +1827,10 @@ impl Widget for BackupsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.job.is_some() || self.toast.is_some() || self.drawer.is_animating()
+        self.job.is_some()
+            || self.toast.is_some()
+            || self.drawer.is_animating()
+            || self.status_bubble.needs_frame(Instant::now())
     }
 }
 
