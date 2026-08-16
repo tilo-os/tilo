@@ -373,6 +373,7 @@ fn list_build_yields_a_file_view() {
         sync_state: None,
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
+    let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let w = build_list(
         &entries,
         &SelectionModel::new(),
@@ -382,6 +383,8 @@ fn list_build_yields_a_file_view() {
         SortOrder::Ascending,
         None,
         rename_rect,
+        vello::kurbo::Point::ZERO,
+        drop_targets,
     );
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
@@ -409,7 +412,8 @@ fn grid_mode_uses_responsive_file_view() {
     let sel = SelectionModel::new();
     let sink = new_sink();
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
-    let w = build_grid(&entries, &sel, &sink, 1.0, None, rename_rect);
+    let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let w = build_grid(&entries, &sel, &sink, 1.0, None, rename_rect, vello::kurbo::Point::ZERO, drop_targets);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
