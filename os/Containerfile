@@ -415,6 +415,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     power-profiles-daemon \
     && dnf clean all
 
+# C9 printing (cups). `cups` only — deliberately NOT `cups-browsed`, which is
+# the daemon that turns *remote* DNS-SD advertisements into local print
+# queues and was the 2024 RCE chain (CVE-2024-47076/47175/47176/47177). Its
+# absence is why nothing on the network can make a print queue appear here.
+# Confinement lives in os/usr/lib/systemd/system/cups.service.d/ and
+# os/etc/cups/cupsd.conf; see docs/printing-threat-model.md.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    cups \
+    && dnf clean all
+
 # Ensure system groups exist in /etc/group and add greetd to them
 RUN (getent group video || echo "video:x:39:greetd" >> /etc/group) && \
     (getent group input || echo "input:x:104:greetd" >> /etc/group) && \
@@ -1017,6 +1027,7 @@ RUN systemctl enable greetd.service && \
     systemctl set-default graphical.target && \
     systemctl enable shell-firstboot.service && \
     systemctl enable fs.service && \
+    systemctl --global enable qos-identity.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 
 # C2 time sync, C5 firewall, C7 bluetooth, C8 power — system services.
@@ -1026,6 +1037,12 @@ RUN systemctl enable chronyd.service && \
     systemctl enable power-profiles-daemon.service && \
     systemctl enable systemd-homed.service && \
     systemctl enable qos-power.service
+
+# C9 printing. The *socket*, not the service: cupsd starts on first use and
+# stays stopped on a machine that never prints, so the IPP parser is not
+# running for most of the fleet's uptime. cups-browsed is not installed, so
+# there is nothing to disable.
+RUN systemctl enable cups.socket
 
 # §11 hardening services: hidepid remount + the boot security self-check.
 RUN systemctl enable qos-hidepid.service && \
@@ -1070,6 +1087,13 @@ RUN for u in \
 #   * The libp2p/gossipsub TCP listener, which binds an EPHEMERAL port
 #     (`/ip4/0.0.0.0/tcp/0` in shell/src/network/p2p.rs) inside that range.
 # firewalld isn't running at build time, so edit the permanent config offline.
+#
+# Printing adds NO service here, deliberately. `ipp` (631/tcp) would expose
+# the scheduler, and `ipp-client` would open the door for the DNS-SD printer
+# announcements qOS does not listen for. Printing on this image is outbound
+# only — the desktop talks to a printer, nothing talks to the desktop — and
+# the FedoraWorkstation zone already permits the outbound side. Adding either
+# service is a decision to be argued for, not a default.
 RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
     firewall-offline-cmd --zone=FedoraWorkstation --add-service=mdns
 

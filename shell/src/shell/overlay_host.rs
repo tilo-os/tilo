@@ -7106,6 +7106,7 @@ fn capability_label(cap: &Capability) -> String {
         Capability::Microphone { .. } => "Microphone access".to_string(),
         Capability::Screencast { .. } => "Screen capture".to_string(),
         Capability::RemoteDesktop { .. } => "Remote control (pointer + keyboard)".to_string(),
+        Capability::Print { .. } => "Send documents to a printer".to_string(),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
             _ => "Network access".to_string(),
@@ -7124,6 +7125,7 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::Microphone { .. } => Capability::Microphone { scope },
         Capability::Screencast { .. } => Capability::Screencast { scope },
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
+        Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
     }
 }

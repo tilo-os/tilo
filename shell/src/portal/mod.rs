@@ -51,6 +51,7 @@ pub mod doc_store;
 pub mod file_chooser;
 pub mod file_picker_spawner;
 pub mod picker_queue;
+pub mod print;
 pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
@@ -68,6 +69,10 @@ pub use file_picker_spawner::{
     MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
 pub use picker_queue::{FilePickerQueue, PickerScope};
+pub use print::{
+    LpSpooler, NullPrintSpooler, PrintBackend, PrintJobRequest, PrintSpooler, PrintSpoolerHandle,
+    RecordingSpooler,
+};
 pub use remote_desktop::{
     ChannelInjector, RecordingInjector, RemoteDesktopBackend, RemoteInputInjector,
     RemoteInputInjectorHandle,
@@ -124,6 +129,7 @@ pub enum CapabilityKind {
     Microphone,
     Screencast,
     RemoteDesktop,
+    Print,
     Network,
 }
 
@@ -141,6 +147,7 @@ impl CapabilityKind {
             (CapabilityKind::Microphone, Capability::Microphone { .. }) => true,
             (CapabilityKind::Screencast, Capability::Screencast { .. }) => true,
             (CapabilityKind::RemoteDesktop, Capability::RemoteDesktop { .. }) => true,
+            (CapabilityKind::Print, Capability::Print { .. }) => true,
             (CapabilityKind::Network, Capability::Network { .. }) => true,
             _ => false,
         }
@@ -476,6 +483,14 @@ pub struct PortalContext {
     /// it. See [`doc_store`] for why recording the grant is not enough
     /// on its own for an app that is already running.
     pub documents: DocumentStoreHandle,
+    /// Print submission sink. The Print backend hands each consented
+    /// job here; production runs `lp`, tests inject a
+    /// [`RecordingSpooler`] and assert on what actually arrived.
+    ///
+    /// This is the only component in the print path that touches CUPS,
+    /// and it lives on *this* side of the sandbox — which is the whole
+    /// point of the interface.
+    pub print_spooler: PrintSpoolerHandle,
 }
 
 impl PortalContext {
@@ -500,6 +515,14 @@ impl PortalContext {
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
             documents: DocumentStoreHandle::host_paths(),
+            // The real spooler, not a null one. Unlike the picker and
+            // the provisioner it needs no chrome, no GPU and no live
+            // seat — it is a process invocation — so there is nothing
+            // for a headless context to be missing. On a machine with
+            // no CUPS it reports no destinations and refuses
+            // submissions, which is the honest answer rather than a
+            // fabricated printer.
+            print_spooler: PrintSpoolerHandle::cups(),
         }
     }
 }
@@ -604,6 +627,7 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::Microphone { .. } => Capability::Microphone { scope },
         Capability::Screencast { .. } => Capability::Screencast { scope },
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
+        Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
     }
 }
@@ -648,6 +672,7 @@ pub async fn serve(
 ) -> Result<ServerHandle, zbus::Error> {
     use camera::AccessBackend;
     use file_chooser::FileChooserBackend;
+    use print::PrintBackend;
     use remote_desktop::RemoteDesktopBackend;
     use screencast::ScreenCastBackend;
 
@@ -655,6 +680,7 @@ pub async fn serve(
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
     let rd = RemoteDesktopBackend::new(ctx.clone());
+    let pr = PrintBackend::new(ctx.clone());
 
     connection
         .object_server()
@@ -671,6 +697,10 @@ pub async fn serve(
     connection
         .object_server()
         .at(OBJECT_PATH, rd)
+        .await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, pr)
         .await?;
 
     // `request_name` only makes sense on a real bus — p2p test
