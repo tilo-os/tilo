@@ -29,9 +29,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         // Screenshots render the sample catalog; `--empty` renders the real
-        // live first-run (empty → onboarding) for verification.
-        let root = if args.iter().any(|a| a == "--empty") {
+        // live first-run (empty → onboarding) for verification. `--scenario
+        // status` arms the floating status bubble so a still frame captures it.
+        let scenario = parse_value_arg(&args, "--scenario");
+        let root: Box<dyn Widget> = if args.iter().any(|a| a == "--empty") {
             backups::app_root()
+        } else if scenario.as_deref() == Some("status") {
+            let mut app = backups::BackupsApp::new_demo();
+            app.arm_status_bubble_for_shots();
+            Box::new(app)
         } else {
             backups::app_root_demo()
         };
