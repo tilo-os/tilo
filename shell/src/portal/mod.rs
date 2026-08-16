@@ -47,8 +47,10 @@
 //! bus the upstream `xdg-desktop-portal` test fixtures use.
 
 pub mod camera;
+pub mod doc_store;
 pub mod file_chooser;
 pub mod file_picker_spawner;
+pub mod picker_queue;
 pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
@@ -59,11 +61,13 @@ pub mod screencast_pipewire;
 // hood; tests need it inline so the server- and client-side
 // handshake can join concurrently (see `tests/portal_test.rs`).
 pub use camera::AccessBackend;
+pub use doc_store::{DocumentStore, DocumentStoreHandle, HostPathStore, PublishedDoc};
 pub use file_chooser::FileChooserBackend;
 pub use file_picker_spawner::{
-    FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle, MockFilePickerSpawner,
-    NullFilePickerSpawner,
+    FilePickerOptions, FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle,
+    MockFilePickerSpawner, NullFilePickerSpawner, PickerFilter,
 };
+pub use picker_queue::{FilePickerQueue, PickerScope};
 pub use remote_desktop::{
     ChannelInjector, RecordingInjector, RemoteDesktopBackend, RemoteInputInjector,
     RemoteInputInjectorHandle,
@@ -468,6 +472,10 @@ pub struct PortalContext {
     /// [`ChannelInjector`] the compositor loop drains into the seat, and
     /// `--portal-server-only` mode (no live seat) uses the null handle.
     pub remote_input_injector: RemoteInputInjectorHandle,
+    /// How a picked path is made reachable by the app that asked for
+    /// it. See [`doc_store`] for why recording the grant is not enough
+    /// on its own for an app that is already running.
+    pub documents: DocumentStoreHandle,
 }
 
 impl PortalContext {
@@ -491,6 +499,7 @@ impl PortalContext {
                 MockScreenCastProvisioner::new_with_node(1, "default"),
             )),
             remote_input_injector: RemoteInputInjectorHandle::null(),
+            documents: DocumentStoreHandle::host_paths(),
         }
     }
 }
@@ -599,6 +608,17 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
+/// The document store this session should use.
+///
+/// One place to make the choice, so the compositor and any future
+/// caller cannot disagree about which mechanism is live. Today that is
+/// the host-path store; see [`doc_store`] for what it does and does not
+/// reach, and for the design of the FUSE-backed store that replaces it
+/// for confined callers.
+pub fn documents_for_session() -> DocumentStoreHandle {
+    DocumentStoreHandle::host_paths()
+}
+
 /// Bus name we register under. xdg-desktop-portal expects backends to
 /// own `org.freedesktop.impl.portal.desktop.<vendor>`; the vendor suffix
 /// is matched against the `portals/<vendor>.portal` config file (see
@@ -654,13 +674,26 @@ pub async fn serve(
         .await?;
 
     // `request_name` only makes sense on a real bus — p2p test
-    // connections have no broker. Try it but downgrade name-acquisition
-    // errors to a warning so the tests don't need to spin a broker.
-    if let Err(e) = connection.request_name(BUS_NAME).await {
-        tracing::debug!("portal: request_name skipped/failed: {e}");
-    }
+    // connections have no broker, and failing there would mean every
+    // hermetic test needed one. So the result is *recorded* rather than
+    // swallowed: `ServerHandle::owns_name` is what the caller checks.
+    //
+    // This used to be a `tracing::debug!` and nothing else, which is the
+    // worst shape available: on a real bus, losing the name to another
+    // claimant left a portal that answered nothing, logged at a level
+    // nobody runs, and looked exactly like a portal that was working.
+    let owns_name = match connection.request_name(BUS_NAME).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::debug!("portal: request_name did not succeed: {e}");
+            false
+        }
+    };
 
-    Ok(ServerHandle { connection })
+    Ok(ServerHandle {
+        connection,
+        owns_name,
+    })
 }
 
 /// RAII handle keeping the portal D-Bus connection alive. Drop releases
@@ -671,6 +704,20 @@ pub struct ServerHandle {
     // tears the object server down, so the portal stops answering.
     #[allow(dead_code)]
     connection: zbus::Connection,
+    owns_name: bool,
+}
+
+impl ServerHandle {
+    /// Did this connection actually acquire [`BUS_NAME`]?
+    ///
+    /// `false` means the object server is up but nothing on the session
+    /// bus can route to it — either there is no broker (a p2p test
+    /// connection) or another process already holds the name. On a real
+    /// session the second case is the one that matters: the portal is
+    /// running and answering nobody.
+    pub fn owns_name(&self) -> bool {
+        self.owns_name
+    }
 }
 
 #[cfg(test)]
