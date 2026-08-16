@@ -301,7 +301,7 @@ impl Widget for BreadcrumbBar {
             if ls.chevron_before {
                 let (cw, _) = text_renderer.measure(CHEVRON, TEXT_SIZE, None);
                 let sep_x = ls.rect.x0 - SEP_PAD - cw as f64;
-                let sep_y = ls.rect.center().y - TEXT_SIZE as f64 / 2.0;
+                let sep_y = crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
                 text_renderer.draw_text(
                     scene,
                     CHEVRON,
@@ -324,7 +324,7 @@ impl Widget for BreadcrumbBar {
                     );
                 }
                 Slot::Text(label) => {
-                    let ty = ls.rect.center().y - TEXT_SIZE as f64 / 2.0;
+                    let ty = crate::text_layout::centered_text_y(ls.rect.y0, ls.rect.height(), TEXT_SIZE);
                     text_renderer.draw_text(
                         scene,
                         label,

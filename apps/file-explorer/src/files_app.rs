@@ -1207,7 +1207,7 @@ impl FileExplorerWidget {
             accent,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let ty = y0 + (h - size as f64) / 2.0;
+        let ty = crate::text_layout::centered_text_y(y0, h, size);
         text_renderer.draw_text(
             scene,
             &name,
