@@ -628,11 +628,21 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[serial_test::serial]
-    fn ctrl_shift_c_copies_selected_text_to_arboard() {
-        // Linux CI typically has no display server, so arboard returns
-        // an error during `Clipboard::new()`. In that case the test
-        // skips with a warning rather than failing — the clipboard
-        // helper is silent on absence by design.
+    fn ctrl_shift_c_copies_the_selection_to_the_clipboard() {
+        // Read back through `clipboard_paste`, the same entry point the
+        // production paste path uses, rather than reaching past it to a
+        // concrete backend. `clipboard_copy` resolves to one of three
+        // backends — the compositor's mirror, the Wayland selection, or
+        // arboard on X11 — and falls back to an in-process buffer when a
+        // process has none, which is exactly the case in a unit test with
+        // no window. Asserting through arboard therefore read the *host's*
+        // real clipboard while the copy went to the fallback, so the
+        // assertion compared against whatever another crate's tests had
+        // last put on the machine's clipboard.
+        //
+        // There is no skip: the fallback always resolves, so the round
+        // trip is always observable, and a clipboard that silently did
+        // nothing would now fail here rather than pass quietly.
         use winit::keyboard::{Key, SmolStr};
         let (mut widget, _write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
@@ -644,18 +654,12 @@ mod tests {
             cursor: GridPos { row: 1, col: 12 },
         }));
 
-        // If no display is available, arboard fails to initialise and
-        // the copy is silently skipped. Skip the round-trip in that case.
-        if arboard::Clipboard::new().is_err() {
-            eprintln!("ctrl_shift_c_copies_selected_text_to_arboard: no clipboard backend, skipping round-trip");
-            return;
-        }
-
         send_key(&mut widget, &mut doc, Key::Character(SmolStr::new_static("C")), /*ctrl=*/ true, /*shift=*/ true);
 
-        let mut cb = arboard::Clipboard::new().expect("clipboard backend");
-        let got = cb.get_text().expect("clipboard contents readable");
-        assert_eq!(got, "coverage one\ncoverage two");
+        assert_eq!(
+            ui::text_selection::clipboard_paste().as_deref(),
+            Some("coverage one\ncoverage two"),
+        );
     }
 
     // ---------------------------------------------------------------
@@ -1342,13 +1346,24 @@ mod tests {
         w.force_viewport_start(8);
         assert_eq!(w.test_selected_text().as_deref(), Some("bravo"));
 
-        // Clipboard round-trip (skipped when no backend is available).
-        if arboard::Clipboard::new().is_ok() {
-            let mut cb = arboard::Clipboard::new().unwrap();
-            if let Ok(text) = cb.get_text() {
-                assert_eq!(text, "bravo", "select-to-copy put exactly the selection on the clipboard");
-            }
-        }
+        // Round-trip through the same entry points production reads from,
+        // not past them to a concrete backend: the copy resolves to one of
+        // several backends and to an in-process buffer when a process has
+        // no window, so reading arboard directly asked the host's clipboard
+        // about a write that never went there. Releasing the drag always
+        // sets the primary selection, and sets the clipboard too because
+        // `select_to_copy` is on above — both are asserted, unconditionally,
+        // so a copy that silently did nothing fails here.
+        assert_eq!(
+            ui::text_selection::clipboard_paste_primary().as_deref(),
+            Some("bravo"),
+            "finishing a drag puts exactly the selection on the primary selection"
+        );
+        assert_eq!(
+            ui::text_selection::clipboard_paste().as_deref(),
+            Some("bravo"),
+            "select-to-copy put exactly the selection on the clipboard"
+        );
     }
 
     #[test]
@@ -1512,19 +1527,21 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[serial_test::serial]
     fn osc_52_writes_clipboard_from_base64() {
-        // OSC 52 ; c ; <base64> sets the clipboard. Skipped without a backend.
-        if arboard::Clipboard::new().is_err() {
-            eprintln!("osc_52_writes_clipboard_from_base64: no clipboard backend, skipping");
-            return;
-        }
+        // OSC 52 ; c ; <base64> sets the clipboard. Read back through the
+        // production paste entry point rather than a concrete backend — the
+        // copy resolves to an in-process buffer in a windowless test, so
+        // asking arboard reported the host's real clipboard instead. No
+        // skip: the round trip is always observable, so an OSC 52 that
+        // decoded nothing fails here rather than passing quietly.
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         // base64("qos-osc52") = cW9zLW9zYzUy
         w.feed(&mut doc, &automerge::ROOT, b"\x1b]52;c;cW9zLW9zYzUy\x07");
-        let mut cb = arboard::Clipboard::new().unwrap();
-        if let Ok(text) = cb.get_text() {
-            assert_eq!(text, "qos-osc52", "OSC 52 decodes base64 into the clipboard");
-        }
+        assert_eq!(
+            ui::text_selection::clipboard_paste().as_deref(),
+            Some("qos-osc52"),
+            "OSC 52 decodes base64 into the clipboard"
+        );
     }
 
     #[test]
