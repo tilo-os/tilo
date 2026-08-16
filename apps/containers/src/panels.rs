@@ -59,26 +59,10 @@ impl ContainersApp {
         let border = Rect::new(rail.x1 - 1.0, rail.y0, rail.x1, rail.y1);
         scene.fill(Fill::NonZero, Affine::IDENTITY, c.border_standard, None, &border);
 
-        // App wordmark + collapse toggle.
+        // No app-name wordmark or brand mark — the OS owns window chrome and
+        // shows "Containers" in the titlebar. The rail leads with its collapse
+        // affordance and flows the section list up into the reclaimed space.
         let title_y = rail.y0 + PAD + 8.0;
-        draw::icon(
-            scene,
-            Icon::Box,
-            Rect::new(rail.x0 + PAD, title_y, rail.x0 + PAD + 20.0, title_y + 20.0),
-            c.accent[5],
-            1.8,
-        );
-        if expanded {
-            draw::text(
-                scene,
-                tr,
-                "Containers",
-                theme.tokens.typography.scale.lg,
-                c.text_primary,
-                Point::new(rail.x0 + PAD + 28.0, title_y),
-                TextWeight::Bold,
-            );
-        }
         // Collapse / expand toggle — a chevron at the top-right of the rail.
         let tgl = Rect::new(rail.x1 - 30.0, title_y - 4.0, rail.x1 - 6.0, title_y + 20.0);
         if expanded {
@@ -89,8 +73,8 @@ impl ContainersApp {
             draw::text(scene, tr, "«", theme.tokens.typography.scale.base, c.text_dim, Point::new(tgl.center().x - 5.0, tgl.center().y - 9.0), TextWeight::Bold);
             self.push_hit(tgl, Hit::ToggleSidebar);
         } else {
-            // Collapsed: the toggle is a wide hit over the header icon area.
-            let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 44.0, rail.x1 - 4.0, rail.y0 + 62.0);
+            // Collapsed: the toggle is a wide hit over the header area.
+            let ctgl = Rect::new(rail.x0 + 4.0, rail.y0 + 28.0, rail.x1 - 4.0, rail.y0 + 46.0);
             if self.hovered(ctgl) {
                 draw::fill_round(scene, ctgl, theme.tokens.radii.sm as f64, c.surface_white_10);
             }
@@ -105,7 +89,7 @@ impl ContainersApp {
             (Section::Volumes, Icon::Box, self.engine.volumes.len()),
             (Section::Distrobox, Icon::Terminal, self.engine.distroboxes.len()),
         ];
-        let mut y = rail.y0 + 72.0;
+        let mut y = rail.y0 + 56.0;
         for (section, icon, count) in items {
             let item = Rect::new(rail.x0 + 8.0, y, rail.x1 - 8.0, y + 40.0);
             let active = view.section == section;
