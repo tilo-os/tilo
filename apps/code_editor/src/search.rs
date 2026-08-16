@@ -419,8 +419,10 @@ mod tests {
 
     #[test]
     fn whole_word_rejects_substrings() {
+        // Plain: `fs`, the `fs` inside `offset`, the one in `refs`, the one
+        // starting `fs_read`, and the standalone one at the end.
         let line = "fs offset refs fs_read fs";
-        assert_eq!(line_matches(line, &q("fs")).len(), 4);
+        assert_eq!(line_matches(line, &q("fs")).len(), 5);
         let whole = line_matches(line, &q("fs").whole_word(true));
         assert_eq!(whole.len(), 2, "only the standalone `fs` occurrences");
         assert_eq!(whole[0].0, 0);
