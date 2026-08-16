@@ -2882,7 +2882,7 @@ mod tests {
             connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", room_before, "alice");
 
         // --- The process dies; a new one loads the same state file. --
-        let mut second_run = crate::shell::persist::load_or_default(&state_path);
+        let (mut second_run, _) = crate::shell::persist::load_or_default(&state_path);
         second_run.persist_path = Some(state_path.clone());
         // The boot-time migration must find nothing to do: these
         // workspaces already have identities, and re-minting them is
