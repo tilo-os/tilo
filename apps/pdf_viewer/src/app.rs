@@ -36,7 +36,7 @@ use ui::Widget;
 use crate::doc::PdfDoc;
 use crate::model::{
     self, AnnoKind, Annotation, Comment, Document, Match, PtRect, Reply, SearchOptions, Signature,
-    Swatch, Tool, MARGIN, PAGE_H, PAGE_W,
+    SignatureInk, Swatch, Tool, MARGIN, PAGE_H, PAGE_W,
 };
 use crate::render;
 use crate::text_layer::{PageText, TextMatch};
@@ -122,23 +122,23 @@ fn ymd_from_unix_secs(secs: i64) -> String {
     format!("{:04}-{:02}-{:02}", year, m, d)
 }
 
-/// Deterministically pick one of the four bundled handwriting styles for a
-/// signer by hashing their name, so each distinct signer gets a stable,
-/// distinct stroke and the signer-card preview matches the signature that
-/// will actually be placed. An empty name falls back to style 0.
-fn signature_style_for(name: &str) -> u8 {
-    let name = name.trim();
-    if name.is_empty() {
-        return 0;
-    }
-    // FNV-1a over the name bytes — stable across runs and across peers, so a
-    // collaborator sees the same style for the same signer.
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    (h % 4) as u8
+/// A plausible hand-drawn signature as normalised `[0,1]²` strokes, used to seed
+/// the demonstration document (shots/tests) so a still frame shows a *real*
+/// drawn signature rather than a canned style. Never used for a live document.
+fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
+    use std::f64::consts::PI;
+    let n = 64;
+    let flourish: Vec<(f64, f64)> = (0..=n)
+        .map(|i| {
+            let t = i as f64 / n as f64;
+            let x = 0.06 + 0.86 * t;
+            let y = 0.55 - 0.34 * (t * PI * 2.6).sin() * (1.0 - 0.35 * t);
+            (x, y)
+        })
+        .collect();
+    // A short underline flick beneath the flourish.
+    let underline = vec![(0.14, 0.86), (0.5, 0.9), (0.82, 0.8)];
+    vec![flourish, underline]
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -247,6 +247,14 @@ enum ToolbarHit {
     Save,
 }
 
+/// How the user is composing their signature in the Signatures panel: typing
+/// their name (rendered as a script), or drawing it by hand on the pad.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SigMode {
+    Type,
+    Draw,
+}
+
 #[derive(Clone)]
 enum SidebarHit {
     Tab(SidebarTab),
@@ -260,6 +268,10 @@ enum SidebarHit {
     EditSigner,
     SigJump(usize),
     DeleteSignature(String),
+    /// Switch the signature composer between typing and drawing.
+    SigMode(SigMode),
+    /// Clear the drawn signature strokes.
+    SigClear,
 }
 
 #[derive(Clone)]
@@ -372,6 +384,19 @@ pub struct PdfApp {
     sidebar_reveal: Option<String>,
     signer_name: String,
     author: String,
+
+    // Signature composer — the user prepares a real signature (typed name or a
+    // hand-drawn one) before stamping it onto a page with the Sign tool.
+    /// Whether the composer is in type or draw mode.
+    sig_mode: SigMode,
+    /// The composed hand-drawn signature: one or more polylines in normalised
+    /// `[0,1]²` pad space. Empty until the user draws.
+    sig_strokes: Vec<Vec<(f64, f64)>>,
+    /// The stroke currently being drawn on the pad (pointer held), if any.
+    sig_stroke: Option<Vec<(f64, f64)>>,
+    /// The draw pad's screen rect, captured during the sidebar draw so a press
+    /// inside it starts drawing rather than hitting a button.
+    sig_pad_rect: Rect,
 
     // Search.
     search_active: bool,
@@ -674,6 +699,10 @@ impl PdfApp {
             sidebar_reveal: None,
             signer_name: author.clone(),
             author,
+            sig_mode: SigMode::Type,
+            sig_strokes: Vec::new(),
+            sig_stroke: None,
+            sig_pad_rect: Rect::ZERO,
             search_active: false,
             query: String::new(),
             matches: Vec::new(),
@@ -803,7 +832,7 @@ impl PdfApp {
             rect: PtRect::new(318.0, 612.0, 218.0, 74.0),
             signer: "Alice Example".into(),
             date: SEED_DATE.into(),
-            style: signature_style_for("Alice Example"),
+            ink: SignatureInk::Drawn { strokes: sample_drawn_signature() },
         };
 
         let note_id = note.id.clone();
@@ -1800,7 +1829,38 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Normalise a screen point into the signature draw pad's `[0,1]²` space
+    /// (clamped), against the same inset the pad renders into so a drawn stroke
+    /// lands where the pointer went.
+    fn sig_pad_norm(&self, p: Point) -> (f64, f64) {
+        let a = self.sig_pad_rect.inflate(-10.0, -10.0);
+        let x = if a.width() > 0.0 { ((p.x - a.x0) / a.width()).clamp(0.0, 1.0) } else { 0.0 };
+        let y = if a.height() > 0.0 { ((p.y - a.y0) / a.height()).clamp(0.0, 1.0) } else { 0.0 };
+        (x, y)
+    }
+
+    /// The signature the composer currently holds: the drawn strokes when in
+    /// draw mode (and something has actually been drawn), otherwise the typed
+    /// name. `None` when draw mode is selected but the pad is empty — there is
+    /// no real signature to place yet.
+    fn composed_ink(&self) -> Option<SignatureInk> {
+        match self.sig_mode {
+            SigMode::Draw => {
+                let ink = SignatureInk::Drawn { strokes: self.sig_strokes.clone() };
+                (!ink.is_empty()).then_some(ink)
+            }
+            SigMode::Type => Some(SignatureInk::Typed),
+        }
+    }
+
     fn place_signature(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+        // Refuse to stamp an empty drawn signature — the user must draw one
+        // first (or switch to a typed signature).
+        let Some(ink) = self.composed_ink() else {
+            self.status_note = Some("Draw your signature first, then click a page".to_string());
+            self.dirty = true;
+            return;
+        };
         let w = 218.0;
         let h = 74.0;
         let rect = PtRect::new(
@@ -1816,7 +1876,7 @@ impl PdfApp {
             rect,
             signer: self.signer_name.clone(),
             date: today_ymd(),
-            style: signature_style_for(&self.signer_name),
+            ink,
         };
         PdfDoc::add_signature(state, &s);
         self.selected_sig = Some(sig_id.clone());
@@ -3384,34 +3444,49 @@ mod tests {
         assert!(stored.iter().any(|x| x.id == s.id && x.date == today_ymd()));
     }
 
+    /// A typed signature stamps the signer's name as its content — real input,
+    /// no canned squiggle.
     #[test]
-    fn signature_style_is_per_signer_and_reaches_every_style() {
-        use std::collections::HashSet;
-        // Distinct signers must not collapse to one canned squiggle: across a
-        // spread of names all four bundled styles are reachable.
-        let mut seen = HashSet::new();
-        for i in 0..256 {
-            let s = signature_style_for(&format!("Signer {i}"));
-            assert!(s < 4, "style stays in range");
-            seen.insert(s);
-        }
-        assert_eq!(seen.len(), 4, "all four handwriting styles are reachable across signers");
-        // Stable for a given name; empty falls back to a fixed style.
-        assert_eq!(signature_style_for("Ada Lovelace"), signature_style_for("Ada Lovelace"));
-        assert_eq!(signature_style_for("   "), 0);
+    fn placing_a_typed_signature_stores_the_typed_name() {
+        let (mut app, mut st) = app_with_state();
+        app.sig_mode = SigMode::Type;
+        app.signer_name = "Grace Hopper".into();
+        app.place_signature(&mut st.doc, 3, (200.0, 300.0));
+        let placed = app.signatures.iter().find(|s| s.page == 3).expect("a signature landed");
+        assert_eq!(placed.signer, "Grace Hopper");
+        assert_eq!(placed.ink, SignatureInk::Typed, "a typed signature carries typed ink");
+        // And it durably reaches the shared CRDT as typed ink.
+        let stored = PdfDoc::list_signatures(&st.doc);
+        assert!(stored.iter().any(|x| x.id == placed.id && x.ink == SignatureInk::Typed));
     }
 
+    /// A drawn signature stores the exact strokes the user drew, and placement
+    /// writes them into the document; an *empty* drawn signature is refused so
+    /// no blank "signed" field is ever stamped.
     #[test]
-    fn placed_signature_style_follows_the_signer_and_matches_the_preview() {
+    fn drawn_signature_places_the_strokes_and_empty_is_refused() {
         let (mut app, mut st) = app_with_state();
-        app.signer_name = "Grace Hopper".into();
-        // The signer-card preview (drawn when not editing) uses
-        // signature_style_for(signer_name); placement stamps the same input, so
-        // the card can never preview a stroke different from what is stamped.
-        let preview_style = signature_style_for(&app.signer_name);
-        app.place_signature(&mut st.doc, 3, (200.0, 300.0));
-        let placed = app.signatures.iter().find(|s| s.page == 3).unwrap();
-        assert_eq!(placed.style, preview_style, "placed style follows the signer, matching the preview");
+        app.sig_mode = SigMode::Draw;
+
+        // Empty pad → nothing is placed, and the user is told to draw first.
+        let before = app.signatures.len();
+        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+        assert_eq!(app.signatures.len(), before, "an empty drawn signature is not placed");
+        assert!(app.status_note.as_deref().unwrap_or("").to_lowercase().contains("draw"));
+
+        // Draw a stroke, then place: the strokes are what land in the document.
+        app.sig_strokes = vec![vec![(0.1, 0.5), (0.4, 0.2), (0.7, 0.6), (0.9, 0.4)]];
+        app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+        let placed = app.signatures.iter().find(|s| s.page == 2).expect("a drawn signature landed");
+        match &placed.ink {
+            SignatureInk::Drawn { strokes } => {
+                assert_eq!(strokes.len(), 1);
+                assert_eq!(strokes[0].len(), 4, "the drawn polyline is preserved");
+            }
+            other => panic!("expected drawn ink, got {other:?}"),
+        }
+        let stored = PdfDoc::list_signatures(&st.doc);
+        assert!(stored.iter().any(|x| matches!(&x.ink, SignatureInk::Drawn { strokes } if strokes.len() == 1)));
     }
 
     #[test]

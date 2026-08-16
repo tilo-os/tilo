@@ -22,11 +22,11 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill, ImageData as PenikoImage};
 
 use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{
-    AnnoKind, Annotation, Block, Page, Signature, Swatch, MARGIN, PAGE_W,
+    AnnoKind, Annotation, Block, Page, Signature, SignatureInk, Swatch, MARGIN, PAGE_W,
 };
 
 pub fn ink() -> Color {
@@ -428,11 +428,11 @@ fn draw_signature(
 
     let stroke_area = Rect::new(
         r.x0 + r.width() * 0.06,
-        r.y0 + r.height() * 0.12,
+        r.y0 + r.height() * 0.10,
         r.x1 - r.width() * 0.06,
-        r.y0 + r.height() * 0.58,
+        r.y0 + r.height() * 0.56,
     );
-    draw_signature_glyph(scene, base, ink(), stroke_area, s.style);
+    draw_signature_ink(scene, tr, base, ink(), stroke_area, &s.ink, &s.signer);
 
     let base_y = r.y0 + r.height() * 0.62;
     let baseline = Line::new((r.x0 + 8.0, base_y), (r.x1 - 8.0, base_y));
@@ -459,47 +459,82 @@ fn draw_signature(
     );
 }
 
-/// Public wrapper to draw just the handwriting glyph (no field chrome),
-/// used by the signatures sidebar for previews.
-pub fn draw_signature_preview(scene: &mut Scene, base: Affine, color: Color, area: Rect, style: u8) {
-    draw_signature_glyph(scene, base, color, area, style);
-}
-
-/// Four bundled signature stroke styles — a fixed bezier "handwriting"
-/// scaled into `area`. Deterministic so a placed signature is stable.
-fn draw_signature_glyph(scene: &mut Scene, base: Affine, color: Color, area: Rect, style: u8) {
-    let w = area.width();
-    let h = area.height();
-    let x = |t: f64| area.x0 + t * w;
-    let y = |t: f64| area.y0 + t * h;
-    let mut path = BezPath::new();
-    match style % 4 {
-        0 => {
-            path.move_to((x(0.02), y(0.7)));
-            path.curve_to((x(0.10), y(0.0)), (x(0.18), y(1.0)), (x(0.26), y(0.4)));
-            path.curve_to((x(0.34), y(-0.1)), (x(0.40), y(0.9)), (x(0.50), y(0.5)));
-            path.curve_to((x(0.62), y(0.05)), (x(0.72), y(1.0)), (x(0.86), y(0.35)));
-            path.curve_to((x(0.92), y(0.15)), (x(0.98), y(0.6)), (x(1.0), y(0.45)));
+/// Draw a signature's **real ink** inside `area` (no field chrome): the signer's
+/// typed name in a script style, or the freehand strokes they actually drew
+/// (normalised `[0,1]²`, scaled into `area`). Shared by the placed-signature
+/// draw and the sidebar preview, so both show exactly what will be stamped.
+pub fn draw_signature_ink(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    base: Affine,
+    color: Color,
+    area: Rect,
+    ink: &SignatureInk,
+    signer: &str,
+) {
+    if area.width() <= 1.0 || area.height() <= 1.0 {
+        return;
+    }
+    match ink {
+        SignatureInk::Typed => {
+            let name = if signer.trim().is_empty() { "Signature" } else { signer.trim() };
+            // A signature script: an italic serif face, sized to the field.
+            let family = FontChoice::Serif;
+            let mut size = (area.height() * 0.85).clamp(9.0, 30.0) as f32;
+            let maxw = area.width() as f32;
+            let (mut tw, _) = tr.measure_font(name, size, None, TextWeight::Medium, true, &family);
+            if tw > maxw && tw > 0.0 {
+                size = (size * maxw / tw).max(7.0);
+                tw = tr.measure_font(name, size, None, TextWeight::Medium, true, &family).0;
+            }
+            let tx = area.x0 + ((area.width() as f32 - tw).max(0.0) / 2.0) as f64;
+            let ty = area.y0 + (area.height() - size as f64) / 2.0;
+            tr.draw_text_font(
+                scene,
+                name,
+                size,
+                color,
+                base * Affine::translate((tx, ty)),
+                None,
+                TextWeight::Medium,
+                true,
+                &family,
+            );
         }
-        1 => {
-            path.move_to((x(0.0), y(0.55)));
-            path.curve_to((x(0.15), y(-0.2)), (x(0.30), y(1.1)), (x(0.45), y(0.5)));
-            path.curve_to((x(0.55), y(0.1)), (x(0.60), y(0.95)), (x(0.70), y(0.55)));
-            path.curve_to((x(0.80), y(0.2)), (x(0.95), y(0.8)), (x(1.0), y(0.4)));
-        }
-        2 => {
-            path.move_to((x(0.02), y(0.5)));
-            path.quad_to((x(0.2), y(-0.05)), (x(0.38), y(0.6)));
-            path.quad_to((x(0.52), y(1.05)), (x(0.66), y(0.45)));
-            path.quad_to((x(0.82), y(-0.05)), (x(1.0), y(0.5)));
-        }
-        _ => {
-            path.move_to((x(0.0), y(0.6)));
-            path.curve_to((x(0.2), y(0.0)), (x(0.3), y(0.9)), (x(0.5), y(0.45)));
-            path.curve_to((x(0.7), y(0.0)), (x(0.85), y(1.0)), (x(1.0), y(0.5)));
+        SignatureInk::Drawn { strokes } => {
+            let w = (area.height() * 0.06).clamp(1.4, 3.0);
+            for stroke in strokes {
+                if stroke.len() < 2 {
+                    continue;
+                }
+                let mut path = BezPath::new();
+                for (i, (nx, ny)) in stroke.iter().enumerate() {
+                    let x = area.x0 + nx.clamp(0.0, 1.0) * area.width();
+                    let y = area.y0 + ny.clamp(0.0, 1.0) * area.height();
+                    if i == 0 {
+                        path.move_to((x, y));
+                    } else {
+                        path.line_to((x, y));
+                    }
+                }
+                scene.stroke(&Stroke::new(w), base, color, None, &path);
+            }
         }
     }
-    scene.stroke(&Stroke::new((area.height() * 0.10).clamp(1.4, 3.0)), base, color, None, &path);
+}
+
+/// Public wrapper to draw just the signature ink (no field chrome), used by the
+/// signatures sidebar for previews.
+pub fn draw_signature_preview(
+    scene: &mut Scene,
+    tr: &mut TextRenderer,
+    base: Affine,
+    color: Color,
+    area: Rect,
+    ink: &SignatureInk,
+    signer: &str,
+) {
+    draw_signature_ink(scene, tr, base, color, area, ink, signer);
 }
 
 // ----------------------------------------------------------------------
