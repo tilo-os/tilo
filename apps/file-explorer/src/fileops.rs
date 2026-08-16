@@ -7,7 +7,78 @@
 //! handling is centralised in [`unique_destination`] so copy/move never
 //! silently clobber an existing file.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+// --- trash ----------------------------------------------------------------
+
+/// The XDG "home trash" files directory (`~/.local/share/Trash/files`), where
+/// trashed files are kept. `None` when there is no data dir.
+pub fn trash_dir() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("Trash").join("files"))
+}
+
+/// Whether `path` is the home-trash files directory.
+pub fn is_trash_dir(path: &Path) -> bool {
+    trash_dir().map(|t| path == t).unwrap_or(false)
+}
+
+/// Ensure the trash files directory exists, so opening an empty trash shows an
+/// empty listing rather than a "no such directory" error. Returns the dir.
+pub fn ensure_trash_dir() -> Option<PathBuf> {
+    let d = trash_dir()?;
+    let _ = std::fs::create_dir_all(&d);
+    Some(d)
+}
+
+/// Permanently remove everything in the trash. Returns how many items were purged.
+pub fn empty_trash() -> Result<usize, String> {
+    let items = trash::os_limited::list().map_err(|e| e.to_string())?;
+    let n = items.len();
+    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// Whether trash `item` backs the in-trash file named `files_name` (the name
+/// shown in `Trash/files`). The item's `.trashinfo` file is
+/// `Trash/info/<files_name>.trashinfo`, so match on that.
+fn trash_item_backs(item: &trash::TrashItem, files_name: &OsStr) -> bool {
+    Path::new(&item.id)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .and_then(|f| f.strip_suffix(".trashinfo"))
+        .map(|stem| OsStr::new(stem) == files_name)
+        .unwrap_or(false)
+}
+
+/// The trash items backing the given in-trash file paths (matched by their
+/// `.trashinfo` file name, which is robust to on-trash name deduplication).
+fn trash_items_for(entries: &[PathBuf]) -> Result<Vec<trash::TrashItem>, String> {
+    let wanted: Vec<_> = entries.iter().filter_map(|p| p.file_name().map(|n| n.to_owned())).collect();
+    Ok(trash::os_limited::list()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|it| wanted.iter().any(|w| trash_item_backs(it, w)))
+        .collect())
+}
+
+/// Restore the trashed items backing `entries` to their original locations.
+/// Returns how many were restored.
+pub fn restore_entries(entries: &[PathBuf]) -> Result<usize, String> {
+    let items = trash_items_for(entries)?;
+    let n = items.len();
+    trash::os_limited::restore_all(items).map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// Permanently delete the trashed items backing `entries` (file + info).
+/// Returns how many were purged.
+pub fn purge_entries(entries: &[PathBuf]) -> Result<usize, String> {
+    let items = trash_items_for(entries)?;
+    let n = items.len();
+    trash::os_limited::purge_all(items).map_err(|e| e.to_string())?;
+    Ok(n)
+}
 
 /// Pick a non-colliding path for `name` inside `dir`. If `dir/name` is
 /// free it's returned as-is; otherwise a numeric suffix is inserted
@@ -203,6 +274,17 @@ mod tests {
         // A second copy into the same dir dedups the folder name.
         let copied2 = copy_into(&src, &destdir).unwrap();
         assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
+    }
+
+    #[test]
+    fn trash_dir_is_the_xdg_home_trash_files_dir() {
+        // The Trash sidebar entry + the "am I in the trash?" check both hinge on
+        // this path being the freedesktop home-trash files dir.
+        if let Some(t) = trash_dir() {
+            assert!(t.ends_with("Trash/files"), "trash dir is <data>/Trash/files: {t:?}");
+            assert!(is_trash_dir(&t), "the trash dir recognises itself");
+            assert!(!is_trash_dir(Path::new("/tmp/not-trash")), "an unrelated dir is not the trash");
+        }
     }
 
     #[test]
