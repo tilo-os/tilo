@@ -96,6 +96,11 @@ pub struct BottomPanel {
     /// Note shown in the Terminal body when no live terminal is present (the
     /// pre-spawn invitation, or "shell unavailable" on a spawn failure).
     terminal_note: Option<String>,
+    /// What the language server is doing, when it has not finished. While this
+    /// is `Some`, an empty Problems list means "not analysed yet" rather than
+    /// "analysed and clean", and the panel must say so — see
+    /// [`BottomPanel::set_analysis`].
+    analysis: Option<String>,
     /// The Search tab's contents, pushed in by the app as the worker streams.
     search: SearchState,
     /// First visible search row, advanced by the wheel.
@@ -118,6 +123,7 @@ impl BottomPanel {
             tab_changed: false,
             has_live_terminal: false,
             terminal_note: None,
+            analysis: None,
             search: SearchState::default(),
             search_scroll: 0,
             activated_hit: None,
@@ -360,6 +366,21 @@ impl BottomPanel {
         }
     }
 
+    /// Say what the language server is still doing, or `None` once it has
+    /// answered.
+    ///
+    /// This exists because "No problems detected in the workspace." is a claim,
+    /// and for the first seconds — or, on a cold crate graph this size, the
+    /// first minutes — it is not a true one: nothing has been analysed. An
+    /// editor that asserts a clean bill of health before it has looked is worse
+    /// than one that looks broken, because the user believes it.
+    pub fn set_analysis(&mut self, note: Option<String>) {
+        if self.analysis != note {
+            self.analysis = note;
+            self.dirty = true;
+        }
+    }
+
     /// Mark whether a live embedded terminal owns the Terminal tab body.
     pub fn set_has_live_terminal(&mut self, live: bool) {
         if self.has_live_terminal != live {
@@ -389,6 +410,17 @@ impl BottomPanel {
 
     pub fn problem_count(&self) -> usize {
         self.problems.len()
+    }
+
+    /// What the panel is saying in place of "no problems", if anything.
+    pub fn analysis(&self) -> Option<&str> {
+        self.analysis.as_deref()
+    }
+
+    /// The diagnostics currently listed, so callers can assert on what the user
+    /// is shown rather than only on how many rows there are.
+    pub fn problems(&self) -> &[Diagnostic] {
+        &self.problems
     }
 
     pub fn set_tab(&mut self, tab: PanelTab) {
@@ -560,14 +592,48 @@ impl Widget for BottomPanel {
         match self.tab {
             PanelTab::Problems => {
                 if self.problems.is_empty() {
-                    text_renderer.draw_text(
-                        scene,
-                        "No problems detected in the workspace.",
-                        13.0,
-                        c.text_dim,
-                        transform * Affine::translate((self.rect.x0 + 14.0, content_y0)),
-                        None,
+                    // An empty list means two different things, and the panel
+                    // must not state the wrong one. While a language server is
+                    // still working nothing has been analysed yet; only once it
+                    // has answered is "no problems" a finding. Both go through
+                    // the shared zero-state so this tab reads like the Search
+                    // tab beside it rather than a bare line of dim text.
+                    let body = Rect::new(
+                        self.rect.x0,
+                        self.rect.y0 + TAB_H,
+                        self.rect.x1,
+                        self.rect.y1,
                     );
+                    let (icon, title, message) = match &self.analysis {
+                        Some(note) => (
+                            ui::icons::Icon::RotateCw,
+                            note.as_str(),
+                            "Nothing has been analysed yet. Problems appear here as \
+                             the language server reports them.",
+                        ),
+                        // Scoped to the open file, because that is what was
+                        // actually checked — the linter reads the active buffer,
+                        // not every file under the root.
+                        None => (
+                            ui::icons::Icon::Check,
+                            "No problems in this file",
+                            "Diagnostics from the language server and the built-in \
+                             checks both land here.",
+                        ),
+                    };
+                    EmptyState::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        body,
+                        Some(icon),
+                        title,
+                        Some(message),
+                        None,
+                        Point::new(-1.0, -1.0),
+                    );
+                    let _ = content_y0;
                 } else {
                     for (i, d) in self.problems.iter().enumerate() {
                         let y = content_y0 + i as f64 * ROW_H;
