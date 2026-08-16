@@ -618,6 +618,10 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        // The shared surface fills the output from its origin, so a
+        // surface-local coordinate and its output-space translation are
+        // the same number and the assertions below read unchanged.
+        stage_shared_surface(&mut state, surface);
 
         // Before injection: pointer is at the seat's default origin
         // (0, 0). `current_location` returns the last-known location;
@@ -697,6 +701,10 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        // Staged as the focused surface: the scrubber's focus guard mutes
+        // a guest's keystrokes unless the shared surface is the one the
+        // seat's keyboard is pointed at.
+        stage_shared_surface(&mut state, surface);
 
         // Baseline: no keys pressed.
         {
@@ -781,6 +789,7 @@ mod tests {
         state
             .share_registry
             .insert(peer, surface, StreamingShare::new());
+        stage_shared_surface(&mut state, surface);
 
         // No seat entry yet — the peer hasn't emitted any input.
         assert!(state.remote_seats.seat(peer).is_none());
