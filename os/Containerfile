@@ -162,6 +162,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
         hyphen libavif libepoxy libmanette libxslt \
         nasm \
+        gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
 
 WORKDIR /build
