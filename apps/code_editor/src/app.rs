@@ -663,21 +663,39 @@ impl CodeApp {
     }
 
     /// Recompute diagnostics over the active buffer and push to the panel +
-    /// status bar. LSP diagnostics (when a server is live) are merged with the
-    /// local linter; the LSP set also drives the editor's inline squiggles.
+    /// status bar.
+    ///
+    /// Two sources feed the Problems panel, and which parts of the local linter
+    /// run depends on whether the language server has answered yet. Before it
+    /// has — no server for this language, or one still indexing — the linter is
+    /// the only feedback there is, so it runs in full. Once the server has
+    /// published for this buffer, its structural scan steps aside
+    /// ([`lint::Scope::TextualOnly`]): a bracket-counter with no type
+    /// information cannot usefully disagree with a compiler, and when it does
+    /// the user is the one who has to work out which to believe.
     fn refresh_diagnostics(&mut self, doc: &AutoCommit) {
+        let lsp_for_buffer = self
+            .lsp_uri
+            .as_ref()
+            .and_then(|uri| self.lsp_diagnostics.get(uri));
+        // An empty publish still counts as an answer: it is the server saying
+        // "this file is clean", which is exactly when a stale bracket warning
+        // would be most confusing.
+        let scope = if lsp_for_buffer.is_some() {
+            lint::Scope::TextualOnly
+        } else {
+            lint::Scope::Full
+        };
+
         let mut diagnostics = match self.session.active_buffer() {
             Some(buf) => {
                 let text = EditorDoc::read_buffer(doc, buf.node).unwrap_or_default();
-                lint::lint(&text, buf.language)
+                lint::lint(&text, buf.language, scope)
             }
             None => Vec::new(),
         };
-        // Merge in any LSP diagnostics for the active document.
-        if let Some(uri) = &self.lsp_uri {
-            if let Some(lsp) = self.lsp_diagnostics.get(uri) {
-                diagnostics.extend(lsp.iter().map(|d| d.to_panel()));
-            }
+        if let Some(lsp) = lsp_for_buffer {
+            diagnostics.extend(lsp.iter().map(|d| d.to_panel()));
         }
         diagnostics.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
         self.panel.set_problems(diagnostics);
