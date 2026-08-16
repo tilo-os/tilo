@@ -270,6 +270,10 @@ struct TimelineGeom {
     body_bottom: f64,
     hour_h: f64,
     content_h: f64,
+    /// Right edge of the day columns. When the day overflows and the scrollbar
+    /// shows, this stops short of the viewport edge so the bar sits in its own
+    /// lane rather than over the last column.
+    grid_right: f64,
 }
 
 impl TimelineGeom {
@@ -278,6 +282,9 @@ impl TimelineGeom {
         Rect::new(x0, self.body_top, x1, self.body_bottom)
     }
 }
+
+/// Right-edge lane (logical px) kept clear for the timeline's overlay scrollbar.
+const TIMELINE_BAR_LANE: f64 = 12.0;
 
 /// An in-progress pointer drag on the week/day timeline. Both variants use the
 /// shared drag-start threshold ([`DRAG_START_THRESHOLD_PX`]): a press that never
@@ -3238,12 +3245,18 @@ impl CalendarApp {
         // otherwise the body scrolls the full day.
         let hour_h = (viewport_h / 24.0).max(TIMELINE_MIN_HOUR_H);
         let content_h = hour_h * 24.0;
-        TimelineGeom { gutter: 56.0, body_top, body_bottom, hour_h, content_h }
+        // Reserve the scrollbar lane only when the day actually overflows.
+        let grid_right = if content_h > viewport_h + 0.5 {
+            area.x1 - TIMELINE_BAR_LANE
+        } else {
+            area.x1
+        };
+        TimelineGeom { gutter: 56.0, body_top, body_bottom, hour_h, content_h, grid_right }
     }
 
     /// Width of one day column in the timeline.
     fn timeline_col_w(&self, area: Rect, days_len: usize, g: &TimelineGeom) -> f64 {
-        ((area.width() - g.gutter) / days_len.max(1) as f64).max(1.0)
+        ((g.grid_right - (area.x0 + g.gutter)) / days_len.max(1) as f64).max(1.0)
     }
 
     /// Column index for a screen x, clamped into the grid.
@@ -3434,7 +3447,7 @@ impl CalendarApp {
             t,
             c.border_standard,
             Point::new(area.x0, g.body_top),
-            Point::new(area.x1, g.body_top),
+            Point::new(g.grid_right, g.body_top),
             0.5,
         );
 
@@ -3450,7 +3463,7 @@ impl CalendarApp {
                 t,
                 c.border_standard.with_alpha(0.5),
                 Point::new(grid_x0, y),
-                Point::new(area.x1, y),
+                Point::new(g.grid_right, y),
                 0.5,
             );
             if h < 24 {
