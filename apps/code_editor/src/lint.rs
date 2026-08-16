@@ -10,8 +10,43 @@
 use crate::bottom_panel::{Diagnostic, Severity};
 use crate::model::Language;
 
+/// Whether the `'` at byte offset `at` in `line` opens a Rust lifetime rather
+/// than a character literal.
+///
+/// A char literal is `'x'` or an escape like `'\n'` — the quote has a partner
+/// within a couple of characters. A lifetime (`'a`, `'_`, `'static`) is a lone
+/// quote followed by an identifier. Deciding by looking for the partner is what
+/// distinguishes them without a real lexer.
+fn is_lifetime_tick(line: &str, at: usize) -> bool {
+    let rest = &line[at + 1..];
+    let mut it = rest.chars();
+    let Some(first) = it.next() else {
+        // A trailing quote at end of line closes nothing.
+        return true;
+    };
+    // `'\n'`, `'\''` — an escape is always a char literal.
+    if first == '\\' {
+        return false;
+    }
+    // `'x'` — a single character then its closing quote.
+    if it.next() == Some('\'') {
+        return false;
+    }
+    // Otherwise: a lone quote followed by an identifier character is a
+    // lifetime. Anything else (e.g. a quote inside prose) is treated as a
+    // lifetime too, since assuming "string" is the reading that corrupts the
+    // rest of the line.
+    first.is_alphanumeric() || first == '_'
+}
+
 /// Run the linter over `text` for a given language. Returns diagnostics sorted
 /// by (line, col).
+///
+/// This runs only where no language server is answering for the buffer — see
+/// [`crate::app::CodeApp::refresh_diagnostics`]. A text scanner that
+/// second-guesses a real compiler is not a second opinion, it is noise: it has
+/// no type information, no macro expansion and no crate graph, so on real code
+/// its disagreements with rustc are always the scanner being wrong.
 pub fn lint(text: &str, language: Language) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     let max_len = match language {
@@ -94,6 +129,14 @@ pub fn lint(text: &str, language: Language) -> Vec<Diagnostic> {
                 continue;
             }
             match ch {
+                // A single quote is not always a string. In Rust `<'_>`,
+                // `&'a str` and `'static` are lifetimes: one quote with no
+                // partner. Treating one as an unterminated char literal makes
+                // the scanner swallow the rest of the line — including the
+                // bracket that closes the signature — and report "Unclosed '('"
+                // on code that is perfectly valid. Opening real qOS sources
+                // produced eight such warnings on the first file.
+                '\'' if is_lifetime_tick(line, bi) => {}
                 '"' | '\'' => {
                     in_string = true;
                     string_delim = ch;
