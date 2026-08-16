@@ -289,6 +289,7 @@ mod tests {
         let mut trimmed_front = 0usize;
         let mut next_link_id = 0u16;
         let mut title_out = None;
+        let mut responses: Vec<u8> = Vec::new();
 
         {
             let mut performer = TerminalPerformer {
@@ -314,6 +315,7 @@ mod tests {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                responses: &mut responses,
                 print_buf: None,
             };
 
@@ -1654,5 +1656,332 @@ mod tests {
         );
         send_left_release(&mut w, &mut doc);
         assert!(w.selection().is_none(), "a lone click clears on release");
+    }
+
+    // ---------------------------------------------------------------
+    // Terminal capability queries — the emulator must reply on the PTY.
+    // fish blocks on the DA1 reply for up to 10s at startup and disables
+    // features if it never arrives; every reply below travels the same
+    // `write_input` path a keystroke does, so the shell reads it.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn da1_query_writes_primary_device_attributes_reply() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // Exactly the bytes fish sends to probe the terminal: CSI c.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[c");
+        let got = drain_writes(&write_rx);
+        assert_eq!(
+            got, b"\x1b[?62;22c",
+            "DA1 (CSI c) must answer with the VT220+ANSI-color device attributes"
+        );
+    }
+
+    #[test]
+    fn da1_query_with_zero_param_also_replies() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[0c");
+        assert_eq!(drain_writes(&write_rx), b"\x1b[?62;22c", "CSI 0 c is DA1 too");
+    }
+
+    #[test]
+    fn decid_esc_z_replies_like_da1() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1bZ");
+        assert_eq!(drain_writes(&write_rx), b"\x1b[?62;22c", "ESC Z (DECID) is a DA1 request");
+    }
+
+    #[test]
+    fn da2_secondary_device_attributes_reply() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[>c");
+        let expected = format!("\x1b[>1;{};0c", crate::inner::terminal_da2_version());
+        assert_eq!(
+            drain_writes(&write_rx),
+            expected.as_bytes(),
+            "DA2 (CSI > c) reports terminal type 1 + build version + 0"
+        );
+    }
+
+    #[test]
+    fn dsr_cursor_position_report_uses_live_cursor() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // Move the cursor to row 5, column 3 (1-based) via CUP, then ask for it.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[5;3H");
+        let _ = drain_writes(&write_rx); // CUP itself sends nothing; clear.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[6n");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[5;3R",
+            "DSR 6n (CPR) reports the 1-based cursor row;col"
+        );
+    }
+
+    #[test]
+    fn dsr_device_status_reports_ok() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[5n");
+        assert_eq!(drain_writes(&write_rx), b"\x1b[0n", "DSR 5n → terminal OK");
+    }
+
+    #[test]
+    fn dsr_private_cursor_position_report() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[2;7H");
+        let _ = drain_writes(&write_rx);
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?6n");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[?2;7;1R",
+            "DECXCPR (?6n) reports row;col;page"
+        );
+    }
+
+    #[test]
+    fn xtversion_reply_names_the_terminal() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[>0q");
+        let got = drain_writes(&write_rx);
+        let expected = format!("\x1bP>|qos-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
+        assert_eq!(got, expected.as_bytes(), "XTVERSION (CSI > 0 q) names + versions the terminal");
+    }
+
+    #[test]
+    fn decrqm_reports_bracketed_paste_state() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // Enable bracketed paste, then query its mode: DECRPM value 1 = set.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004h\x1b[?2004$p");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[?2004;1$y",
+            "DECRQM must report bracketed paste as set (1) after ?2004h"
+        );
+        // Disable it and re-query: value 2 = reset.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004l\x1b[?2004$p");
+        assert_eq!(
+            drain_writes(&write_rx),
+            b"\x1b[?2004;2$y",
+            "DECRQM must report bracketed paste as reset (2) after ?2004l"
+        );
+    }
+
+    #[test]
+    fn decrqm_unknown_mode_reports_not_recognised() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // A mode we do not track → value 0 (not recognised) rather than a hang.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?9999$p");
+        assert_eq!(drain_writes(&write_rx), b"\x1b[?9999;0$y");
+    }
+
+    #[test]
+    fn unknown_query_is_consumed_without_a_spurious_reply() {
+        let (mut w, write_rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        // DECSCUSR (set cursor style, `CSI 2 SP q`) is not a query — it must not
+        // trigger the XTVERSION path or write anything back.
+        w.feed(&mut doc, &automerge::ROOT, b"\x1b[2 q");
+        assert!(
+            drain_writes(&write_rx).is_empty(),
+            "a non-query CSI must not write a spurious reply to the shell"
+        );
+    }
+
+    #[test]
+    fn da1_reply_round_trips_through_the_real_pty_pump_path() {
+        use portable_pty::CommandBuilder;
+        // End-to-end proof on the production path (no `feed`, no mock writer):
+        // a real child emits the DA1 query on its tty and then reads exactly the
+        // 9 reply bytes back from stdin. The reply only arrives if the reader
+        // thread → sync → pump → vte → write_input → PTY loop actually answers.
+        // The tty is put in non-canonical, no-echo mode first (our reply has no
+        // newline, so canonical `read` would block on it forever), and `cat -v`
+        // renders the ESC so the grid shows `^[[?62;22c`.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("stty -icanon -echo min 1 time 0; printf '\\033[c'; head -c 9 | cat -v; echo; echo REPLY_DONE");
+        let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
+        let mut doc = AutoCommit::new();
+        assert!(
+            pump_until_contains(&mut w, &mut doc, "REPLY_DONE", 200),
+            "the child must receive the DA1 reply over the real PTY; grid was:\n{}",
+            w.grid_text()
+        );
+        assert!(
+            w.grid_text().contains("[?62;22c"),
+            "the child echoed back the exact DA1 reply bytes; grid was:\n{}",
+            w.grid_text()
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Default-shell resolution: honour $SHELL, then the passwd login shell,
+    // then /bin/sh. fish must launch when it is the user's login shell.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn resolve_login_shell_prefers_shell_env() {
+        assert_eq!(
+            crate::inner::resolve_login_shell_with(Some("/usr/bin/fish".into()), Some("/bin/bash".into())),
+            "/usr/bin/fish",
+            "$SHELL wins when it is set and non-empty"
+        );
+    }
+
+    #[test]
+    fn resolve_login_shell_falls_back_to_passwd_when_shell_unset() {
+        assert_eq!(
+            crate::inner::resolve_login_shell_with(None, Some("/usr/bin/zsh".into())),
+            "/usr/bin/zsh",
+            "with $SHELL unset the passwd login shell is used, not a hardcoded /bin/sh"
+        );
+        // An empty $SHELL is treated as unset and also falls through to passwd.
+        assert_eq!(
+            crate::inner::resolve_login_shell_with(Some(String::new()), Some("/usr/bin/zsh".into())),
+            "/usr/bin/zsh",
+        );
+    }
+
+    #[test]
+    fn resolve_login_shell_last_resort_is_sh() {
+        assert_eq!(
+            crate::inner::resolve_login_shell_with(None, None),
+            "/bin/sh",
+            "with neither source available the session still starts on /bin/sh"
+        );
+    }
+
+    #[test]
+    fn passwd_lookup_resolves_a_real_login_shell() {
+        // Proves the getpwuid fallback actually reads a plausible shell for the
+        // account running the tests (an absolute path). This is the source the
+        // resolver uses when $SHELL is unset.
+        let shell = crate::inner::login_shell_from_passwd()
+            .expect("the current user must have a passwd entry with a login shell");
+        assert!(
+            shell.starts_with('/'),
+            "passwd login shell should be an absolute path, got {shell:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_default_command_uses_the_resolved_login_shell() {
+        // The real resolver: when $SHELL is set (as it is in an interactive
+        // session), spawn_default launches exactly that shell. We assert on the
+        // resolver the spawn path calls, not a reimplementation.
+        if let Ok(shell) = std::env::var("SHELL") {
+            if !shell.is_empty() {
+                assert_eq!(
+                    crate::inner::resolve_login_shell(),
+                    shell,
+                    "spawn_default's shell resolution must honour $SHELL"
+                );
+                return;
+            }
+        }
+        // No $SHELL in this environment: the resolver must still yield an
+        // absolute shell path from passwd (or /bin/sh), never an empty string.
+        let resolved = crate::inner::resolve_login_shell();
+        assert!(resolved.starts_with('/'), "resolved shell must be absolute, got {resolved:?}");
+    }
+
+    #[test]
+    fn with_command_forces_xterm_256color_term() {
+        use portable_pty::CommandBuilder;
+        // fish (and terminfo) need $TERM to name a terminal they support. Run a
+        // child that prints $TERM and prove the emulator exported it.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg("printf 'TERM=%s\\n' \"$TERM\"");
+        let mut w = TerminalWidget::spawn_command(cmd).expect("spawn pty command");
+        let mut doc = AutoCommit::new();
+        assert!(
+            pump_until_contains(&mut w, &mut doc, "TERM=xterm-256color", 200),
+            "the shell must see TERM=xterm-256color; grid was:\n{}",
+            w.grid_text()
+        );
+    }
+
+    /// Locate a `fish` binary for the live-fish test. Returns `None` if fish is
+    /// not installed (the test then skips — it exercises an external program).
+    fn locate_fish() -> Option<std::path::PathBuf> {
+        for p in ["/usr/bin/fish", "/bin/fish", "/usr/local/bin/fish"] {
+            let path = std::path::PathBuf::from(p);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+        let paths = std::env::var_os("PATH")?;
+        std::env::split_paths(&paths)
+            .map(|d| d.join("fish"))
+            .find(|c| c.exists())
+    }
+
+    #[test]
+    fn fish_starts_without_the_device_attribute_warning() {
+        // Drive the exact program the user runs, through the production
+        // reader→sync→pump→vte→write_input→PTY path (no `feed`, no mock).
+        //
+        // Without a DA reply fish stalls ~10s on its Primary Device Attribute
+        // probe and prints "could not read response to Primary Device Attribute
+        // query … disables some optional features" as part of interactive
+        // startup — i.e. before it will run a typed command. So: let the
+        // emulator answer fish's probe (the warm-up pump), then type a sentinel
+        // and wait for it. On the fixed path the probe is satisfied in ~1s and
+        // the sentinel echoes with no warning; a regressed emulator would leave
+        // the warning on screen. We assert the sentinel ran AND neither warning
+        // string is present.
+        let Some(fish) = locate_fish() else {
+            eprintln!("fish not installed; skipping live-fish startup test");
+            return;
+        };
+
+        let mut cmd = crate::CommandBuilder::new(fish);
+        // `-i` forces the interactive reader (which is what probes the
+        // terminal); `--no-config` keeps the test hermetic without suppressing
+        // the probe (that is core reader behaviour, not config).
+        cmd.arg("--no-config");
+        cmd.arg("-i");
+        let mut w = TerminalWidget::spawn_command(cmd).expect("spawn fish under a pty");
+        let mut doc = AutoCommit::new();
+
+        // Warm-up: pump long enough for fish to issue its DA query and for the
+        // emulator to answer it (via write_input) before we type anything, so
+        // our keystrokes are never mistaken for the DA response.
+        for _ in 0..40 {
+            w.sync(&mut doc, &ROOT);
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // Now type the sentinel the way a user would, then quit.
+        w.write_input(b"echo QOS_FISH_READY\r");
+        let ready = pump_until_contains(&mut w, &mut doc, "QOS_FISH_READY", 200);
+        w.write_input(b"exit\r");
+        w.sync(&mut doc, &ROOT);
+
+        let screen = w.grid_text();
+        assert!(
+            ready,
+            "fish must run a typed command promptly (it did not — a DA stall?); grid was:\n{screen}"
+        );
+        assert!(
+            !screen.contains("Primary Device Attribute"),
+            "fish printed the Primary Device Attribute warning — the emulator did \
+             not answer the DA query in time; grid was:\n{screen}"
+        );
+        assert!(
+            !screen.contains("disables some optional features"),
+            "fish reported it disabled features waiting on a terminal query; \
+             grid was:\n{screen}"
+        );
     }
 }
