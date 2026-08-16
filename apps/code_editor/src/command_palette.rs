@@ -24,24 +24,54 @@ pub enum PaletteKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     NewFile,
+    OpenFolder,
+    OpenFile,
+    Save,
+    SaveAs,
+    SaveAll,
+    RevertFile,
     CloseTab,
+    Find,
+    Replace,
+    SearchProject,
     ToggleBottomPanel,
     NextTheme,
     GoToProblems,
+    GoToSearch,
     GoToTerminal,
     ToggleSidebar,
 }
 
 impl Command {
+    /// Every command, with its palette label and the keybinding to advertise
+    /// beside it. A command reachable only by a shortcut nobody told you about
+    /// is not reachable.
     pub fn all() -> Vec<(Command, &'static str)> {
+        Self::catalogue()
+            .into_iter()
+            .map(|(c, label, _)| (c, label))
+            .collect()
+    }
+
+    pub fn catalogue() -> Vec<(Command, &'static str, &'static str)> {
         vec![
-            (Command::NewFile, "File: New File"),
-            (Command::CloseTab, "View: Close Active Tab"),
-            (Command::ToggleBottomPanel, "View: Toggle Bottom Panel"),
-            (Command::ToggleSidebar, "View: Toggle Sidebar"),
-            (Command::NextTheme, "Preferences: Cycle Color Theme"),
-            (Command::GoToProblems, "View: Focus Problems"),
-            (Command::GoToTerminal, "View: Focus Terminal"),
+            (Command::OpenFolder, "File: Open Folder\u{2026}", "Ctrl+Shift+O"),
+            (Command::OpenFile, "File: Open File\u{2026}", "Ctrl+O"),
+            (Command::NewFile, "File: New File", ""),
+            (Command::Save, "File: Save", "Ctrl+S"),
+            (Command::SaveAs, "File: Save As\u{2026}", "Ctrl+Shift+S"),
+            (Command::SaveAll, "File: Save All", "Ctrl+Alt+S"),
+            (Command::RevertFile, "File: Revert to Saved", ""),
+            (Command::CloseTab, "View: Close Active Tab", "Ctrl+W"),
+            (Command::Find, "Edit: Find in File", "Ctrl+F"),
+            (Command::Replace, "Edit: Replace in File", "Ctrl+H"),
+            (Command::SearchProject, "Edit: Search Project", "Ctrl+Shift+F"),
+            (Command::ToggleBottomPanel, "View: Toggle Bottom Panel", "Ctrl+J"),
+            (Command::ToggleSidebar, "View: Toggle Sidebar", "Ctrl+B"),
+            (Command::NextTheme, "Preferences: Cycle Color Theme", ""),
+            (Command::GoToProblems, "View: Focus Problems", ""),
+            (Command::GoToSearch, "View: Focus Search Results", ""),
+            (Command::GoToTerminal, "View: Focus Terminal", ""),
         ]
     }
 }
