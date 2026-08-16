@@ -208,6 +208,12 @@ pub struct CodeApp {
     conflict_hover: Point,
     conflict_buttons: Vec<(ConflictChoice, Rect)>,
 
+    /// A tab close waiting on the user's "save your changes?" answer, and the
+    /// hover / hit rects for its buttons.
+    close_prompt: Option<ClosePrompt>,
+    close_prompt_hover: Point,
+    close_prompt_buttons: Vec<(CloseChoice, Rect)>,
+
     /// A transient message about the last file operation (saved, failed,
     /// reloaded). Shown in the status bar; cleared by the next action.
     notice: Option<Notice>,
@@ -242,6 +248,25 @@ enum ConflictChoice {
     Overwrite,
     /// Throw our edits away and take what is on disk.
     Reload,
+    Cancel,
+}
+
+/// A tab close held back because the buffer has unsaved edits. Closing it would
+/// silently discard them, so the user answers first.
+#[derive(Clone, Debug)]
+struct ClosePrompt {
+    node: TreeId,
+    name: String,
+}
+
+/// The three ways out of an unsaved-close prompt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseChoice {
+    /// Save the buffer, then close the tab.
+    Save,
+    /// Close the tab, discarding the unsaved edits.
+    Discard,
+    /// Keep the tab open.
     Cancel,
 }
 
@@ -456,6 +481,9 @@ impl CodeApp {
             conflict: None,
             conflict_hover: Point::new(-1.0, -1.0),
             conflict_buttons: Vec::new(),
+            close_prompt: None,
+            close_prompt_hover: Point::new(-1.0, -1.0),
+            close_prompt_buttons: Vec::new(),
             notice: None,
             pending_jump: None,
         }
@@ -1294,6 +1322,18 @@ impl CodeApp {
                 self.bound_node = None;
             }
             TabEvent::Close(i) => {
+                // A buffer with unsaved edits is not closed out from under the
+                // user — closing would silently discard their work, so ask
+                // first. A clean buffer closes immediately.
+                if let Some(buf) = self.session.open.get(i) {
+                    if buf.dirty {
+                        self.close_prompt = Some(ClosePrompt {
+                            node: buf.node,
+                            name: buf.name.clone(),
+                        });
+                        return;
+                    }
+                }
                 self.session.close_tab(i);
                 self.bound_node = None;
             }
@@ -1301,6 +1341,132 @@ impl CodeApp {
         self.sidebar
             .set_active(self.session.active_buffer().map(|b| b.node));
         self.refresh_tabs();
+    }
+
+    /// Close the tab holding `node`, if it is still open.
+    fn close_node_tab(&mut self, node: TreeId) {
+        if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
+            self.session.close_tab(idx);
+            self.bound_node = None;
+            self.sidebar
+                .set_active(self.session.active_buffer().map(|b| b.node));
+            self.refresh_tabs();
+        }
+    }
+
+    /// Answer an unsaved-close prompt.
+    fn resolve_close_prompt(&mut self, doc: &mut AutoCommit, choice: CloseChoice) {
+        let Some(prompt) = self.close_prompt.take() else {
+            return;
+        };
+        match choice {
+            CloseChoice::Save => {
+                let has_path = self
+                    .session
+                    .buffer_of(prompt.node)
+                    .map(|b| b.path.is_some())
+                    .unwrap_or(false);
+                if has_path {
+                    // Save synchronously; close only if it actually landed. A
+                    // save that hits a disk conflict leaves the tab open so the
+                    // conflict prompt (now showing) gets answered first.
+                    let snapshot = doc.clone();
+                    if self.save_buffer(&snapshot, prompt.node, false) {
+                        self.close_node_tab(prompt.node);
+                    }
+                } else {
+                    // No file yet: the destination has to be chosen first. The
+                    // Save As runs async through the portal, so the tab stays
+                    // open — once written, it is clean and closes without a
+                    // prompt.
+                    self.request_save_as(prompt.node);
+                }
+            }
+            CloseChoice::Discard => self.close_node_tab(prompt.node),
+            CloseChoice::Cancel => {}
+        }
+    }
+
+    /// The unsaved-close prompt's keyboard shortcuts: Enter saves (the choice
+    /// that keeps the work), Escape cancels.
+    fn close_prompt_key(&self, event: &WindowEvent) -> Option<CloseChoice> {
+        let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return None;
+        };
+        match logical_key {
+            Key::Named(winit::keyboard::NamedKey::Escape) => Some(CloseChoice::Cancel),
+            Key::Named(winit::keyboard::NamedKey::Enter) => Some(CloseChoice::Save),
+            _ => None,
+        }
+    }
+
+    /// Draw the "save changes before closing?" prompt over everything.
+    fn draw_close_prompt(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.close_prompt_buttons.clear();
+        let Some(prompt) = self.close_prompt.clone() else {
+            return;
+        };
+        let c = &theme.tokens.colors;
+        scene.fill(Fill::NonZero, transform, c.surfaces.scrim, None, &self.rect);
+
+        let w = 460.0_f64.min(self.rect.width() - 32.0);
+        let h = 190.0_f64;
+        let x0 = self.rect.x0 + (self.rect.width() - w) / 2.0;
+        let y0 = self.rect.y0 + (self.rect.height() - h) / 2.0;
+        let card = vello::kurbo::RoundedRect::new(x0, y0, x0 + w, y0 + h, 12.0);
+        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &card);
+        scene.stroke(&Stroke::new(1.0), transform, c.border_white_20, None, &card);
+
+        text_renderer.draw_text_weighted(
+            scene,
+            &format!("Save changes to {}?", prompt.name),
+            16.0,
+            c.text_primary,
+            transform * Affine::translate((x0 + 20.0, y0 + 20.0)),
+            Some((w - 40.0) as f32),
+            ui::text_render::TextWeight::Semibold,
+        );
+        text_renderer.draw_text(
+            scene,
+            "This file has unsaved changes. If you don't save them, they will be lost.",
+            13.0,
+            c.text_dim,
+            transform * Affine::translate((x0 + 20.0, y0 + 50.0)),
+            Some((w - 40.0) as f32),
+        );
+
+        let bw = 116.0;
+        let bh = 34.0;
+        let by = y0 + h - 20.0 - bh;
+        let mut bx = x0 + w - 20.0 - bw;
+        for (choice, label, style) in [
+            (CloseChoice::Save, "Save", ui::widget::ButtonStyle::Primary),
+            (CloseChoice::Discard, "Don't Save", ui::widget::ButtonStyle::Danger),
+            (CloseChoice::Cancel, "Cancel", ui::widget::ButtonStyle::Neutral),
+        ] {
+            let rect = Rect::new(bx, by, bx + bw, by + bh);
+            let face = ui::widget::ButtonFace::new(rect, label)
+                .style(style)
+                .hovered(rect.contains(self.close_prompt_hover));
+            ui::widget::Button::paint(scene, transform, text_renderer, theme, &face);
+            self.close_prompt_buttons.push((choice, rect));
+            bx -= bw + 8.0;
+        }
     }
 
     /// Dispatch a palette command. `doc` is threaded in because the one
@@ -2547,6 +2713,8 @@ impl Widget for CodeApp {
         // …and a conflict prompt above even that: it is a question that must be
         // answered before anything else can be done to the file.
         self.draw_conflict(scene, transform, text_renderer, theme);
+        // The unsaved-close prompt sits at the same top layer.
+        self.draw_close_prompt(scene, transform, text_renderer, theme);
     }
 
     fn draw_with_presence(
@@ -2589,6 +2757,37 @@ impl Widget for CodeApp {
         // scrim hit-tests below have a position to work with.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            if self.close_prompt.is_some() {
+                self.close_prompt_hover = self.last_cursor;
+                *handled = true;
+                return;
+            }
+        }
+
+        // The unsaved-close prompt is modal: while it is up it owns all input,
+        // because closing the tab either way changes which of two versions of
+        // the file survives.
+        if self.close_prompt.is_some() {
+            if let Some(choice) = self.close_prompt_key(event) {
+                self.resolve_close_prompt(state, choice);
+            }
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                if let Some((choice, _)) = self
+                    .close_prompt_buttons
+                    .iter()
+                    .find(|(_, r)| r.contains(self.last_cursor))
+                    .copied()
+                {
+                    self.resolve_close_prompt(state, choice);
+                }
+            }
+            *handled = true;
+            return;
         }
 
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
@@ -2902,6 +3101,7 @@ impl Widget for CodeApp {
             || self.find.needs_redraw()
             || self.palette.is_visible()
             || self.conflict.is_some()
+            || self.close_prompt.is_some()
             || self.flap.is_animating(self.sidebar_layout())
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
@@ -3558,5 +3758,47 @@ mod tests {
             Some("let x = 1;\n"),
             "toggling again removed it"
         );
+    }
+
+    #[test]
+    fn closing_a_dirty_tab_prompts_before_discarding() {
+        let (mut app, mut doc) = synced_sample();
+        let node = app.session.active_buffer().unwrap().node;
+        // Edit the buffer so it has unsaved changes, then let a frame recompute
+        // the dirty flag the way `sync` does.
+        app.editor.insert_for_test(&mut doc, "X");
+        app.ensure_buffers(&mut doc);
+        assert!(
+            app.session.buffer_of(node).unwrap().dirty,
+            "the buffer now has unsaved edits"
+        );
+
+        let before = app.session.open.len();
+        let active = app.session.active.unwrap();
+        app.apply_tab_event(TabEvent::Close(active));
+        assert_eq!(
+            app.session.open.len(),
+            before,
+            "a dirty tab is not closed out from under the user"
+        );
+        assert!(app.close_prompt.is_some(), "the save prompt is raised");
+
+        // Discarding closes it and drops the edits.
+        app.resolve_close_prompt(&mut doc, CloseChoice::Discard);
+        assert_eq!(app.session.open.len(), before - 1, "the tab closed");
+        assert!(app.close_prompt.is_none());
+    }
+
+    #[test]
+    fn closing_a_clean_tab_closes_immediately() {
+        let (mut app, _doc) = synced_sample();
+        let before = app.session.open.len();
+        let active = app.session.active.unwrap();
+        app.apply_tab_event(TabEvent::Close(active));
+        assert!(
+            app.close_prompt.is_none(),
+            "a saved tab closes without a prompt"
+        );
+        assert_eq!(app.session.open.len(), before - 1);
     }
 }
