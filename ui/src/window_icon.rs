@@ -1,0 +1,163 @@
+//! Window-icon resolution for [`crate::App`].
+//!
+//! An app's icon comes from its package. The launcher exports
+//! `QOS_APP_ICON` — the in-sandbox path of the image the manifest names
+//! in `[package].icon` — and the toolkit decodes it into a winit
+//! [`Icon`] at window creation. When that variable is unset or the file
+//! cannot be decoded (a dev run outside the launcher, or an app that
+//! ships no icon art yet) a generated qOS default stands in, so every
+//! window carries a real icon rather than none.
+//!
+//! Decoding uses the `image` crate already vendored for the async image
+//! cache, so raster formats (PNG / JPEG / WebP) work with no new
+//! dependency. Vector icons (SVG) are not decoded here — ship a PNG.
+//!
+//! On Wayland, most compositors ignore a client-set toplevel icon (the
+//! icon is sourced from the app_id + a `.desktop` file instead), so this
+//! is a no-op there today; it is correct on X11 and forward-compatible
+//! with the xdg-toplevel-icon protocol. Wiring it now means an app that
+//! adds an icon file later needs no further code change.
+
+use winit::window::Icon;
+
+/// The environment variable the launcher sets to the in-sandbox path of
+/// the app's icon image.
+pub const ICON_ENV: &str = "QOS_APP_ICON";
+
+/// Resolve the window icon: the app's own icon when [`ICON_ENV`] names a
+/// decodable raster image, otherwise the generated qOS default. Returns
+/// `None` only if even the default fails to build (it never should).
+pub fn resolve() -> Option<Icon> {
+    from_env().or_else(default_icon)
+}
+
+/// Load the icon named by [`ICON_ENV`], if the variable is set,
+/// non-empty, and points at a decodable image.
+fn from_env() -> Option<Icon> {
+    let raw = std::env::var_os(ICON_ENV)?;
+    if raw.is_empty() {
+        return None;
+    }
+    load_path(std::path::Path::new(&raw))
+}
+
+/// Decode a raster image file into a winit [`Icon`]. `pub(crate)` so the
+/// resolution path is testable against a real file on disk.
+pub(crate) fn load_path(path: &std::path::Path) -> Option<Icon> {
+    let bytes = std::fs::read(path).ok()?;
+    load_bytes(&bytes)
+}
+
+/// Decode raster image bytes (PNG / JPEG / WebP) into a winit [`Icon`].
+pub(crate) fn load_bytes(bytes: &[u8]) -> Option<Icon> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    Icon::from_rgba(rgba.into_raw(), w, h).ok()
+}
+
+/// The generated qOS default icon — a rounded square in the qOS accent,
+/// used when an app ships no icon of its own.
+pub(crate) fn default_icon() -> Option<Icon> {
+    const SIZE: u32 = 128;
+    let rgba = render_default(SIZE);
+    Icon::from_rgba(rgba, SIZE, SIZE).ok()
+}
+
+/// Paint the default icon: an anti-aliased rounded square filled with a
+/// vertical accent gradient over a transparent field. Pure CPU raster —
+/// no GPU, no asset — so it works headless and in every build.
+fn render_default(size: u32) -> Vec<u8> {
+    // qOS accent, top-to-bottom: indigo -> violet.
+    let top = [0x4Cu8, 0x6Eu8, 0xF5u8];
+    let bottom = [0x8Bu8, 0x5Cu8, 0xF6u8];
+    let s = size as f32;
+    let radius = s * 0.24; // corner radius
+    let half = s * 0.5;
+    let mut out = Vec::with_capacity((size * size * 4) as usize);
+    for y in 0..size {
+        for x in 0..size {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            // Signed distance to a rounded square centred in the tile.
+            // Positive outside, negative inside; the |d| < 1px band is
+            // the antialiased edge.
+            let dx = (px - half).abs() - (half - radius);
+            let dy = (py - half).abs() - (half - radius);
+            let outside = dx.max(0.0).hypot(dy.max(0.0));
+            let inside = dx.max(dy).min(0.0);
+            let dist = outside + inside - radius;
+            // Coverage: full inside, fades to 0 across a 1px edge.
+            let cover = (0.5 - dist).clamp(0.0, 1.0);
+            let t = py / s;
+            let r = lerp(top[0], bottom[0], t);
+            let g = lerp(top[1], bottom[1], t);
+            let b = lerp(top[2], bottom[2], t);
+            let a = (cover * 255.0).round() as u8;
+            out.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    out
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_icon_builds() {
+        // The generated default must always construct — it is the
+        // fallback every icon-less app relies on.
+        assert!(default_icon().is_some(), "generated qOS default icon must build");
+    }
+
+    #[test]
+    fn default_icon_has_opaque_centre_and_clear_corner() {
+        // Sanity that the rounded-square actually paints: the centre is
+        // opaque accent, the extreme corner is transparent.
+        const SIZE: u32 = 128;
+        let rgba = render_default(SIZE);
+        let at = |x: u32, y: u32| {
+            let i = ((y * SIZE + x) * 4) as usize;
+            [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+        };
+        assert_eq!(at(SIZE / 2, SIZE / 2)[3], 255, "centre pixel must be opaque");
+        assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
+    }
+
+    #[test]
+    fn load_bytes_decodes_a_png() {
+        // Encode a tiny solid PNG in-memory, then prove the loader turns
+        // it into an icon — the same path a real `QOS_APP_ICON` file
+        // takes.
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("encode png");
+        assert!(
+            load_bytes(&buf.into_inner()).is_some(),
+            "a valid PNG must decode into an icon"
+        );
+    }
+
+    #[test]
+    fn load_bytes_rejects_garbage() {
+        assert!(
+            load_bytes(b"not an image").is_none(),
+            "undecodable bytes must not yield an icon"
+        );
+    }
+
+    #[test]
+    fn load_path_of_missing_file_is_none() {
+        assert!(
+            load_path(std::path::Path::new("/nonexistent/qos-icon.png")).is_none(),
+            "a missing icon file must not panic and must yield None"
+        );
+    }
+}
