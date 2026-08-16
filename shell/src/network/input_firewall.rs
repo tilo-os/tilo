@@ -1078,6 +1078,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::bool_assert_comparison)]
     fn a_denied_event_still_costs_the_peer_its_rate_budget() {
         let mut fw = firewall();
         let t0 = Instant::now();
