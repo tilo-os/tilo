@@ -672,6 +672,16 @@ mod tests {
         /// bytes cross two endpoints and both codecs run.
         #[test]
         fn two_peers_exchange_encoded_audio_over_quic() {
+            // Opt-in: now that `live-media` is a default feature, a plain
+            // `cargo test -p chat` compiles this in. It is deliberately NOT
+            // hermetic — it binds real iroh endpoints (whose N0 preset reaches
+            // n0's relay + DNS discovery) and requires the GStreamer Opus
+            // elements — so it must not run by default. Set
+            // CHAT_LIVE_MEDIA_TEST=1 to exercise the real QUIC + codec path.
+            if std::env::var("CHAT_LIVE_MEDIA_TEST").is_err() {
+                eprintln!("CHAT_LIVE_MEDIA_TEST not set — skipping live iroh+GStreamer loopback");
+                return;
+            }
             let mut a = match IrohTransport::try_new() {
                 Some(t) => t,
                 // No usable network stack in this environment: skip cleanly
