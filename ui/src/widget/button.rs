@@ -18,6 +18,12 @@ pub struct Button {
     /// screen reader. When the button does show a label, the label is the
     /// accessible name and this is left unset.
     accessible_name: Option<String>,
+    /// Hover-tooltip text (a fluent key or plain string). Revealed by the
+    /// host's central [`TooltipHost`](crate::widget::TooltipHost) after a short
+    /// hover-dwell over the button, and — for an icon-only button — used as the
+    /// accessible name when none was set explicitly, so one short label serves
+    /// both mouse hover and screen-reader users. `None` = no tooltip.
+    tooltip: Option<String>,
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
@@ -65,6 +71,7 @@ impl Button {
             _id: id.to_string(),
             label: label.to_string(),
             accessible_name: None,
+            tooltip: None,
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -122,6 +129,24 @@ impl Button {
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
+    }
+
+    /// Attach a hover tooltip. On an icon-only button this is strongly
+    /// recommended: the glyph alone is ambiguous, so the tooltip reveals the
+    /// label on hover and — absent an explicit [`with_accessible_name`]
+    /// (Self::with_accessible_name) — also becomes the button's accessible
+    /// name, so the same short label serves both mouse and screen-reader users.
+    /// A fluent key is preferred so the label localises; a plain string is fine
+    /// for un-localised chrome. Rendered centrally by the host's
+    /// [`TooltipHost`](crate::widget::TooltipHost) — no per-app wiring.
+    pub fn tooltip(mut self, text: impl Into<String>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    /// Imperatively set or clear the hover tooltip.
+    pub fn set_tooltip(&mut self, text: Option<String>) {
+        self.tooltip = text;
     }
 
     /// Override the default 120×40 intrinsic size — e.g. a compact 40×36
@@ -696,6 +721,13 @@ impl Widget for Button {
         Some(self.label.as_str())
     }
 
+    /// Expose the hover tooltip to the host's central
+    /// [`TooltipHost`](crate::widget::TooltipHost). Returning the raw string
+    /// (a fluent key or plain text); the host resolves i18n and renders.
+    fn tooltip(&self) -> Option<&str> {
+        self.tooltip.as_deref()
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -759,9 +791,14 @@ impl Widget for Button {
         let name = if !label.is_empty() {
             Some(label)
         } else {
+            // Icon-only button: prefer the explicit accessible name, else fall
+            // back to the tooltip text so the same short label a mouse user
+            // sees on hover is what a screen reader announces. The glyph is
+            // never left silent when a tooltip is set.
             self.accessible_name
                 .as_ref()
                 .map(|n| i18n!(n))
+                .or_else(|| self.tooltip.as_ref().map(|t| i18n!(t)))
                 .filter(|n| !n.is_empty())
         };
         Some(
@@ -1066,6 +1103,42 @@ mod tests {
             .with_accessible_name("Confirm");
         let node = Widget::accessibility(&b).unwrap();
         assert_eq!(node.name.as_deref(), Some("Confirm"));
+    }
+
+    #[test]
+    fn tooltip_is_exposed_to_the_host() {
+        // The `.tooltip(..)` builder makes the text visible to the central
+        // TooltipHost via the `Widget::tooltip` query.
+        let b = Button::new("id", "", None)
+            .with_icon(crate::icons::Icon::Search)
+            .tooltip("Search");
+        assert_eq!(Widget::tooltip(&b), Some("Search"));
+        let plain = Button::new("id", "Save", None);
+        assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
+    }
+
+    #[test]
+    fn icon_only_tooltip_doubles_as_accessible_name() {
+        // An icon-only button with only a tooltip (no explicit accessible name)
+        // announces the tooltip text — so the tooltip is accessibility, not
+        // just a mouse-hover affordance.
+        let b = Button::new("id", "", None)
+            .with_icon(crate::icons::Icon::Search)
+            .tooltip("Search");
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.name.as_deref(), Some("Search"));
+    }
+
+    #[test]
+    fn explicit_accessible_name_wins_over_tooltip() {
+        // When both are set the explicit accessible name is authoritative; the
+        // tooltip is only the fallback.
+        let b = Button::new("id", "", None)
+            .with_icon(crate::icons::Icon::MoreHorizontal)
+            .with_accessible_name("View options")
+            .tooltip("More");
+        let node = Widget::accessibility(&b).unwrap();
+        assert_eq!(node.name.as_deref(), Some("View options"));
     }
 
     #[test]

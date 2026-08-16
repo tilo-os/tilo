@@ -87,6 +87,24 @@ pub trait Widget {
     fn cursor_shape(&self, _point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
         None
     }
+
+    /// The hover-tooltip text for this widget, if any — a short label revealed
+    /// after a brief hover-dwell over the widget's rect (e.g. "Search" for a
+    /// magnifier icon button). Return the raw string; the host resolves i18n
+    /// (fluent keys are supported) and renders one themed chip on top of the
+    /// whole app via [`crate::widget::tooltip::TooltipHost`].
+    ///
+    /// This is the toolkit's single tooltip mechanism: any widget that opts in
+    /// gets a consistent, theme-aware, edge-clamped, keyboard-dismissable
+    /// tooltip with **zero per-app wiring** — the host hit-tests the widget
+    /// tree the same way [`cursor_shape`](Self::cursor_shape) does, so a
+    /// container need not forward anything. An icon-only control should also
+    /// surface the same text as its accessible name so the tooltip doubles as
+    /// accessibility rather than being mouse-only. Default `None`.
+    fn tooltip(&self) -> Option<&str> {
+        None
+    }
+
     fn is_focusable(&self) -> bool { false }
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
@@ -681,6 +699,7 @@ pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
 mod workspace_view;
 pub use workspace_view::{WorkspaceView, WorkspaceSwitchDirection};
 pub mod tooltip;
+pub use tooltip::{Tooltip, TooltipHost};
 pub mod toast;
 pub mod permission_prompt;
 pub use permission_prompt::{PermissionPrompt, PromptChoice, PROMPT_HEIGHT};

@@ -367,6 +367,15 @@ pub struct App {
     /// the incremental-render gate.
     current_cursor: CursorIcon,
 
+    /// Central hover-tooltip controller. On every pointer move the App
+    /// hit-tests the widget tree (the same `node_map` sweep
+    /// [`Self::resolve_cursor`] uses) for the smallest widget under the pointer
+    /// that exposes a [`Widget::tooltip`], feeds it here, and — once the dwell
+    /// elapses — paints a single themed chip on top of the whole app. Clicks,
+    /// scrolls, keys and pointer-leave dismiss it. This is what makes tooltips
+    /// a toolkit primitive available to every app with zero per-app wiring.
+    tooltip_host: crate::widget::TooltipHost,
+
     /// Built-in screen reader. `Some` when
     /// [`A11ySettings::screen_reader`](crate::a11y::A11ySettings::screen_reader)
     /// is on (toggled via [`Self::set_screen_reader_enabled`], or auto-enabled
@@ -533,6 +542,7 @@ impl App {
             presence_broadcast_sink: None,
             frame_tick: None,
             current_cursor: CursorIcon::Default,
+            tooltip_host: crate::widget::TooltipHost::new(),
             // Auto-enable the screen reader if the environment opts in (the
             // shell mirrors A11ySettings.screen_reader into spawned sandboxes
             // via QOS_A11Y_* env vars). Either var, non-empty, turns it on.
@@ -1211,6 +1221,35 @@ impl App {
             }
         }
         best.map(|(_, icon)| icon)
+    }
+
+    /// The hover-tooltip `(anchor_rect, label)` for the widget under `point`,
+    /// or `None`. Mirrors [`Self::resolve_cursor`]: a single sweep over
+    /// `node_map`, picking the smallest-area widget under the pointer that
+    /// exposes a non-empty [`Widget::tooltip`] — so a nested icon button beats
+    /// its enclosing toolbar. The label is the raw string the widget returns;
+    /// the caller resolves i18n at render/announce time.
+    fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
+        for &w_ptr in self.node_map.values() {
+            // SAFETY: identical invariant to `resolve_cursor` — `node_map`
+            // pointers are valid for the duration of an event dispatch.
+            let w = unsafe { &*w_ptr };
+            let rect = w.get_rect();
+            if !rect.contains(point) {
+                continue;
+            }
+            if let Some(tip) = w.tooltip() {
+                if tip.is_empty() {
+                    continue;
+                }
+                let area = (rect.width() * rect.height()).max(0.0);
+                if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
+                    best = Some((area, rect, tip.to_string()));
+                }
+            }
+        }
+        best.map(|(_, rect, label)| (rect, label))
     }
 
     /// Register a per-frame callback invoked from `AboutToWait`. The
@@ -3484,6 +3523,32 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         &app.presence_ctx,
                     );
                 }
+                // Central hover tooltip — painted last so the single chip
+                // composites above the whole app (widget tree, overlays and the
+                // action palette). Tick the wall clock, and if a tooltip has
+                // dwelled long enough to reveal, resolve its i18n label and draw
+                // one themed chip anchored to the hovered control, flipped and
+                // clamped to stay inside the window.
+                app.tooltip_host.tick(Instant::now());
+                if let Some((text, anchor)) = app
+                    .tooltip_host
+                    .visible()
+                    .map(|(label, anchor)| (crate::i18n::I18nManager::lookup(label, None), anchor))
+                {
+                    let win_w = (width as f64) / (scale_factor as f64);
+                    let win_h = (height as f64) / (scale_factor as f64);
+                    let viewport = vello::kurbo::Rect::new(0.0, 0.0, win_w, win_h);
+                    crate::widget::tooltip::draw_hover_tooltip(
+                        &mut scene,
+                        transform,
+                        &mut app.text_renderer,
+                        &app.theme,
+                        anchor,
+                        &text,
+                        viewport,
+                    );
+                }
+
                 // The `draw` pass covers the whole widget tree, the top-layer
                 // overlay, and the action palette — everything encoded into the
                 // scene above (but NOT the profiling HUD, which is drawn after
@@ -4287,6 +4352,28 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         app.current_cursor = desired;
                         window.set_cursor(desired);
                     }
+                    // Retarget the central hover tooltip. `on_pointer` keeps the
+                    // dwell running when the pointer stays over the same region
+                    // and restarts it on a new one; a redraw is requested so the
+                    // reveal/clear lands promptly (the frame pump in
+                    // `about_to_wait` carries the dwell across to the reveal).
+                    let target = app.tooltip_target_at(logical);
+                    if app.tooltip_host.on_pointer(target, Instant::now()) {
+                        window.request_redraw();
+                    }
+                }
+
+                // Any click, scroll, key or pointer-leave dismisses a shown or
+                // pending tooltip — the user has moved on from "what is this?".
+                if matches!(
+                    &event,
+                    WindowEvent::MouseInput { state: ElementState::Pressed, .. }
+                        | WindowEvent::MouseWheel { .. }
+                        | WindowEvent::KeyboardInput { .. }
+                        | WindowEvent::CursorLeft { .. }
+                ) && app.tooltip_host.dismiss()
+                {
+                    window.request_redraw();
                 }
 
                 if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
@@ -4431,6 +4518,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Reduced motion stops the perpetual pump: widgets that respect it
         // already paint their resting state (a still spinner, a static bar),
         // so there is nothing left to animate and we let the loop go idle.
+        // A hover tooltip counting toward its reveal needs frames pumped until
+        // the dwell elapses. Unlike animation, a tooltip is not motion, so it
+        // reveals even under reduce-motion — request a redraw independently.
+        let tooltip_pending = app.tooltip_host.needs_frame();
+        if tooltip_pending {
+            window.request_redraw();
+        }
+
         let needs_frame = app.root_widget.needs_animation_frame();
         if needs_frame && !app.theme.reduce_motion {
             app.needs_sync = true;
@@ -4466,7 +4561,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // still needs another frame (animation or async worker). Dropping
         // straight back to `Wait` the instant both clear is what keeps an
         // idle app from spinning.
-        if app.collab_manager.is_connected() || needs_frame || typing_active {
+        if app.collab_manager.is_connected() || needs_frame || tooltip_pending || typing_active {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
             ));
