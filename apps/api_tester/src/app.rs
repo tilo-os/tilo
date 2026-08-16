@@ -150,7 +150,6 @@ struct Layout {
     response: Rect,
     resp_status: Rect,
     resp_body: Rect,
-    title: Point,
     collections_label: Point,
     history_label: Point,
     body_region: Rect,
@@ -771,9 +770,9 @@ impl ApiTesterApp {
         // --- Sidebar rows ---
         if self.rail.reveal() > 0.001 && l.sidebar.width() > 1.0 {
             let s = l.sidebar;
-            let mut y = s.y0 + PAD;
-            l.title = Point::new(s.x0 + PAD, y);
-            y += 30.0;
+            // No app-name wordmark (the OS titlebar shows "API Tester"); the ENV
+            // picker leads the sidebar. Keep room above it for the ENV caption.
+            let mut y = s.y0 + PAD + 16.0;
             l.env = Rect::new(s.x0 + PAD, y, s.x1 - PAD, y + 40.0);
             y += 54.0;
             l.collections_label = Point::new(s.x0 + PAD, y);
@@ -858,15 +857,6 @@ impl ApiTesterApp {
         let div = Rect::new(area.x1 - 1.0, area.y0, area.x1, area.y1);
         scene.fill(Fill::NonZero, t, c.border_standard, None, &div);
 
-        tr.draw_text_weighted(
-            scene,
-            "API Tester",
-            theme.tokens.typography.scale.lg,
-            c.text_primary,
-            t * Affine::translate((l.title.x, l.title.y)),
-            None,
-            TextWeight::Bold,
-        );
         // ENV label above the picker.
         tr.draw_text_weighted(
             scene,
