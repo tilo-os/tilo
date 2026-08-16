@@ -297,6 +297,43 @@ impl LspStatus {
     pub fn is_working(&self) -> bool {
         matches!(self, LspStatus::Starting { .. } | LspStatus::Busy { .. })
     }
+
+    /// What the Problems panel should title its zero-state with while the
+    /// server is still working, or `None` when an empty list really is a
+    /// finding.
+    ///
+    /// A cold `rust-analyzer` on a workspace this size spends minutes on
+    /// `cargo metadata`, proc-macro loading and indexing before it says
+    /// anything. During that window the editor looks exactly like an editor
+    /// that has analysed the file and found it perfect. Naming the task is the
+    /// difference between "this is working" and "this is broken", and it is the
+    /// honest reading of an empty list.
+    pub fn analysis_note(&self) -> Option<String> {
+        let task = match self {
+            LspStatus::Starting { .. } => "starting".to_string(),
+            LspStatus::Busy {
+                title,
+                detail,
+                percentage,
+                ..
+            } => {
+                let mut s = title.to_lowercase();
+                if let Some(d) = detail {
+                    s.push_str(&format!(" {d}"));
+                }
+                if let Some(p) = percentage {
+                    s.push_str(&format!(" {p}%"));
+                }
+                s
+            }
+            LspStatus::None | LspStatus::Ready { .. } | LspStatus::Failed(_) => return None,
+        };
+        let server = match self {
+            LspStatus::Starting { server } | LspStatus::Busy { server, .. } => server.as_str(),
+            _ => return None,
+        };
+        Some(format!("{server} is still {task}"))
+    }
 }
 
 /// A transient message about a file operation.
@@ -699,6 +736,7 @@ impl CodeApp {
         }
         diagnostics.sort_by(|a, b| (a.line, a.col).cmp(&(b.line, b.col)));
         self.panel.set_problems(diagnostics);
+        self.panel.set_analysis(self.lsp_status.analysis_note());
     }
 
     /// Rebuild the status bar snapshot.
@@ -3106,14 +3144,133 @@ mod tests {
         assert!(app.sidebar_open(), "docked sidebar stays open after open");
     }
 
+    /// Overwrite a buffer's whole text through the CRDT, the way an edit does.
+    fn replace_buffer_text(doc: &mut AutoCommit, node: crate::model::NodeId, text: &str) {
+        let obj = EditorDoc::ensure_buffer(doc, node, "");
+        let len = doc.text(&obj).map(|t| t.chars().count()).unwrap_or(0);
+        EditorDoc::splice(doc, &obj, 0, len, text);
+    }
+
     #[test]
     fn diagnostics_populate_for_buffer_with_todo() {
         let mut app = CodeApp::with_sample();
         let mut doc = AutoCommit::new();
         app.ensure_buffers(&mut doc);
+        // Put a marker the linter is guaranteed to report into the open buffer,
+        // so this asserts that the pipeline carries a real finding through to
+        // the panel rather than merely that it does not panic.
+        let node = app.session.active_buffer().expect("a buffer is open").node;
+        replace_buffer_text(&mut doc, node, "// TODO: prove the pipeline\n");
         app.refresh_diagnostics(&doc);
-        // README/main don't necessarily have problems, but the pipeline runs
-        // without panicking and the count is queryable.
-        let _ = app.panel.problem_count();
+        assert!(
+            app.panel.problem_count() > 0,
+            "the linter's finding reaches the panel"
+        );
+    }
+
+    /// An empty Problems list means two completely different things depending
+    /// on whether anything has looked yet, and the panel has to distinguish
+    /// them: "analysed and clean" is a finding, "not analysed yet" is not.
+    #[test]
+    fn an_unfinished_server_replaces_the_no_problems_claim() {
+        let busy = LspStatus::Busy {
+            server: "rust-analyzer".to_string(),
+            title: "Indexing".to_string(),
+            detail: None,
+            percentage: Some(37),
+        };
+        let note = busy.analysis_note().expect("a working server explains itself");
+        assert!(note.contains("rust-analyzer"), "it names the server: {note}");
+        assert!(note.contains("indexing"), "it names the task: {note}");
+        assert!(note.contains("37%"), "it carries the progress: {note}");
+        assert!(
+            note.contains("still"),
+            "it reads as work in progress, not a result: {note}"
+        );
+
+        assert!(
+            LspStatus::Starting {
+                server: "rust-analyzer".to_string()
+            }
+            .analysis_note()
+            .is_some(),
+            "a server that has not answered yet is also not a verdict"
+        );
+
+        // Once something has answered — or there is no server at all and the
+        // local linter is the analysis — an empty list is a real finding again.
+        for settled in [
+            LspStatus::Ready {
+                server: "rust-analyzer".to_string(),
+            },
+            LspStatus::Failed("rust-analyzer exited".to_string()),
+            LspStatus::None,
+        ] {
+            assert_eq!(
+                settled.analysis_note(),
+                None,
+                "{settled:?} must let the panel state its finding"
+            );
+        }
+    }
+
+    /// And the note reaches the panel through the production path, not just the
+    /// helper that formats it.
+    #[test]
+    fn the_panel_learns_the_server_is_still_working() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+
+        app.refresh_diagnostics(&doc);
+        assert_eq!(
+            app.panel.analysis(),
+            None,
+            "with no server the linter is the analysis"
+        );
+
+        app.shots_indexing();
+        app.refresh_diagnostics(&doc);
+        let shown = app.panel.analysis().expect("the panel is told");
+        assert!(shown.contains("rust-analyzer"), "got: {shown}");
+
+        app.lsp_status = LspStatus::Ready {
+            server: "rust-analyzer".to_string(),
+        };
+        app.refresh_diagnostics(&doc);
+        assert_eq!(
+            app.panel.analysis(),
+            None,
+            "the note clears once the server has settled"
+        );
+    }
+
+    /// The structural scan defers to a language server that has published for
+    /// the buffer, and only to one that has.
+    #[test]
+    fn a_published_diagnostic_retires_the_bracket_scan() {
+        let mut app = CodeApp::with_sample();
+        let mut doc = AutoCommit::new();
+        app.ensure_buffers(&mut doc);
+        let node = app.session.active_buffer().expect("a buffer is open").node;
+        replace_buffer_text(&mut doc, node, "fn main( {\n");
+
+        app.refresh_diagnostics(&doc);
+        assert!(
+            app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            "with nothing better answering, the scan reports the unbalanced bracket"
+        );
+
+        // Now let a server publish for this buffer — even an empty publish is
+        // an answer, and it is the answer that counts.
+        let uri = app.lsp_uri.clone().unwrap_or_else(|| "file:///probe.rs".to_string());
+        app.lsp_uri = Some(uri.clone());
+        app.lsp_diagnostics.insert(uri, Vec::new());
+        app.refresh_diagnostics(&doc);
+        assert!(
+            !app.panel.problems().iter().any(|d| d.message.contains("Unclosed")),
+            "the scanner's guess yields to the compiler's answer: {:?}",
+            app.panel.problems().iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
     }
 }
