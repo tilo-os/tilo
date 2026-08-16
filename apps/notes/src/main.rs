@@ -1,13 +1,13 @@
 //! Thin binary entry point. All logic lives in the library.
 //!
-//! Collaboration: set `QUICK_COLLAB_SOCK` to a running `collab-broker`
-//! socket and `QUICK_APP_ID` to a per-instance identity, and two
-//! instances share one document with live presence:
+//! Collaboration: launched from the shell, the compositor's broker is
+//! reached through the descriptor the launcher injects — nothing to
+//! configure. Run outside a session, point two instances at one shell:
 //!
 //! ```bash
-//! collab-broker /tmp/notes.sock &
-//! QUICK_COLLAB_SOCK=/tmp/notes.sock QUICK_APP_ID=alice notes &
-//! QUICK_COLLAB_SOCK=/tmp/notes.sock QUICK_APP_ID=bob   notes
+//! QUICK_COLLAB_SOCK="$XDG_RUNTIME_DIR/qos/services/collab-json.sock"
+//! QUICK_APP_ID=alice notes &
+//! QUICK_APP_ID=bob   notes
 //! ```
 
 use notes::NotesApp;
