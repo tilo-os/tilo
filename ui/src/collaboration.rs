@@ -2243,6 +2243,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(qos_user_identity)]
     fn join_channel_uses_empty_identity_when_env_var_unset() {
         // The manager's public constructor (`new`) is what apps hit.
         // With `QOS_USER_IDENTITY` unset, `runtime-identity::load()`
@@ -2258,8 +2259,8 @@ mod tests {
         };
         let (fd, captures, _th) = stand_up_fake_broker(broker);
 
-        // SAFETY: env-var mutations in this test module are logically
-        // serial — no other test in this module races on the same var.
+        // SAFETY: every test that mutates this variable is serialised on
+        // the `qos_user_identity` key, so nothing reads it concurrently.
         unsafe { std::env::remove_var(runtime_identity::IDENTITY_ENV_VAR) };
         let cluster = Uuid::new_v4();
         let _mgr =
