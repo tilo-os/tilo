@@ -36,41 +36,50 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::Widget;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{FontChoice, TextRenderer};
 use ui::theme::Theme;
-use ui::widget::BlockEditor;
+use ui::widget::{BlockEditor, EditableLabel, EditOutcome, EmptyState};
 
 use crate::model::PageId;
 
-/// Breadcrumb-style title size. v0.1 used a 32-pt "page title" up top
-/// which then collided with the body's H1 block (most pages open with
-/// a `# Title` heading, so the H1 reads as the page heading and the
-/// panel title is redundant). The new title is a small dim breadcrumb
-/// — always shown so the user can still tell which page they're on,
-/// but visually subordinate to the body so the H1 in the body reads
-/// as THE heading.
-const TITLE_SIZE: f32 = 13.0;
+/// Page-title size. The title is the note's most prominent element — a
+/// large, editable heading pinned above the body, the way Notion/Bear put
+/// the page name at the top of the page rather than burying it in the
+/// first line of the body. Editing it renames the page (and re-syncs the
+/// sidebar). The seeded page bodies no longer repeat the title as a body
+/// H1, so there's a single clear heading per page.
+const TITLE_SIZE: f32 = 30.0;
 /// Inner padding around the panel content.
 const PADDING_PX: f64 = 32.0;
-/// Empty-state hint size.
-const HINT_SIZE: f32 = 14.0;
-/// Vertical gap between the breadcrumb title and the block editor.
-/// Shorter than the previous 24 px since the title is now a small
-/// chip rather than a heading row.
-const TITLE_TO_EDITOR_GAP: f64 = 12.0;
-/// Breadcrumb title row height (~ TITLE_SIZE * 1.5).
-const TITLE_HEIGHT: f64 = 20.0;
+/// Vertical gap between the title and the block editor.
+const TITLE_TO_EDITOR_GAP: f64 = 14.0;
+/// Title row height (~ TITLE_SIZE * 1.4) — enough for the editable field's
+/// caret band without clipping descenders.
+const TITLE_HEIGHT: f64 = 44.0;
 
 pub struct MainPanel {
-    /// Currently displayed page (None until a selection lands).
+    /// Currently displayed page (None until a selection lands). Also the
+    /// "is a page open" signal that gates the title vs. the empty state.
     page_id: Option<PageId>,
-    /// Title rendered above the editor. Drives the empty-state hint
-    /// too — `None` means "no page selected".
-    title: Option<String>,
+    /// The note's prominent, inline-editable title. A shared [`EditableLabel`]
+    /// so the rename gets real selection / clipboard / caret for free; a
+    /// committed edit is queued in `pending_rename` for the host to apply as a
+    /// page rename (which re-syncs the sidebar).
+    title_label: EditableLabel,
+    /// Rect the title occupies (pinned above the scrolled body), used to
+    /// hit-test a click into the title band since press events carry no
+    /// position.
+    title_rect: Rect,
+    /// Latest pointer position (logical), tracked so a press can be classified
+    /// as "in the title" without the event carrying coordinates.
+    last_pointer: Point,
+    /// Rising-edge: a committed title edit that should rename the page. The
+    /// host drains it via [`take_title_rename`](Self::take_title_rename).
+    pending_rename: Option<String>,
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: BlockEditor,
@@ -104,7 +113,13 @@ impl MainPanel {
     pub fn new() -> Self {
         Self {
             page_id: None,
-            title: None,
+            title_label: EditableLabel::new("")
+                .with_font_family(FontChoice::SansSerif)
+                .with_font_size(TITLE_SIZE)
+                .with_id("note_title"),
+            title_rect: Rect::ZERO,
+            last_pointer: Point::ZERO,
+            pending_rename: None,
             editor: BlockEditor::new(),
             body: String::new(),
             rect: Rect::ZERO,
@@ -116,6 +131,24 @@ impl MainPanel {
         }
     }
 
+    /// Set the committed title value shown by the idle label, cancelling any
+    /// in-flight rename first (a page swap should never carry an open editor
+    /// or a stale pending rename into the next page).
+    fn set_title_value(&mut self, title: &str) {
+        self.title_label.cancel();
+        let _ = self.title_label.take_outcome();
+        self.title_label.set_value(title);
+        self.pending_rename = None;
+        self.dirty = true;
+    }
+
+    /// Rising-edge: a committed title edit that renames the current page. The
+    /// host drains this after each event and applies it as a rename. Cleared
+    /// on read.
+    pub fn take_title_rename(&mut self) -> Option<String> {
+        self.pending_rename.take()
+    }
+
     /// Load a page into the panel. The body is parsed and handed to
     /// a fresh `BlockEditor`. The previous editor's state (focus,
     /// caret) is discarded — switching pages is a hard cut.
@@ -125,7 +158,7 @@ impl MainPanel {
     /// `BlockEditor::from_markdown` doesn't see inline marks).
     pub fn load_page(&mut self, id: PageId, title: String, body: String) {
         self.page_id = Some(id);
-        self.title = Some(title);
+        self.set_title_value(&title);
         let specs = crate::markdown::parse(&body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = BlockEditor::new();
@@ -157,7 +190,7 @@ impl MainPanel {
         F: FnMut(&str) -> Option<PageId>,
     {
         self.page_id = Some(id);
-        self.title = Some(title);
+        self.set_title_value(&title);
         let mut specs = crate::markdown::parse(&body);
         crate::markdown::resolve_link_ids(&mut specs, resolver);
         let blocks = crate::markdown::specs_to_blocks(&specs);
@@ -184,7 +217,7 @@ impl MainPanel {
         body: &str,
     ) {
         self.page_id = Some(id);
-        self.title = Some(title);
+        self.set_title_value(&title);
         let specs = crate::markdown::parse(body);
         let blocks = crate::markdown::specs_to_blocks(&specs);
         self.editor = BlockEditor::new();
@@ -208,18 +241,22 @@ impl MainPanel {
     /// Clear the panel back to the empty state.
     pub fn clear(&mut self) {
         self.page_id = None;
-        self.title = None;
+        self.set_title_value("");
         self.editor = BlockEditor::new();
         self.body = String::new();
         self.scroll_y = 0.0;
         self.dirty = true;
     }
 
-    /// Update only the title (used by the sidebar's inline rename).
+    /// Update only the title (used by the sidebar's inline rename). Ignored
+    /// while the title is itself being edited, so a model echo doesn't stomp
+    /// the user's in-flight typing.
     pub fn set_title(&mut self, title: Option<String>) {
-        if self.title != title {
-            self.title = title;
-            self.dirty = true;
+        if let Some(t) = title {
+            if !self.title_label.is_editing() && self.title_label.value() != t {
+                self.title_label.set_value(&t);
+                self.dirty = true;
+            }
         }
     }
 
@@ -248,9 +285,13 @@ impl MainPanel {
         md
     }
 
-    /// Currently displayed title, if any.
+    /// Currently displayed title, if any. `None` when no page is open.
     pub fn title(&self) -> Option<&str> {
-        self.title.as_deref()
+        if self.page_id.is_some() {
+            Some(self.title_label.value())
+        } else {
+            None
+        }
     }
 
     /// Read-only access to the live editor. Used by integration
@@ -273,6 +314,19 @@ impl MainPanel {
     #[doc(hidden)]
     pub fn scroll_y_for_test(&self) -> f64 {
         self.scroll_y
+    }
+
+    /// Test hook: the laid-out title band, for click targeting through the
+    /// real event path.
+    #[doc(hidden)]
+    pub fn title_rect_for_test(&self) -> Rect {
+        self.title_rect
+    }
+
+    /// Test hook: whether the in-page title is currently in edit mode.
+    #[doc(hidden)]
+    pub fn title_is_editing_for_test(&self) -> bool {
+        self.title_label.is_editing()
     }
 }
 
@@ -373,6 +427,14 @@ impl Widget for MainPanel {
             self.dirty = true;
         }
         self.rect = new_rect;
+        // Title band pinned to the top of the panel, above the scrolled body.
+        self.title_rect = Rect::new(
+            self.rect.x0 + PADDING_PX,
+            self.rect.y0 + PADDING_PX,
+            (self.rect.x1 - PADDING_PX).max(self.rect.x0 + PADDING_PX),
+            self.rect.y0 + PADDING_PX + TITLE_HEIGHT,
+        );
+        self.title_label.apply_layout_external(self.title_rect);
         // Lay the editor out at the unshifted origin first so we can
         // compute its natural content extent, then shift by -scroll_y
         // for the second pass. Cheaper than measuring twice through
@@ -431,66 +493,51 @@ impl Widget for MainPanel {
             &self.rect,
         );
 
-        let inner_x = self.rect.x0 + PADDING_PX;
-        let inner_y = self.rect.y0 + PADDING_PX;
-        let inner_w = (self.rect.width() - 2.0 * PADDING_PX).max(0.0) as f32;
+        if self.page_id.is_some() {
+            // Prominent, editable page title, drawn OUTSIDE the scroll clip so
+            // it stays pinned while the body scrolls under it.
+            self.title_label.apply_layout_external(self.title_rect);
+            self.title_label
+                .draw(scene, transform, text_renderer, theme, presence);
 
-        match &self.title {
-            Some(t) => {
-                // Breadcrumb-style title — dim, small, always visible.
-                // The body's H1 (if present) is the real heading; this
-                // chip is just "you are here". Draw OUTSIDE the scroll
-                // clip so the breadcrumb stays put while body scrolls.
-                text_renderer.draw_text(
-                    scene,
-                    t,
-                    TITLE_SIZE,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((inner_x, inner_y)),
-                    Some(inner_w),
-                );
-
-                // Clip the editor body to the panel's scrollable
-                // viewport so blocks past the bottom don't bleed onto
-                // the status bar.
-                let body_clip = Rect::new(
-                    self.rect.x0,
-                    self.rect.y0 + PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
-                    self.rect.x1,
-                    self.rect.y1 - PADDING_PX,
-                );
-                scene.push_layer(
-                    vello::peniko::Fill::NonZero,
-                    vello::peniko::BlendMode::default(),
-                    1.0,
-                    transform,
-                    &body_clip,
-                );
-                self.editor
-                    .draw(scene, transform, text_renderer, theme, presence);
-                scene.pop_layer();
-                // Overlay popovers (slash menu) — drawn AFTER the
-                // main editor scene so they land on top of every
-                // block. The BlockEditor exposes its overlay drawer
-                // directly so the host doesn't have to know which
-                // overlays the editor owns. Drawn OUTSIDE the scroll
-                // clip — popovers must be visible at their anchor
-                // even if the editor scrolls past them.
-                self.editor.draw_overlay(scene, transform, text_renderer, theme);
-            }
-            None => {
-                // Empty state: no note is open. This is what a fresh, unseeded
-                // workspace shows — point the user at the "+" that creates their
-                // first note rather than looking broken.
-                text_renderer.draw_text(
-                    scene,
-                    "No note open yet — press + in the sidebar to create one.",
-                    HINT_SIZE,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((inner_x, inner_y)),
-                    Some(inner_w),
-                );
-            }
+            // Clip the editor body to the panel's scrollable viewport so
+            // blocks past the bottom don't bleed onto the status bar.
+            let body_clip = Rect::new(
+                self.rect.x0,
+                self.rect.y0 + PADDING_PX + TITLE_HEIGHT + TITLE_TO_EDITOR_GAP,
+                self.rect.x1,
+                self.rect.y1 - PADDING_PX,
+            );
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &body_clip,
+            );
+            self.editor
+                .draw(scene, transform, text_renderer, theme, presence);
+            scene.pop_layer();
+            // Overlay popovers (slash menu / link popover) — drawn AFTER the
+            // main editor scene so they land on top of every block, and
+            // OUTSIDE the scroll clip so they stay visible at their anchor.
+            self.editor.draw_overlay(scene, transform, text_renderer, theme);
+        } else {
+            // No note open: a composed zero-state rather than a bare line —
+            // this is what a fresh, unseeded workspace shows, so it should
+            // invite the first note rather than look broken.
+            EmptyState::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                self.rect,
+                None,
+                "No note open",
+                Some("Pick a page from the list, or press + to start a new one."),
+                None,
+                self.last_pointer,
+            );
         }
     }
 
@@ -503,12 +550,61 @@ impl Widget for MainPanel {
         path: &ObjId,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Track the pointer so a press (which carries no position) can be
+        // classified as landing in the title band.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_pointer =
+                Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
         if self.page_id.is_none() {
             return;
         }
+
+        // Title editing. A left press in the title band opens an inline rename
+        // (whole title selected, ready to replace or reposition); while
+        // editing, the title owns typing / Enter / Esc, and a click elsewhere
+        // blur-commits. A committed edit is queued for the host to apply as a
+        // page rename.
+        let press_in_title = matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) && self.title_rect.contains(self.last_pointer);
+        if !self.title_label.is_editing() && press_in_title {
+            self.title_label.begin_edit();
+            self.dirty = true;
+            *handled = true;
+            return;
+        }
+        if self.title_label.is_editing() {
+            self.title_label.apply_layout_external(self.title_rect);
+            self.title_label.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, node_id,
+                taffy,
+            );
+            match self.title_label.take_outcome() {
+                EditOutcome::Committed(new) => {
+                    self.pending_rename = Some(new);
+                    self.dirty = true;
+                }
+                EditOutcome::Cancelled => self.dirty = true,
+                EditOutcome::None => {}
+            }
+            // Typing / Enter / Esc are consumed by the field; stop so they
+            // never reach the body. A blur-commit press outside the title is
+            // deliberately NOT consumed, so it falls through to place the
+            // caret in the body below.
+            if *handled {
+                return;
+            }
+        }
+
         // Mouse wheel: scroll the panel's body. Matches ui::Scrollable's
         // wheel-to-px conversion (~120 px / notch). Consumes the event
         // so the underlying TextInput doesn't try to interpret a wheel
