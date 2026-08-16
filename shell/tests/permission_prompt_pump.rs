@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use shell::shell::chrome_state::{ChromeState, OverlayFlags};
+use shell::shell::chrome_state::{ChromeState, OverlayFlags, PendingPrompt};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
     Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
@@ -103,7 +103,7 @@ fn chrome_with_pending_grant(
         let owner = st.local_user_id.clone();
         st.tree_mut().adopt_ownerless_workspaces(&owner);
         st.pending_grants
-            .push_back((app_id.to_string(), capability));
+            .push_back(PendingPrompt::new(app_id.to_string(), capability));
     }
     (chrome, id)
 }
@@ -418,11 +418,11 @@ fn pump_advances_to_next_grant_after_first_drain() {
     let chrome = ChromeState::new(tree);
     {
         let mut st = chrome.borrow_mut();
-        st.pending_grants.push_back((
+        st.pending_grants.push_back(PendingPrompt::new(
             "org.example.app".into(),
             Capability::Camera { scope: GRANT_ONCE },
         ));
-        st.pending_grants.push_back((
+        st.pending_grants.push_back(PendingPrompt::new(
             "org.other.app".into(),
             Capability::Microphone { scope: GRANT_ONCE },
         ));
