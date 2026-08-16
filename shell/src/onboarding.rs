@@ -237,9 +237,15 @@ pub fn mint_into(identity_dir: &Path) -> Result<MintedIdentity, OnboardingError>
 }
 
 /// Read the public half out of an existing record.
+///
+/// Goes through `IdentityRecord` — the same type that wrote the file — so a
+/// record this build cannot parse is reported as an error rather than
+/// silently showing a fingerprint that belongs to nothing.
 fn read_fingerprint(path: &Path) -> Result<String, String> {
-    let identity = runtime_identity::load_from_path(path.to_path_buf()).map_err(|e| e.to_string())?;
-    Ok(hex_encode(&identity.group_public_key()))
+    use ui::widget::identity_flow::IdentityRecord;
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let record = IdentityRecord::from_json_bytes(&bytes).map_err(|e| e.to_string())?;
+    Ok(hex_encode(&record.threshold_identity.group_public_key))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
