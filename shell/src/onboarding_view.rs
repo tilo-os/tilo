@@ -26,6 +26,12 @@ use crate::onboarding::{
     INTRO_POINTS, INTRO_TITLE, NO_RECOVERY_POINTS, NO_RECOVERY_TITLE,
 };
 
+/// Measure for the ceremony's column, in logical px. Body text at 13px wants
+/// roughly this width to land near 70 characters a line; wider and the eye
+/// loses the start of the next line, which is the last thing you want on the
+/// one screen that has to actually be read.
+const CONTENT_WIDTH: f32 = 620.0;
+
 pub const KEY_BEGIN: &str = "onboarding.begin";
 pub const KEY_UNDERSTOOD: &str = "onboarding.understood";
 pub const KEY_CREATE: &str = "onboarding.create";
@@ -83,23 +89,17 @@ impl OnboardingView {
         self.finished
     }
 
-    fn build_composition(&self) -> Box<dyn Widget> {
+    fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let body: Box<dyn Widget> = match self.flow.screen() {
-            Screen::Intro => self.intro(),
-            Screen::NoRecovery => self.no_recovery(),
-            Screen::Done => self.done(),
+            Screen::Intro => self.intro(theme),
+            Screen::NoRecovery => self.no_recovery(theme),
+            Screen::Done => self.done(theme),
         };
-        Box::new(
-            Column::new()
-                .with_gap(16.0)
-                .with_vertical_padding(48.0)
-                .with_horizontal_padding(64.0, 64.0)
-                .push(body),
-        )
+        Box::new(Column::new().with_no_padding().with_gap(16.0).push(body))
     }
 
-    fn intro(&self) -> Box<dyn Widget> {
-        let mut list = Column::new().with_no_padding().with_intrinsic_height().with_gap(10.0);
+    fn intro(&self, theme: &Theme) -> Box<dyn Widget> {
+        let mut list = Column::new().with_no_padding().with_gap(10.0);
         for point in INTRO_POINTS {
             list = list.push(bullet(point));
         }
@@ -108,24 +108,24 @@ impl OnboardingView {
                 .with_no_padding()
                 .with_gap(20.0)
                 .push(heading(INTRO_TITLE))
-                .push(paragraph(INTRO_BODY))
+                .push(paragraph(INTRO_BODY, theme))
                 .push(Box::new(Card::titled("What it is for", Box::new(list))))
-                .push(actions(vec![Box::new(Button::new(
-                    "onboarding.begin.button",
-                    "Continue",
-                    Some(KEY_BEGIN),
-                ))])),
+                .push(actions(vec![Box::new(
+                    Button::new("onboarding.begin.button", "Continue", Some(KEY_BEGIN))
+                        .with_style(ui::widget::ButtonStyle::Primary),
+                )])),
         )
     }
 
-    fn no_recovery(&self) -> Box<dyn Widget> {
-        let mut list = Column::new().with_no_padding().with_intrinsic_height().with_gap(12.0);
+    fn no_recovery(&self, theme: &Theme) -> Box<dyn Widget> {
+        let mut list = Column::new().with_no_padding().with_gap(14.0);
         for point in NO_RECOVERY_POINTS {
             list = list.push(bullet(point));
         }
         // The gate. Disabled until the box is ticked, so the primary action
         // cannot be clicked past the consequence.
         let create = Button::new("onboarding.create.button", "Create my identity", Some(KEY_CREATE))
+            .with_style(ui::widget::ButtonStyle::Primary)
             .with_enabled(self.flow.can_create());
         Box::new(
             Column::new()
@@ -148,7 +148,7 @@ impl OnboardingView {
         )
     }
 
-    fn done(&self) -> Box<dyn Widget> {
+    fn done(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.error {
             return Box::new(
                 Column::new()
@@ -162,6 +162,7 @@ impl OnboardingView {
                         "The desktop will start, but nothing you do will be signed until this \
                          is fixed. Your edits will still save; other people just will not be \
                          able to tell they came from you.",
+                        theme,
                     ))
                     .push(actions(vec![Box::new(Button::new(
                         "onboarding.finish.button",
@@ -189,14 +190,14 @@ impl OnboardingView {
             .push(Box::new(
                 Text::new(&format!("Stored at {path}, readable only by you."))
                     .with_size(11.0)
-                    .with_color(Theme::dark().text_dim),
+                    .with_color(theme.text_dim),
             ));
         Box::new(
             Column::new()
                 .with_no_padding()
                 .with_gap(20.0)
                 .push(Box::new(Banner::success(DONE_TITLE)))
-                .push(paragraph(DONE_BODY))
+                .push(paragraph(DONE_BODY, theme))
                 .push(Box::new(Card::titled("Fingerprint", Box::new(detail))))
                 // Repeated deliberately. This is the last moment the user is
                 // looking at the subject, and it is the one fact they need to
@@ -204,12 +205,12 @@ impl OnboardingView {
                 .push(paragraph(
                     "There is still no way to recover this key. If this device goes, so does \
                      this identity.",
+                    theme,
                 ))
-                .push(actions(vec![Box::new(Button::new(
-                    "onboarding.finish.button",
-                    "Start using qOS",
-                    Some(KEY_FINISH),
-                ))])),
+                .push(actions(vec![Box::new(
+                    Button::new("onboarding.finish.button", "Start using qOS", Some(KEY_FINISH))
+                        .with_style(ui::widget::ButtonStyle::Primary),
+                )])),
         )
     }
 }
@@ -218,18 +219,20 @@ fn heading(text: &str) -> Box<dyn Widget> {
     Box::new(Text::new(text).with_size(26.0))
 }
 
-fn paragraph(text: &str) -> Box<dyn Widget> {
-    Box::new(Text::new(text).with_size(13.0).with_color(Theme::dark().text_dim))
+/// Secondary body copy. Takes the live theme rather than a hard-coded one:
+/// a dark-theme dim grey on a light background is barely legible, and OS
+/// chrome has no business pinning a palette.
+fn paragraph(text: &str, theme: &Theme) -> Box<dyn Widget> {
+    Box::new(Text::new(text).with_size(13.0).with_color(theme.text_dim))
 }
 
+/// A list item.
+///
+/// The marker is part of the same `Text` rather than a sibling in a `Row`:
+/// these lines wrap, and a marker in its own column detaches from its
+/// sentence and floats onto a line of its own.
 fn bullet(text: &str) -> Box<dyn Widget> {
-    Box::new(
-        Row::new()
-            .push(Box::new(
-                Text::new("•").with_size(13.0).with_color(Theme::dark().text_dim),
-            ))
-            .push(Box::new(Text::new(text).with_size(13.0))),
-    )
+    Box::new(Text::new(&format!("•   {text}")).with_size(13.0))
 }
 
 /// A right-aligned action row, so the primary button lands where the eye
@@ -310,12 +313,28 @@ impl Widget for OnboardingView {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let mut composed = self.build_composition();
+        let mut composed = self.build_composition(theme);
         let child = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
+
+        // Hold the text to a comfortable measure and let the root centre it.
+        // This is a full-screen ceremony, so without both the copy would run
+        // the width of a 4K display and sit hard against the top edge.
+        if let Ok(mut cs) = taffy.style(child).cloned() {
+            cs.size.width = taffy::Dimension::length(CONTENT_WIDTH);
+            // Auto height, or the column claims the full viewport and there
+            // is nothing left for the root to centre.
+            cs.size.height = taffy::Dimension::auto();
+            cs.flex_grow = 0.0;
+            cs.flex_shrink = 0.0;
+            let _ = taffy.set_style(child, cs);
+        }
+
         let style = taffy::Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
+            justify_content: Some(taffy::JustifyContent::Center),
+            align_items: Some(taffy::AlignItems::Center),
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
