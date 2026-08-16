@@ -9923,8 +9923,11 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "qos-bluez",
  "tempfile",
+ "tokio",
  "tracing",
+ "zbus 4.4.0",
 ]
 
 [[package]]
