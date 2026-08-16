@@ -9957,11 +9957,25 @@ impl ShellOverlayHost {
             .unwrap_or_default();
 
         if peers.is_empty() {
+            // "No peers connected" is true of a working session nobody
+            // has joined and of a session with no collaboration at all,
+            // and those need different words: the first is waiting, the
+            // second is broken and the user is the only one who can act
+            // on it. Saying the reassuring one for both is how a session
+            // with its broker down looked healthy.
+            let unavailable = self
+                .chrome
+                .as_ref()
+                .and_then(|c| c.borrow().collab_unavailable.clone());
+            let (message, tint) = match &unavailable {
+                Some(reason) => (reason.as_str(), colors.semantic.danger),
+                None => ("No peers connected", colors.text_dim),
+            };
             text_renderer.draw_text(
                 scene,
-                "No peers connected",
+                message,
                 tokens.typography.scale.sm,
-                colors.text_dim,
+                tint,
                 transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
                 None,
             );
