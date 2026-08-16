@@ -3084,6 +3084,7 @@ mod tests {
         drop(second);
         drop(first);
         unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+    }
 
     // ---- developer surfaces are absent from a shipped build ------------
 
