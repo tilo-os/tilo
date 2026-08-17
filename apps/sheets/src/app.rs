@@ -214,7 +214,24 @@ pub struct SheetsApp {
     formula_bar_selecting: bool,
     sheet_names: Vec<String>,
     active_sheet: usize,
+    /// The latest transient action message (e.g. "Pasted into B2"), surfaced
+    /// via the floating [`status_bubble`](Self::status_bubble) rather than a
+    /// permanent status line. Initialised to `"Ready"`, which the bubble
+    /// treats as "nothing to say".
     status: String,
+    /// Transient floating status bubble carrying the selection summary
+    /// (Sum / Avg / Count) or the active cell's format, plus any fresh action
+    /// message. It surfaces when that composed text changes (a selection
+    /// move/extend, an action) or while the pointer hovers the bottom-right
+    /// reveal zone, then fades — keeping the sheet-tab strip free of status
+    /// text so it reads purely as the sheet switcher.
+    status_bubble: ui::StatusBubble,
+    /// The composed bubble text last seen, so the bubble is poked only when it
+    /// actually changes (never every frame, and never on the idle nothing
+    /// state).
+    last_status_label: String,
+    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    shots_status: bool,
     seeded: bool,
     dirty: bool,
     needs_commit: bool,
@@ -312,6 +329,9 @@ impl SheetsApp {
             sheet_names: Vec::new(),
             active_sheet: 0,
             status: "Ready".into(),
+            status_bubble: ui::StatusBubble::new(),
+            last_status_label: String::new(),
+            shots_status: false,
             seeded: false,
             dirty: true,
             needs_commit: false,
@@ -367,6 +387,14 @@ impl SheetsApp {
         self.seed_sample_data = true;
     }
 
+    /// `--shots`: force the floating status bubble fully visible so a single
+    /// headless frame captures the floating Sum / Avg / Count pill (otherwise
+    /// it would have faded, or never surfaced, by the time the frame renders).
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
     /// Shots hook: open the File menu so its actions appear in the frame.
     pub fn shots_open_file_menu(&mut self) {
         self.open_menu = OpenMenu::File;
@@ -404,6 +432,7 @@ impl SheetsApp {
     pub fn shots_select_summary_range(&mut self) {
         // Budget!B2:B6 — the January column body.
         self.grid.select_range_public((1, 1), (1, 5));
+        self.arm_status_bubble_for_shots();
     }
 
     /// Shots hook: build a discontiguous multi-range selection (the Jan column
@@ -412,6 +441,7 @@ impl SheetsApp {
     pub fn shots_multi_select(&mut self) {
         self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
         self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
+        self.arm_status_bubble_for_shots();
     }
 
     /// Shots hook: open the right-click context menu on the first sheet tab so
@@ -1985,51 +2015,60 @@ impl SheetsApp {
             transform * Affine::translate((self.add_tab_rect.center().x - 4.0, self.add_tab_rect.y0 + 4.0)),
             None,
         );
-        // Right side of the status bar: a live selection summary
-        // (Sum / Avg / Count over the numeric cells in the selection), or —
-        // when the selection holds no numbers — the active cell's type. This
-        // is computed from real cell values every frame, and right-aligns so
-        // it never collides with the tabs.
-        let xs = theme.tokens.typography.scale.xs;
-        let status_y = self.tabs_rect.y0 + (TABS_H - xs as f64) / 2.0;
-        let info = match self.selection_summary() {
-            Some(s) => format!(
-                "Sum {}    Avg {}    Count {}",
-                format_value(&CellValue::Number(s.sum), s.fmt),
-                format_value(&CellValue::Number(s.avg), s.fmt),
-                s.count,
-            ),
-            None => self.current_active_format.label(),
-        };
-        let (iw, _) = tr.measure(&info, xs, None);
-        let info_x = self.tabs_rect.x1 - iw as f64 - 12.0;
-        tr.draw_text_weighted(
-            scene,
-            &info,
-            xs,
-            colors.text_primary,
-            transform * Affine::translate((info_x, status_y)),
-            None,
-            TextWeight::Semibold,
-        );
+        // The tab strip now carries only the sheet switcher (tabs + add
+        // button). The selection summary (Sum / Avg / Count or the active
+        // cell's format) and any transient action message are surfaced as a
+        // floating `ui::StatusBubble` above the strip — see
+        // `draw_status_bubble` — so the strip reads purely as navigation.
+    }
 
-        // The transient action message (e.g. "Exported…") sits between the
-        // tabs and the summary, clipped so long paths never overrun it.
-        let msg_left = self.add_tab_rect.x1 + 16.0;
-        let msg_right = info_x - 16.0;
-        if !self.status.is_empty() && msg_right - msg_left > 48.0 {
-            let clip = Rect::new(msg_left, self.tabs_rect.y0, msg_right, self.tabs_rect.y1);
-            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
-            tr.draw_text(
-                scene,
-                &self.status,
-                xs,
-                colors.text_dim,
-                transform * Affine::translate((msg_left, status_y)),
-                None,
-            );
-            scene.pop_layer();
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// grid area, floated just *above* the sheet-tab strip so it never overlaps
+    /// the tabs. It shows the composed status text (selection summary / active
+    /// format, plus any fresh action message) when that text changes or while
+    /// the pointer hovers the bottom-right reveal band, then fades. All colours
+    /// come from the theme (via `draw_pill`).
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = std::time::Instant::now();
+        let Some(label) = self.status_bubble_label() else {
+            return;
+        };
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 12.0;
+        // Lower bound: a few px above the tab strip, so the pill floats over
+        // the grid's bottom-right corner and never covers the sheet tabs.
+        let y1 = self.tabs_rect.y0 - 8.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            y1 - h,
+            self.rect.x1 - margin,
+            y1,
+        );
+        // Reveal zone: the bottom-right corner band of the grid (plus the pill),
+        // so nudging the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.tabs_rect.y0);
+        let over = self.shots_status || zone.contains(self.last_mouse);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
         }
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     fn draw_dropdown(
@@ -2394,6 +2433,49 @@ impl SheetsApp {
             fmt,
         })
     }
+
+    /// The text for the floating status bubble, or `None` when there is nothing
+    /// worth surfacing (an idle sheet: no pending action, no numeric selection,
+    /// a plain `General` active cell — which keeps the bubble hidden).
+    ///
+    /// Primary text is the live selection summary (Sum / Avg / Count over the
+    /// numeric selection) or, absent numbers, the active cell's format. A fresh
+    /// transient action message (e.g. "Pasted into B2") is prepended when
+    /// present; the idle default `"Ready"` (and the empty string) count as "no
+    /// action message" so they never surface on their own.
+    fn status_bubble_label(&self) -> Option<String> {
+        let summary = self.selection_summary().map(|s| {
+            format!(
+                "Sum {}    Avg {}    Count {}",
+                format_value(&CellValue::Number(s.sum), s.fmt),
+                format_value(&CellValue::Number(s.avg), s.fmt),
+                s.count,
+            )
+        });
+        let action = {
+            let t = self.status.trim();
+            if t.is_empty() || t == "Ready" {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        };
+        match (action, summary) {
+            (Some(a), Some(s)) => Some(format!("{a}    ·    {s}")),
+            (Some(a), None) => Some(a),
+            (None, Some(s)) => Some(s),
+            // No action and no numeric selection: fall back to the active
+            // cell's format, but stay silent on a plain `General` cell so an
+            // idle sheet shows no bubble at all.
+            (None, None) => {
+                if self.current_active_format == CellFormat::General {
+                    None
+                } else {
+                    Some(self.current_active_format.label())
+                }
+            }
+        }
+    }
 }
 
 /// A numeric summary of the selection shown in the status bar.
@@ -2578,6 +2660,18 @@ impl Widget for SheetsApp {
         }
         self.reload(state);
         self.current_active_format = self.format_of_active();
+        // Surface the floating status bubble only when the composed label
+        // actually changes — a selection move/extend, or a fresh action
+        // message. `sync` runs every frame, so poking unconditionally would
+        // pin the bubble open forever; and the idle nothing state (empty
+        // label) never surfaces, so a fresh sheet shows no bubble.
+        let label = self.status_bubble_label().unwrap_or_default();
+        if label != self.last_status_label {
+            if !label.is_empty() {
+                self.status_bubble.poke(std::time::Instant::now());
+            }
+            self.last_status_label = label;
+        }
         self.persist_if_dirty(state);
     }
 
@@ -2621,6 +2715,10 @@ impl Widget for SheetsApp {
     ) {
         self.draw_chrome(scene, transform, text_renderer, theme);
         self.grid.draw(scene, transform, text_renderer, theme);
+        // The transient floating status bubble sits above the grid + tab strip
+        // (the reclaimed home of the old bottom status text), below the modal
+        // overlays that follow.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
         // Overlays paint last so they sit above the grid.
         self.draw_dropdown(scene, transform, text_renderer, theme);
         self.draw_settings_panel(scene, transform, text_renderer, theme);
@@ -2639,6 +2737,13 @@ impl Widget for SheetsApp {
             self.palette
                 .draw(scene, transform, text_renderer, theme, _presence);
         }
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming while the floating status bubble is lingering /
+        // fading, so it hides itself without needing a stray pointer event.
+        self.status_bubble.needs_frame(std::time::Instant::now())
+            || self.children().iter().any(|c| c.needs_animation_frame())
     }
 
     fn draw_with_presence(
