@@ -32,6 +32,21 @@ pub fn dot(scene: &mut Scene, transform: Affine, center: Point, radius: f64, col
     scene.fill(Fill::NonZero, transform, color, None, &Circle::new(center, radius));
 }
 
+/// A vertical "kebab" of three dots — the overflow / more-actions affordance.
+pub fn kebab(scene: &mut Scene, transform: Affine, center: Point, half: f64, color: Color) {
+    let r = 1.6;
+    let gap = half * 0.72;
+    for dy in [-gap, 0.0, gap] {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            color,
+            None,
+            &Circle::new(Point::new(center.x, center.y + dy), r),
+        );
+    }
+}
+
 /// A hollow ring — the "read" marker (subtle).
 pub fn ring(scene: &mut Scene, transform: Affine, center: Point, radius: f64, color: Color) {
     scene.stroke(

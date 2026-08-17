@@ -38,6 +38,9 @@ pub enum ModalIntent {
     RenameFeed { feed_id: Id },
     /// Confirm unsubscribing (destructive) from a feed. No text input.
     Unsubscribe { feed_id: Id },
+    /// Confirm marking every article in the current view as read. No text
+    /// input — a plain confirmation before a bulk, not-easily-undone change.
+    MarkAllRead,
 }
 
 impl ModalIntent {
@@ -75,6 +78,11 @@ pub struct ModalBody {
     input: Option<TextInput>,
     rect: Rect,
     field_rect: Rect,
+    /// An inline validation / failure message shown in the theme's danger
+    /// colour just below the field. `Some` keeps the dialog honest about why a
+    /// submit didn't go through (a bad URL, an unreachable feed) while leaving
+    /// the input fully usable so the user can fix it in place.
+    error: Option<String>,
 }
 
 impl ModalBody {
@@ -95,6 +103,7 @@ impl ModalBody {
             input: Some(input),
             rect: Rect::ZERO,
             field_rect: Rect::ZERO,
+            error: None,
         }
     }
 
@@ -106,7 +115,24 @@ impl ModalBody {
             input: None,
             rect: Rect::ZERO,
             field_rect: Rect::ZERO,
+            error: None,
         }
+    }
+
+    /// Show `msg` as an inline error under the field. Clearing (via
+    /// [`Self::clear_error`]) or a fresh submit removes it.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.error = Some(msg.into());
+    }
+
+    /// Remove any inline error (e.g. as the user edits the field).
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+
+    /// The current inline error, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 
     /// The current field value (trimmed by the caller). `""` when this body has
@@ -216,6 +242,18 @@ impl Widget for ModalBody {
             if let Some(input) = &mut self.input {
                 input.draw(scene, transform, tr, theme, presence);
             }
+            // Inline error under the field — the honest "why it didn't submit".
+            if let Some(err) = &self.error {
+                let ey = self.field_rect.y1 + 8.0;
+                tr.draw_text(
+                    scene,
+                    err,
+                    CAPTION_SIZE,
+                    c.semantic.danger,
+                    transform * Affine::translate((self.rect.x0, ey)),
+                    Some(width),
+                );
+            }
         } else {
             // Message-only: vertically centered, left-aligned, wrapped.
             let (_, h) = tr.measure(&self.caption, CAPTION_SIZE + 1.5, Some(width));
@@ -243,6 +281,16 @@ impl Widget for ModalBody {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // The moment the user edits the field, drop a stale error so the
+        // dialog doesn't nag while they fix the URL.
+        if self.error.is_some()
+            && matches!(
+                event,
+                WindowEvent::KeyboardInput { event: ke, .. } if ke.state == winit::event::ElementState::Pressed
+            )
+        {
+            self.error = None;
+        }
         if let Some(input) = &mut self.input {
             input.handle_event(
                 event,

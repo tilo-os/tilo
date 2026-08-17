@@ -76,12 +76,22 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // The per-feed right-click context menu open over the sidebar (the
         // single-frame renderer can't reach it through live input).
         "context-menu" => app.force_feed_menu_open(),
+        // The per-article right-click context menu (copy / open / read /
+        // favourite) open over the article list.
+        "article-menu" => app.force_article_menu_open(),
+        // The "mark all as read" confirmation dialog before it runs.
+        "mark-all-read" => app.force_mark_all_read_confirm(),
         // The subscriptions list after an OPML import folds new folders + feeds
         // into the sidebar.
         "post-import" => app.stage_post_import(),
         // The Add-subscription dialog open over the reader, with a URL typed
         // into the real TextInput (shared caret / clipboard core).
         "add-subscription" => app.stage_add_subscription("https://blog.rust-lang.org/feed.xml"),
+        // The Add-subscription dialog showing an honest inline error for a bad
+        // entry (the field stays usable).
+        "add-error" => {
+            app.stage_add_subscription_error("not a real url", "That doesn't look like a URL — try https://example.com/feed.xml")
+        }
         _ => {}
     }
     Box::new(app)
