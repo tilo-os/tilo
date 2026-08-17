@@ -41,6 +41,7 @@ pub mod model;
 pub mod oauth;
 pub mod pane;
 pub mod sample;
+pub mod search_provider;
 pub mod state;
 pub mod transport;
 pub mod util;
