@@ -801,19 +801,19 @@ impl DisksApp {
         let tx = h.x0 + 20.0;
         self.txt(scene, tr, &drive.model, 22.0, c.text_primary, tx, h.y0 + 16.0, None, TextWeight::Bold);
 
-        // kind badge next to model is overkill; show meta line.
-        let meta = format!(
-            "{}  ·  /dev/{}  ·  {}{}",
-            drive.kind.long(),
-            drive.name,
-            fmt_size(drive.size),
-            drive
-                .serial
-                .as_ref()
-                .map(|s| format!("  ·  S/N {s}"))
-                .unwrap_or_default(),
-        );
-        self.txt(scene, tr, &meta, 13.0, c.text_dim, tx, h.y0 + 46.0, Some((h.width() - 40.0) as f32), TextWeight::Regular);
+        // Meta line: kind · device · size · serial. Keep it to a SINGLE line —
+        // if the full string (with the serial) would wrap, drop the serial so
+        // it never spills onto the chip row below. Guarantees the header reads
+        // cleanly when the detail pane is narrow (the docked default width).
+        let base = format!("{}  ·  /dev/{}  ·  {}", drive.kind.long(), drive.name, fmt_size(drive.size));
+        let full = match &drive.serial {
+            Some(s) => format!("{base}  ·  S/N {s}"),
+            None => base.clone(),
+        };
+        let max_w = (h.width() - 40.0) as f32;
+        let (fw, _) = tr.measure_weighted(&full, 13.0, None, TextWeight::Regular);
+        let meta = if fw as f32 <= max_w { full } else { base };
+        self.txt(scene, tr, &meta, 13.0, c.text_dim, tx, h.y0 + 46.0, Some(max_w), TextWeight::Regular);
 
         // Health + connection chips.
         let chip_y = h.y0 + 62.0;
