@@ -66,15 +66,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         // takes, then open the strip.
         let (mut state, mut wp) = build_concrete(file.as_deref())?;
         seed_revisions(&mut state, &mut wp);
+        // Pin the floating status readout visible so the shot captures it.
+        wp.arm_status_bubble_for_shots();
+        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        return Ok(());
+    }
+
+    // Plain `--shots`: build the concrete widget so the transient status bubble
+    // (which replaced the bottom strip) can be armed — pinned fully visible — for
+    // the single headless frame, then render.
+    if let Some(out) = shots.as_deref() {
+        let (state, mut wp) = build_concrete(file.as_deref())?;
+        wp.arm_status_bubble_for_shots();
         render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
         return Ok(());
     }
 
     let (mut state, widget) = build(file.as_deref())?;
-
-    if let Some(out) = shots {
-        render_shot(state, widget, (1000, 700), Path::new(&out))?;
-    } else {
+    {
         // Collaboration (best-effort, opt-in via env): give this instance a
         // distinct CRDT actor so two editors are distinguishable authors, then
         // hand the App a presence-broadcast scope. The App already owns a
