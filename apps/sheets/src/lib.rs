@@ -37,6 +37,7 @@ pub mod grid;
 pub mod infer;
 pub mod model;
 pub mod ods;
+pub mod search_provider;
 pub mod settings;
 pub mod xlsx;
 
