@@ -9,6 +9,7 @@ use vello::peniko::Color;
 /// Component-wise colour tweaks built on top of peniko's `Color`.
 pub trait ColorExt {
     /// Darken toward black by `t` in `0.0..=1.0` (0 = unchanged).
+    #[allow(dead_code)]
     fn darken(self, t: f32) -> Color;
     /// Lighten toward white by `t` in `0.0..=1.0`.
     #[allow(dead_code)]

@@ -28,13 +28,16 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::Widget;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
+use ui::status_bubble::{self, StatusBubble};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout};
 
 use crate::doc::RemoteDoc;
+use crate::link::{LinkPhase, LinkQuality, LinkState, LinkTone, RelayPath};
 use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
@@ -53,9 +56,6 @@ enum LiveSession {
     Ssh(SshSession),
     Vnc(VncSession),
     Error(String),
-    /// A fixed status with no transport, for `--shots`/preview rendering of
-    /// the composed connecting/failed/closed surfaces. Never on the live path.
-    Preview(SessionStatus),
 }
 
 impl LiveSession {
@@ -64,7 +64,6 @@ impl LiveSession {
             LiveSession::Ssh(s) => s.status(),
             LiveSession::Vnc(s) => s.status(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
-            LiveSession::Preview(s) => s.clone(),
         }
     }
 }
@@ -136,14 +135,21 @@ enum Action {
     ToggleScale,
     /// Toggle fullscreen for the session surface.
     ToggleFullscreen,
-    /// Copy the session's clipboard sample (no-op offline, but live).
-    CopyClipboard,
     /// Disconnect from the active session.
     Disconnect,
+    /// Re-establish a dropped/failed session (a real retry — re-opens the
+    /// transport and restarts the connection lifecycle).
+    Reconnect(ConnectionId),
+    /// Toggle whether local keyboard/pointer input is captured for the remote
+    /// (vs. released back to the local desktop) without ending the session.
+    ToggleCapture,
     /// Pick one of the discovered qOS devices into the form.
     PickQosDevice(usize),
     /// Open/close the navigation rail (hamburger toggle in overlay mode).
     ToggleRail,
+    /// Connect straight from the quick-connect bar: parse the pasted invite
+    /// token or `user@host` address, save it, and open its session.
+    QuickConnect,
 }
 
 /// Editable text fields. The search box lives on the list screen; the
@@ -156,6 +162,9 @@ enum Field {
     Port,
     User,
     Group,
+    /// The quick-connect bar on the connect/empty state: an invite token or an
+    /// address to reach a machine in one step.
+    QuickConnect,
 }
 
 /// A discoverable qOS peer, surfaced in the form's device picker. Offline
@@ -186,6 +195,23 @@ pub struct RemoteApp {
     /// enabled; the default build leaves it `None` and shows the honest
     /// "not connected" surface.
     live: Option<LiveSession>,
+    /// The app-level connection lifecycle (connecting → connected →
+    /// reconnecting → disconnected) plus the relay path and link health the
+    /// viewer surfaces. `None` when no session is open, or in the gated build
+    /// where the honest "not connected" card is shown instead of a lifecycle.
+    link: Option<LinkState>,
+    /// The reconnect attempt we have already re-dialled for, so a live drop
+    /// re-dials once per attempt rather than in a tight loop.
+    reconnect_dialed_for: u32,
+    /// Transient status bubble controller — poked on every lifecycle phase
+    /// change so the connect/reconnect/disconnect transitions surface briefly
+    /// without a permanent status strip.
+    status_bubble: StatusBubble,
+    /// The last status text the bubble was poked with (what it currently says).
+    status_text: String,
+    /// Quick-connect input: an invite token or `user@host` typed on the
+    /// connect/empty state to reach a machine in one step.
+    quick: String,
     /// Cached GPU image of the most recent VNC frame, rebuilt only when a
     /// new framebuffer generation arrives.
     fb_image: Option<PenikoImage>,
@@ -267,6 +293,11 @@ impl RemoteApp {
             draft: ConnectionDraft::default(),
             focus: None,
             live: None,
+            link: None,
+            reconnect_dialed_for: 0,
+            status_bubble: StatusBubble::new(),
+            status_text: String::new(),
+            quick: String::new(),
             fb_image: None,
             fb_canvas: None,
             vnc_buttons: 0,
@@ -334,26 +365,71 @@ impl RemoteApp {
                 }
             }
             // Preview-only session states (no transport) for `--shots` grading
-            // of the composed status surfaces.
+            // of the composed status + live surfaces. These stage the
+            // app-level link lifecycle directly so the viewer chrome renders
+            // without a network.
             "session-connecting" => {
-                self.dev_preview_session(ConnectionKind::Ssh, SessionStatus::Connecting);
+                self.dev_preview_session(
+                    ConnectionKind::Ssh,
+                    LinkState::staged(LinkPhase::Connecting, RelayPath::Direct, None),
+                );
             }
             "session-failed" => {
                 self.dev_preview_session(
                     ConnectionKind::Vnc,
-                    SessionStatus::Failed("Connection refused".into()),
+                    LinkState::staged(
+                        LinkPhase::Unreachable { reason: "Connection refused".into() },
+                        RelayPath::Direct,
+                        None,
+                    ),
+                );
+            }
+            // A live qOS relay session: the connected relay dashboard with the
+            // toolbar, link-quality indicator and disconnect.
+            "session-qos-connected" => {
+                self.dev_preview_session(
+                    ConnectionKind::Qos,
+                    LinkState::staged(LinkPhase::Connected, RelayPath::Direct, Some(24)),
+                );
+            }
+            // A dropped relay link mid-reconnect (over a relay, degraded).
+            "session-reconnecting" => {
+                self.dev_preview_session(
+                    ConnectionKind::Qos,
+                    LinkState::staged(
+                        LinkPhase::Reconnecting { attempt: 2 },
+                        RelayPath::Relayed { via: "eu-1.relay.qos".into() },
+                        Some(180),
+                    ),
+                );
+            }
+            // The relay is unreachable — a real, surfaced error state.
+            "session-relay-error" => {
+                self.dev_preview_session(
+                    ConnectionKind::Qos,
+                    LinkState::staged(
+                        LinkPhase::Unreachable {
+                            reason: "Relay eu-1.relay.qos is unreachable (no route to host)."
+                                .into(),
+                        },
+                        RelayPath::Relayed { via: "eu-1.relay.qos".into() },
+                        None,
+                    ),
                 );
             }
             _ => {}
         }
     }
 
-    /// Stage a preview session in a fixed status (shots/tests only).
+    /// Stage a preview session with a fixed link lifecycle (shots/tests only).
+    /// No transport is opened — the viewer chrome renders straight from the
+    /// staged [`LinkState`], so a single offscreen frame captures each state.
     #[doc(hidden)]
-    fn dev_preview_session(&mut self, kind: ConnectionKind, status: SessionStatus) {
+    fn dev_preview_session(&mut self, kind: ConnectionKind, link: LinkState) {
         if let Some(id) = self.first_of_kind(kind) {
             self.session_for = Some(id);
-            self.live = Some(LiveSession::Preview(status));
+            self.link = Some(link);
+            self.live = None;
             self.screen = Screen::Session { id };
         }
     }
@@ -448,19 +524,41 @@ impl RemoteApp {
             Action::ToggleFullscreen => {
                 self.fullscreen = !self.fullscreen;
             }
-            Action::CopyClipboard => {
-                // Offline: clipboard sync is a no-op placeholder. Live, this
-                // would push the remote selection into the local clipboard.
-            }
             Action::Disconnect => {
                 // Dropping the live session closes the transport (the worker
-                // thread sees its channel close and disconnects).
+                // thread sees its channel close and disconnects). The lifecycle
+                // lands in its terminal Disconnected state before we clear it.
+                if let Some(link) = self.link.as_mut() {
+                    link.disconnect();
+                }
+                self.poke_status(LinkPhase::Disconnected.short_label());
                 self.live = None;
+                self.link = None;
+                self.reconnect_dialed_for = 0;
                 self.fb_image = None;
                 self.fb_canvas = None;
                 self.session_for = None;
                 self.fullscreen = false;
                 self.screen = Screen::List;
+            }
+            Action::Reconnect(id) => {
+                // A user-driven retry from a failed/ended surface: re-open the
+                // transport and restart the lifecycle from Connecting.
+                self.open_session(id);
+            }
+            Action::ToggleCapture => {
+                if let Some(link) = self.link.as_mut() {
+                    let now_captured = link.toggle_capture();
+                    let text = if now_captured {
+                        "Input captured".to_string()
+                    } else {
+                        "Input released".to_string()
+                    };
+                    self.poke_status(text);
+                }
+            }
+            Action::QuickConnect => {
+                self.quick_connect(state);
             }
             Action::PickQosDevice(i) => {
                 if let Some(d) = self.qos_devices.get(i) {
@@ -507,8 +605,14 @@ impl RemoteApp {
         self.fb_canvas = None;
         self.vnc_buttons = 0;
         self.live = None;
+        self.link = None;
+        self.reconnect_dialed_for = 0;
         if live_sessions_enabled() {
             self.live = Some(self.start_live(&c));
+            // The lifecycle begins dialling; the transport path (direct vs
+            // relayed) is resolved as the connection establishes.
+            self.link = Some(LinkState::connecting(Self::initial_path(c.kind)));
+            self.poke_status(LinkPhase::Connecting.short_label());
             // Record the attempt in "last used"; presence is only marked
             // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
@@ -516,6 +620,24 @@ impl RemoteApp {
             }
         }
         self.screen = Screen::Session { id };
+    }
+
+    /// The path a fresh session of `kind` is expected to ride before the real
+    /// route is resolved. A qOS relay dials over the P2P fabric (path unknown
+    /// until it connects); the classic protocols are point-to-point TCP.
+    fn initial_path(kind: ConnectionKind) -> RelayPath {
+        match kind {
+            ConnectionKind::Qos => RelayPath::Unknown,
+            _ => RelayPath::Direct,
+        }
+    }
+
+    /// Poke the transient status bubble with new lifecycle text so a phase
+    /// change surfaces briefly. Records what the bubble currently says.
+    fn poke_status(&mut self, text: String) {
+        self.status_text = text;
+        self.status_bubble.poke(std::time::Instant::now());
+        self.dirty = true;
     }
 
     /// Build the real transport for a connection from its kind + auth and
@@ -582,6 +704,37 @@ impl RemoteApp {
             }
             _ => {}
         }
+        // Fold the transport's status into the app-level lifecycle so the
+        // viewer reflects connecting → connected → reconnecting → disconnected
+        // rather than the transport's coarser four states. A phase change pokes
+        // the transient status bubble.
+        if let Some(status) = self.live.as_ref().map(|l| l.status()) {
+            let mut phase_text = None;
+            if let Some(link) = self.link.as_mut() {
+                if link.observe(&status) {
+                    phase_text = Some(link.phase().short_label());
+                }
+            }
+            if let Some(text) = phase_text {
+                self.poke_status(text);
+                changed = true;
+            }
+            // A live drop puts the lifecycle into a bounded reconnect loop; we
+            // honour it with a real re-dial (once per attempt), and give up
+            // with a surfaced "unreachable" error rather than hanging.
+            if let (Some(LinkPhase::Reconnecting { attempt }), Some(id)) =
+                (self.link.as_ref().map(|l| l.phase().clone()), self.session_for)
+            {
+                if attempt != self.reconnect_dialed_for {
+                    if let Some(c) = self.workspace.get(id).cloned() {
+                        self.reconnect_dialed_for = attempt;
+                        self.live = Some(self.start_live(&c));
+                        changed = true;
+                    }
+                }
+            }
+        }
+
         // Reflect a freshly-established connection in the row's presence.
         if let (Some(id), Some(live)) = (self.session_for, self.live.as_ref()) {
             if live.status() == SessionStatus::Connected {
@@ -627,9 +780,19 @@ impl RemoteApp {
         Some((fx, fy))
     }
 
+    /// Whether local input is currently captured for the remote. Defaults to
+    /// true when no lifecycle is active (nothing is being forwarded anyway).
+    fn input_captured(&self) -> bool {
+        self.link.as_ref().map(|l| l.input_captured()).unwrap_or(true)
+    }
+
     /// Send a pointer event (current button mask + mapped position) to the
-    /// live remote desktop, if the pointer is over its canvas.
+    /// live remote desktop, if the pointer is over its canvas and input is
+    /// captured (a released session hands the pointer back to the local app).
     fn forward_vnc_pointer(&self, p: Point) {
+        if !self.input_captured() {
+            return;
+        }
         if let (Some(s), Some((x, y))) = (self.vnc_session(), self.vnc_pointer_target(p)) {
             s.send_input(VncInput::Pointer { button_mask: self.vnc_buttons, x, y });
         }
@@ -664,6 +827,27 @@ impl RemoteApp {
         self.focus = None;
     }
 
+    /// One-step connect from the quick-connect bar: parse the pasted invite
+    /// token or `user@host` address, save it through the same validated path
+    /// the form uses, then open its session. A blank / unparseable entry is a
+    /// no-op (the bar keeps focus).
+    fn quick_connect(&mut self, state: &mut AutoCommit) {
+        let Some(draft) = parse_quick_target(&self.quick) else {
+            return;
+        };
+        self.draft = draft;
+        // Force a fresh add, then route through the shared save path so the
+        // new connection is dispatched into the CRDT exactly like the form.
+        self.screen = Screen::Form { editing: None };
+        self.save_form(state);
+        self.quick.clear();
+        self.focus = None;
+        // `save_form` set `selected` to the new connection; open it.
+        if let Some(id) = self.selected {
+            self.open_session(id);
+        }
+    }
+
     /// Insert a character into the focused field (form or search).
     fn type_char(&mut self, s: &str) {
         let Some(field) = self.focus else { return };
@@ -696,6 +880,7 @@ impl RemoteApp {
             Field::Port => &mut self.draft.port,
             Field::User => &mut self.draft.user,
             Field::Group => &mut self.draft.group,
+            Field::QuickConnect => &mut self.quick,
         }
     }
 
@@ -708,6 +893,7 @@ impl RemoteApp {
             Field::Port => &self.draft.port,
             Field::User => &self.draft.user,
             Field::Group => &self.draft.group,
+            Field::QuickConnect => &self.quick,
         }
     }
 
@@ -728,6 +914,66 @@ impl Default for RemoteApp {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Parse a quick-connect entry into a connection draft ready to save + open.
+///
+/// Two shapes are accepted, so pasting either a qOS invite or a classic
+/// address just works:
+/// * A **qOS invite token** — a long opaque base64url blob with no address
+///   punctuation — becomes a qOS relay connection authenticated by device
+///   identity. The real peer name lives inside the (compositor-validated)
+///   token, so it is labelled by its prefix until the relay resolves it.
+/// * An **address** `[user@]host[:port]` becomes an SSH connection (the most
+///   common thing typed into a quick-connect), defaulting the port to 22.
+///
+/// Returns `None` for blank / unusable input.
+fn parse_quick_target(input: &str) -> Option<ConnectionDraft> {
+    let s = input.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let looks_like_token = s.len() >= 24
+        && !s.contains(['@', ':', '.', ' ', '/'])
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if looks_like_token {
+        let short: String = s.chars().take(8).collect();
+        return Some(ConnectionDraft {
+            name: format!("Invited peer {short}"),
+            host: format!("invite:{short}…"),
+            port: String::new(),
+            user: String::new(),
+            kind: ConnectionKind::Qos,
+            auth: AuthMethod::DeviceIdentity,
+            group: String::new(),
+        });
+    }
+    // An address: [user@]host[:port].
+    let (user, hostport) = match s.split_once('@') {
+        Some((u, hp)) => (u.trim().to_string(), hp.trim()),
+        None => (String::new(), s),
+    };
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+            (h.to_string(), p.to_string())
+        }
+        _ => (
+            hostport.to_string(),
+            ConnectionKind::Ssh.default_port().to_string(),
+        ),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(ConnectionDraft {
+        name: host.clone(),
+        host,
+        port,
+        user,
+        kind: ConnectionKind::Ssh,
+        auth: AuthMethod::Password,
+        group: String::new(),
+    })
 }
 
 // ===========================================================================
@@ -1077,9 +1323,10 @@ impl Widget for RemoteApp {
                 }
             }
             // A press/release over the live VNC canvas is injected into the
-            // remote desktop rather than hit-testing the local chrome.
+            // remote desktop rather than hit-testing the local chrome — but
+            // only while input is captured.
             WindowEvent::MouseInput { state, button, .. }
-                if self.vnc_pointer_target(self.pointer).is_some() =>
+                if self.input_captured() && self.vnc_pointer_target(self.pointer).is_some() =>
             {
                 let bit = match button {
                     MouseButton::Left => 1,
@@ -1174,8 +1421,12 @@ impl Widget for RemoteApp {
         // While the rail's overlay/dock slide is mid-flight, keep the host
         // pumping frames so the eased transition plays smoothly. A live
         // session likewise needs continuous frames so incoming remote data
-        // (PTY output, framebuffer updates) is drained and rendered.
-        self.rail.is_animating(self.rail_layout) || self.live_active()
+        // (PTY output, framebuffer updates) is drained and rendered, and a
+        // fading status bubble needs frames to animate out.
+        self.rail.is_animating(self.rail_layout)
+            || self.live_active()
+            || self.link.as_ref().map(|l| l.is_live()).unwrap_or(false)
+            || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -1238,10 +1489,14 @@ impl RemoteApp {
         }
 
         // A connected session captures keyboard input for the remote — except
-        // Escape while fullscreen, which exits fullscreen locally.
+        // Escape while fullscreen, which exits fullscreen locally, and unless
+        // the user has released input capture back to the local desktop.
         let esc_exits_fullscreen =
             self.fullscreen && matches!(key, Key::Named(NamedKey::Escape));
-        if !esc_exits_fullscreen && matches!(self.screen, Screen::Session { .. }) {
+        if !esc_exits_fullscreen
+            && self.input_captured()
+            && matches!(self.screen, Screen::Session { .. })
+        {
             match &self.live {
                 Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
                     if let Some(bytes) = Self::ssh_key_bytes(key, text, mods) {
@@ -1297,7 +1552,9 @@ impl RemoteApp {
                 match self.screen.clone() {
                     Screen::Form { .. } => self.apply(Action::SaveForm, state),
                     Screen::List => {
-                        if let Some(id) = self.selected {
+                        if self.focus == Some(Field::QuickConnect) {
+                            self.apply(Action::QuickConnect, state);
+                        } else if let Some(id) = self.selected {
                             self.apply(Action::Connect(id), state);
                         }
                     }
@@ -1638,29 +1895,16 @@ impl RemoteApp {
         let accent = tokens.colors.accent[5];
         let mid = region.center().x;
         // Nudge the group above the exact centre so it reads as anchored.
-        let mut y = region.y0 + (region.height() * 0.30).max(24.0);
+        let mut y = region.y0 + (region.height() * 0.22).max(24.0);
 
-        // Emblem: an accent-ringed disc with a plus glyph — "add a machine".
+        // Emblem: an accent-ringed disc carrying the monitor glyph — "reach a
+        // machine". Drawn from the shared icon set, not a hand-rolled shape.
         let r = 36.0;
         let c = Point::new(mid, y + r);
         scene.fill(Fill::NonZero, transform, accent.at_alpha(0.12), None, &Circle::new(c, r));
         scene.stroke(&Stroke::new(2.0), transform, accent.at_alpha(0.8), None, &Circle::new(c, r));
-        let arm = 12.0;
-        let thick = Stroke::new(2.6);
-        scene.stroke(
-            &thick,
-            transform,
-            accent,
-            None,
-            &vello::kurbo::Line::new(Point::new(c.x - arm, c.y), Point::new(c.x + arm, c.y)),
-        );
-        scene.stroke(
-            &thick,
-            transform,
-            accent,
-            None,
-            &vello::kurbo::Line::new(Point::new(c.x, c.y - arm), Point::new(c.x, c.y + arm)),
-        );
+        let glyph = Rect::new(c.x - 16.0, c.y - 16.0, c.x + 16.0, c.y + 16.0);
+        Icon::Monitor.draw(scene, transform, glyph, accent);
         y += 2.0 * r + 24.0;
 
         let title = "No machines yet";
@@ -1674,9 +1918,9 @@ impl RemoteApp {
             None,
             TextWeight::Bold,
         );
-        y += 30.0;
+        y += 28.0;
 
-        let sub = "Add one to reach it over SSH, VNC, or the qOS relay.";
+        let sub = "Paste a qOS invite token, or type an address, to connect.";
         let (sw, _) = text_renderer.measure(sub, 13.5, None);
         text_renderer.draw_text(
             scene,
@@ -1686,11 +1930,35 @@ impl RemoteApp {
             transform * Affine::translate((mid - sw as f64 / 2.0, y)),
             None,
         );
-        y += 34.0;
+        y += 30.0;
 
-        let bw = 168.0;
-        let btn = Rect::new(mid - bw / 2.0, y, mid + bw / 2.0, y + 40.0);
-        self.draw_button(scene, transform, text_renderer, theme, btn, "+ New connection", true);
+        // Quick-connect bar: a field + a Connect button, so the empty state is
+        // an honest *connect* entry, not just a blank viewport.
+        let bar_w = 460.0_f64.min(region.width() - 48.0);
+        let connect_w = 116.0;
+        let gap = 10.0;
+        let field_w = bar_w - connect_w - gap;
+        let bar_x = mid - bar_w / 2.0;
+        let field = Rect::new(bar_x, y, bar_x + field_w, y + 42.0);
+        self.draw_field(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            field,
+            Field::QuickConnect,
+            "Invite token or user@host",
+        );
+        self.push_hit(field, Action::FocusField(Field::QuickConnect));
+        let connect = Rect::new(field.x1 + gap, y, field.x1 + gap + connect_w, y + 42.0);
+        self.draw_button(scene, transform, text_renderer, theme, connect, "Connect", true);
+        self.push_hit(connect, Action::QuickConnect);
+        y += 42.0 + 18.0;
+
+        // Secondary: add a saved connection via the full form.
+        let bw = 176.0;
+        let btn = Rect::new(mid - bw / 2.0, y, mid + bw / 2.0, y + 38.0);
+        self.draw_button(scene, transform, text_renderer, theme, btn, "+ New connection", false);
         self.push_hit(btn, Action::NewConnection);
     }
 
@@ -2252,12 +2520,12 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport object: the honest "not connected" card. The
-        // env gate is enforced at `open_session` (it only creates a live
-        // session when REMOTE_LIVE_SESSIONS is set), so a `None` here means
-        // either the default gated build or a not-yet-opened session — never
-        // a fabricated terminal or desktop.
-        let Some(status) = self.live.as_ref().map(|l| l.status()) else {
+        // No lifecycle object: the honest "not connected" card. The env gate
+        // is enforced at `open_session` (it only starts a lifecycle when
+        // REMOTE_LIVE_SESSIONS is set), so a `None` here means either the
+        // default gated build or a not-yet-opened session — never a fabricated
+        // terminal or desktop.
+        let Some(link) = self.link.clone() else {
             self.draw_status_session(
                 scene,
                 transform,
@@ -2272,13 +2540,14 @@ impl RemoteApp {
                     "nothing here is simulated.".to_string(),
                 ],
                 StatusTone::Neutral,
+                None,
             );
             return;
         };
 
-        // Live path: reflect the real transport state.
-        match status {
-            SessionStatus::Connecting => {
+        // Drive the surface from the app-level lifecycle.
+        match link.phase().clone() {
+            LinkPhase::Connecting => {
                 self.draw_status_session(
                     scene,
                     transform,
@@ -2287,11 +2556,15 @@ impl RemoteApp {
                     content,
                     &c,
                     "Connecting…",
-                    &["Negotiating the transport and authenticating…".to_string()],
+                    &[
+                        "Negotiating the transport and authenticating…".to_string(),
+                        format!("Path · {}", link.path().label()),
+                    ],
                     StatusTone::Pending,
+                    None,
                 );
             }
-            SessionStatus::Failed(err) => {
+            LinkPhase::Reconnecting { attempt } => {
                 self.draw_status_session(
                     scene,
                     transform,
@@ -2299,12 +2572,37 @@ impl RemoteApp {
                     theme,
                     content,
                     &c,
-                    "Connection failed",
-                    &[err, "This is the real error — nothing is simulated.".to_string()],
-                    StatusTone::Error,
+                    &link.phase().short_label(),
+                    &[
+                        format!(
+                            "The link dropped — re-establishing it (attempt {attempt} of {}).",
+                            crate::link::MAX_RECONNECT_ATTEMPTS
+                        ),
+                        format!("Path · {}", link.path().label()),
+                    ],
+                    StatusTone::Pending,
+                    None,
                 );
             }
-            SessionStatus::Closed => {
+            LinkPhase::Unreachable { reason } => {
+                self.draw_status_session(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    content,
+                    &c,
+                    "Unreachable",
+                    &[
+                        reason,
+                        format!("Path · {}", link.path().label()),
+                        "This is the real error — nothing is simulated.".to_string(),
+                    ],
+                    StatusTone::Error,
+                    Some(("Retry", Action::Reconnect(c.id))),
+                );
+            }
+            LinkPhase::Disconnected => {
                 self.draw_status_session(
                     scene,
                     transform,
@@ -2313,24 +2611,73 @@ impl RemoteApp {
                     content,
                     &c,
                     "Session ended",
-                    &["The remote closed the session.".to_string()],
+                    &["The session was disconnected.".to_string()],
                     StatusTone::Neutral,
+                    Some(("Reconnect", Action::Reconnect(c.id))),
                 );
             }
-            SessionStatus::Connected => {
-                // Real surface. Toolbar hidden in immersive/fullscreen mode.
+            LinkPhase::Connected => {
+                // Live surface. Toolbar hidden in immersive/fullscreen mode.
                 let surface = if immersive {
                     content
                 } else {
-                    self.draw_session_toolbar(scene, transform, text_renderer, theme, content, &c);
+                    self.draw_session_toolbar(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        content,
+                        &c,
+                        &link,
+                    );
                     Rect::new(content.x0, content.y0 + TOOLBAR_H, content.x1, content.y1)
                 };
-                let is_ssh = matches!(self.live, Some(LiveSession::Ssh(_)));
-                if is_ssh {
-                    self.draw_terminal(scene, transform, text_renderer, theme, surface, &c);
-                } else {
-                    self.draw_framebuffer(scene, transform, text_renderer, theme, surface, immersive);
+                match c.kind {
+                    // A qOS relay renders the peer's workspace locally (the
+                    // compositor's job); the viewer surfaces the live relay
+                    // dashboard — path, health, security — over that.
+                    ConnectionKind::Qos => {
+                        self.draw_relay_dashboard(
+                            scene,
+                            transform,
+                            text_renderer,
+                            theme,
+                            surface,
+                            &c,
+                            &link,
+                        );
+                    }
+                    ConnectionKind::Ssh if matches!(self.live, Some(LiveSession::Ssh(_))) => {
+                        self.draw_terminal(scene, transform, text_renderer, theme, surface, &c);
+                    }
+                    _ if matches!(self.live, Some(LiveSession::Vnc(_))) => {
+                        self.draw_framebuffer(
+                            scene,
+                            transform,
+                            text_renderer,
+                            theme,
+                            surface,
+                            immersive,
+                        );
+                    }
+                    // Connected lifecycle without a live transport object (a
+                    // preview/demo of a framebuffer/terminal kind): the honest
+                    // "waiting for the first frame" note, never a fake surface.
+                    _ => {
+                        scene.fill(Fill::NonZero, transform, Color::BLACK, None, &surface);
+                        text_renderer.draw_text(
+                            scene,
+                            "Connected — waiting for the first frame…",
+                            13.0,
+                            tokens.colors.text_dim,
+                            transform
+                                * Affine::translate((surface.x0 + 24.0, surface.y0 + 24.0)),
+                            None,
+                        );
+                    }
                 }
+                // The transient status bubble floats over the live surface.
+                self.draw_status_bubble(scene, transform, text_renderer, theme, content);
             }
         }
     }
@@ -2353,6 +2700,7 @@ impl RemoteApp {
         title: &str,
         body: &[String],
         tone: StatusTone,
+        secondary: Option<(&str, Action)>,
     ) {
         let tokens = &theme.tokens;
 
@@ -2364,9 +2712,6 @@ impl RemoteApp {
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        // Retry only makes sense after a real failure; the gated/ended states
-        // just return to the list.
-        let can_retry = matches!(tone, StatusTone::Error);
 
         // Card geometry, sized to its content so it stays balanced.
         let cw = 460.0_f64.min(content.width() - 40.0);
@@ -2476,18 +2821,19 @@ impl RemoteApp {
         }
         y += 14.0;
 
-        // Actions: a primary "Back to list", plus "Retry" where it applies.
+        // Actions: a primary "Back to list", plus an optional secondary action
+        // (e.g. Retry / Reconnect) drawn to its left.
         let btn_h = 38.0;
         let back_w = 132.0;
-        let retry_w = 104.0;
+        let secondary_w = 116.0;
         let gap = 12.0;
-        let group_w = if can_retry { back_w + gap + retry_w } else { back_w };
+        let group_w = if secondary.is_some() { back_w + gap + secondary_w } else { back_w };
         let mut bx = mid - group_w / 2.0;
-        if can_retry {
-            let retry = Rect::new(bx, y, bx + retry_w, y + btn_h);
-            self.draw_button(scene, transform, text_renderer, theme, retry, "Retry", false);
-            self.push_hit(retry, Action::Connect(c.id));
-            bx += retry_w + gap;
+        if let Some((label, action)) = secondary {
+            let sec = Rect::new(bx, y, bx + secondary_w, y + btn_h);
+            self.draw_button(scene, transform, text_renderer, theme, sec, label, false);
+            self.push_hit(sec, action);
+            bx += secondary_w + gap;
         }
         let back = Rect::new(bx, y, bx + back_w, y + btn_h);
         self.draw_button(scene, transform, text_renderer, theme, back, "Back to list", true);
@@ -2565,107 +2911,454 @@ impl RemoteApp {
         theme: &Theme,
         content: Rect,
         c: &Connection,
+        link: &LinkState,
     ) {
         let tokens = &theme.tokens;
         let bar = Rect::new(content.x0, content.y0, content.x1, content.y0 + TOOLBAR_H);
         scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &bar);
         let seam = Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1);
         scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
+        let cy = bar.center().y;
 
-        // Live status dot + name + address.
-        let dot = Point::new(bar.x0 + 18.0, bar.center().y);
-        scene.fill(Fill::NonZero, transform, tokens.colors.semantic.success, None, &Circle::new(dot, 5.0));
+        // Live phase dot, coloured by the lifecycle phase (green while up).
+        let dot = Point::new(bar.x0 + 18.0, cy);
+        let phase_col = self.tone_color(theme, link.phase().tone());
+        scene.fill(Fill::NonZero, transform, phase_col, None, &Circle::new(dot, 5.0));
+        scene.fill(Fill::NonZero, transform, phase_col.at_alpha(0.25), None, &Circle::new(dot, 9.0));
+
+        // Machine name + a dim role caption.
         text_renderer.draw_text_weighted(
             scene,
             &c.name,
             14.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((bar.x0 + 32.0, bar.center().y - 9.0)),
+            transform * Affine::translate((bar.x0 + 34.0, cy - 9.0)),
             None,
             TextWeight::Semibold,
         );
         let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
-        // Kind chip + connection label after the name.
-        let mode = if c.kind == ConnectionKind::Qos {
-            format!("· {} · local render", c.address())
-        } else if c.kind.is_terminal() {
-            format!("· {} · shell", c.address())
-        } else {
-            format!("· {} · framebuffer", c.address())
+        let role = match c.kind {
+            ConnectionKind::Qos => "local render",
+            ConnectionKind::Ssh => "shell",
+            _ => "framebuffer",
         };
+        let mode = format!("· {} · {role}", c.address());
         text_renderer.draw_text(
             scene,
             &mode,
             12.0,
             tokens.colors.text_dim,
-            transform * Affine::translate((bar.x0 + 40.0 + nw as f64, bar.center().y - 7.0)),
+            transform * Affine::translate((bar.x0 + 42.0 + nw as f64, cy - 7.0)),
             None,
         );
 
-        // Right-aligned tool buttons. Only the relevant ones per kind.
+        // Right cluster, laid out from the right edge inward. Disconnect first
+        // (outermost), then the surface controls, then the health chips.
         let mut x = bar.x1 - 12.0;
-        let disconnect = Rect::new(x - 110.0, bar.center().y - 16.0, x, bar.center().y + 16.0);
-        self.draw_button(scene, transform, text_renderer, theme, disconnect, "Disconnect", false);
-        // Override the outlined style with a danger tint for disconnect.
-        scene.stroke(
-            &Stroke::new(1.0),
+
+        // Disconnect — a clearly-labelled danger button with the power glyph,
+        // never a bare unlabelled control.
+        let disc_w = self.chip_width(text_renderer, "Disconnect", true);
+        let disconnect = Rect::new(x - disc_w, cy - 15.0, x, cy + 15.0);
+        self.draw_chip(
+            scene,
             transform,
+            text_renderer,
+            theme,
+            disconnect,
+            Some(Icon::Power),
+            "Disconnect",
             tokens.colors.semantic.danger,
-            None,
-            &RoundedRect::from_rect(disconnect, 8.0),
+            true,
         );
         self.push_hit(disconnect, Action::Disconnect);
         x = disconnect.x0 - 10.0;
 
-        // Framebuffer-only controls: fullscreen, scale, clipboard.
-        if c.kind.streams_framebuffer() || c.kind == ConnectionKind::Qos {
-            let fs = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Fullscreen");
-            self.push_hit(fs, Action::ToggleFullscreen);
-            x = fs.x0 - 8.0;
+        // Fullscreen — a symbolic icon button.
+        let fs = Rect::new(x - 30.0, cy - 15.0, x, cy + 15.0);
+        self.draw_icon_button(scene, transform, theme, fs, Icon::Maximize2, self.fullscreen);
+        self.push_hit(fs, Action::ToggleFullscreen);
+        x = fs.x0 - 8.0;
 
-            let scale_label = if self.scale_to_fit { "Scale: Fit" } else { "Scale: 1:1" };
-            let sc = self.draw_tool(scene, transform, text_renderer, theme, x, bar, scale_label);
-            self.push_hit(sc, Action::ToggleScale);
-            x = sc.x0 - 8.0;
+        // Scale / fit toggle — icon + terse label so the mode is unmistakable.
+        let scale_label = if self.scale_to_fit { "Fit" } else { "1:1" };
+        let sc_w = self.chip_width(text_renderer, scale_label, true);
+        let sc = Rect::new(x - sc_w, cy - 15.0, x, cy + 15.0);
+        self.draw_chip(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            sc,
+            Some(Icon::Monitor),
+            scale_label,
+            tokens.colors.neutral[4],
+            self.scale_to_fit,
+        );
+        self.push_hit(sc, Action::ToggleScale);
+        x = sc.x0 - 8.0;
 
-            let clip = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Clipboard");
-            self.push_hit(clip, Action::CopyClipboard);
+        // Input capture toggle — clearly indicates whether local keyboard /
+        // pointer is forwarded to the remote, and releases it on click.
+        let captured = link.input_captured();
+        let cap_label = if captured { "Input on" } else { "Input off" };
+        let cap_icon = if captured { Icon::Check } else { Icon::Ban };
+        let cap_tone = if captured {
+            tokens.colors.semantic.success
         } else {
-            // Terminal: clipboard only.
-            let clip = self.draw_tool(scene, transform, text_renderer, theme, x, bar, "Copy");
-            self.push_hit(clip, Action::CopyClipboard);
+            tokens.colors.neutral[4]
+        };
+        let cap_w = self.chip_width(text_renderer, cap_label, true);
+        let cap = Rect::new(x - cap_w, cy - 15.0, x, cy + 15.0);
+        self.draw_chip(
+            scene, transform, text_renderer, theme, cap, Some(cap_icon), cap_label, cap_tone,
+            captured,
+        );
+        self.push_hit(cap, Action::ToggleCapture);
+        x = cap.x0 - 14.0;
+
+        // Health chips (read-only): link quality + which path the session
+        // rides. Surfaced honestly rather than hidden behind the green dot.
+        if let Some(ms) = link.latency_ms() {
+            let q = link.quality();
+            let label = format!("{ms} ms · {}", q.label());
+            let q_tone = self.quality_color(theme, q);
+            let qw = self.chip_width(text_renderer, &label, true) + 14.0; // room for bars
+            let qchip = Rect::new(x - qw, cy - 15.0, x, cy + 15.0);
+            // Outline pill, then bars + label inside.
+            let rr = RoundedRect::from_rect(qchip, qchip.height() / 2.0);
+            scene.fill(Fill::NonZero, transform, tokens.colors.neutral[0], None, &rr);
+            scene.stroke(&Stroke::new(1.0), transform, q_tone.at_alpha(0.4), None, &rr);
+            self.draw_signal_bars(
+                scene,
+                transform,
+                Point::new(qchip.x0 + 12.0, qchip.center().y),
+                q.bars(),
+                q_tone,
+                tokens.colors.neutral[3],
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                &label,
+                12.0,
+                tokens.colors.text_primary,
+                transform * Affine::translate((qchip.x0 + 30.0, qchip.center().y - 8.0)),
+                None,
+                TextWeight::Medium,
+            );
+            x = qchip.x0 - 8.0;
         }
+
+        // Relay-path chip.
+        let path = link.path();
+        let path_label = path.label();
+        let (path_icon, path_tone) = if path.is_relayed() {
+            (Icon::EthernetPort, tokens.colors.semantic.info)
+        } else {
+            (Icon::Wifi, tokens.colors.semantic.success)
+        };
+        let pw = self.chip_width(text_renderer, &path_label, true);
+        let pchip = Rect::new(x - pw, cy - 15.0, x, cy + 15.0);
+        self.draw_chip(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            pchip,
+            Some(path_icon),
+            &path_label,
+            path_tone,
+            false,
+        );
     }
 
-    /// Draw a compact toolbar tool button ending at `right_x`; returns its rect.
-    fn draw_tool(
+    /// Width of a chip for `label` with an optional leading icon.
+    fn chip_width(&self, tr: &mut TextRenderer, label: &str, has_icon: bool) -> f64 {
+        let (tw, _) = tr.measure_weighted(label, 12.0, None, TextWeight::Medium);
+        let icon_w = if has_icon { 16.0 + 6.0 } else { 0.0 };
+        tw as f64 + icon_w + 24.0
+    }
+
+    /// A compact status chip: an optional leading [`Icon`] plus a label, tinted
+    /// by `tone`. `active` fills the pill with the tone (a lit toggle);
+    /// otherwise it's an outline that lights on hover.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_chip(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        right_x: f64,
-        bar: Rect,
+        rect: Rect,
+        icon: Option<Icon>,
         label: &str,
-    ) -> Rect {
+        tone: Color,
+        active: bool,
+    ) {
         let tokens = &theme.tokens;
-        let (tw, _) = text_renderer.measure(label, 12.5, None);
-        let w = tw as f64 + 24.0;
-        let rect = Rect::new(right_x - w, bar.center().y - 16.0, right_x, bar.center().y + 16.0);
+        let rr = RoundedRect::from_rect(rect, rect.height() / 2.0);
         let hovered = rect.contains(self.pointer);
-        let rr = RoundedRect::from_rect(rect, 8.0);
-        let bg = if hovered { tokens.colors.surface_white_10 } else { tokens.colors.neutral[0] };
-        scene.fill(Fill::NonZero, transform, bg, None, &rr);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
-        text_renderer.draw_text(
+        if active {
+            scene.fill(Fill::NonZero, transform, tone.at_alpha(0.18), None, &rr);
+        } else {
+            let bg = if hovered { tokens.colors.surface_white_10 } else { tokens.colors.neutral[0] };
+            scene.fill(Fill::NonZero, transform, bg, None, &rr);
+        }
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            tone.at_alpha(if active { 0.6 } else { 0.35 }),
+            None,
+            &rr,
+        );
+        let mut tx = rect.x0 + 12.0;
+        if let Some(icon) = icon {
+            let ir = Rect::new(tx, rect.center().y - 8.0, tx + 16.0, rect.center().y + 8.0);
+            icon.draw(scene, transform, ir, tone);
+            tx += 16.0 + 6.0;
+        }
+        text_renderer.draw_text_weighted(
             scene,
             label,
-            12.5,
+            12.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((rect.x0 + 12.0, rect.center().y - 8.0)),
+            transform * Affine::translate((tx, rect.center().y - 8.0)),
+            None,
+            TextWeight::Medium,
+        );
+    }
+
+    /// A square symbolic icon button. `active` lights it with the accent.
+    fn draw_icon_button(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        icon: Icon,
+        active: bool,
+    ) {
+        let tokens = &theme.tokens;
+        let hovered = rect.contains(self.pointer);
+        let rr = RoundedRect::from_rect(rect, 8.0);
+        let bg = if active {
+            tokens.colors.accent[5].at_alpha(0.18)
+        } else if hovered {
+            tokens.colors.surface_white_10
+        } else {
+            tokens.colors.neutral[0]
+        };
+        scene.fill(Fill::NonZero, transform, bg, None, &rr);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+        let col = if active { tokens.colors.accent[5] } else { tokens.colors.text_primary };
+        let inset = 7.0;
+        let ir = Rect::new(rect.x0 + inset, rect.y0 + inset, rect.x1 - inset, rect.y1 - inset);
+        icon.draw(scene, transform, ir, col);
+    }
+
+    /// A three-bar signal-strength glyph anchored at `at` (its vertical
+    /// centre). `filled` bars in `0..=3` are drawn in `on`, the rest in `off`.
+    fn draw_signal_bars(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        at: Point,
+        filled: u8,
+        on: Color,
+        off: Color,
+    ) {
+        for i in 0u8..3 {
+            let h = 4.0 + i as f64 * 4.0;
+            let x = at.x + i as f64 * 5.0;
+            let bar = Rect::new(x, at.y + 6.0 - h, x + 3.0, at.y + 6.0);
+            let col = if i < filled { on } else { off };
+            scene.fill(Fill::NonZero, transform, col, None, &RoundedRect::from_rect(bar, 1.0));
+        }
+    }
+
+    /// Map a lifecycle tone to a concrete theme colour.
+    fn tone_color(&self, theme: &Theme, tone: LinkTone) -> Color {
+        let c = &theme.tokens.colors;
+        match tone {
+            LinkTone::Idle => c.neutral[4],
+            LinkTone::Pending => c.semantic.warning,
+            LinkTone::Live => c.semantic.success,
+            LinkTone::Error => c.semantic.danger,
+        }
+    }
+
+    /// Map a link-quality rating to a concrete theme colour.
+    fn quality_color(&self, theme: &Theme, q: LinkQuality) -> Color {
+        let c = &theme.tokens.colors;
+        match q {
+            LinkQuality::Good => c.semantic.success,
+            LinkQuality::Fair => c.semantic.warning,
+            LinkQuality::Poor => c.semantic.danger,
+            LinkQuality::Unknown => c.neutral[4],
+        }
+    }
+
+    /// The connected qOS-relay surface. A qOS relay never streams pixels — the
+    /// compositor renders the peer's workspace locally — so the viewer surfaces
+    /// the live relay *dashboard* over it: which path the session rides, how
+    /// healthy the link is, and how it is secured. Honest, not a fake desktop.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_relay_dashboard(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        surface: Rect,
+        c: &Connection,
+        link: &LinkState,
+    ) {
+        let tokens = &theme.tokens;
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &surface);
+
+        let cw = 560.0_f64.min(surface.width() - 40.0);
+        let ch = 300.0_f64;
+        let cx = surface.x0 + (surface.width() - cw) / 2.0;
+        let cy = surface.y0 + ((surface.height() - ch) / 2.0).max(16.0);
+        let card = Rect::new(cx, cy, cx + cw, cy + ch);
+        let rr = RoundedRect::from_rect(card, 16.0);
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &rr);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_white_20, None, &rr);
+
+        let pad = 28.0;
+        let accent = tokens.colors.accent[5];
+
+        // Header: monitor emblem + machine identity + live pill.
+        let emblem = Rect::new(card.x0 + pad, card.y0 + pad, card.x0 + pad + 44.0, card.y0 + pad + 44.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent.at_alpha(0.14),
+            None,
+            &RoundedRect::from_rect(emblem, 10.0),
+        );
+        Icon::Monitor.draw(
+            scene,
+            transform,
+            emblem.inflate(-11.0, -11.0),
+            accent,
+        );
+        let tx = emblem.x1 + 16.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            &c.name,
+            20.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((tx, card.y0 + pad + 2.0)),
+            None,
+            TextWeight::Bold,
+        );
+        text_renderer.draw_text(
+            scene,
+            &format!("{} · {}", c.address(), c.kind.label()),
+            13.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((tx, card.y0 + pad + 26.0)),
             None,
         );
-        rect
+
+        // Stat tiles: path, latency/quality, security, rendering.
+        let quality = link.quality();
+        let latency = link
+            .latency_ms()
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "—".to_string());
+        let path = link.path();
+        let tiles: [(Icon, &str, String, Color); 4] = [
+            (
+                if path.is_relayed() { Icon::EthernetPort } else { Icon::Wifi },
+                "Path",
+                path.label(),
+                if path.is_relayed() { tokens.colors.semantic.info } else { tokens.colors.semantic.success },
+            ),
+            (
+                Icon::BarChart,
+                "Link health",
+                format!("{latency} · {}", quality.label()),
+                self.quality_color(theme, quality),
+            ),
+            (
+                Icon::Shield,
+                "Secured by",
+                "Device identity".to_string(),
+                tokens.colors.semantic.success,
+            ),
+            (
+                Icon::Monitor,
+                "Rendering",
+                "Local · crisp".to_string(),
+                accent,
+            ),
+        ];
+
+        let grid_top = card.y0 + pad + 68.0;
+        let gap = 14.0;
+        let tile_w = (cw - 2.0 * pad - gap) / 2.0;
+        let tile_h = 62.0;
+        for (i, (icon, label, value, tone)) in tiles.iter().enumerate() {
+            let col = (i % 2) as f64;
+            let row = (i / 2) as f64;
+            let tx0 = card.x0 + pad + col * (tile_w + gap);
+            let ty0 = grid_top + row * (tile_h + gap);
+            let tile = Rect::new(tx0, ty0, tx0 + tile_w, ty0 + tile_h);
+            let trr = RoundedRect::from_rect(tile, 10.0);
+            scene.fill(Fill::NonZero, transform, tokens.colors.neutral[0], None, &trr);
+            scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &trr);
+            let ir = Rect::new(tile.x0 + 14.0, tile.center().y - 11.0, tile.x0 + 36.0, tile.center().y + 11.0);
+            icon.draw(scene, transform, ir, *tone);
+            text_renderer.draw_text(
+                scene,
+                label,
+                11.5,
+                tokens.colors.text_dim,
+                transform * Affine::translate((tile.x0 + 48.0, tile.y0 + 12.0)),
+                None,
+            );
+            text_renderer.draw_text_weighted(
+                scene,
+                value,
+                14.0,
+                tokens.colors.text_primary,
+                transform * Affine::translate((tile.x0 + 48.0, tile.y0 + 32.0)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+    }
+
+    /// Draw the transient status bubble (poked on every lifecycle phase change)
+    /// floating near the top of the live surface, fading on its own.
+    fn draw_status_bubble(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+    ) {
+        let now = std::time::Instant::now();
+        if self.status_text.is_empty() || !self.status_bubble.is_visible(now) {
+            return;
+        }
+        let alpha = self.status_bubble.alpha(now);
+        let (w, h) = status_bubble::pill_size(&self.status_text, text_renderer, 13.0, 0.0);
+        let x = content.center().x - w / 2.0;
+        let y = content.y0 + TOOLBAR_H + 18.0;
+        let rect = Rect::new(x, y, x + w, y + h);
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &content,
+        );
+        status_bubble::draw_pill(scene, transform, text_renderer, theme, rect, &self.status_text, 13.0);
+        scene.pop_layer();
     }
 
     /// Draw the terminal grid for an SSH session.
@@ -3228,5 +3921,165 @@ mod tests {
         app.sync(&mut state, &automerge::ROOT);
         // Adopted the peer's list (non-empty doc path).
         assert!(app.workspace.get(extra.id).is_some());
+    }
+
+    // --- Connection lifecycle + viewer chrome ------------------------------
+
+    /// Drive the full frame the host does (layout → draw) so the clickable
+    /// [`Hit`] regions are captured on the real production path, then assert on
+    /// them — never on a hand-built geometry helper.
+    fn draw_once(app: &mut RemoteApp, w: f64, h: f64) {
+        lay_out(app, w, h);
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::empty();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn has_hit(app: &RemoteApp, want: &Action) -> bool {
+        app.hits.iter().any(|h| &h.action == want)
+    }
+
+    #[test]
+    fn empty_connect_state_offers_quick_connect_not_a_fake_session() {
+        // A fresh machine shows the honest connect entry (quick-connect field +
+        // Connect + New connection), never a fabricated session or list.
+        let mut app = RemoteApp::new();
+        assert!(app.workspace.connections().is_empty());
+        draw_once(&mut app, 1000.0, 700.0);
+        assert!(has_hit(&app, &Action::QuickConnect), "Connect entry present");
+        assert!(
+            has_hit(&app, &Action::FocusField(Field::QuickConnect)),
+            "quick-connect field present"
+        );
+        assert!(has_hit(&app, &Action::NewConnection));
+        assert!(app.link.is_none(), "no session fabricated on the empty state");
+        assert!(matches!(app.screen, Screen::List));
+    }
+
+    #[test]
+    fn quick_connect_address_saves_and_opens_session() {
+        let mut app = RemoteApp::new();
+        let mut state = doc();
+        app.quick = "root@10.0.0.9:2222".into();
+        app.apply(Action::QuickConnect, &mut state);
+        let saved = app
+            .workspace
+            .connections()
+            .iter()
+            .find(|c| c.host == "10.0.0.9")
+            .expect("quick-connect saved the address")
+            .clone();
+        assert_eq!(saved.user, "root");
+        assert_eq!(saved.port, 2222);
+        assert_eq!(saved.kind, ConnectionKind::Ssh);
+        assert_eq!(app.screen, Screen::Session { id: saved.id });
+        assert!(app.quick.is_empty(), "the bar cleared after connecting");
+    }
+
+    #[test]
+    fn quick_connect_invite_token_makes_a_qos_relay() {
+        let mut app = RemoteApp::new();
+        let mut state = doc();
+        app.quick = "aZ09invitetokenblobwithoutpunct".into();
+        app.apply(Action::QuickConnect, &mut state);
+        let saved = app.workspace.connections().last().expect("saved").clone();
+        assert_eq!(saved.kind, ConnectionKind::Qos);
+        assert_eq!(saved.auth, AuthMethod::DeviceIdentity);
+    }
+
+    #[test]
+    fn parse_quick_target_covers_the_shapes() {
+        assert!(parse_quick_target("   ").is_none());
+        let a = parse_quick_target("host.example.com").unwrap();
+        assert_eq!(a.kind, ConnectionKind::Ssh);
+        assert_eq!(a.host, "host.example.com");
+        assert_eq!(a.port, "22");
+        let b = parse_quick_target("me@box:2200").unwrap();
+        assert_eq!(b.user, "me");
+        assert_eq!(b.host, "box");
+        assert_eq!(b.port, "2200");
+        let t = parse_quick_target("abcdefghijklmnopqrstuvwxyz012345").unwrap();
+        assert_eq!(t.kind, ConnectionKind::Qos);
+    }
+
+    #[test]
+    fn demo_stages_the_three_shot_states() {
+        for (which, want) in [
+            ("session-qos-connected", "Connected"),
+            ("session-reconnecting", "Reconnecting"),
+            ("session-relay-error", "Unreachable"),
+        ] {
+            let mut app = RemoteApp::new_demo();
+            app.dev_set_screen(which);
+            let phase = app.link.as_ref().expect("staged link").phase().short_label();
+            assert!(phase.contains(want), "{which} staged {phase:?}, wanted {want}");
+            assert!(matches!(app.screen, Screen::Session { .. }));
+        }
+    }
+
+    #[test]
+    fn connected_qos_session_draws_disconnect_and_toolbar_controls() {
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-qos-connected");
+        draw_once(&mut app, 1100.0, 720.0);
+        // The toolbar wires a clearly-labelled disconnect and the surface
+        // controls through real hit regions on the production draw path.
+        assert!(has_hit(&app, &Action::Disconnect), "disconnect wired");
+        assert!(has_hit(&app, &Action::ToggleFullscreen), "fullscreen wired");
+        assert!(has_hit(&app, &Action::ToggleScale), "fit/1:1 wired");
+        assert!(has_hit(&app, &Action::ToggleCapture), "capture toggle wired");
+    }
+
+    #[test]
+    fn relay_error_state_surfaces_retry_not_a_hang() {
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-relay-error");
+        draw_once(&mut app, 1000.0, 700.0);
+        let id = match app.screen {
+            Screen::Session { id } => id,
+            _ => panic!("relay-error scenario should open a session"),
+        };
+        // A surfaced error: real retry + back-to-list actions, not a spinner.
+        assert!(has_hit(&app, &Action::Reconnect(id)), "retry offered");
+        assert!(has_hit(&app, &Action::Disconnect), "back-to-list offered");
+    }
+
+    #[test]
+    fn disconnect_ends_the_lifecycle_and_returns_home() {
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-qos-connected");
+        assert!(app.link.is_some());
+        app.apply(Action::Disconnect, &mut doc());
+        assert!(app.link.is_none(), "lifecycle cleared");
+        assert!(matches!(app.screen, Screen::List));
+        assert_eq!(app.status_text, "Disconnected");
+    }
+
+    #[test]
+    fn toggle_capture_releases_input_without_ending_session() {
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-qos-connected");
+        assert!(app.input_captured());
+        app.apply(Action::ToggleCapture, &mut doc());
+        assert!(!app.input_captured(), "input released back to the local desktop");
+        assert!(app.link.is_some(), "session stays live after releasing capture");
+        assert_eq!(app.status_text, "Input released");
+    }
+
+    #[test]
+    fn retry_from_unreachable_reopens_the_session() {
+        let mut app = RemoteApp::new_demo();
+        app.dev_set_screen("session-relay-error");
+        let id = match app.screen {
+            Screen::Session { id } => id,
+            _ => panic!("expected a session"),
+        };
+        app.apply(Action::Reconnect(id), &mut doc());
+        // Re-opened the same connection (gated build → the honest not-connected
+        // surface, never a fabricated one).
+        assert_eq!(app.screen, Screen::Session { id });
+        assert_eq!(app.session_for, Some(id));
     }
 }

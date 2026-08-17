@@ -35,6 +35,7 @@
 pub mod actions;
 pub mod app;
 pub mod doc;
+pub mod link;
 pub mod model;
 pub mod rfb;
 pub mod session;
