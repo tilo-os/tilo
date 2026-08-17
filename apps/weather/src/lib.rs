@@ -50,6 +50,7 @@ pub mod net;
 pub mod panes;
 pub mod region;
 pub mod sample;
+pub mod search_provider;
 pub mod units;
 pub mod wxcode;
 
