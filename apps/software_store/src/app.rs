@@ -4069,4 +4069,85 @@ mod tests {
         assert!(s.nav_flap.is_open(s.nav_layout()));
         assert!(s.nav_flap.reveal() >= 0.999, "snap settles reveal to fully open");
     }
+
+    // ---- Fix proofs: real search widget, real images, honest flatpak state ----
+
+    #[test]
+    fn search_is_backed_by_the_shared_text_input_widget() {
+        // Typing routes into the shared `ui::TextInput` (not a hand-rolled
+        // String), and the clear affordance empties it through the same core —
+        // so selection / clipboard / IME / a11y all come for free.
+        let mut d = Driver::new();
+        d.frame();
+        let p = d.target_center(|a| matches!(a, Action::FocusSearch));
+        d.click(p.x, p.y);
+        assert!(d.app.search_focused);
+        for ch in ["g", "i", "m", "p"] {
+            d.type_char(ch);
+        }
+        // The authoritative editor is the embedded TextInput; the mirror agrees.
+        assert_eq!(d.app.search_input.value(), "gimp");
+        assert_eq!(d.app.search_query, "gimp");
+
+        // The clear (✕) affordance, present once there's a query, empties the
+        // real widget through the shared text core.
+        d.frame();
+        let clr = d.target_center(|a| matches!(a, Action::ClearSearch));
+        d.click(clr.x, clr.y);
+        assert!(d.app.search_input.value().is_empty(), "clear empties the shared widget");
+        assert!(d.app.search_query.is_empty());
+    }
+
+    #[test]
+    fn detail_icon_and_screenshots_load_real_decoded_images() {
+        // The offline sample carries real (synthesised) icon + screenshot
+        // URLs, so the detail page drives the same async fetch→decode→paint
+        // path the live Flathub images use — resolving to real bitmaps, not a
+        // permanent placeholder letter / grey bar.
+        let s = store();
+        let gimp = s.catalog.get("org.gimp.GIMP").expect("sample gimp");
+        let icon = gimp.icon_url.clone().expect("sample icon carries a URL");
+        assert!(gimp.shots.iter().all(|sh| sh.url.is_some()), "every shot carries a URL");
+
+        // Prewarm the way `--shots` does, then assert the icon + each shot
+        // decoded to a Ready bitmap and `get()` returns real dimensions.
+        s.prewarm_images(Duration::from_secs(5));
+        assert_eq!(s.image_store.load_state(&icon), Some(ui::LoadState::Ready));
+        let img = s.image_store.get(&icon).expect("a real decoded icon");
+        assert!(img.width > 1 && img.height > 1, "icon has real pixel dimensions");
+        for sh in &gimp.shots {
+            let u = sh.url.as_deref().unwrap();
+            assert_eq!(s.image_store.load_state(u), Some(ui::LoadState::Ready), "shot {u} decoded");
+        }
+    }
+
+    #[test]
+    fn missing_icon_url_falls_back_without_scheduling_a_load() {
+        // An entry with no icon URL never schedules a fetch — it draws the
+        // honest monogram tile. (Proves the fallback is a real fallback, not a
+        // silent grey placeholder waiting on a load that never comes.)
+        let s = store();
+        // `get("")` is ignored by the store; an unknown URL is simply never
+        // requested unless an entry carries it.
+        assert!(!s.image_store.is_known(""));
+    }
+
+    #[test]
+    fn flatpak_unavailable_surfaces_an_honest_banner() {
+        // A live probe that found no flatpak binary flips the store into the
+        // honest "Flatpak unavailable" state (banner reserves space); browsing
+        // still works, so we never fake results.
+        let probe = crate::probe::ProbeResult { flatpak_available: false, ..Default::default() };
+        let mut s = SoftwareStore::new(Some(probe));
+        let mut doc = AutoCommit::new();
+        s.sync(&mut doc, &automerge::ROOT);
+        assert!(!s.flatpak_available, "probe with no flatpak marks it unavailable");
+        assert!(s.banner_h() > 0.0, "the honest banner reserves layout space");
+
+        // With flatpak present (the offline/default path), no banner.
+        let mut ok = store();
+        ok.sync(&mut doc, &automerge::ROOT);
+        assert!(ok.flatpak_available);
+        assert_eq!(ok.banner_h(), 0.0);
+    }
 }

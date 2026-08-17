@@ -135,14 +135,21 @@ pub struct Remote {
 
 /// `flatpak list --app --columns=application,version` → app-id → version.
 pub fn list_installed() -> BTreeMap<String, String> {
-    let mut map = BTreeMap::new();
     let Some(out) = run_with_timeout(
         "flatpak",
         &["list", "--app", "--columns=application,version"],
         Duration::from_millis(1500),
     ) else {
-        return map;
+        return BTreeMap::new();
     };
+    parse_installed(&out)
+}
+
+/// Parse the tab-separated `application\tversion` output of
+/// `flatpak list` into an app-id → version map. Pure, so the real listing
+/// path is unit-testable without the `flatpak` binary.
+pub fn parse_installed(out: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
     for line in out.lines() {
         let mut parts = line.split('\t');
         if let Some(id) = parts.next() {
@@ -159,14 +166,21 @@ pub fn list_installed() -> BTreeMap<String, String> {
 
 /// `flatpak remotes --columns=name,url,title,options` → list of remotes.
 pub fn list_remotes() -> Vec<Remote> {
-    let mut remotes = Vec::new();
     let Some(out) = run_with_timeout(
         "flatpak",
         &["remotes", "--columns=name,url,title,options"],
         Duration::from_millis(1500),
     ) else {
-        return remotes;
+        return Vec::new();
     };
+    parse_remotes(&out)
+}
+
+/// Parse the tab-separated `name\turl\ttitle\toptions` output of
+/// `flatpak remotes` into [`Remote`]s. Pure, so the real remote-listing
+/// path is unit-testable without the `flatpak` binary.
+pub fn parse_remotes(out: &str) -> Vec<Remote> {
+    let mut remotes = Vec::new();
     for line in out.lines() {
         let mut parts = line.split('\t');
         let Some(name) = parts.next() else { continue };
@@ -737,5 +751,29 @@ mod tests {
         // A relative or data icon must not become a fetch URL.
         let hit = serde_json::json!({ "app_id": "a.B", "name": "B", "icon": "icons/hicolor/B.png" });
         assert!(entry_from_search_hit(&hit).unwrap().icon_url.is_none());
+    }
+
+    #[test]
+    fn parse_installed_reads_flatpak_list_columns() {
+        // The exact tab-separated shape `flatpak list --columns=...` emits.
+        let out = "org.gimp.GIMP\t3.0.2\norg.mozilla.firefox\t129.0\n\t\n";
+        let map = parse_installed(out);
+        assert_eq!(map.get("org.gimp.GIMP").map(String::as_str), Some("3.0.2"));
+        assert_eq!(map.get("org.mozilla.firefox").map(String::as_str), Some("129.0"));
+        assert_eq!(map.len(), 2, "blank lines are skipped");
+    }
+
+    #[test]
+    fn parse_remotes_reads_flatpak_remotes_columns() {
+        let out = "flathub\thttps://dl.flathub.org/repo/\tFlathub\t\n\
+                   dev\thttps://example.test/repo/\t\tdisabled\n";
+        let remotes = parse_remotes(out);
+        assert_eq!(remotes.len(), 2);
+        assert_eq!(remotes[0].name, "flathub");
+        assert_eq!(remotes[0].title, "Flathub");
+        assert!(!remotes[0].disabled);
+        // A remote with no title falls back to its name; `disabled` is parsed.
+        assert_eq!(remotes[1].title, "dev");
+        assert!(remotes[1].disabled);
     }
 }
