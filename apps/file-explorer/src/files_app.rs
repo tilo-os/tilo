@@ -2655,6 +2655,30 @@ impl Widget for FileExplorerWidget {
         d
     }
 
+    /// Fold the Favourites / Places into the unified Ctrl+K palette: a snapshot
+    /// [`PlacesSearchProvider`](crate::search_provider::PlacesSearchProvider)
+    /// makes every pinned location findable there by label or path. Live
+    /// directory contents and the back/forward history are deliberately not
+    /// indexed — only the stable, curated places set.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::PlacesSearchProvider::new(
+            self.favs.borrow().favorites.clone(),
+        ))]
+    }
+
+    /// Navigate to the place a chosen palette row identifies (its destination
+    /// path is the opaque id). Navigation is app-local presentation.
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        _doc: &mut automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) {
+        if let Some(dest) = crate::search_provider::PlacesSearchProvider::parse_action_id(action_id) {
+            self.navigate(dest);
+        }
+    }
+
     fn needs_animation_frame(&self) -> bool {
         // The body's docked→push / reveal slide must keep the host pumping
         // frames while it settles; the floating status bubble likewise while it
