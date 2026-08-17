@@ -17,8 +17,8 @@ pub mod app;
 pub mod backend;
 pub mod doc;
 pub mod model;
-pub mod paint;
 pub mod sample;
+pub mod views;
 
 pub use app::FirewallApp;
 
