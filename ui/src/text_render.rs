@@ -78,6 +78,35 @@ pub fn centered_text_y(y0: f64, h: f64, size: f32) -> f64 {
     y0 + (h - size as f64) / 2.0 - size as f64 * OPTICAL_LIFT
 }
 
+/// Optically-centred top `y` for the two lines of a name-over-subtitle block —
+/// a list row's bold name over a dim subtitle — within `[y0, y0 + h]`.
+/// `line_advance` is the distance between the two runs' top edges. Both tops
+/// are lifted together so the block's optical centre lands on the box middle,
+/// level with a box-centred avatar, icon, or swatch in the same row. This is
+/// the two-line extension of [`centered_text_y`]'s single-line optical model,
+/// and the one canonical helper for list-row content across the toolkit and
+/// apps (prefer it over hand-placed `y0 + k` / `y1 - k` line tops, which read
+/// the block ~0.2 em low against a box-centred leading glyph).
+///
+/// Returns `(name_top, subtitle_top)`; the advance between them is preserved
+/// exactly, so the pair keeps its intended line spacing while the block as a
+/// whole is centred.
+pub fn centered_two_line_tops(
+    y0: f64,
+    h: f64,
+    size_top: f32,
+    size_bottom: f32,
+    line_advance: f64,
+) -> (f64, f64) {
+    // A run drawn at top `y` has its optical centre at `y + size·(0.5 + LIFT)`.
+    let k = 0.5 + OPTICAL_LIFT;
+    // Span between the two runs' optical centres = advance + the lift-weighted
+    // run heights; centre that span's midpoint on the box middle.
+    let optical_extent = line_advance + k * (size_top as f64 + size_bottom as f64);
+    let y_top = y0 + h / 2.0 - optical_extent / 2.0;
+    (y_top, y_top + line_advance)
+}
+
 /// A font family to shape with. The three generic classes resolve to the
 /// system's default face for that class (via cosmic-text / fontconfig); `Named`
 /// targets a specific installed family by name (e.g. a serif book face the user
@@ -1236,6 +1265,30 @@ mod tests {
         let small = (0.0 + (34.0 - 12.0) / 2.0) - centered_text_y(0.0, 34.0, 12.0);
         let large = (0.0 + (34.0 - 24.0) / 2.0) - centered_text_y(0.0, 34.0, 24.0);
         assert!(large > small, "lift scales with font size: {large} > {small}");
+    }
+
+    /// A two-line name-over-subtitle block (a list row) is optically centred as
+    /// a unit: the midpoint of the two runs' optical centres lands on the box
+    /// middle — level with a box-centred avatar / icon in the same row — while
+    /// the advance between the two run tops is preserved exactly.
+    #[test]
+    fn centered_two_line_tops_centers_the_block() {
+        let k = 0.5 + OPTICAL_LIFT;
+        // Sweep list-row shapes: a 50 px results row (16/13), a 38 px roster row
+        // (14/11), a tall 58 px settings row (14/11).
+        for (h, st, sb, adv) in [(50.0, 16.0f32, 13.0f32, 20.8), (38.0, 14.0, 11.0, 18.0), (58.0, 14.0, 11.0, 22.0)] {
+            let y0 = 100.0;
+            let (yt, yb) = centered_two_line_tops(y0, h, st, sb, adv);
+            let ct = yt + st as f64 * k; // top-line optical centre
+            let cb = yb + sb as f64 * k; // bottom-line optical centre
+            let block_center = (ct + cb) / 2.0;
+            let box_center = y0 + h / 2.0;
+            assert!(
+                (block_center - box_center).abs() < 1e-6,
+                "h={h}: block centre {block_center} must equal box centre {box_center}",
+            );
+            assert!((yb - yt - adv).abs() < 1e-9, "the run advance is preserved");
+        }
     }
 
     /// `bump_generation` blows away every cached entry — the next

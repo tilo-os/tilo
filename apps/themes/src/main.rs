@@ -94,11 +94,13 @@ fn render_shot_to_png(
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
+    // `QOS_SHOTS_THEME=<name>` renders the shot under any named theme (e.g.
+    // `oled`, `dracula`, `light`, `high-contrast`), so the same frame can be
+    // graded under every palette. Defaults to dark.
+    let theme = std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|n| Theme::named(&n))
+        .unwrap_or_else(Theme::dark);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();

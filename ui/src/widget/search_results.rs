@@ -233,6 +233,34 @@ impl SearchResultsView {
         }
     }
 
+    /// Optically-centred `y` tops for a row's title (and subtitle, when
+    /// present), against the row `rect`. A single-line row centres the title on
+    /// the row middle; a two-line row centres the title/subtitle block as a
+    /// unit — both level with the leading icon, which is box-centred on the same
+    /// middle (see `draw_row`). Routes through the toolkit's canonical
+    /// optical-centring helpers so list-row text lines up with box-centred
+    /// glyphs everywhere. Returns `(title_top, subtitle_top?)`.
+    fn row_text_ys(rect: Rect, has_sub: bool, title_size: f32, sub_size: f32) -> (f64, Option<f64>) {
+        if has_sub {
+            // Advance between the title top and subtitle top: the title's
+            // line-box height, so the pair reads as a natural two-line block.
+            let advance = title_size as f64 * 1.3;
+            let (title_y, sub_y) = crate::text_render::centered_two_line_tops(
+                rect.y0,
+                rect.height(),
+                title_size,
+                sub_size,
+                advance,
+            );
+            (title_y, Some(sub_y))
+        } else {
+            (
+                crate::text_render::centered_text_y(rect.y0, rect.height(), title_size),
+                None,
+            )
+        }
+    }
+
     /// Lay out headers + rows against the current rect. Single source of truth
     /// shared by `draw` and `row_at`, so a click always lands on the row that
     /// was drawn.
@@ -316,12 +344,10 @@ impl SearchResultsView {
         let sub_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
         let text_w = (row.rect.x1 - text_x - ROW_TEXT_X).max(0.0) as f32;
 
-        // Title.
-        let title_y = if has_sub {
-            row.rect.y0 + 8.0
-        } else {
-            row.rect.y0 + (row.rect.height() - title_size as f64) / 2.0
-        };
+        // Title + optional subtitle, optically centred against the row so the
+        // text block sits level with the box-centred leading icon rather than
+        // ~0.2 em low (shared toolkit helper).
+        let (title_y, sub_y) = Self::row_text_ys(row.rect, has_sub, title_size, sub_size);
         tr.draw_text_weighted(
             scene,
             &result.title,
@@ -334,7 +360,7 @@ impl SearchResultsView {
 
         // Subtitle (dim; on a selected row it stays readable on the fill).
         if let Some(sub) = &result.subtitle {
-            let sy = row.rect.y1 - sub_size as f64 - 9.0;
+            let sy = sub_y.unwrap_or(title_y);
             let sub_col = if selected { colors.text_primary } else { colors.text_dim };
             tr.draw_text(
                 scene,
@@ -356,9 +382,10 @@ impl SearchResultsView {
     ) {
         let _ = scene;
         let size = theme.tokens.typography.scale.sm;
-        let (tw, th) = tr.measure(&self.empty_text, size, None);
+        let (tw, _th) = tr.measure(&self.empty_text, size, None);
         let cx = self.rect.center().x - tw as f64 / 2.0;
-        let cy = self.rect.center().y - th as f64 / 2.0;
+        // Optically centre the single empty-state line (shared toolkit helper).
+        let cy = crate::text_render::centered_text_y(self.rect.y0, self.rect.height(), size);
         tr.draw_text(
             scene,
             &self.empty_text,
@@ -675,5 +702,51 @@ mod tests {
         let empty = SearchResultsView::new().desired_height();
         let full = view_from("").desired_height();
         assert!(full > empty, "populated overlay is taller than the empty state");
+    }
+
+    /// List-row content is optically vertically centred against the row — level
+    /// with the leading icon, which `draw_row` box-centres on the row middle.
+    /// Asserts on the exact `row_text_ys` production path `draw_row` calls:
+    /// a single-line row centres the title's optical centre on the row middle;
+    /// a two-line row centres the title/subtitle block's optical centre there.
+    /// Both must lift above the naive `(h - size)/2` box-centre that read low.
+    #[test]
+    fn row_content_is_optically_centered_against_the_row() {
+        use crate::text_render::OPTICAL_LIFT;
+        let k = 0.5 + OPTICAL_LIFT;
+        let title_size = 16.0f32;
+        let sub_size = 13.0f32;
+
+        // Single-line row: the icon sits on the row centre, so the title's
+        // optical centre must land there too.
+        let one = Rect::new(0.0, 0.0, 360.0, ROW_H_ONE_LINE);
+        let (title_y, sub_y) = SearchResultsView::row_text_ys(one, false, title_size, sub_size);
+        assert_eq!(sub_y, None, "a single-line row has no subtitle top");
+        let optical_center = title_y + title_size as f64 * k;
+        assert!(
+            (optical_center - one.center().y).abs() < 0.5,
+            "single-line title optical centre {optical_center} must sit on the row centre {}",
+            one.center().y,
+        );
+        let naive = one.y0 + (one.height() - title_size as f64) / 2.0;
+        assert!(title_y < naive, "single-line title must lift above the naive-low baseline");
+
+        // Two-line row: the title/subtitle block's optical centre must land on
+        // the row centre (level with the icon), and the title must still lift
+        // above the naive box-centre.
+        let two = Rect::new(0.0, 0.0, 360.0, ROW_H_TWO_LINE);
+        let (t2, s2) = SearchResultsView::row_text_ys(two, true, title_size, sub_size);
+        let s2 = s2.expect("a two-line row exposes a subtitle top");
+        let ct = t2 + title_size as f64 * k;
+        let cb = s2 + sub_size as f64 * k;
+        let block_center = (ct + cb) / 2.0;
+        assert!(
+            (block_center - two.center().y).abs() < 0.5,
+            "two-line block optical centre {block_center} must sit on the row centre {}",
+            two.center().y,
+        );
+        assert!(s2 > t2, "the subtitle sits below the title");
+        let naive2 = two.y0 + (two.height() - title_size as f64) / 2.0;
+        assert!(t2 < naive2, "two-line title must lift above the naive-low baseline");
     }
 }
