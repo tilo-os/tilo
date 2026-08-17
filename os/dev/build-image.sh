@@ -86,6 +86,11 @@ bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
 # as an empty launcher rather than as a build error.
 bash "$QOS_OS_DIR/tests/app_store.sh" >/dev/null \
   || { bash "$QOS_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
+# Pre-flight: the store this builds in has to hand a layer's bytes back
+# unchanged. It is the one pre-flight that cannot be deferred to the end of the
+# build, because the damage it prevents lands in the middle of one and is
+# blamed on dnf. Switches to a dedicated store when the default one tears.
+use_build_store
 
 # Where the build unpacks layers. Two failure modes converge here, and neither
 # names its cause:

@@ -368,74 +368,62 @@ RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 # what will actually be mounted). See the split/uki/final stages at the end.
 FROM ${BASE_REF} AS rootfs
 
-# ---- Drop SQLite's WAL sidecars after every rpm transaction -----------------
+# ---- Keeping the rpm database intact across a layer boundary ----------------
+# Two separate faults land on the same file, `/usr/lib/sysimage/rpm/rpmdb.sqlite`,
+# and both show up as dnf failing against a database the previous step wrote.
+# They have different causes and different fixes, and conflating them cost two
+# agents an afternoon each, so they are written down apart.
+#
+# --- 1. The sidecars, which this stage drops --------------------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
 # than letting SQLite delete them when the last connection closes. `-shm` is the
 # WAL *index*: pure derived state, valid only for the processes that mapped it,
 # and meaningless once the transaction's processes are gone. `-wal` is left at
-# zero bytes, i.e. already checkpointed into the database — so neither file
-# carries data, and neither survives correctly across a container layer.
+# zero bytes — measured at every dnf step here, every time — i.e. fully
+# checkpointed. So neither file carries data, and a 32 KiB index describing a
+# WAL that no longer exists is exactly the sort of thing a later open should
+# not be handed. Measured, one transaction per arm, nothing else varied:
+# sidecars KEPT -> `rpm --verifydb` DIRTY in the next layer and the following
+# transaction fails; sidecars DROPPED -> clean. Hence the line below.
 #
-# Every layer boundary is where that bites. The fedora-bootc base ships neither
-# file; every qOS image built so far shipped both, and every dnf step here left
-# a fresh pair in its layer. Reading such a layer back in the following RUN
-# yields a structurally corrupt database — duplicate b-tree page references and
-# wrong index entry counts under `pragma integrity_check`, with `rpm -qa` and
-# `rpm -ql` still fine because the Packages blob is intact while Basenames and
-# Dirnames are not. That surfaces as dnf refusing to resolve file dependencies
-# the base plainly satisfies ("/usr/bin/basename is needed by distrobox") and
-# `rpm -qf` reporting that no package owns files it just installed.
+# --- 2. The layer capture, which is not fixed here --------------------------
+# Dropping them is necessary and NOT sufficient. On a machine whose podman store
+# reports `Native Overlay Diff: false`, the database is corrupted at a layer
+# boundary with no sidecar anywhere near it.
 #
-# So this is not a workaround for the corruption; it is not shipping derived
-# state that was never valid to ship. Only this stage needs it: the wpe-builder
-# and builder stages are thrown away and nothing in them reads the rpmdb after
-# their one transaction, and touching their dnf layers would invalidate a
-# ~45-minute engine build for nothing.
+# What that flag means: the overlay driver is running through a mount program
+# (fuse-overlayfs), so containers/storage cannot read the changeset out of
+# overlayfs metadata and falls back to walking the tree and re-reading every
+# file whose stat differs. Replaying these real dnf steps onto a real parent
+# layer, sidecars dropped in both arms, everything else identical:
 #
-# What is established, and what is not — because the next person will need to
-# know which half to trust. Two earlier claims here were wrong and are corrected
-# below; they were drawn from single passes of a fault that does not reproduce
-# reliably, which is the trap this note now exists to prevent.
+#   fuse-overlayfs   the database comes back from the boundary with the SAME
+#                    length and the SAME allocated block count but different
+#                    content — page images mixed from before and after the
+#                    transaction. `PRAGMA integrity_check` reports invalid page
+#                    numbers and btreeInitPage errors; the next transaction then
+#                    resolves against damaged indexes, decides an installed
+#                    package is missing, and rpm refuses it.
+#   native overlay   40 of 40 layer boundaries handed the file back
+#                    byte-identical; 48 of 48 integrity checks clean; 40 of 40
+#                    dnf transactions succeeded. It is also ~15x faster per
+#                    layer commit, because nothing re-reads the tree.
 #
-#   Established. Carrying the sidecars across a layer boundary does corrupt the
-#   database, and dropping them does help. Measured directly, one transaction
-#   per arm, everything else identical: sidecars KEPT -> `rpm --verifydb` DIRTY
-#   in the next layer and the following dnf transaction fails; sidecars DROPPED
-#   -> CLEAN, transaction succeeds. So this line earns its place.
+# Same kernel, same btrfs, same Containerfile — the only difference is the
+# store. So this is not a property of the machine and not something to work
+# around in here: the fix is to build in a store that does not tear, which
+# os/tests/layer_capture.sh checks and os/dev/_common.sh arranges.
 #
-#   Also established, and this is the correction. Dropping them is NOT
-#   sufficient, and the fault is INTERMITTENT. Replaying one real dnf step onto
-#   one real parent layer, with the sidecars dropped every time, gives CLEAN on
-#   some runs and DIRTY on others — roughly one in four here. A layer can
-#   therefore ship a corrupt rpmdb with no sidecar anywhere in it, which is
-#   exactly what happened to the `chrony … glibc-langpack-en … ` step: its layer
-#   verified DIRTY while the six dnf layers before it verified CLEAN, and two
-#   steps later dnf resolved against the damaged indexes, decided glibc was not
-#   installed, and rpm refused the transaction ("package glibc-common … is
-#   already installed").
+# Ruled out as the mechanism, each by A/B trial rather than argument, so that
+# nobody re-tests them: `sync` before the layer ends (did not help; the sync arm
+# was dirtier); `VACUUM` before dropping the sidecars (rewrites in place, same
+# inode, did not help — and made it worse, which fits, since it rewrites the
+# whole file); and `--source-date-epoch` / `--rewrite-timestamp` (dirty and
+# clean runs on both sides).
 #
-#   Ruled out as the mechanism, each by A/B trials rather than reasoning:
-#   `sync` before the layer ends (did not help, and the sync arm was dirtier
-#   than the plain one); `VACUUM` on the database before dropping the sidecars
-#   (rewrites in place, same inode, did not help); and the reproducible-build
-#   flags `--source-date-epoch` / `--rewrite-timestamp` (dirty and clean runs on
-#   both sides). Nor is the storage stack what the previous note said: podman
-#   here is the NATIVE overlay driver on btrfs, not fuse-overlayfs — though
-#   "Native Overlay Diff: false" does mean the layer changeset is computed by
-#   walking and re-reading the tree, which is where a large file being rewritten
-#   in place is most plausibly captured inconsistently.
-#
-#   NOT established. Why the capture tears. It correlates with how much of the
-#   database a transaction rewrites — the step that upgrades glibc, replacing
-#   four packages and every file list they own, is the one that fails, while
-#   small pure-install steps rarely do — but that is an observation, not a
-#   mechanism. CI builds the same Containerfile under buildkit and has never
-#   reproduced it.
-#
-# So: keep dropping the sidecars, and do not trust a green build to mean the
-# fault is gone — it is a dice roll per layer. The assertion below is what
-# actually closes the loop, because it fails the build the moment the indexes
-# are damaged, whatever the mechanism turns out to be.
+# The assertion near the end of this stage stays regardless. It is what closes
+# the loop for any mechanism not yet found, because it fails the build the
+# moment the indexes are damaged.
 ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
 
 # Graphics stack
@@ -499,12 +487,19 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # and `cancel` per job. The pane already degrades honestly when lpstat is absent,
 # so the image shipped a printers pane that was permanently empty and correct
 # about it. The socket below is what makes those calls reach a daemon.
+#
+# `vim-enhanced` because the base ships only `vim-minimal`, whose `/usr/bin/vi`
+# has no syntax highlighting, no plugins and no `~/.vimrc` support — enough to
+# fix a config file by hand, not enough to be the editor on a machine whose own
+# source you are expected to edit. `less` is already in the base, so this is the
+# remaining half of "there is a usable text editor in a terminal here".
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     bubblewrap \
     flatpak \
     xdg-dbus-proxy \
     distrobox \
     git \
+    vim-enhanced \
     cups \
     podman \
     foot \
