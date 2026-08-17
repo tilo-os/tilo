@@ -1,6 +1,7 @@
 use vello::peniko::Color;
 use crate::tokens::{PaletteSpec, Tokens};
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
+use crate::text_render::{FontChoice, FontRole};
 
 #[derive(Clone, Debug)]
 pub struct Theme {
@@ -61,6 +62,14 @@ pub struct Theme {
     /// resolution). Effective physical size = logical × `ui_scale` ×
     /// device-scale, and text additionally × `text_scale`.
     pub ui_scale: f32,
+    /// The font family reading views use for long-form **body copy** — the RSS
+    /// article body, the ebook page, an office document. OS-controlled so the
+    /// whole system's reading face is set in one place; defaults to the
+    /// toolkit's embedded serif ([`crate::text_render::SERIF_FAMILY`]), a
+    /// genuine serif that resolves the same on every host. UI chrome is
+    /// unaffected — it keeps the sans default. Resolve a role through
+    /// [`Theme::font_family`] rather than reading this directly.
+    pub reading_family: FontChoice,
 }
 
 impl Default for Theme { fn default() -> Self { Self::dark() } }
@@ -122,7 +131,23 @@ impl Theme {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            // Reading body copy defaults to the embedded serif; chrome stays sans.
+            reading_family: FontChoice::Serif,
             tokens,
+        }
+    }
+
+    /// Resolve a semantic [`FontRole`] to the concrete [`FontChoice`] a widget
+    /// shapes with. This is the OS-controlled selector: `Ui` and `Mono` are the
+    /// system sans / mono, while `Reading` yields the theme's
+    /// [`reading_family`](Theme::reading_family) (the embedded serif by
+    /// default). Reading views call this for their body text; UI chrome keeps
+    /// the sans default by simply not requesting `Reading`.
+    pub fn font_family(&self, role: FontRole) -> FontChoice {
+        match role {
+            FontRole::Ui => FontChoice::SansSerif,
+            FontRole::Reading => self.reading_family.clone(),
+            FontRole::Mono => FontChoice::Monospace,
         }
     }
     /// The default: a calm neutral **graphite** dark theme with a restrained
@@ -881,6 +906,35 @@ mod tests {
             (composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3,
             "spacing only picks up the UI factor, not text",
         );
+    }
+
+    #[test]
+    fn font_role_reading_maps_to_the_embedded_serif_by_default() {
+        use crate::text_render::{FontChoice, FontRole, SERIF_FAMILY};
+        let t = Theme::dark();
+        // Reading body copy is the embedded serif; chrome + mono are unchanged.
+        assert_eq!(t.font_family(FontRole::Reading), FontChoice::Serif);
+        assert_eq!(t.font_family(FontRole::Ui), FontChoice::SansSerif);
+        assert_eq!(t.font_family(FontRole::Mono), FontChoice::Monospace);
+        // The default reading face is the toolkit's embedded serif family.
+        assert_eq!(t.reading_family, FontChoice::Serif);
+        // Light theme carries the same reading default — serif is a system-wide
+        // reading role, not a per-palette accident.
+        assert_eq!(Theme::light().font_family(FontRole::Reading), FontChoice::Serif);
+        // The canonical family name is stable (the OS image depends on it).
+        assert_eq!(SERIF_FAMILY, "Source Serif 4");
+    }
+
+    #[test]
+    fn font_role_reading_follows_an_os_override() {
+        use crate::text_render::{FontChoice, FontRole};
+        // The OS can retarget the reading face in one place; every reading view
+        // then picks it up through the role without per-app changes.
+        let mut t = Theme::dark();
+        t.reading_family = FontChoice::Named("Literata".into());
+        assert_eq!(t.font_family(FontRole::Reading), FontChoice::Named("Literata".into()));
+        // Chrome is untouched by a reading-face override.
+        assert_eq!(t.font_family(FontRole::Ui), FontChoice::SansSerif);
     }
 
     #[test]
