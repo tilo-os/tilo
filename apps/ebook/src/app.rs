@@ -2923,6 +2923,42 @@ impl Widget for BooksApp {
         self.actions.take_committed()
     }
 
+    /// Fold the library and the open book's reading positions into the unified
+    /// Ctrl+K palette: a snapshot
+    /// [`BookSearchProvider`](crate::search_provider::BookSearchProvider) makes
+    /// every book (by title / author) and every current-book bookmark (by
+    /// excerpt) findable there, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::BookSearchProvider::new(
+            &self.library,
+            &self.annotations,
+        ))]
+    }
+
+    /// Open the book, or jump to the annotation, a chosen palette row
+    /// identifies. Opening a book restores its saved position; jumping to an
+    /// annotation moves to its chapter/block within the open book.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        match crate::search_provider::Activation::parse(action_id) {
+            Some(crate::search_provider::Activation::Book(id)) => {
+                if let Some(i) = self.library.iter().position(|b| b.id == id) {
+                    self.open_book_at(doc, i);
+                }
+            }
+            Some(crate::search_provider::Activation::Annotation(id)) => {
+                if let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() {
+                    self.view = View::Reader;
+                    self.chapter = a.chapter.min(self.num_chapters().saturating_sub(1));
+                    self.pending_jump_block = Some(a.block);
+                    self.clear_selection();
+                    self.comment_group = None;
+                    self.layout = None;
+                }
+            }
+            None => {}
+        }
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
