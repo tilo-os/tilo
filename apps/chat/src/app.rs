@@ -1724,6 +1724,34 @@ impl Widget for ChatApp {
         self.actions.take_committed()
     }
 
+    /// Fold the conversations into the unified Ctrl+K palette: a snapshot
+    /// [`ChannelSearchProvider`](crate::search_provider::ChannelSearchProvider)
+    /// makes every text channel findable there by name or topic, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::ChannelSearchProvider::new(
+            &self.channels,
+            &self.workspaces,
+        ))]
+    }
+
+    /// Open the conversation a chosen palette row identifies: switch to its
+    /// workspace and make it the active channel (the next `reload` loads its
+    /// messages). View state is per-peer presentation, so the doc args are
+    /// unused — the same fields the sidebar's own channel click sets.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::ChannelSearchProvider::parse_action_id(action_id) {
+            if let Some(ws) = self.channel(&id).map(|c| c.workspace.clone()) {
+                self.active_ws = ws;
+                self.active_channel = id;
+                self.thread_open = None;
+                self.scroll = 0.0;
+                self.focus = Focus::Main;
+                self.caret = 0;
+            }
+        }
+    }
+
     fn name(&self) -> &str {
         "ChatApp"
     }
