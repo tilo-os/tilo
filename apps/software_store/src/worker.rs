@@ -450,6 +450,39 @@ mod tests {
     }
 
     #[test]
+    fn install_and_remove_route_through_the_real_flatpak_path() {
+        // Drive the real handler: it shells out to `flatpak` and reports an
+        // `ActionDone` tagged with the right kind + target for the app to fold
+        // in. On a host without flatpak the outcome is `Failed` (surfaced
+        // honestly as an error toast) — either way the real mutating path is
+        // exercised, not a stub.
+        match handle(Request::Install { remote: "flathub".into(), app_id: "org.gimp.GIMP".into() }) {
+            Some(WorkerMsg::ActionDone { target, kind, .. }) => {
+                assert_eq!(kind, ActionKind::Install);
+                assert_eq!(target, "org.gimp.GIMP");
+            }
+            other => panic!("expected an Install ActionDone, got {other:?}"),
+        }
+        match handle(Request::Remove("org.gimp.GIMP".into())) {
+            Some(WorkerMsg::ActionDone { target, kind, .. }) => {
+                assert_eq!(kind, ActionKind::Remove);
+                assert_eq!(target, "org.gimp.GIMP");
+            }
+            other => panic!("expected a Remove ActionDone, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn refresh_installed_yields_an_installed_message() {
+        // The real list path runs `flatpak list` and returns an Installed
+        // message (an empty map on a host without flatpak — never a panic).
+        match handle(Request::RefreshInstalled) {
+            Some(WorkerMsg::Installed(_)) => {}
+            other => panic!("expected an Installed message, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn detail_cache_round_trips() {
         let mut caches = Caches::default();
         let app = AppEntry::flathub_stub("a.b.C", "C", "dev", "sum", Category::Graphics);
