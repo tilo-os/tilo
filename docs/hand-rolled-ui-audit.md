@@ -117,7 +117,7 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 | imager | "type device name to arm" confirm | `app.rs:104 confirm` → `:1421 push(c)` | MIGRATE → `TextInput::local` (paste-safety caveat) | S |
 | vpn ✅ | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | **DONE** → `TextInput::local` ×2 (plain chrome inside app boxes; Tab cycles focus) | M |
 | monitor ✅ | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | **DONE** → `SearchField` (real caret/selection/clipboard/clear; `filter` kept as the lower-cased mirror the row filter reads) | M |
-| logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE → `SearchField` (mirror to doc) | M |
+| logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE-with-caveat → `SearchField`, **but** logs deliberately overloads the keyboard (arrows = list nav, every printable char filters, no focus toggle); a focused `TextInput` claims the arrows for caret motion, so this needs a *focus-model* UX decision (click / `/` to focus the field, arrows nav only when unfocused) — a behaviour change, deferred pending that call | M |
 | hex_editor ✅ | find search | `view.rs:69 search_query` → `:1285 push_str` | **DONE** → mono `TextInput::local` inside the overlay's own chip + counter (adds the real caret/selection/clipboard it lacked); `SearchField`'s pill would duplicate the overlay chrome, so the bare `TextInput` fits | M |
 | hex_editor ✅ | go-to offset | `view.rs:77 goto_query` → `:1316 push_str` | **DONE** → mono `TextInput::local` (hex/decimal parse stays in `commit_goto`; **not** `NumberInput`, which has no hex) | S |
 | sheets | name-box / go-to | `app.rs:139 NameBoxEdit` → `:3517 insert` | MIGRATE → `TextInput::local` (enter_submits) | M |
@@ -147,9 +147,20 @@ app, or a non-plain-text field):**
 | ebook | `num_edit` page field (`app.rs:651`) | digit/`.`-filtered numeric entry — `NumberInput` shape, not plain text |
 
 **Counts.** Text-input surfaces across the fleet (excl. the 3 owned elsewhere):
-**11 apps already fully on the shared widget** (incl. the done halves of the 6
-partially-migrated apps), **18 surfaces across 15 apps still hand-rolled and in
-scope to MIGRATE**, **9 genuine KEEP-with-reason** engines/fields.
+**11 apps already fully on the shared widget** at the start of this round (incl.
+the done halves of the 6 partially-migrated apps), **18 surfaces across 15 apps
+still hand-rolled and in scope to MIGRATE**, **9 genuine KEEP-with-reason**
+engines/fields.
+
+**Migrated this round (✅ above, one commit each, each with a test that drives
+the field through the real event path):** `disks` (format-confirm field),
+`vpn` (Add-tunnel name/endpoint), `monitor` (process filter → `SearchField`),
+`db_client` (connect-modal 7 fields incl. the **secret** password), `hex_editor`
+(find + go-to overlay fields). That leaves the remaining rows above for a
+follow-up round — the largest being `logs` (needs the focus-model UX call),
+`word-processor`/`sheets` find-and-rename fields, `remote`/`containers`
+multi-field forms, `pdf_viewer` find, `chat`/`ebook`/`slides` inline/multiline
+editors.
 
 **Shared-widget extensions made this round (extend, don't fork):** `SearchField`
 gained `apply_layout_external(rect)` + `is_focused()` + a `standalone()` marker so
