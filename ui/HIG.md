@@ -179,6 +179,13 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 - The compute path (event → laid-out frame) should stay well under one frame
   (~16 ms); if an app feels slow, measure event/layout/draw/present separately
   before blaming app code.
+- **Scrolling is smooth for free.** The shared `Scrollable` primitive eases
+  wheel/trackpad scrolling toward its target every frame (refresh-rate adaptive,
+  fast-flick-aware) and draws a slim overlay progress bar that fades in while
+  scrolling and out when idle. Don't hand-roll per-app scroll physics or a
+  bespoke scrollbar — wrap content in `Scrollable` and inherit both. It honors
+  reduced motion (instant, no momentum) and can opt back to 1:1 stepping via
+  `with_smooth_scroll(false)`.
 
 ---
 

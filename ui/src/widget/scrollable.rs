@@ -49,6 +49,25 @@ const FADE_MS: u128 = 320;
 const HOLD_INITIAL_MS: u64 = 300;
 /// Click-and-hold track paging: interval between repeats.
 const HOLD_REPEAT_MS: u64 = 55;
+/// Smooth-scroll easing time constant (seconds). The rendered offset chases
+/// its target with `1 - exp(-dt / TAU)` per frame, so the motion is
+/// frame-rate independent — identical feel at 60 Hz and 120 Hz. Smaller is
+/// snappier; ~0.09 s reads as buttery but never floaty.
+const SCROLL_EASE_TAU: f32 = 0.09;
+/// Once the rendered offset is within this many logical px of its target the
+/// ease snaps shut and stops pumping frames — no sub-pixel idle spin.
+const SCROLL_SETTLE_EPS: f32 = 0.4;
+/// Any single easing step advances by at most this slice of wall time, so a
+/// wheel flick that resumes after a long idle can't teleport the content in
+/// one giant frame (a stale `last_ease` is clamped to this).
+const EASE_MAX_DT: f32 = 0.05;
+/// Wheel notches arriving within this window count as one flick and get a
+/// velocity boost, so a fast flick travels further per notch than a slow,
+/// deliberate one.
+const FLICK_WINDOW_MS: u128 = 140;
+/// Upper bound on the flick boost (a back-to-back notch multiplies its step
+/// by this; it tapers to 1× as the gap approaches [`FLICK_WINDOW_MS`]).
+const FLICK_MAX_BOOST: f32 = 2.6;
 
 /// A track click-and-hold in progress: the bar keeps paging toward the
 /// press point on a timer until the pointer is released or the thumb
@@ -68,8 +87,19 @@ struct TrackHold {
 
 pub struct Scrollable {
     axis: ScrollAxis,
+    /// The **rendered** scroll position — what `apply_layout` positions the
+    /// children by and the scrollbar thumb tracks. Under smooth scrolling it
+    /// eases toward [`Self::target_x`]/[`Self::target_y`] each frame rather
+    /// than jumping, so wheel/trackpad scrolling glides instead of stepping.
     offset_x: f32,
     offset_y: f32,
+    /// The scroll position wheel/trackpad input drives toward. Equal to the
+    /// rendered offset at rest and for every *instant* mutation (thumb drag,
+    /// keyboard paging, programmatic `set_offset_y`); a wheel gesture pushes it
+    /// ahead and the rendered offset chases it (the momentum/inertia feel).
+    /// Held identical to the offset under reduced motion — no easing at all.
+    target_x: f32,
+    target_y: f32,
     content_w: f32,
     content_h: f32,
     viewport_w: f32,
@@ -164,6 +194,22 @@ pub struct Scrollable {
     /// floating above the content's right edge. See
     /// [`Scrollable::with_content_gutter`].
     content_gutter: f32,
+    /// Master switch for eased (momentum) wheel/trackpad scrolling. On by
+    /// default; opt out via [`Scrollable::with_smooth_scroll`] for a viewport
+    /// that wants raw 1:1 wheel stepping. Independent of the drawn scrollbar.
+    smooth: bool,
+    /// Cached `Theme::reduce_motion`, refreshed every `build_layout`. The event
+    /// and `sync` paths have no `Theme` in hand, so the smoothness decision
+    /// reads this snapshot: when the OS asks to reduce motion, wheel scrolling
+    /// applies instantly (no ease, no flick momentum).
+    reduce_motion: bool,
+    /// Wall-clock stamp of the previous easing step, so the per-frame
+    /// interpolation uses real elapsed time (refresh-rate independent). `None`
+    /// resets the ramp so a fresh gesture starts from a nominal frame slice.
+    last_ease: Option<Instant>,
+    /// Wall-clock stamp of the previous wheel notch, for the flick
+    /// velocity boost (rapid successive notches travel further).
+    last_wheel: Option<Instant>,
 }
 
 impl Scrollable {
@@ -172,6 +218,8 @@ impl Scrollable {
             axis,
             offset_x: 0.0,
             offset_y: 0.0,
+            target_x: 0.0,
+            target_y: 0.0,
             content_w: 0.0,
             content_h: 0.0,
             viewport_w: 0.0,
@@ -198,6 +246,10 @@ impl Scrollable {
             bar_dirty: false,
             persisted_offset: None,
             content_gutter: 0.0,
+            smooth: true,
+            reduce_motion: false,
+            last_ease: None,
+            last_wheel: None,
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -256,7 +308,20 @@ impl Scrollable {
         let (x, y) = cell.get();
         self.offset_x = x;
         self.offset_y = y;
+        // Resume at rest, not mid-ease: the rebuilt instance should sit exactly
+        // where the last one left off with no glide from zero.
+        self.target_x = x;
+        self.target_y = y;
         self.persisted_offset = Some(cell);
+        self
+    }
+
+    /// Enable (`true`, the default) or disable eased momentum wheel/trackpad
+    /// scrolling. When off, each wheel notch moves the content 1:1 with no
+    /// interpolation. Reduced motion (OS-driven) forces the instant path
+    /// regardless of this flag.
+    pub fn with_smooth_scroll(mut self, on: bool) -> Self {
+        self.smooth = on;
         self
     }
 
@@ -281,6 +346,17 @@ impl Scrollable {
     pub fn set_offset_y(&mut self, y: f32) {
         self.offset_y = y;
         self.clamp();
+        // A programmatic seek is an instant jump — collapse any pending ease so
+        // the view doesn't glide away from the position just set.
+        self.sync_target_to_offset();
+    }
+
+    /// Collapse the eased target onto the rendered offset. Called by every
+    /// *instant* mutation (thumb drag, programmatic seek, `scroll_into_view`)
+    /// so a later ease frame doesn't drag the view off the position just set.
+    fn sync_target_to_offset(&mut self) {
+        self.target_x = self.offset_x;
+        self.target_y = self.offset_y;
     }
 
     /// Whether the vertical axis currently overflows its viewport (i.e. the
@@ -319,6 +395,10 @@ impl Scrollable {
             ScrollAxis::Both => { self.offset_x += dx; self.offset_y += dy; }
         }
         self.clamp();
+        // `scroll_by` is the *instant* path (thumb drag, keyboard paging,
+        // programmatic). Keep the eased target pinned to the offset so a
+        // subsequent ease frame can't drag the view away from it.
+        self.sync_target_to_offset();
         // Only signal dirty if the clamp didn't eat the entire
         // delta — at the edges of the content, `offset_y` doesn't
         // actually change, and we'd waste a redraw otherwise.
@@ -326,6 +406,138 @@ impl Scrollable {
             self.scroll_dirty = true;
             self.wake();
         }
+    }
+
+    /// Eased (momentum) scroll — the wheel/trackpad path. Pushes the *target*
+    /// ahead by the delta and lets the rendered offset chase it over the next
+    /// frames (see [`Self::ease_tick`]), giving smooth, refresh-rate-adaptive
+    /// motion. Falls back to an instant [`Self::scroll_by`] when smoothing is
+    /// disabled or the OS asks to reduce motion. Rapid successive notches
+    /// accumulate in the target faster than the offset can catch them, which
+    /// is what reads as inertia.
+    pub fn smooth_scroll_by(&mut self, dx: f32, dy: f32) {
+        if !self.smooth || self.reduce_motion {
+            self.scroll_by(dx, dy);
+            return;
+        }
+        let was_easing = self.easing_active();
+        let (tx, ty) = (self.target_x, self.target_y);
+        match self.axis {
+            ScrollAxis::Vertical => { self.target_y += dy; }
+            ScrollAxis::Horizontal => { self.target_x += dx; }
+            ScrollAxis::Both => { self.target_x += dx; self.target_y += dy; }
+        }
+        self.clamp();
+        // Nothing changed (already at the content edge) → let the wheel bubble
+        // to an outer scroll region; don't wake the bar for a no-op.
+        if self.target_x == tx && self.target_y == ty {
+            return;
+        }
+        // Starting a fresh glide from rest: reset the ease clock so the first
+        // step uses a nominal frame slice rather than a stale, long-idle dt.
+        if !was_easing {
+            self.last_ease = None;
+        }
+        // The overlay bar rides scroll activity, and the ease loop needs a
+        // frame pumped even though the rendered offset hasn't moved yet.
+        self.wake();
+        self.scroll_dirty = true;
+    }
+
+    /// Whether the rendered offset is still easing toward its target (and so
+    /// the host must keep pumping frames). False under reduced motion or when
+    /// smoothing is off — those paths keep offset and target identical.
+    fn easing_active(&self) -> bool {
+        self.smooth
+            && !self.reduce_motion
+            && ((self.target_x - self.offset_x).abs() > SCROLL_SETTLE_EPS
+                || (self.target_y - self.offset_y).abs() > SCROLL_SETTLE_EPS)
+    }
+
+    /// Advance the rendered offset one frame toward its target with
+    /// frame-rate-independent exponential smoothing. `now` is injected so the
+    /// curve is unit-testable; production wires the wall clock via `sync`.
+    /// Returns whether the offset actually moved.
+    fn ease_tick(&mut self, now: Instant) -> bool {
+        if !self.easing_active() {
+            self.last_ease = Some(now);
+            return false;
+        }
+        let dt = match self.last_ease {
+            Some(prev) => now.saturating_duration_since(prev).as_secs_f32().clamp(0.0, EASE_MAX_DT),
+            None => 1.0 / 60.0,
+        };
+        self.last_ease = Some(now);
+        if dt <= 0.0 {
+            return false;
+        }
+        let alpha = 1.0 - (-dt / SCROLL_EASE_TAU).exp();
+        let (ox, oy) = (self.offset_x, self.offset_y);
+        self.offset_x += (self.target_x - self.offset_x) * alpha;
+        self.offset_y += (self.target_y - self.offset_y) * alpha;
+        // Snap the last sub-pixel gap shut so the ease terminates cleanly.
+        if (self.target_x - self.offset_x).abs() <= SCROLL_SETTLE_EPS {
+            self.offset_x = self.target_x;
+        }
+        if (self.target_y - self.offset_y).abs() <= SCROLL_SETTLE_EPS {
+            self.offset_y = self.target_y;
+        }
+        self.clamp();
+        let moved = self.offset_x != ox || self.offset_y != oy;
+        if moved {
+            self.scroll_dirty = true;
+        }
+        moved
+    }
+
+    /// Velocity boost for a wheel notch at `now`: back-to-back notches (within
+    /// [`FLICK_WINDOW_MS`]) scale up toward [`FLICK_MAX_BOOST`], tapering to 1×
+    /// as the gap widens, so a fast flick travels further per notch than a
+    /// deliberate one. Records `now` as the latest notch.
+    fn flick_boost(&mut self, now: Instant) -> f32 {
+        let boost = match self.last_wheel {
+            Some(prev) => {
+                let gap = now.saturating_duration_since(prev).as_millis();
+                if gap >= FLICK_WINDOW_MS {
+                    1.0
+                } else {
+                    let t = gap as f32 / FLICK_WINDOW_MS as f32; // 0 (fast) → 1 (slow)
+                    FLICK_MAX_BOOST - (FLICK_MAX_BOOST - 1.0) * t
+                }
+            }
+            None => 1.0,
+        };
+        self.last_wheel = Some(now);
+        boost
+    }
+
+    /// Advance the smooth-scroll ease exactly one frame against the wall clock,
+    /// returning whether the rendered offset moved. For headless shots that
+    /// want to capture the view mid-glide (offset still short of its target)
+    /// without a live frame loop.
+    pub fn ease_step(&mut self) -> bool {
+        self.ease_tick(Instant::now())
+    }
+
+    /// Run the ease to completion against a synthetic clock. For headless
+    /// shots and tests that need the settled offset without a live frame loop;
+    /// bounded so a runaway target can't spin forever.
+    pub fn settle_scroll(&mut self) {
+        let mut t = Instant::now();
+        for _ in 0..600 {
+            if !self.easing_active() {
+                break;
+            }
+            t += Duration::from_millis(16);
+            self.ease_tick(t);
+        }
+    }
+
+    /// The scroll position the wheel/trackpad is driving toward (equals the
+    /// rendered offset at rest). Exposed for callers and tests that need the
+    /// eventual destination rather than the in-flight rendered position.
+    pub fn scroll_target(&self) -> (f32, f32) {
+        (self.target_x, self.target_y)
     }
 
     /// Refresh the overlay auto-hide timer: fade the bar to full opacity now
@@ -357,12 +569,20 @@ impl Scrollable {
             self.offset_x = (x + w - self.viewport_w).max(0.0);
         }
         self.clamp();
+        // An instant reveal — don't let a pending ease glide back off the
+        // element we just brought into view.
+        self.sync_target_to_offset();
     }
     fn clamp(&mut self) {
         let max_x = (self.content_w - self.viewport_w).max(0.0);
         let max_y = (self.content_h - self.viewport_h).max(0.0);
         self.offset_x = self.offset_x.clamp(0.0, max_x);
         self.offset_y = self.offset_y.clamp(0.0, max_y);
+        // Keep the eased target inside the same range — otherwise a target
+        // parked past a now-shorter content (a list that shrank) would leave
+        // the offset easing toward an unreachable position and never settle.
+        self.target_x = self.target_x.clamp(0.0, max_x);
+        self.target_y = self.target_y.clamp(0.0, max_y);
         // Mirror the live position into the shared cell (if any) so a fresh
         // instance rebuilt next frame seeds from here. Every offset mutation
         // funnels through `clamp`, so this is the single write-back point.
@@ -651,6 +871,14 @@ impl Widget for Scrollable {
         if self.hold.is_some() {
             self.advance_hold(Instant::now());
         }
+        // Advance smooth (momentum) wheel/trackpad scrolling: the rendered
+        // offset eases toward its target one frame per re-sync. `sync` is the
+        // hook the host pumps every animation frame (`needs_animation_frame`
+        // re-arms it), giving the ease its per-frame cadence at the display's
+        // refresh rate — the same mechanism as `advance_hold` above.
+        if self.easing_active() {
+            self.ease_tick(Instant::now());
+        }
         if let Some(c) = &mut self.child { c.sync(s, p); }
     }
 
@@ -662,6 +890,16 @@ impl Widget for Scrollable {
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        // Snapshot reduced-motion from the live theme — the event/`sync` paths
+        // that decide whether to ease have no `Theme` in hand. If motion was
+        // just turned down mid-glide, finish the scroll instantly so the offset
+        // never strands partway to a target it will no longer ease toward.
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion && (self.offset_x != self.target_x || self.offset_y != self.target_y) {
+            self.offset_x = self.target_x;
+            self.offset_y = self.target_y;
+            self.scroll_dirty = true;
+        }
         let child_node = self.child.as_mut().map(|c| c.build_layout(taffy, theme, node_map));
         // Resolve the outer height. Default (`percent(1.0)`) is preserved
         // for the overwhelmingly-common "fills a definite-height parent"
@@ -957,6 +1195,16 @@ impl Widget for Scrollable {
                 MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
                 MouseScrollDelta::PixelDelta(pp) => (-pp.x as f32, -pp.y as f32),
             };
+            // Velocity boost for discrete notches: a fast flick (notches close
+            // together) travels further per notch than a slow, deliberate one.
+            // Trackpad `PixelDelta` already encodes velocity in its magnitude,
+            // so it's left un-boosted to keep precise two-finger scrolling 1:1.
+            // Reduced motion opts out entirely — pure 1:1 notch stepping.
+            if matches!(delta, MouseScrollDelta::LineDelta(..)) && self.smooth && !self.reduce_motion {
+                let boost = self.flick_boost(Instant::now());
+                dx *= boost;
+                dy *= boost;
+            }
             // Shift+wheel scrolls horizontally: remap the dominant vertical
             // delta onto X when the axis can scroll horizontally and the
             // wheel is (as on a plain mouse) vertical-only. Tilt wheels that
@@ -965,14 +1213,17 @@ impl Widget for Scrollable {
                 dx = dy;
                 dy = 0.0;
             }
-            let before = (self.offset_x, self.offset_y);
-            self.scroll_by(dx, dy);
+            // Drive the *target*; the rendered offset eases toward it over the
+            // next frames (instant under reduced motion / when smoothing is
+            // off). "Did the wheel take?" is whether the target moved.
+            let before = (self.target_x, self.target_y);
+            self.smooth_scroll_by(dx, dy);
             // Only consume the wheel when it actually moved the view. Leaving an
             // at-the-edge / can't-scroll wheel unhandled lets it bubble to an
             // outer or sibling scroll region (e.g. the sidebar behind a content
             // pane that fits, or the parent once an inner list is maxed) —
             // standard nested-scroll chaining.
-            if (self.offset_x, self.offset_y) != before {
+            if (self.target_x, self.target_y) != before {
                 *handled = true;
             }
             return;
@@ -1030,6 +1281,7 @@ impl Widget for Scrollable {
     /// spins.
     fn needs_animation_frame(&self) -> bool {
         self.hold.is_some()
+            || self.easing_active()
             || self.fade_in_progress()
             || self.child.as_ref().is_some_and(|c| c.needs_animation_frame())
     }
@@ -1042,6 +1294,7 @@ impl Widget for Scrollable {
     fn needs_redraw(&self) -> bool {
         self.scroll_dirty
             || self.bar_dirty
+            || self.easing_active()
             || self.fade_in_progress()
             || self.child.as_ref().is_some_and(|c| c.needs_redraw())
     }
@@ -1051,7 +1304,12 @@ impl Widget for Scrollable {
     /// so a scroll demands `apply_layout` even though no widget
     /// changed *size*.
     fn is_layout_dirty(&self) -> bool {
-        self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
+        // An in-flight ease repositions the child every frame, so layout must
+        // re-run to push the moving offset down — even on a frame whose
+        // `ease_tick` hasn't yet flipped `scroll_dirty`.
+        self.scroll_dirty
+            || self.easing_active()
+            || self.child.as_ref().is_some_and(|c| c.is_layout_dirty())
     }
 
     /// A scroll only *repositions* the child (via the offset applied in
@@ -1285,6 +1543,8 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         };
         assert!(dispatch(&mut s, &ev), "wheel handled");
+        // The wheel drives the eased target; let the ease run to completion.
+        s.settle_scroll();
         assert!(s.offset_y() > before, "wheel down increases offset");
     }
 
@@ -1652,6 +1912,7 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         };
         assert!(dispatch_mods(&mut s, &wheel, &shift), "shift+wheel handled");
+        s.settle_scroll();
         assert!(s.offset_x() > 0.0, "shift+wheel scrolls X, got x={}", s.offset_x());
         assert_eq!(s.offset_y(), 0.0, "shift+wheel leaves Y untouched");
     }
@@ -1665,6 +1926,7 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         };
         assert!(dispatch(&mut s, &tilt), "tilt wheel handled");
+        s.settle_scroll();
         assert!(s.offset_x() > 0.0, "tilt wheel scrolls X, got x={}", s.offset_x());
     }
 
@@ -1812,5 +2074,172 @@ mod tests {
              indefinite parent; the fix is opt-in via with_height / \
              fill_parent_height"
         );
+    }
+
+    // === Smooth (momentum) wheel scrolling ================================
+
+    fn wheel_down() -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0),
+            phase: winit::event::TouchPhase::Moved,
+        }
+    }
+
+    #[test]
+    fn wheel_drives_target_and_offset_eases_toward_it() {
+        // A wheel notch moves the *target* immediately but the rendered offset
+        // starts at rest and interpolates toward it over successive frames —
+        // this is the smoothness the primitive gives every list for free.
+        let mut s = vertical(1200.0); // viewport 300, max_scroll 900
+        assert!(dispatch(&mut s, &wheel_down()), "wheel handled");
+
+        let (_, target) = s.scroll_target();
+        assert!(target > 0.0, "wheel pushes the target forward: {target}");
+        assert_eq!(s.offset_y(), 0.0, "rendered offset has not jumped — it eases");
+        assert!(s.easing_active(), "an ease is now in flight");
+
+        // One frame: the offset moves partway, never past the target (proof of
+        // interpolation rather than a snap).
+        let t0 = Instant::now();
+        s.ease_tick(t0);
+        let after_one = s.offset_y();
+        assert!(
+            after_one > 0.0 && after_one < target,
+            "one frame eases partway: 0 < {after_one} < {target}",
+        );
+
+        // Run the ease out: the offset converges onto the target and the ease
+        // reports settled.
+        s.settle_scroll();
+        assert!(
+            (s.offset_y() - target).abs() <= SCROLL_SETTLE_EPS,
+            "eased offset converges to target: offset={} target={target}",
+            s.offset_y(),
+        );
+        assert!(!s.easing_active(), "ease settles once the offset reaches target");
+    }
+
+    #[test]
+    fn easing_pumps_animation_frames_until_settled() {
+        // The host keeps pumping frames while the ease is live (so it renders
+        // at the display refresh rate) and drops back to idle once settled.
+        let mut s = vertical(1200.0);
+        dispatch(&mut s, &wheel_down());
+        assert!(s.easing_active(), "ease in flight after the wheel");
+        assert!(
+            Widget::needs_animation_frame(&s),
+            "an in-flight ease requests the next frame",
+        );
+        assert!(Widget::is_layout_dirty(&s), "the moving offset re-runs layout");
+
+        s.settle_scroll();
+        assert!(!s.easing_active(), "ease no longer pumps once settled");
+    }
+
+    #[test]
+    fn reduced_motion_makes_the_wheel_instant() {
+        // With reduced motion the wheel applies 1:1 with no ease — offset and
+        // target land together on the same frame, and nothing keeps animating.
+        let mut s = vertical(1200.0);
+        s.reduce_motion = true;
+        dispatch(&mut s, &wheel_down());
+
+        assert!(s.offset_y() > 0.0, "reduced-motion wheel still scrolls");
+        assert_eq!(
+            s.offset_y(),
+            s.scroll_target().1,
+            "reduced motion: offset == target immediately (no glide)",
+        );
+        assert!(!s.easing_active(), "reduced motion disables the ease/momentum");
+    }
+
+    #[test]
+    fn smooth_scroll_opt_out_is_instant() {
+        // `with_smooth_scroll(false)` opts a viewport back into raw 1:1 wheel
+        // stepping — the offset moves on the event, no ease pending.
+        let mut s = vertical(1200.0).with_smooth_scroll(false);
+        dispatch(&mut s, &wheel_down());
+        assert!(s.offset_y() > 0.0, "opt-out wheel scrolls instantly");
+        assert_eq!(s.offset_y(), s.scroll_target().1, "offset == target with smoothing off");
+        assert!(!s.easing_active());
+    }
+
+    #[test]
+    fn flick_boost_scales_with_notch_spacing() {
+        // The first notch is unboosted; a back-to-back notch is boosted well
+        // above 1×; a notch after a long pause drops back to 1×.
+        let mut s = vertical(1200.0);
+        let t = Instant::now();
+        assert!((s.flick_boost(t) - 1.0).abs() < 1e-6, "first notch has no prior → 1×");
+        let fast = s.flick_boost(t + Duration::from_millis(10));
+        assert!(fast > 1.5, "a rapid follow-up notch is boosted: {fast}");
+        assert!(fast <= FLICK_MAX_BOOST + 1e-6, "boost is capped: {fast}");
+        let slow = s.flick_boost(t + Duration::from_millis(10) + Duration::from_millis(500));
+        assert!((slow - 1.0).abs() < 1e-6, "a notch after a pause is unboosted: {slow}");
+    }
+
+    #[test]
+    fn fast_flick_travels_further_than_a_slow_one() {
+        // Two notches back-to-back reach further than the same two notches
+        // spaced out — "fast flick scrolls further", driven through the same
+        // boost the wheel path applies.
+        let t = Instant::now();
+
+        let mut slow = vertical(3000.0); // max_scroll 2700, plenty of room
+        let s1 = slow.flick_boost(t);
+        slow.smooth_scroll_by(0.0, 60.0 * s1);
+        let s2 = slow.flick_boost(t + Duration::from_millis(400)); // gap > window → 1×
+        slow.smooth_scroll_by(0.0, 60.0 * s2);
+
+        let mut fast = vertical(3000.0);
+        let f1 = fast.flick_boost(t);
+        fast.smooth_scroll_by(0.0, 60.0 * f1);
+        let f2 = fast.flick_boost(t + Duration::from_millis(8)); // rapid → boosted
+        fast.smooth_scroll_by(0.0, 60.0 * f2);
+
+        assert!(
+            fast.scroll_target().1 > slow.scroll_target().1,
+            "a fast flick reaches further: fast={} slow={}",
+            fast.scroll_target().1,
+            slow.scroll_target().1,
+        );
+    }
+
+    #[test]
+    fn wheel_scroll_wakes_overlay_then_it_fades() {
+        // The overlay progress bar shows *while* scrolling and hides shortly
+        // after — asserted through the real wheel path (wheel → wake), not by
+        // poking the timer directly.
+        let mut s = vertical(1200.0);
+        s.last_activity = None;
+        assert_eq!(s.bar_opacity_at(Instant::now(), false), 0.0, "hidden at rest");
+
+        dispatch(&mut s, &wheel_down());
+        let woke = s.last_activity.expect("a wheel scroll wakes the overlay bar");
+        assert_eq!(s.bar_opacity_at(woke, false), 1.0, "overlay visible while scrolling");
+        assert_eq!(
+            s.bar_opacity_at(
+                woke + Duration::from_millis((VISIBLE_HOLD_MS + FADE_MS + 100) as u64),
+                false,
+            ),
+            0.0,
+            "overlay fades out after scrolling stops",
+        );
+    }
+
+    #[test]
+    fn instant_paths_keep_target_pinned_to_offset() {
+        // Thumb drag / keyboard / programmatic seeks must not leave a dangling
+        // ease target — otherwise the view would glide away after the gesture.
+        let mut s = vertical(1200.0);
+        s.scroll_by(0.0, 120.0);
+        assert_eq!(s.offset_y(), 120.0);
+        assert_eq!(s.scroll_target(), (0.0, 120.0), "scroll_by keeps target == offset");
+        assert!(!s.easing_active(), "an instant scroll leaves no ease pending");
+
+        s.set_offset_y(300.0);
+        assert_eq!(s.scroll_target(), (0.0, 300.0), "set_offset_y keeps target == offset");
+        assert!(!s.easing_active());
     }
 }
