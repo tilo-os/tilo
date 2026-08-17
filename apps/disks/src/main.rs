@@ -20,8 +20,9 @@ use ui::vello::kurbo::{Affine, Point};
 use ui::vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
-/// A phone-width capture used to exercise the responsive overlay flap. Below
-/// the app's 900px breakpoint the drive list collapses to an overlay.
+/// A phone-width capture used to exercise the responsive overlay drawer. Below
+/// the app's dock breakpoint the drive list collapses to an overlay summoned by
+/// the labeled "Drives" toggle.
 const NARROW_SHOTS_VIEWPORT: (u32, u32) = (640, 800);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,9 +41,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
-        // collapsed layout with the drive-list flap revealed over its scrim.
+        // collapsed layout with the drive-list drawer revealed over its scrim.
+        // The 760px threshold mirrors the app's dock breakpoint.
         let narrow = args.iter().any(|a| a == "--narrow")
-            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 900.0);
+            || parse_viewport_arg(&args).is_some_and(|(w, _)| (w as f64) < 760.0);
         let viewport = parse_viewport_arg(&args).unwrap_or(if narrow {
             NARROW_SHOTS_VIEWPORT
         } else {
@@ -55,6 +57,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             part: parse_num_arg(&args, "--part"),
             tab: parse_val_arg(&args, "--tab"),
             pending: parse_val_arg(&args, "--pending"),
+            // `--empty` seeds a drive-less topology so the honest empty state can
+            // be captured offline (the live probe on real hardware never is).
+            empty: args.iter().any(|a| a == "--empty"),
         };
         render_shot_to_png(DisksApp::new(), viewport, narrow, preset, &out)?;
         return Ok(());
@@ -122,6 +127,8 @@ struct Preset {
     /// Pre-arm a confirm modal, e.g. `format:0:2`, to capture the
     /// type-to-confirm gate offscreen.
     pending: Option<String>,
+    /// Seed an empty topology so the honest "no drives" state can be captured.
+    empty: bool,
 }
 
 /// Parse `--flag N` / `--flag=N` as a `usize`.
@@ -171,8 +178,20 @@ fn render_shot_to_png(
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
+    if preset.empty {
+        // Replace the seeded sample with a drive-less topology and switch on the
+        // live-copy branch so the empty state explains *why* (grant storage /
+        // attach a drive), not the terse offline note. The re-sync below adopts
+        // it — the widget is already seeded, so this triggers no re-probe.
+        disks::doc::DisksDoc::write_topology(&mut state.doc, &disks::Topology::default());
+        // SAFETY: single-threaded startup, before any thread reads the env.
+        unsafe {
+            std::env::set_var("DISKS_LIVE", "1");
+        }
+    }
     // Apply any pinned selection, then re-sync so the widget adopts it.
-    if preset.drive.is_some()
+    if preset.empty
+        || preset.drive.is_some()
         || preset.part.is_some()
         || preset.tab.is_some()
         || preset.pending.is_some()
