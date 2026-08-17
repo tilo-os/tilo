@@ -54,11 +54,18 @@ impl OskToolbarItem {
         }
     }
 
-    /// The default toolbar: paste, selection-left, selection-right, dismiss.
-    /// Data-driven — callers can replace this wholesale via
+    /// The default toolbar: emoji, paste, selection-left, selection-right,
+    /// dismiss. Data-driven — callers can replace this wholesale via
     /// [`crate::widget::OskWidget::with_toolbar`].
     pub fn default_set() -> Vec<OskToolbarItem> {
         vec![
+            // No emoji glyph in the shared Icon set, so the label carries it.
+            OskToolbarItem::new(
+                "emoji",
+                None,
+                "\u{1f600}",
+                OskToolbarAction::Custom("emoji".to_string()),
+            ),
             OskToolbarItem::new(
                 "paste",
                 Some(Icon::ClipboardPaste),
@@ -107,20 +114,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_toolbar_has_four_items() {
+    fn default_toolbar_has_emoji_and_core_items() {
         let t = OskToolbarItem::default_set();
-        assert_eq!(t.len(), 4);
-        assert_eq!(t[0].action, OskToolbarAction::Paste);
-        assert_eq!(t[3].action, OskToolbarAction::Dismiss);
+        assert_eq!(t.len(), 5);
+        assert_eq!(t[0].action, OskToolbarAction::Custom("emoji".to_string()));
+        assert_eq!(t[1].action, OskToolbarAction::Paste);
+        assert_eq!(t[4].action, OskToolbarAction::Dismiss);
     }
 
     #[test]
     fn toolbar_rects_split_evenly_and_fill_width() {
         let items = OskToolbarItem::default_set();
         let rects = toolbar_rects(&items, Rect::new(0.0, 0.0, 400.0, 50.0));
-        assert_eq!(rects.len(), 4);
+        assert_eq!(rects.len(), 5);
         for (_, r) in &rects {
-            assert!((r.width() - 100.0).abs() < 1e-6);
+            assert!((r.width() - 80.0).abs() < 1e-6);
         }
         assert!((rects.last().unwrap().1.x1 - 400.0).abs() < 1e-6);
     }
