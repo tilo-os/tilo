@@ -16,6 +16,7 @@ pub mod model;
 pub mod odp;
 pub mod portal;
 pub mod render;
+pub mod search_provider;
 
 pub use app::{PresentSurface, SlidesApp};
 
