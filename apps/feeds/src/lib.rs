@@ -26,6 +26,7 @@ pub mod opml;
 pub mod portal;
 pub mod reader_theme;
 pub mod sample;
+pub mod search_provider;
 
 pub use app::FeedsApp;
 pub use model::{Article, Feed, FeedKind, Filter, Folder, Store};
