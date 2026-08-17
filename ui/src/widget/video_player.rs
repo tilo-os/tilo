@@ -37,7 +37,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
-use crate::widget::Widget;
+use crate::widget::{EmptyState, Widget};
 
 /// How long the controls bar stays visible after the last cursor movement.
 const CONTROLS_AUTO_HIDE: Duration = Duration::from_secs(3);
@@ -184,6 +184,25 @@ pub struct NowPlaying {
     pub art_url: String,
 }
 
+/// The centered call-to-action a player shows while **no media is loaded** — a
+/// hero icon, a title, an optional subtitle and an optional action pill,
+/// rendered through the shared [`EmptyState`]. It replaces the bare placeholder
+/// ring so an idle player reads as an intentional, inviting zero-state ("Open a
+/// video") rather than a fake loaded clip. Configure it with
+/// [`VideoPlayer::with_empty_state`]; the host drains action-pill clicks via
+/// [`VideoPlayer::take_empty_action`] (e.g. to open the file portal).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EmptyMedia {
+    /// Hero icon shown in a soft tinted disc above the title.
+    pub icon: Option<Icon>,
+    /// The headline (e.g. "Open a video").
+    pub title: String,
+    /// Optional dim one-liner under the title (e.g. "or drop a file here").
+    pub message: Option<String>,
+    /// Optional accent action-pill label (e.g. "Open"). `None` ⇒ no pill.
+    pub action: Option<String>,
+}
+
 /// Video surface with an overlaid playback-controls bar.
 pub struct VideoPlayer {
     /// Shared streaming engine (engine mode). `None` in push mode.
@@ -262,6 +281,15 @@ pub struct VideoPlayer {
     mpris: crate::mpris::MprisHandle,
     /// Fullscreen output target expressed when the user toggles fullscreen.
     fullscreen_target: crate::fullscreen::FullscreenTarget,
+    /// Zero-state CTA shown while no media is loaded (see [`EmptyMedia`]).
+    /// `None` keeps the bare placeholder ring (unchanged for push-mode consumers
+    /// that never configure one).
+    empty: Option<EmptyMedia>,
+    /// Hit rect of the empty-state action pill, recomputed each draw. ZERO when
+    /// no CTA is shown this frame (media loaded, or no pill configured).
+    empty_action_rect: Rect,
+    /// Drained flag: the empty-state action pill was clicked this frame.
+    empty_action_fired: bool,
 }
 
 impl VideoPlayer {
@@ -304,6 +332,9 @@ impl VideoPlayer {
             now_playing: NowPlaying::default(),
             mpris: crate::mpris::MprisHandle::disabled(),
             fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
+            empty: None,
+            empty_action_rect: Rect::ZERO,
+            empty_action_fired: false,
         }
     }
 
@@ -596,6 +627,44 @@ impl VideoPlayer {
         self.latest_frame.as_ref()
     }
 
+    /// Whether any media is actually loaded: a picture has been decoded, or the
+    /// engine has a source open (a clip that is prerolling but hasn't produced a
+    /// frame yet). This gates the transport bar — no scrubber/timeline is shown
+    /// over an empty player, since a "0:00 / duration" bar with nothing loaded
+    /// is a fabricated clip — and selects the empty-state CTA vs. the surface.
+    pub fn has_media(&self) -> bool {
+        self.latest_frame.is_some()
+            || self.engine.as_ref().is_some_and(|e| e.source().is_some())
+    }
+
+    /// Configure the centered zero-state CTA shown while no media is loaded (a
+    /// hero icon + title + subtitle + action pill, via the shared
+    /// [`EmptyState`]). Replaces the bare placeholder ring. Action-pill clicks
+    /// are drained with [`Self::take_empty_action`] so the host can open a file.
+    pub fn set_empty_state(&mut self, empty: EmptyMedia) {
+        self.empty = Some(empty);
+        self.dirty = true;
+    }
+
+    /// Builder form of [`Self::set_empty_state`].
+    pub fn with_empty_state(mut self, empty: EmptyMedia) -> Self {
+        self.set_empty_state(empty);
+        self
+    }
+
+    /// Drain the "empty-state action pill was clicked" signal (fires once per
+    /// click). The host reacts by opening a file (e.g. through the portal).
+    pub fn take_empty_action(&mut self) -> bool {
+        std::mem::take(&mut self.empty_action_fired)
+    }
+
+    /// The resolved bounds of the empty-state action pill (ZERO until the
+    /// zero-state has been drawn, or when media is loaded). Exposed so a host
+    /// or test can hit-test the CTA without rendering to pixels.
+    pub fn empty_action_rect(&self) -> Rect {
+        self.empty_action_rect
+    }
+
     /// Whether playback is currently running (engine-aware).
     pub fn is_playing(&self) -> bool {
         match &self.engine {
@@ -849,8 +918,10 @@ impl VideoPlayer {
             &self.rect,
         );
 
-        // 2) Latest frame, contain-fit — or a placeholder when nothing is loaded.
+        // 2) Latest frame, contain-fit — the empty-state CTA when nothing is
+        //    loaded, or a brief placeholder while a source prerolls its picture.
         if let Some(img) = self.latest_frame.clone() {
+            self.empty_action_rect = Rect::ZERO;
             let iw = img.width as f64;
             let ih = img.height as f64;
             let rw = self.rect.width();
@@ -867,13 +938,22 @@ impl VideoPlayer {
                 let image_brush = vello::peniko::ImageBrush::new(img);
                 scene.fill(Fill::NonZero, transform, &image_brush, Some(brush_transform), &dest);
             }
-        } else {
+        } else if self.has_media() {
+            // A source is opening but no frame has decoded yet — a brief preroll.
+            self.empty_action_rect = Rect::ZERO;
             self.paint_empty_placeholder(scene, transform, theme);
+        } else {
+            // Nothing loaded: an inviting zero-state that offers to open a file.
+            self.paint_empty(scene, transform, text_renderer, theme);
         }
 
-        // 3) Controls overlay — within the auto-hide window, or whenever a
-        // settings menu is open (so it can't vanish under the user's cursor).
-        if !self.controls_visible_now() && self.open_menu.is_none() {
+        // 3) Controls overlay — only once real media is loaded (an empty player
+        //    shows no transport bar / scrubber, which would be a fake clip), and
+        //    within the auto-hide window or whenever a settings menu is open (so
+        //    it can't vanish under the user's cursor).
+        let show_controls =
+            self.has_media() && (self.controls_visible_now() || self.open_menu.is_some());
+        if !show_controls {
             self.play_button_rect = Rect::ZERO;
             self.scrub_track_rect = Rect::ZERO;
             self.volume_track_rect = Rect::ZERO;
@@ -1312,6 +1392,38 @@ impl VideoPlayer {
         }
     }
 
+    /// Paint the zero-state while no media is loaded. With an [`EmptyMedia`]
+    /// configured this is the shared [`EmptyState`] CTA (hero icon + title +
+    /// subtitle + action pill), and the pill's hit rect is recorded so a click
+    /// routes through [`Self::press_at_cursor`]. Without one it falls back to the
+    /// bare placeholder ring (unchanged for consumers that configure nothing).
+    fn paint_empty(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let Some(empty) = self.empty.clone() else {
+            self.empty_action_rect = Rect::ZERO;
+            self.paint_empty_placeholder(scene, transform, theme);
+            return;
+        };
+        self.empty_action_rect = EmptyState::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            empty.icon,
+            &empty.title,
+            empty.message.as_deref(),
+            empty.action.as_deref(),
+            self.last_cursor,
+        )
+        .unwrap_or(Rect::ZERO);
+    }
+
     /// Paint the empty-surface placeholder: a dim ringed play glyph centred in
     /// the letterbox, so a player with no media reads as intentionally empty
     /// ("nothing loaded — Open a video") rather than a blank/broken black rect.
@@ -1519,7 +1631,9 @@ impl Widget for VideoPlayer {
                     self.show_controls();
                     self.dirty = true;
                     *handled = true;
-                } else if self.rect.contains(logical) {
+                } else if self.rect.contains(logical) && self.has_media() {
+                    // Only wake the auto-hiding controls when there is media to
+                    // control; an empty player stays at rest (no idle repaint).
                     self.show_controls();
                     self.dirty = true;
                 }
@@ -1537,7 +1651,9 @@ impl Widget for VideoPlayer {
                 if self.press_at_cursor() {
                     *handled = true;
                 }
-                self.show_controls();
+                if self.has_media() {
+                    self.show_controls();
+                }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if self.scrubbing {
@@ -1591,6 +1707,14 @@ impl Widget for VideoPlayer {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        // The empty-state action pill is clickable while nothing is loaded.
+        if !self.has_media()
+            && self.empty.is_some()
+            && self.empty_action_rect.width() > 0.0
+            && self.empty_action_rect.contains(point)
+        {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
         let on_menu_row = self.menu_hit_rects.iter().any(|(_, r)| r.contains(point));
         let on_setting_icon = self.setting_icon_rects.iter().any(|(_, r)| r.contains(point));
         if on_menu_row
@@ -1691,6 +1815,18 @@ impl VideoPlayer {
     /// controls. Returns whether the press was consumed.
     fn press_at_cursor(&mut self) -> bool {
         let p = self.last_cursor;
+
+        // 0) Empty state: the only actionable target is the zero-state action
+        //    pill (e.g. "Open"). A press anywhere else must not fabricate
+        //    playback on a player that has nothing loaded.
+        if !self.has_media() {
+            if self.empty.is_some() && self.empty_action_rect.contains(p) {
+                self.empty_action_fired = true;
+                self.dirty = true;
+                return true;
+            }
+            return false;
+        }
 
         // 1) An open menu owns the click. A row wins; a click anywhere off the
         //    menu (and off the buttons that could re-open it) dismisses it.
@@ -1990,7 +2126,7 @@ mod tests {
         // Marks set via `set_sponsor_marks` must paint onto the one scrub track,
         // proving the SponsorBlock segments render inline on the shared timeline
         // (not a second bar).
-        let mut vp = VideoPlayer::new();
+        let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.duration_ms = 100_000;
         vp.show_controls();
@@ -2127,9 +2263,19 @@ mod tests {
         vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
+    /// A player with media on the surface, so the transport bar actually
+    /// renders. The controls (scrubber, time, settings icons, gear) only appear
+    /// once real media is loaded — an empty player shows the zero-state instead
+    /// — so any test that lays out or clicks a control must put a frame up first.
+    fn player_with_media() -> VideoPlayer {
+        let mut vp = VideoPlayer::new();
+        vp.latest_frame = Some(rgba_image(16, 16, Arc::new(vec![0u8; 4 * 16 * 16])));
+        vp
+    }
+
     #[test]
     fn mixed_priority_settings_surface_as_icons_and_under_the_gear() {
-        let mut vp = VideoPlayer::new();
+        let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.show_controls();
         // A high-priority toggle (own icon) + a priority-0 choice (under the gear).
@@ -2156,7 +2302,7 @@ mod tests {
 
     #[test]
     fn higher_priority_wins_limited_space_and_overflow_falls_into_the_gear() {
-        let mut vp = VideoPlayer::new();
+        let mut vp = player_with_media();
         // Narrow bar + many priority settings ⇒ only the top few fit as icons.
         vp.rect = Rect::new(0.0, 0.0, 560.0, 315.0);
         vp.show_controls();
@@ -2191,7 +2337,7 @@ mod tests {
 
     #[test]
     fn resolution_setting_round_trips_through_the_player() {
-        let mut vp = VideoPlayer::new();
+        let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.show_controls();
         vp.set_setting(PlayerSetting::choice(
@@ -2234,7 +2380,7 @@ mod tests {
 
     #[test]
     fn gear_toggle_setting_flips_and_emits() {
-        let mut vp = VideoPlayer::new();
+        let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
         vp.show_controls();
         // Priority 0 ⇒ under the gear.
@@ -2364,5 +2510,74 @@ mod tests {
             .filter(|t| **t == DrawTag::IMAGE)
             .count();
         assert!(image_count >= 1, "expected an IMAGE draw, got {image_count}");
+    }
+
+    #[test]
+    fn has_media_is_false_until_a_source_or_frame() {
+        assert!(!VideoPlayer::new().has_media(), "no engine, no frame ⇒ empty");
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        let vp = VideoPlayer::new().with_engine(engine);
+        assert!(vp.has_media(), "an opened source counts as media (it is prerolling)");
+    }
+
+    #[test]
+    fn empty_player_shows_the_cta_and_no_transport_bar() {
+        let mut vp = VideoPlayer::new().with_empty_state(EmptyMedia {
+            icon: Some(Icon::Film),
+            title: "Open a video".into(),
+            message: Some("or drop a file here".into()),
+            action: Some("Open".into()),
+        });
+        vp.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(!vp.has_media(), "a fresh player has nothing loaded");
+
+        // Even with the controls explicitly revealed, an empty player paints no
+        // transport bar — no fake 0:00 / duration scrubber over a blank surface.
+        vp.reveal_controls();
+        draw_once(&mut vp);
+        assert_eq!(vp.scrub_track_rect, Rect::ZERO, "no scrubber over the empty state");
+        assert_eq!(vp.play_button_rect, Rect::ZERO, "no transport bar over the empty state");
+
+        // The zero-state resolved an "Open" hit target.
+        let cta = vp.empty_action_rect();
+        assert!(cta.width() > 0.0 && cta.height() > 0.0, "the Open CTA has a hit target");
+
+        // Clicking it fires the drain the host reads to open a file.
+        dispatch(&mut vp, &cursor_moved(cta.center().x, cta.center().y));
+        assert!(dispatch(&mut vp, &mouse_press()), "the CTA click is consumed");
+        assert!(vp.take_empty_action(), "the open-action signal fires");
+        assert!(!vp.take_empty_action(), "and drains after one read");
+    }
+
+    #[test]
+    fn a_press_off_the_cta_does_not_fabricate_playback() {
+        // On an empty player a click anywhere but the CTA must do nothing — in
+        // particular it must not start "playing" a clip that does not exist.
+        let mut vp = VideoPlayer::new().with_empty_state(EmptyMedia {
+            icon: Some(Icon::Film),
+            title: "Open a video".into(),
+            message: None,
+            action: Some("Open".into()),
+        });
+        vp.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        draw_once(&mut vp);
+        // Top-left corner is well clear of the centered CTA.
+        dispatch(&mut vp, &cursor_moved(8.0, 8.0));
+        assert!(!dispatch(&mut vp, &mouse_press()), "an off-CTA press is not consumed");
+        assert!(!vp.take_empty_action(), "no open-action fired");
+        assert!(!vp.is_playing(), "an empty player never starts playing");
+    }
+
+    #[test]
+    fn transport_bar_appears_once_media_is_loaded() {
+        let mut vp = player_with_media();
+        vp.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        vp.show_controls();
+        draw_once(&mut vp);
+        assert!(vp.has_media(), "a frame on the surface counts as media");
+        assert!(vp.scrub_track_rect.width() > 0.0, "the scrubber appears once media is loaded");
+        assert!(vp.play_button_rect.width() > 0.0, "the transport bar appears once media is loaded");
+        assert_eq!(vp.empty_action_rect(), Rect::ZERO, "no empty CTA while media is loaded");
     }
 }

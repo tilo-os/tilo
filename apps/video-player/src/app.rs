@@ -21,9 +21,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::collaboration::{CollabEvent, CollaborationManager, CollabRequest};
+use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::video_player::EmptyMedia;
 use ui::widget::{Button, ButtonFace, VideoPlayer, Widget};
 
 use crate::collab::{CollabPlayback, Role};
@@ -72,7 +74,17 @@ impl PlayerApp {
     pub fn new() -> Self {
         let player = VideoPlayer::new()
             .with_engine(media::MediaEngine::new())
-            .with_test_id("video_surface");
+            .with_test_id("video_surface")
+            // Empty launch shows an inviting zero-state, not a fake clip: a
+            // centered "Open a video" CTA whose pill opens the file portal
+            // (drained in `sync`). No transport bar appears until a real video
+            // is loaded.
+            .with_empty_state(EmptyMedia {
+                icon: Some(Icon::Film),
+                title: "Open a video".to_string(),
+                message: Some("or drop a file here".to_string()),
+                action: Some("Open".to_string()),
+            });
         Self {
             player,
             title: "No media".to_string(),
@@ -99,12 +111,20 @@ impl PlayerApp {
     /// socket, so no thread/portal is created.
     ///
     /// `scenario` selects an optional demo overlay for the capture:
+    ///   * `"empty"` — the zero-state: a fresh player with **no** media, so the
+    ///     capture shows the centered "Open a video" CTA (no demo clip, no
+    ///     transport bar).
     ///   * `"settings"` — register app player-settings (priority icons + a
     ///     couple under the gear) and open the settings-gear menu.
     ///   * `"fullscreen"` — register the same settings and toggle fullscreen so
     ///     the control bar shows the immersive (exit-fullscreen) state.
     ///   * anything else / `None` — a plain player.
     pub fn for_shot(open: Option<PathBuf>, scenario: Option<&str>) -> Self {
+        // Empty-state capture: nothing loaded, so the zero-state CTA shows
+        // instead of the demo clip. Never opens a source.
+        if open.is_none() && scenario == Some("empty") {
+            return Self::new();
+        }
         let mut app = Self::new();
         match open {
             Some(path) => app.open_path(path),
@@ -264,10 +284,11 @@ impl PlayerApp {
 
     /// Whether the floating overlay (media title + Open pill) should show this
     /// frame. It rides the player's own controls visibility, so it auto-hides
-    /// during immersive playback — and it stays up in the empty state (no frame
-    /// decoded yet) so there is always a way to open a file.
+    /// during immersive playback. In the empty state the player draws its own
+    /// centered "Open a video" CTA, so the floating chrome stays hidden — no
+    /// redundant title scrim or second Open affordance over the zero-state.
     fn overlay_visible(&self) -> bool {
-        self.player.controls_visible() || self.player.latest_frame().is_none()
+        self.player.has_media() && self.player.controls_visible()
     }
 
     /// Paint the floating top overlay: the media title (left) over a soft scrim
@@ -334,6 +355,11 @@ impl Default for PlayerApp {
 impl Widget for PlayerApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.drain_portal();
+        // The player's empty-state "Open" CTA routes through the same file
+        // portal as the floating pill and the menu.
+        if self.player.take_empty_action() {
+            self.trigger_open();
+        }
         self.tick_collab();
         self.player.sync(state, path);
     }
@@ -408,6 +434,14 @@ impl Widget for PlayerApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Drag-and-drop-to-open: dropping a file anywhere on the surface opens
+        // it — the same path as the Open CTA / portal, matching the empty
+        // state's "or drop a file here" invitation.
+        if let WindowEvent::DroppedFile(path) = event {
+            self.open_path(path.clone());
+            *handled = true;
+            return;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
@@ -544,8 +578,131 @@ mod tests {
             app.player.latest_frame().is_none(),
             "empty state: no picture until a file is opened"
         );
+        assert!(!app.player.has_media(), "empty state: nothing loaded, so no fake clip");
         assert_eq!(app.title, "No media");
         assert!(!app.player.is_playing());
+    }
+
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Lay the app out at `w`×`h` and draw one frame, so the player resolves its
+    /// hit rects (e.g. the empty-state Open CTA). Returns the root node + taffy
+    /// so a follow-up event can be routed through the same tree.
+    fn lay_out_and_draw(app: &mut PlayerApp, w: f32, h: f32) -> (NodeId, TaffyTree<()>) {
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(w),
+                    height: taffy::AvailableSpace::Definite(h),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        (node, taffy)
+    }
+
+    #[test]
+    fn empty_launch_has_no_media_and_a_wired_open_cta() {
+        let mut app = PlayerApp::new();
+        // A fresh launch loads no media — no fabricated clip, no transport bar.
+        assert!(!app.player.has_media(), "empty launch loads no media");
+        assert!(!app.player.is_playing());
+
+        let (node, taffy) = lay_out_and_draw(&mut app, 1280.0, 800.0);
+        let cta = app.player.empty_action_rect();
+        assert!(cta.width() > 0.0 && cta.height() > 0.0, "the Open CTA is present in the empty state");
+
+        // Click the CTA through the app's own event path.
+        let mods = winit::event::Modifiers::default();
+        let r = root();
+        let mut doc = AutoCommit::new();
+        let mut focus_target = None;
+        let mut moved = false;
+        app.handle_event(&cursor_at(cta.center()), 1.0, &mods, &mut doc, &r, &mut moved, &mut focus_target, node, &taffy);
+        let mut pressed = false;
+        app.handle_event(&left_press(), 1.0, &mods, &mut doc, &r, &mut pressed, &mut focus_target, node, &taffy);
+        assert!(pressed, "the CTA press routed through the app to the player");
+
+        // The Open CTA is wired to the same portal the menu/pill use: the next
+        // sync drains the widget's request and opens a file-open portal.
+        assert!(app.portal_rx.is_none(), "no portal request until the click drains");
+        app.sync(&mut doc, &r);
+        assert!(app.portal_rx.is_some(), "the Open CTA fired a file-open portal request");
+    }
+
+    #[test]
+    fn dropping_a_file_opens_it() {
+        // Drag-and-drop-to-open: the "or drop a file here" invitation works.
+        let mut app = PlayerApp::new();
+        assert!(!app.player.has_media());
+        let mods = winit::event::Modifiers::default();
+        let r = root();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus_target = None;
+        // DroppedFile is handled before any hit-testing, so no layout is needed.
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        app.handle_event(
+            &WindowEvent::DroppedFile(PathBuf::from("/tmp/Dropped.mp4")),
+            1.0,
+            &mods,
+            &mut doc,
+            &r,
+            &mut handled,
+            &mut focus_target,
+            NodeId::new(0),
+            &taffy,
+        );
+        assert!(handled, "a dropped file is consumed");
+        assert_eq!(app.title, "Dropped.mp4");
+        assert!(app.player.is_playing(), "the dropped file autoplays");
+    }
+
+    #[test]
+    fn the_demo_clip_only_appears_under_shots() {
+        // Default launch: empty, never the demo clip.
+        assert!(!PlayerApp::new().player.has_media(), "default launch is empty");
+
+        // `--shots` with no file stages the demo clip (populated + transport).
+        let mut shot = PlayerApp::for_shot(None, None);
+        assert!(shot.player.has_media(), "the --shots demo stages a populated player");
+        let mut doc = AutoCommit::new();
+        for _ in 0..5 {
+            shot.sync(&mut doc, &root());
+            if shot.player.latest_frame().is_some() {
+                break;
+            }
+        }
+        assert!(shot.player.latest_frame().is_some(), "the demo clip produced a frame");
+
+        // The dedicated empty scenario stays empty even under `--shots`, so the
+        // zero-state itself can be captured.
+        assert!(
+            !PlayerApp::for_shot(None, Some("empty")).player.has_media(),
+            "the empty --shots scenario shows the zero-state, not the demo"
+        );
     }
 
     /// A player pinned to the deterministic synthesized backend, so the app's
