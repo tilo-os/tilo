@@ -41,13 +41,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (the synthesized fallback produces one on the first pump). This makes a
         // `--features decode --open <file>` capture a genuine decoded frame.
         let scenario = parse_value_arg(&args, "--scenario");
+        // The empty-state capture has nothing to decode, so don't wait on a
+        // frame that will never arrive — one sync lays the zero-state out.
+        let expects_frame = !(open.is_none() && scenario.as_deref() == Some("empty"));
         let mut app = video_player::PlayerApp::for_shot(open, scenario.as_deref());
         {
             let mut warm = ui::State::new();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {
                 app.sync(&mut warm.doc, &warm.root);
-                if app.has_media_frame() || std::time::Instant::now() >= deadline {
+                if !expects_frame
+                    || app.has_media_frame()
+                    || std::time::Instant::now() >= deadline
+                {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(40));
