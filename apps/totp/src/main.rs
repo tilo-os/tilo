@@ -37,6 +37,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let widget = match parse_screen_arg(&args).as_deref() {
             Some("add") => totp::app_root_add_screen(),
             Some("add-advanced") => totp::app_root_add_advanced_screen(),
+            Some("add-link") => totp::app_root_add_link_screen(),
             Some("add-picker") => totp::app_root_add_picker_screen(),
             Some("empty") => totp::app_root_empty(),
             _ => totp::app_root_demo(),

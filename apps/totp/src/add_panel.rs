@@ -66,6 +66,12 @@ const MODAL_W: f64 = 460.0;
 const INPUT_H: f64 = 42.0;
 const PAD: f64 = 28.0;
 
+/// Placeholder hint for the paste-a-link field. Set on the shared
+/// [`TextInput`] so it renders on the field's own single baseline (clipped to
+/// the box) rather than as a hand-drawn overlay that could wrap and bleed
+/// below the field.
+const URI_PLACEHOLDER: &str = "otpauth://totp/Issuer:account?secret=\u{2026}";
+
 pub struct AddAccountPanel {
     open: bool,
     window: Rect,
@@ -135,11 +141,15 @@ impl AddAccountPanel {
             max_scroll: 0.0,
             reveal_advanced: false,
             body_clip: Rect::ZERO,
-            uri: TextInput::local(),
+            // Placeholders live on the shared TextInput widget itself, so the
+            // hint paints on the field's own single baseline, clipped inside
+            // the box — never a separate overlay that can wrap and bleed below
+            // the field (HIG §5: use the shared widget, don't hand-draw one).
+            uri: TextInput::local().with_placeholder(URI_PLACEHOLDER),
             uri_expanded: false,
-            issuer: TextInput::local(),
-            label: TextInput::local(),
-            secret: TextInput::local(),
+            issuer: TextInput::local().with_placeholder("GitHub"),
+            label: TextInput::local().with_placeholder("ada@example.com"),
+            secret: TextInput::local().with_placeholder("JBSWY3DPEHPK3PXP"),
             advanced_open: false,
             algorithm: Algorithm::Sha1,
             digits: 6,
@@ -199,6 +209,14 @@ impl AddAccountPanel {
         self.open();
         self.advanced_open = true;
         self.reveal_advanced = true;
+    }
+
+    /// Open with the paste-a-link row already disclosed. Used by the `--shots`
+    /// renderer to capture the expanded paste field reflowing the details
+    /// below it; runtime opens via [`open`] with the row collapsed.
+    pub fn open_with_link(&mut self) {
+        self.open();
+        self.expand_uri();
     }
 
     pub fn take_event(&mut self) -> Option<AddPanelEvent> {
@@ -555,11 +573,9 @@ impl AddAccountPanel {
             Glyph::Link, "Paste a setup link", "Fill everything from an otpauth:// link", link_hover, false,
         );
 
-        // Paste-link field (disclosed).
+        // Paste-link field (disclosed). The field paints its own placeholder
+        // (set in `new`), so there is no separate overlay to bleed below it.
         if self.uri_expanded {
-            if self.uri.value().is_empty() {
-                self.draw_placeholder(scene, transform, text_renderer, theme, self.uri_rect, "otpauth://totp/Issuer:account?secret=\u{2026}");
-            }
             self.uri.draw(scene, transform, text_renderer, theme, &presence);
             let parse_hover = self.parse_rect.contains(self.last_mouse);
             self.draw_button(scene, transform, text_renderer, theme, self.parse_rect, "Fill", parse_hover, true);
@@ -570,9 +586,9 @@ impl AddAccountPanel {
         self.draw_divider(scene, transform, text_renderer, theme, div_y, "or enter details");
 
         // Manual fields.
-        self.draw_text_field(scene, transform, text_renderer, theme, "Issuer", Field::Issuer, "GitHub");
-        self.draw_text_field(scene, transform, text_renderer, theme, "Account name", Field::Label, "ada@example.com");
-        self.draw_text_field(scene, transform, text_renderer, theme, "Secret key", Field::Secret, "JBSWY3DPEHPK3PXP");
+        self.draw_text_field(scene, transform, text_renderer, theme, "Issuer", Field::Issuer);
+        self.draw_text_field(scene, transform, text_renderer, theme, "Account name", Field::Label);
+        self.draw_text_field(scene, transform, text_renderer, theme, "Secret key", Field::Secret);
 
         // --- Advanced options disclosure ---
         self.draw_advanced_header(scene, transform, text_renderer, theme);
@@ -773,6 +789,9 @@ impl AddAccountPanel {
         );
     }
 
+    /// Draw one manual field: its label above, then the shared [`TextInput`],
+    /// which paints its own placeholder (set in `new`) on the field's baseline
+    /// — no separate overlay that could wrap and bleed below the box.
     fn draw_text_field(
         &mut self,
         scene: &mut Scene,
@@ -781,7 +800,6 @@ impl AddAccountPanel {
         theme: &Theme,
         label: &str,
         field: Field,
-        placeholder: &str,
     ) {
         let presence = PresenceCtx::empty();
         let rect = match field {
@@ -791,31 +809,7 @@ impl AddAccountPanel {
             _ => return,
         };
         self.draw_field_label(scene, transform, text_renderer, theme, label, rect);
-        let empty = self.field_mut(field).value().is_empty();
-        if empty {
-            self.draw_placeholder(scene, transform, text_renderer, theme, rect, placeholder);
-        }
         self.field_mut(field).draw(scene, transform, text_renderer, theme, &presence);
-    }
-
-    fn draw_placeholder(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        text: &str,
-    ) {
-        let pad = theme.padding_standard as f64;
-        text_renderer.draw_text(
-            scene,
-            text,
-            16.0,
-            theme.tokens.colors.text_dim.with_alpha_factor(0.6),
-            transform * Affine::translate((rect.x0 + pad, rect.center().y - 10.0)),
-            Some((rect.width() - pad * 2.0) as f32),
-        );
     }
 
     fn draw_divider(
@@ -1276,6 +1270,84 @@ mod tests {
         p.scroll = 0.0;
         p.layout(win);
         assert_eq!(p.scroll, 0.0, "a plain relayout does not re-trigger the reveal");
+    }
+
+    /// Do two rects share any area? (kurbo's `intersect` yields a rect whose
+    /// area is `<= 0` when they merely touch or miss.)
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.intersect(b).area() > 0.5
+    }
+
+    #[test]
+    fn expanding_paste_link_pushes_details_down_without_overlap() {
+        // The core of the reported bug: revealing the paste-a-link row must
+        // REFLOW the form — everything below is pushed down, never drawn over.
+        // Drive the exact production `layout()` path in a window tall enough
+        // that nothing scrolls, so the rects are the on-screen geometry.
+        let win = Rect::new(0.0, 0.0, 1280.0, 900.0);
+        let mut p = AddAccountPanel::new();
+        p.open();
+        p.layout(win);
+        assert_eq!(p.max_scroll, 0.0, "the collapsed form fits without scrolling");
+        let issuer_top_collapsed = p.issuer_rect.y0;
+        let label_top_collapsed = p.label_rect.y0;
+        let secret_top_collapsed = p.secret_rect.y0;
+
+        p.expand_uri();
+        p.layout(win);
+        assert_eq!(p.max_scroll, 0.0, "the expanded form still fits this tall window");
+        assert_ne!(p.uri_rect, Rect::ZERO, "the paste field lays out once disclosed");
+        assert_ne!(p.parse_rect, Rect::ZERO, "the Fill button lays out too");
+
+        // Everything below the paste row moved DOWN — it was pushed, not overlaid.
+        assert!(
+            p.issuer_rect.y0 > issuer_top_collapsed,
+            "Issuer is pushed down by the revealed paste row"
+        );
+        assert!(p.label_rect.y0 > label_top_collapsed, "Account name is pushed down");
+        assert!(p.secret_rect.y0 > secret_top_collapsed, "Secret key is pushed down");
+
+        // The paste field + its Fill button share no area with any field below,
+        // and sit entirely above the first of them.
+        for below in [p.issuer_rect, p.label_rect, p.secret_rect] {
+            assert!(!overlaps(p.uri_rect, below), "paste field overlaps a detail field");
+            assert!(!overlaps(p.parse_rect, below), "Fill button overlaps a detail field");
+        }
+        assert!(
+            p.uri_rect.y1 <= p.issuer_rect.y0,
+            "the whole paste row sits above the first detail field"
+        );
+        // …and above the "or enter details" divider line (drawn 32px over Issuer).
+        let divider_y = p.issuer_rect.y0 - 18.0 - 14.0;
+        assert!(p.uri_rect.y1 <= divider_y, "the paste row clears the divider");
+        // The paste field and its Fill button are side by side, not stacked.
+        assert!(p.parse_rect.x0 >= p.uri_rect.x1, "Fill sits beside the field, no overlap");
+    }
+
+    #[test]
+    fn placeholders_are_native_to_the_shared_input_not_an_overlay() {
+        // The ghost-text bug came from hand-drawing placeholders as a separate
+        // overlay (which wrapped and bled below the field). The hints now live
+        // on the shared TextInput, which clips them to the field's own line.
+        let p = AddAccountPanel::new();
+        assert_eq!(p.uri.placeholder(), URI_PLACEHOLDER, "paste hint is on the field");
+        assert!(!p.issuer.placeholder().is_empty(), "issuer hint is on the field");
+        assert!(!p.label.placeholder().is_empty(), "account-name hint is on the field");
+        assert!(!p.secret.placeholder().is_empty(), "secret hint is on the field");
+        // A native placeholder only paints when empty AND unfocused — so it can
+        // never coexist with (and bleed past) a focused/typed field.
+        assert!(p.uri.shows_placeholder(), "empty unfocused paste field shows its hint");
+    }
+
+    #[test]
+    fn focusing_the_paste_field_hides_its_placeholder() {
+        // Opening via the paste-link card focuses the field; a native
+        // placeholder hides on focus, so there is nothing to bleed anywhere.
+        let mut p = AddAccountPanel::new();
+        p.open_with_link();
+        assert!(p.uri_expanded);
+        assert_eq!(p.focused, Some(Field::Uri));
+        assert!(!p.uri.shows_placeholder(), "focused paste field hides its placeholder");
     }
 
     #[test]
