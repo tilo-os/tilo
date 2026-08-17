@@ -189,9 +189,10 @@ impl Avatar {
         // Semibold so the monogram reads crisply on a small saturated chip —
         // the weight the roster apps hand-rolled before adopting this helper.
         let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
-        let (tw, th) = text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
+        let (tw, _th) = text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        // Optically centre the monogram in the chip (shared toolkit helper).
+        let ty = crate::text_render::centered_text_y(rect.y0, rect.height(), text_size);
         text_renderer.draw_text_weighted(
             scene,
             &initials,
@@ -263,10 +264,11 @@ impl Avatar {
         // initials ratio to keep "+12" inside the chip.
         let label = format!("+{count}");
         let text_size = (rect.width().min(rect.height()) as f32) * 0.36;
-        let (tw, th) =
+        let (tw, _th) =
             text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        // Optically centre the "+N" label in the chip (shared toolkit helper).
+        let ty = crate::text_render::centered_text_y(rect.y0, rect.height(), text_size);
         text_renderer.draw_text_weighted(
             scene,
             &label,
@@ -355,9 +357,10 @@ impl Avatar {
         // and a 64px header avatar both look balanced. 0.4× matches the
         // ratio used in the concept mocks for chat avatars.
         let text_size = self.size * 0.4;
-        let (tw, th) = text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
+        let (tw, _th) = text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
-        let ty = centre.y - th as f64 / 2.0;
+        // Optically centre the monogram in the circle (shared toolkit helper).
+        let ty = crate::text_render::centered_text_y(self.rect.y0, self.rect.height(), text_size);
         text_renderer.draw_text_weighted(
             scene,
             &self.initials,
@@ -557,6 +560,27 @@ mod tests {
             "Avatar::from_initials must push a glyph run for the initials text \
              into the scene; resources.glyph_runs is empty",
         );
+    }
+
+    /// The initials monogram is optically vertically centred in the chip. All
+    /// three avatar paint paths (`paint_initials`, `draw_at`, `draw_overflow_at`)
+    /// place the label top at `centered_text_y(rect.y0, rect.height, size)`;
+    /// assert that puts its optical centre on the chip centre (within
+    /// tolerance) and lifts it above the naive box-centre that read low.
+    #[test]
+    fn initials_are_optically_vertically_centered() {
+        use crate::text_render::{centered_text_y, OPTICAL_LIFT};
+        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+        let size = 40.0f32 * 0.4; // the 0.4× monogram size the avatar draws at
+        let top = centered_text_y(rect.y0, rect.height(), size);
+        let optical_center = top + size as f64 * (0.5 + OPTICAL_LIFT);
+        assert!(
+            (optical_center - rect.center().y).abs() < 0.5,
+            "monogram optical centre {optical_center} must sit on the chip centre {}",
+            rect.center().y,
+        );
+        let naive = rect.y0 + (rect.height() - size as f64) / 2.0;
+        assert!(top < naive, "monogram must lift above the naive-low baseline");
     }
 
     /// The initials variant exposes the `Image` role with the (uppercased,

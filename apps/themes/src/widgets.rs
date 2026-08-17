@@ -289,14 +289,17 @@ impl Widget for ThemeRow {
             draw::circle(scene, t, Point::new(sw.x0 + 8.0 + i as f64 * 8.6, dot_y), 3.0, model::color(*c));
         }
 
-        // Name (unless the gallery's inline editor covers it) + tag.
+        // Name (unless the gallery's inline editor covers it) + tag. The
+        // name-over-tag pair is optically centred against the row so it sits
+        // level with the swatch tile (shared two-line helper).
         let tx = sw.x1 + 11.0;
+        let (name_y, tag_y) = draw::two_line_tops(self.rect.y0, ROW_H as f64, 14.0, 11.0, 22.0);
         if !self.suppress_name {
-            draw::text_w(tr, scene, t, &self.name, 14.0, theme.text_primary, tx, self.rect.y0 + 11.0, TextWeight::Semibold);
+            draw::text_w(tr, scene, t, &self.name, 14.0, theme.text_primary, tx, name_y, TextWeight::Semibold);
         }
         let tag = if self.builtin { "Preset" } else { "Custom" };
         let base = if self.dark_base { "Dark" } else { "Light" };
-        draw::text(tr, scene, t, &format!("{tag} · {base}"), 11.0, theme.text_dim, tx, self.rect.y0 + 33.0);
+        draw::text(tr, scene, t, &format!("{tag} · {base}"), 11.0, theme.text_dim, tx, tag_y);
 
         // Applied-theme badge on the right edge.
         if self.active {

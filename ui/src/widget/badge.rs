@@ -237,9 +237,11 @@ impl Widget for Badge {
 
                 if let Some(label) = self.display_text() {
                     let text_size = theme.tokens.typography.scale.xs;
-                    let (tw, th) = text_renderer.measure(&label, text_size, None);
+                    let (tw, _th) = text_renderer.measure(&label, text_size, None);
                     let tx = self.rect.center().x - tw as f64 / 2.0;
-                    let ty = self.rect.center().y - th as f64 / 2.0;
+                    // Optically centre the label in the pill so it sits level
+                    // with the box middle, not ~0.2 em low (shared helper).
+                    let ty = crate::text_render::centered_text_y(self.rect.y0, self.rect.height(), text_size);
                     text_renderer.draw_text(
                         &mut cached,
                         &label,
@@ -401,6 +403,28 @@ mod tests {
         // `with_tint` overrides a count badge's colour too.
         let counted = Badge::count(3).with_tint(tint);
         assert_eq!(counted.background(&theme), tint);
+    }
+
+    /// The count / text label is optically vertically centred in the pill.
+    /// The draw path places the label top at
+    /// `centered_text_y(rect.y0, rect.height, xs)`; assert that puts its
+    /// optical centre on the pill centre (within tolerance) and lifts it above
+    /// the naive box-centre that read low.
+    #[test]
+    fn label_is_optically_vertically_centered() {
+        use crate::text_render::{centered_text_y, OPTICAL_LIFT};
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 24.0, 16.0); // a representative count pill
+        let size = theme.tokens.typography.scale.xs;
+        let top = centered_text_y(rect.y0, rect.height(), size);
+        let optical_center = top + size as f64 * (0.5 + OPTICAL_LIFT);
+        assert!(
+            (optical_center - rect.center().y).abs() < 0.5,
+            "badge label optical centre {optical_center} must sit on the pill centre {}",
+            rect.center().y,
+        );
+        let naive = rect.y0 + (rect.height() - size as f64) / 2.0;
+        assert!(top < naive, "badge label must lift above the naive-low baseline");
     }
 
     /// `Badge::dot()` must emit exactly one fill — the filled circle.

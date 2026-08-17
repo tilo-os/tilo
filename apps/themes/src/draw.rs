@@ -83,7 +83,9 @@ pub fn text_font(
     tr.draw_text_font(scene, s, size, color, t * Affine::translate((x, y)), None, weight, false, family);
 }
 
-/// Text vertically centred in `[y0, y1]` at left edge `x`.
+/// Text vertically centred in `[y0, y1]` at left edge `x`. Routes through the
+/// toolkit's canonical optical-centring helper so the run's optical centre —
+/// not its low nominal box centre — lands on the row middle.
 #[allow(clippy::too_many_arguments)]
 pub fn text_vcenter(
     tr: &mut TextRenderer,
@@ -97,7 +99,7 @@ pub fn text_vcenter(
     y1: f64,
     weight: TextWeight,
 ) {
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
+    let y = ui::text_render::centered_text_y(y0, y1 - y0, size);
     text_w(tr, scene, t, s, size, color, x, y, weight);
 }
 
@@ -115,7 +117,7 @@ pub fn text_right(
     y1: f64,
 ) {
     let (w, _) = tr.measure(s, size, None);
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
+    let y = ui::text_render::centered_text_y(y0, y1 - y0, size);
     text(tr, scene, t, s, size, color, x_right - w as f64, y);
 }
 
@@ -136,8 +138,22 @@ pub fn text_center(
 ) {
     let (w, _) = tr.measure(s, size, None);
     let x = x0 + ((x1 - x0) - w as f64) / 2.0;
-    let y = y0 + ((y1 - y0) - size as f64) / 2.0;
+    let y = ui::text_render::centered_text_y(y0, y1 - y0, size);
     text_w(tr, scene, t, s, size, color, x, y, weight);
+}
+
+/// Optically-centred top `y` for the two lines of a name-over-subtitle list row
+/// within `[y0, y0 + h]`. `d` is the distance between the two run tops (the line
+/// advance). Both tops are lifted so the block's optical centre lands on the row
+/// middle, level with a box-centred avatar / swatch — the same optical model
+/// `ui::centered_text_y` uses for single lines, extended to a two-line block.
+pub fn two_line_tops(y0: f64, h: f64, size_top: f32, size_bottom: f32, d: f64) -> (f64, f64) {
+    // A run drawn at top `y` has its optical centre at `y + size·(0.5 + LIFT)`.
+    let k = 0.5 + ui::text_render::OPTICAL_LIFT;
+    // Vertical span between the two runs' optical centres, plus the run heights.
+    let optical_extent = d + k * (size_top as f64 + size_bottom as f64);
+    let y_top = y0 + h / 2.0 - optical_extent / 2.0;
+    (y_top, y_top + d)
 }
 
 /// Filled smooth polyline area (for the preview sparkline). `pts` are
@@ -167,4 +183,33 @@ pub fn polyline(scene: &mut Scene, t: Affine, pts: &[Point], color: Color, width
         path.push(PathEl::LineTo(*p));
     }
     scene.stroke(&Stroke::new(width), t, color, None, &path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A name-over-subtitle list-row block is optically centred against the
+    /// row: the midpoint of the two runs' optical centres lands on the row
+    /// middle (level with a box-centred avatar / swatch), within tolerance —
+    /// the recurring "list row content sits low" defect. Covers both the
+    /// preview list rows (38 px, 13/11) and the sidebar theme rows (58 px,
+    /// 14/11).
+    #[test]
+    fn two_line_block_is_optically_centered_against_the_row() {
+        let k = 0.5 + ui::text_render::OPTICAL_LIFT;
+        for (h, st, sb, d) in [(38.0, 13.0f32, 11.0f32, 15.0), (58.0, 14.0, 11.0, 22.0)] {
+            let y0 = 100.0;
+            let (yt, yb) = two_line_tops(y0, h, st, sb, d);
+            let ct = yt + st as f64 * k; // top line optical centre
+            let cb = yb + sb as f64 * k; // bottom line optical centre
+            let block_center = (ct + cb) / 2.0;
+            let row_center = y0 + h / 2.0;
+            assert!(
+                (block_center - row_center).abs() < 0.5,
+                "h={h}: block centre {block_center} must sit on the row centre {row_center}",
+            );
+            assert!(yb - yt == d, "the run advance is preserved");
+        }
+    }
 }

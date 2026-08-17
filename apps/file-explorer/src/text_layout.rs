@@ -2,28 +2,19 @@
 //!
 //! The text renderer draws a single line of `size`-px text from the top of a
 //! ~1.25× line box whose baseline sits well below the box's geometric middle.
-//! Centering a run by its nominal `size` alone — `y0 + (h - size) / 2` — therefore
-//! leaves the text sitting visibly LOW next to an icon that is centered by its
-//! box in the same row: measured against rendered output, the text's optical
-//! centre lands ~0.2 em below the icon's.
+//! Centering a run by its nominal `size` alone — `y0 + (h - size) / 2` —
+//! therefore leaves the text sitting visibly LOW next to an icon that is
+//! centered by its box in the same row: measured against rendered output, the
+//! text's optical centre lands ~0.2 em below the icon's.
 //!
-//! [`centered_text_y`] lifts a run by that much so its optical centre (roughly
-//! mid cap-height) falls on the row centre, level with the icon. Every icon +
-//! label pairing in the app routes its text y through this one helper so the
-//! whole surface — list rows, the sidebar, the drag ghost — lines up identically.
+//! This module is now a thin re-export of the toolkit's canonical helper
+//! [`ui::centered_text_y`] (in `ui::text_render`). The optical-lift fix used to
+//! live only here in the file explorer; it has been promoted into `ui` so every
+//! shared widget (button label, badge / pill / chip text, avatar initials,
+//! list-row content) and every app centers text the one same way. Call sites in
+//! this crate keep using `crate::text_layout::centered_text_y` unchanged.
 
-/// Fraction of the font size to lift a single-line text run so its optical
-/// centre matches an icon centered in the same row. Calibrated against the
-/// text renderer's `line_height = size * 1.25` metric and the rendered
-/// alignment shots (text sat ~0.2 em low without it).
-pub const OPTICAL_LIFT: f64 = 0.2;
-
-/// Top-left y for a `size`-px single-line text run so its optical centre lands
-/// on the middle of a box of height `h` starting at `y0` — level with an icon
-/// centered in the same box.
-pub fn centered_text_y(y0: f64, h: f64, size: f32) -> f64 {
-    y0 + (h - size as f64) / 2.0 - size as f64 * OPTICAL_LIFT
-}
+pub use ui::text_render::{centered_text_y, OPTICAL_LIFT};
 
 #[cfg(test)]
 mod tests {
@@ -41,5 +32,7 @@ mod tests {
         let small = 0.0 + (34.0 - 12.0) / 2.0 - centered_text_y(0.0, 34.0, 12.0);
         let large = 0.0 + (34.0 - 24.0) / 2.0 - centered_text_y(0.0, 34.0, 24.0);
         assert!(large > small, "lift grows with font size: {large} > {small}");
+        // The re-exported constant is the shared 0.2 em optical lift.
+        assert!((OPTICAL_LIFT - 0.2).abs() < 1e-9);
     }
 }

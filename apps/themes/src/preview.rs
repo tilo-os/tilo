@@ -181,14 +181,14 @@ impl Widget for PreviewPane {
         let tg = Rect::new(cx, y, cx + 44.0, y + 24.0);
         draw::fill_rrect(scene, t, tg, 12.0, th.accent_primary);
         draw::circle(scene, t, Point::new(tg.x1 - 12.0, tg.center().y), 9.0, Color::WHITE);
-        draw::text(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + 8.0, y + 5.0);
+        draw::text_vcenter(tr, scene, t, "On", 12.0, th.text_dim, tg.x1 + 8.0, tg.y0, tg.y1, TextWeight::Regular);
         // Checkbox (checked)
         let cbx = cx + 110.0;
         let cb = Rect::new(cbx, y + 2.0, cbx + 20.0, y + 22.0);
         draw::fill_rrect(scene, t, cb, (radius * 0.4).max(3.0), th.accent_primary);
         draw::line(scene, t, Point::new(cb.x0 + 5.0, cb.center().y), Point::new(cb.x0 + 8.5, cb.y1 - 6.0), self.on_accent(), 2.0);
         draw::line(scene, t, Point::new(cb.x0 + 8.5, cb.y1 - 6.0), Point::new(cb.x1 - 4.5, cb.y0 + 5.0), self.on_accent(), 2.0);
-        draw::text(tr, scene, t, "Enabled", 12.0, th.text_dim, cb.x1 + 8.0, y + 5.0);
+        draw::text_vcenter(tr, scene, t, "Enabled", 12.0, th.text_dim, cb.x1 + 8.0, cb.y0, cb.y1, TextWeight::Regular);
         // Slider (~62%)
         let sl_x0 = cx + 230.0;
         let sl_x1 = cx + cw.min(cw) - 0.0;
@@ -226,8 +226,11 @@ impl Widget for PreviewPane {
             draw::circle(scene, t, ac, 12.0, *col);
             let initial = name.chars().next().unwrap_or('?').to_string();
             draw::text_center(tr, scene, t, &initial, 12.0, model::color(model::on_color([col.r(), col.g(), col.b()])), ac.x - 12.0, ac.x + 12.0, ac.y - 12.0, ac.y + 12.0, TextWeight::Bold);
-            draw::text_w(tr, scene, t, name, 13.0, th.text_primary, rr.x0 + 44.0, rr.y0 + 7.0, TextWeight::Medium);
-            draw::text(tr, scene, t, sub, 11.0, th.text_dim, rr.x0 + 44.0, rr.y0 + 22.0);
+            // Optically centre the name + subtitle block against the row so it
+            // sits level with the avatar (shared two-line helper).
+            let (name_y, sub_y) = draw::two_line_tops(rr.y0, rowh, 13.0, 11.0, 15.0);
+            draw::text_w(tr, scene, t, name, 13.0, th.text_primary, rr.x0 + 44.0, name_y, TextWeight::Medium);
+            draw::text(tr, scene, t, sub, 11.0, th.text_dim, rr.x0 + 44.0, sub_y);
             // trailing badge
             if *badge > 0 {
                 let bw2 = 22.0;
@@ -253,7 +256,7 @@ impl Widget for PreviewPane {
             draw::fill_rrect(scene, t, br, 11.0, Self::alpha(col, 0.18));
             draw::stroke_rrect(scene, t, br, 11.0, Self::alpha(col, 0.5), 1.0);
             draw::circle(scene, t, Point::new(br.x0 + 9.0, br.center().y), 3.0, col);
-            draw::text(tr, scene, t, lab, 11.0, col, br.x0 + 15.0, y + 5.5);
+            draw::text_vcenter(tr, scene, t, lab, 11.0, col, br.x0 + 15.0, br.y0, br.y1, TextWeight::Regular);
             bx += pw + 8.0;
         }
         // count pill + NEW

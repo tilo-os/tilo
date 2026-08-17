@@ -584,7 +584,7 @@ mod tests {
         let t = dracula.to_theme();
         let want = Theme::dracula();
         assert_eq!(rgb_of(t.bg_app), rgb_of(want.bg_app), "ground");
-        assert_eq!(rgb_of(t.accent_primary), [0xFF, 0x79, 0xC6], "canonical Dracula pink");
+        assert_eq!(rgb_of(t.accent_primary), [0xBD, 0x93, 0xF9], "canonical Dracula purple accent");
         assert_eq!(rgb_of(t.text_tertiary), rgb_of(want.text_tertiary), "tertiary tier survives");
         // The rich near-black popover comes from the constructor, not the default.
         assert_eq!(
