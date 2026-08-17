@@ -37,6 +37,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("sync") => Some(seed_sync_demo()),
             Some("thumbnails") => Some(seed_thumbnails_demo()),
             Some("thumbnails-fs") => Some(seed_thumbnails_fs_demo()),
+            // The focus capture reuses the populated thumbnails grid so the
+            // focused file view has real content behind the ring.
+            Some("focus") => Some(seed_thumbnails_demo()),
             _ => None,
         };
         let mut widget = FileExplorerWidget::new();
@@ -51,7 +54,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Pre-layout scenario setup (view mode + selection must be set before
         // the tree is built so the composed view captures them).
         match scenario.as_deref() {
-            Some("grid") | Some("thumbnails") | Some("thumbnails-fs") => {
+            Some("grid") | Some("thumbnails") | Some("thumbnails-fs") | Some("focus") => {
                 widget.set_view_mode(file_explorer::model::ViewMode::Grid)
             }
             Some("select") => {
@@ -75,6 +78,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // the panes at their pre-reveal rects.
             Some("places") => widget.debug_open_places_drawer(),
             _ => {}
+        }
+        // `--scenario focus` proves keyboard focus is visible: the file view
+        // takes keyboard focus and shows its themed focus ring. Routed through
+        // the real `App` frame (which also paints the shared ring for any
+        // focusable that draws none of its own). `QOS_SHOTS_THEME` selects
+        // light/dark so both are captured from one binary.
+        if scenario.as_deref() == Some("focus") {
+            let theme = std::env::var("QOS_SHOTS_THEME")
+                .ok()
+                .and_then(|n| Theme::named(&n))
+                .unwrap_or_else(Theme::dark);
+            ui::App::render_focus_shot(Box::new(widget), viewport, theme, Some("FileView"), &out);
+            println!("file-explorer: wrote focus shot to {}", out.display());
+            return Ok(());
         }
         render_shot_to_png(widget, viewport, scenario.as_deref(), &out)?;
         return Ok(());

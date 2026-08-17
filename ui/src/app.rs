@@ -2618,6 +2618,69 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// Compose one frame into a fresh [`Scene`] exactly as the redraw loop does
+    /// — draw the widget tree, then paint the shared focus ring
+    /// ([`Self::compose_focus_ring`]) — minus the GPU present. Exposed
+    /// (doc-hidden) so a `--shots` capture or a test can rasterise a real frame,
+    /// focus ring included, through an [`OffscreenRenderer`](crate::offscreen::OffscreenRenderer).
+    #[doc(hidden)]
+    pub fn render_to_scene_for_test(&mut self) -> Scene {
+        let mut scene = Scene::new();
+        self.root_widget.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text_renderer,
+            &self.theme,
+            &self.presence_ctx,
+            &self.permission_ctx,
+        );
+        self.root_widget.mark_drawn();
+        self.compose_focus_ring(&mut scene, Affine::IDENTITY);
+        scene
+    }
+
+    /// Render one offscreen frame of `root` to a PNG at `out` under `theme`,
+    /// with a control focused and the **shared focus ring** painted around it —
+    /// the byte-for-byte ring the live compositor draws, via the real `App`
+    /// frame path (layout -> draw tree -> [`Self::compose_focus_ring`]).
+    ///
+    /// `focus_name` picks which focusable to land on: `Some(name)` focuses the
+    /// first focusable whose [`Widget::name`](crate::widget::Widget::name)
+    /// matches (e.g. a custom app row), `None` focuses the first focusable in
+    /// tree order. Used by the system apps' `--shots` focus captures to prove
+    /// keyboard focus is visible in both light and dark themes.
+    pub fn render_focus_shot(
+        root: Box<dyn Widget>,
+        viewport: (u32, u32),
+        theme: Theme,
+        focus_name: Option<&str>,
+        out: &std::path::Path,
+    ) {
+        let (w, h) = viewport;
+        let mut app = App::new(State::new(), root);
+        app.set_theme(theme);
+        app.init_layout();
+        app.layout_for_test(w as f64, h as f64);
+
+        let target = match focus_name {
+            Some(name) => app.focusable_order.iter().copied().find(|id| {
+                app.node_map
+                    .get(id)
+                    .map(|&p| unsafe { (*p).name() == name })
+                    .unwrap_or(false)
+            }),
+            None => app.focusable_order.first().copied(),
+        };
+        app.set_focused_node(target);
+
+        let scene = app.render_to_scene_for_test();
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
+        renderer.render_png(&scene, vello::peniko::Color::TRANSPARENT, out);
+    }
+
     /// Re-run the per-frame focus pass: pull widget state via `sync` (so a
     /// modal's open flag updates) then re-evaluate the focusable order and any
     /// focus trap. This is what the event loop does after handling input that

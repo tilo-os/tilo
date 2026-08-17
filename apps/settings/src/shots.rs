@@ -187,6 +187,28 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
+    // `…focus.png` proves keyboard focus is visible: the wide layout with a
+    // sidebar category row focused, showing the shared themed focus ring the
+    // compositor paints around any focusable control (the sidebar rows draw no
+    // ring of their own). `QOS_SHOTS_THEME` selects light/dark so both are
+    // captured from one binary. Routed through the real `App` frame so the ring
+    // is the exact one the live session paints.
+    if fname.contains("focus") {
+        let theme = std::env::var("QOS_SHOTS_THEME")
+            .ok()
+            .and_then(|n| Theme::named(&n))
+            .unwrap_or_else(Theme::dark);
+        ui::App::render_focus_shot(
+            Box::new(Scenario::Wide.app()),
+            DEFAULT_SHOTS_VIEWPORT,
+            theme,
+            Some("SidebarRow"),
+            out,
+        );
+        println!("settings: wrote focus shot to {}", out.display());
+        return Ok(());
+    }
+
     // `…narrow-list.png` proves the narrow list screen: the full-screen
     // category list (the back-tap-away state a collapse no longer defaults to).
     if fname.contains("narrow") && fname.contains("list") {
