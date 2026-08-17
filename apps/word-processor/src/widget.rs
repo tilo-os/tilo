@@ -6418,6 +6418,13 @@ impl Widget for WordProcessorWidget {
                             changed = false;
                         } else {
                             self.inner.insert_str(state, &typed);
+                            // Live inline "visual markdown": a closing delimiter
+                            // (`*`/`_`/`` ` ``/`~`) may complete a `**bold**` /
+                            // `*italic*` / `` `code` `` / `~~strike~~` span —
+                            // detection is shared with the notes editor.
+                            if typed.ends_with(['*', '_', '`', '~']) {
+                                self.inner.autoformat_inline(state);
+                            }
                         }
                     }
                 }
