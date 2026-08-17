@@ -428,8 +428,8 @@ fn age_label(age: i64, absolute: &str) -> String {
         1 => "1 day ago".to_string(),
         2..=6 => format!("{age} days ago"),
         7..=13 => "1 week ago".to_string(),
-        14..=59 => format!("{} weeks ago", age / 7),
-        60..=364 => {
+        14..=27 => format!("{} weeks ago", age / 7),
+        28..=364 => {
             let months = (age / 30).max(1);
             if months == 1 { "1 month ago".to_string() } else { format!("{months} months ago") }
         }
