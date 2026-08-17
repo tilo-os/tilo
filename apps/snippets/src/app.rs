@@ -41,8 +41,8 @@ use ui::icons::Icon;
 use ui::widget::autocomplete::{Autocomplete, AutocompleteOutcome, Suggestion};
 use ui::widget::code_editor::CodeEditor;
 use ui::widget::{
-    Button, ButtonFace, ButtonStyle, EmptyState, FlapState, PushPane, SplitLayout, TextInput,
-    Widget,
+    Button, ButtonFace, ButtonStyle, EmptyState, FlapState, PushPane, SearchField, SplitLayout,
+    TextInput, Widget,
 };
 
 use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
@@ -117,7 +117,7 @@ pub struct SnippetsApp {
     seeded: bool,
 
     // ---- hosted shared widgets -----------------------------------------
-    search: TextInput,
+    search: SearchField,
     title: TextInput,
     language: Autocomplete,
     tags: TextInput,
@@ -210,7 +210,10 @@ impl SnippetsApp {
             open: None,
             visible: Vec::new(),
             seeded: false,
-            search: TextInput::local().with_id("snippet.search").with_placeholder("Search snippets"),
+            search: SearchField::new()
+                .standalone()
+                .with_id("snippet.search")
+                .with_placeholder("Search snippets"),
             title: TextInput::local()
                 .with_id("snippet.title")
                 .with_plain_chrome()
@@ -396,7 +399,7 @@ impl SnippetsApp {
 
     fn set_focus(&mut self, focus: Focus) {
         self.focus = focus;
-        self.search.set_focus(focus == Focus::Search);
+        self.search.set_focused(focus == Focus::Search);
         self.title.set_focus(focus == Focus::Title);
         self.tags.set_focus(focus == Focus::Tags);
         self.description.set_focus(focus == Focus::Description);
@@ -556,7 +559,7 @@ impl SnippetsApp {
             Action::Duplicate => self.duplicate(doc),
             Action::Delete => self.delete(doc),
             Action::ClearSearch => {
-                self.search.set_text("");
+                self.search.set_query("");
                 self.list_scroll = 0.0;
                 self.recompute_visible();
             }
@@ -613,6 +616,13 @@ impl SnippetsApp {
     /// * anything else — the default frame.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
+            "search" => {
+                // A live query in the search field, so the capture shows the
+                // single shared SearchField with its magnifier, the typed text,
+                // and exactly one clear button — no nested search chrome.
+                self.search.set_query("kubectl");
+                self.recompute_visible();
+            }
             "detail" => {
                 self.push_pane = PushPane::Detail;
                 self.push.snap(true);
@@ -653,7 +663,7 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn set_search_for_test(&mut self, q: &str) {
-        self.search.set_text(q);
+        self.search.set_query(q);
         self.recompute_visible();
     }
 
@@ -1007,7 +1017,7 @@ impl Widget for SnippetsApp {
                         return;
                     }
                     if !self.search_text().is_empty() && self.focus == Focus::Search {
-                        self.search.set_text("");
+                        self.search.set_query("");
                         self.recompute_visible();
                         *handled = true;
                         return;
@@ -1200,25 +1210,14 @@ impl SnippetsApp {
         draw::fill_rect(scene, t, area, c.neutral[1]);
         let pad = 14.0;
 
-        // Search field: a rounded container with a magnifier, a plain-chrome
-        // TextInput inset past it, and a clear affordance when non-empty.
+        // Search field: the shared `SearchField` owns the whole search box — one
+        // pill, one magnifier, real caret/selection/clipboard, and its own clear
+        // button when the query is non-empty. The app just hand-places it and
+        // routes events; the entire pill is the click/focus target.
         let sr = Rect::new(area.x0 + pad, area.y0 + 12.0, area.x1 - pad, area.y0 + 12.0 + 38.0);
-        let focused = self.focus == Focus::Search;
-        draw::fill_round(scene, t, sr, theme.radii_md(), c.surfaces.base);
-        draw::stroke_round(scene, t, sr, theme.radii_md(), if focused { 1.5 } else { 1.0 }, if focused { c.border_focus } else { c.border_standard });
-        let icon = Rect::new(sr.x0 + 10.0, sr.y0 + (sr.height() - 16.0) / 2.0, sr.x0 + 26.0, sr.y0 + (sr.height() - 16.0) / 2.0 + 16.0);
-        Icon::Search.draw(scene, t, icon, c.text_dim);
-        let has_query = !self.search_text().is_empty();
-        let field_right = if has_query { sr.x1 - 30.0 } else { sr.x1 - 10.0 };
-        self.search_rect = Rect::new(sr.x0 + 32.0, sr.y0, field_right, sr.y1);
-        self.search.apply_layout_external(self.search_rect);
+        self.search_rect = sr;
+        self.search.apply_layout_external(sr);
         self.search.draw(scene, t, tr, theme, &PresenceCtx::empty());
-        if has_query {
-            let clear = Rect::new(sr.x1 - 28.0, sr.y0, sr.x1, sr.y1);
-            let g = Rect::new(clear.x0 + 4.0, clear.y0 + (clear.height() - 14.0) / 2.0, clear.x0 + 18.0, clear.y0 + (clear.height() - 14.0) / 2.0 + 14.0);
-            Icon::X.draw(scene, t, g, c.text_dim);
-            self.record(clear, Action::ClearSearch);
-        }
 
         // Scope segmented control + New button.
         let seg_y = sr.y1 + 12.0;
@@ -1848,6 +1847,34 @@ mod tests {
             let hay = format!("{} {} {} {} {}", s.title, s.description, s.body, s.tags.join(" "), s.folder).to_lowercase();
             assert!(hay.contains("rust"), "every survivor matches the live query");
         }
+    }
+
+    /// The list search is a single shared [`SearchField`] — one pill that owns
+    /// the whole query. Typing filters through it and clearing it (Escape, on
+    /// that same field) restores the list; there is no field-inside-a-field.
+    #[test]
+    fn search_is_one_shared_field_that_filters_and_clears() {
+        use crate::test_events::{char_press, ctrl, named_press, no_mods};
+        use winit::keyboard::NamedKey;
+        let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let total = app.visible_count_for_test();
+
+        // Ctrl+F focuses the one field; typing routes into it and narrows.
+        drive(&mut app, &char_press("f"), &ctrl(), &mut doc);
+        assert_eq!(app.focus, Focus::Search, "Ctrl+F focuses the single search field");
+        for ch in ["r", "u", "s", "t"] {
+            drive(&mut app, &char_press(ch), &no_mods(), &mut doc);
+        }
+        assert_eq!(app.search.value(), "rust", "the query lives in the one shared field");
+        let filtered = app.visible_count_for_test();
+        assert!(filtered < total, "typing into the one field narrowed the list ({filtered} < {total})");
+
+        // Escape clears the query through that same field and restores the list.
+        drive(&mut app, &named_press(NamedKey::Escape), &no_mods(), &mut doc);
+        assert!(app.search.value().is_empty(), "clearing empties the one field");
+        assert_eq!(app.visible_count_for_test(), total, "and the full list returns");
     }
 
     #[test]
