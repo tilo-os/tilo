@@ -39,6 +39,8 @@ pub fn app_root() -> Box<dyn Widget> {
 /// and can't reach toggled states through input). Recognised scenarios:
 ///
 /// * `"empty"` — the honest live zero-state (a fresh install has no snippets).
+/// * `"search"` — a live query in the search field, so the capture shows the
+///   single shared search box (magnifier, text, one clear button).
 /// * `"fill"` — open a templated snippet with its variables filled in, so the
 ///   capture shows the fill-and-copy flow mid-use.
 /// * `"detail"` — pair with a very-narrow `--viewport` to show the single-pane
