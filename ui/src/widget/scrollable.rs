@@ -464,7 +464,15 @@ impl Scrollable {
             return false;
         }
         let dt = match self.last_ease {
-            Some(prev) => now.saturating_duration_since(prev).as_secs_f32().clamp(0.0, EASE_MAX_DT),
+            Some(prev) => {
+                let measured = now.saturating_duration_since(prev).as_secs_f32();
+                // Floor an implausibly small gap (a headless harness pumping
+                // `sync` in a tight loop, or a >500 Hz display) to one nominal
+                // 60 Hz step so every pumped frame makes forward progress and
+                // the ease always terminates. Real 60/120/240 Hz frames sit
+                // above the floor and use their true elapsed time.
+                if measured < 0.002 { 1.0 / 60.0 } else { measured.min(EASE_MAX_DT) }
+            }
             None => 1.0 / 60.0,
         };
         self.last_ease = Some(now);

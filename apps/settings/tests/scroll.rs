@@ -71,6 +71,23 @@ impl Harness {
         self.app.apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
     }
 
+    /// Pump the smooth-scroll ease to rest. A wheel now drives an eased target
+    /// that the rendered offset chases over several frames (via `sync`), so a
+    /// single relayout would observe a mid-glide position. Pump sync+relayout
+    /// until the content offset stops changing (bounded); a no-op once settled.
+    fn settle_scroll(&mut self) {
+        let mut prev = content_scroll(&self.app).0;
+        for _ in 0..400 {
+            self.app.sync(&mut self.state.doc, &self.state.root);
+            self.relayout();
+            let now = content_scroll(&self.app).0;
+            if (now - prev).abs() < 0.01 {
+                break;
+            }
+            prev = now;
+        }
+    }
+
     fn dispatch(&mut self, event: &WindowEvent) -> bool {
         let mut handled = false;
         let mut focus_target = None;
@@ -139,19 +156,19 @@ fn content_pane_scrolls_with_the_mouse_wheel() {
 
     // Wheel down: the content pane's Scrollable shifts its child up.
     h.wheel(3.0);
-    h.relayout();
+    h.settle_scroll();
     let (one, _, _) = content_scroll(&h.app);
     assert!(one > 0.5, "a wheel-down scrolls the settings content; offset stayed {one}");
 
     // Fling to the bottom: scrolls further, then clamps — a second identical
     // fling must NOT move it any further (it's parked at the content edge).
     h.wheel(1000.0);
-    h.relayout();
+    h.settle_scroll();
     let (bottom, _, _) = content_scroll(&h.app);
     assert!(bottom > one, "flinging scrolls further ({bottom} vs {one})");
 
     h.wheel(1000.0);
-    h.relayout();
+    h.settle_scroll();
     let (still, _, _) = content_scroll(&h.app);
     assert!(
         (still - bottom).abs() < 0.5,
