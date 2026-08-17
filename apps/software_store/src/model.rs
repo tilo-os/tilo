@@ -275,6 +275,24 @@ impl AppEntry {
         }
     }
 
+    /// A minimal entry synthesised for an app the system reports **installed**
+    /// but that isn't in the browse catalog (e.g. a Flatpak or `.qpkg`
+    /// installed before the store's catalog knew about it). Ensures the
+    /// Installed tab shows the real installed set rather than only the curated
+    /// apps — the "Installed · 0" fix. `version` is both installed + latest so
+    /// it derives as `Installed`, not a phantom update.
+    pub fn installed_stub(id: &str, name: &str, version: &str, source: Source) -> Self {
+        let mut e = Self::flathub_stub(id, name, "", "", Category::Productivity);
+        e.source = source;
+        e.latest_version = version.to_string();
+        e.remote = match source {
+            Source::QosNative => "qos".into(),
+            Source::Oci => "podman".into(),
+            Source::Flatpak => "flathub".into(),
+        };
+        e
+    }
+
     /// `true` for a qOS-native app, which uses the bespoke
     /// "Open directly" / "Add" affordances instead of a permanent install.
     pub fn is_qos_native(&self) -> bool {
@@ -371,6 +389,11 @@ pub enum InstallState {
     /// Installed but an update is available (carries the installed
     /// version that is behind `latest_version`).
     UpdateAvailable(String),
+    /// The most recent install / update **failed**; carries the real reason
+    /// from the package manager. This is the honest terminal state a failed
+    /// operation lands in — the control reads "Failed" with the reason, never
+    /// a bar filled to 100%.
+    Failed(String),
 }
 
 impl InstallState {

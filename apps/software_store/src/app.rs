@@ -33,7 +33,10 @@ use ui::permissions::PermissionContext;
 use ui::image_store::paint_image_cover;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, ModalDialog, SegmentedFace, SplitLayout, TextInput, ToggleGroup};
+use ui::widget::{
+    Button, ButtonFace, ButtonStyle, FlapState, ModalDialog, SegmentedFace, SplitLayout, TextInput,
+    ToggleGroup,
+};
 use ui::{ImageStore, LoadState};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -42,7 +45,7 @@ use crate::catalog::sample_catalog;
 use crate::images;
 use crate::doc::StoreDoc;
 use crate::draw::{self, alpha, mix};
-use crate::flatpak::Remote;
+use crate::flatpak::{Remote, Scope};
 use crate::flatpakref::FlatpakRef;
 use crate::model::{
     AppEntry, Category, Catalog, Compat, InstallPhase, InstallSnapshot, InstallState, Permission,
@@ -51,10 +54,38 @@ use crate::model::{
 use crate::probe::ProbeResult;
 use crate::worker::{ActionKind, Request, Worker, WorkerMsg};
 
+/// A live (real) install / update operation on the live path, driven entirely
+/// by worker messages — never a wall-clock timer. `fraction` stays `None`
+/// until flatpak emits a real percentage, so the UI shows an honest
+/// indeterminate "working" state rather than a faked bar.
+#[derive(Clone, Debug)]
+struct LiveOp {
+    kind: ActionKind,
+    fraction: Option<f64>,
+    phase: InstallPhase,
+    /// Wall-clock start, used only to animate the indeterminate marquee.
+    started: Instant,
+}
+
+/// What the store knows about an installed app beyond its version — enough to
+/// synthesise a browse/Installed entry for an app that isn't in the catalog,
+/// and to label its provenance (Flatpak vs qOS).
+#[derive(Clone, Debug)]
+struct InstalledMeta {
+    name: String,
+    source: Source,
+    #[allow(dead_code)]
+    scope: Option<Scope>,
+}
+
 /// How long a simulated install / update takes to fill its progress bar.
 const INSTALL_DURATION: Duration = Duration::from_millis(2600);
 /// How long an "Opening …" toast lingers.
 const TOAST_DURATION: Duration = Duration::from_millis(2200);
+/// How long a failed install/update keeps its "Failed" control before the
+/// affordance returns to normal (the real reason is surfaced as a toast the
+/// moment it happens; this only bounds how long the terminal state sticks).
+const FAILED_LINGER: Duration = Duration::from_secs(12);
 /// How many updates run at once during "Update All"; the rest queue and
 /// start as slots free up — so the Updates view shows a real pending →
 /// in-progress → done pipeline rather than every app downloading at once.
@@ -185,8 +216,22 @@ pub struct SoftwareStore {
     /// clamp scrolling.
     content_height: f64,
     /// Local wall-clock start time per in-flight install, used to animate
-    /// the progress bar smoothly between syncs.
+    /// the progress bar smoothly between syncs. **Offline / `--shots` / tests
+    /// only** — the live path never fakes progress this way; see `ops`.
     install_start: HashMap<String, Instant>,
+    /// Live (real) operations in flight, keyed by app-id — the honest source
+    /// of truth for the progress control on the live path. Populated by
+    /// `start_install` and driven by `WorkerMsg::ActionProgress` /
+    /// `ActionDone`. A wall-clock timer never touches these.
+    ops: HashMap<String, LiveOp>,
+    /// Apps whose most recent operation **failed**, with the real reason and
+    /// when it happened (so the control reads "Failed" + reason, and the entry
+    /// eventually clears). A failed op is never shown as a full bar.
+    failed: HashMap<String, (String, Instant)>,
+    /// What the live system reports installed, keyed by app-id — real Flatpak
+    /// apps (across both installations) plus installed qOS `.qpkg`s. Drives the
+    /// Installed tab + provenance labels for apps outside the browse catalog.
+    installed_meta: HashMap<String, InstalledMeta>,
     /// The ordered set of app-ids participating in the current update
     /// *batch* (driven by the Updates view's "Update All" / per-row
     /// Update). Apps stay listed here while in flight AND after they finish
@@ -290,6 +335,9 @@ impl SoftwareStore {
             scroll: 0.0,
             content_height: 0.0,
             install_start: HashMap::new(),
+            ops: HashMap::new(),
+            failed: HashMap::new(),
+            installed_meta: HashMap::new(),
             update_batch: Vec::new(),
             finalize_pending: false,
             toast: None,
@@ -384,6 +432,22 @@ impl SoftwareStore {
             // The drawer only renders when the layout resolves to overlay,
             // i.e. at a narrow viewport.
             self.nav_flap.snap(true);
+        } else if spec == "install-error" || spec == "failed" {
+            // Stage a representative FAILED install so the frame shows the
+            // honest terminal state: a danger Retry control, the real reason
+            // inline on the detail page, and the error toast — never a bar at
+            // 100%.
+            let id = "org.gimp.GIMP";
+            let reason = "error: No such ref 'app/org.gimp.GIMP/x86_64/stable' in remote flathub";
+            self.failed.insert(id.to_string(), (reason.to_string(), Instant::now()));
+            self.action_error = Some((format!("GIMP: {reason}"), Instant::now()));
+            self.detail = Some(id.to_string());
+        } else if spec == "qpkg" || spec == "qos" {
+            // Show the qOS-native (`.qpkg`) source as first-class: the browse
+            // grid filtered to the qOS apps, each carrying its "qOS" source tag.
+            self.search_input.set_text("qOS");
+            self.search_query = "qOS".to_string();
+            self.tab = Tab::Browse;
         } else if let Some(q) = spec.strip_prefix("search:") {
             self.search_input.set_text(q);
             self.search_query = q.to_string();
@@ -521,11 +585,56 @@ impl SoftwareStore {
 
     /// The set of updatable apps, used by the Updates badge + Update All.
     fn updatable_ids(&self) -> Vec<String> {
-        self.catalog
-            .updatable(&self.snapshot)
-            .iter()
-            .map(|a| a.id.clone())
+        self.updatable_apps().iter().map(|a| a.id.clone()).collect()
+    }
+
+    /// Synthesise a browse/Installed entry for an app the system reports
+    /// installed but that isn't in the catalog / live set — so a real Flatpak
+    /// or `.qpkg` installed outside the store's catalog still appears (the
+    /// "Installed · 0" fix). Uses the known name / source when available.
+    fn synth_installed_entry(&self, id: &str) -> AppEntry {
+        let ver = self.snapshot.installed.get(id).cloned().unwrap_or_default();
+        match self.installed_meta.get(id) {
+            Some(meta) => AppEntry::installed_stub(id, &meta.name, &ver, meta.source),
+            None => AppEntry::installed_stub(id, &crate::qpkg::display_name(id), &ver, Source::Flatpak),
+        }
+    }
+
+    /// The true installed set: every app-id the snapshot marks installed (real
+    /// Flatpak across both installations + installed qOS `.qpkg`s + the offline
+    /// seed), resolved to a full entry. Sorted by name. This — not
+    /// `Catalog::installed`, which only ever sees the curated catalog — is what
+    /// the Installed tab + its count read, so the live path shows the real set
+    /// instead of `Installed · 0`.
+    fn installed_apps(&self) -> Vec<AppEntry> {
+        let mut out: Vec<AppEntry> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for id in self.snapshot.installed.keys() {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(app) = self.app_by_id(id) {
+                if self.catalog.state_of(&app, &self.snapshot).is_installed_or_update() {
+                    out.push(app);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out
+    }
+
+    /// Installed apps with a pending update (across all sources).
+    fn updatable_apps(&self) -> Vec<AppEntry> {
+        self.installed_apps()
+            .into_iter()
+            .filter(|a| matches!(self.catalog.state_of(a, &self.snapshot), InstallState::UpdateAvailable(_)))
             .collect()
+    }
+
+    /// `true` while a live op for `id` has no real fraction yet — so the
+    /// control shows an honest indeterminate marquee, not a fabricated %.
+    fn op_indeterminate(&self, id: &str) -> bool {
+        self.ops.get(id).map(|o| o.fraction.is_none()).unwrap_or(false)
     }
 
     /// Start updating every pending app, but only run [`UPDATE_CONCURRENCY`]
@@ -536,6 +645,17 @@ impl SoftwareStore {
     /// done pipeline instead of every app downloading simultaneously.
     fn start_update_all(&mut self, state: &mut AutoCommit) {
         let ids = self.updatable_ids();
+        if self.worker.is_live() {
+            // Live: dispatch every real update to the worker (which serialises
+            // them on its single thread — a real queue), each entering `ops`.
+            for id in &ids {
+                self.enqueue_update(id);
+                self.start_install(state, id);
+            }
+            return;
+        }
+        // Offline / --shots / tests: a deterministic staggered simulation so the
+        // Updates view shows a real pending → in-progress → done pipeline.
         for (i, id) in ids.iter().enumerate() {
             self.enqueue_update(id);
             if i < UPDATE_CONCURRENCY {
@@ -606,9 +726,9 @@ impl SoftwareStore {
                 out.push(app);
             }
         }
-        for app in self.catalog.updatable(&self.snapshot) {
+        for app in self.updatable_apps() {
             if seen.insert(app.id.clone()) {
-                out.push(app.clone());
+                out.push(app);
             }
         }
         out
@@ -709,23 +829,37 @@ impl SoftwareStore {
         }
     }
 
-    /// Begin a (simulated) install / update of `id`.
+    /// Begin an install / update of `id`.
     ///
-    /// The visible progress bar is always driven by a local wall-clock
-    /// animation (deterministic, never blocks the frame). When a live
-    /// worker is present the *real* `flatpak install/update` is dispatched
-    /// to it in parallel; its outcome arrives later via the worker channel
-    /// and only surfaces if it fails (the simulated bar is the source of
-    /// truth for the visual). This keeps the UX identical online and off.
+    /// **Live path:** the visible state is the REAL operation. We dispatch the
+    /// actual `flatpak` / `qos-install` action to the worker and record a
+    /// [`LiveOp`] whose progress is filled in only from real
+    /// `WorkerMsg::ActionProgress` samples; the op is finalised (installed) or
+    /// marked failed strictly from the real `ActionDone`. No wall-clock bar.
+    ///
+    /// **Offline / `--shots` / tests:** there is no real backend, so a
+    /// deterministic wall-clock animation stands in (sample behaviour, never
+    /// shown to a real user) to keep screenshots and tests populated.
     fn start_install(&mut self, state: &mut AutoCommit, id: &str) {
-        StoreDoc::set_installing(state, id, 0.0);
-        self.install_start.insert(id.to_string(), Instant::now());
-        self.snapshot = StoreDoc::read_snapshot(state);
+        // A fresh attempt clears any prior failure marker.
+        self.failed.remove(id);
+        let app = self.app_by_id(id);
+        let already_installed = self.snapshot.installed.contains_key(id);
+
         if self.worker.is_live() {
-            let app = self.app_by_id(id);
-            let already_installed = self.snapshot.installed.contains_key(id);
+            let kind = match app.as_ref().map(|a| a.source) {
+                Some(Source::QosNative) => ActionKind::QosInstall,
+                _ if already_installed => ActionKind::Update,
+                _ => ActionKind::Install,
+            };
+            self.ops.insert(
+                id.to_string(),
+                LiveOp { kind, fraction: None, phase: InstallPhase::Downloading, started: Instant::now() },
+            );
             match app.as_ref().map(|a| (a.source, a.remote.clone())) {
-                Some((Source::QosNative, _)) => {} // qOS apps don't flatpak-install
+                Some((Source::QosNative, _)) => {
+                    self.worker.request(Request::QosInstall(id.to_string()));
+                }
                 Some((_, _)) if already_installed => {
                     self.worker.request(Request::Update(id.to_string()));
                 }
@@ -739,14 +873,23 @@ impl SoftwareStore {
                     });
                 }
             }
+        } else {
+            StoreDoc::set_installing(state, id, 0.0);
+            self.install_start.insert(id.to_string(), Instant::now());
+            self.snapshot = StoreDoc::read_snapshot(state);
         }
         self.dirty = true;
     }
 
-    /// Cancel an in-flight install.
+    /// Cancel an in-flight install (dismisses the local progress state). On
+    /// the live path the underlying transaction can't be interrupted mid-flush
+    /// once dispatched; we drop the local op so the row stops showing progress
+    /// and its eventual outcome is reconciled by the next refresh.
     fn cancel_install(&mut self, state: &mut AutoCommit, id: &str) {
         StoreDoc::clear_installing(state, id);
         self.install_start.remove(id);
+        self.ops.remove(id);
+        self.failed.remove(id);
         // Drop it from the update batch too, so a canceled update doesn't
         // linger as a stuck "Queued" row.
         self.update_batch.retain(|x| x != id);
@@ -804,11 +947,19 @@ impl SoftwareStore {
             }
             Action::Cancel(id) => self.cancel_install(state, &id),
             Action::Remove(id) => {
+                let is_qos = self.app_by_id(&id).map(|a| a.is_qos_native()).unwrap_or(false);
                 StoreDoc::remove_installed(state, &id);
                 self.install_start.remove(&id);
+                self.failed.remove(&id);
                 self.snapshot = StoreDoc::read_snapshot(state);
                 if self.worker.is_live() {
-                    self.worker.request(Request::Remove(id.clone()));
+                    // qOS apps remove through the real qOS packaging path;
+                    // everything else through flatpak.
+                    if is_qos {
+                        self.worker.request(Request::QosRemove(id.clone()));
+                    } else {
+                        self.worker.request(Request::Remove(id.clone()));
+                    }
                 }
             }
             Action::Open(id) => {
@@ -833,11 +984,16 @@ impl SoftwareStore {
                 self.show_toast(format!("Opening {name} directly (cached, sandboxed)…"));
             }
             Action::QosAdd(id) => {
-                // VISUAL-ONLY (documented stub): would keep the bundle cached
-                // and prioritise it in auto-updates + global search. We
-                // record it as installed locally so the affordance reads as
-                // "added", but no real packaging action runs.
-                if let Some(app) = self.app_by_id(&id) {
+                // "Add" keeps the qOS app cached + prioritised — the qOS
+                // equivalent of installing. On the live path this runs the REAL
+                // `qos-install` action (via `start_install`, which routes a
+                // qOS-native app to the qpkg path); offline `--shots` records it
+                // installed so the affordance reads as "added".
+                let name = self.app_by_id(&id).map(|a| a.name).unwrap_or_else(|| id.clone());
+                if self.worker.is_live() {
+                    self.start_install(state, &id);
+                    self.show_toast(format!("Adding {name}…"));
+                } else if let Some(app) = self.app_by_id(&id) {
                     StoreDoc::set_installed(state, &id, &app.latest_version);
                     self.snapshot = StoreDoc::read_snapshot(state);
                     self.show_toast(format!("Added {} — cached & prioritised", app.name));
@@ -879,10 +1035,20 @@ impl SoftwareStore {
         self.dirty = true;
     }
 
-    /// Derive the install state for a catalog app, preferring the smooth
-    /// local wall-clock progress over the CRDT-stored value while an
-    /// install is in flight locally.
+    /// Derive the per-app state the controls render against. Precedence:
+    /// a real failure first (honest terminal state), then a live op (real
+    /// progress, or indeterminate), then the offline wall-clock simulation,
+    /// then the snapshot-derived state.
     fn live_state(&self, app: &AppEntry) -> InstallState {
+        if let Some((reason, _)) = self.failed.get(&app.id) {
+            return InstallState::Failed(reason.clone());
+        }
+        if let Some(op) = self.ops.get(&app.id) {
+            // Remove ops don't render as a progress bar here.
+            if op.kind != ActionKind::Remove {
+                return InstallState::Installing(op.fraction.unwrap_or(0.0));
+            }
+        }
         if let Some(start) = self.install_start.get(&app.id) {
             let p = (start.elapsed().as_secs_f64() / INSTALL_DURATION.as_secs_f64()).min(1.0);
             return InstallState::Installing(p);
@@ -902,6 +1068,10 @@ impl SoftwareStore {
         self.worker.request(Request::RefreshInstalled);
         self.worker.request(Request::RefreshRemotes);
         self.worker.request(Request::Collection("popular".into()));
+        // qOS-native packaging path: the installed `.qpkg` set + the qOS app
+        // registry, so qOS apps are first-class alongside Flatpak.
+        self.worker.request(Request::RefreshQos);
+        self.worker.request(Request::QosBrowse);
     }
 
     /// Drain finished worker messages into the model. Non-blocking — runs
@@ -912,17 +1082,14 @@ impl SoftwareStore {
         let mut new_remotes: Option<Vec<Remote>> = None;
         let mut new_live: Vec<AppEntry> = Vec::new();
         let mut new_popular: Option<Vec<String>> = None;
-        let mut installed_updates: Vec<(String, String)> = Vec::new();
-        let mut removed: Vec<String> = Vec::new();
-        let mut errors: Vec<String> = Vec::new();
-        let mut finished_actions: Vec<(String, ActionKind)> = Vec::new();
+        let mut flatpak_installed: Option<Vec<crate::flatpak::InstalledApp>> = None;
+        let mut qos_installed: Option<Vec<crate::qpkg::QpkgApp>> = None;
+        let mut progress: Vec<(String, crate::flatpak::ActionProgress)> = Vec::new();
+        let mut finished_ok: Vec<(String, ActionKind)> = Vec::new();
+        let mut finished_failed: Vec<(String, String)> = Vec::new();
 
         let drained = self.worker.drain(|msg| match msg {
-            WorkerMsg::Installed(map) => {
-                for (id, ver) in map {
-                    installed_updates.push((id.clone(), ver.clone()));
-                }
-            }
+            WorkerMsg::Installed(apps) => flatpak_installed = Some(apps.clone()),
             WorkerMsg::Remotes(rs) => new_remotes = Some(rs.clone()),
             WorkerMsg::Collection { name, apps } => {
                 if name == "popular" {
@@ -933,16 +1100,16 @@ impl SoftwareStore {
             WorkerMsg::SearchResults { apps, .. } => new_live.extend(apps.iter().cloned()),
             WorkerMsg::Detail(app) => new_live.push((**app).clone()),
             WorkerMsg::QosCatalog(apps) => new_live.extend(apps.iter().cloned()),
-            WorkerMsg::QosInstalled(_) => {}
-            WorkerMsg::ActionProgress { .. } => {}
-            WorkerMsg::ActionDone { target, kind, outcome } => {
-                finished_actions.push((target.clone(), *kind));
-                if let crate::flatpak::ActionOutcome::Failed(e) = outcome {
-                    errors.push(format!("{}: {e}", short_target(target)));
-                } else if matches!(kind, ActionKind::Remove) {
-                    removed.push(target.clone());
-                }
+            WorkerMsg::QosInstalled(apps) => qos_installed = Some(apps.clone()),
+            WorkerMsg::ActionProgress { target, progress: p, .. } => {
+                progress.push((target.clone(), *p))
             }
+            WorkerMsg::ActionDone { target, kind, outcome } => match outcome {
+                crate::flatpak::ActionOutcome::Failed(e) => {
+                    finished_failed.push((target.clone(), e.clone()))
+                }
+                crate::flatpak::ActionOutcome::Ok => finished_ok.push((target.clone(), *kind)),
+            },
         });
 
         if drained == 0 {
@@ -962,37 +1129,92 @@ impl SoftwareStore {
                 self.live_apps.insert(app.id.clone(), app);
             } else if let Some(slot) = self.live_apps.get_mut(&app.id) {
                 *slot = app;
-            } else {
-                self.live_apps.insert(app.id.clone(), app);
             }
         }
-        // Reflect the real installed set into the CRDT (live app only).
-        for (id, ver) in installed_updates {
-            if self.catalog.get(&id).is_some() || self.live_apps.contains_key(&id) {
-                let v = if ver.is_empty() {
-                    self.catalog.get(&id).map(|a| a.latest_version.clone()).unwrap_or_default()
+
+        // Fold REAL progress samples into the live ops (honest fraction/phase).
+        for (target, p) in progress {
+            if let Some(op) = self.ops.get_mut(&target) {
+                if let Some(f) = p.fraction {
+                    op.fraction = Some(f);
+                }
+                if let Some(ph) = p.phase {
+                    op.phase = ph;
+                }
+            }
+        }
+
+        // Reconcile the real Flatpak installed set across both installations.
+        if let Some(apps) = flatpak_installed {
+            self.installed_meta.retain(|_, m| m.source == Source::QosNative);
+            for a in &apps {
+                let v = if a.version.is_empty() {
+                    self.app_by_id(&a.id).map(|e| e.latest_version.clone()).unwrap_or_default()
                 } else {
-                    ver
+                    a.version.clone()
                 };
-                StoreDoc::set_installed(state, &id, &v);
+                StoreDoc::set_installed(state, &a.id, &v);
+                self.installed_meta.insert(
+                    a.id.clone(),
+                    InstalledMeta { name: a.name.clone(), source: Source::Flatpak, scope: Some(a.scope) },
+                );
             }
         }
-        for id in removed {
-            StoreDoc::remove_installed(state, &id);
-            self.install_start.remove(&id);
-        }
-        // Clear local in-flight markers for finished real actions.
-        for (target, kind) in finished_actions {
-            if matches!(kind, ActionKind::Install | ActionKind::Update) {
-                // The real action finished; the simulated progress bar
-                // finalises on its own timer, so nothing else to do here.
-                let _ = target;
-            }
-            if matches!(kind, ActionKind::RemoteAdd | ActionKind::RemoteDelete) {
-                self.worker.request(Request::RefreshRemotes);
+        // Reconcile installed qOS `.qpkg`s.
+        if let Some(apps) = qos_installed {
+            for a in &apps {
+                StoreDoc::set_installed(state, &a.id, &a.version);
+                self.installed_meta.insert(
+                    a.id.clone(),
+                    InstalledMeta { name: a.name.clone(), source: Source::QosNative, scope: None },
+                );
             }
         }
-        if let Some(e) = errors.into_iter().next() {
+
+        // Finished OK: mark installed / removed, and drop the live op + failure.
+        let mut refresh_remotes = false;
+        for (target, kind) in finished_ok {
+            self.ops.remove(&target);
+            self.failed.remove(&target);
+            match kind {
+                ActionKind::Install
+                | ActionKind::Update
+                | ActionKind::QosInstall
+                | ActionKind::InstallRef => {
+                    let v = self.app_by_id(&target).map(|a| a.latest_version.clone()).unwrap_or_default();
+                    if !v.is_empty() {
+                        StoreDoc::set_installed(state, &target, &v);
+                    }
+                    // Authoritative refresh of the real installed set + version.
+                    if kind == ActionKind::QosInstall {
+                        self.worker.request(Request::RefreshQos);
+                    } else {
+                        self.worker.request(Request::RefreshInstalled);
+                    }
+                }
+                ActionKind::Remove | ActionKind::QosRemove => {
+                    StoreDoc::remove_installed(state, &target);
+                    self.installed_meta.remove(&target);
+                    self.install_start.remove(&target);
+                }
+                ActionKind::RemoteAdd | ActionKind::RemoteDelete => refresh_remotes = true,
+            }
+        }
+        // Finished FAILED: the honest terminal state. Record the real reason,
+        // drop the op (so no bar keeps filling), surface it as an error toast.
+        // Never mark installed.
+        let mut first_error: Option<String> = None;
+        for (target, reason) in finished_failed {
+            self.ops.remove(&target);
+            self.install_start.remove(&target);
+            self.failed.insert(target.clone(), (reason.clone(), Instant::now()));
+            first_error.get_or_insert_with(|| format!("{}: {reason}", short_target(&target)));
+        }
+
+        if refresh_remotes {
+            self.worker.request(Request::RefreshRemotes);
+        }
+        if let Some(e) = first_error {
             self.action_error = Some((e, Instant::now()));
         }
         self.snapshot = StoreDoc::read_snapshot(state);
@@ -1068,12 +1290,16 @@ impl SoftwareStore {
         out
     }
 
-    /// Look up an app by id across the curated catalog and live entries.
+    /// Look up an app by id across the curated catalog, live entries, and —
+    /// as a last resort — a synthesised entry for an app the system reports
+    /// installed but that isn't in either (so installed apps outside the
+    /// catalog still resolve to a real row).
     fn app_by_id(&self, id: &str) -> Option<AppEntry> {
         self.catalog
             .get(id)
             .cloned()
             .or_else(|| self.live_apps.get(id).cloned())
+            .or_else(|| self.snapshot.installed.contains_key(id).then(|| self.synth_installed_entry(id)))
     }
 
     /// The pool of apps the Browse home renders. On the live path this is the
@@ -1110,10 +1336,27 @@ impl SoftwareStore {
     /// sheet.
     fn confirm_pending_ref(&mut self, state: &mut AutoCommit) {
         let Some(r) = self.pending_ref.take() else { return };
-        // Drive the visible progress bar via the same simulated-install path.
-        self.start_install(state, &r.app_id);
         if self.worker.is_live() {
-            self.worker.request(Request::InstallRef(r.source_path.clone()));
+            // The `.flatpakref` install IS the real operation — a single
+            // streaming action keyed by the app-id, whose real outcome drives
+            // the control (no separate simulated bar).
+            self.failed.remove(&r.app_id);
+            self.ops.insert(
+                r.app_id.clone(),
+                LiveOp {
+                    kind: ActionKind::InstallRef,
+                    fraction: None,
+                    phase: InstallPhase::Downloading,
+                    started: Instant::now(),
+                },
+            );
+            self.worker.request(Request::InstallRef {
+                app_id: r.app_id.clone(),
+                path: r.source_path.clone(),
+            });
+        } else {
+            // Offline / --shots: the deterministic simulated install.
+            self.start_install(state, &r.app_id);
         }
         self.tab = Tab::Browse;
         self.detail = Some(r.app_id.clone());
@@ -1213,7 +1456,7 @@ impl SoftwareStore {
         // Right cluster: nav tabs (wide only), then search pill.
         let pad_r = header.x1 - BODY_PAD_X;
         let tsize = theme.tokens.typography.scale.sm;
-        let up_count = self.catalog.updatable(&self.snapshot).len();
+        let up_count = self.updatable_apps().len();
 
         // Tabs anchored at the right edge: measure widths, then lay out
         // left-to-right from a computed origin. Narrow windows hide the
@@ -1222,35 +1465,36 @@ impl SoftwareStore {
         let tabs_origin = if narrow {
             pad_r
         } else {
-            let inst_count = self.catalog.installed(&self.snapshot).len();
-            let tabs: [(Tab, String); 4] = [
-                (Tab::Browse, "Browse".into()),
-                (Tab::Installed, format!("Installed · {inst_count}")),
-                (Tab::Updates, "Updates".into()),
-                (Tab::Remotes, "Remotes".into()),
+            let inst_count = self.installed_apps().len();
+            // One consistent tab treatment: base label + a trailing count badge
+            // for the tabs that carry a count (Installed = accent, Updates =
+            // warning). Both badges share the same size/spacing so the strip
+            // reads as one clean control.
+            let tabs: [(Tab, &str, Option<(usize, Color)>); 4] = [
+                (Tab::Browse, "Browse", None),
+                (Tab::Installed, "Installed", (inst_count > 0).then_some((inst_count, c.accent[5]))),
+                (Tab::Updates, "Updates", (up_count > 0).then_some((up_count, c.semantic.warning))),
+                (Tab::Remotes, "Remotes", None),
             ];
             let mut widths = Vec::new();
-            for (tab, label) in &tabs {
+            for (_, label, badge) in &tabs {
                 let mut w = draw::measure(tr, label, tsize).0 + 28.0;
-                if *tab == Tab::Updates && up_count > 0 {
+                if badge.is_some() {
                     w += 22.0;
                 }
                 widths.push(w);
             }
             let total_tabs: f64 = widths.iter().sum();
             let origin = pad_r - total_tabs;
-            // Nav tabs via the shared segmented control (pill/tab-strip style,
-            // left-aligned labels). No tab is active while a detail page or a
-            // search is open, so `selected` falls out of range → nothing lit.
             let mut rects: Vec<Rect> = Vec::with_capacity(tabs.len());
             let mut tab_x = origin;
             for w in &widths {
                 rects.push(Rect::new(tab_x, cy - 16.0, tab_x + w, cy + 16.0));
                 tab_x += w;
             }
-            let labels: Vec<&str> = tabs.iter().map(|(_, l)| l.as_str()).collect();
+            let labels: Vec<&str> = tabs.iter().map(|(_, l, _)| *l).collect();
             let selected = if self.detail.is_none() && self.search_query.is_empty() {
-                tabs.iter().position(|(tab, _)| self.tab == *tab).unwrap_or(usize::MAX)
+                tabs.iter().position(|(tab, _, _)| self.tab == *tab).unwrap_or(usize::MAX)
             } else {
                 usize::MAX
             };
@@ -1267,20 +1511,13 @@ impl SoftwareStore {
                     .text_size(tsize)
                     .left_labels(14.0),
             );
-            // Updates badge + hit targets (per-tab extras the strip doesn't own).
-            for (i, (tab, label)) in tabs.iter().enumerate() {
+            // Count badges + hit targets (the per-tab extras the strip doesn't own).
+            for (i, (tab, label, badge)) in tabs.iter().enumerate() {
                 let r = rects[i];
-                let active = selected == i;
-                if *tab == Tab::Updates && up_count > 0 {
-                    let bw = draw::measure(tr, label, tsize).0;
-                    let badge_c = Point::new(r.x0 + 14.0 + bw + 12.0, cy);
-                    let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
-                    let badge = Circle::new(badge_c, 9.0);
-                    scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
-                    let txt = up_count.to_string();
-                    let (nw, nh) = draw::measure(tr, &txt, theme.tokens.typography.scale.xs);
-                    let nfg = if active { c.accent[5] } else { Color::WHITE };
-                    draw::text_w(scene, tr, t, &txt, theme.tokens.typography.scale.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+                if let Some((count, tint)) = badge {
+                    let lw = draw::measure(tr, label, tsize).0;
+                    let center = Point::new(r.x0 + 14.0 + lw + 12.0, cy);
+                    self.draw_count_badge(scene, tr, t, theme, center, *count, *tint, selected == i);
                 }
                 targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
             }
@@ -1354,6 +1591,31 @@ impl SoftwareStore {
             draw::text(scene, tr, t, "✕", 13.0, if hov { c.text_primary } else { c.text_dim }, clr.center().x - xw / 2.0, cy - xh / 2.0, None);
             targets.push(HitTarget { rect: clr, action: Action::ClearSearch });
         }
+    }
+
+    /// A small round count badge, drawn identically everywhere it appears
+    /// (nav tabs, drawer rows) so counts read consistently. `tint` is the
+    /// resting colour (accent for Installed, warning for Updates); an active
+    /// tab inverts to a white chip with the tint as its text.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_count_badge(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        center: Point,
+        count: usize,
+        tint: Color,
+        active: bool,
+    ) {
+        let ty = &theme.tokens.typography.scale;
+        let bg = if active { Color::WHITE } else { tint };
+        scene.fill(vello::peniko::Fill::NonZero, t, bg, None, &Circle::new(center, 9.0));
+        let txt = if count >= 100 { "99+".to_string() } else { count.to_string() };
+        let (nw, nh) = draw::measure(tr, &txt, ty.xs);
+        let fg = if active { tint } else { Color::WHITE };
+        draw::text_w(scene, tr, t, &txt, ty.xs, TextWeight::Bold, fg, center.x - nw / 2.0, center.y - nh / 2.0, None);
     }
 
     /// The hamburger / close toggle shown in the header on narrow windows.
@@ -1433,18 +1695,19 @@ impl SoftwareStore {
         // No app-name wordmark or brand tile: the OS titlebar shows "Software".
         // The drawer leads straight with its nav rows, reclaiming the space.
 
-        // Vertical nav rows.
-        let up_count = self.catalog.updatable(&self.snapshot).len();
-        let inst_count = self.catalog.installed(&self.snapshot).len();
-        let rows: [(Tab, String); 4] = [
-            (Tab::Browse, "Browse".into()),
-            (Tab::Installed, format!("Installed · {inst_count}")),
-            (Tab::Updates, "Updates".into()),
-            (Tab::Remotes, "Remotes".into()),
+        // Vertical nav rows — base labels + the same count badges as the wide
+        // tab strip (Installed = accent, Updates = warning), right-aligned.
+        let up_count = self.updatable_apps().len();
+        let inst_count = self.installed_apps().len();
+        let rows: [(Tab, &str, Option<(usize, Color)>); 4] = [
+            (Tab::Browse, "Browse", None),
+            (Tab::Installed, "Installed", (inst_count > 0).then_some((inst_count, c.accent[5]))),
+            (Tab::Updates, "Updates", (up_count > 0).then_some((up_count, c.semantic.warning))),
+            (Tab::Remotes, "Remotes", None),
         ];
         let row_h = 44.0;
         let mut ry = drawer.y0 + 22.0;
-        for (tab, label) in &rows {
+        for (tab, label, badge) in &rows {
             let r = Rect::new(x, ry, x + w, ry + row_h);
             let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
             let hov = r.contains(self.mouse);
@@ -1460,16 +1723,9 @@ impl SoftwareStore {
             }
             let fg = if active { Color::WHITE } else { c.text_primary };
             draw::text_w(scene, tr, t, label, ty.base, TextWeight::Medium, fg, r.x0 + 14.0, r.center().y - ty.base as f64 / 2.0 - 1.0, None);
-            // Updates count badge on the right of the row.
-            if *tab == Tab::Updates && up_count > 0 {
-                let badge_c = Point::new(r.x1 - 20.0, r.center().y);
-                let bg_badge = if active { Color::WHITE } else { c.semantic.warning };
-                let badge = Circle::new(badge_c, 10.0);
-                scene.fill(vello::peniko::Fill::NonZero, t, bg_badge, None, &badge);
-                let txt = up_count.to_string();
-                let (nw, nh) = draw::measure(tr, &txt, ty.xs);
-                let nfg = if active { c.accent[5] } else { Color::WHITE };
-                draw::text_w(scene, tr, t, &txt, ty.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
+            if let Some((count, tint)) = badge {
+                let center = Point::new(r.x1 - 20.0, r.center().y);
+                self.draw_count_badge(scene, tr, t, theme, center, *count, *tint, active);
             }
             targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
             ry += row_h + 6.0;
@@ -1577,50 +1833,22 @@ impl SoftwareStore {
         hovered: bool,
         action: Action,
     ) {
-        let c = &theme.tokens.colors;
-        let (bg, fg, border) = match style {
-            BtnStyle::Primary => (
-                if hovered { c.accent[4] } else { c.accent[5] },
-                Color::WHITE,
-                None,
-            ),
-            BtnStyle::Neutral => (
-                if hovered { c.surface_white_20 } else { c.surface_white_10 },
-                c.text_primary,
-                Some(c.border_standard),
-            ),
-            BtnStyle::Ghost => (
-                if hovered { c.surface_white_10 } else { Color::TRANSPARENT },
-                c.text_dim,
-                Some(c.border_standard),
-            ),
-            BtnStyle::Danger => (
-                if hovered { alpha(c.semantic.danger, 0.22) } else { Color::TRANSPARENT },
-                c.semantic.danger,
-                Some(alpha(c.semantic.danger, 0.5)),
-            ),
+        // Paint via the shared Button face so every store pill shares the OS
+        // button palette / hover / focus treatment (one consistent control),
+        // then keep our own hit-target for the click.
+        let bstyle = match style {
+            BtnStyle::Primary => ButtonStyle::Primary,
+            BtnStyle::Neutral => ButtonStyle::Neutral,
+            BtnStyle::Ghost => ButtonStyle::Ghost,
+            BtnStyle::Danger => ButtonStyle::Danger,
         };
-        let radius = theme.tokens.radii.full;
-        if bg != Color::TRANSPARENT {
-            draw::fill_round(scene, t, rect, radius, bg);
-        }
-        if let Some(b) = border {
-            draw::stroke_round(scene, t, rect, radius, b, 1.0);
-        }
-        let size = theme.tokens.typography.scale.sm;
-        let (lw, lh) = draw::measure(tr, label, size);
-        draw::text_w(
-            scene,
-            tr,
-            t,
-            label,
-            size,
-            TextWeight::Semibold,
-            fg,
-            rect.center().x - lw / 2.0,
-            rect.center().y - lh / 2.0,
-            None,
-        );
+        let face = ButtonFace::new(rect, label)
+            .style(bstyle)
+            .radius(theme.tokens.radii.full as f64)
+            .text_size(theme.tokens.typography.scale.sm)
+            .weight(TextWeight::Semibold)
+            .hovered(hovered);
+        Button::paint(scene, t, tr, theme, &face);
         targets.push(HitTarget { rect, action });
     }
 
@@ -1643,29 +1871,53 @@ impl SoftwareStore {
                 Self::pill_button(scene, tr, t, theme, targets, rect, "Install", BtnStyle::Primary, rect.contains(self.mouse), Action::Install(app.id.clone()));
             }
             InstallState::Installing(p) => {
-                // Track.
                 let radius = theme.tokens.radii.full;
                 draw::fill_round(scene, t, rect, radius, c.surface_white_10);
-                // Fill.
-                let fill_w = (rect.width() * p).max(rect.height());
-                let fill = Rect::new(rect.x0, rect.y0, rect.x0 + fill_w, rect.y1);
-                draw::fill_round(scene, t, fill, radius, c.accent[5]);
                 let size = theme.tokens.typography.scale.xs;
-                // Prefer the descriptive label, but fall back to a compact
-                // percentage when the control is too narrow (grid cards use a
-                // ~96px pill) so it never overflows into the card body.
-                let full = format!("Installing… {:.0}%", p * 100.0);
-                let (full_w, lh) = draw::measure(tr, &full, size);
-                let (label, lw) = if full_w <= rect.width() - 12.0 {
-                    (full, full_w)
+                if self.op_indeterminate(&app.id) {
+                    // A REAL operation whose percentage flatpak hasn't reported:
+                    // an honest indeterminate marquee, never a fabricated fill.
+                    let elapsed = self.ops.get(&app.id).map(|o| o.started.elapsed().as_secs_f64()).unwrap_or(0.0);
+                    let seg = 0.34;
+                    let travel = 1.0 + seg;
+                    let head = (elapsed / 1.15).fract() * travel - seg;
+                    let a = head.clamp(0.0, 1.0);
+                    let b = (head + seg).clamp(0.0, 1.0);
+                    if b > a {
+                        let sx0 = rect.x0 + rect.width() * a;
+                        let sx1 = rect.x0 + rect.width() * b;
+                        draw::fill_round(scene, t, Rect::new(sx0, rect.y0, sx1, rect.y1), radius, c.accent[5]);
+                    }
+                    let phase = self.ops.get(&app.id).map(|o| o.phase.label()).unwrap_or("Installing");
+                    let label = format!("{phase}…");
+                    let (lw, lh) = draw::measure(tr, &label, size);
+                    draw::text_w(scene, tr, t, &label, size, TextWeight::Semibold, c.text_primary, rect.center().x - lw / 2.0, rect.center().y - lh / 2.0, None);
                 } else {
-                    let short = format!("{:.0}%", p * 100.0);
-                    let (sw, _) = draw::measure(tr, &short, size);
-                    (short, sw)
-                };
-                draw::text_w(scene, tr, t, &label, size, TextWeight::Semibold, Color::WHITE, rect.center().x - lw / 2.0, rect.center().y - lh / 2.0, None);
+                    // Determinate: real parsed fraction (live) or the offline sim.
+                    let fill_w = (rect.width() * p).max(rect.height());
+                    let fill = Rect::new(rect.x0, rect.y0, rect.x0 + fill_w, rect.y1);
+                    draw::fill_round(scene, t, fill, radius, c.accent[5]);
+                    let full = format!("Installing… {:.0}%", p * 100.0);
+                    let (full_w, lh) = draw::measure(tr, &full, size);
+                    let (label, lw) = if full_w <= rect.width() - 12.0 {
+                        (full, full_w)
+                    } else {
+                        let short = format!("{:.0}%", p * 100.0);
+                        let (sw, _) = draw::measure(tr, &short, size);
+                        (short, sw)
+                    };
+                    draw::text_w(scene, tr, t, &label, size, TextWeight::Semibold, Color::WHITE, rect.center().x - lw / 2.0, rect.center().y - lh / 2.0, None);
+                }
                 // Cancel target spans the whole control.
                 targets.push(HitTarget { rect, action: Action::Cancel(app.id.clone()) });
+            }
+            InstallState::Failed(_) => {
+                // The honest terminal state of a failed op: a danger-tinted
+                // Retry — NOT a bar filled to 100%. The real reason is surfaced
+                // in the toast the moment it fails (and inline on the detail
+                // page). Clicking retries the real operation.
+                let label = if rect.width() >= 120.0 { "Failed · Retry" } else { "Retry" };
+                Self::pill_button(scene, tr, t, theme, targets, rect, label, BtnStyle::Danger, rect.contains(self.mouse), Action::Install(app.id.clone()));
             }
             InstallState::Installed => {
                 if allow_remove {
@@ -1714,8 +1966,14 @@ impl SoftwareStore {
         self.icon(scene, tr, t, theme, icon_r, app);
 
         let text_x = icon_r.x1 + 12.0;
+        // Provenance tag top-right (Flatpak / OCI / qOS), so the source is
+        // always honest at a glance; the name ellipsizes to clear it.
+        let (slabel, _) = Self::source_tag(app.source);
+        let stag_w = draw::measure(tr, slabel, theme.tokens.typography.scale.xs).0 + 16.0;
+        self.draw_source_tag(scene, tr, t, theme, rect.x1 - pad - stag_w, rect.y0 + pad, app.source);
         let text_w = rect.x1 - pad - text_x;
-        draw::text_w(scene, tr, t, &app.name, theme.tokens.typography.scale.base, TextWeight::Bold, c.text_primary, text_x, rect.y0 + pad, None);
+        let name = draw::ellipsize(tr, &app.name, theme.tokens.typography.scale.base, text_w - stag_w - 8.0);
+        draw::text_w(scene, tr, t, &name, theme.tokens.typography.scale.base, TextWeight::Bold, c.text_primary, text_x, rect.y0 + pad, None);
         let dev = draw::ellipsize(tr, &app.developer, theme.tokens.typography.scale.xs, text_w);
         draw::text(scene, tr, t, &dev, theme.tokens.typography.scale.xs, c.text_dim, text_x, rect.y0 + pad + 20.0, None);
 
@@ -1791,38 +2049,10 @@ impl SoftwareStore {
         targets.insert(0, HitTarget { rect, action: Action::OpenDetail(app.id.clone()) });
     }
 
-    /// Draw one category chip at `*x`, advancing `*x` past it.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_chip(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        targets: &mut Vec<HitTarget>,
-        x: &mut f64,
-        y: f64,
-        label: &str,
-        cat: Option<Category>,
-    ) {
-        let c = &theme.tokens.colors;
-        let size = theme.tokens.typography.scale.sm;
-        let w = draw::measure(tr, label, size).0 + 28.0;
-        let r = Rect::new(*x, y, *x + w, y + 32.0);
-        let active = self.active_category == cat;
-        let hov = r.contains(self.mouse);
-        let bg = if active { c.accent[5] } else if hov { c.surface_white_10 } else { c.surfaces.raised };
-        draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
-        if !active {
-            draw::stroke_round(scene, t, r, theme.tokens.radii.full, c.border_standard, 1.0);
-        }
-        let fg = if active { Color::WHITE } else { c.text_dim };
-        draw::text_w(scene, tr, t, label, size, TextWeight::Medium, fg, r.x0 + 14.0, r.center().y - size as f64 / 2.0 - 1.0, None);
-        targets.push(HitTarget { rect: r, action: Action::SetCategory(cat) });
-        *x += w + 10.0;
-    }
-
-    /// Category chip row. Returns the y after the row.
+    /// Category filter row. Single-select, so it uses the **same** shared
+    /// segmented pill treatment as the primary nav tabs — one consistent
+    /// control across the whole store rather than a second bespoke chip look.
+    /// Returns the y after the row.
     fn draw_chips(
         &self,
         scene: &mut Scene,
@@ -1833,12 +2063,64 @@ impl SoftwareStore {
         x0: f64,
         y: f64,
     ) -> f64 {
+        let size = theme.tokens.typography.scale.sm;
+        let cats: Vec<Option<Category>> =
+            std::iter::once(None).chain(Category::ALL.iter().map(|c| Some(*c))).collect();
+        let labels: Vec<&str> =
+            std::iter::once("All").chain(Category::ALL.iter().map(|c| c.label())).collect();
+
+        // Equal internal padding so every pill sizes to its label; small gaps
+        // between them keep the row readable (the pill style paints no border,
+        // matching the nav tabs).
+        let mut rects: Vec<Rect> = Vec::with_capacity(labels.len());
         let mut x = x0;
-        self.draw_chip(scene, tr, t, theme, targets, &mut x, y, "All", None);
-        for cat in Category::ALL {
-            self.draw_chip(scene, tr, t, theme, targets, &mut x, y, cat.label(), Some(cat));
+        for label in &labels {
+            let w = draw::measure(tr, label, size).0 + 28.0;
+            rects.push(Rect::new(x, y, x + w, y + 32.0));
+            x += w + 8.0;
+        }
+        let selected = cats.iter().position(|c| *c == self.active_category).unwrap_or(usize::MAX);
+        let hovered = rects.iter().position(|r| r.contains(self.mouse));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(theme.tokens.radii.full as f64)
+                .text_size(size),
+        );
+        for (i, cat) in cats.iter().enumerate() {
+            targets.push(HitTarget { rect: rects[i], action: Action::SetCategory(*cat) });
         }
         y + 32.0
+    }
+
+    /// A compact provenance tag (`Flatpak` / `OCI` / `qOS`) so the source of
+    /// every app is honest at a glance on cards and rows. qOS-native apps get
+    /// the accent tint; external packages a neutral one.
+    fn source_tag(source: Source) -> (&'static str, bool) {
+        match source {
+            Source::Flatpak => ("Flatpak", false),
+            Source::Oci => ("OCI", false),
+            Source::QosNative => ("qOS", true),
+        }
+    }
+
+    /// Draw a small source pill at `(x, y)` (top-left origin). Returns its width.
+    fn draw_source_tag(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, x: f64, y: f64, source: Source) -> f64 {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let (label, accent) = Self::source_tag(source);
+        let tint = if accent { c.accent[5] } else { c.text_dim };
+        let lw = draw::measure(tr, label, ty.xs).0;
+        let w = lw + 16.0;
+        let r = Rect::new(x, y, x + w, y + 18.0);
+        draw::fill_round(scene, t, r, theme.tokens.radii.full, alpha(tint, 0.16));
+        draw::text_w(scene, tr, t, label, ty.xs, TextWeight::Semibold, mix(c.text_primary, tint, 0.5), r.x0 + 8.0, r.center().y - ty.xs as f64 / 2.0 - 1.0, None);
+        w
     }
 
     /// Section header text. Returns y after it.
@@ -2044,6 +2326,14 @@ impl SoftwareStore {
             let uw = draw::measure(tr, &upd, ty.xs).0;
             draw::text_w(scene, tr, t, &upd, ty.xs, TextWeight::Medium, c.semantic.warning, btn.x1 - uw, meta_y, None);
         }
+        // Honest failure line under the action, carrying the real reason.
+        if let InstallState::Failed(reason) = self.live_state(app) {
+            let msg = format!("Install failed — {reason}");
+            let avail = (btn.x1 - x0).max(120.0);
+            let msg = draw::ellipsize(tr, &msg, ty.xs, avail);
+            let fw = draw::measure(tr, &msg, ty.xs).0;
+            draw::text_w(scene, tr, t, &msg, ty.xs, TextWeight::Medium, c.semantic.danger, btn.x1 - fw, meta_y, None);
+        }
 
         let mut y = top + icon_sz + 36.0;
 
@@ -2185,8 +2475,15 @@ impl SoftwareStore {
                 format!("v{}   ·   {}", app.latest_version, app.size_label())
             }
         } else {
+            // Installed row: version · size (when known) · honest source.
             let installed_v = self.snapshot.installed.get(&app.id).cloned().unwrap_or_else(|| app.latest_version.clone());
-            format!("v{}   ·   {}   ·   {}", installed_v, app.size_label(), app.category.label())
+            let (slabel, _) = Self::source_tag(app.source);
+            let mut parts = vec![format!("v{installed_v}")];
+            if app.size_mib > 0.0 {
+                parts.push(app.size_label());
+            }
+            parts.push(slabel.to_string());
+            parts.join("   ·   ")
         };
         let sub_color = if show_update_arrow { mix(c.text_dim, c.semantic.warning, 0.5) } else { c.text_dim };
         draw::text(scene, tr, t, &sub, ty.sm, sub_color, tx, rect.center().y + 2.0, None);
@@ -2213,7 +2510,7 @@ impl SoftwareStore {
         let width = body.width() - BODY_PAD_X * 2.0;
         let mut y = body.y0 + BODY_PAD_TOP - self.scroll;
 
-        let installed = self.catalog.installed(&self.snapshot);
+        let installed = self.installed_apps();
         y = self.section(scene, tr, t, theme, x0, y, &format!("Installed apps · {}", installed.len()));
         y += 12.0;
 
@@ -3009,8 +3306,10 @@ impl Widget for SoftwareStore {
 
         // One-time default seed so a fresh document (and the --shots
         // path) is populated: a few installed apps, two a version behind
-        // (Updates tab), and one mid-install (progress bar visible).
-        if !StoreDoc::is_seeded(state) {
+        // (Updates tab), and one mid-install (progress bar visible). **Offline
+        // only** — the live app never seeds fake installs; its installed set is
+        // the real one from the probe + `qos-install list` + `flatpak list`.
+        if !self.worker.is_live() && !StoreDoc::is_seeded(state) {
             let current = [
                 ("org.mozilla.firefox", "129.0"),
                 ("md.obsidian.Obsidian", "1.6.7"),
@@ -3061,6 +3360,11 @@ impl Widget for SoftwareStore {
             self.install_start.remove(&id);
         }
         self.finalize_pending = false;
+
+        // Expire stale failure markers so a failed control eventually returns to
+        // its normal affordance (the real reason was already surfaced as a
+        // toast). A fresh failure — e.g. staged for a `--shots` frame — stays.
+        self.failed.retain(|_, (_, at)| at.elapsed() < FAILED_LINGER);
 
         self.snapshot = StoreDoc::read_snapshot(state);
 
@@ -3436,6 +3740,7 @@ impl Widget for SoftwareStore {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || !self.install_start.is_empty()
+            || !self.ops.is_empty()
             || self.toast.is_some()
             || self.worker.has_inflight()
             || self.image_store.pending() > 0
@@ -3454,6 +3759,7 @@ impl Widget for SoftwareStore {
         // worker channel each frame until results paint. Without this, an
         // async result that lands between frames would never be shown.
         !self.install_start.is_empty()
+            || !self.ops.is_empty()
             || self.toast.is_some()
             || self.worker.has_inflight()
             || self.image_store.pending() > 0
@@ -4157,5 +4463,132 @@ mod tests {
         ok.sync(&mut doc, &automerge::ROOT);
         assert!(ok.flatpak_available);
         assert_eq!(ok.banner_h(), 0.0);
+    }
+
+    // ---- Honest live path: real progress, real failure, real installed set ----
+
+    /// A live store (the real branches) fed messages through the test-live
+    /// worker inbox, so the production folding logic runs without a subprocess.
+    fn live_store() -> (SoftwareStore, AutoCommit) {
+        let mut app = SoftwareStore::with_worker(None, Worker::test_live());
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    fn gimp_entry() -> AppEntry {
+        AppEntry::flathub_stub("org.gimp.GIMP", "GIMP", "", "", Category::Graphics)
+    }
+
+    #[test]
+    fn live_install_failure_shows_failed_and_is_not_marked_installed() {
+        // The headline bug: a failed install must read FAILED with the real
+        // reason and must NOT be reported installed / at 100%.
+        let (mut app, mut doc) = live_store();
+        app.start_install(&mut doc, "org.gimp.GIMP");
+        assert!(app.ops.contains_key("org.gimp.GIMP"), "a live op is tracked while running");
+
+        app.worker.inject(WorkerMsg::ActionDone {
+            target: "org.gimp.GIMP".into(),
+            kind: ActionKind::Install,
+            outcome: crate::flatpak::ActionOutcome::Failed(
+                "error: No such ref 'app/org.gimp.GIMP/x86_64/stable' in remote flathub".into(),
+            ),
+        });
+        app.sync(&mut doc, &automerge::ROOT);
+
+        // No lingering op → no bar keeps filling; not installed.
+        assert!(!app.ops.contains_key("org.gimp.GIMP"), "the op is dropped, not left filling a bar");
+        assert!(!app.snapshot.installed.contains_key("org.gimp.GIMP"), "a FAILED install is not installed");
+        match app.live_state(&gimp_entry()) {
+            InstallState::Failed(reason) => assert!(reason.contains("No such ref"), "carries the real reason: {reason}"),
+            other => panic!("a failed install must read Failed, got {other:?}"),
+        }
+        // The real reason is surfaced (error toast), not a silent success.
+        assert!(
+            app.action_error.as_ref().map(|(m, _)| m.contains("No such ref")).unwrap_or(false),
+            "the failure reason is surfaced to the user",
+        );
+    }
+
+    #[test]
+    fn live_progress_reflects_the_real_parsed_fraction_not_a_wall_clock() {
+        let (mut app, mut doc) = live_store();
+        app.start_install(&mut doc, "org.gimp.GIMP");
+        // Until a real sample arrives the op is indeterminate — never a faked %.
+        assert!(app.op_indeterminate("org.gimp.GIMP"), "no fraction is invented before a real sample");
+
+        app.worker.inject(WorkerMsg::ActionProgress {
+            target: "org.gimp.GIMP".into(),
+            kind: ActionKind::Install,
+            progress: crate::flatpak::ActionProgress {
+                fraction: Some(0.42),
+                phase: Some(InstallPhase::Downloading),
+            },
+        });
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert!(!app.op_indeterminate("org.gimp.GIMP"), "a real sample resolves the indeterminate state");
+        assert_eq!(
+            app.live_state(&gimp_entry()),
+            InstallState::Installing(0.42),
+            "the bar shows the REAL parsed fraction, not a wall-clock animation",
+        );
+    }
+
+    #[test]
+    fn installed_detection_lists_apps_across_both_installations() {
+        // The "Installed · 0" fix: the installed set is the real one from
+        // `flatpak list` across user + system installations, even with an
+        // empty browse catalog (the live app).
+        let (mut app, mut doc) = live_store();
+        assert!(app.catalog.is_empty(), "live catalog is empty; nothing seeded");
+        app.worker.inject(WorkerMsg::Installed(vec![
+            crate::flatpak::InstalledApp { id: "org.gimp.GIMP".into(), name: "GIMP".into(), version: "3.0.2".into(), origin: "flathub".into(), scope: Scope::User },
+            crate::flatpak::InstalledApp { id: "org.mozilla.firefox".into(), name: "Firefox".into(), version: "129.0".into(), origin: "flathub".into(), scope: Scope::System },
+        ]));
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let installed = app.installed_apps();
+        assert_eq!(installed.len(), 2, "the real installed set is shown, not Installed · 0");
+        let ids: Vec<&str> = installed.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.contains(&"org.gimp.GIMP"), "user-installation app is listed");
+        assert!(ids.contains(&"org.mozilla.firefox"), "system-installation app is listed");
+        // Real names flow through (not just ids), even outside the catalog.
+        assert!(installed.iter().any(|a| a.name == "Firefox"));
+    }
+
+    #[test]
+    fn installed_qpkg_apps_appear_in_the_installed_set_as_qos_native() {
+        let (mut app, mut doc) = live_store();
+        app.worker.inject(WorkerMsg::QosInstalled(vec![crate::qpkg::QpkgApp {
+            id: "dev.qos.notes".into(),
+            name: "Notes".into(),
+            version: "0.3.1".into(),
+        }]));
+        app.sync(&mut doc, &automerge::ROOT);
+
+        let installed = app.installed_apps();
+        let notes = installed
+            .iter()
+            .find(|a| a.id == "dev.qos.notes")
+            .expect("the installed qOS app appears in the Installed set");
+        assert!(notes.is_qos_native(), "it is tagged qOS-native — routed through the qpkg path, not flatpak");
+    }
+
+    #[test]
+    fn live_qos_add_routes_through_the_qos_packaging_path() {
+        // Clicking Add on a qOS-native app dispatches the real qpkg op and
+        // tracks it as a live op tagged QosInstall (not a flatpak install).
+        let (mut app, mut doc) = live_store();
+        // Seed a qOS-native entry into the live set so app_by_id resolves it.
+        let mut q = AppEntry::flathub_stub("dev.qos.board", "Board", "qOS", "", Category::Productivity);
+        q.source = Source::QosNative;
+        app.live_apps.insert("dev.qos.board".into(), q);
+
+        app.apply(Action::QosAdd("dev.qos.board".into()), &mut doc);
+        let op = app.ops.get("dev.qos.board").expect("a live op is tracked for the qOS add");
+        assert_eq!(op.kind, ActionKind::QosInstall, "a qOS app installs through the qpkg path, not flatpak");
     }
 }
