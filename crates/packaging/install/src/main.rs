@@ -1018,6 +1018,10 @@ fn update(
     trust: TrustFlags,
     runtime: RuntimeFlags,
 ) -> Result<(), Error> {
+    // Updating writes, so the targets come from the writable store. The
+    // merged view is consulted only to tell "no such package" from
+    // "that one came with the image": a preinstalled app is replaced by
+    // installing your own build of it, which is a different command.
     let reg = load_registry()?;
     let targets: Vec<RegistryEntry> = match pkg_id {
         Some(id) => vec![
@@ -1025,7 +1029,16 @@ fn update(
                 .iter()
                 .find(|e| e.id == id)
                 .cloned()
-                .ok_or_else(|| Error::NotInstalled(id.into()))?,
+                .ok_or_else(|| {
+                    if load_merged_registry()
+                        .map(|rows| rows.iter().any(|(s, e)| e.id == id && !s.is_writable()))
+                        .unwrap_or(false)
+                    {
+                        Error::Preinstalled(id.into())
+                    } else {
+                        Error::NotInstalled(id.into())
+                    }
+                })?,
         ],
         None => {
             if from.is_some() {
