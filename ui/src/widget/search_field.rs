@@ -60,6 +60,10 @@ pub struct SearchField {
     /// Latched when the (non-editable) launcher pill is activated;
     /// drained by the host via [`SearchField::take_palette_request`].
     palette_requested: bool,
+    /// Set once [`apply_layout_external`](Self::apply_layout_external) is used:
+    /// the host hand-places the field and passes a throwaway taffy tree, so
+    /// `handle_event` must not look the inner input up via taffy.
+    standalone: bool,
 }
 
 impl SearchField {
@@ -77,6 +81,7 @@ impl SearchField {
             last_cursor: Point::ZERO,
             opens_palette: false,
             palette_requested: false,
+            standalone: false,
         }
     }
 
@@ -99,6 +104,16 @@ impl SearchField {
     /// Whether this field is a palette launcher (vs. an inline filter).
     pub fn is_palette_launcher(&self) -> bool {
         self.opens_palette
+    }
+
+    /// Mark this field as hand-placed by an immediate-mode host (which drives
+    /// it via [`apply_layout_external`](Self::apply_layout_external) and routes
+    /// events with a throwaway taffy tree). Set this at construction so the
+    /// field is safe to route events to even before its first draw. Retained
+    /// hosts never call this.
+    pub fn standalone(mut self) -> Self {
+        self.standalone = true;
+        self
     }
 
     /// One-shot read: `true` exactly once after the launcher pill was
@@ -174,6 +189,23 @@ impl SearchField {
     /// Whether the query is empty.
     pub fn is_empty(&self) -> bool {
         self.input.value().is_empty()
+    }
+
+    /// Whether the embedded input currently holds focus — lets a host that
+    /// paints its own surrounding chrome (focus ring, placeholder gating) read
+    /// the field's focus state instead of tracking a parallel boolean.
+    pub fn is_focused(&self) -> bool {
+        self.input.is_focused()
+    }
+
+    /// Position the field at an explicit rect, for immediate-mode hosts that
+    /// hand-place their widgets (mirrors [`TextInput::apply_layout_external`]).
+    /// The inner text input is inset by the magnifier + clear-button gutters.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.standalone = true;
+        self.rect = rect;
+        let inner = Rect::new(rect.x0 + ICON_GUTTER, rect.y0, rect.x1 - CLEAR_GUTTER, rect.y1);
+        self.input.apply_layout_external(inner);
     }
 
     /// One-shot read of query changes since the last call — typing **and**
@@ -397,7 +429,17 @@ impl Widget for SearchField {
                 return;
             }
         }
-        let child_node = taffy.children(node_id).unwrap()[0];
+        // Route to the inner input. Retained hosts pass a taffy tree whose
+        // `node_id` has the input as its first child. Immediate-mode hosts
+        // (that hand-place the field via `apply_layout_external`) pass a
+        // throwaway tree where looking the child up would panic, so pass
+        // `node_id` straight through — the input ignores taffy and only uses
+        // the node id for focus-target identity, which those hosts sink.
+        let child_node = if self.standalone {
+            node_id
+        } else {
+            taffy.children(node_id).unwrap()[0]
+        };
         self.input
             .handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
     }

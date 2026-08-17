@@ -116,7 +116,7 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 | pdf_viewer | find query | `app.rs:406 query` → `app_events.rs:918 push(ch)` | MIGRATE → `SearchField` | S |
 | imager | "type device name to arm" confirm | `app.rs:104 confirm` → `:1421 push(c)` | MIGRATE → `TextInput::local` (paste-safety caveat) | S |
 | vpn ✅ | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | **DONE** → `TextInput::local` ×2 (plain chrome inside app boxes; Tab cycles focus) | M |
-| monitor | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | MIGRATE → `SearchField` | M |
+| monitor ✅ | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | **DONE** → `SearchField` (real caret/selection/clipboard/clear; `filter` kept as the lower-cased mirror the row filter reads) | M |
 | logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE → `SearchField` (mirror to doc) | M |
 | hex_editor | find search | `view.rs:69 search_query` → `:1285 push_str` | MIGRATE → `SearchField` (adds missing caret) | M |
 | hex_editor | go-to offset | `view.rs:77 goto_query` → `:1316 push_str` | MIGRATE → `TextInput::local` (hex parse stays; **not** `NumberInput`) | S |
@@ -150,6 +150,12 @@ app, or a non-plain-text field):**
 **11 apps already fully on the shared widget** (incl. the done halves of the 6
 partially-migrated apps), **18 surfaces across 15 apps still hand-rolled and in
 scope to MIGRATE**, **9 genuine KEEP-with-reason** engines/fields.
+
+**Shared-widget extensions made this round (extend, don't fork):** `SearchField`
+gained `apply_layout_external(rect)` + `is_focused()` + a `standalone()` marker so
+immediate-mode canvas apps can hand-place it and route events with a throwaway
+taffy tree (its `handle_event` no longer unwraps `taffy.children` in that mode) —
+the same embedding contract `TextInput` already offered. First consumer: monitor.
 
 ### Pure non-adoption — a fitting widget already exists (do these first)
 

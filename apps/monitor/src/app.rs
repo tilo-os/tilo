@@ -30,7 +30,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, SearchField, Text, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -262,8 +262,12 @@ pub struct MonitorApp {
     tab: Tab,
     sort_key: SortKey,
     sort_desc: bool,
+    /// Lower-cased process filter, mirrored from `search` each time its query
+    /// changes; the row filter reads this.
     filter: String,
-    search_focused: bool,
+    /// The shared search field (magnifier pill; real caret / selection /
+    /// clipboard / clear button). Source of truth for the filter text + focus.
+    search: SearchField,
     selected_pid: Option<u32>,
     scroll_off: f32,
     /// Horizontal scroll of the process table, in logical px, when its
@@ -415,7 +419,10 @@ impl MonitorApp {
             sort_key: SortKey::Cpu,
             sort_desc: true,
             filter: String::new(),
-            search_focused: false,
+            search: SearchField::new()
+                .standalone()
+                .with_id("monitor_search")
+                .with_placeholder("Search processes…"),
             selected_pid,
             scroll_off: 0.0,
             table_scroll_x: 0.0,
@@ -1819,26 +1826,13 @@ impl MonitorApp {
             let right = (search_row.x0 + SEARCH_PREF_W).min(max_right);
             Rect::new(search_row.x0, search_row.y0, right, search_row.y1)
         };
-        let radius = search_r.height() / 2.0;
-        charts::fill_rrect(scene, t, search_r, radius, c.surfaces.base);
-        let border = if self.search_focused { c.border_focus } else { c.border_standard };
-        charts::stroke_rrect(scene, t, search_r, radius, border, if self.search_focused { 1.6 } else { 1.0 });
-        let icon_r = Rect::new(search_r.x0 + 10.0, search_r.center().y - 8.0, search_r.x0 + 26.0, search_r.center().y + 8.0);
-        icons::draw_icon(scene, t, icon_r, Icon::Search, c.text_dim, 1.6);
-        let tx = icon_r.x1 + 8.0;
-        let ty = search_r.center().y - fs as f64 / 2.0 - 1.0;
-        if self.filter.is_empty() && !self.search_focused {
-            let placeholder = Self::truncate(tr, "Search processes…", fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(scene, &placeholder, fs, c.text_dim, t * Affine::translate((tx, ty)), None);
-        } else {
-            let shown = Self::truncate(tr, &self.filter, fs, search_r.x1 - tx - 12.0);
-            tr.draw_text(scene, &shown, fs, c.text_primary, t * Affine::translate((tx, ty)), None);
-            if self.search_focused {
-                let (cw, _) = tr.measure(&shown, fs, None);
-                let caret_x = tx + cw as f64 + 1.0;
-                scene.stroke(&Stroke::new(1.5), t, c.accent[5], None, &Line::new((caret_x, search_r.y0 + 8.0), (caret_x, search_r.y1 - 8.0)));
-            }
-        }
+        // The shared SearchField owns the pill chrome, magnifier, placeholder,
+        // caret/selection/clipboard, and clear button. Monitor's search is not
+        // a collaborative surface, so it draws with empty presence (matching the
+        // app's own presence-free draw).
+        let presence = PresenceCtx::empty();
+        self.search.apply_layout_external(search_r);
+        self.search.draw(scene, t, tr, theme, &presence);
         self.hit.search = search_r;
 
         // Count label centred in the slack between the search box and the pill
@@ -2410,9 +2404,11 @@ impl MonitorApp {
             return;
         }
 
-        // Lose search focus unless the search box itself is clicked.
+        // Lose search focus unless the search box itself is clicked (clicks
+        // inside the box are routed to the SearchField in `handle_event`, which
+        // focuses it and positions the caret).
         let clicked_search = self.hit.search.contains(p);
-        self.search_focused = clicked_search;
+        self.search.set_focused(clicked_search);
 
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
@@ -2589,7 +2585,7 @@ impl MonitorApp {
         self.clamp_scroll();
     }
 
-    fn on_key(&mut self, key: &Key, text: Option<&str>, ctrl: bool, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
+    fn on_key(&mut self, key: &Key, _text: Option<&str>, ctrl: bool, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
         // Global-search seam: leave Ctrl+K (and Ctrl+/) untouched so the
         // forthcoming shared global-search framework can claim it. We do NOT
         // build a bespoke search here — just refuse to swallow the chord so
@@ -2636,40 +2632,10 @@ impl MonitorApp {
         // The stop-confirmation modal is handled in `handle_event` before
         // dispatch reaches here, so `on_key` never runs with a confirm pending.
 
-        // Search editing.
-        if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
-                    self.search_focused = false;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.filter.pop();
-                    self.scroll_off = 0.0;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.filter.push(' ');
-                    *handled = true;
-                }
-                _ => {
-                    if let Some(txt) = text {
-                        let mut pushed = false;
-                        for ch in txt.chars() {
-                            if !ch.is_control() {
-                                self.filter.push(ch);
-                                pushed = true;
-                            }
-                        }
-                        if pushed {
-                            self.scroll_off = 0.0;
-                            *handled = true;
-                        }
-                    }
-                }
-            }
-            return;
-        }
+        // Search editing while the field is focused is handled in
+        // `handle_event`, which routes keystrokes to the shared SearchField
+        // (and never reaches `on_key` for those). So here we only handle the
+        // global keys below.
 
         // Global keys.
         match key {
@@ -2732,7 +2698,7 @@ impl MonitorApp {
                     "2" => self.tab = Tab::Resources,
                     "/" => {
                         self.tab = Tab::Processes;
-                        self.search_focused = true;
+                        self.search.set_focused(true);
                     }
                     "c" | "C" => self.set_sort(SortKey::Cpu),
                     "m" | "M" => self.set_sort(SortKey::Mem),
@@ -2974,8 +2940,8 @@ impl Widget for MonitorApp {
         path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         // A pending stop confirmation is modal: while it's up the shared
         // dialog captures every event (typing, clicks, Esc) and nothing leaks
@@ -2987,6 +2953,15 @@ impl Widget for MonitorApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Let the search field track hover (so a subsequent press can
+                // focus it and place the caret) and follow a drag-select.
+                let mut sink = None;
+                let mut h = false;
+                self.search.handle_event(event, scale_factor, modifiers, doc, path, &mut h, &mut sink, node_id, taffy);
+                if let Some(q) = self.search.take_dirty() {
+                    self.filter = q;
+                    self.scroll_off = 0.0;
+                }
                 // A live scrollbar thumb drag follows the cursor.
                 if self.scroll_drag.is_some() {
                     self.apply_scroll_drag(self.last_cursor);
@@ -3041,7 +3016,22 @@ impl Widget for MonitorApp {
                 ..
             } => {
                 let p = self.last_cursor;
-                self.on_click(p, doc, path, handled);
+                // A click inside the search pill goes to the shared field
+                // (caret placement, clear button, focus).
+                if self.hit.search.contains(p) {
+                    let mut sink = None;
+                    self.search.handle_event(event, scale_factor, modifiers, doc, path, handled, &mut sink, node_id, taffy);
+                    // Immediate-mode hosts drive focus explicitly (the field
+                    // only requests focus via the sunk focus_target).
+                    self.search.set_focused(true);
+                    if let Some(q) = self.search.take_dirty() {
+                        self.filter = q;
+                        self.scroll_off = 0.0;
+                    }
+                    *handled = true;
+                } else {
+                    self.on_click(p, doc, path, handled);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -3056,6 +3046,11 @@ impl Widget for MonitorApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Let the search field end any drag-select it started (a plain
+                // click is a press+release, so the field must see the release).
+                let mut sink = None;
+                let mut h = false;
+                self.search.handle_event(event, scale_factor, modifiers, doc, path, &mut h, &mut sink, node_id, taffy);
                 // End any scrollbar thumb drag, otherwise resolve a pending
                 // interval-pill press (quick release cycles; a held release
                 // that already opened the popover leaves it up).
@@ -3068,6 +3063,26 @@ impl Widget for MonitorApp {
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
             {
+                // While the search field holds focus, keystrokes edit it: text,
+                // caret motion, selection, and Ctrl+C/V/X all go to the shared
+                // SearchField; Enter/Escape blur it. Nothing reaches on_key.
+                if self.search.is_focused() {
+                    match &ke.logical_key {
+                        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => {
+                            self.search.set_focused(false);
+                            *handled = true;
+                        }
+                        _ => {
+                            let mut sink = None;
+                            self.search.handle_event(event, scale_factor, modifiers, doc, path, handled, &mut sink, node_id, taffy);
+                            if let Some(q) = self.search.take_dirty() {
+                                self.filter = q;
+                                self.scroll_off = 0.0;
+                            }
+                        }
+                    }
+                    return;
+                }
                 let text = ke.text.as_ref().map(|s| s.as_str());
                 let ctrl = modifiers.state().control_key();
                 let prev_tab = self.tab;
@@ -3358,7 +3373,7 @@ mod tests {
         let slash = Key::Character("/".into());
         let mut handled2 = false;
         a.on_key(&slash, Some("/"), false, &mut doc, &root, &mut handled2);
-        assert!(handled2 && a.search_focused, "bare / still focuses local search");
+        assert!(handled2 && a.search.is_focused(), "bare / still focuses local search");
     }
 
     /// Switching tabs via the production click path resets the page scroll so
@@ -3869,6 +3884,23 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(x, y),
         }
     }
+    /// A synthetic printable keypress carrying `text` (what a focused field
+    /// actually inserts).
+    fn synth_char(s: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(s.into());
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(s.into());
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
     fn synth_press() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: winit::event::DeviceId::dummy(),
@@ -4191,39 +4223,37 @@ mod tests {
         assert!(b.model.processes.iter().any(|p| p.pid == pid2), "Escape cancelled the kill");
     }
 
-    /// Clicking the search box focuses it, and the keyboard editing path
-    /// (chars, Space, Backspace, Escape) drives the real filter.
+    /// Clicking the search box focuses the shared SearchField, and the real
+    /// keyboard path (chars, Backspace, Escape) drives the filter through it.
     #[test]
     fn search_click_focus_and_keyboard_editing_filters() {
         let mut a = app();
-        a.hit.search = Rect::new(0.0, 0.0, 300.0, 30.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
-        assert!(h && a.search_focused, "clicking the search box focuses it");
+        // A real draw lays out the search pill + the embedded field's rect.
+        draw_at(&mut a, 1280.0, 800.0);
+        let sc = a.hit.search.center();
+        // Click inside the pill → routed to the field, which focuses.
+        dispatch_ev(&mut a, &synth_cursor(sc.x, sc.y));
+        dispatch_ev(&mut a, &synth_press());
+        assert!(a.search.is_focused(), "clicking the search box focuses the shared field");
+        // Type through the production keyboard path — each key edits the field.
         for ch in "brow".chars() {
-            let s = ch.to_string();
-            let mut hk = false;
-            a.on_key(&Key::Character(s.as_str().into()), Some(s.as_str()), false, &mut doc, &root, &mut hk);
-            assert!(hk, "typed char handled");
+            dispatch_ev(&mut a, &synth_char(&ch.to_string()));
         }
-        assert_eq!(a.filter, "brow");
-        let mut hsp = false;
-        a.on_key(&Key::Named(NamedKey::Space), None, false, &mut doc, &root, &mut hsp);
-        assert_eq!(a.filter, "brow ");
-        let mut hbs = false;
-        a.on_key(&Key::Named(NamedKey::Backspace), None, false, &mut doc, &root, &mut hbs);
-        assert_eq!(a.filter, "brow");
+        assert_eq!(a.search.value(), "brow", "typed text lands in the shared field");
+        assert_eq!(a.filter, "brow", "the filter mirror tracks the field value");
+        // Backspace erases through the field's real caret.
+        dispatch_ev(&mut a, &synth_key(NamedKey::Backspace));
+        assert_eq!(a.search.value(), "bro");
+        assert_eq!(a.filter, "bro");
         assert!(
-            a.visible_processes().iter().all(|p| p.name.to_lowercase().contains("brow")
-                || p.user.to_lowercase().contains("brow")
-                || p.pid.to_string().contains("brow")),
+            a.visible_processes().iter().all(|p| p.name.to_lowercase().contains("bro")
+                || p.user.to_lowercase().contains("bro")
+                || p.pid.to_string().contains("bro")),
             "typed filter actually narrows the list"
         );
-        let mut hesc = false;
-        a.on_key(&Key::Named(NamedKey::Escape), None, false, &mut doc, &root, &mut hesc);
-        assert!(hesc && !a.search_focused, "Escape leaves the search box");
+        // Escape blurs the field.
+        dispatch_ev(&mut a, &synth_key(NamedKey::Escape));
+        assert!(!a.search.is_focused(), "Escape leaves the search box");
     }
 
     /// On a narrow window, selecting a row through the real click path pushes
