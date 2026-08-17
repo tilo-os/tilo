@@ -23,6 +23,7 @@ default-members = [
     "crates/system/desktop-entry",
     "crates/system/power",
     "crates/system/qos-rollback",
+    "crates/system/qos-privileged-broker",
     "crates/system/qos-cli",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
@@ -125,6 +126,7 @@ default-members = [
 ]
 members = [
     "crates/system/qos-rollback",
+    "crates/system/qos-privileged-broker",
     "crates/system/qos-cli",
     "crates/system/tinker",
     "crates/system/swipe",
