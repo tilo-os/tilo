@@ -146,6 +146,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--probe-gst` (which proves the *decode*) for eyeballing the on-screen
         // player without a network or a live decoder.
         let play_demo = args.iter().any(|a| a == "--play-demo");
+        // `--gesture`: the playing watch page with the volume gesture indicator
+        // revealed, so the still captures the touch-gesture overlay.
+        let gesture = args.iter().any(|a| a == "--gesture");
         // `--empty`: the cold-start loading skeleton (no fabricated sample).
         let empty_loading = args.iter().any(|a| a == "--empty");
         // Seed the app with the render viewport so the single offscreen frame
@@ -160,6 +163,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Ctrl+K overlay with live results.
             let q = parse_palette_query_arg(&args).unwrap_or_else(|| "rust".to_string());
             app = app.with_palette_open_for_test(&q);
+        } else if gesture {
+            app = app.with_gesture_demo_for_test();
         } else if play_demo {
             app = app.with_playing_demo_for_test();
         } else if narrow {
@@ -1893,6 +1898,10 @@ fn parse_route_arg(args: &[String]) -> Option<tube::model::Route> {
         _ => {
             if let Some(id) = spec.strip_prefix("watch:") {
                 Route::Watch(id.to_string())
+            } else if let Some(id) = spec.strip_prefix("channel:") {
+                Route::Channel(id.to_string())
+            } else if let Some(id) = spec.strip_prefix("playlist:") {
+                Route::Playlist(id.to_string())
             } else if let Some(q) = spec.strip_prefix("search:") {
                 Route::Search(q.to_string())
             } else {

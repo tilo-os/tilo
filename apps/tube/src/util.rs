@@ -107,6 +107,60 @@ pub fn clock(secs: f64) -> String {
     format!("{m}:{s:02}")
 }
 
+/// A compact relative-time label from an age in seconds, YouTube-style:
+/// `just now`, `3 minutes ago`, `5 hours ago`, `yesterday`, `3 days ago`,
+/// `2 weeks ago`, `4 months ago`, `2 years ago`. Real relative formatting for a
+/// known publish age; singular/plural are handled so it never reads "1 days ago".
+pub fn relative_from_secs(age_secs: i64) -> String {
+    let s = age_secs.max(0);
+    // (threshold in seconds the unit starts at, seconds per unit, unit noun)
+    const MINUTE: i64 = 60;
+    const HOUR: i64 = 60 * MINUTE;
+    const DAY: i64 = 24 * HOUR;
+    const WEEK: i64 = 7 * DAY;
+    const MONTH: i64 = 30 * DAY;
+    const YEAR: i64 = 365 * DAY;
+    let plural = |n: i64, unit: &str| {
+        if n == 1 {
+            format!("1 {unit} ago")
+        } else {
+            format!("{n} {unit}s ago")
+        }
+    };
+    if s < 45 {
+        "just now".to_string()
+    } else if s < HOUR {
+        plural((s + 30) / MINUTE, "minute")
+    } else if s < DAY {
+        plural(s / HOUR, "hour")
+    } else if s < 2 * DAY {
+        "yesterday".to_string()
+    } else if s < WEEK {
+        plural(s / DAY, "day")
+    } else if s < MONTH {
+        plural(s / WEEK, "week")
+    } else if s < YEAR {
+        plural(s / MONTH, "month")
+    } else {
+        plural(s / YEAR, "year")
+    }
+}
+
+/// The card meta line: `N views · <relative time>`, dropping any part that is
+/// unknown (no views, or no publish text) so a row never shows a dangling `·`,
+/// a bare `0 views`, or an empty string. Uses the middot separator every video
+/// site uses. Empty when neither part is known.
+pub fn views_time_line(views: u64, published: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if views > 0 {
+        parts.push(human_views(views));
+    }
+    if !published.trim().is_empty() {
+        parts.push(published.trim().to_string());
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +190,26 @@ mod tests {
     #[test]
     fn gradient_is_deterministic() {
         assert_eq!(seed_gradient("x"), seed_gradient("x"));
+    }
+
+    #[test]
+    fn relative_time_reads_naturally() {
+        assert_eq!(relative_from_secs(5), "just now");
+        assert_eq!(relative_from_secs(60), "1 minute ago");
+        assert_eq!(relative_from_secs(3 * 60), "3 minutes ago");
+        assert_eq!(relative_from_secs(60 * 60), "1 hour ago");
+        assert_eq!(relative_from_secs(5 * 60 * 60), "5 hours ago");
+        assert_eq!(relative_from_secs(24 * 60 * 60), "yesterday");
+        assert_eq!(relative_from_secs(3 * 24 * 60 * 60), "3 days ago");
+        assert_eq!(relative_from_secs(14 * 24 * 60 * 60), "2 weeks ago");
+        assert_eq!(relative_from_secs(365 * 24 * 60 * 60), "1 year ago");
+    }
+
+    #[test]
+    fn views_time_line_drops_missing_parts() {
+        assert_eq!(views_time_line(3_300_000, "1 day ago"), "3.3M views · 1 day ago");
+        assert_eq!(views_time_line(0, "1 day ago"), "1 day ago");
+        assert_eq!(views_time_line(1_200, ""), "1.2K views");
+        assert_eq!(views_time_line(0, ""), "");
     }
 }

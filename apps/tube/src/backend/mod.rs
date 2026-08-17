@@ -32,6 +32,9 @@
 //! uploads across subscribed channels), [`YtBackend::trending`], and
 //! [`YtBackend::related`] (per-video "up next"). See [`crate::recommend`].
 
+/// Adaptive bitrate (ABR) stream selection: pick the rendition that fits the
+/// measured bandwidth, honour a manual resolution override.
+pub mod abr;
 pub mod mp4;
 pub mod offline;
 pub mod potoken;
@@ -240,6 +243,16 @@ pub trait YtBackend: Send + Sync {
     /// degrades to the poster when this fails.
     fn resolve_playback_source(&self, _id: &str) -> Result<PlaybackSource, BackendError> {
         Err(BackendError("this backend cannot resolve a playback source".into()))
+    }
+
+    /// Resolve the quality ladder for `id` — every directly-playable rendition
+    /// (each with a height + bitrate + URL) — so the ABR layer
+    /// ([`crate::backend::abr`]) can pick the one that fits the bandwidth, or the
+    /// one the user pinned. The default errors; only a backend that can reach a
+    /// real extractor produces variants, and the worker falls back to
+    /// [`YtBackend::resolve_playback_source`] when it does.
+    fn resolve_stream_variants(&self, _id: &str) -> Result<Vec<abr::StreamVariant>, BackendError> {
+        Err(BackendError("this backend cannot resolve stream variants".into()))
     }
 
     /// Fan-out the latest uploads across `channel_ids` (the subscriptions

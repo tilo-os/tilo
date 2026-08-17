@@ -52,8 +52,11 @@ pub enum Request {
     /// thread, since it probes public Invidious instances over the network. The
     /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
     /// audio out happens in the watch page's media-engine-backed `VideoPlayer`,
-    /// not here.
-    PlayVideo(String),
+    /// not here. `quality` is the user's resolution preference ("1080p" / "720p"
+    /// / "480p" / "auto"); the worker honours a pinned resolution and lets "auto"
+    /// pick the rendition that fits the measured bandwidth (see
+    /// [`crate::backend::abr`]).
+    PlayVideo { id: String, quality: String },
 }
 
 /// A result folded back into the model on the UI thread.
@@ -376,6 +379,10 @@ impl Worker {
                 // rustypipe and simply skips every enrichment below.
                 #[cfg(feature = "live")]
                 let mut rp: Option<Option<crate::backend::live::RustyPipeBackend>> = None;
+                // A smoothed bandwidth estimate, carried across plays, so "auto"
+                // resolution rides the connection: each resolve probes throughput
+                // and folds it in, and the next auto pick uses the running average.
+                let mut bandwidth = crate::backend::abr::BandwidthEstimator::new();
                 // Announce the starting posture honestly: even with a live
                 // backend constructed we don't claim "live" until a real fetch
                 // returns, because construction doesn't touch the network.
@@ -575,12 +582,14 @@ impl Worker {
                                 let _ = up_tx.send(Update::ChannelPage { channel, uploads });
                             }
                         }
-                        Request::PlayVideo(id) => {
+                        Request::PlayVideo { id, quality } => {
                             // Resolve a real, fully-rangeable stream URL for the
-                            // watch page's media engine. Proxy-first (Invidious
-                            // `local=true`, which serves whole-file byte ranges),
-                            // falling back to the live backend's direct URL.
-                            match resolve_stream_url(&live, &id) {
+                            // watch page's media engine, honouring the resolution
+                            // preference: a pinned quality caps the rendition, and
+                            // "auto" picks the one that fits the measured bandwidth
+                            // (ABR). Falls back to the direct-best URL / Invidious
+                            // proxy when the quality ladder is unavailable.
+                            match resolve_stream_url(&live, &id, &quality, &mut bandwidth, &client) {
                                 Some((url, has_audio, quality)) => {
                                     let _ = up_tx.send(Update::Note(format!(
                                         "stream: {quality} {} [{}]",
@@ -639,26 +648,75 @@ fn short_host(url: &str) -> String {
 fn resolve_stream_url(
     live: &Option<Box<dyn YtBackend>>,
     id: &str,
+    quality: &str,
+    bandwidth: &mut crate::backend::abr::BandwidthEstimator,
+    client: &reqwest::blocking::Client,
 ) -> Option<(String, bool, String)> {
-    // Primary: yt-dlp resolves a full, non-SABR-gated googlevideo URL (via the
-    // `android_vr` client) that streams the WHOLE video+audio without the
-    // ~1-minute truncation that gates raw iOS/TV URLs — so the media engine can
-    // play the full length and seek. (Proven with `--probe-engine`: full
-    // duration, buffered to 100%.)
+    use crate::backend::abr;
+    // The user's resolution preference: a pinned height caps the rendition;
+    // `None` means "auto" (bandwidth-driven).
+    let manual = abr::max_height_for_quality(quality);
+
     if let Some(b) = live.as_ref() {
+        // Primary: the real quality ladder, so ABR / the manual pin can choose
+        // among the renditions yt-dlp exposes.
+        if let Ok(variants) = b.resolve_stream_variants(id) {
+            if !variants.is_empty() {
+                // For an "auto" pick with no estimate yet, probe throughput from
+                // the smallest rendition so the FIRST pick is already
+                // bandwidth-aware rather than a blind default.
+                if manual.is_none() && bandwidth.estimate_bps().is_none() {
+                    if let Some(smallest) = variants.iter().min_by_key(|v| v.height) {
+                        if let Some((bytes, dt)) = probe_bandwidth(client, &smallest.url) {
+                            bandwidth.record(bytes, dt);
+                        }
+                    }
+                }
+                if let Some(idx) = abr::select_variant(&variants, bandwidth.estimate_bps(), manual) {
+                    let v = &variants[idx];
+                    return Some((v.url.clone(), v.has_audio, v.quality.clone()));
+                }
+            }
+        }
+        // No ladder available — the extractor's single best playable URL. (This
+        // path can't honour a resolution pin; the ladder above is what does.)
         if let Ok(src) = b.resolve_playback_source(id) {
             if !src.url.is_empty() {
                 return Some((src.url, src.has_audio, src.quality));
             }
         }
     }
-    // Fallback: a fully-rangeable Invidious `local=true` proxy. The public
-    // instance network has largely collapsed, so this is a last resort for when
+    // Last resort: a fully-rangeable Invidious `local=true` proxy. The public
+    // instance network has largely collapsed, so this is a fallback for when
     // yt-dlp is unavailable.
     if let Some(r) = crate::backend::proxy::resolve_rangeable(id) {
         return Some((r.url, r.has_audio, r.quality));
     }
     None
+}
+
+/// Best-effort bandwidth probe: time a ranged GET of the first chunk of a media
+/// URL and report `(bytes, elapsed)` for the [`crate::backend::abr::BandwidthEstimator`].
+/// Returns `None` on any error — the probe is optional, and "auto" falls back to
+/// a sensible default target when it can't measure.
+fn probe_bandwidth(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> Option<(u64, std::time::Duration)> {
+    use std::time::Instant;
+    const PROBE_BYTES: u64 = 256 * 1024;
+    let t = Instant::now();
+    let resp = client
+        .get(url)
+        .header(reqwest::header::RANGE, format!("bytes=0-{}", PROBE_BYTES - 1))
+        .send()
+        .ok()?;
+    let bytes = resp.bytes().ok()?;
+    let dt = t.elapsed();
+    if bytes.is_empty() {
+        return None;
+    }
+    Some((bytes.len() as u64, dt))
 }
 
 /// Construct the live rustypipe backend when the `live` feature is on and it
