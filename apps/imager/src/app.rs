@@ -40,12 +40,13 @@ use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{TextInput, Widget};
 
 use crate::customize::CustomizePanel;
 use crate::doc::ImagerDoc;
@@ -59,10 +60,42 @@ use crate::write::{spawn_job, WriteRequest};
 const OUTER: f64 = 28.0;
 // The compositor draws the window chrome + app name (OS owns chrome), so the
 // app itself opens straight into the step indicator — no in-app title bar.
-const CRUMB_TOP: f64 = 26.0;
-const CRUMB_H: f64 = 34.0;
+const CRUMB_TOP: f64 = 24.0;
+// The step-indicator band. Tall enough to host either full labelled pills, an
+// icon rail with a caption line, or a compact segmented bar — whichever the
+// window width admits (see [`ImagerApp::layout_stepbar`]).
+const CRUMB_H: f64 = 46.0;
 const FOOTER_H: f64 = 78.0;
 const CONTENT_MAX_W: f64 = 900.0;
+
+/// How the six-station step indicator is drawn for the current window width.
+/// The indicator is fully responsive: it picks the richest tier that fits the
+/// available width so it can never overflow or clip a station.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum StepBarMode {
+    /// Full labelled pills — a disc + step icon + text label per station, with
+    /// connectors between. Used when the whole labelled bar fits.
+    Full,
+    /// An icon rail — one disc (step icon inside) per station with connectors,
+    /// and the current station named in a caption below. Used at medium widths.
+    Rail,
+    /// A compact segmented progress bar — six segments under a
+    /// "Step N of 6 · Title" line. Always fits, for the narrowest windows.
+    Compact,
+}
+
+/// The lucide glyph that stands for each wizard station — used in the step
+/// indicator discs and (in the compact tiers) as the station's only mark.
+fn step_icon(s: Step) -> Icon {
+    match s {
+        Step::Source => Icon::Disc3,
+        Step::Drive => Icon::HardDrive,
+        Step::Customize => Icon::SlidersHorizontal,
+        Step::Confirm => Icon::Shield,
+        Step::Write => Icon::Download,
+        Step::Done => Icon::Check,
+    }
+}
 
 /// A clickable hit-target for one frame. Pure function of the viewport +
 /// state, so `draw` and `handle_event` agree without ordering hazards. The
@@ -86,10 +119,19 @@ enum Hit {
 
 struct Layout {
     crumbs: Vec<(Rect, Step)>,
+    crumb_mode: StepBarMode,
     back: Option<Rect>,
     primary: Option<Rect>,
     hits: Vec<(Rect, Hit)>,
     content: Rect,
+}
+
+/// The Confirm step's rects for one frame — pure function of the content rect,
+/// shared by drawing, hit-testing and event routing so they can never drift.
+struct ConfirmGeom {
+    card: Rect,
+    banner: Rect,
+    field: Rect,
 }
 
 pub struct ImagerApp {
@@ -128,6 +170,12 @@ pub struct ImagerApp {
     /// protected) and dispatches each edit through [`Self::actions`]. See
     /// [`crate::customize`].
     customize: CustomizePanel,
+    /// The Confirm step's typed device-name gate — a real shared
+    /// [`ui::widget::TextInput`] (caret, selection, clipboard and a11y for free)
+    /// rather than a hand-rolled `String`. It is the editing surface only; the
+    /// authoritative armed value stays [`Self::confirm`] (mirrored to the doc),
+    /// so the write-gating logic and its tests read one field.
+    confirm_input: TextInput,
     /// Framework-owned action dispatch (the only action-dispatch state the app
     /// holds). Every guided-customization profile edit dispatches its
     /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
@@ -167,6 +215,11 @@ impl ImagerApp {
             last_mouse: Point::ZERO,
             hover_target: None,
             customize: CustomizePanel::new(),
+            confirm_input: {
+                let mut t = TextInput::local();
+                t.set_plain_chrome(true); // the app draws the field box itself
+                t
+            },
             actions: ui::ActionHost::new(),
         }
     }
@@ -387,6 +440,27 @@ impl ImagerApp {
         }
     }
 
+    /// A triangle-alert mark (warning triangle + exclamation) filling `r`, in
+    /// `color`. The icon set has no triangle-alert glyph, so this is the one
+    /// bespoke semantic mark — it is not an interactive control.
+    fn warn_mark(scene: &mut Scene, t: Affine, r: Rect, color: Color) {
+        let cx = (r.x0 + r.x1) / 2.0;
+        let top = r.y0 + r.height() * 0.06;
+        let bot = r.y1 - r.height() * 0.08;
+        let mut tri = BezPath::new();
+        tri.move_to((cx, top));
+        tri.line_to((r.x1, bot));
+        tri.line_to((r.x0, bot));
+        tri.close_path();
+        let stroke = Stroke::new(1.8).with_caps(vello::kurbo::Cap::Round).with_join(vello::kurbo::Join::Round);
+        scene.stroke(&stroke, t, color, None, &tri);
+        // Exclamation: a short bar over a dot.
+        let bar_top = r.y0 + r.height() * 0.34;
+        let bar_bot = r.y0 + r.height() * 0.62;
+        scene.stroke(&Stroke::new(1.8).with_caps(vello::kurbo::Cap::Round), t, color, None, &Line::new(Point::new(cx, bar_top), Point::new(cx, bar_bot)));
+        scene.fill(Fill::NonZero, t, color, None, &Circle::new(Point::new(cx, r.y0 + r.height() * 0.76), 1.1));
+    }
+
     /// A small check-mark glyph inside a filled disc of radius `rad` at `c`.
     fn check_disc(scene: &mut Scene, t: Affine, center: Point, rad: f64, disc: Color, tick: Color) {
         scene.fill(Fill::NonZero, t, disc, None, &Circle::new(center, rad));
@@ -421,22 +495,8 @@ impl ImagerApp {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
         let content = self.content_rect();
 
-        // ---- Step-indicator pills ----
-        let steps = Step::all();
-        let crumb_w = 132.0f64;
-        let gap = 14.0f64;
-        let total = crumb_w * steps.len() as f64 + gap * (steps.len() as f64 - 1.0);
-        let mut cx = v.x0 + (v.width() - total) / 2.0;
-        let cy = v.y0 + CRUMB_TOP;
-        let mut crumbs = Vec::new();
-        for s in steps {
-            let r = Rect::new(cx, cy, cx + crumb_w, cy + CRUMB_H);
-            crumbs.push((r, s));
-            if self.crumb_reachable(s) {
-                hits.push((r, Hit::StepJump(s)));
-            }
-            cx += crumb_w + gap;
-        }
+        // ---- Responsive step indicator ----
+        let (crumbs, crumb_mode) = self.layout_stepbar(&mut hits);
 
         // ---- Per-step content hit-targets ----
         match self.step {
@@ -472,7 +532,120 @@ impl ImagerApp {
             primary = Some(p);
         }
 
-        Layout { crumbs, back, primary, hits, content }
+        Layout { crumbs, crumb_mode, back, primary, hits, content }
+    }
+
+    /// Lay out the six-station step indicator so it **fits any window width**.
+    /// Returns the per-station rects (always six, one per [`Step`], for hit
+    /// testing and drawing) and the tier chosen for the current width. Reachable
+    /// stations get a [`Hit::StepJump`] on their rect. This is a pure function
+    /// of the viewport + state (no text measurement), so draw and hit-test
+    /// always agree and the tier is deterministic in tests.
+    fn layout_stepbar(&self, hits: &mut Vec<(Rect, Hit)>) -> (Vec<(Rect, Step)>, StepBarMode) {
+        let v = self.rect;
+        let steps = Step::all();
+        let n = steps.len() as f64;
+        let cy = v.y0 + CRUMB_TOP;
+
+        // The bar lives in the same centred column as the content, capped so it
+        // never stretches edge-to-edge on a very wide window.
+        let bar_w = (v.width() - OUTER * 2.0).max(0.0).min(CONTENT_MAX_W);
+        let bx0 = v.x0 + (v.width() - bar_w) / 2.0;
+
+        // Pick the richest tier that fits `bar_w`.
+        let full_gap = 10.0;
+        let full_min_pill = 116.0; // disc + step icon + longest label + padding
+        let full_total = full_min_pill * n + full_gap * (n - 1.0);
+        let rail_min = 34.0 * n + 96.0; // discs + connectors + the current caption
+        let mode = if bar_w >= full_total {
+            StepBarMode::Full
+        } else if bar_w >= rail_min {
+            StepBarMode::Rail
+        } else {
+            StepBarMode::Compact
+        };
+
+        let mut crumbs = Vec::with_capacity(steps.len());
+        match mode {
+            StepBarMode::Full => {
+                let pill_w = ((bar_w - full_gap * (n - 1.0)) / n).min(150.0);
+                let total = pill_w * n + full_gap * (n - 1.0);
+                let mut cx = bx0 + (bar_w - total) / 2.0;
+                for s in steps {
+                    // Pill height 34, vertically centred in the band.
+                    let r = Rect::new(cx, cy + 6.0, cx + pill_w, cy + 40.0);
+                    crumbs.push((r, s));
+                    cx += pill_w + full_gap;
+                }
+            }
+            StepBarMode::Rail => {
+                // Discs evenly spaced centre-to-centre; the hit rect is the disc
+                // box. The current station is named in a caption below (drawn in
+                // `draw_stepbar`), so no per-disc labels crowd the row.
+                let d = 26.0;
+                let step = (bar_w - d) / (n - 1.0);
+                for (i, s) in steps.into_iter().enumerate() {
+                    let cxi = bx0 + d / 2.0 + step * i as f64;
+                    let cyd = cy + 13.0;
+                    let r = Rect::new(cxi - d / 2.0, cyd - d / 2.0, cxi + d / 2.0, cyd + d / 2.0);
+                    crumbs.push((r, s));
+                }
+            }
+            StepBarMode::Compact => {
+                // Six segments filling the bar, under a "Step N of 6 · Title"
+                // line drawn in `draw_stepbar`.
+                let seg_gap = 5.0;
+                let seg_w = (bar_w - seg_gap * (n - 1.0)) / n;
+                let seg_top = cy + CRUMB_H - 12.0;
+                let mut cx = bx0;
+                for s in steps {
+                    let r = Rect::new(cx, seg_top, cx + seg_w, seg_top + 7.0);
+                    crumbs.push((r, s));
+                    cx += seg_w + seg_gap;
+                }
+            }
+        }
+
+        for (r, s) in &crumbs {
+            if self.crumb_reachable(*s) {
+                hits.push((*r, Hit::StepJump(*s)));
+            }
+        }
+        (crumbs, mode)
+    }
+
+    /// The confirm-step geometry (review card, danger banner, typed-name field),
+    /// as a pure function of the content rect so draw + hit-test + event-routing
+    /// never drift. The field is pinned directly under the banner rather than to
+    /// the window bottom, so the review reads as one top-aligned column.
+    fn confirm_geom(content: Rect) -> ConfirmGeom {
+        let card = Rect::new(content.x0, content.y0 + 46.0, content.x1, content.y0 + 46.0 + 150.0);
+        let banner = Rect::new(content.x0, card.y1 + 16.0, content.x1, card.y1 + 16.0 + 46.0);
+        let field = Rect::new(content.x0, banner.y1 + 34.0, content.x1, banner.y1 + 34.0 + 48.0);
+        ConfirmGeom { card, banner, field }
+    }
+
+    /// The Y at which a step's body starts, below its title + subtitle. On a
+    /// narrow window the gap widens so a wrapped two-line subtitle never
+    /// collides with the first card. Pure function of the content rect, so draw
+    /// and hit-test always agree.
+    fn step_body_top(content: Rect) -> f64 {
+        content.y0 + if content.width() < 470.0 { 62.0 } else { 44.0 }
+    }
+
+    /// The Y of the Drive step's controls row (detected count + Rescan). The
+    /// device cards start [`Self::drive_cards_top`] below it. One source of
+    /// truth for draw + hit-test.
+    fn drive_controls_y(content: Rect) -> f64 {
+        Self::step_body_top(content) + 4.0
+    }
+    fn drive_cards_top(content: Rect) -> f64 {
+        Self::drive_controls_y(content) + 44.0
+    }
+    /// The Rescan button rect, right-aligned in the Drive controls row.
+    fn rescan_rect(content: Rect) -> Rect {
+        let y = Self::drive_controls_y(content);
+        Rect::new(content.x1 - 104.0, y, content.x1, y + 30.0)
     }
 
     /// The primary action button rect, right-aligned in the footer — or `None`
@@ -492,7 +665,7 @@ impl ImagerApp {
     fn layout_source(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         let x0 = content.x0;
         let x1 = content.x1;
-        let mut y = content.y0 + 44.0;
+        let mut y = Self::step_body_top(content);
         // Browse drop-zone.
         let browse = Rect::new(x0, y, x1, y + 96.0);
         hits.push((browse, Hit::PickFile));
@@ -524,10 +697,10 @@ impl ImagerApp {
     fn layout_drive(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         let x0 = content.x0;
         let x1 = content.x1;
-        // Rescan button top-right of the header row.
-        let rescan = Rect::new(x1 - 104.0, content.y0, x1, content.y0 + 30.0);
-        hits.push((rescan, Hit::Rescan));
-        let mut y = content.y0 + 52.0;
+        // Rescan button in its own controls row (below the title + subtitle), so
+        // it never collides with the title on a narrow window.
+        hits.push((Self::rescan_rect(content), Hit::Rescan));
+        let mut y = Self::drive_cards_top(content);
         let vis = self.visible_targets();
         if vis.is_empty() {
             // Empty state occupies the body; the only action is the internal toggle below.
@@ -553,9 +726,9 @@ impl ImagerApp {
     }
 
     fn layout_confirm(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
-        // The typed device-name confirmation field sits under the review card.
-        let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
-        hits.push((field, Hit::ConfirmField));
+        // The typed device-name confirmation field sits just under the danger
+        // banner (shared geometry with draw + event routing).
+        hits.push((Self::confirm_geom(content).field, Hit::ConfirmField));
     }
 }
 
@@ -578,41 +751,105 @@ impl ImagerApp {
             self.txt_right(scene, tr, &self.status, 11.5, col, v.x1 - OUTER, v.y0 + 8.0, TextWeight::Medium);
         }
 
-        // ---- Step indicator ----
-        for (i, (r, s)) in lay.crumbs.iter().enumerate() {
-            let done = self.step_completed(*s);
-            let current = *s == self.step;
-            let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
-            let bg = if current {
-                with_alpha(c.accent[5], 40)
-            } else if hov {
-                c.neutral[2]
-            } else {
-                Color::TRANSPARENT
-            };
-            if bg != Color::TRANSPARENT {
-                Self::fill_rr(scene, t, *r, 10.0, bg);
+        // ---- Responsive step indicator ----
+        self.draw_stepbar(scene, tr, theme, t, lay);
+    }
+
+    /// One step-indicator disc: a green check for a completed station, an
+    /// accent-filled disc with a white step glyph for the current one, and a
+    /// muted outlined disc with a dim glyph for a future one.
+    fn draw_step_disc(&self, scene: &mut Scene, theme: &Theme, t: Affine, center: Point, rad: f64, s: Step, done: bool, current: bool) {
+        let c = &theme.tokens.colors;
+        if done {
+            Self::check_disc(scene, t, center, rad, c.semantic.success, Color::WHITE);
+            return;
+        }
+        let (fill, glyph) = if current {
+            (c.accent[5], Color::WHITE)
+        } else {
+            (c.neutral[3], c.text_dim)
+        };
+        scene.fill(Fill::NonZero, t, fill, None, &Circle::new(center, rad));
+        if current {
+            scene.stroke(&Stroke::new(1.4), t, with_alpha(c.accent[5], 90), None, &Circle::new(center, rad + 2.6));
+        }
+        let g = rad * 1.15;
+        let ir = Rect::new(center.x - g, center.y - g, center.x + g, center.y + g);
+        step_icon(s).draw_with_stroke(scene, t, ir, glyph, 1.6);
+    }
+
+    /// Draw the step indicator in whichever responsive tier `compute_layout`
+    /// chose — full labelled pills, an icon rail, or a compact segmented bar.
+    fn draw_stepbar(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+        let c = &theme.tokens.colors;
+        match lay.crumb_mode {
+            StepBarMode::Full => {
+                for (i, (r, s)) in lay.crumbs.iter().enumerate() {
+                    let done = self.step_completed(*s);
+                    let current = *s == self.step;
+                    let hov = r.contains(self.last_mouse) && self.crumb_reachable(*s);
+                    if current {
+                        Self::fill_rr(scene, t, *r, 11.0, with_alpha(c.accent[5], 38));
+                        Self::stroke_rr(scene, t, *r, 11.0, c.accent[5], 1.4);
+                    } else if hov {
+                        Self::fill_rr(scene, t, *r, 11.0, c.neutral[2]);
+                    }
+                    let midy = (r.y0 + r.y1) / 2.0;
+                    self.draw_step_disc(scene, theme, t, Point::new(r.x0 + 21.0, midy), 11.0, *s, done, current);
+                    let label_c = if current || done { c.text_primary } else { c.text_dim };
+                    self.txt(scene, tr, s.title(), 13.0, label_c, r.x0 + 38.0, midy - 9.0, Some((r.width() - 44.0) as f32), if current { TextWeight::Semibold } else { TextWeight::Medium });
+                    if i + 1 < lay.crumbs.len() {
+                        let nx0 = lay.crumbs[i + 1].0.x0;
+                        let cc = if s.index() < self.step.index() { c.semantic.success } else { c.neutral[3] };
+                        scene.stroke(&Stroke::new(2.0), t, cc, None, &Line::new(Point::new(r.x1 + 4.0, midy), Point::new(nx0 - 4.0, midy)));
+                    }
+                }
             }
-            if current {
-                Self::stroke_rr(scene, t, *r, 10.0, c.accent[5], 1.4);
+            StepBarMode::Rail => {
+                // Connectors first, so the discs sit on top of them.
+                for i in 0..lay.crumbs.len().saturating_sub(1) {
+                    let (r, s) = lay.crumbs[i];
+                    let (nr, _) = lay.crumbs[i + 1];
+                    let midy = (r.y0 + r.y1) / 2.0;
+                    let cc = if s.index() < self.step.index() { c.semantic.success } else { c.neutral[3] };
+                    scene.stroke(&Stroke::new(2.0), t, cc, None, &Line::new(Point::new(r.x1 + 3.0, midy), Point::new(nr.x0 - 3.0, midy)));
+                }
+                for (r, s) in &lay.crumbs {
+                    let done = self.step_completed(*s);
+                    let current = *s == self.step;
+                    let center = Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+                    self.draw_step_disc(scene, theme, t, center, 11.0, *s, done, current);
+                }
+                // Caption naming the current station.
+                if let Some((r, _)) = lay.crumbs.first() {
+                    let bar_x0 = r.x0;
+                    let bar_x1 = lay.crumbs.last().map(|(r, _)| r.x1).unwrap_or(bar_x0);
+                    let cx = (bar_x0 + bar_x1) / 2.0;
+                    let cap = format!("Step {} of {} · {}", self.step.index() + 1, lay.crumbs.len(), self.step.title());
+                    self.txt_center(scene, tr, &cap, 12.5, c.text_primary, cx, r.y1 + 6.0, TextWeight::Semibold);
+                }
             }
-            // Number disc / check.
-            let disc_c = Point::new(r.x0 + 22.0, (r.y0 + r.y1) / 2.0);
-            if done {
-                Self::check_disc(scene, t, disc_c, 11.0, c.semantic.success, Color::WHITE);
-            } else {
-                let ring = if current { c.accent[5] } else { c.neutral[4] };
-                scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, 11.0));
-                self.txt_center(scene, tr, &format!("{}", s.index() + 1), 12.0, Color::WHITE, disc_c.x, disc_c.y - 8.0, TextWeight::Bold);
-            }
-            let label_c = if current { c.text_primary } else if done { c.text_primary } else { c.text_dim };
-            self.txt(scene, tr, s.title(), 13.5, label_c, r.x0 + 40.0, (r.y0 + r.y1) / 2.0 - 9.0, None, if current { TextWeight::Semibold } else { TextWeight::Medium });
-            // Connector to the next pill.
-            if i + 1 < lay.crumbs.len() {
-                let nx0 = lay.crumbs[i + 1].0.x0;
-                let midy = (r.y0 + r.y1) / 2.0;
-                let cc = if s.index() < self.step.index() { c.semantic.success } else { c.neutral[3] };
-                scene.stroke(&Stroke::new(2.0), t, cc, None, &Line::new(Point::new(r.x1 + 4.0, midy), Point::new(nx0 - 4.0, midy)));
+            StepBarMode::Compact => {
+                if let (Some((first, _)), Some((last, _))) = (lay.crumbs.first(), lay.crumbs.last()) {
+                    let bx0 = first.x0;
+                    let bx1 = last.x1;
+                    // Label line above the segments.
+                    let ly = first.y0 - 22.0;
+                    self.txt(scene, tr, &format!("Step {} of {}", self.step.index() + 1, lay.crumbs.len()), 12.0, c.text_dim, bx0, ly, None, TextWeight::Semibold);
+                    self.txt_right(scene, tr, self.step.title(), 13.5, c.text_primary, bx1, ly - 1.0, TextWeight::Bold);
+                }
+                for (r, s) in &lay.crumbs {
+                    let done = self.step_completed(*s);
+                    let current = *s == self.step;
+                    let col = if done {
+                        c.semantic.success
+                    } else if current {
+                        c.accent[5]
+                    } else {
+                        c.neutral[3]
+                    };
+                    Self::fill_rr(scene, t, *r, r.height() / 2.0, col);
+                }
             }
         }
     }
@@ -707,27 +944,20 @@ impl ImagerApp {
     fn draw_source_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Choose the source image", "The image to write. Pick a local .iso or .img file, or a qOS release below.");
-        let mut y = content.y0 + 44.0;
+        self.draw_step_title(scene, tr, theme, content, "Choose the source image", "Pick a local .iso, .img or .raw file — or a qOS release below.");
+        let mut y = Self::step_body_top(content);
 
         // Browse drop-zone.
         let browse = Rect::new(content.x0, y, content.x1, y + 96.0);
         let hov = browse.contains(self.last_mouse);
         Self::fill_rr(scene, t, browse, 14.0, if hov { c.neutral[2] } else { with_alpha(c.accent[5], 16) });
         Self::dashed_rr(scene, t, browse, 14.0, if hov { c.accent[6] } else { with_alpha(c.accent[5], 160) }, 1.6);
-        // Download/arrow glyph.
-        let gx = browse.x0 + 46.0;
+        // A folder-open glyph in an accent tile leads the drop-zone.
         let gy = (browse.y0 + browse.y1) / 2.0;
-        let mut arr = BezPath::new();
-        arr.move_to((gx, gy - 14.0));
-        arr.line_to((gx, gy + 8.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &arr);
-        let mut head = BezPath::new();
-        head.move_to((gx - 7.0, gy + 1.0));
-        head.line_to((gx, gy + 9.0));
-        head.line_to((gx + 7.0, gy + 1.0));
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &head);
-        scene.stroke(&Stroke::new(2.4), t, c.accent[6], None, &Line::new(Point::new(gx - 12.0, gy + 15.0), Point::new(gx + 12.0, gy + 15.0)));
+        let tile = Rect::new(browse.x0 + 24.0, gy - 22.0, browse.x0 + 24.0 + 44.0, gy + 22.0);
+        Self::fill_rr(scene, t, tile, 11.0, with_alpha(c.accent[5], 34));
+        let ic = Rect::new(tile.x0 + 11.0, tile.y0 + 11.0, tile.x1 - 11.0, tile.y1 - 11.0);
+        Icon::FolderOpen.draw_with_stroke(scene, t, ic, c.accent[6], 1.8);
         self.txt(scene, tr, "Browse for an image…", 16.0, c.text_primary, browse.x0 + 84.0, browse.y0 + 30.0, None, TextWeight::Semibold);
         self.txt(scene, tr, "Opens the system file picker · .iso, .img, .raw", 12.5, c.text_dim, browse.x0 + 84.0, browse.y0 + 54.0, None, TextWeight::Regular);
         y = browse.y1 + 16.0;
@@ -742,7 +972,9 @@ impl ImagerApp {
             Self::fill_rr(scene, t, badge, 6.0, source_color(theme, src.kind));
             self.txt_center(scene, tr, src.kind.tag(), 12.0, Color::WHITE, (badge.x0 + badge.x1) / 2.0, badge.y0 + 4.0, TextWeight::Bold);
             self.txt(scene, tr, &src.name, 15.5, c.text_primary, card.x0 + 108.0, card.y0 + 18.0, Some((card.width() - 130.0) as f32), TextWeight::Semibold);
-            self.txt(scene, tr, &src.summary(), 12.0, c.text_dim, card.x0 + 108.0, card.y0 + 42.0, Some((card.width() - 130.0) as f32), TextWeight::Regular);
+            // Label + size only — no leaked filesystem path in chrome (HIG §4);
+            // the file name is already the card title above.
+            self.txt(scene, tr, &format!("{}  ·  {}", src.label, fmt_size(src.size)), 12.0, c.text_dim, card.x0 + 108.0, card.y0 + 42.0, Some((card.width() - 130.0) as f32), TextWeight::Regular);
             if src.installable {
                 self.txt(scene, tr, "● Can be pre-configured", 11.5, c.semantic.success, card.x0 + 108.0, card.y0 + 62.0, None, TextWeight::Medium);
             } else {
@@ -799,23 +1031,25 @@ impl ImagerApp {
     fn draw_drive_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
         let c = &theme.tokens.colors;
         let content = lay.content;
-        self.draw_step_title(scene, tr, theme, content, "Select the target drive", "The drive to write to — everything on it will be erased.");
-        // Detected count (to the left of the Rescan button).
+        self.draw_step_title(scene, tr, theme, content, "Select the target drive", "Everything on the chosen drive is erased.");
+        // Controls row (below the title): detected count on the left, Rescan on
+        // the right — its own row so it never collides with the title.
+        let rescan = Self::rescan_rect(content);
         let detected = if self.show_internal {
-            format!("{} drive(s)", self.targets.len())
+            format!("{} drive(s) detected", self.targets.len())
         } else {
-            format!("{} removable", self.removable_count())
+            format!("{} removable drive(s)", self.removable_count())
         };
-        self.txt_right(scene, tr, &detected, 11.5, c.text_dim, content.x1 - 116.0, content.y0 + 8.0, TextWeight::Medium);
-        // Rescan button (top-right).
-        let rescan = Rect::new(content.x1 - 104.0, content.y0, content.x1, content.y0 + 30.0);
+        self.txt(scene, tr, &detected, 12.0, c.text_dim, content.x0, rescan.y0 + 8.0, Some((rescan.x0 - content.x0 - 12.0) as f32), TextWeight::Medium);
         let hov = rescan.contains(self.last_mouse);
         Self::fill_rr(scene, t, rescan, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
         Self::stroke_rr(scene, t, rescan, 9.0, c.border_standard, 1.0);
-        self.txt_center(scene, tr, "⟳ Rescan", 12.5, c.text_primary, (rescan.x0 + rescan.x1) / 2.0, rescan.y0 + 7.0, TextWeight::Medium);
+        let rir = Rect::new(rescan.x0 + 16.0, rescan.y0 + 8.0, rescan.x0 + 30.0, rescan.y0 + 22.0);
+        Icon::RotateCw.draw_with_stroke(scene, t, rir, c.text_primary, 1.6);
+        self.txt(scene, tr, "Rescan", 12.5, c.text_primary, rescan.x0 + 36.0, rescan.y0 + 7.0, None, TextWeight::Medium);
 
         let vis = self.visible_targets();
-        let mut y = content.y0 + 52.0;
+        let mut y = Self::drive_cards_top(content);
         if vis.is_empty() {
             self.draw_drive_empty(scene, tr, theme, t, content);
         } else {
@@ -887,16 +1121,16 @@ impl ImagerApp {
 
     fn draw_drive_empty(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, content: Rect) {
         let c = &theme.tokens.colors;
-        let card = Rect::new(content.x0, content.y0 + 60.0, content.x1, content.y0 + 60.0 + 240.0);
+        let top = Self::drive_cards_top(content) + 6.0;
+        let card = Rect::new(content.x0, top, content.x1, top + 240.0);
         Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
         Self::dashed_rr(scene, t, card, 16.0, c.border_standard, 1.4);
         let cx = (card.x0 + card.x1) / 2.0;
-        // A simple USB-stick glyph.
-        let gy = card.y0 + 66.0;
-        let body = Rect::new(cx - 16.0, gy, cx + 16.0, gy + 54.0);
-        Self::fill_rr(scene, t, body, 6.0, c.neutral[4]);
-        let cap = Rect::new(cx - 10.0, gy - 16.0, cx + 10.0, gy);
-        Self::fill_rr(scene, t, cap, 3.0, c.neutral[5]);
+        // A drive glyph in a soft disc.
+        let gcy = card.y0 + 74.0;
+        scene.fill(Fill::NonZero, t, c.neutral[2], None, &Circle::new(Point::new(cx, gcy), 34.0));
+        let gr = Rect::new(cx - 18.0, gcy - 18.0, cx + 18.0, gcy + 18.0);
+        Icon::HardDrive.draw_with_stroke(scene, t, gr, c.text_dim, 1.8);
         self.txt_center(scene, tr, "Insert a drive", 17.0, c.text_primary, cx, card.y0 + 140.0, TextWeight::Semibold);
         self.txt_center(scene, tr, "Plug in a USB stick or SD card, then press Rescan.", 13.0, c.text_dim, cx, card.y0 + 168.0, TextWeight::Regular);
         let hint = if self.show_internal {
@@ -923,16 +1157,17 @@ impl ImagerApp {
         };
         Self::stroke_rr(scene, t, r, 14.0, border, if selected { 2.0 } else { 1.0 });
 
-        // Selection check on the left.
+        // Leading device-type tile, tinted by kind, with a drive glyph.
+        let cyc = (r.y0 + r.y1) / 2.0;
+        let kc = kind_color(theme, drive.kind);
+        let tile = Rect::new(r.x0 + 18.0, cyc - 26.0, r.x0 + 70.0, cyc + 26.0);
+        Self::fill_rr(scene, t, tile, 12.0, with_alpha(kc, 40));
+        let gi = Rect::new(tile.x0 + 13.0, tile.y0 + 13.0, tile.x1 - 13.0, tile.y1 - 13.0);
+        Icon::HardDrive.draw_with_stroke(scene, t, gi, kc, 1.9);
         if selected {
-            Self::check_disc(scene, t, Point::new(r.x0 + 28.0, (r.y0 + r.y1) / 2.0), 13.0, c.accent[5], Color::WHITE);
+            Self::check_disc(scene, t, Point::new(tile.x1 - 1.0, tile.y0 + 1.0), 9.0, c.accent[5], Color::WHITE);
         }
-        let left = if selected { r.x0 + 54.0 } else { r.x0 + 18.0 };
-
-        // Kind badge.
-        let badge = Rect::new(left, r.y0 + 18.0, left + 54.0, r.y0 + 18.0 + 24.0);
-        Self::fill_rr(scene, t, badge, 6.0, kind_color(theme, drive.kind));
-        self.txt_center(scene, tr, drive.kind.tag(), 12.0, Color::WHITE, (badge.x0 + badge.x1) / 2.0, badge.y0 + 5.0, TextWeight::Bold);
+        let left = tile.x1 + 16.0;
 
         // Removable / fixed / system chip on the right.
         let (chip_label, chip_c) = if drive.is_system {
@@ -947,18 +1182,27 @@ impl ImagerApp {
         Self::fill_rr(scene, t, chip, 6.0, with_alpha(chip_c, 40));
         self.txt_center(scene, tr, chip_label, 10.5, chip_c, (chip.x0 + chip.x1) / 2.0, chip.y0 + 6.0, TextWeight::Bold);
 
-        // Model + capacity.
-        self.txt(scene, tr, &drive.model, 16.0, c.text_primary, left, r.y0 + 50.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Semibold);
-        self.txt(scene, tr, &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)), 12.5, c.text_dim, left, r.y0 + 72.0, None, TextWeight::Regular);
+        // Model (single-line elided so it never wraps into the meta) + a meta
+        // line: kind · device · capacity.
+        let model_max = (chip.x0 - left - 12.0).max(40.0) as f32;
+        let model = tr.elide_to_width_weighted(&drive.model, 16.0, model_max, TextWeight::Semibold);
+        self.txt(scene, tr, &model, 16.0, c.text_primary, left, r.y0 + 24.0, None, TextWeight::Semibold);
+        let meta = format!("{}  ·  {}  ·  {}", drive.kind.tag(), drive.dev_path(), fmt_size(drive.size));
+        let meta = tr.elide_to_width_weighted(&meta, 12.5, (r.x1 - 16.0 - left) as f32, TextWeight::Regular);
+        self.txt(scene, tr, &meta, 12.5, c.text_dim, left, r.y0 + 48.0, None, TextWeight::Regular);
 
         // Destructive line — or, for a not-yet-acknowledged system disk, a
         // clear "locked" note pointing at the acknowledgement gate.
+        let icr = Rect::new(left, r.y1 - 28.0, left + 15.0, r.y1 - 13.0);
         let (line, col) = if drive.is_system && !self.system_ack {
-            ("🔒 Locked — this is your system disk. Acknowledge below to select it.".to_string(), c.text_dim)
+            Icon::Shield.draw_with_stroke(scene, t, icr, c.text_dim, 1.6);
+            ("Locked — this is your system disk. Acknowledge below to select it.".to_string(), c.text_dim)
         } else {
-            (format!("⚠ Erases {}", drive.contents_summary()), c.semantic.danger)
+            Self::warn_mark(scene, t, Rect::new(left, r.y1 - 28.0, left + 16.0, r.y1 - 12.0), c.semantic.danger);
+            (format!("Erases {}", drive.contents_summary()), c.semantic.danger)
         };
-        self.txt(scene, tr, &line, 11.5, col, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
+        let line = tr.elide_to_width_weighted(&line, 11.5, (r.x1 - 12.0 - (left + 22.0)) as f32, TextWeight::Medium);
+        self.txt(scene, tr, &line, 11.5, col, left + 22.0, r.y1 - 26.0, None, TextWeight::Medium);
     }
 
     fn draw_customize_step(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, presence: &PresenceCtx) {
@@ -987,9 +1231,10 @@ impl ImagerApp {
         self.customize.draw(scene, t, tr, theme, presence, content, &self.profile, removable);
     }
 
-    fn draw_confirm_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+    fn draw_confirm_step(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         let content = lay.content;
+        let g = Self::confirm_geom(content);
         let (title, sub) = match self.action {
             Action::Install => (
                 "Confirm & install",
@@ -1003,13 +1248,13 @@ impl ImagerApp {
         self.draw_step_title(scene, tr, theme, content, title, sub);
 
         // Review card: Image → Drive.
-        let card = Rect::new(content.x0, content.y0 + 46.0, content.x1, content.y0 + 46.0 + 150.0);
+        let card = g.card;
         Self::fill_rr(scene, t, card, 14.0, c.surfaces.raised);
         Self::stroke_rr(scene, t, card, 14.0, c.border_standard, 1.0);
         let row = |this: &Self, scene: &mut Scene, tr: &mut TextRenderer, y: f64, k: &str, v: String, ok: bool| {
             this.txt(scene, tr, k, 12.0, c.text_dim, card.x0 + 20.0, y, None, TextWeight::Semibold);
             let col = if ok { c.text_primary } else { c.semantic.danger };
-            this.txt(scene, tr, &v, 14.0, col, card.x0 + 96.0, y - 1.0, Some((card.width() - 116.0) as f32), TextWeight::Semibold);
+            this.txt(scene, tr, &v, 14.0, col, card.x0 + 100.0, y - 1.0, Some((card.width() - 120.0) as f32), TextWeight::Semibold);
         };
         let src_v = self.source.as_ref().map(|s| format!("{}   ({})", s.name, fmt_size(s.size))).unwrap_or_else(|| "—".into());
         row(self, scene, tr, card.y0 + 24.0, "Image", src_v, self.source.is_some());
@@ -1023,7 +1268,7 @@ impl ImagerApp {
                 ("image is larger than the drive".into(), c.semantic.danger)
             };
             self.txt(scene, tr, "Capacity", 12.0, c.text_dim, card.x0 + 20.0, card.y0 + 92.0, None, TextWeight::Semibold);
-            self.txt(scene, tr, &fit.0, 13.0, fit.1, card.x0 + 96.0, card.y0 + 91.0, None, TextWeight::Medium);
+            self.txt(scene, tr, &fit.0, 13.0, fit.1, card.x0 + 100.0, card.y0 + 91.0, None, TextWeight::Medium);
         }
         // Action summary.
         let act = match self.action {
@@ -1038,45 +1283,51 @@ impl ImagerApp {
             Action::Flash => "Write the image, then read-back verify".to_string(),
         };
         self.txt(scene, tr, "Action", 12.0, c.text_dim, card.x0 + 20.0, card.y0 + 122.0, None, TextWeight::Semibold);
-        self.txt(scene, tr, &act, 13.0, c.text_primary, card.x0 + 96.0, card.y0 + 121.0, Some((card.width() - 116.0) as f32), TextWeight::Medium);
+        self.txt(scene, tr, &act, 13.0, c.text_primary, card.x0 + 100.0, card.y0 + 121.0, Some((card.width() - 120.0) as f32), TextWeight::Medium);
 
         // Danger banner — louder for a fixed/internal (install) target.
         let internal = self.target().map(|d| !d.removable).unwrap_or(false);
         let system = self.target().map(|d| d.is_system).unwrap_or(false);
-        let banner = Rect::new(content.x0, card.y1 + 16.0, content.x1, card.y1 + 16.0 + 44.0);
+        let banner = g.banner;
         Self::fill_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 40 } else { 28 }));
         Self::stroke_rr(scene, t, banner, 11.0, with_alpha(c.semantic.danger, if internal { 170 } else { 130 }), if internal { 1.4 } else { 1.0 });
+        let wr = Rect::new(banner.x0 + 16.0, banner.y0 + (banner.height() - 20.0) / 2.0, banner.x0 + 36.0, banner.y0 + (banner.height() - 20.0) / 2.0 + 20.0);
+        Self::warn_mark(scene, t, wr, c.semantic.danger);
         let warn = if system {
-            "⚠  This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
+            "This is your system disk. Everything on it — the running OS included — is erased. This cannot be undone."
         } else if internal {
-            "⚠  This erases the entire internal disk. This cannot be undone."
+            "This erases the entire internal disk. This cannot be undone."
         } else {
-            "⚠  This permanently erases the drive. This cannot be undone."
+            "This permanently erases the drive. This cannot be undone."
         };
-        self.txt(scene, tr, warn, 13.0, c.semantic.danger, banner.x0 + 16.0, banner.y0 + 14.0, Some((banner.width() - 32.0) as f32), TextWeight::Semibold);
+        self.txt(scene, tr, warn, 13.0, c.semantic.danger, banner.x0 + 48.0, banner.y0 + (banner.height() - 16.0) / 2.0, Some((banner.width() - 64.0) as f32), TextWeight::Semibold);
 
-        // Typed confirmation field.
-        let field = Rect::new(content.x0, content.y1 - 96.0, content.x1, content.y1 - 96.0 + 46.0);
+        // Typed confirmation field — a real shared TextInput (caret, selection,
+        // clipboard and a11y for free), the box chrome drawn here around it.
+        let field = g.field;
         let focused = self.confirm_focused;
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        self.txt(scene, tr, "CONFIRM THE TARGET DEVICE", 11.0, c.text_dim, field.x0 + 2.0, field.y0 - 17.0, None, TextWeight::Semibold);
+        self.txt(scene, tr, "CONFIRM THE TARGET DEVICE", 11.0, c.text_dim, field.x0 + 2.0, field.y0 - 18.0, None, TextWeight::Semibold);
         Self::fill_rr(scene, t, field, 11.0, c.neutral[2]);
         Self::stroke_rr(scene, t, field, 11.0, if matches { c.semantic.success } else if focused { c.border_focus } else { with_alpha(c.semantic.danger, 160) }, if focused || matches { 1.6 } else { 1.2 });
-        let (shown, col) = if self.confirm.is_empty() {
-            (format!("type “{want}” here"), c.neutral[6])
-        } else {
-            (self.confirm.clone(), if matches { c.semantic.success } else { c.text_primary })
-        };
-        self.txt(scene, tr, &shown, 14.0, col, field.x0 + 14.0, field.y0 + 13.0, Some((field.width() - 28.0) as f32), TextWeight::Medium);
+        let armed_w = if matches { 84.0 } else { 0.0 };
+        let inner = Rect::new(field.x0 + 14.0, field.y0, field.x1 - 16.0 - armed_w, field.y1);
+        self.confirm_input.set_placeholder(&format!("type “{want}” to confirm"));
+        self.confirm_input.set_focus(focused);
+        self.confirm_input.apply_layout_external(inner);
+        Widget::draw(&mut self.confirm_input, scene, t, tr, theme, presence);
         if matches {
-            self.txt_right(scene, tr, "✓ armed", 12.5, c.semantic.success, field.x1 - 14.0, field.y0 + 14.0, TextWeight::Bold);
+            let cy = field.y0 + (field.height() - 16.0) / 2.0;
+            let ic = Rect::new(field.x1 - 78.0, cy, field.x1 - 62.0, cy + 16.0);
+            Icon::Check.draw_with_stroke(scene, t, ic, c.semantic.success, 2.0);
+            self.txt(scene, tr, "armed", 12.5, c.semantic.success, field.x1 - 58.0, field.y0 + (field.height() - 15.0) / 2.0, None, TextWeight::Bold);
         }
         // Gate note.
         let note = if crate::write::allow_write() {
-            "Live write enabled (QOS_IMAGER_ALLOW_WRITE=1)."
+            "Live write enabled — the write is real and irreversible."
         } else {
-            "Safe mode — no bytes are written unless QOS_IMAGER_ALLOW_WRITE=1."
+            "Safe mode — no bytes are written until live-write support is enabled."
         };
         self.txt(scene, tr, note, 11.0, c.neutral[6], field.x0 + 2.0, field.y1 + 8.0, None, TextWeight::Regular);
     }
@@ -1169,9 +1420,9 @@ impl ImagerApp {
             self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
             self.txt_center(scene, tr, sub, 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
         } else {
-            // Danger disc with an "!".
+            // Danger disc with a warning mark.
             scene.fill(Fill::NonZero, t, c.semantic.danger, None, &Circle::new(Point::new(cxp, cyp), 46.0));
-            self.txt_center(scene, tr, "!", 44.0, Color::WHITE, cxp, cyp - 34.0, TextWeight::Bold);
+            Self::warn_mark(scene, t, Rect::new(cxp - 24.0, cyp - 22.0, cxp + 24.0, cyp + 26.0), Color::WHITE);
             let headline = if install { "Install failed" } else { "Write failed" };
             self.txt_center(scene, tr, headline, 26.0, c.text_primary, cxp, cyp + 66.0, TextWeight::Bold);
             self.txt_center(scene, tr, "The drive was not changed. See the message below.", 14.0, c.text_dim, cxp, cyp + 100.0, TextWeight::Regular);
@@ -1409,21 +1660,13 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    /// Edit the Confirm step's typed device-name field. This is a *transient*
-    /// arming gesture for the (external) write — presentation, not a document
-    /// action — so it writes only the `confirm` scalar. (The profile fields, by
-    /// contrast, are real actions handled by [`CustomizePanel`].)
-    fn type_into_confirm(&mut self, state: &mut AutoCommit, ch: Option<char>, backspace: bool) {
-        if backspace {
-            self.confirm.pop();
-        } else if let Some(c) = ch {
-            if !c.is_control() {
-                self.confirm.push(c);
-            }
-        }
-        let conf = self.confirm.clone();
-        ImagerDoc::set_confirm(state, &conf);
-        self.dirty = true;
+    /// The inner text rect of the Confirm step's typed-name field for the
+    /// current viewport — shared by draw and event routing so the caret and the
+    /// text land in the same place.
+    fn confirm_input_inner(&self) -> Rect {
+        let field = Self::confirm_geom(self.content_rect()).field;
+        let armed_w = if self.confirm_matches() { 84.0 } else { 0.0 };
+        Rect::new(field.x0 + 14.0, field.y0, field.x1 - 16.0 - armed_w, field.y1)
     }
 
     fn do_rescan(&mut self, state: &mut AutoCommit) {
@@ -1498,6 +1741,8 @@ impl ImagerApp {
             Hit::ConfirmField => {
                 self.confirm_focused = true;
                 self.customize.clear_focus();
+                self.confirm_input.set_focus(true);
+                self.confirm_input.apply_layout_external(self.confirm_input_inner());
                 self.dirty = true;
             }
             Hit::StepJump(s) => {
@@ -1556,6 +1801,14 @@ impl Widget for ImagerApp {
         // (each unfocused field mirrors the stored value; a focused one stays
         // the source of truth).
         self.customize.sync(&self.profile);
+        // Mirror the armed device-name into the confirm field's TextInput while
+        // it is not being edited; a focused input stays the source of truth and
+        // writes back through the event path.
+        let confirm_editing = self.confirm_focused && self.step == Step::Confirm;
+        self.confirm_input.set_focus(confirm_editing);
+        if !confirm_editing {
+            self.confirm_input.set_text(&self.confirm);
+        }
         self.dirty = true;
     }
 
@@ -1597,7 +1850,7 @@ impl Widget for ImagerApp {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
             Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay, presence),
-            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay),
+            Step::Confirm => self.draw_confirm_step(scene, tr, theme, transform, &lay, presence),
             Step::Write => self.draw_write_progress(scene, tr, theme, transform, &lay),
             Step::Done => self.draw_write_done(scene, tr, theme, transform, &lay, self.progress.phase == JobPhase::Success),
         }
@@ -1657,6 +1910,13 @@ impl Widget for ImagerApp {
                     _ => None,
                 });
                 self.hover_target = hover_now;
+                // Forward pointer moves to the focused confirm field so a drag
+                // extends its selection like any other text input.
+                if self.confirm_focused && self.step == Step::Confirm {
+                    self.confirm_input.apply_layout_external(self.confirm_input_inner());
+                    let (mut h, mut ft) = (false, None);
+                    self.confirm_input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                }
                 // Repaint on move so buttons/cards light up under the pointer.
                 self.dirty = true;
             }
@@ -1670,7 +1930,15 @@ impl Widget for ImagerApp {
                 }
                 let hit = lay.hits.iter().find(|(r, _)| r.contains(p)).map(|(_, h)| h.clone());
                 if let Some(hit) = hit {
+                    let is_confirm_field = matches!(hit, Hit::ConfirmField);
                     self.dispatch_hit(state, hit);
+                    // Forward the press to the now-focused confirm input so the
+                    // caret lands where the user clicked (and a drag can begin).
+                    if is_confirm_field {
+                        self.confirm_input.apply_layout_external(self.confirm_input_inner());
+                        let (mut h, mut ft) = (false, None);
+                        self.confirm_input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    }
                     *handled = true;
                     self.dirty = true;
                     return;
@@ -1687,14 +1955,11 @@ impl Widget for ImagerApp {
                     }
                     return;
                 }
-                // The Confirm step's typed device-name field (a transient arming
-                // gesture, not a profile edit).
+                // The Confirm step's typed device-name gate — routed into the
+                // shared TextInput (a transient arming gesture, not a profile
+                // edit). Enter arms & starts the write; Escape blurs.
                 if self.confirm_focused && self.step == Step::Confirm {
                     match logical_key {
-                        Key::Named(NamedKey::Backspace) => {
-                            self.type_into_confirm(state, None, true);
-                            *handled = true;
-                        }
                         Key::Named(NamedKey::Enter) => {
                             if self.can_advance(Step::Confirm) {
                                 self.start_write(state);
@@ -1708,17 +1973,20 @@ impl Widget for ImagerApp {
                             *handled = true;
                             self.dirty = true;
                         }
-                        Key::Named(NamedKey::Space) => {
-                            self.type_into_confirm(state, Some(' '), false);
+                        _ => {
+                            // Feed the keystroke to the real input, then mirror
+                            // its value into the armed-name gate + the document.
+                            let inner = self.confirm_input_inner();
+                            self.confirm_input.set_focus(true);
+                            self.confirm_input.apply_layout_external(inner);
+                            let (mut h, mut ft) = (false, None);
+                            self.confirm_input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                            let val = self.confirm_input.value().to_string();
+                            self.confirm = val.clone();
+                            ImagerDoc::set_confirm(state, &val);
                             *handled = true;
+                            self.dirty = true;
                         }
-                        Key::Character(s) => {
-                            if let Some(ch) = s.chars().next() {
-                                self.type_into_confirm(state, Some(ch), false);
-                                *handled = true;
-                            }
-                        }
-                        _ => {}
                     }
                     return;
                 }
@@ -1930,6 +2198,66 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let lay = app.compute_layout();
         assert_eq!(lay.crumbs.len(), 6);
+    }
+
+    /// The step indicator must **fit the window at every width** — the fix for
+    /// the overflow bug where the "Source" pill was clipped off the left edge at
+    /// ~620px. At no width may any station rect fall outside the viewport, and
+    /// there are always six stations. Asserted on the production
+    /// `compute_layout` path.
+    #[test]
+    fn step_bar_fits_at_every_width_and_keeps_six_stations() {
+        let (mut app, _doc) = seeded_app();
+        for w in [300.0, 320.0, 360.0, 420.0, 500.0, 560.0, 700.0, 820.0, 1024.0, 1180.0, 1600.0] {
+            app.rect = Rect::new(0.0, 0.0, w, 820.0);
+            let lay = app.compute_layout();
+            assert_eq!(lay.crumbs.len(), 6, "six stations at width {w}");
+            for (r, s) in &lay.crumbs {
+                assert!(r.x0 >= app.rect.x0 - 0.5, "station {s:?} clipped past the left edge at width {w}: x0={}", r.x0);
+                assert!(r.x1 <= app.rect.x1 + 0.5, "station {s:?} clipped past the right edge at width {w}: x1={}", r.x1);
+                assert!(r.width() > 0.0 && r.height() > 0.0, "station {s:?} has zero area at width {w}");
+            }
+        }
+    }
+
+    /// The indicator degrades through its three responsive tiers as the window
+    /// narrows: full labelled pills → icon rail → compact segmented bar.
+    #[test]
+    fn step_bar_degrades_through_tiers_by_width() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        assert_eq!(app.compute_layout().crumb_mode, StepBarMode::Full, "wide window → labelled pills");
+        app.rect = Rect::new(0.0, 0.0, 700.0, 820.0);
+        assert_eq!(app.compute_layout().crumb_mode, StepBarMode::Rail, "medium window → icon rail");
+        app.rect = Rect::new(0.0, 0.0, 340.0, 820.0);
+        assert_eq!(app.compute_layout().crumb_mode, StepBarMode::Compact, "narrow window → segmented bar");
+    }
+
+    /// The Confirm gate is a real shared [`TextInput`] (not a hand-rolled
+    /// `String`): typing through the actual click + key event path routes into
+    /// the input, mirrors to the armed value + document, and arms the write.
+    #[test]
+    fn confirm_gate_is_a_shared_textinput_that_gates_the_write() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        app.select_target(&mut doc, 0); // sdb
+        app.goto(&mut doc, Step::Confirm);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.confirm_matches(), "not armed before typing");
+
+        // Click the field to focus it, then type the device name.
+        let field = hit_rect(&app, |h| matches!(h, Hit::ConfirmField));
+        click_at(&mut app, &mut doc, center(field));
+        assert!(app.confirm_focused);
+        for s in ["s", "d", "b"] {
+            feed(&mut app, &mut doc, &char_ev(s));
+        }
+
+        // The shared input holds the value, and it mirrored to the gate + doc.
+        assert_eq!(app.confirm_input.value(), "sdb", "the shared TextInput holds the typed value");
+        assert_eq!(app.confirm, "sdb", "mirrored to the armed-name gate");
+        assert_eq!(ImagerDoc::confirm(&doc), "sdb", "persisted to the document");
+        assert!(app.confirm_matches(), "typed device name arms the write");
     }
 
     #[test]
