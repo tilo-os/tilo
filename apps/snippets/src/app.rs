@@ -670,6 +670,25 @@ impl ui::widget::Widget for SnippetsApp {
         self.actions.take_committed()
     }
 
+    /// Fold the library into the unified Ctrl+K palette: a snapshot
+    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider)
+    /// makes every snippet findable there by title, language, folder, tag,
+    /// description or body, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::SnippetSearchProvider::new(&self.library))]
+    }
+
+    /// Open the snippet a chosen palette row identifies. Selection is app-local
+    /// presentation (per-peer, never in the shared doc), so the doc args are
+    /// unused.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id) {
+            if self.library.get(id).is_some() {
+                self.open_snippet(id);
+            }
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
