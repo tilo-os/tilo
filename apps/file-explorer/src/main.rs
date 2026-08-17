@@ -54,7 +54,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some("grid") | Some("thumbnails") | Some("thumbnails-fs") => {
                 widget.set_view_mode(file_explorer::model::ViewMode::Grid)
             }
-            Some("select") => widget.debug_select(&[7, 8]),
+            Some("select") => {
+                widget.debug_select(&[7, 8]);
+                // Surface the floating status bubble for the still (count + N
+                // selected), since a single headless frame can't hover it.
+                widget.arm_status_bubble_for_shots();
+            }
+            // Just the floating status bubble (item count) over the cold-start
+            // view, with nothing selected.
+            Some("status") => widget.arm_status_bubble_for_shots(),
             // Begin an inline rename before the seeding sync so the in-place
             // editor is drawn over the row (with the name selected).
             Some("rename") => {
