@@ -1358,6 +1358,18 @@ impl CodeApp {
         self.refresh_tabs();
     }
 
+    /// The node of the file in the active tab, if any. Lets a test observe
+    /// where a Ctrl+K activation navigated.
+    pub fn active_file_node(&self) -> Option<crate::model::NodeId> {
+        self.session.active_buffer().map(|b| b.node)
+    }
+
+    /// Read access to the editing session — the open buffers + project tree a
+    /// search provider snapshots. Exposed for tests.
+    pub fn session_for_test(&self) -> &crate::model::Session {
+        &self.session
+    }
+
     /// Apply a tree event (open file / toggle folder).
     fn apply_tree_event(&mut self, ev: TreeEvent) {
         match ev {
@@ -3192,6 +3204,23 @@ impl Widget for CodeApp {
     /// [`Self::apply_command`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// Fold the open buffers and revealed project files into the unified Ctrl+K
+    /// palette: a snapshot
+    /// [`FileSearchProvider`](crate::search_provider::FileSearchProvider) makes
+    /// each findable there by name or path, alongside the actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::FileSearchProvider::new(&self.session))]
+    }
+
+    /// Open / focus the file a chosen palette row identifies. The row carries
+    /// the file's node id; opening it focuses the existing tab or creates one.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(node) = crate::search_provider::FileSearchProvider::parse_action_id(action_id) {
+            self.open_node(node);
+        }
     }
 
     fn get_rect(&self) -> Rect {
