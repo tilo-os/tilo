@@ -226,7 +226,6 @@ const RULER_GRAB: f64 = 8.0;
 const PAGE_GAP: f64 = 22.0;
 const CARET_WIDTH: f64 = 2.0;
 const TOOLBAR_H: f64 = ui::chrome::TOOLBAR_HEIGHT;
-const STATUS_H: f64 = ui::chrome::STATUS_BAR_HEIGHT;
 const LAYOUT_BAR_H: f64 = 32.0;
 /// Width of the contextual styles panel reserved on the right of the canvas.
 const STYLES_PANEL_W: f64 = 250.0;
@@ -390,7 +389,7 @@ enum FindAction {
     ToggleRegex,
 }
 
-/// A clickable control in the status bar (currently the zoom stepper).
+/// A clickable zoom control (the toolbar's right-aligned zoom stepper).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum StatusAction {
     ZoomOut,
@@ -402,6 +401,13 @@ enum StatusAction {
 const ZOOM_MIN: f64 = 0.5;
 const ZOOM_MAX: f64 = 3.0;
 const ZOOM_STEP: f64 = 0.1;
+/// Width of the toolbar's right-aligned zoom stepper cluster `[−] [100%] [+]`
+/// (= `bw + gap + val_w + gap + bw` in `draw_zoom_control`). Reserved on the
+/// toolbar's last row, right of the colour swatches, so buttons never pack under it.
+const ZOOM_CLUSTER_W: f64 = 88.0;
+/// Gap between the zoom stepper cluster and the colour-swatch strips on the
+/// toolbar's last row.
+const ZOOM_SWATCH_GAP: f64 = 16.0;
 
 /// Draw a text-input box (Find/Replace fields). A trailing `_` marks the focused
 /// field's caret; an empty field shows the placeholder.
@@ -1689,8 +1695,18 @@ pub struct WordProcessorWidget {
     /// Set when the current query is `find_regex` but does not compile — drives a
     /// subtle "bad pattern" cue and yields zero matches (never panics).
     find_regex_error: bool,
-    /// Clickable status-bar controls (the zoom stepper): `(action, rect)`.
+    /// Clickable zoom-stepper controls (now in the toolbar): `(action, rect)`.
     status_buttons: Vec<(StatusAction, Rect)>,
+    /// Transient floating status readout (word/char count + modified dot,
+    /// filename and format), in place of a permanent bottom status strip. Pokes
+    /// on a label change, reveals while the pointer hovers the bottom-right
+    /// corner band, then fades. See `draw_status_bubble`.
+    status_bubble: ui::StatusBubble,
+    /// Last composed bubble label, so the bubble pokes only on a real change
+    /// (the readout is recomputed every frame).
+    last_status: String,
+    /// `--shots`: pin the status bubble fully visible for a single headless frame.
+    shots_status: bool,
     /// Number of toolbar rows the controls wrapped into this frame (>=1). Drives
     /// the canvas top offset so no control is ever clipped.
     toolbar_rows: usize,
@@ -1905,6 +1921,9 @@ impl WordProcessorWidget {
             find_regex: false,
             find_regex_error: false,
             status_buttons: Vec::new(),
+            status_bubble: ui::StatusBubble::new(),
+            last_status: String::new(),
+            shots_status: false,
             toolbar_rows: 1,
             notes: Vec::new(),
             dict: None,
@@ -4131,7 +4150,7 @@ impl WordProcessorWidget {
         let w = approx.clamp(160.0, (self.rect.width() - 40.0).max(160.0));
         let h = 34.0;
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
-        let y1 = self.rect.y1 - STATUS_H - 14.0;
+        let y1 = self.rect.y1 - LAYOUT_BAR_H - 14.0;
         let r = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
         let shape = vello::kurbo::RoundedRect::from_rect(r, 8.0);
         // A soft drop shadow so the pill reads above the page.
@@ -4431,6 +4450,13 @@ impl Widget for WordProcessorWidget {
         );
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming only while the floating status bubble is lingering /
+        // fading, so it hides itself without needing a stray pointer event. Idle
+        // otherwise.
+        self.status_bubble.needs_frame(std::time::Instant::now())
+    }
+
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         // Resolve the OS theme into this frame's chrome palette once; every
         // chrome helper below reads `self.chrome` so the whole editor follows
@@ -4445,8 +4471,11 @@ impl Widget for WordProcessorWidget {
         let tb = Rect::new(full.x0, full.y0, full.x1, full.y0 + tb_h);
         self.draw_toolbar(scene, transform, text_renderer, theme, tb);
 
-        let status_top = (full.y1 - STATUS_H).max(full.y0 + tb_h);
-        let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + tb_h);
+        // No bottom status strip: its readout floats as a transient bubble (see
+        // `draw_status_bubble`), so the content spans down to the layout bar and
+        // reclaims the strip's height. The layout bar now sits at the very bottom.
+        let content_bottom = full.y1.max(full.y0 + tb_h);
+        let layout_bar_top = (content_bottom - LAYOUT_BAR_H).max(full.y0 + tb_h);
         // Version-history strip: a band between the canvas and the layout bar,
         // so the page shrinks rather than the history painting over the text.
         let history_h = self.history.band_height();
@@ -5659,11 +5688,14 @@ impl Widget for WordProcessorWidget {
             self.history.draw(scene, transform, text_renderer, theme, presence, band);
         }
 
-        let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
+        let lbar = Rect::new(full.x0, layout_bar_top, full.x1, content_bottom);
         self.draw_layout_bar(scene, transform, text_renderer, theme, lbar);
 
-        let bar = Rect::new(full.x0, status_top, full.x1, full.y1);
-        self.draw_status_bar(scene, transform, text_renderer, theme, bar);
+        // Transient floating status readout (bottom-right, above the layout bar),
+        // in place of the old permanent bottom status strip. Drawn last so it
+        // composites over the page; contextual menus/toasts (in `draw_overlay`)
+        // still stack above it.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &Modifiers, state: &mut AutoCommit, _path: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -5733,7 +5765,7 @@ impl Widget for WordProcessorWidget {
                 if self.rect.contains(self.pointer) {
                     let tb_h = self.toolbar_height(self.rect.width());
                     let over_body = self.pointer.y >= self.rect.y0 + tb_h
-                        && self.pointer.y <= self.rect.y1 - STATUS_H
+                        && self.pointer.y <= self.rect.y1 - LAYOUT_BAR_H
                         && !(self.styles_panel_open && self.panel_rect.contains(self.pointer))
                         && !(self.outline_open && self.outline_rect.contains(self.pointer));
                     if over_body {
@@ -5837,7 +5869,7 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 let in_chrome = self.pointer.y < self.rect.y0 + tb_h
-                    || self.pointer.y > self.rect.y1 - STATUS_H
+                    || self.pointer.y > self.rect.y1 - LAYOUT_BAR_H
                     || (self.styles_panel_open && self.panel_rect.contains(self.pointer))
                     || (self.outline_open && self.outline_rect.contains(self.pointer));
                 if !in_chrome {
@@ -5960,6 +5992,19 @@ impl Widget for WordProcessorWidget {
                     return;
                 }
                 if self.pointer.y < self.rect.y0 + tb_h {
+                    // The zoom stepper lives in the toolbar (right-aligned); its
+                    // buttons are tracked in `self.status_buttons`, separate from
+                    // the chrome toolbar buttons — check them first.
+                    if let Some(action) = self.status_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
+                        match action {
+                            StatusAction::ZoomOut => self.zoom_by(-ZOOM_STEP),
+                            StatusAction::ZoomIn => self.zoom_by(ZOOM_STEP),
+                            StatusAction::ZoomReset => self.set_zoom(1.0),
+                        };
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                     // Reverse so the colour swatches (pushed after the chrome
                     // buttons) win a hit-test on any overlap at a crowded edge.
                     let clicked = self.toolbar.iter().rev().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a);
@@ -5985,21 +6030,9 @@ impl Widget for WordProcessorWidget {
                     *handled = true;
                     return;
                 }
-                if self.pointer.y > self.rect.y1 - STATUS_H {
-                    // Status bar: the only clickable controls are the zoom stepper.
-                    if let Some(action) = self.status_buttons.iter().find(|(_, r)| r.contains(self.pointer)).map(|(a, _)| *a) {
-                        match action {
-                            StatusAction::ZoomOut => self.zoom_by(-ZOOM_STEP),
-                            StatusAction::ZoomIn => self.zoom_by(ZOOM_STEP),
-                            StatusAction::ZoomReset => self.set_zoom(1.0),
-                        };
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                    return; // status bar text itself — not editable
-                }
-                // Bottom layout bar (mode chips), just above the status bar.
-                let lbar_top = self.rect.y1 - STATUS_H - LAYOUT_BAR_H;
+                // Bottom layout bar (mode chips) now sits at the very bottom (the
+                // status strip it used to sit above is gone; its readout floats).
+                let lbar_top = self.rect.y1 - LAYOUT_BAR_H;
                 if self.pointer.y >= lbar_top {
                     if let Some(mode) = self.layout_chips.iter().find(|(_, r)| r.contains(self.pointer)).map(|(m, _)| *m) {
                         self.toggle_layout_mode(mode);
@@ -7694,10 +7727,17 @@ impl WordProcessorWidget {
             .collect()
     }
 
-    fn draw_status_bar(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, bar: Rect) {
+    /// Draw the transient floating status bubble at the bottom-left of the window
+    /// (just above the layout bar) — the reclaimed home of the old bottom status
+    /// strip. It shows the word/char count plus the modified dot, filename and
+    /// format, on a change or while the pointer hovers the bottom-left band, then
+    /// fades. Anchored left so it clears the right-side contextual styles panel.
+    /// All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let now = std::time::Instant::now();
         let words: usize = self.blocks.iter().map(|b| b.text.split_whitespace().count()).sum();
         let chars: usize = self.blocks.iter().map(|b| b.text.chars().count()).sum();
-        let left = t_args("status-count", &[arg("words", words as i64), arg("chars", chars as i64)]);
+        let count = t_args("status-count", &[arg("words", words as i64), arg("chars", chars as i64)]);
         let untitled = t("status-untitled");
         let fname = self
             .path
@@ -7716,32 +7756,73 @@ impl WordProcessorWidget {
             None => String::new(),
         };
         let dot = if self.modified { "●  " } else { "" };
-        let right = if kind.is_empty() {
-            format!("{dot}{fname}")
+        // Compose one compact readout combining the count and the file/format info.
+        let label = if kind.is_empty() {
+            format!("{count}    ·    {dot}{fname}")
         } else {
-            format!("{dot}{fname}    ·    {kind}")
+            format!("{count}    ·    {dot}{fname}    ·    {kind}")
         };
-        chrome::status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
-        // Overlay the zoom stepper (− value + …%) on top of the status bar,
-        // centered. It's the only clickable status-bar control.
-        self.draw_zoom_control(scene, transform, tr, bar);
+        // Poke only on a real change, so the every-frame recompute doesn't pin it
+        // open forever.
+        if label != self.last_status {
+            self.status_bubble.poke(now);
+            self.last_status = label.clone();
+        }
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        // Float above the bottom layout bar so the two never overlap.
+        let anchor_bottom = self.rect.y1 - LAYOUT_BAR_H - margin;
+        let rect = Rect::new(
+            self.rect.x0 + margin,
+            anchor_bottom - h,
+            self.rect.x0 + margin + w,
+            anchor_bottom,
+        );
+        // Reveal zone: the bottom-left corner band (plus the pill), above the
+        // layout bar — nudging the pointer there re-surfaces the readout.
+        let zone = Rect::new(self.rect.x0, rect.y0 - 24.0, rect.x1 + 40.0, self.rect.y1 - LAYOUT_BAR_H);
+        let over = self.shots_status || zone.contains(self.pointer);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
-    /// Draw the status-bar zoom control: a − button, the current percentage, a +
-    /// button, then a small "Reset" affordance when zoomed away from 100%. Each
-    /// button is registered in `self.status_buttons` for click hit-testing.
-    fn draw_zoom_control(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, bar: Rect) {
+    /// `--shots`: pin the status bubble fully visible so a single headless frame
+    /// captures the floating readout pill.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// Draw the toolbar's zoom control: a − button, the current percentage, a +
+    /// button, right-aligned within `row` (the toolbar's last row). The
+    /// percentage chip doubles as a click-to-reset-to-100% target. Each control
+    /// is registered in `self.status_buttons` for click hit-testing.
+    fn draw_zoom_control(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, row: Rect) {
         let cc = self.chrome;
         self.status_buttons.clear();
-        let cy = (bar.y0 + bar.y1) / 2.0;
+        let cy = (row.y0 + row.y1) / 2.0;
         let bw = 18.0;
         let bh = 18.0;
         let y0 = cy - bh / 2.0;
         let pct = format!("{}%", (self.zoom * 100.0).round() as i32);
-        // Layout: [−] [ 100% ] [+]  — centered horizontally in the bar.
+        // Layout: [−] [ 100% ] [+]  — right-aligned in the row (its width is
+        // `ZOOM_CLUSTER_W`), matching the swatch strip's edge margin.
         let val_w = 44.0;
         let total = bw + 4.0 + val_w + 4.0 + bw;
-        let mut x = (bar.x0 + bar.x1) / 2.0 - total / 2.0;
+        let mut x = row.x1 - 14.0 - total;
 
         let btn = |scene: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str| -> Rect {
             let r = Rect::new(x, y0, x + bw, y0 + bh);
@@ -7854,7 +7935,9 @@ impl WordProcessorWidget {
         // a full button row from extending under the swatches: on a wide window the
         // reservation shares the last row's right edge; on a narrow one it wraps the
         // swatches onto their own row. `toolbar_item_widths` mirrors this exactly.
-        widths.push(swatch_reserve_width());
+        // Reserve the swatch strips *and* the right-aligned zoom stepper (with the
+        // gap between them) so no button row extends under either.
+        widths.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
         starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
@@ -7896,7 +7979,13 @@ impl WordProcessorWidget {
         // targets) — no `ui` change needed. The leading neutral swatch clears the
         // run colour.
         let last_row_y = tb.y0 + (rows.len() as f64 - 1.0) * row_h;
-        let swatch_band = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
+        // Zoom stepper: right-aligned on the last toolbar row (its width reserved
+        // as part of the trailing packer phantom below, so buttons never run under
+        // it). The colour/highlight swatch strips pack to its left.
+        let last_row = Rect::new(tb.x0, last_row_y, tb.x1, last_row_y + row_h);
+        self.draw_zoom_control(scene, transform, tr, last_row);
+        let swatch_x1 = (tb.x1 - ZOOM_CLUSTER_W - ZOOM_SWATCH_GAP).max(tb.x0);
+        let swatch_band = Rect::new(tb.x0, last_row_y, swatch_x1, last_row_y + row_h);
         let text_left = self.draw_color_swatches(scene, transform, tr, swatch_band);
         // Highlight swatch strip, packed just left of the text-colour strip.
         let hl_band = Rect::new(tb.x0, last_row_y, (text_left - 10.0).max(tb.x0), last_row_y + row_h);
@@ -7944,7 +8033,9 @@ impl WordProcessorWidget {
         w.push(60.0); // Ruler
         w.push(72.0); // Outline
         w.push(48.0); // TOC
-        w.push(swatch_reserve_width()); // right-aligned colour + highlight swatches
+        // right-aligned colour + highlight swatches, plus the zoom stepper cluster
+        // (mirrors the reservation in `draw_toolbar`).
+        w.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
         w
     }
 
@@ -9480,6 +9571,53 @@ mod tests {
         assert!((wp.zoom - 1.0).abs() < 1e-9, "reset returns to 100%");
     }
 
+    /// The zoom stepper now lives right-aligned in the toolbar (the bottom status
+    /// strip it used to sit in is gone). Driving its buttons through the real
+    /// event handler must still zoom out / in / reset — proving the relocated
+    /// `status_buttons` hit-testing fires from the toolbar band.
+    #[test]
+    fn toolbar_zoom_stepper_drives_zoom_from_its_new_home() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        // Every zoom button sits inside the toolbar band, not a bottom strip.
+        let tb_h = wp.toolbar_height(1000.0);
+        assert_eq!(wp.status_buttons.len(), 3, "the −/%/+ stepper registered three targets");
+        for (_, r) in &wp.status_buttons {
+            assert!(r.y1 <= tb_h + 1.0, "zoom button is in the toolbar (rect={r:?}, toolbar_h={tb_h})");
+            assert!(r.x1 <= wp.rect.x1, "zoom button is within the window (rect={r:?})");
+        }
+
+        let center = |wp: &WordProcessorWidget, want: StatusAction| -> Point {
+            let (_, r) = wp
+                .status_buttons
+                .iter()
+                .find(|(a, _)| *a == want)
+                .expect("zoom button present");
+            Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+        };
+
+        // Click + : zoom in one step.
+        let p = center(&wp, StatusAction::ZoomIn);
+        left_click(&mut wp, &mut state, p);
+        assert!((wp.zoom - (1.0 + ZOOM_STEP)).abs() < 1e-6, "clicking + zooms in one step: {}", wp.zoom);
+
+        // Click − : back to 100%.
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let p = center(&wp, StatusAction::ZoomOut);
+        left_click(&mut wp, &mut state, p);
+        assert!((wp.zoom - 1.0).abs() < 1e-6, "clicking − zooms out one step: {}", wp.zoom);
+
+        // Click the percentage chip: reset to 100% from any zoom.
+        wp.set_zoom(1.6);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let p = center(&wp, StatusAction::ZoomReset);
+        left_click(&mut wp, &mut state, p);
+        assert!((wp.zoom - 1.0).abs() < 1e-9, "clicking the % chip resets to 100%: {}", wp.zoom);
+    }
+
     #[test]
     fn zoom_in_grows_the_scrollable_range() {
         let mut state = ui::State::new();
@@ -10325,7 +10463,9 @@ mod tests {
         // After redrawing at the new scroll, the heading is laid within the canvas.
         pipeline_draw(&mut wp, &mut state, 1000, 700);
         let canvas_top = wp.toolbar_height(1000.0);
-        let canvas_bottom = wp.rect.y1 - STATUS_H - LAYOUT_BAR_H;
+        // The bottom status strip is gone (its readout floats as a bubble); the
+        // canvas now runs down to the top of the layout bar.
+        let canvas_bottom = wp.rect.y1 - LAYOUT_BAR_H;
         let laid = wp.laid.iter().find(|l| l.id == concl.id).expect("conclusion is laid out after scrolling to it");
         assert!(laid.y_top >= canvas_top && laid.y_top <= canvas_bottom, "the clicked heading is visible in the canvas (y_top={}, canvas=[{canvas_top},{canvas_bottom}])", laid.y_top);
     }
@@ -11984,8 +12124,8 @@ mod history_strip_tests {
         let band = wp.history.band();
         assert!(band.height() > 100.0, "the strip has a real band: {band:?}");
         assert!(
-            band.y1 <= wp.rect.y1 - STATUS_H,
-            "the strip sits above the status bar"
+            band.y1 <= wp.rect.y1 - LAYOUT_BAR_H,
+            "the strip sits above the bottom layout bar"
         );
         assert_eq!(band.width(), wp.rect.width(), "full-width strip");
 
