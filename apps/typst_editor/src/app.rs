@@ -196,6 +196,11 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, apply a failed compile over the
     /// good render so the capture proves the stale-render banner.
     demo_stale: bool,
+    /// Screenshot-only: force the "Compiling…" status while the last good render
+    /// stays on screen, so a single headless frame captures the in-flight
+    /// indicator without depending on the worker thread's timing. Never set by
+    /// the live event loop.
+    demo_compiling: bool,
 
     // --- layout rects (filled by apply_layout) ---
     rect: Rect,
@@ -313,6 +318,7 @@ impl TypstApp {
             demo_preview_pan: false,
             demo_preview_select: false,
             demo_stale: false,
+            demo_compiling: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
             divider_rect: Rect::ZERO,
@@ -370,6 +376,14 @@ impl TypstApp {
             "select" => self.demo_preview_select = true,
             "stale" => self.demo_stale = true,
             "status" => self.arm_status_bubble_for_shots(),
+            "compiling" => {
+                // A source edit is mid-compile: the editor holds focus (typing),
+                // the last good render stays on screen, and the bottom-right pill
+                // reads "Compiling…".
+                self.editor.focused = true;
+                self.demo_compiling = true;
+                self.arm_status_bubble_for_shots();
+            }
             _ => {}
         }
     }
@@ -794,7 +808,9 @@ impl TypstApp {
     }
 
     fn compiling(&self) -> bool {
-        self.worker.as_ref().map(|w| w.in_flight()).unwrap_or(false)
+        // `demo_compiling` is a screenshot-only override (never set by the live
+        // loop) so a single headless frame can capture the in-flight indicator.
+        self.demo_compiling || self.worker.as_ref().map(|w| w.in_flight()).unwrap_or(false)
     }
 
     /// Compute every pane rect from a content rect. Split out from
