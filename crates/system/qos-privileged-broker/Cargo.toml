@@ -1,0 +1,21 @@
+[package]
+name = "qos-privileged-broker"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_privileged_broker"
+path = "src/lib.rs"
+
+[dependencies]
+# The manifest's privileged-capability vocabulary + the capability→scope
+# bridge. The broker's ceiling check reads the same `Capabilities` a package
+# declared.
+pkg = { path = "../../packaging/pkg" }
+# The runtime capability model: consent is a `CapOverride` evaluated by the
+# same `decide_capability` the compositor and filesystem call.
+collab-types = { path = "../../collab/collab-types" }
+serde = { workspace = true }
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
