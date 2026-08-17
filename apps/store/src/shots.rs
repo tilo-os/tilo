@@ -143,7 +143,11 @@ pub fn render_to_path(
     viewport: (u32, u32),
     out: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut widget: Box<dyn Widget> = Box::new(seeded_app());
+    let mut app = seeded_app();
+    // Force the floating status chip fully visible so this single
+    // headless frame captures it (a still can't hover it).
+    app.arm_status_bubble_for_shots();
+    let mut widget: Box<dyn Widget> = Box::new(app);
     render_widget(viewport, out, &mut widget)
 }
 
@@ -210,6 +214,9 @@ pub fn render_widget(
         &presence,
         &permission,
     );
+    // Top-layer overlay pass — the floating status bubble paints here,
+    // matching the live event loop's dedicated overlay pass.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
