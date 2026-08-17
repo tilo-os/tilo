@@ -696,6 +696,18 @@ impl FeedsApp {
         }
     }
 
+    /// The article currently open, if any. Lets a test observe where a Ctrl+K
+    /// activation navigated.
+    pub fn selected_article(&self) -> Option<Id> {
+        self.selected
+    }
+
+    /// The subset the list pane is currently showing. Lets a test observe that
+    /// an activation focused the right source.
+    pub fn active_filter(&self) -> Filter {
+        self.filter
+    }
+
     fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
         self.list_scroll = 0.0;
@@ -3161,6 +3173,35 @@ impl Widget for FeedsApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
+    /// palette: a snapshot
+    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
+    /// makes both findable there without touching the network, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(&self.store))]
+    }
+
+    /// Navigate to the article or feed a chosen palette row identifies. For an
+    /// article, focus its feed (so the row is in the visible list) then open it,
+    /// marking it read; for a feed, focus that subscription.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        match crate::search_provider::Activation::parse(action_id) {
+            Some(crate::search_provider::Activation::Article(id)) => {
+                if let Some(feed_id) = self.store.article(id).map(|a| a.feed_id) {
+                    self.set_filter(Filter::Feed(feed_id));
+                    self.select_article(id, doc);
+                }
+            }
+            Some(crate::search_provider::Activation::Feed(id)) => {
+                if self.store.feed(id).is_some() {
+                    self.set_filter(Filter::Feed(id));
+                }
+            }
+            None => {}
+        }
     }
 
     fn build_layout(
