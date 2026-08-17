@@ -57,7 +57,6 @@ use crate::paint;
 use crate::reader_theme::ReaderPalette;
 
 const TOP_BAR: f64 = 54.0;
-const BOTTOM_BAR: f64 = 58.0;
 
 /// Pixels one wheel-line notch maps to, matching the toolkit's other scroll
 /// surfaces so a mouse wheel feels consistent across apps.
@@ -279,7 +278,7 @@ enum Action {
     GotoChapter(usize),
     ToggleToc,
     ToggleNotes,
-    /// Toggle the reading-settings (type + page) popover above the bottom bar.
+    /// Toggle the reading-settings (type + page) popover from the top bar.
     ToggleTypePopover,
     /// Dismiss any open overlay flap (scrim tap on a narrow window).
     DismissOverlay,
@@ -439,8 +438,6 @@ enum Ico {
     Toc,
     Notes,
     Bookmark(bool),
-    Prev,
-    Next,
     PlusI,
     MinusI,
     /// A horizontal three-dot "more" glyph (opens the full settings screen).
@@ -560,9 +557,29 @@ pub struct BooksApp {
     /// deltas coalesce into whole page turns instead of flipping wildly.
     turn_accum: f64,
     /// Reading-settings popover (text size / spacing / typeface / page tint),
-    /// summoned from the bottom bar. Keeps those controls out of the always-on
-    /// chrome so the bar stays readable at every width.
+    /// summoned by the "Aa" button in the top bar. Keeps those controls out of
+    /// the always-on chrome so the reader stays clean at every width.
     type_popover: bool,
+
+    /// The floating page-indicator bubble — a transient overlay (the shared
+    /// [`ui::StatusBubble`]) that floats over the bottom-centre of the reading
+    /// column on a page change or while the pointer hovers the bottom band, then
+    /// fades. It replaces the old always-on bottom status strip so the page keeps
+    /// that vertical space.
+    page_bubble: ui::StatusBubble,
+    /// The (chapter, page) the bubble last announced, so a change re-pokes it.
+    /// `None` until the first draw records a position (so opening a book doesn't
+    /// poke the bubble open).
+    bubble_shown: Option<(usize, usize)>,
+    /// The bubble's pill + chevron rects, captured during draw for hover
+    /// detection and click hit-testing.
+    bubble_rect: Rect,
+    bubble_prev: Rect,
+    bubble_next: Rect,
+    /// Screenshot-only: force the page bubble hover-pinned open so a still frame
+    /// captures the transient indicator. Never set at runtime.
+    shots_reader_bubble: bool,
+
     cursor: Point,
     /// First block index visible on the current page (for bookmark targeting).
     page_top_block: usize,
@@ -765,6 +782,12 @@ impl BooksApp {
             scroll_to_cursor: false,
             turn_accum: 0.0,
             type_popover: false,
+            page_bubble: ui::StatusBubble::new(),
+            bubble_shown: None,
+            bubble_rect: Rect::ZERO,
+            bubble_prev: Rect::ZERO,
+            bubble_next: Rect::ZERO,
+            shots_reader_bubble: false,
             cursor: Point::ZERO,
             page_top_block: 0,
             composing: None,
@@ -833,6 +856,14 @@ impl BooksApp {
         app.pending_open_path = Some(path.to_path_buf());
         app.view = View::Reader;
         app
+    }
+
+    /// Screenshot-only: force the floating page bubble hover-pinned open (and
+    /// poke it) so a single still reader frame captures the transient page
+    /// indicator + its prev/next stepper. Never armed at runtime.
+    pub fn arm_reader_bubble_for_shots(&mut self) {
+        self.shots_reader_bubble = true;
+        self.page_bubble.poke(Instant::now());
     }
 
     fn num_chapters(&self) -> usize {
@@ -910,7 +941,9 @@ impl BooksApp {
     ///   scroll offset, top-bar clip, and indicator).
     /// * `narrow`  — the contents rail summoned as an overlay flap over the
     ///   page behind a scrim (the narrow-window layout).
-    /// * `type`    — the reading-settings popover open above the bottom bar.
+    /// * `type`    — the reading-settings popover open, dropped from the top bar.
+    /// * `page-bubble` — the reader with the floating page-indicator bubble
+    ///   (page count + prev/next stepper) pinned open over the page.
     /// * `select`  — a paragraph selected, floating the selection toolbar.
     /// * anything else — the reader on the first sample book (clean page).
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
@@ -944,6 +977,13 @@ impl BooksApp {
         match scenario {
             "shelf" | "library" => self.view = View::Library,
             "read" => self.view = View::Reader,
+            "page-bubble" => {
+                // The reader with the floating page-indicator bubble pinned open,
+                // so a still frame shows the transient overlay + its prev/next
+                // stepper (not a permanent bottom strip).
+                self.view = View::Reader;
+                self.arm_reader_bubble_for_shots();
+            }
             "settings-library" => {
                 // The Library settings pane: the folders books were opened from,
                 // one already being watched for new additions.
@@ -3364,10 +3404,13 @@ impl Widget for BooksApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while either rail flap is
-        // mid-slide (so the overlay reveal + scrim fade are smooth) or a page
-        // turn is easing the incoming page into place.
+        // mid-slide (so the overlay reveal + scrim fade are smooth), a page
+        // turn is easing the incoming page into place, or the floating page
+        // bubble is lingering / fading (so it hides itself without a stray
+        // pointer event).
         self.flaps_animating()
             || self.page_turn.map_or(false, |pt| !pt.done(Instant::now()))
+            || self.page_bubble.needs_frame(Instant::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -3780,8 +3823,7 @@ impl BooksApp {
         let w = 1.9;
         let inner = rect;
         match ico {
-            Ico::Back | Ico::Prev => paint::chevron_left(scene, t, inner, icon_col, w),
-            Ico::Next => paint::chevron_right(scene, t, inner, icon_col, w),
+            Ico::Back => paint::chevron_left(scene, t, inner, icon_col, w),
             Ico::Toc => paint::list(scene, t, inner, icon_col, w),
             Ico::Notes => paint::note(scene, t, inner, icon_col, w),
             Ico::Bookmark(filled) => paint::bookmark(scene, t, inner, icon_col, w, filled),
@@ -4643,7 +4685,10 @@ impl BooksApp {
         let center_x0 = r.x0 + toc_w;
         let center_x1 = r.x1 - notes_w;
         let body_y0 = r.y0 + TOP_BAR;
-        let body_y1 = r.y1 - BOTTOM_BAR;
+        // The page renders to the window bottom now that the always-on bottom
+        // strip is gone — the page indicator floats as a transient bubble
+        // (`draw_reader_bubble`) instead of costing a permanent strip of chrome.
+        let body_y1 = r.y1;
 
         let palette = self.resolve_palette(theme);
 
@@ -4940,9 +4985,9 @@ impl BooksApp {
         // bookmark state + the notes drawer both consult `self.annotations`)
         self.annotations = annos;
 
-        // ---- chrome: top bar, bottom bar, selection HUD, drawers --------
+        // ---- chrome: top bar, floating page bubble, selection HUD, drawers -
         self.draw_reader_topbar(scene, t, tr, theme, &lib, &c);
-        self.draw_reader_bottombar(scene, t, tr, theme, &c, nchap.max(1));
+        self.draw_reader_bubble(scene, t, tr, theme, center_x0, center_x1, nchap.max(1));
         // Floating selection toolbar over the page (under any overlay rail).
         self.draw_selection_hud(scene, t, tr, theme, &c, paper_x, paper_w, body_y0, body_y1, sel_anchor);
         self.draw_rails(scene, t, tr, theme, &lib, body_y0, body_y1, &c);
@@ -5308,7 +5353,7 @@ impl BooksApp {
         let cx = (r.x0 + r.x1) / 2.0;
         let x0 = (cx - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
         let top_lim = r.y0 + TOP_BAR + 8.0;
-        let bot_lim = r.y1 - BOTTOM_BAR - 8.0;
+        let bot_lim = r.y1 - 16.0;
         let y0 = match anchor_y {
             Some(ay) if ay + 22.0 + ch <= bot_lim => ay + 22.0,
             Some(ay) if ay - 14.0 - ch >= top_lim => ay - 14.0 - ch,
@@ -5437,7 +5482,7 @@ impl BooksApp {
         };
         let x0 = (ax - cw / 2.0).clamp(r.x0 + 12.0, (r.x1 - 12.0 - cw).max(r.x0 + 12.0));
         let top_lim = r.y0 + TOP_BAR + 8.0;
-        let bot_lim = r.y1 - BOTTOM_BAR - 8.0;
+        let bot_lim = r.y1 - 16.0;
         let y0 = if abot + 12.0 + ch <= bot_lim {
             abot + 12.0
         } else if atop - 12.0 - ch >= top_lim {
@@ -5606,6 +5651,10 @@ impl BooksApp {
         // drawn a touch larger than the other chrome icons.
         let s_bm = 40.0;
         let cy = r.y0 + (TOP_BAR - s) / 2.0;
+        // The reading-settings ("Aa") pill lives in the right cluster; its width
+        // is measured up front so the centre title reserves room for it.
+        let (aa_tw, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
+        let aa_w = aa_tw as f64 + 26.0;
         let mut x = r.x0 + 14.0;
         x += self.icon_button(scene, t, theme, x, cy, s, Ico::Back, false, Action::Back) + 6.0;
         let toc_active = self.toc_open();
@@ -5616,7 +5665,9 @@ impl BooksApp {
         // rather than allowed to collide with either cluster on a narrow window.
         if let Some(book) = lib.get(self.book_idx) {
             let left_bound = x + s + 12.0;
-            let right_bound = r.x1 - 14.0 - s - 4.0 - s_bm - 12.0;
+            // Right cluster, walking in from the edge: notes icon, bookmark,
+            // then the "Aa" pill — the title clears the left edge of that pill.
+            let right_bound = r.x1 - 14.0 - s - 4.0 - s_bm - 8.0 - aa_w - 12.0;
             let avail = (right_bound - left_bound).max(40.0);
 
             let auth = format!("   {}", book.author);
@@ -5648,7 +5699,7 @@ impl BooksApp {
             }
         }
 
-        // right: bookmark toggle + notes toggle
+        // right: reading-settings ("Aa") pill + bookmark toggle + notes toggle
         let bookmarked = self.annotations.iter().any(|a| {
             a.kind == AnnoKind::Bookmark && a.chapter == self.chapter && a.block == self.page_top_block
         });
@@ -5668,59 +5719,14 @@ impl BooksApp {
             bookmarked,
             Action::ToggleBookmark,
         );
-    }
 
-    /// The bottom bar carries only page navigation and one "Aa" button that
-    /// opens the reading-settings popover. Keeping the type/spacing/theme
-    /// controls out of the always-on chrome is what lets the bar stay clean and
-    /// non-overflowing from 1280 all the way down to 560px.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_reader_bottombar(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        c: &ui::tokens::colors::Colors,
-        nchap: usize,
-    ) {
-        let r = self.rect;
-        let y0 = r.y1 - BOTTOM_BAR;
-        let bar = Rect::new(r.x0, y0, r.x1, r.y1);
-        paint::fill_rect(scene, t, bar, c.surfaces.raised);
-        paint::line(scene, t, Point::new(r.x0, y0), Point::new(r.x1, y0), c.border_standard, 1.0);
-
-        let s = 34.0;
-        let cy = y0 + (BOTTOM_BAR - s) / 2.0;
-        let mut x = r.x0 + 18.0;
-
-        // --- left: page navigation ---------------------------------------
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::Prev, false, Action::PrevPage) + 2.0;
-        let pg = format!("{} / {}", self.page + 1, self.cur_page_count.max(1));
-        let (pw, _) = tr.measure_weighted(&pg, 13.0, None, TextWeight::Medium);
-        tr.draw_text_weighted(
-            scene,
-            &pg,
-            13.0,
-            c.text_primary,
-            t * Affine::translate((x + 6.0, cy + 8.0)),
-            None,
-            TextWeight::Medium,
-        );
-        x += pw as f64 + 12.0;
-        x += self.icon_button(scene, t, theme, x, cy, s, Ico::Next, false, Action::NextPage);
-
-        // Chapter locator, only when there is comfortable room for it.
-        let loc = format!("Chapter {} of {}", self.chapter + 1, nchap.max(1));
-        let (lw, _) = tr.measure(&loc, 12.0, None);
-
-        // --- right: reading-settings ("Aa") ------------------------------
-        let pill_h = 30.0;
-        let pill_y = y0 + (BOTTOM_BAR - pill_h) / 2.0;
-        let (aw, _) = tr.measure_weighted("Aa", 15.0, None, TextWeight::Semibold);
-        let aa_w = aw as f64 + 26.0;
-        let aa_x = r.x1 - 18.0 - aa_w;
-        let aa_rect = Rect::new(aa_x, pill_y, aa_x + aa_w, pill_y + pill_h);
+        // Reading-settings ("Aa") — relocated off the removed bottom strip so
+        // typography stays one tap away. Opens the same type/spacing/theme
+        // popover, with the same active state + hit target.
+        rx -= 8.0 + aa_w;
+        let aa_h = 32.0;
+        let aa_y = r.y0 + (TOP_BAR - aa_h) / 2.0;
+        let aa_rect = Rect::new(rx, aa_y, rx + aa_w, aa_y + aa_h);
         let aa_active = self.type_popover;
         let aa_hover = self.is_hover(aa_rect);
         let aa_bg = if aa_active {
@@ -5730,30 +5736,107 @@ impl BooksApp {
         } else {
             c.surfaces.overlay
         };
-        paint::fill_round(scene, t, aa_rect, pill_h / 2.0, aa_bg);
+        paint::fill_round(scene, t, aa_rect, aa_h / 2.0, aa_bg);
         let aa_ink = if aa_active { Color::from_rgb8(248, 248, 252) } else { c.text_primary };
         tr.draw_text_weighted(
             scene,
             "Aa",
             15.0,
             aa_ink,
-            t * Affine::translate((aa_x + 13.0, pill_y + 6.0)),
+            t * Affine::translate((rx + (aa_w - aa_tw as f64) / 2.0, aa_y + (aa_h - 15.0) / 2.0)),
             None,
             TextWeight::Semibold,
         );
         self.push_hit(aa_rect, Action::ToggleTypePopover);
-
-        // Draw the chapter locator centred in the gap between the nav cluster
-        // and the Aa button, but only if it fits without crowding either.
-        let gap_start = x + 20.0;
-        let gap_end = aa_x - 20.0;
-        if gap_end - gap_start > lw as f64 {
-            let lx = (gap_start + gap_end) / 2.0 - lw as f64 / 2.0;
-            tr.draw_text(scene, &loc, 12.0, c.text_dim, t * Affine::translate((lx, cy + 9.0)), None);
-        }
     }
 
-    /// The reading-settings popover summoned by the bottom bar's "Aa" button:
+    /// The floating page-indicator bubble — a transient overlay (the shared
+    /// [`ui::StatusBubble`]) that floats over the bottom-centre of the reading
+    /// column. It surfaces on a page change (poked here) or while the pointer
+    /// hovers the bottom-centre band, then fades — replacing the old always-on
+    /// bottom status strip so the page keeps that vertical space. The pill reads
+    /// `"{page} / {count}"` (plus the chapter locator when it fits) with a left
+    /// chevron (prev) and a right chevron (next) that step pages; the chevron
+    /// rects are pushed as `PrevPage` / `NextPage` hits only while the bubble is
+    /// visible, so an invisible bubble never eats a click in the bottom band.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_reader_bubble(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        center_x0: f64,
+        center_x1: f64,
+        nchap: usize,
+    ) {
+        self.bubble_rect = Rect::ZERO;
+        self.bubble_prev = Rect::ZERO;
+        self.bubble_next = Rect::ZERO;
+
+        let now = Instant::now();
+        // A page (or chapter) change briefly floats the bubble. The first
+        // observation only records the position, so opening a book — or a resize
+        // redraw — doesn't poke it open.
+        let pos = (self.chapter, self.page);
+        if let Some(prev) = self.bubble_shown {
+            if prev != pos {
+                self.page_bubble.poke(now);
+            }
+        }
+        self.bubble_shown = Some(pos);
+
+        let r = self.rect;
+        let count = self.cur_page_count.max(1);
+        let base = format!("{} / {}", self.page + 1, count);
+        let with_chapter = format!("{}   ·   Chapter {} of {}", base, self.chapter + 1, nchap.max(1));
+        let text_size = 12.5f32;
+        let chev = 26.0;
+        let col_w = (center_x1 - center_x0).max(120.0);
+        // Prefer the richer label with the chapter locator, but only when the
+        // pill would still sit comfortably within the reading column.
+        let (rich_w, _) = ui::status_bubble::pill_size(&with_chapter, tr, text_size, chev);
+        let label = if nchap > 0 && rich_w <= col_w - 48.0 { with_chapter } else { base };
+
+        let (pill_w, pill_h) = ui::status_bubble::pill_size(&label, tr, text_size, chev);
+        let cx = (center_x0 + center_x1) / 2.0;
+        let by = r.y1 - 16.0 - pill_h;
+        let rect = Rect::new(cx - pill_w / 2.0, by, cx + pill_w / 2.0, by + pill_h);
+
+        // Reveal zone: a band across the bottom-centre of the reading column
+        // (plus the pill itself), so approaching the bottom edge surfaces the
+        // indicator.
+        let zone = Rect::new(rect.x0 - 40.0, r.y1 - (pill_h + 32.0), rect.x1 + 40.0, r.y1);
+        let over = self.shots_reader_bubble || zone.contains(self.cursor) || rect.contains(self.cursor);
+        self.page_bubble.set_hover(over, now);
+
+        let alpha = self.page_bubble.alpha(now) as f32;
+        if alpha <= 0.0 {
+            return;
+        }
+
+        // Capture geometry for hover + click hit-testing (the chevron slots), and
+        // route the chevrons through the same page-nav action path every other
+        // affordance uses — only while the bubble is actually up.
+        self.bubble_rect = rect;
+        self.bubble_prev = Rect::new(rect.x0, rect.y0, rect.x0 + chev + 8.0, rect.y1);
+        self.bubble_next = Rect::new(rect.x1 - chev - 8.0, rect.y0, rect.x1, rect.y1);
+        self.push_hit(self.bubble_prev, Action::PrevPage);
+        self.push_hit(self.bubble_next, Action::NextPage);
+
+        scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, t, &rect.inflate(12.0, 14.0));
+        ui::status_bubble::draw_pill(scene, t, tr, theme, rect, &label, text_size);
+        let prev_hot = self.bubble_prev.contains(self.cursor);
+        let next_hot = self.bubble_next.contains(self.cursor);
+        let cyy = (rect.y0 + rect.y1) / 2.0;
+        let pc = Rect::new(rect.x0 + 8.0, cyy - 8.0, rect.x0 + 8.0 + 16.0, cyy + 8.0);
+        let nc = Rect::new(rect.x1 - 8.0 - 16.0, cyy - 8.0, rect.x1 - 8.0, cyy + 8.0);
+        ui::status_bubble::draw_chevron(scene, t, pc, if prev_hot { theme.text_primary } else { theme.text_dim }, true);
+        ui::status_bubble::draw_chevron(scene, t, nc, if next_hot { theme.text_primary } else { theme.text_dim }, false);
+        scene.pop_layer();
+    }
+
+    /// The reading-settings popover summoned by the top bar's "Aa" button:
     /// text size, line spacing, typeface, and page tint. A full-surface scrim
     /// behind it makes any tap-away dismiss it. Drawn last so it floats on top.
     /// Horizontal bounds `(left, right)` for the reading-settings popover,
@@ -5835,10 +5918,12 @@ impl BooksApp {
         let panel_h =
             pad * 2.0 + header_h + steppers_h + 22.0 + layout_h + 22.0 + type_h + 22.0 + page_h;
 
-        let bar_top = r.y1 - BOTTOM_BAR;
+        // The "Aa" trigger now lives in the top bar, so the popover drops down
+        // from just below it (right-aligned via the shared x-bounds), clamping
+        // its foot to the window bottom on a short window.
         let (px0, px1) = self.type_popover_x_bounds(panel_w);
-        let py1 = bar_top - 10.0;
-        let py0 = (py1 - panel_h).max(r.y0 + TOP_BAR + 8.0);
+        let py0 = r.y0 + TOP_BAR + 8.0;
+        let py1 = (py0 + panel_h).min(r.y1 - 12.0);
         let panel = Rect::new(px0, py0, px1, py1);
         // Body panel (its own tap-swallow so clicks inside don't dismiss).
         paint::fill_round(scene, t, panel, theme.tokens.radii.lg as f64, c.surfaces.raised);
@@ -7763,16 +7848,49 @@ mod interaction_tests {
     #[test]
     fn next_page_advances_position() {
         let mut app = app_with_sample();
+        // The page-nav stepper now lives on the floating page bubble, which is
+        // transient — arm it open so its next chevron registers a NextPage hit,
+        // then click that chevron on the real hit-testing path.
+        app.arm_reader_bubble_for_shots();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let (c0, p0) = (app.chapter, app.page);
-        let next = find_hit(&app, |a| matches!(a, Action::NextPage)).expect("next button");
+        let next = find_hit(&app, |a| matches!(a, Action::NextPage)).expect("next chevron on the page bubble");
         assert!(click(&mut app, &mut doc, next), "next handled");
         assert!(
             app.page != p0 || app.chapter != c0,
             "position advanced from ch{c0}/pg{p0} to ch{}/pg{}",
             app.chapter,
             app.page
+        );
+    }
+
+    /// The floating page bubble is a transient overlay: hidden on a settled
+    /// reader, surfaced by a page change, and it schedules the animation frames
+    /// that let it fade itself out (so it hides without a stray pointer event).
+    #[test]
+    fn page_bubble_surfaces_on_a_page_change_and_schedules_its_fade() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Settled reader: the bubble is not up, and no NextPage hit is exposed in
+        // the bottom band (an invisible bubble never eats a click there).
+        assert!(!app.needs_animation_frame(), "a settled reader schedules no animation frames");
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
+            "the hidden bubble exposes no page-nav hit"
+        );
+        // A page turn pokes the bubble; the next frame draws it (its chevrons are
+        // hit-testable) and it keeps requesting frames so it can fade on its own.
+        app.dispatch(Action::NextPage, &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
+            "a page change surfaces the bubble's next chevron"
+        );
+        assert!(
+            app.page_bubble.needs_frame(Instant::now()),
+            "the visible bubble schedules its own fade-out frames"
         );
     }
 
