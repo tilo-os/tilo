@@ -1067,6 +1067,15 @@ impl CalendarApp {
         self.open_detail();
     }
 
+    /// The event currently selected, if the selection is an event (not a task).
+    /// Lets a test observe where a Ctrl+K activation navigated.
+    pub fn selected_event(&self) -> Option<Id> {
+        match self.selection {
+            Some(Sel::Event(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     fn select_task(&mut self, id: Id) {
         self.selection = Some(Sel::Task(id));
         self.open_detail();
@@ -4242,6 +4251,26 @@ impl Widget for CalendarApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// Fold the calendar's events into the unified Ctrl+K palette: a snapshot
+    /// [`EventSearchProvider`](crate::search_provider::EventSearchProvider)
+    /// makes every event findable there, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::EventSearchProvider::new(&self.model))]
+    }
+
+    /// Navigate to the event a chosen palette row identifies: jump the view's
+    /// anchor to its day and select it. Anchor/selection are app-local
+    /// presentation (per-peer, never in the shared doc), so the doc args are
+    /// unused.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::EventSearchProvider::parse_action_id(action_id) {
+            if let Some(ev) = self.model.event(id) {
+                self.anchor = ev.start.date();
+                self.select_event(id);
+            }
+        }
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {

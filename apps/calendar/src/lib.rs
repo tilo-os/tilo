@@ -18,6 +18,7 @@ pub mod date;
 pub mod doc;
 pub mod ics;
 pub mod model;
+pub mod search_provider;
 pub mod store;
 
 pub use account::{AccountStore, CalDavConfig, CalendarAccount, RemoteCalendar};
