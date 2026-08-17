@@ -633,6 +633,12 @@ impl FeedsApp {
         self.stage_article_menu_shot = true;
     }
 
+    /// Stage keyboard focus on the reader pane (for the `--shots` focus-ring
+    /// scenario).
+    pub fn force_reader_focus(&mut self) {
+        self.reader_focused = true;
+    }
+
     /// Stage the "mark all as read" confirmation dialog open for a `--shots`
     /// capture of the confirm step.
     pub fn force_mark_all_read_confirm(&mut self) {

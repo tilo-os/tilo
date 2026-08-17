@@ -79,6 +79,8 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // The per-article right-click context menu (copy / open / read /
         // favourite) open over the article list.
         "article-menu" => app.force_article_menu_open(),
+        // The reader pane holding keyboard focus (its accent focus ring).
+        "reader-focus" => app.force_reader_focus(),
         // The "mark all as read" confirmation dialog before it runs.
         "mark-all-read" => app.force_mark_all_read_confirm(),
         // The subscriptions list after an OPML import folds new folders + feeds
