@@ -48,7 +48,7 @@ use ui::icons::{self, Icon};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{EmojiPicker, Widget};
 
 use crate::layout::{Key, KeyAction, KeyId, KeyboardLayout, InputPurpose, ShiftState, key_rects};
 use crate::predict::Predictor;
@@ -151,6 +151,16 @@ pub struct OskWidget {
     on_key: Option<Box<dyn FnMut(KeyAction)>>,
     on_toolbar: Option<Box<dyn FnMut(OskToolbarAction)>>,
 
+    // --- emoji picker ---
+    /// When true, the key area is replaced by the shared [`EmojiPicker`]; a
+    /// chosen emoji is injected through the same `on_key` path a key tap uses.
+    emoji_mode: bool,
+    /// The shared emoji picker primitive (search + recents + categories).
+    emoji_picker: EmojiPicker,
+    /// Last pointer position (logical px), for routing to the picker + toolbar
+    /// while in emoji mode.
+    last_cursor: Point,
+
     // --- dirty tracking ---
     /// Set when the displayed layer/layout changes so the host rebuilds the
     /// taffy node (its intrinsic height tracks the row count). Cleared by
@@ -221,6 +231,9 @@ impl OskWidget {
             toolbar_log: Vec::new(),
             on_key: None,
             on_toolbar: None,
+            emoji_mode: false,
+            emoji_picker: EmojiPicker::new(),
+            last_cursor: Point::ZERO,
             structure_dirty: false,
             visible: true,
         };
@@ -460,9 +473,62 @@ impl OskWidget {
             Some(it) => it.action.clone(),
             None => return,
         };
+        // The emoji button toggles the in-widget picker; it is handled here
+        // rather than forwarded to the host.
+        if matches!(&action, OskToolbarAction::Custom(s) if s == "emoji") {
+            self.set_emoji_mode(!self.emoji_mode);
+            self.toolbar_log.push(action);
+            return;
+        }
         self.toolbar_log.push(action.clone());
         if let Some(cb) = &mut self.on_toolbar {
             cb(action);
+        }
+    }
+
+    /// Show or hide the emoji picker in place of the key area. Opening it
+    /// resets its search + scroll and lands on the recents/first category.
+    pub fn set_emoji_mode(&mut self, on: bool) {
+        if self.emoji_mode == on {
+            return;
+        }
+        self.emoji_mode = on;
+        if on {
+            self.emoji_picker.open_reset();
+        }
+        self.structure_dirty = true;
+    }
+
+    /// Whether the emoji picker is currently shown.
+    pub fn emoji_mode(&self) -> bool {
+        self.emoji_mode
+    }
+
+    /// Preset the emoji picker's search query (used to stage a screenshot).
+    pub fn set_emoji_query(&mut self, q: &str) {
+        self.emoji_picker.set_query(q);
+    }
+
+    /// Inject `e` (an emoji glyph) as if a key produced it — the same
+    /// `apply_action` → `on_key` path a normal key tap takes, so both the
+    /// virtual-keyboard backend and the input-method commit carry it.
+    pub fn insert_emoji(&mut self, e: &str) {
+        self.apply_action(KeyAction::Char(e.to_string()));
+    }
+
+    /// Forward one raw event to the hosted emoji picker and inject any pick.
+    fn route_emoji_picker(&mut self, event: &WindowEvent, scale_factor: f64) {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods = winit::event::Modifiers::default();
+        let mut sink = AutoCommit::new();
+        let mut h = false;
+        let mut f = None;
+        self.emoji_picker.handle_event(
+            event, scale_factor, &mods, &mut sink, &automerge::ROOT, &mut h, &mut f, node, &taffy,
+        );
+        if let Some(emoji) = self.emoji_picker.take_picked() {
+            self.insert_emoji(&emoji);
         }
     }
 
@@ -939,6 +1005,10 @@ impl Widget for OskWidget {
             key_rects(layout, key_area, self.shift)
         };
         self.key_geom = geom;
+        // In emoji mode the picker takes the key band.
+        if self.emoji_mode {
+            self.emoji_picker.apply_layout_external(key_area);
+        }
     }
 
     fn draw(
@@ -967,7 +1037,9 @@ impl Widget for OskWidget {
         for (i, r) in &self.toolbar_geom {
             let item = &self.toolbar[*i];
             let hovered = self.hovered_tool == Some(*i);
-            let pressed = self.pressed_tool == Some(*i);
+            let is_emoji = matches!(&item.action, OskToolbarAction::Custom(s) if s == "emoji");
+            // Highlight the emoji button while the picker is showing.
+            let pressed = self.pressed_tool == Some(*i) || (is_emoji && self.emoji_mode);
             draw_cell(
                 scene,
                 transform,
@@ -1013,6 +1085,13 @@ impl Widget for OskWidget {
                     top,
                 );
             }
+        }
+
+        // In emoji mode, the picker replaces the key grid.
+        if self.emoji_mode {
+            self.emoji_picker.draw(scene, transform, text_renderer, theme, _presence);
+            self.emoji_picker.draw_overlay(scene, transform, text_renderer, theme, _presence);
+            return;
         }
 
         // Keys.
@@ -1063,6 +1142,46 @@ impl Widget for OskWidget {
         // A hidden keyboard occupies no area and draws nothing, so it should
         // not consume or react to pointer events meant for the app behind it.
         if !self.visible {
+            return;
+        }
+        // Emoji mode: the toolbar still works (to toggle back), everything else
+        // routes to the hosted picker.
+        if self.emoji_mode {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    self.last_cursor = p;
+                    let t = self.tool_at(p);
+                    if t != self.hovered_tool {
+                        self.hovered_tool = t;
+                    }
+                    self.route_emoji_picker(event, scale_factor);
+                    *handled = true;
+                }
+                WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                    if let Some(i) = self.hovered_tool {
+                        self.pressed_tool = Some(i);
+                    } else {
+                        self.route_emoji_picker(event, scale_factor);
+                    }
+                    *handled = true;
+                }
+                WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                    if let Some(i) = self.pressed_tool.take() {
+                        if self.hovered_tool == Some(i) {
+                            self.activate_tool(i);
+                        }
+                    } else {
+                        self.route_emoji_picker(event, scale_factor);
+                    }
+                    *handled = true;
+                }
+                WindowEvent::KeyboardInput { .. } => {
+                    self.route_emoji_picker(event, scale_factor);
+                    *handled = true;
+                }
+                _ => {}
+            }
             return;
         }
         match event {
@@ -1280,6 +1399,23 @@ mod tests {
         osk.apply_layout(&taffy, child, Point::ORIGIN);
     }
 
+    fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = winit::keyboard::Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
     #[test]
     fn tapping_letter_appends_to_pending_text() {
         let mut osk = OskWidget::new();
@@ -1287,6 +1423,71 @@ mod tests {
         assert!(osk.activate_label("h"));
         assert!(osk.activate_label("i"));
         assert_eq!(osk.pending_text(), "hi");
+    }
+
+    #[test]
+    fn emoji_toolbar_button_toggles_the_picker() {
+        let mut osk = OskWidget::new();
+        lay_out(&mut osk, 800.0, 360.0);
+        // The emoji button is toolbar item 0 in the default set.
+        assert!(!osk.emoji_mode());
+        osk.activate_tool(0);
+        assert!(osk.emoji_mode(), "tapping the emoji button opens the picker");
+        osk.activate_tool(0);
+        assert!(!osk.emoji_mode(), "tapping it again returns to the keys");
+    }
+
+    #[test]
+    fn insert_emoji_fires_on_key() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut osk = {
+            let seen = seen.clone();
+            OskWidget::new().on_key(move |a| seen.borrow_mut().push(a))
+        };
+        lay_out(&mut osk, 800.0, 360.0);
+        osk.insert_emoji("\u{1f525}");
+        assert_eq!(*seen.borrow(), vec![KeyAction::Char("\u{1f525}".into())]);
+        assert!(osk.pending_text().contains('\u{1f525}'));
+    }
+
+    #[test]
+    fn emoji_picker_pick_injects_a_char() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut osk = {
+            let seen = seen.clone();
+            OskWidget::new().on_key(move |a| seen.borrow_mut().push(a))
+        };
+        // Enable emoji mode BEFORE layout so the picker gets its rect.
+        osk.set_emoji_mode(true);
+        osk.set_emoji_query("fire");
+        lay_out(&mut osk, 800.0, 360.0);
+        // A draw builds the picker's result cells that Enter selects from.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        let mut scene = Scene::new();
+        osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        // Enter picks the first search result and injects it via `on_key`.
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut h = false;
+        let mut f = None;
+        osk.handle_event(
+            &key_named(winit::keyboard::NamedKey::Enter),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut AutoCommit::new(),
+            &automerge::ROOT,
+            &mut h,
+            &mut f,
+            node,
+            &taffy,
+        );
+        let log = seen.borrow();
+        assert!(
+            matches!(log.first(), Some(KeyAction::Char(s)) if !s.is_empty()),
+            "picking an emoji injects a Char action: {log:?}",
+        );
     }
 
     #[test]
@@ -1446,7 +1647,7 @@ mod tests {
             OskWidget::new().on_toolbar(move |a| seen.borrow_mut().push(a))
         };
         lay_out(&mut osk, 800.0, 360.0);
-        osk.activate_tool(0); // default[0] == Paste
+        osk.activate_tool(1); // default[1] == Paste (default[0] is the emoji toggle)
         assert_eq!(osk.take_toolbar_actions(), vec![OskToolbarAction::Paste]);
         assert_eq!(*seen.borrow(), vec![OskToolbarAction::Paste]);
     }

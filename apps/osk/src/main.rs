@@ -99,6 +99,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(p) = purpose {
             widget.set_purpose(p);
         }
+        // `--emoji [QUERY]` stages the emoji picker open (optionally mid-search)
+        // for a screenshot.
+        if let Some(q) = parse_emoji_arg(&args) {
+            widget.set_emoji_mode(true);
+            if !q.is_empty() {
+                widget.set_emoji_query(&q);
+            }
+        }
         render_shot_to_png(Box::new(widget), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
@@ -286,6 +294,26 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// `--emoji [QUERY]` (or `--emoji=QUERY`): stage the emoji picker open for a
+/// shot, optionally with a preset search query. `Some("")` = open, no query.
+fn parse_emoji_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--emoji" {
+            return Some(
+                iter.next()
+                    .filter(|s| !s.starts_with("--"))
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+        }
+        if let Some(rest) = arg.strip_prefix("--emoji=") {
+            return Some(rest.to_string());
         }
     }
     None
