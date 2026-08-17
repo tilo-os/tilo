@@ -57,6 +57,18 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 qos-fs = "optional@1"
+# The privileged broker. Optional: without it the app is config-only.
+privbroker = "optional@1"
+
+# Bringing a tunnel up — creating a TUN device and installing routes — is
+# privileged and goes through the broker, never the app. The broker's vpn-tun
+# applier is a staged follow-up; declaring the capability now is what lets the
+# app request it and the broker recognise (and, until the applier lands,
+# refuse) it, rather than the app opening /dev/net/tun directly.
+[capabilities]
+[[capabilities.privileged]]
+capability = "vpn-tun"
+reason     = "bring up the VPN tunnel the user connects"
 
 [entrypoint]
 bin             = "bin/vpn"
