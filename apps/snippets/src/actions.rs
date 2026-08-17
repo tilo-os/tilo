@@ -57,6 +57,11 @@ pub enum SnippetsAction {
     SetFavorite { id: String, favorite: bool },
     /// Replace the free-text description shown above the body.
     SetDescription { id: String, description: String },
+    /// Replace the snippet body (the reusable text, `${placeholder}`s and all).
+    /// The authoring path for the in-app code editor; carried as the whole new
+    /// body so replay is deterministic against the replica's base state (the
+    /// churn-safe [`SnippetsDoc::upsert`] diff-splices it into the `Text`).
+    SetBody { id: String, body: String },
     /// Move the snippet to a folder (`""` == the implicit "All Snippets" root).
     SetFolder { id: String, folder: String },
     /// Replace the whole tag set.
@@ -107,6 +112,9 @@ impl Action for SnippetsAction {
             }
             SnippetsAction::SetDescription { id, description } => {
                 Self::edit(doc, id, |s| s.description = description.clone());
+            }
+            SnippetsAction::SetBody { id, body } => {
+                Self::edit(doc, id, |s| s.body = body.clone());
             }
             SnippetsAction::SetFolder { id, folder } => {
                 Self::edit(doc, id, |s| s.folder = folder.clone());
@@ -166,6 +174,10 @@ pub fn set_favorite_action(id: SnippetId, favorite: bool) -> SnippetsAction {
 
 pub fn set_description_action(id: SnippetId, description: &str) -> SnippetsAction {
     SnippetsAction::SetDescription { id: id.to_string(), description: description.to_string() }
+}
+
+pub fn set_body_action(id: SnippetId, body: &str) -> SnippetsAction {
+    SnippetsAction::SetBody { id: id.to_string(), body: body.to_string() }
 }
 
 pub fn set_folder_action(id: SnippetId, folder: &str) -> SnippetsAction {
@@ -296,6 +308,16 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             "describe this snippet…",
             ExecutionLocus::ClientLocal,
             move |t: &str| encode(&set_description_action(id, t)),
+        ));
+        // Replace the body — prompted. The rich multi-line authoring surface is
+        // the in-app editor; this keeps the field reachable from Ctrl+K too.
+        r = r.with_action(ActionSpec::prompted(
+            "edit-body",
+            "Edit body",
+            "Body",
+            "snippet text (use ${var} for variables)…",
+            ExecutionLocus::ClientLocal,
+            move |t: &str| encode(&set_body_action(id, t)),
         ));
         // Star / unstar — immediate; carries the flipped target value, the same
         // EncodedAction the toolbar Star button dispatches.
@@ -515,6 +537,16 @@ mod tests {
     fn parse_tags_trims_dedups_and_drops_empties() {
         assert_eq!(parse_tags("  k8s , deploy ,, k8s "), vec!["k8s", "deploy"]);
         assert!(parse_tags("  ,  , ").is_empty());
+    }
+
+    #[test]
+    fn set_body_replaces_the_snippet_body() {
+        let mut doc = AutoCommit::new();
+        let mut s = Snippet::blank("Ops");
+        s.body = "echo hi".into();
+        SnippetsDoc::upsert(&mut doc, &s);
+        set_body_action(s.id, "echo hi ${name}").apply(&mut doc).unwrap();
+        assert_eq!(SnippetsDoc::get(&doc, s.id).unwrap().body, "echo hi ${name}");
     }
 
     #[test]
