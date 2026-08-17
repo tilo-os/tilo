@@ -2376,8 +2376,12 @@ mod tests {
     fn vertical_drag_right_half_raises_volume_left_half_changes_brightness() {
         // The Netflix/Grayjay gesture: a vertical drag on the right half adjusts
         // volume, on the left half brightness — driven through the real
-        // handle_event path (press → move-up → release).
-        let mut vp = VideoPlayer::new();
+        // handle_event path (press → move-up → release). The gesture applies to
+        // loaded media; an empty player is intentionally inert (it fabricates no
+        // playback), so give the player an opened source first.
+        let mut engine = media::MediaEngine::new_synthesized();
+        engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
+        let mut vp = VideoPlayer::new().with_engine(engine);
         vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
         vp.set_volume(0.5);
         let v0 = vp.volume();
