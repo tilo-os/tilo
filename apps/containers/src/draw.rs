@@ -5,6 +5,7 @@
 //! the rest of the OS. They paint directly into a Vello [`Scene`]; the app
 //! widget owns hit-testing and state, these are pure paint.
 
+use ui::icons::Icon as UiIcon;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::ColorCompat;
@@ -198,122 +199,32 @@ pub fn divider(scene: &mut Scene, x0: f64, x1: f64, y: f64, color: Color) {
     scene.stroke(&Stroke::new(1.0), base(), color, None, &line);
 }
 
-/// Draw a simple glyph-style icon (stroked vector) centered in `rect`.
-/// The manager keeps icons primitive — a handful of recognisable marks —
-/// so it has no asset dependency and re-colours with the theme.
+/// Draw a control glyph centred in `rect`, in `color`.
+///
+/// The glyph pixels come from the shared [`ui::icons::Icon`] set — the one
+/// themable, Lucide-based icon set the whole OS draws from — so the manager's
+/// controls match every other app. The local [`Icon`] enum is just a
+/// domain-readable alias that this function maps onto that shared set.
 pub fn icon(scene: &mut Scene, kind: Icon, rect: Rect, color: Color, width: f64) {
-    let s = Stroke::new(width);
-    let id = base();
-    let c = rect.center();
-    let r = rect.width().min(rect.height()) / 2.0;
     match kind {
-        Icon::Box => {
-            // A cube/box outline.
-            let b = Rect::from_center_size(c, (r * 1.6, r * 1.4));
-            scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
-            scene.stroke(&s, id, color, None, &Line::new(Point::new(b.x0, c.y), Point::new(b.x1, c.y)));
-        }
-        Icon::Layers => {
-            // Three stacked diamonds.
-            for (i, dy) in [(-0.55_f64), 0.0, 0.55].iter().enumerate() {
-                let oy = c.y + r * dy;
-                let mut path = vello::kurbo::BezPath::new();
-                path.move_to(Point::new(c.x, oy - r * 0.5));
-                path.line_to(Point::new(c.x + r, oy));
-                path.line_to(Point::new(c.x, oy + r * 0.5));
-                path.line_to(Point::new(c.x - r, oy));
-                path.close_path();
-                let col = if i == 0 { color } else { with_alpha(color, 150) };
-                scene.stroke(&s, id, col, None, &path);
-            }
-        }
-        Icon::Terminal => {
-            let b = Rect::from_center_size(c, (r * 1.8, r * 1.4));
-            scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
-            // prompt chevron
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(b.x0 + r * 0.35, c.y - r * 0.3),
-                Point::new(b.x0 + r * 0.75, c.y),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(b.x0 + r * 0.75, c.y),
-                Point::new(b.x0 + r * 0.35, c.y + r * 0.3),
-            ));
-        }
-        Icon::Play => {
-            let mut path = vello::kurbo::BezPath::new();
-            path.move_to(Point::new(c.x - r * 0.5, c.y - r * 0.7));
-            path.line_to(Point::new(c.x + r * 0.7, c.y));
-            path.line_to(Point::new(c.x - r * 0.5, c.y + r * 0.7));
-            path.close_path();
-            scene.fill(Fill::NonZero, id, color, None, &path);
-        }
-        Icon::Stop => {
-            let b = Rect::from_center_size(c, (r * 1.1, r * 1.1));
-            scene.fill(Fill::NonZero, id, color, None, &RoundedRect::from_rect(b, 2.0));
-        }
-        Icon::Restart => {
-            let arc = Circle::new(c, r * 0.8);
-            scene.stroke(&Stroke::new(width), id, color, None, &arc);
-            // arrow head
-            let mut path = vello::kurbo::BezPath::new();
-            let tip = Point::new(c.x + r * 0.8, c.y - r * 0.3);
-            path.move_to(tip);
-            path.line_to(Point::new(tip.x - r * 0.4, tip.y - r * 0.1));
-            path.line_to(Point::new(tip.x - r * 0.05, tip.y + r * 0.4));
-            path.close_path();
-            scene.fill(Fill::NonZero, id, color, None, &path);
-        }
-        Icon::Trash => {
-            let b = Rect::new(c.x - r * 0.6, c.y - r * 0.5, c.x + r * 0.6, c.y + r * 0.8);
-            scene.stroke(&s, id, color, None, &RoundedRect::from_rect(b, 2.0));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.9, c.y - r * 0.5),
-                Point::new(c.x + r * 0.9, c.y - r * 0.5),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.3, c.y - r * 0.8),
-                Point::new(c.x + r * 0.3, c.y - r * 0.8),
-            ));
-        }
-        Icon::Plus => {
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.7, c.y),
-                Point::new(c.x + r * 0.7, c.y),
-            ));
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x, c.y - r * 0.7),
-                Point::new(c.x, c.y + r * 0.7),
-            ));
-        }
-        Icon::Search => {
-            let circle = Circle::new(Point::new(c.x - r * 0.2, c.y - r * 0.2), r * 0.55);
-            scene.stroke(&s, id, color, None, &circle);
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x + r * 0.25, c.y + r * 0.25),
-                Point::new(c.x + r * 0.7, c.y + r * 0.7),
-            ));
-        }
-        Icon::Pause => {
-            let bw = r * 0.35;
-            let h = r * 1.3;
-            for dx in [-r * 0.4, r * 0.4] {
-                let b = Rect::from_center_size(Point::new(c.x + dx, c.y), (bw, h));
-                scene.fill(Fill::NonZero, id, color, None, &RoundedRect::from_rect(b, 1.5));
-            }
-        }
-        Icon::Enter => {
-            // arrow pointing into a bracket
-            scene.stroke(&s, id, color, None, &Line::new(
-                Point::new(c.x - r * 0.7, c.y),
-                Point::new(c.x + r * 0.4, c.y),
-            ));
-            let mut path = vello::kurbo::BezPath::new();
-            path.move_to(Point::new(c.x + r * 0.7, c.y));
-            path.line_to(Point::new(c.x + r * 0.2, c.y - r * 0.4));
-            path.move_to(Point::new(c.x + r * 0.7, c.y));
-            path.line_to(Point::new(c.x + r * 0.2, c.y + r * 0.4));
-            scene.stroke(&s, id, color, None, &path);
+        // "Running" and "stop" affordances read as solid marks, not outlines.
+        Icon::Play => UiIcon::Play.draw_filled(scene, base(), rect, color),
+        Icon::Stop => UiIcon::Square.draw_filled(scene, base(), rect, color),
+        _ => {
+            let glyph = match kind {
+                Icon::Box => UiIcon::Package,
+                Icon::Layers => UiIcon::Layers,
+                Icon::Terminal => UiIcon::Terminal,
+                Icon::Restart => UiIcon::RotateCw,
+                Icon::Pause => UiIcon::Pause,
+                Icon::Trash => UiIcon::Trash2,
+                Icon::Plus => UiIcon::Plus,
+                Icon::Search => UiIcon::Search,
+                Icon::Enter => UiIcon::CornerDownLeft,
+                // Play / Stop are drawn filled above.
+                Icon::Play | Icon::Stop => unreachable!(),
+            };
+            glyph.draw_with_stroke(scene, base(), rect, color, width);
         }
     }
 }

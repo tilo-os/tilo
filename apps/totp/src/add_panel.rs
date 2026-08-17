@@ -1127,38 +1127,18 @@ enum Glyph {
 }
 
 /// Draw a method-card glyph centred in `tile`, in `color`.
+///
+/// The glyph comes from the shared [`ui::icons::Icon`] set so the method
+/// cards match the rest of the OS (uniform stroke, grid and theming).
 fn draw_glyph(scene: &mut Scene, transform: Affine, tile: Rect, glyph: Glyph, color: Color) {
-    let c = tile.center();
-    match glyph {
-        Glyph::Image => {
-            // Picture frame + sun + mountain.
-            let frame = RoundedRect::new(c.x - 8.0, c.y - 7.0, c.x + 8.0, c.y + 7.0, 2.0);
-            scene.stroke(&Stroke::new(1.6), transform, color, None, &frame);
-            let sun = vello::kurbo::Circle::new((c.x - 3.0, c.y - 2.5), 1.8);
-            scene.fill(Fill::NonZero, transform, color, None, &sun);
-            let mut mtn = BezPath::new();
-            mtn.move_to((c.x - 7.0, c.y + 6.0));
-            mtn.line_to((c.x - 1.0, c.y - 0.5));
-            mtn.line_to((c.x + 2.5, c.y + 3.0));
-            mtn.line_to((c.x + 5.0, c.y + 0.5));
-            mtn.line_to((c.x + 7.0, c.y + 6.0));
-            scene.stroke(&Stroke::new(1.6), transform, color, None, &mtn);
-        }
-        Glyph::Link => {
-            // Two interlocking link halves.
-            let stroke = Stroke::new(1.8);
-            let mut a = BezPath::new();
-            a.move_to((c.x - 1.0, c.y - 5.0));
-            a.curve_to((c.x - 8.0, c.y - 5.0), (c.x - 8.0, c.y + 1.0), (c.x - 1.0, c.y + 1.0));
-            scene.stroke(&stroke, transform, color, None, &a);
-            let mut b = BezPath::new();
-            b.move_to((c.x + 1.0, c.y + 5.0));
-            b.curve_to((c.x + 8.0, c.y + 5.0), (c.x + 8.0, c.y - 1.0), (c.x + 1.0, c.y - 1.0));
-            scene.stroke(&stroke, transform, color, None, &b);
-            let bar = Rect::new(c.x - 3.0, c.y - 1.0, c.x + 3.0, c.y + 1.0);
-            scene.fill(Fill::NonZero, transform, color, None, &bar);
-        }
-    }
+    let icon = match glyph {
+        Glyph::Image => ui::icons::Icon::Image,
+        Glyph::Link => ui::icons::Icon::Link,
+    };
+    // Keep the ~20px visual size the cards were designed around.
+    let side = 24.0_f64.min(tile.width()).min(tile.height());
+    let r = Rect::from_center_size(tile.center(), (side, side));
+    icon.draw_with_stroke(scene, transform, r, color, 1.6);
 }
 
 #[cfg(test)]
