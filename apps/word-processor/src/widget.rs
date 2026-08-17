@@ -7876,7 +7876,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
+            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -7920,12 +7920,15 @@ impl WordProcessorWidget {
         // label — replacing the old emoji-prefixed "🖼 Image" caption. The empty
         // label keeps the chrome button blank so only the icon shows.
         add(ToolAction::InsertImage, "", 40.0, false);
+        // Table-of-contents generator belongs with the other document inserts
+        // (table, image): it writes content into the document, unlike the
+        // view/panel toggles that follow — so it groups here, not with them.
+        add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
         add(ToolAction::ToggleStyles, &t("toolbar-styles"), 64.0, panel_open);
         add(ToolAction::ToggleRuler, &t("toolbar-ruler"), 60.0, self.ruler_on);
-        // Navigation: outline pane toggle + table-of-contents generator.
+        // View/navigation panels: document outline + revision history.
         add(ToolAction::ToggleOutline, &t("toolbar-outline"), 72.0, self.outline_open);
         add(ToolAction::ToggleHistory, &t("toolbar-history"), 68.0, self.history.is_open());
-        add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
         drop(add);
 
         let items: Vec<ToolbarItem> = specs.iter().map(|(_, item)| item.clone()).collect();
@@ -8036,10 +8039,11 @@ impl WordProcessorWidget {
             w.push(78.0); // ⊞ Table
         }
         w.push(40.0); // Image (vector icon, no label)
+        w.push(48.0); // TOC (grouped with the inserts)
         w.push(64.0); // Styles
         w.push(60.0); // Ruler
         w.push(72.0); // Outline
-        w.push(48.0); // TOC
+        w.push(68.0); // History
         // right-aligned colour + highlight swatches, plus the zoom stepper cluster
         // (mirrors the reservation in `draw_toolbar`).
         w.push(swatch_reserve_width() + ZOOM_CLUSTER_W + ZOOM_SWATCH_GAP);
@@ -8062,11 +8066,12 @@ impl WordProcessorWidget {
         } else {
             g.push(true); // ⊞ Table starts a group
         }
-        g.push(true); // Image starts a group
+        g.push(false); // Image (same insert group as Table)
+        g.push(false); // TOC (same insert group)
         g.push(true); // Styles starts a group
         g.push(false); // Ruler (same group as Styles)
-        g.push(true); // Outline starts a group (navigation)
-        g.push(false); // TOC
+        g.push(true); // Outline starts a group (view panels)
+        g.push(false); // History (same group as Outline)
         g.push(true); // swatch reservation starts a group (see `swatch_reserve_width`)
         g
     }
@@ -11144,7 +11149,14 @@ mod tests {
             .iter()
             .filter_map(|c| c.node.name.as_deref())
             .collect();
-        assert!(names.contains(&"Bold"), "the Bold button is named for a screen reader");
+        // Assert on the canonical Bold label (locale-independent: the process
+        // locale comes from the environment and the i18n tests mutate the shared
+        // global, so a hard-coded "Bold" would flake under targeted test runs).
+        let bold_label = tool_action_a11y_label(ToolAction::Bold);
+        assert!(
+            names.contains(&bold_label.as_str()),
+            "the Bold button is named ({bold_label:?}) for a screen reader; got {names:?}"
+        );
         assert!(
             toolbar.children.iter().any(|c| c.node.role == Role::Button),
             "the toolbar contains button nodes",
