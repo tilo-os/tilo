@@ -138,6 +138,10 @@ pub struct TypstApp {
     source_id: Option<ObjId>,
     documents: Vec<Document>,
     current: usize,
+    /// An in-flight host file dialog: the operation and the channel its chosen
+    /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
+    /// when no Open / Save / Export chooser is open.
+    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -278,6 +282,7 @@ impl TypstApp {
             source_id: None,
             documents,
             current,
+            io: None,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
@@ -473,50 +478,64 @@ impl TypstApp {
             .map(|d| d.join("typst_editor"))
     }
 
-    fn save(&mut self, doc: &mut AutoCommit) {
+    /// Open the host Save dialog to choose where to write the current source,
+    /// seeded with the document's name (unless a chooser is already in flight).
+    /// The chosen path is handled in [`Self::drain_io`].
+    fn save(&mut self, _doc: &mut AutoCommit) {
+        if self.io.is_some() {
+            return;
+        }
         let name = self
             .documents
             .get(self.current)
             .map(|d| d.name.clone())
             .unwrap_or_else(|| "untitled.typ".into());
+        self.io = Some((crate::portal::PendingIo::SaveTyp, crate::portal::request_save(&name)));
+        self.set_flash("Choose where to save…".into());
+    }
+
+    /// Core: write the current source to `path`. Split out so the portal drain
+    /// and tests drive it against a real file.
+    fn save_typ_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let src = self.read_source(doc);
-        match Self::save_dir() {
-            Some(dir) => {
-                let _ = std::fs::create_dir_all(&dir);
-                let path = dir.join(&name);
-                match std::fs::write(&path, src) {
-                    Ok(_) => {
-                        self.set_flash(format!("Saved {}", path.display()));
-                        self.rescan_library();
-                    }
-                    Err(e) => self.set_flash(format!("Save failed: {e}")),
+        match std::fs::write(path, src) {
+            Ok(_) => {
+                self.set_flash(format!("Saved {}", path.display()));
+                // Adopt the chosen filename for the current document so a later
+                // Save suggests it again.
+                if let (Some(name), Some(cur)) = (
+                    path.file_name().and_then(|n| n.to_str()).map(|s| s.to_string()),
+                    self.documents.get_mut(self.current),
+                ) {
+                    cur.name = name;
                 }
             }
-            None => self.set_flash("No writable documents directory".into()),
+            Err(e) => self.set_flash(format!("Save failed: {e}")),
         }
     }
 
-    /// Export the current document to a PDF next to where the source saves.
-    fn export_pdf(&mut self, doc: &mut AutoCommit) {
-        match Self::save_dir() {
-            Some(dir) => match self.export_pdf_to(doc, &dir) {
-                Ok(path) => self.set_flash(format!("Exported {}", path.display())),
-                Err(e) => self.set_flash(format!("Export failed: {e}")),
-            },
-            None => self.set_flash("No writable documents directory".into()),
+    /// Open the host Save dialog to choose where to export the compiled PDF,
+    /// seeded with the document's name and a `.pdf` extension (unless a chooser
+    /// is already in flight). The chosen path is handled in [`Self::drain_io`].
+    fn export_pdf(&mut self, _doc: &mut AutoCommit) {
+        if self.io.is_some() {
+            return;
         }
+        let stem = self
+            .documents
+            .get(self.current)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| "untitled.typ".into());
+        let pdf_name =
+            std::path::Path::new(&stem).with_extension("pdf").to_string_lossy().to_string();
+        self.io =
+            Some((crate::portal::PendingIo::ExportPdf, crate::portal::request_export_pdf(&pdf_name)));
+        self.set_flash("Choose where to export the PDF…".into());
     }
 
-    /// Compile the current source to a PDF and write it into `dir`, named after
-    /// the open document with a `.pdf` extension. Returns the written path, or an
-    /// error string (a compile failure or an I/O error). Split out from
-    /// [`Self::export_pdf`] so it can be driven against a scratch directory in a
-    /// test without touching the user's real documents folder.
-    fn export_pdf_to(
-        &mut self,
-        doc: &mut AutoCommit,
-        dir: &std::path::Path,
-    ) -> Result<PathBuf, String> {
+    /// Compile the current source to a PDF and write it to the exact `path`.
+    /// Returns an error string on a compile failure or an I/O error.
+    fn export_pdf_to_path(&mut self, doc: &mut AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
         let bytes = compile::compile_pdf(&self.parts, &src).map_err(|diags| {
             let errs = diags.iter().filter(|d| d.kind == compile::DiagKind::Error).count();
@@ -526,6 +545,20 @@ impl TypstApp {
                 "could not build PDF".to_string()
             }
         })?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(path, bytes).map_err(|e| e.to_string())
+    }
+
+    /// Compile the current source to a PDF and write it into `dir`, named after
+    /// the open document with a `.pdf` extension. Returns the written path.
+    /// Split out so a test can drive it against a scratch directory.
+    fn export_pdf_to(
+        &mut self,
+        doc: &mut AutoCommit,
+        dir: &std::path::Path,
+    ) -> Result<PathBuf, String> {
         let stem = self
             .documents
             .get(self.current)
@@ -535,18 +568,76 @@ impl TypstApp {
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let path = dir.join(pdf_name);
-        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        self.export_pdf_to_path(doc, &path)?;
         Ok(path)
     }
 
-    fn open(&mut self, doc: &mut AutoCommit) {
-        self.rescan_library();
-        if let Some(i) = self.documents.iter().position(|d| d.from_disk) {
-            self.load_document(doc, i);
-        } else {
-            self.set_flash("No saved .typ files yet — Save one first.".into());
+    /// Open the host chooser to pick a `.typ` file to load (unless a chooser is
+    /// already in flight). The chosen path is handled in [`Self::drain_io`].
+    fn open(&mut self, _doc: &mut AutoCommit) {
+        if self.io.is_some() {
+            return;
+        }
+        self.io = Some((crate::portal::PendingIo::OpenTyp, crate::portal::request_open()));
+        self.set_flash("Choose a .typ file to open…".into());
+    }
+
+    /// Core: load the `.typ` file at `path` into the editor as the current
+    /// document. Split out so the portal drain and tests drive it against a
+    /// real file.
+    fn open_typ_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) => {
+                self.set_flash(format!("Open failed: {e}"));
+                return;
+            }
+        };
+        let name =
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("untitled.typ").to_string();
+        // Focus an already-loaded copy of this file, or add it to the document
+        // list, then splice its source into the CRDT via `load_document`.
+        let idx = match self.documents.iter().position(|d| d.name == name && d.from_disk) {
+            Some(i) => {
+                self.documents[i].source = src;
+                i
+            }
+            None => {
+                self.documents.push(Document { name, source: src, from_disk: true });
+                self.documents.len() - 1
+            }
+        };
+        self.load_document(doc, idx);
+    }
+
+    /// Drain a finished Open / Save / Export file dialog, if one landed since
+    /// the last frame, and run it against the chosen path. The UI thread never
+    /// blocks: the portal round-trip lives on its own worker.
+    fn drain_io(&mut self, doc: &mut AutoCommit) {
+        use crate::portal::{PendingIo, PortalOutcome};
+        let Some((op, rx)) = &self.io else { return };
+        let op = *op;
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.io = None;
+                match outcome {
+                    PortalOutcome::Opened(path) => match op {
+                        PendingIo::OpenTyp => self.open_typ_from(doc, &path),
+                        PendingIo::SaveTyp => self.save_typ_to(doc, &path),
+                        PendingIo::ExportPdf => match self.export_pdf_to_path(doc, &path) {
+                            Ok(_) => self.set_flash(format!("Exported {}", path.display())),
+                            Err(e) => self.set_flash(format!("Export failed: {e}")),
+                        },
+                    },
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(e) => {
+                        self.set_flash(format!("File chooser unavailable: {e}"))
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.io = None,
         }
     }
 
@@ -567,33 +658,6 @@ impl TypstApp {
             }
         }
         docs
-    }
-
-    /// Refresh the on-disk documents, preserving the currently open document by
-    /// name where possible. Bundled demo documents (if any) are kept ahead of
-    /// the disk ones.
-    fn rescan_library(&mut self) {
-        let open_name = self.documents.get(self.current).map(|d| d.name.clone());
-        // Preserve any non-disk documents (demo set / unsaved starter) at the
-        // front; replace the disk-backed tail with a fresh scan.
-        self.documents.retain(|d| !d.from_disk);
-        if let Some(dir) = Self::save_dir() {
-            let mut disk = Self::scan_dir(&dir);
-            // Don't list a disk file that duplicates a bundled name.
-            disk.retain(|d| !self.documents.iter().any(|b| b.name == d.name));
-            self.documents.append(&mut disk);
-        }
-        if self.documents.is_empty() {
-            self.documents.push(Document {
-                name: "untitled.typ".into(),
-                source: crate::samples::STARTER.to_string(),
-                from_disk: false,
-            });
-        }
-        // Re-point `current` at the same document by name if it survived.
-        self.current = open_name
-            .and_then(|n| self.documents.iter().position(|d| d.name == n))
-            .unwrap_or(self.current.min(self.documents.len().saturating_sub(1)));
     }
 
     fn next_doc(&mut self, doc: &mut AutoCommit) {
@@ -1410,6 +1474,10 @@ impl Widget for TypstApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         let src_id = self.ensure_source_obj(doc);
         self.source_id = Some(src_id.clone());
+        // Land a finished Open/Save/Export file dialog before reading the
+        // source, so a freshly-opened document is spliced in and compiles this
+        // frame.
+        self.drain_io(doc);
         // Bind the shared editor to the source object and pull its content.
         self.editor.bind(src_id.clone(), doc);
         let source = doc.text(&src_id).unwrap_or_default();
@@ -2251,6 +2319,59 @@ mod tests {
         let bytes = std::fs::read(&path).expect("the pdf was written to disk");
         assert!(bytes.starts_with(b"%PDF"), "the written file is a real PDF");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The portal Open → edit → Save round trip through real files on disk,
+    /// driving the exact per-frame `drain_io` the host chooser feeds via
+    /// injected outcomes (no D-Bus dialog). Opening loads an arbitrary `.typ`
+    /// into the editor's CRDT; saving writes the current source to a chosen
+    /// path.
+    #[test]
+    fn portal_open_then_save_round_trips_a_real_file() {
+        use crate::portal::{PendingIo, PortalOutcome};
+        let (mut app, mut doc) = fresh();
+        let dir = unique_dir("portal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let src_path = dir.join("imported.typ");
+        std::fs::write(&src_path, "= Imported\nHello from disk\n").unwrap();
+
+        // Inject an Open outcome and sync: the file loads into the CRDT source.
+        app.io = Some((
+            PendingIo::OpenTyp,
+            crate::portal::inject_for_test(PortalOutcome::Opened(src_path.clone())),
+        ));
+        app.sync(&mut doc, &ROOT);
+        assert!(app.io.is_none(), "a delivered outcome clears the in-flight dialog");
+        let loaded = app.read_source(&doc);
+        assert!(
+            loaded.contains("Hello from disk"),
+            "the opened file's text became the editor source: {loaded:?}"
+        );
+
+        // Inject a Save outcome for a new path and sync: the source is written.
+        let out_path = dir.join("saved.typ");
+        app.io = Some((
+            PendingIo::SaveTyp,
+            crate::portal::inject_for_test(PortalOutcome::Opened(out_path.clone())),
+        ));
+        app.sync(&mut doc, &ROOT);
+        let written = std::fs::read_to_string(&out_path).expect("the save wrote the file");
+        assert_eq!(written, app.read_source(&doc), "the saved file round-trips the current source");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A cancelled chooser clears the in-flight dialog and changes nothing.
+    #[test]
+    fn portal_cancel_is_silent() {
+        use crate::portal::{PendingIo, PortalOutcome};
+        let (mut app, mut doc) = fresh();
+        let before = app.read_source(&doc);
+        app.io =
+            Some((PendingIo::OpenTyp, crate::portal::inject_for_test(PortalOutcome::Cancelled)));
+        app.sync(&mut doc, &ROOT);
+        assert!(app.io.is_none());
+        assert_eq!(app.read_source(&doc), before, "cancel loads nothing");
     }
 
     /// The status now floats as two transient bubbles instead of a permanent
