@@ -131,9 +131,20 @@ pub struct FileExplorerWidget {
     /// bar carries live edit state — the in-progress typed path and its
     /// completion popover — that must survive the per-structure-change rebuild.
     toolbar: crate::toolbar::FileToolbar,
-    /// Chrome below the body (rename bar + footer), rebuilt each structure
-    /// change; spans the full width.
-    chrome_below: Option<Box<dyn Widget>>,
+    /// Transient floating status bubble (bottom-right) — the item count /
+    /// operation status + selection summary, surfaced on a real change or on
+    /// hover then faded, in place of a permanent bottom footer strip so the
+    /// file list spans to the window bottom.
+    status_bubble: ui::StatusBubble,
+    /// Last label the bubble showed, so it is re-poked only on a real change.
+    last_status_label: String,
+    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    shots_status: bool,
+    /// Set once `build_layout` has composed the panes into `nav`. Used to
+    /// detect "hosted in a TabBar that never ran build_layout for us yet" so
+    /// paint can flag a structure rebuild (replaces the old `chrome_below`
+    /// None-sentinel).
+    composed_once: bool,
     /// Command queue the interactive children push into.
     cmds: CommandSink,
     /// Set when applying a command changed structure; consumed by
@@ -303,7 +314,10 @@ impl FileExplorerWidget {
             // the hamburger still summons the drawer when narrow.
             .hide_toggle_when_docked(),
             toolbar: crate::toolbar::FileToolbar::new(cmds.clone()),
-            chrome_below: None,
+            status_bubble: ui::StatusBubble::new(),
+            last_status_label: String::new(),
+            shots_status: false,
+            composed_once: false,
             cmds,
             structure_dirty: false,
             context_menu: ContextMenu::new(),
@@ -365,21 +379,6 @@ impl FileExplorerWidget {
     /// placeholders. Never call on a live UI thread.
     pub fn prewarm_thumbnails(&self, timeout: std::time::Duration) {
         self.thumbs.block_until_idle(timeout);
-    }
-
-    /// Wrap `child` in a full-width chrome band with a consistent horizontal
-    /// inset from the spacing scale (so toolbar / breadcrumb / footer content
-    /// lines up across bands while the panels below still reach the window
-    /// edges). `vpad` sets the band's vertical breathing room.
-    fn band(theme: &ui::Theme, child: Box<dyn Widget>, vpad: f32) -> Box<dyn Widget> {
-        let sp = &theme.tokens.spacing;
-        Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_horizontal_padding(sp.s3, sp.s3)
-                .with_vertical_padding(vpad)
-                .push(child),
-        )
     }
 
     /// Refresh the persistent top bar with the current navigation context
@@ -485,34 +484,76 @@ impl FileExplorerWidget {
         Box::new(view_col)
     }
 
-    /// The chrome below the responsive body: the inline-rename bar (only while
-    /// a rename is active) and the footer. Spans the full width.
-    fn build_chrome_below(&self, theme: &ui::Theme) -> Box<dyn Widget> {
-        let sp = &theme.tokens.spacing;
-        // Footer: an operation status, else the item count. The current path is
-        // shown ONCE — in the path bar at the top — so it is deliberately not
-        // repeated here. The right side summarises the selection when there is
-        // one (a live-state readout, not a path).
+    /// The label for the floating status bubble: an operation status, else the
+    /// item count, plus the selection summary when something is selected. The
+    /// current path is shown ONCE — in the path bar at the top — so it is
+    /// deliberately not repeated here. Empty string means nothing to surface.
+    fn footer_label(&self) -> String {
         let count = self.entries.len();
         let left = self
             .status
             .clone()
             .unwrap_or_else(|| format!("{count} {}", if count == 1 { "item" } else { "items" }));
         let sel = self.selection.selected().len();
-        let right = if sel > 0 { format!("{sel} selected") } else { String::new() };
-        let footer = Row::new()
-            .push(Box::new(Text::new(&left).with_size(12.0).with_color(theme.tokens.colors.text_dim)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Text::new(&right).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
+        if sel > 0 {
+            format!("{left}  ·  {sel} selected")
+        } else {
+            left
+        }
+    }
 
-        // The rename editor is drawn in place over the row (see `draw`), not in a
-        // bottom bar — so the footer is the only chrome below the body.
-        let col = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(sp.s0)
-            .push(Self::band(theme, Box::new(footer), sp.s2));
-        Box::new(col)
+    /// `--shots`: force the status bubble fully visible so a single headless
+    /// frame captures the floating chip.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// Draw the transient floating status bubble at the window's bottom-right —
+    /// the reclaimed home of the old footer strip. It surfaces on a real change
+    /// (dir load, selection, an operation result) or while the pointer hovers
+    /// the bottom-right band, then fades. Colours come from the theme.
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        tr: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+    ) {
+        let now = std::time::Instant::now();
+        let label = self.footer_label();
+        if label != self.last_status_label {
+            self.last_status_label = label.clone();
+            self.status_bubble.poke(now);
+        }
+        if label.is_empty() {
+            return;
+        }
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = vello::kurbo::Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        let zone = vello::kurbo::Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_cursor);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     pub fn current_path(&self) -> PathBuf {
@@ -1403,7 +1444,7 @@ impl FileExplorerWidget {
         // full rebuild (which populates the chrome + swaps the real panes into
         // the persistent `nav`) on the next frame.
         let _ = theme;
-        if self.chrome_below.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+        if !self.composed_once && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             self.structure_dirty = true;
         }
     }
@@ -2088,9 +2129,7 @@ impl FileExplorerWidget {
         taffy: &taffy::TaffyTree<()>,
     ) {
         let Ok(children) = taffy.children(node_id) else { return };
-        let (Some(&above_n), Some(&nav_n), Some(&below_n)) =
-            (children.first(), children.get(1), children.get(2))
-        else {
+        let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) else {
             return;
         };
         if !*handled {
@@ -2102,14 +2141,6 @@ impl FileExplorerWidget {
             self.nav.handle_event(
                 event, scale_factor, modifiers, state, path, handled, focus_target, nav_n, taffy,
             );
-        }
-        if !*handled {
-            if let Some(c) = &mut self.chrome_below {
-                c.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, below_n,
-                    taffy,
-                );
-            }
         }
     }
 
@@ -2231,9 +2262,6 @@ impl Widget for FileExplorerWidget {
 
         self.toolbar.sync(state, path);
         self.nav.sync(state, path);
-        if let Some(c) = &mut self.chrome_below {
-            c.sync(state, path);
-        }
 
         // While renaming, mirror the field's live text into our buffer so a
         // commit renames to what the user actually typed.
@@ -2256,17 +2284,18 @@ impl Widget for FileExplorerWidget {
         // path bar's in-progress edit), so a rebuild triggered by navigation /
         // sort doesn't snap the body or the path bar back mid-interaction.
         self.update_toolbar();
-        let mut below = self.build_chrome_below(theme);
+        self.composed_once = true;
         self.nav.set_sidebar(Some(self.build_places_pane()));
         self.nav.set_content(self.build_content_pane(theme));
 
         let above_node = self.toolbar.build_layout(taffy, theme, node_map);
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
-        let below_node = below.build_layout(taffy, theme, node_map);
-        self.chrome_below = Some(below);
+        // No footer band: the item count / selection status floats as a
+        // transient bubble (see `draw_status_bubble`), so the body spans to the
+        // window bottom.
 
-        // The body fills the height left between the intrinsic-height chrome
-        // bands (which `build_*_chrome` size with `with_intrinsic_height`).
+        // The body fills the height left below the top bar (the toolbar uses
+        // `with_intrinsic_height`).
         // `NavShell::build_layout` hard-codes a `percent(1.0)` height leaf; in
         // a column of three that would claim the full height, so override it to
         // grow into the remaining space instead.
@@ -2300,7 +2329,7 @@ impl Widget for FileExplorerWidget {
             ..Default::default()
         };
         let node = taffy
-            .new_with_children(style, &[above_node, nav_node, below_node])
+            .new_with_children(style, &[above_node, nav_node])
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
@@ -2321,14 +2350,9 @@ impl Widget for FileExplorerWidget {
         );
         let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
         if let Ok(children) = taffy.children(node) {
-            if let (Some(&above_n), Some(&nav_n), Some(&below_n)) =
-                (children.first(), children.get(1), children.get(2))
-            {
+            if let (Some(&above_n), Some(&nav_n)) = (children.first(), children.get(1)) {
                 self.toolbar.apply_layout(taffy, above_n, base);
                 self.nav.apply_layout(taffy, nav_n, base);
-                if let Some(c) = &mut self.chrome_below {
-                    c.apply_layout(taffy, below_n, base);
-                }
             }
         }
     }
@@ -2344,9 +2368,6 @@ impl Widget for FileExplorerWidget {
         self.paint_background(scene, transform, theme);
         self.toolbar.draw(scene, transform, text_renderer, theme, presence);
         self.nav.draw(scene, transform, text_renderer, theme, presence);
-        if let Some(c) = &mut self.chrome_below {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -2370,9 +2391,6 @@ impl Widget for FileExplorerWidget {
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         self.nav
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        if let Some(c) = &mut self.chrome_below {
-            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        }
         self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
@@ -2390,9 +2408,9 @@ impl Widget for FileExplorerWidget {
         // above everything.
         self.toolbar.draw_overlay(scene, transform, text_renderer, theme, presence);
         self.nav.draw_overlay(scene, transform, text_renderer, theme, presence);
-        if let Some(c) = &mut self.chrome_below {
-            c.draw_overlay(scene, transform, text_renderer, theme, presence);
-        }
+        // Floating status bubble (item count / status + selection), above the
+        // content but below any open menus / drag ghost.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
         if self.context_menu.is_open() {
             layout_menu_widget(&mut self.context_menu);
             self.context_menu.draw(scene, transform, text_renderer, theme, presence);
@@ -2634,41 +2652,26 @@ impl Widget for FileExplorerWidget {
         let mut d = std::mem::take(&mut self.structure_dirty);
         d |= self.toolbar.take_structure_dirty();
         d |= self.nav.take_structure_dirty();
-        if let Some(c) = &mut self.chrome_below {
-            d |= c.take_structure_dirty();
-        }
         d
     }
 
     fn needs_animation_frame(&self) -> bool {
         // The body's docked→push / reveal slide must keep the host pumping
-        // frames while it settles.
+        // frames while it settles; the floating status bubble likewise while it
+        // lingers / fades.
         self.nav.needs_animation_frame()
             || self.toolbar.needs_animation_frame()
-            || self
-                .chrome_below
-                .as_ref()
-                .map(|c| c.needs_animation_frame())
-                .unwrap_or(false)
+            || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.nav.needs_idle_sync()
-            || self.toolbar.needs_idle_sync()
-            || self
-                .chrome_below
-                .as_ref()
-                .map(|c| c.needs_idle_sync())
-                .unwrap_or(false)
+        self.nav.needs_idle_sync() || self.toolbar.needs_idle_sync()
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut v: Vec<&dyn Widget> = Vec::new();
         v.push(&self.toolbar);
         v.push(&self.nav);
-        if let Some(c) = &self.chrome_below {
-            v.push(c.as_ref());
-        }
         v
     }
 
@@ -2676,9 +2679,6 @@ impl Widget for FileExplorerWidget {
         let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
         v.push(&mut self.toolbar);
         v.push(&mut self.nav);
-        if let Some(c) = &mut self.chrome_below {
-            v.push(c.as_mut());
-        }
         v
     }
 
