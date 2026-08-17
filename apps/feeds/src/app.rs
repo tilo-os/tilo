@@ -23,7 +23,7 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
@@ -34,7 +34,7 @@ use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
+use ui::widget::{FlapState, ModalDialog, Scrollable, SplitLayout, Widget};
 
 use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::doc::FeedsDoc;
@@ -369,8 +369,15 @@ pub struct FeedsApp {
     filter: Filter,
     selected: Option<Id>,
 
-    list_scroll: f64,
-    reader_scroll: f64,
+    /// The article list and reader panes scroll through the shared
+    /// [`Scrollable`] primitive (controlled mode: this app paints the content
+    /// itself but hands the Scrollable its viewport + content size, forwards
+    /// wheel / scrollbar-drag events to it, reads `offset_y()` to place the
+    /// content, and lets it draw the fading overlay progress bar). This is what
+    /// gives feeds the OS-standard smooth/adaptive scrolling + reduced-motion +
+    /// the half-transparent scroll overlay, rather than a hand-rolled offset.
+    list_scroll_ctl: Scrollable,
+    reader_scroll_ctl: Scrollable,
     reader_content_h: f64,
     list_content_h: f64,
 
@@ -508,8 +515,8 @@ impl FeedsApp {
             store,
             filter: Filter::All,
             selected: None,
-            list_scroll: 0.0,
-            reader_scroll: 0.0,
+            list_scroll_ctl: Scrollable::new_vertical(),
+            reader_scroll_ctl: Scrollable::new_vertical(),
             reader_content_h: 0.0,
             list_content_h: 0.0,
             rect: Rect::ZERO,
@@ -796,11 +803,21 @@ impl FeedsApp {
         self.filter
     }
 
+    /// The article list's live scroll offset (owned by the shared Scrollable).
+    fn list_scroll(&self) -> f64 {
+        self.list_scroll_ctl.offset_y() as f64
+    }
+
+    /// The reader pane's live scroll offset (owned by the shared Scrollable).
+    fn reader_scroll(&self) -> f64 {
+        self.reader_scroll_ctl.offset_y() as f64
+    }
+
     fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
-        self.list_scroll = 0.0;
+        self.list_scroll_ctl.set_offset_y(0.0);
         self.ensure_selection();
-        self.reader_scroll = 0.0;
+        self.reader_scroll_ctl.set_offset_y(0.0);
         // In a single-pane tier, changing the source returns to the list so the
         // new selection is visible (the reader is pushed back on the next select).
         if self.single_pane() {
@@ -810,7 +827,7 @@ impl FeedsApp {
 
     fn select_article(&mut self, id: Id, doc: &mut AutoCommit) {
         self.selected = Some(id);
-        self.reader_scroll = 0.0;
+        self.reader_scroll_ctl.set_offset_y(0.0);
         if self.store.mark_read(id, true) {
             self.perform_action(doc, actions::mark_read_action(id, true));
         }
@@ -853,13 +870,10 @@ impl FeedsApp {
                 .position(|a| a.id == sel)
             {
                 let row_top = pos as f64 * LIST_ROW_H;
-                let row_bot = row_top + LIST_ROW_H;
-                let view_h = (self.list_rect.height() - HEADER_H).max(0.0);
-                if row_top < self.list_scroll {
-                    self.list_scroll = row_top;
-                } else if row_bot > self.list_scroll + view_h {
-                    self.list_scroll = row_bot - view_h;
-                }
+                // Ask the shared Scrollable to bring the selected row into the
+                // viewport (it clamps against its own content/viewport size).
+                self.list_scroll_ctl
+                    .scroll_into_view(0.0, row_top as f32, 0.0, LIST_ROW_H as f32);
             }
         }
     }
@@ -1383,6 +1397,45 @@ impl FeedsApp {
         }
         let scope = self.filter_title().to_lowercase();
         self.modal = Some(FeedsModal::mark_all_read_confirm(&scope, count));
+    }
+
+    /// Forward a pointer / wheel event to whichever pane's shared [`Scrollable`]
+    /// should handle it — an in-progress thumb drag keeps the gesture wherever
+    /// the pointer goes; otherwise the pane under the cursor. Returns whether the
+    /// Scrollable consumed it (a wheel that moved, or a scrollbar interaction).
+    #[allow(clippy::too_many_arguments)]
+    fn route_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let reader = if self.reader_scroll_ctl.wants_pointer_capture() {
+            true
+        } else if self.list_scroll_ctl.wants_pointer_capture() {
+            false
+        } else if self.reader_rect.contains(self.last_mouse) {
+            true
+        } else if self.list_rect.contains(self.last_mouse) {
+            false
+        } else {
+            return false;
+        };
+        let mut handled = false;
+        let mut ft = *focus_target;
+        let scroll = if reader { &mut self.reader_scroll_ctl } else { &mut self.list_scroll_ctl };
+        scroll.handle_event(
+            event, scale_factor, modifiers, state, path, &mut handled, &mut ft, node_id, taffy,
+        );
+        if handled {
+            *focus_target = ft;
+        }
+        handled
     }
 
     /// Open the "Add subscription" dialog (real modal + real URL field).
@@ -1961,8 +2014,15 @@ impl FeedsApp {
         let articles: Vec<Id> =
             self.store.articles_for(self.filter).iter().map(|a| a.id).collect();
         self.list_content_h = articles.len() as f64 * LIST_ROW_H;
+        // Point the shared Scrollable at the list's scrolling viewport + content
+        // so it clamps the offset and sizes its overlay bar correctly.
+        let view = Rect::new(x0, content_top, x1, self.list_rect.y1);
+        self.list_scroll_ctl.set_viewport_rect(view);
+        self.list_scroll_ctl
+            .set_content_size(view.width() as f32, self.list_content_h as f32);
+        let offset = self.list_scroll();
         for (i, id) in articles.iter().enumerate() {
-            let top = content_top + i as f64 * LIST_ROW_H - self.list_scroll;
+            let top = content_top + i as f64 * LIST_ROW_H - offset;
             let rect = Rect::new(x0, top, x1, top + LIST_ROW_H);
             let star_rect = Rect::new(x1 - 40.0, top + LIST_ROW_H - 34.0, x1 - 8.0, top + LIST_ROW_H - 2.0);
             rows.push(ListRow { rect, star_rect, id: *id });
@@ -2070,7 +2130,7 @@ impl FeedsApp {
             &self.reader_rect,
             self.selected.and_then(|id| self.store.article(id)),
             self.selected.and_then(|id| self.store.article(id)).and_then(|a| self.store.feed(a.feed_id)),
-            self.reader_scroll,
+            self.reader_scroll(),
             self.now,
             reader_inset,
             self.settings,
@@ -2080,6 +2140,22 @@ impl FeedsApp {
         self.reader_links = links;
         self.reader_open_rect = open_rect;
         self.reader_content_h = content_h;
+        // Point the reader's shared Scrollable at its viewport + content (with a
+        // little bottom slack, matching the previous hand-rolled clamp) and
+        // paint the fading overlay progress bar over both panes.
+        let reader_view = Rect::new(
+            self.reader_rect.x0,
+            self.reader_rect.y0 + HEADER_H,
+            self.reader_rect.x1,
+            self.reader_rect.y1,
+        );
+        self.reader_scroll_ctl.set_viewport_rect(reader_view);
+        self.reader_scroll_ctl
+            .set_content_size(reader_view.width() as f32, (content_h + 60.0) as f32);
+        self.list_scroll_ctl.draw_bar_overlay(scene, t, theme);
+        if has_article {
+            self.reader_scroll_ctl.draw_bar_overlay(scene, t, theme);
+        }
 
         // The list/reader divider only exists in the wide three-pane layout;
         // the middle + narrow tiers show a single content pane at a time.
@@ -3499,6 +3575,10 @@ impl Widget for FeedsApp {
                 self.store_heads = heads;
             }
         }
+        // Let both pane Scrollables run their per-frame sync (scrollbar
+        // track-hold auto-repeat while the host pumps frames).
+        self.list_scroll_ctl.sync(state, _path);
+        self.reader_scroll_ctl.sync(state, _path);
     }
 
     /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
@@ -3638,6 +3718,38 @@ impl Widget for FeedsApp {
             self.handle_modal_event(event, scale_factor, modifiers, state, path, handled);
             return;
         }
+        // A wheel event scrolls the pane under the cursor through its shared
+        // Scrollable (OS-standard smoothing + fading overlay bar), and is always
+        // consumed over a pane so it never leaks past the app.
+        if let WindowEvent::MouseWheel { .. } = event {
+            if !self.feed_menu.is_open() {
+                self.route_scroll_event(
+                    event, scale_factor, modifiers, state, path, _focus_target, _node_id, _taffy,
+                );
+                if self.list_rect.contains(self.last_mouse)
+                    || self.reader_rect.contains(self.last_mouse)
+                {
+                    *handled = true;
+                }
+            }
+            return;
+        }
+        // A pointer press/move on a pane's scrollbar thumb (or an in-progress
+        // thumb drag) goes to that pane's Scrollable before the content-click
+        // routing. Unconsumed events fall through to the normal handling below.
+        if !self.feed_menu.is_open()
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { button: MouseButton::Left, .. }
+            )
+            && self.route_scroll_event(
+                event, scale_factor, modifiers, state, path, _focus_target, _node_id, _taffy,
+            )
+        {
+            *handled = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3670,24 +3782,6 @@ impl Widget for FeedsApp {
                     self.close_feed_menu();
                     *handled = true;
                 }
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-                };
-                if self.reader_rect.contains(self.last_mouse) {
-                    let visible = (self.reader_rect.height() - HEADER_H).max(0.0);
-                    let max = (self.reader_content_h - visible + 60.0).max(0.0);
-                    self.reader_scroll = (self.reader_scroll - dy).clamp(0.0, max);
-                } else if self.list_rect.contains(self.last_mouse) {
-                    // The refresh strip (when visible) eats into the row viewport.
-                    let view_h =
-                        (self.list_rect.height() - HEADER_H - self.refresh_strip_h()).max(0.0);
-                    let max = (self.list_content_h - view_h).max(0.0);
-                    self.list_scroll = (self.list_scroll - dy).clamp(0.0, max);
-                }
-                *handled = true;
             }
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
@@ -3724,6 +3818,18 @@ impl Widget for FeedsApp {
                 .as_ref()
                 .map(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
                 .unwrap_or(false)
+            // Keep frames flowing while either pane's Scrollable is animating
+            // (momentum fling settling, overlay bar fading, track-hold repeat).
+            || self.list_scroll_ctl.needs_animation_frame()
+            || self.reader_scroll_ctl.needs_animation_frame()
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        // Drive the shared Scrollables' per-frame work (momentum decay,
+        // track-hold auto-repeat) while the host pumps animation frames.
+        let a = self.list_scroll_ctl.update(state, path);
+        let b = self.reader_scroll_ctl.update(state, path);
+        a || b
     }
 }
 
