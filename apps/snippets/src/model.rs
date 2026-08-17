@@ -147,11 +147,14 @@ pub struct Snippet {
 }
 
 impl Snippet {
-    /// A blank snippet with a fresh id, ready to be edited.
+    /// A blank snippet with a fresh id, ready to be edited. The title starts
+    /// empty so the editor shows its "Untitled snippet" placeholder and the
+    /// first keystroke authors the real title rather than appending to a
+    /// literal default.
     pub fn blank(folder: &str) -> Self {
         Self {
             id: Uuid::new_v4(),
-            title: "Untitled snippet".to_string(),
+            title: String::new(),
             language: Language::PlainText,
             folder: folder.to_string(),
             tags: Vec::new(),

@@ -21,6 +21,9 @@ pub mod model;
 pub mod search_provider;
 pub mod seed;
 
+#[cfg(test)]
+mod test_events;
+
 pub use app::SnippetsApp;
 pub use model::{Language, Library, Selection, Snippet, SnippetId, SmartFolder};
 
