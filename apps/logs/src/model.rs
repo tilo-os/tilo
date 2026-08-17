@@ -25,8 +25,8 @@ pub enum Priority {
 }
 
 impl Priority {
-    /// Every priority, severe → verbose. Drives the legend and the
-    /// severity threshold chips.
+    /// Every priority, severe → verbose. Drives the severity threshold
+    /// chips and the per-row / detail severity colouring.
     pub const ALL: [Priority; 8] = [
         Priority::Emerg,
         Priority::Alert,
@@ -82,7 +82,7 @@ impl Priority {
         }
     }
 
-    /// Human-readable name for the legend / detail pane.
+    /// Human-readable name for the detail pane badge.
     pub fn long(self) -> &'static str {
         match self {
             Priority::Emerg => "Emergency",
