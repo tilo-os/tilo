@@ -12,6 +12,8 @@
 //!   * `idle`   — the resting overlay thumb (neutral, no track chrome).
 //!   * `active` — pointer parked on the thumb: brightened + track revealed.
 //!   * `both`   — content overflowing on both axes: vertical + horizontal bars.
+//!   * `glide`  — a smooth wheel scroll caught mid-ease: the rendered offset is
+//!                still interpolating toward its (further) target, overlay lit.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -60,7 +62,16 @@ fn cursor_at(p: Point) -> winit::event::WindowEvent {
     }
 }
 
-fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
+#[derive(Clone, Copy, PartialEq)]
+enum Motion {
+    /// Settled: the offset has fully arrived at its scroll position.
+    Rest,
+    /// Mid-ease: a wheel flick just landed and the offset is still gliding
+    /// toward a further target (exercises the smooth-scroll path).
+    Glide,
+}
+
+fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool, motion: Motion) {
     let mut state = State::new();
     let axis = if both { ScrollAxis::Both } else { ScrollAxis::Vertical };
     let mut scroll = Scrollable::new(axis)
@@ -94,9 +105,20 @@ fn shoot(theme: &Theme, out: PathBuf, active: bool, both: bool) {
     // (which wakes the overlay bar to full opacity); a second layout pushes
     // the new offset down to the children.
     scroll.apply_layout(&taffy, node, Point::ZERO);
-    scroll.scroll_by(0.0, 700.0);
-    if both {
-        scroll.scroll_by(320.0, 0.0);
+    match motion {
+        Motion::Rest => {
+            scroll.scroll_by(0.0, 700.0);
+            if both {
+                scroll.scroll_by(320.0, 0.0);
+            }
+        }
+        Motion::Glide => {
+            // A smooth wheel flick: push the target well ahead, then advance a
+            // single ease frame so the rendered offset is caught mid-glide
+            // (visibly short of its target) with the overlay lit by the scroll.
+            scroll.smooth_scroll_by(0.0, 900.0);
+            scroll.ease_step();
+        }
     }
     scroll.apply_layout(&taffy, node, Point::ZERO);
 
@@ -138,8 +160,9 @@ fn main() {
     let dir = PathBuf::from(dir);
 
     for (theme, tag) in [(Theme::dark(), "dark"), (Theme::light(), "light")] {
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-idle.png")), false, false);
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-active.png")), true, false);
-        shoot(&theme, dir.join(format!("scrollbar-{tag}-both.png")), true, true);
+        shoot(&theme, dir.join(format!("scrollbar-{tag}-idle.png")), false, false, Motion::Rest);
+        shoot(&theme, dir.join(format!("scrollbar-{tag}-active.png")), true, false, Motion::Rest);
+        shoot(&theme, dir.join(format!("scrollbar-{tag}-both.png")), true, true, Motion::Rest);
+        shoot(&theme, dir.join(format!("scrollbar-{tag}-glide.png")), false, false, Motion::Glide);
     }
 }
