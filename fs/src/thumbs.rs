@@ -23,6 +23,21 @@ use thumbnail::{FileCategory, ThumbCache, ThumbKey};
 /// pathological source must not stall the FUSE thread or blow up memory.
 const MAX_SOURCE_BYTES: usize = 96 * 1024 * 1024;
 
+/// Longest-edge target for host-generated previews. Smaller than the file
+/// manager's grid size on purpose: a host thumbnail is **metadata** — it must
+/// stay small enough to ride the `user.qos.thumb` xattr (bounded to
+/// [`MAX_XATTR_THUMB`]) and gossip cheaply as a blob a peer fetches before the
+/// file itself. A client that wants a crisper preview generates one locally
+/// once it has the content.
+pub const HOST_EDGE: u32 = 160;
+
+/// The largest thumbnail (encoded PNG bytes) that can be served through the
+/// `user.qos.thumb` xattr. The kernel caps a single xattr value at 64 KiB
+/// (`XATTR_SIZE_MAX`), so a larger preview cannot be delivered that way at all —
+/// the driver reports it absent (`ENODATA`) and the client falls back to local
+/// generation. [`HOST_EDGE`] keeps real previews comfortably under this.
+pub const MAX_XATTR_THUMB: usize = 60 * 1024;
+
 /// The host's thumbnail generator + on-disk cache for one mount.
 pub struct ThumbProvider {
     cache: ThumbCache,
@@ -35,7 +50,7 @@ impl ThumbProvider {
     pub fn open(dir: impl AsRef<Path>) -> std::io::Result<Self> {
         Ok(Self {
             cache: ThumbCache::open(dir)?,
-            edge: thumbnail::DEFAULT_EDGE,
+            edge: HOST_EDGE,
         })
     }
 
@@ -111,10 +126,12 @@ mod tests {
             let png = provider
                 .generate(content_hash, FileCategory::Image, &src)
                 .expect("generates a preview");
-            // It is a real, smaller PNG.
+            // It is a real, smaller PNG at the host preview size.
             let decoded = thumbnail::decode_png(&png).unwrap();
             assert!(decoded.is_valid());
-            assert_eq!(decoded.max_edge(), thumbnail::DEFAULT_EDGE);
+            assert_eq!(decoded.max_edge(), HOST_EDGE);
+            // Small enough to ride the xattr metadata channel.
+            assert!(png.len() <= MAX_XATTR_THUMB, "host preview fits the xattr: {} bytes", png.len());
             // Second lookup hits the cache.
             assert_eq!(provider.cached(content_hash).unwrap(), png, "cache hit");
             png
