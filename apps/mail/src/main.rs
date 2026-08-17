@@ -104,49 +104,70 @@ fn render_shot_to_png(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
+    // One full pass (sync → build → compute → apply → draw), then re-run it while
+    // the widget still wants animation frames — bounded — so asynchronously
+    // loaded content (an HTML mail's inline images decode off-thread) settles
+    // into the single captured frame instead of showing a loading placeholder.
+    // This mirrors what the live event loop does; a hermetic shot has no pump.
     let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
+    // Bound the settle by a re-draw count, not wall-clock: the very first pass
+    // is slow (font-system init + shaping the whole mailbox), which would blow a
+    // time budget before an async image ever gets a second frame. Each extra
+    // pass reuses the shaping cache, so it is cheap.
+    let mut settle_passes = 0u32;
+    loop {
+        taffy = TaffyTree::new();
+        node_map = HashMap::new();
+        widget.sync(&mut state.doc, &state.root);
+        let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )?;
+        {
+            let measure_map = node_map.clone();
+            let tr = &mut text_renderer;
+            taffy.compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )?;
+        }
+        widget.apply_layout(&taffy, child, Point::ORIGIN);
+        scene = Scene::new();
+        widget.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+        );
+        widget.mark_drawn();
+        // Settle once nothing wants another frame (or after a bounded number of
+        // extra passes — ~1.5s of settling for async images to decode).
+        if !widget.needs_animation_frame() || settle_passes >= 40 {
+            break;
+        }
+        settle_passes += 1;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

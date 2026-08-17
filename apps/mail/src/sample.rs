@@ -266,11 +266,15 @@ is definitely not a scam.",
         m.read = true;
         mb.insert(m);
     }
-    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
-    // reader exercises the sandboxed WebView path and the remote-content block.
-    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
+    // A rich HTML newsletter — an inline `data:` banner (renders offline), a
+    // remote screenshot (blocked until the reader opts in), and a 1×1 tracking
+    // pixel (silently dropped) — so the reader exercises the native HTML render
+    // path and the remote-content block.
+    if let Some(mut m) = parse_eml(raw_html_newsletter().as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
         m.read = false;
         m.starred = true;
+        // Use the pristine body (with the inline banner) — see `newsletter_html_body`.
+        m.html_body = Some(newsletter_html_body());
         mb.insert(m);
     }
 
@@ -352,9 +356,33 @@ Content-Transfer-Encoding: base64\r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
 --=_qos_boundary_=--\r\n";
 
-/// A multipart/alternative message with a plain-text part and a rich HTML part
-/// (including a **remote** image the reader must block by default), parsed live.
-const RAW_HTML: &str = "From: qOS Weekly <news@weekly.qos.example>\r\n\
+/// The newsletter EML — real headers + a plain-text part + the HTML part, all
+/// parsed live by `mail-parser`. The HTML body carries a remote screenshot
+/// (blocked until the reader opts in) and a 1×1 tracking pixel (dropped).
+fn raw_html_newsletter() -> String {
+    format!("{MIME_HEAD}{HTML_OPEN}{HTML_TAIL}\r\n--=_qos_alt_=--\r\n")
+}
+
+/// The pristine HTML body **with** the inline `data:` banner. A hand-authored
+/// 2 KB single-line data: URI does not survive a round-trip through the MIME
+/// line handling intact, so the sample sets this genuine body directly rather
+/// than reading mail-parser's mangled copy. Real IMAP mail is unaffected — its
+/// bodies come straight off the wire.
+fn newsletter_html_body() -> String {
+    format!(
+        "{HTML_OPEN}<img src=\"{}\" width=\"360\" height=\"96\" alt=\"qOS Weekly banner\">{HTML_TAIL}",
+        banner_data_uri()
+    )
+}
+
+/// The banner PNG as base64, kept in its own file (`sample_banner.b64`) so a
+/// 2 KB literal can't be mis-transcribed; decoded on the fly by the reader's
+/// image store.
+fn banner_data_uri() -> String {
+    format!("data:image/png;base64,{}", include_str!("sample_banner.b64").trim())
+}
+
+const MIME_HEAD: &str = "From: qOS Weekly <news@weekly.qos.example>\r\n\
 To: you@qos.example\r\n\
 Subject: This week in qOS — spatial shells & collab buffers\r\n\
 Message-ID: <weekly-2026-27@weekly.qos.example>\r\n\
@@ -369,18 +397,21 @@ This week: the scrollable-strip shell landed, and collaboration buffers now \
 stream over gossipsub. Read on.\r\n\
 --=_qos_alt_=\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
-\r\n\
-<html><body style=\"font-family:sans-serif\">\
-<h1 style=\"color:#4f7cff\">This week in qOS</h1>\
+\r\n";
+
+const HTML_OPEN: &str = "<html><body style=\"font-family:sans-serif\">\
+<h1 style=\"color:#4f7cff\">This week in qOS</h1>";
+
+const HTML_TAIL: &str = "\
 <img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
 buffers now stream over gossipsub.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
+<img src=\"https://cdn.weekly.qos.example/shell.png\" width=\"320\" height=\"150\" alt=\"The scrollable-strip shell\">\
 <p><a href=\"https://qos.example/weekly/27\">Read the full issue \u{2192}</a></p>\
-</body></html>\r\n\
---=_qos_alt_=--\r\n";
+</body></html>";
 
 #[cfg(test)]
 mod tests {

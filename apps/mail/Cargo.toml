@@ -70,19 +70,14 @@ futures = { workspace = true, optional = true, features = ["std"] }
 # configured account for real. With no account configured — and on the `--shots`
 # path, which injects a no-op avatar fetcher and drives the offline stub backend
 # at runtime — nothing opens a socket, so the screenshot/test path stays
-# hermetic with the live stack compiled in. `html-webview` (real WPE HTML
-# rendering) stays opt-in: it needs the WPE stack from os/dev/build-wpe.sh.
+# hermetic with the live stack compiled in. HTML mail bodies render natively
+# (sanitized rich text + images via the shared `ui` primitives) in every build —
+# no web engine — so an opened HTML email is legible headless and live alike.
 default = ["live"]
-# Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires
+# Compile the real IMAP/SMTP engine backend + remote image/avatar fetch. Requires
 # network + a TLS/async stack; only exercised at runtime with a configured
 # account (never the headless build or `--shots`).
 live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures"]
-# Render HTML mail bodies with the real WPE WebKit engine (the same one the
-# browser uses), so an opened HTML email shows true rendered content instead of
-# the deterministic test-engine surface. Needs the WPE stack from
-# os/dev/build-wpe.sh; the default build renders HTML through the hermetic test
-# engine (the sandbox/remote-block plumbing is identical either way).
-html-webview = ["ui/webview-wpe"]
 
 [dev-dependencies]
 # Generates a throwaway self-signed certificate so the `live` engine tests can

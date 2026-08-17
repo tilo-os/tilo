@@ -141,12 +141,12 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .map(|c| c.into_owned())
         .unwrap_or_default();
     // The original text/html part, if the message carried a GENUINE one. The
-    // reader renders it sandboxed in a WebView (remote content blocked by
-    // default). We match `PartType::Html` explicitly rather than calling
-    // `body_html`, because `body_html` auto-converts a text/plain part into HTML
-    // as a fallback — which would wrongly route every plain-text mail through
-    // the webview. A plain-text mail therefore keeps `html_body == None` and
-    // renders as text.
+    // reader renders it natively (sanitized rich text + images, remote content
+    // blocked by default). We match `PartType::Html` explicitly rather than
+    // calling `body_html`, because `body_html` auto-converts a text/plain part
+    // into HTML as a fallback — which would wrongly route every plain-text mail
+    // through the HTML path. A plain-text mail therefore keeps `html_body ==
+    // None` and renders as text.
     let html_body = parsed
         .html_bodies()
         .find_map(|part| match &part.body {
