@@ -197,6 +197,10 @@ pub struct MailApp {
     /// first real layout snaps it to the resting state for the current width so
     /// a narrow launch doesn't flash the drawer open before easing it closed.
     first_layout: bool,
+    /// The persisted sidebar collapse choice mirrored from the doc (read in
+    /// `sync`), re-applied to the shell during layout where the width is known.
+    /// `None` ⇒ no explicit choice, follow the responsive default.
+    persisted_sidebar_collapsed: Option<bool>,
     dirty: bool,
 }
 
@@ -235,7 +239,10 @@ impl MailApp {
             .with_sidebar(sidebar)
             .with_breakpoint(BREAKPOINT)
             .with_sidebar_width(SIDEBAR_W)
-            .with_overview_width(OVERVIEW_W);
+            .with_overview_width(OVERVIEW_W)
+            // Remember an explicit collapse across window-width changes; the
+            // choice is persisted as view/pref state (see `sync` below).
+            .with_remembered_sidebar();
 
         let cfg = shared.borrow().accounts.active_config();
         Self {
@@ -263,6 +270,7 @@ impl MailApp {
             overlay_hits: Vec::new(),
             rect: Rect::ZERO,
             first_layout: true,
+            persisted_sidebar_collapsed: None,
             dirty: true,
         }
     }
@@ -350,7 +358,26 @@ impl MailApp {
 
     /// Lay the shell out into the app's rect via a throwaway sub-taffy, the
     /// same shape the offscreen renderer uses for the whole tree.
+    /// Re-apply the persisted sidebar collapse onto the shell while docked
+    /// (wide). Only a *collapse* is a real preference — an open sidebar is the
+    /// docked default, represented as `None` so it never leaks into the narrow
+    /// overlay as a forced-open drawer. Narrow is left alone so the overlay
+    /// keeps its own transient open/close.
+    fn apply_persisted_sidebar(&mut self) {
+        if self.rect.width() < BREAKPOINT {
+            return;
+        }
+        let want = match self.persisted_sidebar_collapsed {
+            Some(true) => Some(false), // explicit collapse (shell pref = not open)
+            _ => None,                 // open / unset → follow the docked default
+        };
+        if self.nav.sidebar_user_pref() != want {
+            self.nav.set_sidebar_pref(want);
+        }
+    }
+
     fn layout_nav(&mut self) {
+        self.apply_persisted_sidebar();
         self.publish_shell_flags();
         let (w, h) = (self.rect.width() as f32, self.rect.height() as f32);
         let theme = Theme::dark();
@@ -413,7 +440,14 @@ impl MailApp {
             match intent {
                 Intent::ShowDetail => self.nav.show_detail(),
                 Intent::ShowOverview => self.nav.show_overview(),
-                Intent::CloseDrawer => self.nav.close_sidebar(),
+                // Dismiss the overlay drawer after a narrow-mode selection only.
+                // While docked (wide) the sidebar is permanent, so selecting a
+                // folder must NOT collapse it (nor persist a collapse).
+                Intent::CloseDrawer => {
+                    if self.rect.width() < BREAKPOINT {
+                        self.nav.close_sidebar();
+                    }
+                }
                 Intent::Compose => {
                     self.editing_draft = None;
                     self.compose.open_blank();
@@ -1747,6 +1781,10 @@ impl Widget for MailApp {
             self.shared.borrow_mut().now_min = crate::state::now_minutes();
             self.maybe_auto_refresh();
         }
+        // Mirror the persisted sidebar collapse choice; `layout_nav` re-applies
+        // it to the shell where the current width is known (only a docked
+        // collapse is honoured — see `apply_persisted_sidebar`).
+        self.persisted_sidebar_collapsed = MailDoc::get_sidebar_collapsed(state);
         self.nav.sync(state, path);
     }
 
@@ -1936,6 +1974,24 @@ impl Widget for MailApp {
 
         // 5) Route to the navigation shell (affordance/scrim/Esc + the panes).
         self.nav.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+        // The shell may have toggled the sidebar (its collapse chip is
+        // self-routed). While docked (wide) the chip is the only sidebar control,
+        // so its state is the user's explicit choice — persist a collapse as
+        // view/pref state (an open sidebar clears the pref: it is the default).
+        // Narrow drawer opens/closes are transient and never persisted.
+        if self.rect.width() >= BREAKPOINT {
+            let collapsed = self.nav.sidebar_user_pref() == Some(false);
+            let want = if collapsed { Some(true) } else { None };
+            if MailDoc::get_sidebar_collapsed(state) != want {
+                MailDoc::set_sidebar_collapsed(state, want);
+            }
+            self.persisted_sidebar_collapsed = want;
+            // Normalise an explicit "open" back to the docked default so it can
+            // never leak into the narrow overlay as a forced-open drawer.
+            if self.nav.sidebar_user_pref() == Some(true) {
+                self.nav.set_sidebar_pref(None);
+            }
+        }
         // Panes raised intents; apply the cross-pane effects.
         self.process_intents();
 
@@ -2319,6 +2375,72 @@ mod tests {
         // Esc dismisses the open overlay drawer.
         assert!(dispatch(&mut app, &esc_event(), &mut doc), "Esc consumed");
         assert!(!app.nav.is_sidebar_open(), "Esc closes the drawer");
+    }
+
+    #[test]
+    fn collapsed_sidebar_survives_a_width_change_and_persists() {
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        assert!(app.nav.is_sidebar_open(), "docked sidebar open by default");
+
+        // Collapse it via the shell's collapse chip.
+        let chip = app.nav.collapse_button_rect();
+        assert!(chip.width() > 0.0, "collapse chip present when docked");
+        assert!(click_at(&mut app, &mut doc, chip.center()), "collapse click consumed");
+        app.layout_for_test(1280.0, 800.0);
+        assert!(!app.nav.is_sidebar_open(), "sidebar collapsed after the chip");
+        assert_eq!(
+            MailDoc::get_sidebar_collapsed(&doc),
+            Some(true),
+            "the collapse is persisted as view/pref state"
+        );
+
+        // A width change that crosses the breakpoint (wide→narrow→wide) must NOT
+        // re-open the sidebar — the user override beats the width-driven default.
+        app.layout_for_test(520.0, 860.0);
+        assert!(!app.nav.is_sidebar_open(), "narrow keeps it closed");
+        app.layout_for_test(1280.0, 800.0);
+        assert!(
+            !app.nav.is_sidebar_open(),
+            "the collapse survives the resize — the sidebar does NOT force back open"
+        );
+    }
+
+    #[test]
+    fn docked_folder_click_does_not_collapse_the_sidebar() {
+        // A folder selection dismisses only the narrow overlay drawer; while
+        // docked (wide) the permanent sidebar must stay open and record no pref.
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let sidebar = app.nav.sidebar_content_rect();
+        let p = Point::new(sidebar.x0 + 130.0, sidebar.y0 + 250.0);
+        assert!(click_at(&mut app, &mut doc, p), "folder click consumed");
+        app.layout_for_test(1280.0, 800.0);
+        assert!(app.nav.is_sidebar_open(), "docked sidebar stays open on a folder click");
+        assert_eq!(
+            MailDoc::get_sidebar_collapsed(&doc),
+            None,
+            "a transient folder selection persists no collapse preference"
+        );
+    }
+
+    #[test]
+    fn a_relaunch_rehydrates_the_persisted_collapse() {
+        // Persist a collapse, then build a fresh app over the same document: the
+        // sidebar comes up collapsed rather than at the width default.
+        let (mut app, mut doc) = app();
+        app.layout_for_test(1280.0, 800.0);
+        let chip = app.nav.collapse_button_rect();
+        assert!(click_at(&mut app, &mut doc, chip.center()), "collapse click consumed");
+        assert_eq!(MailDoc::get_sidebar_collapsed(&doc), Some(true));
+
+        let mut fresh = MailApp::new_sample();
+        fresh.sync(&mut doc, &automerge::ROOT);
+        fresh.layout_for_test(1280.0, 800.0);
+        assert!(
+            !fresh.nav.is_sidebar_open(),
+            "a fresh app restores the persisted collapse instead of opening by default"
+        );
     }
 
     #[test]

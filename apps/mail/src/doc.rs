@@ -146,6 +146,30 @@ impl MailDoc {
         }
     }
 
+    /// Persist the user's explicit sidebar open/collapsed choice as view/pref
+    /// state, so it survives a window resize and a relaunch (and syncs). `None`
+    /// clears it back to the width-driven default.
+    pub fn set_sidebar_collapsed(doc: &mut AutoCommit, collapsed: Option<bool>) {
+        let ui = Self::ui(doc);
+        match collapsed {
+            Some(v) => {
+                let _ = doc.put(&ui, "sidebar_collapsed", v);
+            }
+            None => {
+                let _ = doc.delete(&ui, "sidebar_collapsed");
+            }
+        }
+    }
+
+    /// The persisted sidebar collapse choice, or `None` if the user has never
+    /// set one (follow the responsive default).
+    pub fn get_sidebar_collapsed(doc: &AutoCommit) -> Option<bool> {
+        match doc.get(&ROOT, "ui") {
+            Ok(Some((Value::Object(ObjType::Map), ui))) => Self::read_bool(doc, &ui, "sidebar_collapsed"),
+            _ => None,
+        }
+    }
+
     pub fn get_selected(doc: &AutoCommit) -> Option<String> {
         match doc.get(&ROOT, "ui") {
             Ok(Some((Value::Object(ObjType::Map), ui))) => {
