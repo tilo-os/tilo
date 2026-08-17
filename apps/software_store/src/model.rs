@@ -127,17 +127,24 @@ impl QosAppModel {
     }
 }
 
-/// One synthetic "screenshot" for the detail strip. We have no real
-/// image assets, so a screenshot is described as a duotone placeholder
-/// with a caption; the renderer paints a faux-UI thumbnail from the two
-/// palette indices.
+/// One screenshot for the detail strip.
+///
+/// When `url` is set the store fetches + decodes the real bitmap off-thread
+/// (via the shared [`ui::ImageStore`]) and paints it, showing an honest
+/// loading skeleton until it resolves. The `tone_a` / `tone_b` palette
+/// indices are the fallback: a duotone faux-UI thumbnail drawn when no real
+/// image is available (or a fetch fails), so the strip is never a blank grey
+/// bar.
 #[derive(Clone, Debug)]
 pub struct Shot {
-    /// Index into the theme accent ramp for the dominant fill.
+    /// Index into the theme accent ramp for the dominant fill (fallback).
     pub tone_a: usize,
-    /// Index into the theme neutral ramp for the secondary fill.
+    /// Index into the theme neutral ramp for the secondary fill (fallback).
     pub tone_b: usize,
     pub caption: String,
+    /// URL (or `qos-demo://…` synthesised source) of the real screenshot
+    /// bitmap, when known. `None` → paint the duotone fallback.
+    pub url: Option<String>,
 }
 
 /// A short textual review with a star rating, shown on the detail page.
@@ -206,10 +213,17 @@ pub struct AppEntry {
     /// app (drives the large hero cards on the home screen).
     pub featured: bool,
     /// Palette index (into the accent ramp) for this app's icon tile, so
-    /// even icon colour tracks the active theme.
+    /// even icon colour tracks the active theme. Used as the fallback tile
+    /// colour behind the monogram when no real icon is available.
     pub icon_tone: usize,
-    /// One- or two-character monogram drawn on the icon tile.
+    /// One- or two-character monogram drawn on the icon tile when no real
+    /// icon bitmap is available (or its fetch failed).
     pub monogram: String,
+    /// URL (or `qos-demo://…` synthesised source) of the real app icon, when
+    /// known (from the Flathub/AppStream metadata). The store fetches +
+    /// decodes it off-thread and paints it; `None` (or a failed fetch) falls
+    /// back to the monogram tile.
+    pub icon_url: Option<String>,
     /// Textual reviews (sample catalog only — see [`Review`]).
     pub reviews: Vec<Review>,
     /// Compatibility notices for this app on qOS.
@@ -253,6 +267,7 @@ impl AppEntry {
             featured: false,
             icon_tone: tone,
             monogram: name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(),
+            icon_url: None,
             reviews: Vec::new(),
             compat: Vec::new(),
             download_count: None,
@@ -554,6 +569,7 @@ mod tests {
             featured: false,
             icon_tone: 5,
             monogram: "X".into(),
+            icon_url: None,
             reviews: vec![],
             compat: vec![],
             download_count: None,

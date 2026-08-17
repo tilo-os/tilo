@@ -44,6 +44,22 @@ enum Slot {
     Failed,
 }
 
+/// The public, per-URL load state a caller can query to render an honest
+/// placeholder: a *loading* skeleton while the fetch/decode is in flight
+/// (it resolves to the real image on a later frame), or a *failed* fallback
+/// (e.g. a letter monogram) once a fetch/decode has definitively failed.
+/// Distinguishing the two is the difference between a skeleton that resolves
+/// and a permanent grey placeholder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoadState {
+    /// Fetch/decode in flight; a real image may still arrive.
+    Loading,
+    /// Decoded and ready to paint.
+    Ready,
+    /// Fetch or decode failed; it will not be retried.
+    Failed,
+}
+
 struct Shared {
     slots: Mutex<HashMap<String, Slot>>,
     /// Count of in-flight (queued or decoding) loads, for `is_idle` /
@@ -111,6 +127,20 @@ impl ImageStore {
     /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
     pub fn is_known(&self, url: &str) -> bool {
         self.shared.slots.lock().unwrap().contains_key(url)
+    }
+
+    /// The current [`LoadState`] for `url`, or `None` if it has never been
+    /// requested. Lets a caller paint an honest *loading* skeleton (which
+    /// resolves to the real image on a later frame) versus a *failed*
+    /// fallback, without a permanent grey placeholder. Unlike [`Self::get`]
+    /// this does **not** schedule a load — call `get` first (or in the same
+    /// frame) to kick one off.
+    pub fn load_state(&self, url: &str) -> Option<LoadState> {
+        self.shared.slots.lock().unwrap().get(url).map(|slot| match slot {
+            Slot::Loading => LoadState::Loading,
+            Slot::Ready(_) => LoadState::Ready,
+            Slot::Failed => LoadState::Failed,
+        })
     }
 
     /// Number of in-flight loads (queued or decoding).
@@ -277,6 +307,33 @@ mod tests {
         // Still None, and no repeated scheduling (already known/Failed).
         assert!(store.get("http://example.test/missing.jpg").is_none());
         assert!(store.is_known("http://example.test/missing.jpg"));
+    }
+
+    #[test]
+    fn load_state_reports_loading_then_ready() {
+        let bytes = png_bytes(6, 6, [80, 90, 100]);
+        let fetch: Fetcher = Arc::new(move |_url: &str| Some(bytes.clone()));
+        let store = ImageStore::new(fetch);
+        let url = "http://example.test/icon.png";
+        // Unknown until first requested.
+        assert_eq!(store.load_state(url), None);
+        // get() schedules the load and the slot becomes Loading immediately.
+        assert!(store.get(url).is_none());
+        assert_eq!(store.load_state(url), Some(LoadState::Loading));
+        // Once settled it is Ready and paintable.
+        store.block_until_idle(Duration::from_secs(5));
+        assert_eq!(store.load_state(url), Some(LoadState::Ready));
+        assert!(store.get(url).is_some());
+    }
+
+    #[test]
+    fn load_state_reports_failed_for_bad_fetch() {
+        let fetch: Fetcher = Arc::new(|_url: &str| None);
+        let store = ImageStore::new(fetch);
+        let url = "http://example.test/broken.jpg";
+        assert!(store.get(url).is_none());
+        store.block_until_idle(Duration::from_secs(5));
+        assert_eq!(store.load_state(url), Some(LoadState::Failed));
     }
 
     #[test]

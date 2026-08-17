@@ -78,6 +78,42 @@ pub fn run_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Opti
     }
 }
 
+/// Run `program args...`, returning stdout as **raw bytes**, or `None` on
+/// failure/timeout. The binary-safe sibling of [`run_with_timeout`] — used
+/// to fetch encoded image bytes (PNG/JPEG/WebP) that a lossy UTF-8 decode
+/// would corrupt.
+pub fn run_bytes_with_timeout(program: &str, args: &[&str], timeout: Duration) -> Option<Vec<u8>> {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let out = Command::new(&program)
+            .args(&args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| o.stdout);
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(v) => v,
+        Err(_) => None,
+    }
+}
+
+/// Fetch the raw bytes of a remote image over HTTP(S) with `curl`, bounded so
+/// a slow CDN can't wedge the fetch thread. Used by the store's image loader
+/// to pull real Flathub app icons + screenshots off the UI thread. `None` on
+/// any failure — the caller shows an honest loading/fallback state.
+pub fn http_get_bytes(url: &str) -> Option<Vec<u8>> {
+    let bytes = run_bytes_with_timeout(
+        "curl",
+        &["-sSL", "--max-time", "12", url],
+        Duration::from_secs(15),
+    )?;
+    if bytes.is_empty() { None } else { Some(bytes) }
+}
+
 /// Whether a usable `flatpak` binary is on PATH and answers `--version`.
 pub fn flatpak_available() -> bool {
     run_with_timeout("flatpak", &["--version"], Duration::from_millis(1500)).is_some()
@@ -333,7 +369,66 @@ fn entry_from_search_hit(hit: &serde_json::Value) -> Option<AppEntry> {
         entry.download_count = Some(d);
     }
     entry.monogram = monogram_for(&name);
+    entry.icon_url = icon_url_from(hit);
     Some(entry)
+}
+
+/// Extract a usable icon URL from a Flathub hit / AppStream record. Flathub
+/// exposes the icon under `icon` (a CDN URL); some payloads instead carry an
+/// `icons` array of `{ url | src }`. Only absolute http(s) URLs are kept.
+fn icon_url_from(v: &serde_json::Value) -> Option<String> {
+    if let Some(s) = v.get("icon").and_then(|i| i.as_str()) {
+        if s.starts_with("http") {
+            return Some(s.to_string());
+        }
+    }
+    if let Some(arr) = v.get("icons").and_then(|i| i.as_array()) {
+        for ic in arr {
+            let cand = ic
+                .get("url")
+                .or_else(|| ic.get("src"))
+                .and_then(|u| u.as_str());
+            if let Some(s) = cand {
+                if s.starts_with("http") {
+                    return Some(s.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract the best screenshot URL from a Flathub AppStream screenshot
+/// object. Prefers a mid-size thumbnail (`thumb_url`), then the largest
+/// entry in `sizes`, then a bare `source_url`/`src`. Only http(s) URLs.
+fn screenshot_url_from(s: &serde_json::Value) -> Option<String> {
+    let keep = |u: &str| u.starts_with("http").then(|| u.to_string());
+    if let Some(u) = s.get("thumb_url").and_then(|v| v.as_str()).and_then(keep) {
+        return Some(u);
+    }
+    if let Some(sizes) = s.get("sizes").and_then(|v| v.as_array()) {
+        // Pick the widest size so the detail strip gets a crisp bitmap; the
+        // ImageStore downsamples oversized sources anyway.
+        let mut best: Option<(u64, String)> = None;
+        for sz in sizes {
+            let w = sz
+                .get("width")
+                .and_then(|w| w.as_u64().or_else(|| w.as_str().and_then(|s| s.parse().ok())))
+                .unwrap_or(0);
+            if let Some(src) = sz.get("src").and_then(|v| v.as_str()).and_then(keep) {
+                if best.as_ref().map(|(bw, _)| w > *bw).unwrap_or(true) {
+                    best = Some((w, src));
+                }
+            }
+        }
+        if let Some((_, src)) = best {
+            return Some(src);
+        }
+    }
+    s.get("source_url")
+        .or_else(|| s.get("src"))
+        .and_then(|v| v.as_str())
+        .and_then(keep)
 }
 
 /// Map a full AppStream record into a detailed [`AppEntry`].
@@ -363,6 +458,7 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
         entry.description = description;
     }
     entry.monogram = monogram_for(&name);
+    entry.icon_url = icon_url_from(json);
 
     // Version + size from the most recent release / bundle.
     if let Some(rel) = json
@@ -382,9 +478,9 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
         entry.size_mib = sz as f64 / (1024.0 * 1024.0);
     }
 
-    // Screenshots → our duotone placeholders (we don't fetch the bitmaps
-    // here; the live detail page keeps the synthetic thumbnail look but
-    // carries the real caption so the count + labels are accurate).
+    // Screenshots → real bitmaps: carry the CDN URL so the detail page
+    // fetches + decodes the actual screenshot (with a duotone fallback tone
+    // pair should the fetch fail, so it is never a blank grey bar).
     if let Some(shots) = json.get("screenshots").and_then(|v| v.as_array()) {
         entry.shots = shots
             .iter()
@@ -396,7 +492,12 @@ fn entry_from_appstream(app_id: &str, json: &serde_json::Value) -> Option<AppEnt
                     .and_then(|v| v.as_str())
                     .unwrap_or("Screenshot")
                     .to_string();
-                Shot { tone_a: 4 + i % 5, tone_b: 1 + i % 4, caption }
+                Shot {
+                    tone_a: 4 + i % 5,
+                    tone_b: 1 + i % 4,
+                    caption,
+                    url: screenshot_url_from(s),
+                }
             })
             .collect();
     }
@@ -589,5 +690,52 @@ mod tests {
     fn monogram_picks_two_chars_for_multiword() {
         assert_eq!(monogram_for("Podman Desktop"), "Pd");
         assert_eq!(monogram_for("GIMP"), "G");
+    }
+
+    #[test]
+    fn search_hit_carries_the_real_icon_url() {
+        let hit = serde_json::json!({
+            "app_id": "org.gimp.GIMP",
+            "name": "GIMP",
+            "summary": "Image editor",
+            "icon": "https://dl.flathub.org/media/org/gimp/GIMP/icon.png",
+        });
+        let entry = entry_from_search_hit(&hit).unwrap();
+        assert_eq!(
+            entry.icon_url.as_deref(),
+            Some("https://dl.flathub.org/media/org/gimp/GIMP/icon.png"),
+            "a real icon URL must flow through so the tile shows the app's icon, not a letter"
+        );
+    }
+
+    #[test]
+    fn appstream_screenshots_carry_real_bitmap_urls() {
+        let json = serde_json::json!({
+            "name": "GIMP",
+            "summary": "Image editor",
+            "icon": "https://dl.flathub.org/media/org/gimp/GIMP/icon.png",
+            "screenshots": [
+                {
+                    "caption": "Single-window mode",
+                    "sizes": [
+                        {"width": "224", "height": "126", "src": "https://dl.flathub.org/media/small.png"},
+                        {"width": "752", "height": "423", "src": "https://dl.flathub.org/media/large.png"}
+                    ]
+                }
+            ]
+        });
+        let entry = entry_from_appstream("org.gimp.GIMP", &json).unwrap();
+        assert!(entry.icon_url.is_some());
+        assert_eq!(entry.shots.len(), 1);
+        // The widest size is chosen so the strip gets a crisp bitmap.
+        assert_eq!(entry.shots[0].url.as_deref(), Some("https://dl.flathub.org/media/large.png"));
+        assert_eq!(entry.shots[0].caption, "Single-window mode");
+    }
+
+    #[test]
+    fn non_http_icon_is_rejected() {
+        // A relative or data icon must not become a fetch URL.
+        let hit = serde_json::json!({ "app_id": "a.B", "name": "B", "icon": "icons/hicolor/B.png" });
+        assert!(entry_from_search_hit(&hit).unwrap().icon_url.is_none());
     }
 }

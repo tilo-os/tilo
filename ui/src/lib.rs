@@ -105,7 +105,7 @@ pub use view::{
     FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect, FROZEN_VERSION,
 };
 pub use theme::{AppearanceIntent, Theme};
-pub use image_store::{Fetcher, ImageStore};
+pub use image_store::{Fetcher, ImageStore, LoadState};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use search::{fuzzy_score, FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
