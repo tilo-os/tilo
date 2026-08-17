@@ -51,6 +51,7 @@ pub mod richtext;
 pub mod chrome;
 pub mod clipboard;
 pub mod gesture;
+pub mod player_gesture;
 pub mod status_bubble;
 pub mod text_selection;
 pub mod text_edit;
@@ -182,6 +183,7 @@ pub use text_render::{FontChoice, TextRenderer, TextWeight};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
+pub use player_gesture::{DragSide, LevelIndicator, LevelKind, VerticalDrag};
 pub use status_bubble::StatusBubble;
 pub use text_selection::{
     Selection, clipboard_copy, clipboard_copy_image, clipboard_copy_primary, clipboard_paste,
