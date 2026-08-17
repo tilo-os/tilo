@@ -1001,6 +1001,27 @@ impl BooksApp {
                 self.view = View::Reader;
                 self.shot_settings = Some(Settings { font_id: "serif".into(), ..Settings::default() });
             }
+            "serif-light" => {
+                // Serif body copy on the light (paper-white) reading palette —
+                // proves the embedded serif shapes with genuine serifs next to
+                // the sans UI chrome, in the light theme.
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_id: "serif".into(),
+                    theme: ReadTheme::Light,
+                    ..Settings::default()
+                });
+            }
+            "serif-dark" => {
+                // Serif body copy on the dark reading palette — the same
+                // embedded serif in the dark theme.
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings {
+                    font_id: "serif".into(),
+                    theme: ReadTheme::Dark,
+                    ..Settings::default()
+                });
+            }
             "dark" => {
                 // The warm dark page tint.
                 self.view = View::Reader;

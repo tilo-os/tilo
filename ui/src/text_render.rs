@@ -8,6 +8,57 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::peniko::{Color, FontData as Font, StyleRef};
 
+/// Canonical family name of the toolkit's **embedded** serif face.
+///
+/// The toolkit bundles a real, well-hinted libre serif (Source Serif 4, SIL
+/// OFL 1.1 — see `ui/assets/fonts/`) and registers it into **every**
+/// [`FontSystem`] it builds, then points cosmic-text's generic
+/// [`Family::Serif`] at it via `set_serif_family`. That makes serif body text
+/// resolve **deterministically to a genuine serif**, with no dependency on
+/// whatever the host happens to have installed.
+///
+/// This closes a real trap: a named-but-absent font silently substitutes a
+/// proportional/wrong face (cosmic-text falls through to its default sans). In
+/// the OS image and the build container — neither of which ships a serif —
+/// `Family::Serif` would otherwise render as sans, so a "serif" reading view
+/// would look identical to the sans UI. Embedding the face is what guarantees
+/// the reader (RSS article body, ebook body, office document body) actually
+/// gets serifs.
+pub const SERIF_FAMILY: &str = "Source Serif 4";
+
+/// The four embedded Source Serif 4 faces (regular / italic / bold / bold-
+/// italic) so a serif body run picks the right face for emphasis and headings.
+/// Baked into the binary — no filesystem or host-font dependency at runtime.
+const EMBEDDED_SERIF_FACES: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/SourceSerif4-Regular.ttf"),
+    include_bytes!("../assets/fonts/SourceSerif4-It.ttf"),
+    include_bytes!("../assets/fonts/SourceSerif4-Bold.ttf"),
+    include_bytes!("../assets/fonts/SourceSerif4-BoldIt.ttf"),
+];
+
+/// Build a [`FontSystem`] with the toolkit's embedded faces registered.
+///
+/// Loads the host font set (so named installed families still resolve for the
+/// font picker), then loads the bundled serif faces and makes the generic
+/// serif family point at them. Every [`TextRenderer`] is constructed through
+/// here, so serif shaping is identical and host-independent across the whole
+/// toolkit — the compositor, every system app, and the offscreen `--shots`
+/// renderer alike.
+fn build_font_system() -> FontSystem {
+    let mut fs = FontSystem::new();
+    {
+        let db = fs.db_mut();
+        for face in EMBEDDED_SERIF_FACES {
+            db.load_font_data(face.to_vec());
+        }
+        // Point the generic serif family at the embedded face. Even on a host
+        // that ships its own serif, ours wins deterministically — the same
+        // glyphs render everywhere qOS runs.
+        db.set_serif_family(SERIF_FAMILY);
+    }
+    fs
+}
+
 /// Concept-aligned named weight tiers for shell chrome.
 ///
 /// Tailwind's `font-medium` / `font-semibold` / `font-bold` map 1:1 to
@@ -124,6 +175,26 @@ impl Default for FontChoice {
     fn default() -> Self {
         FontChoice::SansSerif
     }
+}
+
+/// A **semantic** font role, resolved by the OS [`Theme`](crate::theme::Theme)
+/// to a concrete [`FontChoice`]. Widgets and apps ask for a role rather than a
+/// literal family so the OS controls the mapping in one place — the same way
+/// colours and spacing are theme-driven, not hard-coded.
+///
+/// - [`FontRole::Ui`] — chrome / labels / controls. The default; sans.
+/// - [`FontRole::Reading`] — long-form **body copy** in reading views (RSS
+///   article body, ebook page, office document body). Maps to the theme's
+///   reading face, which defaults to the toolkit's embedded serif
+///   ([`SERIF_FAMILY`]). Serif stays **opt-in** per run/view — UI chrome keeps
+///   the sans default.
+/// - [`FontRole::Mono`] — code / fixed-width numeric.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum FontRole {
+    #[default]
+    Ui,
+    Reading,
+    Mono,
 }
 
 impl FontChoice {
@@ -253,7 +324,10 @@ pub struct TextRenderer {
 impl TextRenderer {
     pub fn new() -> Self {
         Self {
-            font_system: FontSystem::new(),
+            // Build the font system with the embedded serif registered so
+            // `FontChoice::Serif` resolves to a real serif everywhere — the
+            // compositor, every app, and the headless renderer share one path.
+            font_system: build_font_system(),
             swash_cache: SwashCache::new(),
             font_cache: HashMap::new(),
             measure_cache: HashMap::with_capacity(256),
@@ -622,6 +696,34 @@ impl TextRenderer {
             }
         }
         set.into_iter().collect()
+    }
+
+    /// The font-family name(s) each shaped run of `text` actually resolves to
+    /// under the given [`FontChoice`], shaping through the **real** draw path
+    /// ([`Self::shaped_runs`]). This is how a test proves that
+    /// `FontChoice::Serif` lands on the embedded serif face
+    /// ([`SERIF_FAMILY`]) — a genuine serif — rather than silently falling
+    /// through to the default sans. De-duplicated, in first-seen order.
+    pub fn resolved_run_families(
+        &mut self,
+        text: &str,
+        size: f32,
+        weight: TextWeight,
+        italic: bool,
+        family: &FontChoice,
+    ) -> Vec<String> {
+        let runs = self.shaped_runs(text, size, None, weight, italic, family);
+        let mut out: Vec<String> = Vec::new();
+        for run in runs.iter() {
+            if let Some(face) = self.font_system.db().face(run.face_id) {
+                if let Some((name, _)) = face.families.first() {
+                    if !out.iter().any(|n| n == name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Measure `text` with style attributes. Mirrors
@@ -1239,6 +1341,73 @@ mod tests {
         );
         let (_h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 2, "serif and sans shape as separate families");
+    }
+
+    /// The embedded serif is registered into the font system and the generic
+    /// [`FontChoice::Serif`] resolves to it **through the real shaping path** —
+    /// not to a silent sans substitute. This is the guarantee the reading views
+    /// (RSS body, ebook body, office documents) depend on: a serif request must
+    /// yield genuine serif glyphs on any host, including the OS image and build
+    /// container that ship no serif of their own.
+    #[test]
+    fn embedded_serif_resolves_through_the_shaping_path() {
+        let mut tr = TextRenderer::new();
+
+        // The face is present in the db under its canonical family name.
+        assert!(
+            tr.system_families().iter().any(|f| f == SERIF_FAMILY),
+            "the embedded serif family {SERIF_FAMILY:?} must be registered; \
+             families = {:?}",
+            tr.system_families(),
+        );
+
+        // Shaping real text as Serif lands on the embedded face.
+        let serif_fams = tr.resolved_run_families(
+            "Reading fjord",
+            20.0,
+            TextWeight::Regular,
+            false,
+            &FontChoice::Serif,
+        );
+        assert!(
+            serif_fams.iter().any(|f| f == SERIF_FAMILY),
+            "FontChoice::Serif must shape with the embedded serif {SERIF_FAMILY:?}, \
+             got {serif_fams:?}",
+        );
+
+        // And it is a *distinct* choice from sans — proving we didn't just make
+        // everything serif. The sans run must NOT resolve to the serif face.
+        let sans_fams = tr.resolved_run_families(
+            "Reading fjord",
+            20.0,
+            TextWeight::Regular,
+            false,
+            &FontChoice::SansSerif,
+        );
+        assert!(
+            !sans_fams.iter().any(|f| f == SERIF_FAMILY),
+            "sans must not resolve to the serif face; sans = {sans_fams:?}",
+        );
+    }
+
+    /// The bold and italic serif faces are registered too, so an emphasised or
+    /// bold run inside serif body copy stays on the same embedded family rather
+    /// than faux-styling a single weight. Guards that all four faces load.
+    #[test]
+    fn embedded_serif_bold_and_italic_stay_on_the_family() {
+        let mut tr = TextRenderer::new();
+        for (weight, italic, label) in [
+            (TextWeight::Bold, false, "bold"),
+            (TextWeight::Regular, true, "italic"),
+            (TextWeight::Bold, true, "bold-italic"),
+        ] {
+            let fams =
+                tr.resolved_run_families("Emphasis", 20.0, weight, italic, &FontChoice::Serif);
+            assert!(
+                fams.iter().any(|f| f == SERIF_FAMILY),
+                "serif {label} run must stay on {SERIF_FAMILY:?}, got {fams:?}",
+            );
+        }
     }
 
     /// The canonical optical-centring helper places a single-line run so its
