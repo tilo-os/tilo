@@ -4800,9 +4800,35 @@ impl Widget for SlidesApp {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+
+    /// Fold the deck's slides into the unified Ctrl+K palette: a snapshot
+    /// [`SlideSearchProvider`](crate::search_provider::SlideSearchProvider)
+    /// makes every slide findable there by its text-box content or speaker
+    /// notes, alongside the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::SlideSearchProvider::new(&self.deck))]
+    }
+
+    /// Navigate to the slide a chosen palette row identifies. The row carries
+    /// the slide's stable id; resolve it to the current index and jump there.
+    /// Navigation is app-local presentation, so the doc args are unused.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::SlideSearchProvider::parse_action_id(action_id) {
+            if let Some(idx) = self.deck.index_of(id) {
+                self.goto_slide(idx);
+                self.scroll_rail_to_current();
+            }
+        }
+    }
 }
 
 impl SlidesApp {
+    /// The index of the slide currently shown. Lets a test observe where a
+    /// Ctrl+K activation navigated.
+    pub fn current_slide(&self) -> usize {
+        self.cur_slide
+    }
+
     /// Snap a moving element to the slide's center/edge guides and to the
     /// anchors (left/center/right · top/middle/bottom) of its siblings.
     /// Returns the adjusted top-left plus the guide lines that fired.
