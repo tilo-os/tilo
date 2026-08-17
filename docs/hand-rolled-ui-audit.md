@@ -118,8 +118,8 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 | vpn ✅ | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | **DONE** → `TextInput::local` ×2 (plain chrome inside app boxes; Tab cycles focus) | M |
 | monitor ✅ | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | **DONE** → `SearchField` (real caret/selection/clipboard/clear; `filter` kept as the lower-cased mirror the row filter reads) | M |
 | logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE → `SearchField` (mirror to doc) | M |
-| hex_editor | find search | `view.rs:69 search_query` → `:1285 push_str` | MIGRATE → `SearchField` (adds missing caret) | M |
-| hex_editor | go-to offset | `view.rs:77 goto_query` → `:1316 push_str` | MIGRATE → `TextInput::local` (hex parse stays; **not** `NumberInput`) | S |
+| hex_editor ✅ | find search | `view.rs:69 search_query` → `:1285 push_str` | **DONE** → mono `TextInput::local` inside the overlay's own chip + counter (adds the real caret/selection/clipboard it lacked); `SearchField`'s pill would duplicate the overlay chrome, so the bare `TextInput` fits | M |
+| hex_editor ✅ | go-to offset | `view.rs:77 goto_query` → `:1316 push_str` | **DONE** → mono `TextInput::local` (hex/decimal parse stays in `commit_goto`; **not** `NumberInput`, which has no hex) | S |
 | sheets | name-box / go-to | `app.rs:139 NameBoxEdit` → `:3517 insert` | MIGRATE → `TextInput::local` (enter_submits) | M |
 | sheets | sheet-tab rename | `app.rs:127 TabRename` → `:3403 insert` | MIGRATE → `EditableLabel` | S |
 | word-processor | find / replace bar | `widget.rs:1595/1596` → `:2753 push_str` | MIGRATE → `TextInput::local` ×2 | M |
