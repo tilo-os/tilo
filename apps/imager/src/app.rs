@@ -654,11 +654,16 @@ impl ImagerApp {
         if self.step == Step::Write {
             return None;
         }
-        let w = match self.step {
+        let desired: f64 = match self.step {
             Step::Confirm => 250.0,
             Step::Done => 190.0,
             _ => 170.0,
         };
+        // Shrink so the primary never overruns the Back button on a narrow
+        // footer (the label is elided to fit in `draw_primary`).
+        let show_back = matches!(self.step, Step::Drive | Step::Customize | Step::Confirm);
+        let reserved = if show_back { 120.0 + 20.0 } else { 0.0 };
+        let w = desired.min((content.width() - reserved).max(140.0));
         Some(Rect::new(content.x1 - w, by, content.x1, by + 44.0))
     }
 
@@ -927,6 +932,7 @@ impl ImagerApp {
         };
         Self::fill_rr(scene, t, r, 11.0, bg);
         let fg = if enabled { Color::WHITE } else { c.neutral[6] };
+        let label = tr.elide_to_width_weighted(&label, 14.0, (r.width() - 24.0) as f32, TextWeight::Bold);
         self.txt_center(scene, tr, &label, 14.0, fg, (r.x0 + r.x1) / 2.0, r.y0 + 13.0, TextWeight::Bold);
     }
 }
