@@ -29,6 +29,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -37,20 +38,22 @@ use crate::widget::Widget;
 /// Boxed zero-argument callback invoked when an action item is clicked.
 pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
 
-/// One entry in a [`ContextMenu`]. Actions carry an invocation callback;
-/// separators are purely visual and ignored by [`ContextMenu::click_item`].
+/// One entry in a [`ContextMenu`]. Actions carry an invocation callback and an
+/// optional leading [`Icon`]; separators are purely visual and ignored by
+/// [`ContextMenu::click_item`].
 #[derive(Clone)]
 pub enum MenuItem {
-    Action { label: String, action: MenuAction },
+    Action { label: String, icon: Option<Icon>, action: MenuAction },
     Separator,
 }
 
 impl std::fmt::Debug for MenuItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MenuItem::Action { label, .. } => f
+            MenuItem::Action { label, icon, .. } => f
                 .debug_struct("MenuItem::Action")
                 .field("label", label)
+                .field("icon", icon)
                 .field("action", &"<fn>")
                 .finish(),
             MenuItem::Separator => f.write_str("MenuItem::Separator"),
@@ -59,12 +62,23 @@ impl std::fmt::Debug for MenuItem {
 }
 
 impl MenuItem {
-    /// Build a clickable action item with the given label and callback.
+    /// Build a clickable action item with the given label and callback (no
+    /// icon). Use [`MenuItem::action_with_icon`] for a leading glyph.
     pub fn action<F>(label: impl Into<String>, action: F) -> Self
     where
         F: Fn() + Send + Sync + 'static,
     {
-        MenuItem::Action { label: label.into(), action: Arc::new(action) }
+        MenuItem::Action { label: label.into(), icon: None, action: Arc::new(action) }
+    }
+
+    /// Build a clickable action item with a leading [`Icon`], a label and a
+    /// callback. The glyph is tinted from the theme's primary text colour and
+    /// drawn to the left of the label.
+    pub fn action_with_icon<F>(icon: Icon, label: impl Into<String>, action: F) -> Self
+    where
+        F: Fn() + Send + Sync + 'static,
+    {
+        MenuItem::Action { label: label.into(), icon: Some(icon), action: Arc::new(action) }
     }
 
     /// Build a non-interactive separator (visual divider).
@@ -74,6 +88,15 @@ impl MenuItem {
     pub fn label(&self) -> Option<&str> {
         match self {
             MenuItem::Action { label, .. } => Some(label.as_str()),
+            MenuItem::Separator => None,
+        }
+    }
+
+    /// The leading icon for an action item, if any. `None` for separators and
+    /// icon-less actions.
+    pub fn icon(&self) -> Option<Icon> {
+        match self {
+            MenuItem::Action { icon, .. } => *icon,
             MenuItem::Separator => None,
         }
     }
@@ -255,6 +278,8 @@ const ROW_HEIGHT: f64 = 28.0;
 const SEPARATOR_HEIGHT: f64 = 9.0;
 const MENU_WIDTH: f64 = 220.0;
 const PADDING: f64 = 6.0;
+/// Edge length of a leading action glyph.
+const ICON_PX: f64 = 16.0;
 
 fn item_height(item: &MenuItem) -> f64 {
     match item {
@@ -335,7 +360,7 @@ impl Widget for ContextMenu {
         let mut y = self.rect.y0 + PADDING;
         for (idx, item) in self.items.iter().enumerate() {
             match item {
-                MenuItem::Action { label, .. } => {
+                MenuItem::Action { label, icon, .. } => {
                     // Hover highlight behind the active row.
                     if self.hovered == Some(idx) {
                         let hl = Rect::new(
@@ -356,13 +381,30 @@ impl Widget for ContextMenu {
                             &hl_shape,
                         );
                     }
+                    // Optional leading glyph, then the label indented past it so
+                    // labelled rows align whether or not they carry an icon.
+                    let label_x = if let Some(icon) = icon {
+                        let iy = y + (ROW_HEIGHT - ICON_PX) / 2.0;
+                        let icon_rect =
+                            Rect::new(self.rect.x0 + 10.0, iy, self.rect.x0 + 10.0 + ICON_PX, iy + ICON_PX);
+                        icon.draw_with_stroke(
+                            scene,
+                            transform,
+                            icon_rect,
+                            theme.tokens.colors.text_primary,
+                            LUCIDE_DEFAULT_STROKE_PX,
+                        );
+                        self.rect.x0 + 10.0 + ICON_PX + 10.0
+                    } else {
+                        self.rect.x0 + 10.0
+                    };
                     let label_y = y + (ROW_HEIGHT - text_size as f64) / 2.0;
                     text_renderer.draw_text(
                         scene,
                         label,
                         text_size,
                         theme.tokens.colors.text_primary,
-                        transform * Affine::translate((self.rect.x0 + 10.0, label_y)),
+                        transform * Affine::translate((label_x, label_y)),
                         None,
                     );
                     y += ROW_HEIGHT;
@@ -685,5 +727,51 @@ mod tests {
         assert!(Widget::modal_capture(&m).is_some(), "open menu reports capture");
         let closed = ContextMenu::new();
         assert!(Widget::modal_capture(&closed).is_none());
+    }
+
+    #[test]
+    fn action_with_icon_reports_its_glyph() {
+        use crate::icons::Icon;
+        let item = MenuItem::action_with_icon(Icon::Copy, "Copy link", || {});
+        assert_eq!(item.icon(), Some(Icon::Copy), "an icon item exposes its glyph");
+        assert_eq!(item.label(), Some("Copy link"));
+        // A plain action carries no icon.
+        assert_eq!(MenuItem::action("Plain", || {}).icon(), None);
+    }
+
+    #[test]
+    fn icon_row_paints_the_glyph() {
+        use crate::icons::Icon;
+        use vello::Scene;
+        use vello_encoding::DrawTag;
+
+        // Draw an icon-bearing menu and a label-only menu of the same shape;
+        // the icon variant must emit strictly more draw work (the glyph
+        // strokes) — proving the icon reaches the scene.
+        fn draw_menu(with_icon: bool) -> usize {
+            let mut m = ContextMenu::new();
+            if with_icon {
+                m.push(MenuItem::action_with_icon(Icon::Star, "Favourite", || {}));
+            } else {
+                m.push(MenuItem::action("Favourite", || {}));
+            }
+            m.open_at([40.0, 40.0]);
+            lay_out(&mut m);
+            let theme = Theme::dark();
+            let mut tr = crate::text_render::TextRenderer::new();
+            let presence = crate::presence::PresenceCtx::default();
+            let mut scene = Scene::new();
+            m.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count()
+        }
+        assert!(
+            draw_menu(true) > draw_menu(false),
+            "the icon variant paints extra glyph strokes"
+        );
     }
 }
