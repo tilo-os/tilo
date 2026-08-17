@@ -419,6 +419,26 @@ pub struct SlidesApp {
     select_word_click: Option<Point>,
     needs_commit: bool,
 
+    /// Additional selected element ids beyond the primary [`Self::sel`], for a
+    /// shift-click multi-selection. The primary stays the *active* one (it drives
+    /// the inspector, the resize handles and text edit); the whole set is what a
+    /// delete / nudge / duplicate / Escape acts on. Kept in step with `sel`
+    /// through the `select_*` helpers and pruned to live elements on `reload`.
+    sel_extra: Vec<Id>,
+    /// Which pane last took focus, so a bare Delete with nothing selected knows
+    /// whether the slide rail (→ delete the slide) or the canvas (→ nothing) is
+    /// the target. Set by the press that lands in each pane.
+    rail_focused: bool,
+    /// Modifier state captured on the last pointer press. The canvas press path
+    /// doesn't receive `Modifiers`, so it reads shift (extend the multi-selection)
+    /// and alt (cycle to an occluded object beneath) from here.
+    pointer_mods: winit::keyboard::ModifiersState,
+    /// Per-text-element painted glyph-row rectangles, in slide space, rebuilt
+    /// each editor frame from the live text layout. The canvas hit-test consults
+    /// it so a text box's empty frame doesn't swallow clicks meant for an object
+    /// showing through beneath it — only its real glyph rows count as solid.
+    text_hit: HashMap<Id, Vec<Rect>>,
+
     /// Framework-owned action dispatch (undo boundary + executor + last-action
     /// record). Every structural / geometric / stylistic deck mutation goes
     /// through it as a [`SlidesAction`](crate::actions::SlidesAction); flowing
@@ -628,6 +648,10 @@ impl SlidesApp {
             text_drag: false,
             select_word_click: None,
             needs_commit: false,
+            sel_extra: Vec::new(),
+            rail_focused: false,
+            pointer_mods: winit::keyboard::ModifiersState::empty(),
+            text_hit: HashMap::new(),
             actions: ui::ActionHost::new(),
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
@@ -852,6 +876,28 @@ impl SlidesApp {
                 self.fill_picker_needs_init = true;
                 self.bootstrapped = true;
             }
+            // A shape sitting inside a text box's empty area, with the shape
+            // (the occluded object) selected — proves the content-aware
+            // hit-test: the text box's blank frame is see-through, so an object
+            // showing through beneath it is reachable and shown with handles.
+            "occluded" => {
+                let mut s = Slide::new(Layout::Blank);
+                // The card is added first, so it sits *below* the text box in the
+                // z-stack — a rounded shape inside the text box's empty lower area.
+                let card = s.add(Element::shape(ElementKind::Rect, 360.0, 320.0, 560.0, 240.0));
+                // The heading text box on top: its glyphs cover only the upper
+                // rows, so most of its frame — the part over the card — is blank.
+                s.add(
+                    Element::text("Roadmap", 200.0, 120.0, 880.0, 480.0, 60.0)
+                        .with(|e| e.bold = true),
+                );
+                self.deck.slides.push(s);
+                self.cur_slide = self.deck.slides.len() - 1;
+                // Select the occluded shape (as a content-aware / alt-click would).
+                self.select_only(card);
+                self.editing_text = false;
+                self.bootstrapped = true;
+            }
             // "edit" (and anything unknown) keeps the default editor screen.
             _ => {}
         }
@@ -965,6 +1011,15 @@ impl SlidesApp {
                 self.editing_text = false;
             }
         }
+        // Prune multi-selection extras that vanished (remote delete / undo), so a
+        // stale id can never resurrect a phantom selection.
+        if !self.sel_extra.is_empty() {
+            if let Some(s) = self.deck.slides.get(self.cur_slide) {
+                self.sel_extra.retain(|id| s.element(id).is_some());
+            } else {
+                self.sel_extra.clear();
+            }
+        }
     }
 
     fn slide(&self) -> Option<&Slide> {
@@ -974,6 +1029,66 @@ impl SlidesApp {
     fn selected_element(&self) -> Option<&Element> {
         let id = self.sel.as_ref()?;
         self.slide()?.element(id)
+    }
+
+    /// The full set of selected element ids on the current slide — the primary
+    /// [`Self::sel`] first, then the shift-click extras — filtered to elements
+    /// that still exist. This is what a delete / nudge / duplicate acts on.
+    fn selected_ids(&self) -> Vec<Id> {
+        let Some(slide) = self.slide() else { return Vec::new() };
+        let alive = |id: &str| slide.elements.iter().any(|e| e.id == id);
+        let mut out: Vec<Id> = Vec::new();
+        if let Some(p) = &self.sel {
+            if alive(p) {
+                out.push(p.clone());
+            }
+        }
+        for id in &self.sel_extra {
+            if !out.iter().any(|x| x == id) && alive(id) {
+                out.push(id.clone());
+            }
+        }
+        out
+    }
+
+    /// Whether `id` is part of the current selection (primary or an extra).
+    fn is_selected(&self, id: &str) -> bool {
+        self.sel.as_deref() == Some(id) || self.sel_extra.iter().any(|x| x == id)
+    }
+
+    /// Make `id` the sole selection (a plain click / keyboard select), dropping
+    /// any shift-click extras.
+    fn select_only(&mut self, id: Id) {
+        self.sel = Some(id);
+        self.sel_extra.clear();
+    }
+
+    /// Drop the whole selection (primary and extras).
+    fn clear_selection(&mut self) {
+        self.sel = None;
+        self.sel_extra.clear();
+    }
+
+    /// Toggle `id` in a multi-selection (shift-click): add it and make it the
+    /// active element if absent, or remove it (promoting an extra to primary) if
+    /// already selected.
+    fn toggle_select(&mut self, id: Id) {
+        if self.is_selected(&id) {
+            self.sel_extra.retain(|x| *x != id);
+            if self.sel.as_deref() == Some(id.as_str()) {
+                self.sel = self.sel_extra.first().cloned();
+                if let Some(p) = self.sel.clone() {
+                    self.sel_extra.retain(|x| *x != p);
+                }
+            }
+        } else {
+            if let Some(old) = self.sel.take() {
+                if !self.sel_extra.contains(&old) {
+                    self.sel_extra.push(old);
+                }
+            }
+            self.sel = Some(id);
+        }
     }
 
     fn palette(&self, theme: &Theme) -> Palette {
@@ -1866,8 +1981,9 @@ impl SlidesApp {
             }
             Hit::OpenSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
-                self.sel = None;
+                self.clear_selection();
                 self.mode = Mode::Edit;
+                self.rail_focused = false;
             }
             Hit::CyclePalette => {
                 self.perform_action(doc, actions::set_deck_palette_action(self.deck.palette.next()));
@@ -1878,9 +1994,10 @@ impl SlidesApp {
             Hit::Insert(kind) => self.insert_element(doc, kind),
             Hit::SelectSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
-                self.sel = None;
+                self.clear_selection();
                 self.editing_text = false;
                 self.editing_notes = false;
+                self.rail_focused = true;
                 self.scroll_rail_to_current();
             }
             Hit::SetFill(role) => self.set_sel_str(doc, "fill", &role),
@@ -1917,8 +2034,10 @@ impl SlidesApp {
             Hit::SetAlign(a) => self.set_sel_str(doc, "align", a.as_str()),
             Hit::BringFront => self.restack(doc, true),
             Hit::SendBack => self.restack(doc, false),
-            Hit::DuplicateElement => self.duplicate_element(doc),
-            Hit::DeleteElement => self.delete_element(doc),
+            Hit::DuplicateElement => self.duplicate_selected(doc),
+            Hit::DeleteElement => {
+                self.delete_selected_elements(doc);
+            }
             Hit::SetLayout(l) => {
                 self.perform_action(doc, actions::set_slide_layout_action(self.cur_slide, l));
             }
@@ -1971,7 +2090,7 @@ impl SlidesApp {
         let at = self.cur_slide + 1;
         self.perform_action(doc, actions::insert_slide_action(at, &s));
         self.cur_slide = at;
-        self.sel = None;
+        self.clear_selection();
         self.editing_text = false;
         self.scroll_rail_to_current();
     }
@@ -1986,7 +2105,7 @@ impl SlidesApp {
         let at = self.cur_slide + 1;
         self.perform_action(doc, actions::insert_slide_action(at, &copy));
         self.cur_slide = at;
-        self.sel = None;
+        self.clear_selection();
         self.scroll_rail_to_current();
     }
 
@@ -1998,7 +2117,7 @@ impl SlidesApp {
         if self.cur_slide > 0 {
             self.cur_slide -= 1;
         }
-        self.sel = None;
+        self.clear_selection();
     }
 
     fn insert_element(&mut self, doc: &mut AutoCommit, kind: ElementKind) {
@@ -2010,8 +2129,9 @@ impl SlidesApp {
         };
         let id = el.id.clone();
         self.perform_action(doc, actions::add_element_action(self.cur_slide, &el));
-        self.sel = Some(id);
+        self.select_only(id);
         self.editing_text = false;
+        self.rail_focused = false;
     }
 
     /// Ask the host desktop's file chooser to pick an image, via the XDG
@@ -2141,27 +2261,52 @@ impl SlidesApp {
         self.reload(doc);
     }
 
-    fn duplicate_element(&mut self, doc: &mut AutoCommit) {
-        let Some(el) = self.selected_element().cloned() else { return };
-        let mut copy = el;
-        copy.id = new_id();
-        copy.x += 24.0;
-        copy.y += 24.0;
-        let id = copy.id.clone();
-        self.perform_action(doc, actions::add_element_action(self.cur_slide, &copy));
-        self.sel = Some(id);
-    }
-
-    fn delete_element(&mut self, doc: &mut AutoCommit) {
-        if let Some(id) = self.sel.clone() {
-            self.perform_action(doc, actions::delete_element_action(self.cur_slide, id));
-            self.sel = None;
-            self.editing_text = false;
+    /// Duplicate every selected object (offset a little), then select the copies.
+    /// Each copy is one action; because they dispatch within a single event the
+    /// host brackets them as one undo boundary.
+    fn duplicate_selected(&mut self, doc: &mut AutoCommit) {
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let mut new_ids: Vec<Id> = Vec::new();
+        for id in &ids {
+            let Some(el) = self.slide().and_then(|s| s.element(id)).cloned() else { continue };
+            let mut copy = el;
+            copy.id = new_id();
+            copy.x += 24.0;
+            copy.y += 24.0;
+            new_ids.push(copy.id.clone());
+            self.perform_action(doc, actions::add_element_action(self.cur_slide, &copy));
+        }
+        if let Some((first, rest)) = new_ids.split_first() {
+            self.sel = Some(first.clone());
+            self.sel_extra = rest.to_vec();
         }
     }
 
-    fn nudge(&mut self, doc: &mut AutoCommit, dx: f64, dy: f64) {
-        if let Some(el) = self.selected_element().cloned() {
+    /// Delete every selected object. Returns whether anything was deleted. One
+    /// undo boundary bounds the whole multi-delete (all dispatches share the
+    /// event's boundary).
+    fn delete_selected_elements(&mut self, doc: &mut AutoCommit) -> bool {
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            return false;
+        }
+        for id in ids {
+            self.perform_action(doc, actions::delete_element_action(self.cur_slide, id));
+        }
+        self.clear_selection();
+        self.editing_text = false;
+        true
+    }
+
+    /// Nudge every selected object by `(dx, dy)` slide units, clamped so each
+    /// stays reachable on the slide. Positions are read from the (pre-move)
+    /// mirror, so each element shifts by the same delta from its own origin.
+    fn nudge_selected(&mut self, doc: &mut AutoCommit, dx: f64, dy: f64) {
+        for id in self.selected_ids() {
+            let Some(el) = self.slide().and_then(|s| s.element(&id)).cloned() else { continue };
             let nx = (el.x + dx).clamp(-el.w + 20.0, SLIDE_W - 20.0);
             let ny = (el.y + dy).clamp(-el.h + 20.0, SLIDE_H - 20.0);
             self.perform_action(doc, actions::move_element_action(self.cur_slide, el.id, nx, ny));
@@ -2184,7 +2329,7 @@ impl SlidesApp {
             }
             self.cur_slide = i as usize;
         }
-        self.sel = None;
+        self.clear_selection();
         self.editing_text = false;
     }
 
@@ -2204,7 +2349,7 @@ impl SlidesApp {
             }
             self.cur_slide = target;
         }
-        self.sel = None;
+        self.clear_selection();
         self.editing_text = false;
     }
 
@@ -2712,6 +2857,9 @@ impl SlidesApp {
         // double-click word-select, drag-extend) now that the text layout is
         // measurable, before anything borrows the slide immutably.
         self.resolve_text_pointer(tr, chrome);
+        // Refresh the content-aware canvas hit cache (glyph rows per text box)
+        // from the same measurable layout, so the next press hit-tests real text.
+        self.rebuild_text_hit_cache(tr, chrome);
 
         // Panels (base layer). A docked panel is part of the base; an overlay
         // flap is painted later, on top of the dimming scrim.
@@ -2739,6 +2887,26 @@ impl SlidesApp {
             chrome::fill_rrect(scene, t, sh.inflate(2.0, 2.0), 14.0, render::with_alpha(Color::BLACK, 70));
             render::draw_slide(scene, t, tr, theme, &pal, slide, chrome.slide_dest, 14.0, &self.images);
             chrome::stroke_rrect(scene, t, chrome.slide_dest, 14.0, render::with_alpha(c.text_primary, 28), 1.0);
+
+            // Secondary selection rings: the shift-click extras beyond the active
+            // element, so a whole multi-selection reads at a glance (a thinner,
+            // softer accent ring, no handles — the active element owns those).
+            for id in &self.sel_extra {
+                if self.sel.as_deref() == Some(id.as_str()) {
+                    continue;
+                }
+                if let Some(el) = slide.element(id) {
+                    let er = render::element_dest(chrome.slide_dest, chrome.scale, el);
+                    chrome::stroke_rrect(
+                        scene,
+                        t,
+                        er.inflate(HANDLE_OFFSET, HANDLE_OFFSET),
+                        5.0,
+                        render::with_alpha(pal.accent, 150),
+                        1.25,
+                    );
+                }
+            }
 
             // Selection chrome.
             if let Some(el) = self.selected_element() {
@@ -4167,13 +4335,13 @@ impl SlidesApp {
             ("P", "Present from current slide"),
             ("G", "Slide-sorter overview"),
             ("T / R / O / L", "Insert text · rect · ellipse · line"),
-            ("Tab", "Cycle selection on the slide"),
+            ("Tab · Shift-click", "Cycle · add to selection"),
             ("Enter", "Edit selected text box"),
-            ("Drag", "Move · resize (snaps to guides)"),
+            ("Drag · Alt-click", "Move/resize · pick object beneath"),
             ("Arrows", "Nudge selection (Shift = 1px)"),
             ("[  /  ]", "Send back · bring to front"),
-            ("Ctrl-D", "Duplicate element"),
-            ("Del / Backspace", "Delete element"),
+            ("Ctrl-D", "Duplicate selection"),
+            ("Del / Backspace", "Delete selection or slide"),
             ("Ctrl-Z / Ctrl-Y", "Undo · redo"),
             ("Present mode", ""),
             ("← → / Space / click", "Previous · next slide"),
@@ -4311,6 +4479,60 @@ fn line_starts(chars: &[char]) -> Vec<usize> {
         }
     }
     starts
+}
+
+/// The screen-space rectangles a text element's painted glyph rows actually
+/// cover, tracking the exact wrapped layout [`render::draw_text_element`] uses
+/// (line height `font_px * 1.25`, per-line alignment, vertical centering). Empty
+/// (`\n`-only) lines contribute nothing, and each row spans only its measured
+/// text width — so the box's blank areas are *not* covered, which is what makes
+/// the canvas hit-test content-aware. `er` is the element's screen rect; `s` the
+/// slide→screen scale.
+fn text_line_boxes(tr: &mut TextRenderer, el: &Element, er: Rect, s: f64) -> Vec<Rect> {
+    let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+    let font_px = (el.font_size * s).max(1.0) as f32;
+    let line_h = (font_px as f64) * 1.25;
+    let wrap_w = (er.width() + 4.0).max(1.0) as f32;
+    let lines: Vec<&str> = el.text.split('\n').collect();
+    let rows: Vec<usize> = lines
+        .iter()
+        .map(|line| {
+            if line.is_empty() {
+                1
+            } else {
+                let (_, h) = tr.measure_styled(line, font_px, Some(wrap_w), weight, el.italic, false);
+                ((h as f64 / line_h).round() as usize).max(1)
+            }
+        })
+        .collect();
+    let total_rows: usize = rows.iter().sum();
+    let total_h = total_rows as f64 * line_h;
+    let mut y = if total_h < er.height() {
+        er.y0 + (er.height() - total_h) / 2.0
+    } else {
+        er.y0
+    };
+    // A little grab tolerance around each row so a click that grazes a glyph
+    // still lands (mirrors the ±2px the whole-frame test used to allow).
+    let pad = 4.0;
+    let mut out: Vec<Rect> = Vec::new();
+    for (line, r) in lines.iter().zip(&rows) {
+        if !line.is_empty() {
+            let (lw, _) = tr.measure_styled(line, font_px, Some(wrap_w), weight, el.italic, false);
+            let x = match el.align {
+                TextAlign::Left | TextAlign::Justify => er.x0,
+                TextAlign::Center => er.x0 + (er.width() - lw as f64) / 2.0,
+                TextAlign::Right => er.x1 - lw as f64,
+            };
+            let row_h = *r as f64 * line_h;
+            // A wrapped (multi-row) line can run out to the wrap width; a single
+            // row is exactly its measured glyph width.
+            let w = if *r > 1 { wrap_w as f64 } else { lw as f64 };
+            out.push(Rect::new(x - pad, y, x + w.max(2.0) + pad, y + row_h));
+        }
+        y += *r as f64 * line_h;
+    }
+    out
 }
 
 /// Move a char-index caret up (`dir < 0`) or down one explicit (`\n`-delimited)
@@ -4748,7 +4970,12 @@ impl Widget for SlidesApp {
             }
             WindowEvent::MouseInput { state: btn_state, button: MouseButton::Left, .. } => {
                 match btn_state {
-                    ElementState::Pressed => self.on_press(state, self.last_mouse, handled),
+                    ElementState::Pressed => {
+                        // The canvas press path reads shift (extend the
+                        // multi-selection) / alt (cycle beneath) from here.
+                        self.pointer_mods = modifiers.state();
+                        self.on_press(state, self.last_mouse, handled);
+                    }
                     ElementState::Released => self.on_release(state, handled),
                 }
             }
@@ -5122,6 +5349,9 @@ impl SlidesApp {
         // slide by closing the overlay flap (deferred to `on_release` so a drag
         // doesn't close it). Sync the rail's geometry to this frame first.
         if chrome.rail_viewport.contains(p) {
+            // Pressing a thumbnail moves focus to the rail, so a bare Delete
+            // afterwards targets the slide (matching the rail's Del button).
+            self.rail_focused = true;
             self.sync_page_rail();
             self.page_sidebar.on_press(p);
             self.apply_rail_events(doc);
@@ -5146,7 +5376,13 @@ impl SlidesApp {
     fn press_canvas(&mut self, doc: &mut AutoCommit, p: Point, chrome: &Chrome, handled: &mut bool) {
         let dest = chrome.slide_dest;
         let s = chrome.scale;
-        // Resize handle of the current selection?
+        // A canvas press moves focus to the canvas, so a bare Delete afterwards
+        // targets the object, not the slide.
+        self.rail_focused = false;
+        let shift = self.pointer_mods.shift_key();
+        let alt = self.pointer_mods.alt_key();
+        let ps = self.to_slide(dest, s, p);
+        // Resize handle of the current selection? (single-selection affordance)
         if let Some(el) = self.selected_element().cloned() {
             if !self.editing_text {
                 for (h, hr) in self.handles_of(dest, s, &el) {
@@ -5163,21 +5399,44 @@ impl SlidesApp {
                 }
             }
         }
-        // Hit-test elements front-to-back.
-        let mut picked: Option<Id> = None;
-        if let Some(slide) = self.slide() {
-            let mut z: Vec<&Element> = slide.elements.iter().collect();
-            z.sort_by_key(|e| -e.z);
-            for el in z {
-                let er = render::element_dest(dest, s, el);
-                if er.inflate(2.0, 2.0).contains(p) {
-                    picked = Some(el.id.clone());
-                    break;
-                }
+        // Alt-click walks *down* the z-stack at the point, so a fully-occluded
+        // object is reachable: each alt-press selects the next frame below the
+        // current selection, wrapping through every overlapping element there.
+        if alt {
+            let stack = self.bbox_hits_at(ps);
+            if !stack.is_empty() {
+                let next = match self.sel.as_ref().and_then(|c| stack.iter().position(|x| x == c)) {
+                    Some(i) => stack[(i + 1) % stack.len()].clone(),
+                    None => stack[0].clone(),
+                };
+                self.select_only(next);
+                self.editing_text = false;
+                self.last_click = None;
+                *handled = true;
+                return;
             }
         }
+        // Plain pick: the top-most element whose *painted content* is under the
+        // cursor (content-aware, so a text box's empty frame is see-through and an
+        // object showing through beneath it stays reachable). Only if nothing's
+        // content is there do we fall back to the top-most frame, so an otherwise
+        // empty box is still selectable.
+        let picked = self
+            .content_hits_at(ps)
+            .into_iter()
+            .next()
+            .or_else(|| self.bbox_hits_at(ps).into_iter().next());
         match picked {
             Some(id) => {
+                // Shift-click toggles the object in/out of a multi-selection; it
+                // never enters text edit or arms a move.
+                if shift {
+                    self.toggle_select(id);
+                    self.editing_text = false;
+                    self.last_click = None;
+                    *handled = true;
+                    return;
+                }
                 let is_text = self
                     .slide()
                     .and_then(|sl| sl.element(&id))
@@ -5211,7 +5470,7 @@ impl SlidesApp {
                     return;
                 }
 
-                self.sel = Some(id.clone());
+                self.select_only(id.clone());
                 if double && is_text {
                     // A deliberate double-click opens the text for editing and
                     // selects the word under the point.
@@ -5237,8 +5496,12 @@ impl SlidesApp {
                 *handled = true;
             }
             None => {
-                self.sel = None;
-                self.editing_text = false;
+                // A shift-click on empty canvas keeps the current selection (it is
+                // an additive gesture); a plain click drops it.
+                if !shift {
+                    self.clear_selection();
+                    self.editing_text = false;
+                }
                 self.last_click = None;
                 *handled = true;
             }
@@ -5246,19 +5509,97 @@ impl SlidesApp {
         let _ = doc;
     }
 
-    /// Hit-test the canvas elements front-to-back at screen point `p`.
-    fn element_at(&self, chrome: &Chrome, p: Point) -> Option<Id> {
-        let dest = chrome.slide_dest;
-        let s = chrome.scale;
-        let slide = self.slide()?;
+    /// Front-to-back (top-most first) element ids whose *painted content* is under
+    /// the slide-space point `ps`. Text hit-tests its real glyph rows (from the
+    /// per-frame [`Self::text_hit`] cache) so a text box's empty frame doesn't
+    /// swallow clicks meant for an object showing through beneath it; every other
+    /// kind fills its frame.
+    fn content_hits_at(&self, ps: Point) -> Vec<Id> {
+        let Some(slide) = self.slide() else { return Vec::new() };
         let mut z: Vec<&Element> = slide.elements.iter().collect();
         z.sort_by_key(|e| -e.z);
-        for el in z {
-            if render::element_dest(dest, s, el).inflate(2.0, 2.0).contains(p) {
-                return Some(el.id.clone());
+        z.into_iter()
+            .filter(|el| self.content_contains(el, ps))
+            .map(|el| el.id.clone())
+            .collect()
+    }
+
+    /// Whether element `el`'s painted content covers slide-space point `ps`. Text
+    /// counts only where its glyph rows are; every other kind counts across its
+    /// (slightly inflated) frame.
+    fn content_contains(&self, el: &Element, ps: Point) -> bool {
+        match el.kind {
+            ElementKind::Text => self
+                .text_hit
+                .get(&el.id)
+                .map(|rows| rows.iter().any(|r| r.contains(ps)))
+                .unwrap_or(false),
+            _ => Rect::new(el.x, el.y, el.x + el.w, el.y + el.h)
+                .inflate(2.0, 2.0)
+                .contains(ps),
+        }
+    }
+
+    /// Front-to-back element ids whose bounding frame contains slide-space `ps`
+    /// (every kind, empty text frames included). The permissive stack Alt-click
+    /// cycles through and the fallback when no content is under the cursor.
+    fn bbox_hits_at(&self, ps: Point) -> Vec<Id> {
+        let Some(slide) = self.slide() else { return Vec::new() };
+        let mut z: Vec<&Element> = slide.elements.iter().collect();
+        z.sort_by_key(|e| -e.z);
+        z.into_iter()
+            .filter(|el| {
+                Rect::new(el.x, el.y, el.x + el.w, el.y + el.h)
+                    .inflate(2.0, 2.0)
+                    .contains(ps)
+            })
+            .map(|el| el.id.clone())
+            .collect()
+    }
+
+    /// Hit-test the canvas at screen point `p`: the top-most element whose painted
+    /// content is there, else the top-most frame. Content-aware, so right-click
+    /// reaches an object showing through a text box's empty frame.
+    fn element_at(&self, chrome: &Chrome, p: Point) -> Option<Id> {
+        let ps = self.to_slide(chrome.slide_dest, chrome.scale, p);
+        self.content_hits_at(ps)
+            .into_iter()
+            .next()
+            .or_else(|| self.bbox_hits_at(ps).into_iter().next())
+    }
+
+    /// Rebuild the per-text-element glyph-row hit cache ([`Self::text_hit`]) for
+    /// the current slide from the live text layout. Runs each editor frame in
+    /// `draw`, where the `TextRenderer` can measure; the boxes are stored in slide
+    /// space so the hit-test is robust to a scale change between draw and press.
+    fn rebuild_text_hit_cache(&mut self, tr: &mut TextRenderer, chrome: &Chrome) {
+        let mut map: HashMap<Id, Vec<Rect>> = HashMap::new();
+        let dest = chrome.slide_dest;
+        let s = chrome.scale;
+        if s > 0.0 {
+            if let Some(slide) = self.deck.slides.get(self.cur_slide) {
+                for el in &slide.elements {
+                    if el.kind != ElementKind::Text || el.text.is_empty() {
+                        continue;
+                    }
+                    let er = render::element_dest(dest, s, el);
+                    let boxes = text_line_boxes(tr, el, er, s);
+                    let slide_boxes: Vec<Rect> = boxes
+                        .into_iter()
+                        .map(|r| {
+                            Rect::new(
+                                (r.x0 - dest.x0) / s,
+                                (r.y0 - dest.y0) / s,
+                                (r.x1 - dest.x0) / s,
+                                (r.y1 - dest.y0) / s,
+                            )
+                        })
+                        .collect();
+                    map.insert(el.id.clone(), slide_boxes);
+                }
             }
         }
-        None
+        self.text_hit = map;
     }
 
     /// Right-click opens a context menu — on a canvas element (front / back /
@@ -5290,7 +5631,13 @@ impl SlidesApp {
             // Close any open rail menu first so the two never stack.
             self.page_sidebar.on_escape();
             if let Some(id) = self.element_at(&chrome, p) {
-                self.sel = Some(id);
+                self.rail_focused = false;
+                // Right-clicking an element that isn't part of the current
+                // multi-selection collapses to it; right-clicking one that *is*
+                // keeps the whole selection so its menu acts on the group.
+                if !self.is_selected(&id) {
+                    self.select_only(id);
+                }
                 self.editing_text = false;
                 self.editing_notes = false;
                 self.open_element_menu(p);
@@ -5709,6 +6056,13 @@ impl SlidesApp {
                     self.enter_present();
                     *handled = true;
                 }
+                // Delete the highlighted slide from the slide-sorter (keeps at
+                // least one slide, via the same action as the rail's Del button).
+                Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                    self.delete_slide(doc);
+                    self.reload(doc);
+                    *handled = true;
+                }
                 _ => {}
             }
             return;
@@ -5928,14 +6282,23 @@ impl SlidesApp {
         // Editor command keys.
         match key {
             Key::Named(NamedKey::Escape) => {
-                if self.sel.is_some() {
-                    self.sel = None;
+                if self.sel.is_some() || !self.sel_extra.is_empty() {
+                    self.clear_selection();
                     *handled = true;
                 }
             }
             Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
-                if self.sel.is_some() {
-                    self.delete_element(doc);
+                // An object (or a multi-selection) selected → delete the whole
+                // selection. Otherwise, if the slide rail last took focus, Delete
+                // removes the current slide (the same action as the rail's Del
+                // button); a bare Delete on the canvas does nothing.
+                if self.sel.is_some() || !self.sel_extra.is_empty() {
+                    if self.delete_selected_elements(doc) {
+                        self.reload(doc);
+                    }
+                    *handled = true;
+                } else if self.rail_focused {
+                    self.delete_slide(doc);
                     self.reload(doc);
                     *handled = true;
                 }
@@ -5953,22 +6316,22 @@ impl SlidesApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.nudge(doc, if mods.shift_key() { -1.0 } else { -12.0 }, 0.0);
+                self.nudge_selected(doc, if mods.shift_key() { -1.0 } else { -12.0 }, 0.0);
                 self.reload(doc);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.nudge(doc, if mods.shift_key() { 1.0 } else { 12.0 }, 0.0);
+                self.nudge_selected(doc, if mods.shift_key() { 1.0 } else { 12.0 }, 0.0);
                 self.reload(doc);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.nudge(doc, 0.0, if mods.shift_key() { -1.0 } else { -12.0 });
+                self.nudge_selected(doc, 0.0, if mods.shift_key() { -1.0 } else { -12.0 });
                 self.reload(doc);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.nudge(doc, 0.0, if mods.shift_key() { 1.0 } else { 12.0 });
+                self.nudge_selected(doc, 0.0, if mods.shift_key() { 1.0 } else { 12.0 });
                 self.reload(doc);
                 *handled = true;
             }
@@ -5987,7 +6350,7 @@ impl SlidesApp {
                     return;
                 }
                 if ctrl && lc == "d" {
-                    self.duplicate_element(doc);
+                    self.duplicate_selected(doc);
                     self.reload(doc);
                     *handled = true;
                     return;
@@ -6004,7 +6367,7 @@ impl SlidesApp {
                     }
                     "g" => {
                         self.mode = Mode::Overview;
-                        self.sel = None;
+                        self.clear_selection();
                         self.editing_text = false;
                         *handled = true;
                     }
@@ -6029,7 +6392,7 @@ impl SlidesApp {
                         *handled = true;
                     }
                     "d" => {
-                        self.duplicate_element(doc);
+                        self.duplicate_selected(doc);
                         self.reload(doc);
                         *handled = true;
                     }
@@ -6065,8 +6428,9 @@ impl SlidesApp {
             }
             None => ids[0].clone(),
         };
-        self.sel = Some(next);
+        self.select_only(next);
         self.editing_text = false;
+        self.rail_focused = false;
     }
 }
 
@@ -7768,6 +8132,226 @@ mod tests {
         assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
         assert_eq!(loaded(&doc).slides[0].elements.len(), n - 1, "Delete removed the element");
         assert!(app.sel.is_none(), "selection clears after delete");
+    }
+
+    // --- Delete on the slide rail (QOL: Del deletes the selected slide) ------
+
+    /// A bare Delete with the slide rail focused and no object selected removes
+    /// the current slide — the same action as the rail's Del button — through the
+    /// real thumbnail-press + key path.
+    #[test]
+    fn delete_key_removes_the_current_slide_when_the_rail_has_focus() {
+        let (mut app, mut doc) = reorder_app();
+        let before = loaded(&doc).slides.len();
+
+        // Press a thumbnail: focus moves to the rail and the slide is selected.
+        let (idx, rect) = app.rail_thumb_rects()[2];
+        let p = rect.center();
+        app.last_mouse = p;
+        let mut h = false;
+        app.on_press(&mut doc, p, &mut h);
+        app.on_release(&mut doc, &mut h);
+        assert!(app.rail_focused, "pressing a thumbnail focuses the rail");
+        assert_eq!(app.cur_slide, idx, "the pressed slide is current");
+        assert!(app.sel.is_none(), "no canvas object is selected");
+
+        // Delete now removes that slide (was a no-op before).
+        assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
+        assert_eq!(loaded(&doc).slides.len(), before - 1, "Delete removed the current slide");
+    }
+
+    /// The safety counterpart: a bare Delete after a canvas interaction with
+    /// nothing selected does NOT delete the slide (only the rail path does).
+    #[test]
+    fn delete_key_on_empty_canvas_keeps_the_slide() {
+        let (mut app, mut doc) = reorder_app();
+        let before = loaded(&doc).slides.len();
+        // Click empty canvas → canvas focus, no selection.
+        let chrome = app.compute_chrome();
+        let p = Point::new(chrome.slide_dest.x0 + 40.0 * chrome.scale, chrome.slide_dest.y0 + 40.0 * chrome.scale);
+        app.pointer_mods = winit::keyboard::ModifiersState::empty();
+        app.last_mouse = p;
+        let mut h = false;
+        app.on_press(&mut doc, p, &mut h);
+        assert!(!app.rail_focused, "a canvas press focuses the canvas");
+        assert!(app.sel.is_none());
+        // Delete is a no-op here.
+        keyn(&mut app, &mut doc, NamedKey::Delete);
+        assert_eq!(loaded(&doc).slides.len(), before, "a bare canvas Delete does not drop a slide");
+    }
+
+    // --- content-aware canvas hit-test (QOL: reach an object behind text) ----
+
+    /// A filled rectangle behind a text box: clicking the text box's *empty*
+    /// frame where the rect shows through selects the RECT (content-aware
+    /// hit-test), while clicking the real glyphs still selects the text box.
+    #[test]
+    fn clicking_through_a_text_boxs_empty_frame_selects_the_rect_beneath() {
+        let mut s = Slide::new(Layout::Blank);
+        // Rect underneath, then a big text box on top that overlaps it. "Hi" is
+        // short + left-anchored, so most of the text box's frame is empty.
+        let rect_id = s.add(Element::shape(ElementKind::Rect, 150.0, 150.0, 500.0, 400.0));
+        let text_id = s.add(Element::text("Hi", 150.0, 150.0, 600.0, 400.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+
+        // Build the content-aware hit cache from the live text layout (the exact
+        // production path `draw` runs each frame).
+        let chrome = app.compute_chrome();
+        let mut tr = TextRenderer::new();
+        app.rebuild_text_hit_cache(&mut tr, &chrome);
+        let to_screen = |sx: f64, sy: f64| {
+            Point::new(chrome.slide_dest.x0 + sx * chrome.scale, chrome.slide_dest.y0 + sy * chrome.scale)
+        };
+
+        // (a) Empty text-frame area over the rect → the rect wins.
+        let empty = to_screen(400.0, 300.0);
+        app.pointer_mods = winit::keyboard::ModifiersState::empty();
+        app.last_mouse = empty;
+        let mut h = false;
+        app.on_press(&mut doc, empty, &mut h);
+        assert_eq!(app.sel.as_deref(), Some(rect_id.as_str()), "empty text frame is see-through: the rect is selected");
+
+        // (b) On the glyphs → the text box wins.
+        let glyphs = to_screen(165.0, 350.0);
+        app.last_mouse = glyphs;
+        let mut h2 = false;
+        app.on_press(&mut doc, glyphs, &mut h2);
+        assert_eq!(app.sel.as_deref(), Some(text_id.as_str()), "clicking the real glyphs selects the text box");
+    }
+
+    /// Alt-click walks down the z-stack so a fully-occluded object is reachable:
+    /// a small rect entirely covered by a big one is selected on the second
+    /// (alt) click, and a third wraps back to the top.
+    #[test]
+    fn alt_click_cycles_through_stacked_objects() {
+        let mut s = Slide::new(Layout::Blank);
+        let lower = s.add(Element::shape(ElementKind::Rect, 300.0, 300.0, 120.0, 120.0));
+        let upper = s.add(Element::shape(ElementKind::Rect, 200.0, 200.0, 500.0, 400.0));
+        let (mut app, mut doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        let chrome = app.compute_chrome();
+        let p = Point::new(chrome.slide_dest.x0 + 350.0 * chrome.scale, chrome.slide_dest.y0 + 350.0 * chrome.scale);
+
+        // Plain click picks the top-most (upper).
+        app.pointer_mods = winit::keyboard::ModifiersState::empty();
+        app.last_mouse = p;
+        let mut h = false;
+        app.on_press(&mut doc, p, &mut h);
+        app.on_release(&mut doc, &mut h);
+        assert_eq!(app.sel.as_deref(), Some(upper.as_str()), "plain click selects the top object");
+
+        // Alt-click cycles down to the occluded lower rect.
+        app.pointer_mods = winit::keyboard::ModifiersState::ALT;
+        let mut h2 = false;
+        app.on_press(&mut doc, p, &mut h2);
+        assert_eq!(app.sel.as_deref(), Some(lower.as_str()), "alt-click reaches the occluded object beneath");
+
+        // A further alt-click wraps back to the top.
+        let mut h3 = false;
+        app.on_press(&mut doc, p, &mut h3);
+        assert_eq!(app.sel.as_deref(), Some(upper.as_str()), "alt-click cycles and wraps");
+    }
+
+    // --- multi-selection (QOL: shift-click, delete/nudge/duplicate the set) --
+
+    /// A one-slide deck with two non-overlapping rects, sized so both are on the
+    /// canvas.
+    fn two_rects() -> (SlidesApp, AutoCommit, Id, Id) {
+        let mut s = Slide::new(Layout::Blank);
+        let a = s.add(Element::shape(ElementKind::Rect, 100.0, 100.0, 200.0, 150.0));
+        let b = s.add(Element::shape(ElementKind::Rect, 700.0, 450.0, 200.0, 150.0));
+        let (mut app, doc) = app_doc(s);
+        sized(&mut app, 1280.0, 800.0);
+        (app, doc, a, b)
+    }
+
+    fn screen_center(app: &SlidesApp, id: &str) -> Point {
+        let chrome = app.compute_chrome();
+        let el = app.slide().unwrap().element(id).unwrap().clone();
+        render::element_dest(chrome.slide_dest, chrome.scale, &el).center()
+    }
+
+    /// Shift-click adds a second object to the selection, and a single Delete
+    /// removes the whole set as one undo boundary.
+    #[test]
+    fn shift_click_multi_select_then_delete_removes_all() {
+        let (mut app, mut doc, a, b) = two_rects();
+        // Select A, then shift-click B.
+        app.select_only(a.clone());
+        let pb = screen_center(&app, &b);
+        app.pointer_mods = winit::keyboard::ModifiersState::SHIFT;
+        app.last_mouse = pb;
+        let mut h = false;
+        app.on_press(&mut doc, pb, &mut h);
+        let sel = app.selected_ids();
+        assert_eq!(sel.len(), 2, "shift-click built a two-object selection: {sel:?}");
+        assert!(sel.contains(&a) && sel.contains(&b));
+
+        // Drain the boundary the selection clicks may have armed (as the host
+        // does after each event), so the next assertion isolates the delete.
+        app.actions.take_committed();
+        assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
+        assert_eq!(loaded(&doc).slides[0].elements.len(), 0, "Delete removed both selected objects");
+        assert!(app.sel.is_none() && app.sel_extra.is_empty(), "the whole selection clears");
+        assert!(app.actions.take_committed().is_some(), "the multi-delete armed exactly one undo boundary");
+    }
+
+    /// Escape drops a whole multi-selection.
+    #[test]
+    fn escape_clears_a_multi_selection() {
+        let (mut app, mut doc, a, b) = two_rects();
+        app.select_only(a);
+        let pb = screen_center(&app, &b);
+        app.pointer_mods = winit::keyboard::ModifiersState::SHIFT;
+        app.last_mouse = pb;
+        let mut h = false;
+        app.on_press(&mut doc, pb, &mut h);
+        assert_eq!(app.selected_ids().len(), 2);
+        assert!(keyn(&mut app, &mut doc, NamedKey::Escape));
+        assert!(app.selected_ids().is_empty(), "Escape cleared the selection");
+    }
+
+    /// Ctrl+D duplicates the whole selection and selects the copies.
+    #[test]
+    fn ctrl_d_duplicates_the_whole_selection() {
+        use winit::keyboard::ModifiersState;
+        let (mut app, mut doc, a, b) = two_rects();
+        app.select_only(a.clone());
+        let pb = screen_center(&app, &b);
+        app.pointer_mods = ModifiersState::SHIFT;
+        app.last_mouse = pb;
+        let mut h = false;
+        app.on_press(&mut doc, pb, &mut h);
+        assert_eq!(app.selected_ids().len(), 2);
+
+        assert!(key_char_mods(&mut app, &mut doc, "d", ModifiersState::CONTROL));
+        assert_eq!(loaded(&doc).slides[0].elements.len(), 4, "both objects were duplicated");
+        let sel = app.selected_ids();
+        assert_eq!(sel.len(), 2, "the two duplicates are selected");
+        assert!(!sel.contains(&a) && !sel.contains(&b), "the copies are new elements, not the originals");
+    }
+
+    /// An arrow key nudges every selected object, not just the active one.
+    #[test]
+    fn arrow_nudges_the_whole_selection() {
+        let (mut app, mut doc, a, b) = two_rects();
+        let (ax0, bx0) = (
+            loaded(&doc).slides[0].element(&a).unwrap().x,
+            loaded(&doc).slides[0].element(&b).unwrap().x,
+        );
+        app.select_only(a.clone());
+        let pb = screen_center(&app, &b);
+        app.pointer_mods = winit::keyboard::ModifiersState::SHIFT;
+        app.last_mouse = pb;
+        let mut h = false;
+        app.on_press(&mut doc, pb, &mut h);
+        assert_eq!(app.selected_ids().len(), 2);
+
+        assert!(keyn(&mut app, &mut doc, NamedKey::ArrowRight));
+        let after = loaded(&doc);
+        assert!(after.slides[0].element(&a).unwrap().x > ax0 + 1.0, "the active object moved");
+        assert!(after.slides[0].element(&b).unwrap().x > bx0 + 1.0, "the other selected object moved too");
     }
 
     // --- overview click opens the slide -------------------------------------
