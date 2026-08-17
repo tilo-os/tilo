@@ -380,6 +380,13 @@ pub struct FeedsApp {
     reader_scroll_ctl: Scrollable,
     reader_content_h: f64,
     list_content_h: f64,
+    /// Which pane the keyboard drives: `false` = the article list (arrows move
+    /// the selection), `true` = the reader (arrows / PageUp-Down scroll the
+    /// body). Tab cycles between them; Enter moves focus into the reader; Esc
+    /// returns it to the list. This is feeds' in-widget equivalent of the
+    /// shared focus ring — the app is one custom-drawn widget, so it routes its
+    /// own pane focus rather than exposing child focusables.
+    reader_focused: bool,
 
     // Geometry, recomputed every `apply_layout`.
     rect: Rect,
@@ -520,6 +527,7 @@ impl FeedsApp {
             reader_scroll_ctl: Scrollable::new_vertical(),
             reader_content_h: 0.0,
             list_content_h: 0.0,
+            reader_focused: false,
             rect: Rect::ZERO,
             node: None,
             sidebar_rect: Rect::ZERO,
@@ -819,6 +827,8 @@ impl FeedsApp {
         self.list_scroll_ctl.set_offset_y(0.0);
         self.ensure_selection();
         self.reader_scroll_ctl.set_offset_y(0.0);
+        // Changing the source returns keyboard focus to the list.
+        self.reader_focused = false;
         // In a single-pane tier, changing the source returns to the list so the
         // new selection is visible (the reader is pushed back on the next select).
         if self.single_pane() {
@@ -2158,6 +2168,19 @@ impl FeedsApp {
         self.list_scroll_ctl.draw_bar_overlay(scene, t, theme);
         if has_article {
             self.reader_scroll_ctl.draw_bar_overlay(scene, t, theme);
+            // Keyboard-focus affordance: a subtle accent ring on the reader
+            // when it owns the arrow keys, so focus reads at a glance (the list
+            // is the default focus, so it needs no persistent ring).
+            if self.reader_focused {
+                let ring = self.reader_rect.inset(-1.5);
+                scene.stroke(
+                    &Stroke::new(2.0),
+                    t,
+                    alpha(c.accent[5], 180),
+                    None,
+                    &RoundedRect::from_rect(ring, 6.0),
+                );
+            }
         }
 
         // The list/reader divider only exists in the wide three-pane layout;
@@ -3851,8 +3874,8 @@ impl FeedsApp {
             return;
         }
 
-        // Esc dismisses the responsive overlay sidebar, then unwinds a pushed
-        // detail back to the list (single-pane master→detail).
+        // Esc dismisses the responsive overlay sidebar, returns keyboard focus
+        // from the reader to the list, then unwinds a pushed detail.
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
             if self.nav_layout() == SplitLayout::Overlay
                 && self.sidebar.is_open(SplitLayout::Overlay)
@@ -3861,20 +3884,82 @@ impl FeedsApp {
                 *handled = true;
                 return;
             }
+            if self.reader_focused && !self.single_pane() {
+                self.reader_focused = false;
+                *handled = true;
+                return;
+            }
             if self.single_pane() && self.detail_pushed {
+                self.reader_focused = false;
                 self.show_master();
                 *handled = true;
                 return;
             }
         }
 
+        // Tab cycles keyboard focus between the article list and the reader
+        // (only meaningful once an article is selected).
+        if matches!(&key_event.logical_key, Key::Named(NamedKey::Tab)) {
+            if self.selected.is_some() {
+                self.reader_focused = !self.reader_focused;
+            }
+            *handled = true;
+            return;
+        }
+        // Enter opens the selected article into the reader and moves focus there
+        // (pushing the detail pane when single-pane).
+        if matches!(&key_event.logical_key, Key::Named(NamedKey::Enter)) {
+            if let Some(id) = self.selected {
+                self.select_article(id, state);
+                self.reader_focused = true;
+            }
+            *handled = true;
+            return;
+        }
+        // PageUp/PageDown/Home/End scroll the reader when it holds focus.
+        if self.reader_focused {
+            let page = (self.reader_rect.height() - HEADER_H).max(0.0) as f32 * 0.9;
+            match &key_event.logical_key {
+                Key::Named(NamedKey::PageDown) => {
+                    self.reader_scroll_ctl.scroll_by(0.0, page);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::PageUp) => {
+                    self.reader_scroll_ctl.scroll_by(0.0, -page);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::Home) => {
+                    self.reader_scroll_ctl.set_offset_y(0.0);
+                    *handled = true;
+                    return;
+                }
+                Key::Named(NamedKey::End) => {
+                    self.reader_scroll_ctl.set_offset_y(f32::MAX);
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match &key_event.logical_key {
+            // Arrows drive the reader while it holds focus, else the list.
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_selection(1, state);
+                if self.reader_focused {
+                    self.reader_scroll_ctl.scroll_by(0.0, 60.0);
+                } else {
+                    self.move_selection(1, state);
+                }
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_selection(-1, state);
+                if self.reader_focused {
+                    self.reader_scroll_ctl.scroll_by(0.0, -60.0);
+                } else {
+                    self.move_selection(-1, state);
+                }
                 *handled = true;
             }
             Key::Character(s) => {
@@ -5406,5 +5491,46 @@ mod tests {
             "a wheel scrolls the list through the shared Scrollable (offset {})",
             a.list_scroll(),
         );
+    }
+
+    // --- keyboard navigation ---------------------------------------------
+
+    #[test]
+    fn tab_and_esc_move_keyboard_focus_between_list_and_reader() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 1280.0, 800.0);
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        assert!(!a.reader_focused, "the list holds keyboard focus by default");
+
+        // Tab moves focus to the reader; arrows then scroll it, not the list.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Tab)));
+        assert!(a.reader_focused, "Tab focuses the reader");
+        let sel = a.selected;
+        dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown));
+        assert_eq!(a.selected, sel, "arrows drive the reader (not the list) while it's focused");
+
+        // Esc returns focus to the list; arrows move the selection again.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+        assert!(!a.reader_focused, "Esc returns keyboard focus to the list");
+        dispatch(&mut a, &mut doc, &named_key(NamedKey::ArrowDown));
+        assert_ne!(a.selected, sel, "arrows move the list selection when it's focused");
+    }
+
+    #[test]
+    fn enter_opens_the_selected_article_into_the_reader() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 560.0, 800.0); // narrow → single-pane master/detail
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        a.show_master();
+        assert!(!a.detail_pushed, "back on the list");
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+        assert!(a.detail_pushed, "Enter pushes the reader in single-pane");
+        assert!(a.reader_focused, "and moves keyboard focus into it");
     }
 }
