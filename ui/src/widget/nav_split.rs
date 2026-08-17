@@ -143,6 +143,16 @@ impl FlapState {
     /// Force the flap closed (scrim / Esc / selection-dismiss).
     pub fn close(&mut self) { self.user_open = Some(false); }
 
+    /// The explicit user preference, if one has been set (`None` ⇒ the flap is
+    /// still following the width-driven layout default). Lets a host persist the
+    /// user's open/collapsed choice as view/pref state.
+    pub fn user_pref(&self) -> Option<bool> { self.user_open }
+
+    /// Restore an explicit preference (or clear it back to the layout default
+    /// with `None`) WITHOUT snapping the reveal — the eased slide catches up on
+    /// the next tick. Used to re-hydrate a persisted sidebar choice.
+    pub fn set_pref(&mut self, pref: Option<bool>) { self.user_open = pref; }
+
     /// Set open state with NO animation — snaps `reveal` to the endpoint.
     /// Used by `--shots` / headless so a frame is deterministic.
     pub fn snap(&mut self, open: bool) {
@@ -178,6 +188,22 @@ impl FlapState {
             if !first {
                 self.user_open = None;
             }
+            self.last_layout = Some(layout);
+            if first {
+                self.settle(layout);
+            }
+        }
+    }
+
+    /// Like [`Self::reconcile`] but **keeps** an explicit user preference across
+    /// a breakpoint crossing instead of dropping it. A host that persists the
+    /// sidebar's open/collapsed choice (as view/pref state) uses this so a
+    /// window-width change respects what the user last set rather than snapping
+    /// back to the width-driven default. Still settles the eased reveal on the
+    /// first resolved layout, exactly like [`Self::reconcile`].
+    pub fn reconcile_sticky(&mut self, layout: SplitLayout) {
+        if self.last_layout != Some(layout) {
+            let first = self.last_layout.is_none();
             self.last_layout = Some(layout);
             if first {
                 self.settle(layout);

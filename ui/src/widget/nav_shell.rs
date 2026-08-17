@@ -190,6 +190,12 @@ pub struct NavShell {
     /// The hamburger still appears in the narrow overlay layout to summon the
     /// drawer. Off by default so existing shells keep their collapse control.
     hide_docked_toggle: bool,
+    /// When set, a breakpoint crossing keeps the user's explicit sidebar
+    /// open/collapsed choice instead of dropping it back to the width default.
+    /// The host is expected to persist that choice as view/pref state (see
+    /// [`NavShell::with_remembered_sidebar`]). Off by default so existing shells
+    /// keep the auto-reset-on-resize behaviour.
+    remember_sidebar: bool,
 
     last_cursor: Point,
 
@@ -229,6 +235,7 @@ impl NavShell {
             affordance_rect: Rect::ZERO,
             affordance: Affordance::None,
             hide_docked_toggle: false,
+            remember_sidebar: false,
             last_cursor: Point::ZERO,
             inner_taffy: None,
             sidebar_node: None,
@@ -298,6 +305,33 @@ impl NavShell {
     pub fn with_sidebar_collapsed(mut self) -> Self {
         self.sidebar_flap = FlapState::closed_by_default();
         self
+    }
+
+    /// Remember the user's explicit sidebar open/collapsed choice across window
+    /// resizes: a breakpoint crossing no longer drops it back to the width
+    /// default (the annoying "the sidebar keeps re-opening when I resize").
+    /// Pair this with persisting [`Self::sidebar_user_pref`] as view/pref state
+    /// and re-applying it via [`Self::set_sidebar_pref`] on load.
+    pub fn with_remembered_sidebar(mut self) -> Self {
+        self.remember_sidebar = true;
+        self
+    }
+
+    /// The user's explicit sidebar preference (`Some(true)` open / `Some(false)`
+    /// collapsed), or `None` while still following the width-driven default.
+    /// Persist this as view/pref state so the choice survives a relaunch.
+    pub fn sidebar_user_pref(&self) -> Option<bool> {
+        self.sidebar_flap.user_pref()
+    }
+
+    /// Re-apply a persisted sidebar preference (or clear it back to the layout
+    /// default with `None`). The eased reveal catches up on the next frame.
+    pub fn set_sidebar_pref(&mut self, pref: Option<bool>) {
+        if !self.has_sidebar() {
+            return;
+        }
+        self.sidebar_flap.set_pref(pref);
+        self.dirty = true;
     }
 
     // --- live child swap -------------------------------------------------
@@ -930,8 +964,15 @@ impl Widget for NavShell {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
         // A window resize that crosses the breakpoint drops a stale sidebar
-        // preference so the sidebar returns to its auto behaviour.
-        self.sidebar_flap.reconcile(self.sidebar_split_layout());
+        // preference so the sidebar returns to its auto behaviour — unless the
+        // host opted to remember the choice, in which case an explicit
+        // open/collapse survives the resize (persisted view/pref state).
+        let split_layout = self.sidebar_split_layout();
+        if self.remember_sidebar {
+            self.sidebar_flap.reconcile_sticky(split_layout);
+        } else {
+            self.sidebar_flap.reconcile(split_layout);
+        }
 
         // On a wide→narrow collapse of a genuine three-pane shell
         // (`sidebar | overview | detail`) the content region can only show one
@@ -1689,6 +1730,48 @@ mod tests {
             ns.is_sidebar_open(),
             "crossing the breakpoint drops the stale collapse preference"
         );
+    }
+
+    #[test]
+    fn remembered_sidebar_survives_a_resize_across_the_breakpoint() {
+        // With `with_remembered_sidebar`, an explicit collapse is NOT dropped
+        // when the window width crosses the breakpoint — the user override beats
+        // the width-driven default, so widening does not force the sidebar open.
+        let mut ns =
+            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
+                .with_sidebar(Box::new(Text::new("sidebar")))
+                .with_remembered_sidebar();
+        lay_out(&mut ns, 1200.0, 640.0);
+        assert!(ns.is_sidebar_open(), "docked default is open");
+        ns.toggle_sidebar(); // user collapses it
+        assert!(!ns.is_sidebar_open());
+        assert_eq!(ns.sidebar_user_pref(), Some(false), "the choice is recorded");
+
+        lay_out(&mut ns, 420.0, 640.0); // cross to narrow
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert!(!ns.is_sidebar_open(), "narrow keeps it closed");
+
+        lay_out(&mut ns, 1200.0, 640.0); // cross back to wide
+        assert!(
+            !ns.is_sidebar_open(),
+            "the remembered collapse survives the resize — the sidebar does NOT re-open"
+        );
+        assert_eq!(ns.sidebar_user_pref(), Some(false), "preference persists");
+    }
+
+    #[test]
+    fn set_sidebar_pref_rehydrates_a_persisted_choice() {
+        // Re-applying a persisted collapse (e.g. from the doc on load) collapses
+        // a shell whose width default would otherwise open the sidebar.
+        let mut ns =
+            NavShell::new(Box::new(Text::new("overview")), Box::new(Text::new("detail")))
+                .with_sidebar(Box::new(Text::new("sidebar")))
+                .with_remembered_sidebar();
+        lay_out(&mut ns, 1200.0, 640.0);
+        assert!(ns.is_sidebar_open(), "docked default is open before rehydrate");
+        ns.set_sidebar_pref(Some(false));
+        lay_out(&mut ns, 1200.0, 640.0);
+        assert!(!ns.is_sidebar_open(), "a persisted collapse is honoured on load");
     }
 
     // --- rendering -------------------------------------------------------
