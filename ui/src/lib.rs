@@ -80,6 +80,7 @@ pub mod format;
 pub mod nav_stack;
 pub mod reader_hud;
 pub mod search;
+pub mod emoji;
 pub mod profiling;
 pub mod sysdirs;
 

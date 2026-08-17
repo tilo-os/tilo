@@ -684,6 +684,7 @@ pub mod context_menu;     pub use context_menu::{ContextMenu, MenuItem};
 pub mod data_table;
 pub mod table;         pub use table::Table;
 pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
+pub mod emoji_picker;  pub use emoji_picker::EmojiPicker;
 mod window_group;
 pub use window_group::{
     WindowGroup, WindowWidth, DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX,
