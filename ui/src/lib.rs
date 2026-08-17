@@ -180,7 +180,7 @@ pub use widget::merge_strategy::{
 };
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};
-pub use text_render::{FontChoice, TextRenderer, TextWeight};
+pub use text_render::{centered_text_y, FontChoice, TextRenderer, TextWeight, OPTICAL_LIFT};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};

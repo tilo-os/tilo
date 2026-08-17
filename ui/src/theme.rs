@@ -148,8 +148,11 @@ impl Theme {
         Self::from_tokens("qOS Blue", t)
     }
 
-    /// Dracula — the canonical palette (pink accent, purple focus, the
-    /// signature green / cyan / red / yellow on a charcoal-violet ground).
+    /// Dracula — the canonical palette. Its signature **purple** (`#bd93f9`) is
+    /// the interactive accent *and* the focus ring (pink `#ff79c6` is reserved,
+    /// not the primary accent — using it as the accent drenched the UI pink),
+    /// over the canonical green / cyan / red / yellow on a charcoal-violet
+    /// ground. Every colour below is a canonical Dracula value.
     pub fn dracula() -> Self {
         Self::from_palette("Dracula", PaletteSpec {
             dark: true,
@@ -161,8 +164,8 @@ impl Theme {
             text_tertiary: Color::from_rgb8(0x8A, 0x90, 0xBE), // lifted comment
             border:        Color::from_rgb8(0x44, 0x47, 0x5A), // current line
             focus:         Color::from_rgb8(0xBD, 0x93, 0xF9), // purple
-            accent:        Color::from_rgb8(0xFF, 0x79, 0xC6), // pink
-            accent_hover:  Color::from_rgb8(0xE8, 0x5B, 0xAE),
+            accent:        Color::from_rgb8(0xBD, 0x93, 0xF9), // purple (signature accent)
+            accent_hover:  Color::from_rgb8(0xA6, 0x81, 0xDB), // purple, one step darker
             success:       Color::from_rgb8(0x50, 0xFA, 0x7B), // green
             warning:       Color::from_rgb8(0xF1, 0xFA, 0x8C), // yellow
             danger:        Color::from_rgb8(0xFF, 0x55, 0x55), // red
@@ -324,18 +327,24 @@ impl Theme {
         t
     }
 
-    /// OLED Dark — a true-black (`#000000`) ground for OLED panels, with
-    /// high-contrast white text and an accent tuned to pop on black.
+    /// OLED Dark — a true-black (`#000000`) ground for OLED panels. Every
+    /// surface tier is pure black so lit pixels are reserved for content, and
+    /// cards / panels read by a **near-white outline** (like the high-contrast
+    /// preset's borders) rather than an elevation tint — the only way a card
+    /// separates from the ground when both are true black. White text and an
+    /// accent tuned to pop on black complete it.
     pub fn oled() -> Self {
         Self::from_palette("OLED", PaletteSpec {
             dark: true,
             base:          Color::from_rgb8(0x00, 0x00, 0x00), // true black
-            raised:        Color::from_rgb8(0x0C, 0x0C, 0x0F),
-            popover:       Color::from_rgb8(0x05, 0x05, 0x06),
+            raised:        Color::from_rgb8(0x00, 0x00, 0x00), // true-black cards
+            popover:       Color::from_rgb8(0x00, 0x00, 0x00),
             text:          Color::from_rgb8(0xFF, 0xFF, 0xFF),
             text_dim:      Color::from_rgb8(0xB4, 0xB7, 0xBE),
             text_tertiary: Color::from_rgb8(0x7A, 0x7D, 0x85),
-            border:        Color::from_rgb8(0x24, 0x25, 0x2A),
+            // Near-white card / panel outline so a true-black card reads
+            // against the true-black ground (cf. high_contrast's white border).
+            border:        Color::from_rgb8(0xE6, 0xE6, 0xEA),
             focus:         Color::from_rgb8(0x4C, 0x9A, 0xFF),
             accent:        Color::from_rgb8(0x4C, 0x9A, 0xFF), // pops on black
             accent_hover:  Color::from_rgb8(0x3D, 0x86, 0xE6),
@@ -343,9 +352,9 @@ impl Theme {
             warning:       Color::from_rgb8(0xFF, 0xB0, 0x20),
             danger:        Color::from_rgb8(0xFF, 0x5C, 0x5C),
             info:          Color::from_rgb8(0x4C, 0xC2, 0xFF),
-            // Keep window framing black so it disappears behind app content
-            // rather than flashing a white card on a black desktop.
-            window_card:   Some(Color::from_rgb8(0x0A, 0x0A, 0x0A)),
+            // Keep window framing true black so it disappears behind app
+            // content rather than flashing a card on a black desktop.
+            window_card:   Some(Color::from_rgb8(0x00, 0x00, 0x00)),
         })
     }
 
@@ -634,7 +643,7 @@ mod tests {
         // signature ground + accent, so a preset can't silently drift into
         // the default. These are the canonical upstream hex values.
         let cases: &[(Theme, [u8; 3], [u8; 3])] = &[
-            (Theme::dracula(),          [0x28, 0x2A, 0x36], [0xFF, 0x79, 0xC6]),
+            (Theme::dracula(),          [0x28, 0x2A, 0x36], [0xBD, 0x93, 0xF9]),
             (Theme::nord(),             [0x2E, 0x34, 0x40], [0x88, 0xC0, 0xD0]),
             (Theme::gruvbox(),          [0x28, 0x28, 0x28], [0xFA, 0xBD, 0x2F]),
             (Theme::gruvbox_light(),    [0xFB, 0xF1, 0xC7], [0xD7, 0x99, 0x21]),
@@ -653,9 +662,45 @@ mod tests {
     }
 
     #[test]
+    fn dracula_roles_map_to_canonical_hexes() {
+        // The signature Dracula purple is the accent + focus (NOT pink — using
+        // pink as the accent read "too pink"), over the canonical ground /
+        // foreground / current-line and the green / yellow / red / cyan
+        // semantics. Every value here is a documented canonical Dracula hex.
+        let t = Theme::dracula();
+        let c = &t.tokens.colors;
+        assert_eq!(rgb(t.bg_app), [0x28, 0x2A, 0x36], "background #282a36");
+        assert_eq!(rgb(t.text_primary), [0xF8, 0xF8, 0xF2], "foreground #f8f8f2");
+        assert_eq!(rgb(c.border_standard), [0x44, 0x47, 0x5A], "current line #44475a");
+        assert_eq!(rgb(t.accent_primary), [0xBD, 0x93, 0xF9], "accent = purple #bd93f9");
+        assert_eq!(rgb(c.border_focus), [0xBD, 0x93, 0xF9], "focus = purple #bd93f9");
+        assert_ne!(rgb(t.accent_primary), [0xFF, 0x79, 0xC6], "accent must NOT be pink");
+        assert_eq!(rgb(c.semantic.success), [0x50, 0xFA, 0x7B], "green #50fa7b");
+        assert_eq!(rgb(c.semantic.warning), [0xF1, 0xFA, 0x8C], "yellow #f1fa8c");
+        assert_eq!(rgb(c.semantic.danger), [0xFF, 0x55, 0x55], "red #ff5555");
+        assert_eq!(rgb(c.semantic.info), [0x8B, 0xE9, 0xFD], "cyan #8be9fd");
+    }
+
+    #[test]
     fn oled_ground_is_true_black() {
         let t = Theme::oled();
         assert_eq!(rgb(t.bg_app), [0, 0, 0], "OLED must be pure #000000");
+        // The card / panel surface is true black too, so cards sit ON true
+        // black rather than reading as a near-black tint against it.
+        assert_eq!(rgb(t.bg_primary), [0, 0, 0], "OLED cards are true black");
+    }
+
+    #[test]
+    fn oled_card_outline_is_near_white() {
+        // With every surface at true black, a card separates from the ground
+        // only by its outline — which must be close to pure white (like the
+        // high-contrast preset's borders), not a dark near-black hairline.
+        let t = Theme::oled();
+        let b = rgb(t.border_standard);
+        assert!(
+            b.iter().all(|&ch| ch >= 0xC8),
+            "OLED card/panel outline must be near-white, got {b:?}",
+        );
     }
 
     #[test]

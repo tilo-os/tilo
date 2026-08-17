@@ -228,6 +228,13 @@ impl ThemesApp {
                 self.gallery_flap.snap(true);
                 self.shot_select = Some("dracula".to_string());
             }
+            // `select:<id>` — preview a specific preset (e.g. `select:oled`) so a
+            // capture shows that theme's live specimen. Same hook the `font`
+            // scenario uses, generalised to any catalog id.
+            s if s.starts_with("select:") => {
+                self.gallery_flap.snap(true);
+                self.shot_select = Some(s["select:".len()..].to_string());
+            }
             _ => self.gallery_flap.snap(true),
         }
     }

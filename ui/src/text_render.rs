@@ -51,6 +51,33 @@ impl Default for TextWeight {
     }
 }
 
+/// Fraction of the font size a single-line text run must be lifted so its
+/// *optical* centre — roughly the middle of the cap height — lands on the
+/// geometric centre of the box it is centred in, level with an icon, avatar,
+/// or dot centred by its box in the same row.
+///
+/// The renderer draws a `size`-px line from the top of a `size * 1.25` line
+/// box (see [`TextRenderer::measure_weighted`]), and the baseline sits well
+/// below that box's geometric middle. Centring a run by its nominal `size`
+/// alone — `y0 + (h - size) / 2` — therefore leaves the text sitting visibly
+/// LOW next to a box-centred glyph: measured against rendered output, the
+/// text's optical centre lands ~0.2 em below it. This constant is that
+/// measured offset, calibrated against the alignment shots.
+pub const OPTICAL_LIFT: f64 = 0.2;
+
+/// Top-left `y` for a `size`-px single-line text run so its optical centre
+/// lands on the middle of a box of height `h` starting at `y0` — level with an
+/// icon, avatar, or dot centred in the same box.
+///
+/// This is the one canonical vertical-centring helper for the toolkit. Shared
+/// widgets (button label, badge / pill / chip text, avatar initials, list-row
+/// content) and app draw helpers route their centred-text `y` through it so
+/// every surface lines up identically. Prefer this over an inline
+/// `y0 + (h - size) / 2`, which reads ~0.2 em low (see [`OPTICAL_LIFT`]).
+pub fn centered_text_y(y0: f64, h: f64, size: f32) -> f64 {
+    y0 + (h - size as f64) / 2.0 - size as f64 * OPTICAL_LIFT
+}
+
 /// A font family to shape with. The three generic classes resolve to the
 /// system's default face for that class (via cosmic-text / fontconfig); `Named`
 /// targets a specific installed family by name (e.g. a serif book face the user
@@ -1183,6 +1210,32 @@ mod tests {
         );
         let (_h, m, _ns) = tr.take_shape_stats();
         assert_eq!(m, 2, "serif and sans shape as separate families");
+    }
+
+    /// The canonical optical-centring helper places a single-line run so its
+    /// optical centre (≈ mid cap-height, `top + size·(0.5 + OPTICAL_LIFT)`)
+    /// lands on the box centre within a sub-pixel tolerance, and sits strictly
+    /// higher than the naive `(h - size)/2` box-centre that read visibly low.
+    #[test]
+    fn centered_text_y_optically_centers_within_tolerance() {
+        // Sweep a range of box heights and font sizes (button, badge, avatar,
+        // list-row content all pass through this one helper).
+        for (h, size) in [(40.0, 14.0f32), (16.0, 11.0), (28.0, 13.0), (58.0, 14.0), (40.0, 16.0)] {
+            let y0 = 7.0;
+            let top = centered_text_y(y0, h, size);
+            let optical_center = top + size as f64 * (0.5 + OPTICAL_LIFT);
+            let box_center = y0 + h / 2.0;
+            assert!(
+                (optical_center - box_center).abs() < 1e-6,
+                "h={h} size={size}: optical centre {optical_center} must equal box centre {box_center}",
+            );
+            let naive = y0 + (h - size as f64) / 2.0;
+            assert!(top < naive, "h={h} size={size}: optical top {top} must lift above naive {naive}");
+        }
+        // The lift grows with the font size — a larger run needs a larger lift.
+        let small = (0.0 + (34.0 - 12.0) / 2.0) - centered_text_y(0.0, 34.0, 12.0);
+        let large = (0.0 + (34.0 - 24.0) / 2.0) - centered_text_y(0.0, 34.0, 24.0);
+        assert!(large > small, "lift scales with font size: {large} > {small}");
     }
 
     /// `bump_generation` blows away every cached entry — the next

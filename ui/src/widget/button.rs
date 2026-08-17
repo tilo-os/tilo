@@ -450,7 +450,9 @@ impl Button {
                     );
                 }
                 let text_x = start_x + icon_w + gap;
-                let text_y = rect.y0 + (rect.height() - face.text_size as f64) / 2.0;
+                // Optically centre the label so it sits level with the box
+                // middle instead of ~0.2 em low (shared toolkit helper).
+                let text_y = crate::text_render::centered_text_y(rect.y0, rect.height(), face.text_size);
                 text_renderer.draw_text_weighted(
                     scene,
                     &label,
@@ -612,7 +614,9 @@ impl Widget for Button {
                     );
                 }
                 let text_x = start_x + icon_w + gap;
-                let text_y = self.rect.y0 + (self.rect.height() - text_size as f64) / 2.0;
+                // Optically centre the label so it sits level with the box
+                // middle instead of ~0.2 em low (shared toolkit helper).
+                let text_y = crate::text_render::centered_text_y(self.rect.y0, self.rect.height(), text_size as f32);
                 text_renderer.draw_text(
                     scene,
                     &label,
@@ -863,6 +867,29 @@ mod tests {
     fn button_test_id_returns_label() {
         let b = Button::new("id", "Save", None);
         assert_eq!(Widget::test_id(&b), Some("Save"));
+    }
+
+    #[test]
+    fn label_is_optically_vertically_centered() {
+        // Both the retained `Button::draw` and the immediate-mode
+        // `Button::paint` place the label top at
+        // `centered_text_y(rect.y0, rect.height, size)`. Assert that value
+        // puts the label's optical centre on the button's centre (within a
+        // sub-pixel tolerance) and strictly above the naive box-centre
+        // baseline that read visibly low. This is the exact computation both
+        // draw faces now use — the recurring "text sits low" defect.
+        use crate::text_render::{centered_text_y, OPTICAL_LIFT};
+        let rect = Rect::new(0.0, 0.0, 120.0, 40.0); // the default button size
+        let size = 14.0f32; // the button label size both faces draw at
+        let top = centered_text_y(rect.y0, rect.height(), size);
+        let optical_center = top + size as f64 * (0.5 + OPTICAL_LIFT);
+        assert!(
+            (optical_center - rect.center().y).abs() < 0.5,
+            "label optical centre {optical_center} must sit on the button centre {}",
+            rect.center().y,
+        );
+        let naive = rect.y0 + (rect.height() - size as f64) / 2.0;
+        assert!(top < naive, "optical centring must lift the label above the naive-low baseline");
     }
 
     #[test]

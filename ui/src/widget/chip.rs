@@ -219,15 +219,18 @@ impl Widget for Chip {
 
         // Label.
         let size = theme.tokens.typography.scale.sm;
-        let (lw, lh) = text_renderer.measure(&self.label, size, None);
+        let (lw, _lh) = text_renderer.measure(&self.label, size, None);
         self.label_w = lw as f64;
         let label_col = if selected { accent } else { theme.text_primary };
+        // Optically centre the label so it sits level with the leading dot /
+        // trailing "×" and the pill middle, not ~0.2 em low (shared helper).
+        let label_y = crate::text_render::centered_text_y(self.rect.y0, self.rect.height(), size);
         text_renderer.draw_text(
             scene,
             &self.label,
             size,
             label_col,
-            transform * Affine::translate((x, cy - lh as f64 / 2.0)),
+            transform * Affine::translate((x, label_y)),
             None,
         );
         x += lw as f64;
