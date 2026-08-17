@@ -36,6 +36,7 @@ pub mod model;
 pub mod portal;
 pub mod qr;
 pub mod ring;
+pub mod search_provider;
 pub mod storage;
 pub mod totp;
 
