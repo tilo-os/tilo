@@ -1,24 +1,19 @@
-//! The bottom status bar: language, caret position (line:col), selection size,
-//! indentation, problem count, and a branch-ish project label. Drawn directly
-//! into the scene as a single accent-tinted strip, the way an IDE status line
-//! reads.
+//! `StatusModel` — the editor's caret position, language, diagnostics and
+//! buffer status, surfaced as a transient floating [`ui::StatusBubble`] rather
+//! than a permanent full-width bottom strip (which stole a row of vertical
+//! space from the editor at every width).
+//!
+//! `CodeApp` refreshes a [`StatusState`] snapshot each frame and, when the
+//! composed label actually changes (a caret move, a save flip, an indexing
+//! tick), pokes the bubble so it surfaces briefly then quietly fades. The
+//! bubble also appears while the pointer hovers the bottom-right corner.
+//!
+//! This type owns no render state and does no drawing — it holds the snapshot
+//! and formats the label, which keeps it trivially unit-testable.
 
-use automerge::{AutoCommit, ObjId};
-use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
-use winit::event::WindowEvent;
-
-pub const STATUS_HEIGHT: f64 = 26.0;
-
-/// Snapshot of everything the status bar shows. The app refreshes this each
-/// frame; the bar diffs to avoid needless redraws.
+/// Snapshot of everything the status readout can show. The app refreshes this
+/// each frame; the model composes the actionable subset into the floating
+/// bubble's label.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusState {
     pub language: String,
@@ -32,7 +27,8 @@ pub struct StatusState {
     /// What the language server is doing — "rust-analyzer: indexing 42%".
     /// Empty when there is no server.
     pub lsp: String,
-    /// True while the server is starting or busy, which draws the activity dot.
+    /// True while the server is starting or busy — the label surfaces the LSP
+    /// readout only then, so a resting "ready" doesn't clutter it.
     pub lsp_working: bool,
     /// The last file-operation message ("Saved main.rs", "Could not save …").
     pub notice: String,
@@ -41,229 +37,201 @@ pub struct StatusState {
     pub dirty: bool,
 }
 
-pub struct StatusBar {
-    rect: Rect,
+/// Holds the latest [`StatusState`] and composes it into the floating status
+/// bubble's label.
+#[derive(Default)]
+pub struct StatusModel {
     state: StatusState,
-    dirty: bool,
+    /// The last composed label, so `set_state` reports whether the string the
+    /// bubble shows actually changed (and only then pokes it).
+    label: String,
 }
 
-impl StatusBar {
+impl StatusModel {
     pub fn new() -> Self {
-        StatusBar {
-            rect: Rect::ZERO,
-            state: StatusState::default(),
-            dirty: true,
-        }
+        let mut m = StatusModel::default();
+        m.label = m.compose();
+        m
     }
 
-    pub fn set_state(&mut self, s: StatusState) {
-        if s != self.state {
-            self.state = s;
-            self.dirty = true;
+    /// Replace the snapshot. Returns whether the composed bubble label changed,
+    /// so the caller pokes the bubble only on a real change — `refresh_status`
+    /// runs every frame, and poking unconditionally would pin the bubble open
+    /// forever (and re-poke it on state changes the label never surfaces, like
+    /// the project name or indent width).
+    pub fn set_state(&mut self, new: StatusState) -> bool {
+        if new == self.state {
+            return false;
         }
+        self.state = new;
+        let label = self.compose();
+        let changed = label != self.label;
+        self.label = label;
+        changed
+    }
+
+    /// The full bubble label: the caret + language, then any actionable
+    /// contextual bits, combined with " · " separators.
+    pub fn bubble_text(&self) -> String {
+        self.label.clone()
+    }
+
+    /// Compose the label from the current snapshot. The primary segment is the
+    /// caret position and the language; the remaining segments are appended only
+    /// when they carry a genuinely-actionable signal (a dirty buffer, a live
+    /// selection, real problems, an indexing server, a fresh file-op notice).
+    fn compose(&self) -> String {
+        let s = &self.state;
+        let mut parts: Vec<String> = Vec::new();
+
+        // Primary: caret position, then the language when a buffer is bound.
+        if s.language.is_empty() {
+            parts.push(format!("Ln {}, Col {}", s.line, s.col));
+        } else {
+            parts.push(format!("Ln {}, Col {} · {}", s.line, s.col, s.language));
+        }
+
+        // Unsaved marker for the active buffer.
+        if s.dirty {
+            parts.push("\u{25CF} Unsaved".to_string());
+        }
+
+        // Multi-selection: characters selected and any extra carets.
+        if s.selection > 0 {
+            parts.push(format!("{} selected", s.selection));
+        }
+        if s.caret_count > 1 {
+            parts.push(format!("{} cursors", s.caret_count));
+        }
+
+        // Problems, only once there is at least one — a clean bill of health is
+        // the resting state and needs no chip.
+        if s.problems > 0 {
+            let word = if s.problems == 1 { "problem" } else { "problems" };
+            parts.push(format!("\u{26A0} {} {}", s.problems, word));
+        }
+
+        // Language-server progress, only while it is actually working (an
+        // "indexing 42%" readout), not its idle "ready".
+        if s.lsp_working && !s.lsp.is_empty() {
+            parts.push(s.lsp.clone());
+        }
+
+        // The last file-operation notice, so a save is visibly a save and a
+        // failed one is visibly a failure.
+        if !s.notice.is_empty() {
+            parts.push(s.notice.clone());
+        }
+
+        parts.join(" \u{b7} ")
     }
 }
 
-impl Widget for StatusBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(STATUS_HEIGHT as f32),
-                },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
-        node
+    fn caret(line: usize, col: usize, language: &str) -> StatusState {
+        StatusState {
+            language: language.to_string(),
+            line,
+            col,
+            ..Default::default()
+        }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let layout = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + layout.location.x as f64,
-            origin.y + layout.location.y as f64,
-            origin.x + layout.location.x as f64 + layout.size.width as f64,
-            origin.y + layout.location.y as f64 + layout.size.height as f64,
+    #[test]
+    fn label_leads_with_caret_and_language() {
+        let mut m = StatusModel::new();
+        m.set_state(caret(12, 5, "Rust"));
+        assert_eq!(m.bubble_text(), "Ln 12, Col 5 · Rust");
+    }
+
+    #[test]
+    fn label_drops_language_when_no_buffer_is_bound() {
+        let mut m = StatusModel::new();
+        m.set_state(caret(1, 1, ""));
+        assert_eq!(m.bubble_text(), "Ln 1, Col 1");
+    }
+
+    #[test]
+    fn label_omits_default_and_clean_signals() {
+        // No problems, no selection, an idle (not working) server, a clean
+        // buffer and no notice ⇒ nothing beyond the caret + language.
+        let mut m = StatusModel::new();
+        m.set_state(StatusState {
+            language: "Rust".into(),
+            line: 3,
+            col: 9,
+            problems: 0,
+            selection: 0,
+            caret_count: 1,
+            lsp: "rust-analyzer: ready".into(),
+            lsp_working: false,
+            dirty: false,
+            ..Default::default()
+        });
+        assert_eq!(m.bubble_text(), "Ln 3, Col 9 · Rust");
+    }
+
+    #[test]
+    fn label_appends_actionable_contextual_bits() {
+        let mut m = StatusModel::new();
+        m.set_state(StatusState {
+            language: "Rust".into(),
+            line: 8,
+            col: 2,
+            dirty: true,
+            selection: 20,
+            caret_count: 3,
+            problems: 4,
+            lsp: "rust-analyzer: indexing 42%".into(),
+            lsp_working: true,
+            notice: "Saved main.rs".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            m.bubble_text(),
+            "Ln 8, Col 2 · Rust · \u{25CF} Unsaved · 20 selected · 3 cursors · \u{26A0} 4 problems · rust-analyzer: indexing 42% · Saved main.rs"
         );
     }
 
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        let c = &theme.tokens.colors;
-        // Accent-tinted bar. Use accent[3] (darker indigo) so light foreground
-        // text reads against it across themes.
-        scene.fill(Fill::NonZero, transform, c.accent[3], None, &self.rect);
+    #[test]
+    fn problems_count_singularizes() {
+        let mut m = StatusModel::new();
+        m.set_state(StatusState {
+            problems: 1,
+            ..caret(1, 1, "Rust")
+        });
+        assert_eq!(m.bubble_text(), "Ln 1, Col 1 · Rust · \u{26A0} 1 problem");
+    }
 
-        let fg = vello::peniko::Color::WHITE;
-        let y = self.rect.y0 + 5.0;
-
-        // Left cluster: project name.
-        let mut x = self.rect.x0 + 12.0;
-        if !self.state.project.is_empty() {
-            let label = format!("\u{2387} {}", self.state.project);
-            text_renderer.draw_text_weighted(
-                scene,
-                &label,
-                12.0,
-                fg,
-                transform * Affine::translate((x, y)),
-                None,
-                TextWeight::Medium,
-            );
-            let (w, _) = text_renderer.measure(&label, 12.0, None);
-            x += w as f64 + 18.0;
-        }
-
-        // Problems indicator. Zero problems is only a clean bill of health once
-        // something has looked: while the language server is still working it
-        // means "not analysed yet", and a tick here would contradict the panel
-        // two rows above, which says exactly that.
-        let problems = match (self.state.problems, self.state.lsp_working) {
-            (0, true) => "\u{2026} No problems yet".to_string(),
-            (0, false) => "\u{2713} No problems".to_string(),
-            (n, _) => format!("\u{26A0} {n} problems"),
-        };
-        text_renderer.draw_text(
-            scene,
-            &problems,
-            12.0,
-            fg,
-            transform * Affine::translate((x, y)),
-            None,
+    #[test]
+    fn set_state_reports_change_only_when_the_label_changes() {
+        let mut m = StatusModel::new();
+        assert!(
+            m.set_state(caret(1, 1, "Rust")),
+            "first real snapshot changes the label"
         );
-        let (pw, _) = text_renderer.measure(&problems, 12.0, None);
-        x += pw as f64 + 18.0;
-
-        // Language-server state. This is the difference between "the editor is
-        // thinking" and "the editor is broken" during a multi-minute index, so
-        // it sits in the left cluster where it is read, not tucked away.
-        if !self.state.lsp.is_empty() {
-            if self.state.lsp_working {
-                // A small filled dot as the activity mark. The bar redraws only
-                // while the server reports progress, so this does not spin the
-                // frame loop when nothing is happening.
-                let dot = Rect::from_center_size(
-                    Point::new(x + 4.0, self.rect.center().y),
-                    (6.0, 6.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    fg.multiply_alpha(0.85),
-                    None,
-                    &vello::kurbo::Circle::new(dot.center(), 3.0),
-                );
-                x += 14.0;
-            }
-            text_renderer.draw_text(
-                scene,
-                &self.state.lsp,
-                12.0,
-                fg.multiply_alpha(0.9),
-                transform * Affine::translate((x, y)),
-                None,
-            );
-            let (w, _) = text_renderer.measure(&self.state.lsp, 12.0, None);
-            x += w as f64 + 18.0;
-        }
-
-        // The last file-operation message, so a save is visibly a save and a
-        // failed one is visibly a failure.
-        if !self.state.notice.is_empty() {
-            let color = if self.state.notice_is_error {
-                c.semantic.danger
-            } else {
-                fg.multiply_alpha(0.9)
-            };
-            text_renderer.draw_text(
-                scene,
-                &self.state.notice,
-                12.0,
-                color,
-                transform * Affine::translate((x, y)),
-                Some((self.rect.width() * 0.4) as f32),
-            );
-        }
-
-        // Right cluster: assembled and right-aligned.
-        let mut right: Vec<String> = Vec::new();
-        if self.state.dirty {
-            right.push("\u{25CF} Unsaved".to_string());
-        }
-        if self.state.selection > 0 {
-            right.push(format!("{} selected", self.state.selection));
-        }
-        if self.state.caret_count > 1 {
-            right.push(format!("{} cursors", self.state.caret_count));
-        }
-        right.push(format!("Ln {}, Col {}", self.state.line, self.state.col));
-        if !self.state.indent.is_empty() {
-            right.push(self.state.indent.clone());
-        }
-        if !self.state.language.is_empty() {
-            right.push(self.state.language.clone());
-        }
-
-        // Lay the right cluster out from the right edge leftward.
-        let mut rx = self.rect.x1 - 12.0;
-        for seg in right.iter() {
-            let (w, _) = text_renderer.measure(seg, 12.0, None);
-            rx -= w as f64;
-            text_renderer.draw_text(
-                scene,
-                seg,
-                12.0,
-                fg,
-                transform * Affine::translate((rx, y)),
-                None,
-            );
-            rx -= 18.0;
-        }
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
-    fn name(&self) -> &str {
-        "StatusBar"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
+        assert!(
+            !m.set_state(caret(1, 1, "Rust")),
+            "an identical snapshot reports no change (so the bubble is not re-poked)"
+        );
+        // A field the label never surfaces (the project name) must NOT re-poke.
+        assert!(
+            !m.set_state(StatusState {
+                project: "some-project".into(),
+                ..caret(1, 1, "Rust")
+            }),
+            "a change the label doesn't surface reports no change"
+        );
+        // A caret move the label does surface must poke.
+        assert!(
+            m.set_state(StatusState {
+                project: "some-project".into(),
+                ..caret(2, 1, "Rust")
+            }),
+            "a caret move changes the label"
+        );
     }
 }

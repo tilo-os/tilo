@@ -1,6 +1,6 @@
 //! Root widget for the code editor. Owns the [`Session`] (project + open
 //! buffers), the editor pane, the file-tree sidebar, the tab bar, the status
-//! bar, the bottom panel, and the command palette — and coordinates the data
+//! model, the bottom panel, and the command palette — and coordinates the data
 //! flow between them.
 //!
 //! Layout:
@@ -12,10 +12,11 @@
 //! |          +-------------------------------+
 //! |          |  bottom panel (problems/term) |
 //! +----------+-------------------------------+
-//! |  status bar                              |
-//! +------------------------------------------+
 //! ```
-//! The command palette floats above everything in the overlay pass.
+//! The caret / diagnostics readout is not a laid-out row: it floats as a
+//! transient [`ui::StatusBubble`] at the bottom-right (see `draw_status_bubble`),
+//! so the content column spans the full window height. The command palette
+//! floats above everything in the overlay pass.
 //!
 //! ## Responsive sidebar
 //!
@@ -64,7 +65,7 @@ use crate::lint;
 use crate::model::{NodeId as TreeId, NodeKind, Project, Session};
 use crate::sample_project;
 use crate::search;
-use crate::status_bar::{StatusBar, StatusState};
+use crate::status_bar::{StatusModel, StatusState};
 use crate::tab_bar::{TabBar, TabEvent, TabItem};
 
 const SIDEBAR_WIDTH: f64 = 240.0;
@@ -101,7 +102,17 @@ pub struct CodeApp {
     sidebar: FileTree,
     tabs: TabBar,
     editor: EditorView,
-    status: StatusBar,
+    /// The caret / language / diagnostics readout, surfaced as a transient
+    /// floating bubble (see `draw_status_bubble`) instead of a permanent bottom
+    /// strip so the editor column spans to the window bottom.
+    status: StatusModel,
+    /// Transient floating status bubble (bottom-right): poked on a status
+    /// change (a caret move, a save flip, an indexing tick) and shown while the
+    /// pointer hovers the bottom-right corner, then fades. Replaces the old
+    /// full-width bottom status strip.
+    status_bubble: ui::StatusBubble,
+    /// `--shots` forces the bubble fully visible so a still frame captures it.
+    shots_status: bool,
     panel: BottomPanel,
     palette: CommandPalette,
 
@@ -140,7 +151,6 @@ pub struct CodeApp {
     tabs_node: Option<NodeId>,
     editor_node: Option<NodeId>,
     panel_node: Option<NodeId>,
-    status_node: Option<NodeId>,
     content_node: Option<NodeId>,
     editor_col_node: Option<NodeId>,
 
@@ -440,7 +450,9 @@ impl CodeApp {
             sidebar,
             tabs: TabBar::new(),
             editor: EditorView::new(),
-            status: StatusBar::new(),
+            status: StatusModel::new(),
+            status_bubble: ui::StatusBubble::new(),
+            shots_status: false,
             panel: BottomPanel::new(),
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
@@ -461,7 +473,6 @@ impl CodeApp {
             tabs_node: None,
             editor_node: None,
             panel_node: None,
-            status_node: None,
             content_node: None,
             editor_col_node: None,
             bound_node: default,
@@ -810,7 +821,7 @@ impl CodeApp {
             text: String::new(),
             is_error: false,
         });
-        self.status.set_state(StatusState {
+        let changed = self.status.set_state(StatusState {
             language: lang,
             line: line + 1,
             col: col + 1,
@@ -825,6 +836,66 @@ impl CodeApp {
             notice_is_error: notice.is_error,
             dirty: self.session.active_buffer().map(|b| b.dirty).unwrap_or(false),
         });
+        // Surface the floating status bubble only on a real change to the label
+        // (a caret move, a save flip, an indexing tick) — refresh_status runs
+        // every frame, so poking unconditionally would pin the bubble open.
+        if changed {
+            self.status_bubble.poke(Instant::now());
+        }
+    }
+
+    /// `--shots`: force the status bubble fully visible so a single headless
+    /// frame captures the floating chip. Refreshes the model first so the label
+    /// reflects the currently-staged editor state.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.refresh_status();
+        self.shots_status = true;
+        self.status_bubble.poke(Instant::now());
+    }
+
+    /// Draw the transient floating status bubble at the bottom-right of the
+    /// window — the reclaimed home of the old bottom status strip. It shows on a
+    /// status change or while the pointer hovers the bottom-right band, then
+    /// fades. All colours come from the theme (via `draw_pill`).
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = Instant::now();
+        let label = self.status.bubble_text();
+        if label.is_empty() {
+            return;
+        }
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
+        // the pointer there re-surfaces the status on demand.
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_cursor);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     /// Refresh the command palette's entry set (files + commands).
@@ -2218,6 +2289,15 @@ impl CodeApp {
         }
     }
 
+    /// Stage a populated status bubble for a screenshot: a live multi-word
+    /// selection and a recent save notice, then force the floating bubble
+    /// visible so a still frame captures the caret + language + contextual bits.
+    pub fn shots_status(&mut self) {
+        self.shots_select_words();
+        self.note("Saved main.rs", false);
+        self.arm_status_bubble_for_shots();
+    }
+
     /// Stage the language-server indexing readout.
     pub fn shots_indexing(&mut self) {
         self.lsp_status = LspStatus::Busy {
@@ -2547,11 +2627,10 @@ impl Widget for CodeApp {
             .unwrap();
         self.content_node = Some(content_node);
 
-        // --- Status bar ---
-        let status_node = self.status.build_layout(taffy, theme, node_map);
-        self.status_node = Some(status_node);
-
         // --- Outer column ---
+        // No status-bar row: the editor's status floats as a transient bubble
+        // (see `draw_status_bubble`), so the content row spans the full window
+        // height and reclaims the strip's row.
         let root = taffy
             .new_with_children(
                 Style {
@@ -2564,7 +2643,7 @@ impl Widget for CodeApp {
                     gap: Size { width: length(0.0), height: length(0.0) },
                     ..Default::default()
                 },
-                &[content_node, status_node],
+                &[content_node],
             )
             .unwrap();
         node_map.insert(root, self as *mut dyn Widget);
@@ -2624,9 +2703,6 @@ impl Widget for CodeApp {
                     self.panel.apply_layout(taffy, n, col_origin);
                 }
             }
-        }
-        if let Some(n) = self.status_node {
-            self.status.apply_layout(taffy, n, new_origin);
         }
         self.palette.set_viewport(self.rect);
     }
@@ -2731,7 +2807,9 @@ impl Widget for CodeApp {
             }
         }
 
-        self.status.draw(scene, transform, text_renderer, theme, presence);
+        // Transient floating status bubble (bottom-right), in place of the old
+        // permanent bottom status strip.
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
         // Palette floats on top.
         self.palette.draw_overlay(scene, transform, text_renderer, theme);
         // …and a conflict prompt above even that: it is a question that must be
@@ -3086,7 +3164,6 @@ impl Widget for CodeApp {
         if self.panel_visible {
             out.push(&self.panel);
         }
-        out.push(&self.status);
         out
     }
 
@@ -3099,7 +3176,6 @@ impl Widget for CodeApp {
         if self.panel_visible {
             out.push(&mut self.panel);
         }
-        out.push(&mut self.status);
         out
     }
 
@@ -3127,7 +3203,6 @@ impl Widget for CodeApp {
             || self.tabs.needs_redraw()
             || self.editor.needs_redraw()
             || self.panel.needs_redraw()
-            || self.status.needs_redraw()
             || self.find.needs_redraw()
             || self.palette.is_visible()
             || self.conflict.is_some()
@@ -3153,6 +3228,9 @@ impl Widget for CodeApp {
             || self.search_job.is_some()
             || self.portal.is_some()
             || self.lsp_status.is_working()
+            // Keep frames coming while the floating status bubble is lingering
+            // / fading, so it hides itself without needing a stray pointer event.
+            || self.status_bubble.needs_frame(Instant::now())
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -3169,7 +3247,6 @@ impl Widget for CodeApp {
         self.tabs.mark_drawn();
         self.editor.mark_drawn();
         self.panel.mark_drawn();
-        self.status.mark_drawn();
         self.find.mark_drawn();
     }
 }
