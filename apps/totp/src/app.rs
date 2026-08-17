@@ -243,6 +243,12 @@ impl AuthenticatorApp {
         self.last_copied.as_deref()
     }
 
+    /// The account currently selected, if any. Lets a test observe where a
+    /// Ctrl+K activation navigated.
+    pub fn selected_account(&self) -> Option<AccountId> {
+        self.selected
+    }
+
     /// Apply one list interaction. Reorder and delete are document mutations, so
     /// they dispatch a [`TotpAction`](crate::actions::TotpAction) through
     /// [`Self::perform_action`] (the same action the Ctrl+K palette dispatches);
@@ -769,6 +775,27 @@ impl Widget for AuthenticatorApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// Fold the vault into the unified Ctrl+K palette: a snapshot
+    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider) makes
+    /// every account findable there by issuer or account name, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::TotpSearchProvider::new(&self.vault))]
+    }
+
+    /// Select the account a chosen palette row identifies. Clears the in-app
+    /// filter so the account is revealed in the list even if a search term was
+    /// active. Selection is app-local presentation, so the doc args are unused.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::TotpSearchProvider::parse_action_id(action_id) {
+            if self.vault.get(id).is_some() {
+                self.selected = Some(id);
+                self.search.set_text("");
+                self.list_dirty = true;
+            }
+        }
     }
 
     fn name(&self) -> &str {
