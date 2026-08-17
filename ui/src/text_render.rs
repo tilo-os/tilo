@@ -26,6 +26,26 @@ use vello::peniko::{Color, FontData as Font, StyleRef};
 /// gets serifs.
 pub const SERIF_FAMILY: &str = "Source Serif 4";
 
+/// Canonical family name of the toolkit's **embedded** monospace face.
+///
+/// The toolkit bundles a real, fixed-width libre mono (Source Code Pro, SIL OFL
+/// 1.1 — the coding sibling of the embedded serif; see `ui/assets/fonts/`) and
+/// registers it into **every** [`FontSystem`] it builds, then points
+/// cosmic-text's generic [`Family::Monospace`] at it via
+/// `set_monospace_family`. That makes code / fixed-width text resolve
+/// **deterministically to a genuine monospace**, with no dependency on whatever
+/// the host happens to have installed.
+///
+/// This closes the same trap the serif embed did, on the axis that matters most
+/// for a code tool: a named-but-absent mono (e.g. "JetBrains Mono") silently
+/// substitutes a **proportional** face — cosmic-text falls through to its
+/// default sans — so a "monospace" grid smears and columns stop lining up. The
+/// OS image and the build container ship **no** mono, so `Family::Monospace`
+/// would otherwise render as the sans UI face. Embedding a real fixed-width
+/// face is what guarantees the terminal, code editor, hex editor, snippet
+/// bodies, Typst source, and diff/merge panels actually get aligned columns.
+pub const MONO_FAMILY: &str = "Source Code Pro";
+
 /// The four embedded Source Serif 4 faces (regular / italic / bold / bold-
 /// italic) so a serif body run picks the right face for emphasis and headings.
 /// Baked into the binary — no filesystem or host-font dependency at runtime.
@@ -34,6 +54,17 @@ const EMBEDDED_SERIF_FACES: &[&[u8]] = &[
     include_bytes!("../assets/fonts/SourceSerif4-It.ttf"),
     include_bytes!("../assets/fonts/SourceSerif4-Bold.ttf"),
     include_bytes!("../assets/fonts/SourceSerif4-BoldIt.ttf"),
+];
+
+/// The four embedded Source Code Pro faces (regular / italic / bold / bold-
+/// italic) so a monospace run picks the right face for bold keywords and
+/// emphasised code. Baked into the binary — no filesystem or host-font
+/// dependency at runtime.
+const EMBEDDED_MONO_FACES: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/SourceCodePro-Regular.ttf"),
+    include_bytes!("../assets/fonts/SourceCodePro-It.ttf"),
+    include_bytes!("../assets/fonts/SourceCodePro-Bold.ttf"),
+    include_bytes!("../assets/fonts/SourceCodePro-BoldIt.ttf"),
 ];
 
 /// Build a [`FontSystem`] with the toolkit's embedded faces registered.
@@ -51,10 +82,18 @@ fn build_font_system() -> FontSystem {
         for face in EMBEDDED_SERIF_FACES {
             db.load_font_data(face.to_vec());
         }
+        for face in EMBEDDED_MONO_FACES {
+            db.load_font_data(face.to_vec());
+        }
         // Point the generic serif family at the embedded face. Even on a host
         // that ships its own serif, ours wins deterministically — the same
         // glyphs render everywhere qOS runs.
         db.set_serif_family(SERIF_FAMILY);
+        // Likewise pin the generic monospace family at the embedded fixed-width
+        // face, so `Family::Monospace` / `FontChoice::Monospace` / `FontRole::Mono`
+        // resolve to a genuine mono with no host dependency (rather than falling
+        // through to a proportional face and smearing every code grid).
+        db.set_monospace_family(MONO_FAMILY);
     }
     fs
 }
@@ -1458,6 +1497,67 @@ mod tests {
             );
             assert!((yb - yt - adv).abs() < 1e-9, "the run advance is preserved");
         }
+    }
+
+    /// The embedded monospace face is registered and cosmic-text's generic
+    /// [`Family::Monospace`] resolves **to it** — not to a proportional host
+    /// fallback. Proven two ways: the fontdb query for the generic monospace
+    /// family returns a face whose family name is the embedded [`MONO_FAMILY`],
+    /// and that face is genuinely fixed-width (a narrow `i` and a wide `W`
+    /// advance identically) where the proportional sans face is not — so the
+    /// silent named-but-absent → proportional substitution can't recur.
+    #[test]
+    fn monospace_resolves_to_embedded_fixed_width_face() {
+        use cosmic_text::fontdb::{Family as DbFamily, Query};
+        let mut tr = TextRenderer::new();
+
+        // The embedded family is registered under its canonical name.
+        assert!(
+            tr.system_families().iter().any(|f| f == MONO_FAMILY),
+            "the embedded monospace family is present in the font db"
+        );
+
+        // The generic monospace family resolves *to the embedded face*.
+        let id = tr
+            .font_system
+            .db()
+            .query(&Query { families: &[DbFamily::Monospace], ..Default::default() })
+            .expect("generic monospace resolves to a face");
+        let resolved = tr
+            .font_system
+            .db()
+            .face(id)
+            .and_then(|f| f.families.first().map(|(n, _)| n.clone()))
+            .unwrap_or_default();
+        assert_eq!(
+            resolved, MONO_FAMILY,
+            "generic monospace points at the embedded face, got {resolved:?}"
+        );
+
+        // Genuinely fixed-width: a narrow `i` and a wide `W` advance identically
+        // in mono, but differ in the proportional sans face — so this proves the
+        // mono face is not the silent proportional substitute.
+        let (wi, _) =
+            tr.measure_font("i", 20.0, None, TextWeight::Regular, false, &FontChoice::Monospace);
+        let (ww, _) =
+            tr.measure_font("W", 20.0, None, TextWeight::Regular, false, &FontChoice::Monospace);
+        assert!((wi - ww).abs() < 0.5, "monospace advances are equal: i={wi} W={ww}");
+
+        let (si, _) =
+            tr.measure_font("i", 20.0, None, TextWeight::Regular, false, &FontChoice::SansSerif);
+        let (sw, _) =
+            tr.measure_font("W", 20.0, None, TextWeight::Regular, false, &FontChoice::SansSerif);
+        assert!((sw - si).abs() > 1.0, "sans is proportional (control): i={si} W={sw}");
+
+        // A column of equal-length mono runs lines up to the pixel, whatever the
+        // glyphs — the property a diff / code grid depends on.
+        let (row_a, _) = tr.measure_font(
+            "iiiiiiii", 16.0, None, TextWeight::Regular, false, &FontChoice::Monospace,
+        );
+        let (row_b, _) = tr.measure_font(
+            "WWWWWWWW", 16.0, None, TextWeight::Regular, false, &FontChoice::Monospace,
+        );
+        assert!((row_a - row_b).abs() < 0.5, "eight-char mono rows share a width: {row_a} vs {row_b}");
     }
 
     /// `bump_generation` blows away every cached entry — the next
