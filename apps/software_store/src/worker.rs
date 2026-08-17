@@ -33,7 +33,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::Duration;
 
-use crate::flatpak::{self, ActionOutcome, ActionProgress, Remote};
+use crate::flatpak::{self, ActionOutcome, ActionProgress, InstalledApp, Remote};
 use crate::model::AppEntry;
 use crate::qpkg::{self, QpkgApp};
 
@@ -59,8 +59,10 @@ pub enum Request {
     Update(String),
     /// Gated remove: `flatpak uninstall <app-id>`.
     Remove(String),
-    /// Install from a `.flatpakref` file path.
-    InstallRef(String),
+    /// Install from a `.flatpakref` file path. Carries the app-id so the
+    /// resulting `ActionDone` is keyed by the app (not the path), letting the
+    /// UI clear the right in-flight op.
+    InstallRef { app_id: String, path: String },
     /// Add a remote: `flatpak remote-add <name> <url>`.
     RemoteAdd { name: String, url: String },
     /// Remove a remote: `flatpak remote-delete <name>`.
@@ -100,8 +102,10 @@ impl Request {
 /// A message produced by the worker thread for the UI to fold in.
 #[derive(Clone, Debug)]
 pub enum WorkerMsg {
-    /// Local installed set: app-id → version.
-    Installed(HashMap<String, String>),
+    /// Local installed set across all installations, with name/version/origin
+    /// /scope per app — so the Installed tab shows the real set (including
+    /// apps outside the browse catalog) and can label provenance.
+    Installed(Vec<InstalledApp>),
     /// Configured remotes.
     Remotes(Vec<Remote>),
     /// A collection finished: name + entries (empty = no live data).
@@ -210,6 +214,12 @@ pub struct Worker {
     msg_rx: Option<Receiver<WorkerMsg>>,
     inflight: InFlight,
     pub caches: Caches,
+    /// Test-only: a live-mode flag independent of a real thread, plus an
+    /// inbox `drain` also yields — so a test can drive the *real* live message
+    /// folding (progress → failed, installed reconciliation, qpkg) without a
+    /// subprocess. Empty / false on every real handle.
+    force_live: bool,
+    injected: VecDeque<WorkerMsg>,
 }
 
 impl Worker {
@@ -226,6 +236,8 @@ impl Worker {
             msg_rx: Some(msg_rx),
             inflight: InFlight::default(),
             caches: Caches::default(),
+            force_live: false,
+            injected: VecDeque::new(),
         }
     }
 
@@ -237,12 +249,31 @@ impl Worker {
             msg_rx: None,
             inflight: InFlight::default(),
             caches: Caches::default(),
+            force_live: false,
+            injected: VecDeque::new(),
         }
     }
 
-    /// `true` if this is a live worker (has a background thread).
+    /// A test handle that reports live (so the store exercises its live-path
+    /// branches) but has no thread: messages are supplied via [`Self::inject`]
+    /// and yielded by [`Self::drain`], driving the real folding logic.
+    #[cfg(test)]
+    pub fn test_live() -> Self {
+        let mut w = Self::offline();
+        w.force_live = true;
+        w
+    }
+
+    /// Test-only: enqueue a message for the next [`Self::drain`].
+    #[cfg(test)]
+    pub fn inject(&mut self, msg: WorkerMsg) {
+        self.injected.push_back(msg);
+    }
+
+    /// `true` if this is a live worker (has a background thread, or is a
+    /// test-live handle).
     pub fn is_live(&self) -> bool {
-        self.job_tx.is_some()
+        self.job_tx.is_some() || self.force_live
     }
 
     /// Enqueue `req`, deduping read-only queries against the in-flight set.
@@ -279,6 +310,10 @@ impl Worker {
                     Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
                 }
             }
+        }
+        // Test-injected messages (empty on every real handle).
+        while let Some(m) = self.injected.pop_front() {
+            msgs.push(m);
         }
         for msg in &msgs {
             count += 1;
@@ -367,8 +402,7 @@ fn run_streaming_action(
 fn handle(req: Request, msg_tx: &Sender<WorkerMsg>) -> Result<(), ()> {
     match req {
         Request::RefreshInstalled => {
-            let installed = flatpak::list_installed().into_iter().collect();
-            send(msg_tx, WorkerMsg::Installed(installed))
+            send(msg_tx, WorkerMsg::Installed(flatpak::list_installed_apps()))
         }
         Request::RefreshRemotes => send(msg_tx, WorkerMsg::Remotes(flatpak::list_remotes())),
         Request::Collection(name) => {
@@ -404,9 +438,9 @@ fn handle(req: Request, msg_tx: &Sender<WorkerMsg>) -> Result<(), ()> {
             let args = flatpak::uninstall_args(scope, &id);
             run_streaming_action(msg_tx, id, ActionKind::Remove, args)
         }
-        Request::InstallRef(path) => {
+        Request::InstallRef { app_id, path } => {
             let args = flatpak::install_ref_args(flatpak::Scope::User, &path);
-            run_streaming_action(msg_tx, path, ActionKind::InstallRef, args)
+            run_streaming_action(msg_tx, app_id, ActionKind::InstallRef, args)
         }
         Request::RemoteAdd { name, url } => {
             let outcome = flatpak::remote_add(&name, &url);
