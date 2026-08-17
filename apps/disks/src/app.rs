@@ -25,7 +25,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SegmentedFace, SplitLayout, ToggleGroup, Widget};
+use ui::widget::{FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget};
 
 use crate::ops::{self, Op};
 use crate::doc::DisksDoc;
@@ -287,9 +287,10 @@ pub struct DisksApp {
     selected_part: Option<usize>,
     tab: Tab,
     pending: Option<Pending>,
-    /// Typed confirmation text for a destructive (Format) action. The Erase
-    /// button only unlocks once this matches the target device name.
-    confirm_input: String,
+    /// Typed confirmation field for a destructive (Format) action — a shared
+    /// [`TextInput`] (real caret / selection / clipboard). The Erase button only
+    /// unlocks once its value matches the target device name.
+    confirm_field: TextInput,
     status: String,
     /// True in the live binary (`DISKS_LIVE`): actions actually execute.
     /// False for `--shots` and unit tests, which stay inert.
@@ -337,7 +338,7 @@ impl DisksApp {
             selected_part: None,
             tab: Tab::Overview,
             pending: None,
-            confirm_input: String::new(),
+            confirm_field: TextInput::local().with_plain_chrome().with_font_size(14.0),
             status: String::new(),
             live: std::env::var("DISKS_LIVE").is_ok(),
             action_rx: None,
@@ -1278,7 +1279,7 @@ impl DisksApp {
     }
 
     // ---- modal ---------------------------------------------------------
-    fn draw_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, ml: &ModalLayout, pending: Pending) {
+    fn draw_modal(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, ml: &ModalLayout, pending: Pending, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         // Scrim.
         scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, &self.rect);
@@ -1302,15 +1303,16 @@ impl DisksApp {
         let inp = ml.input;
         Self::fill_rr(scene, t, inp, 8.0, c.surfaces.base);
         Self::stroke_rr(scene, t, inp, 8.0, if ready { c.semantic.success } else { c.border_focus }, 1.4);
-        let shown = if self.confirm_input.is_empty() { expected.clone() } else { self.confirm_input.clone() };
-        let text_c = if self.confirm_input.is_empty() {
-            with_alpha(c.text_dim, 110) // placeholder
-        } else if ready {
-            c.semantic.success
-        } else {
-            c.text_primary
-        };
-        self.txt(scene, tr, &shown, 14.0, text_c, inp.x0 + 12.0, inp.y0 + 9.0, Some((inp.width() - 24.0) as f32), TextWeight::Medium);
+        // The typed text lives in the shared `TextInput` (real caret /
+        // selection / clipboard); disks keeps its own success-tinted box and
+        // "✓ match" chip around it, and paints the dim expected-name hint only
+        // while the field is still empty.
+        let field_rect = Rect::new(inp.x0 + 12.0, inp.y0, inp.x1 - 12.0, inp.y1);
+        self.confirm_field.apply_layout_external(field_rect);
+        if self.confirm_field.value().is_empty() {
+            self.txt(scene, tr, &expected, 14.0, with_alpha(c.text_dim, 110), inp.x0 + 12.0, inp.y0 + 9.0, Some((inp.width() - 24.0) as f32), TextWeight::Medium);
+        }
+        self.confirm_field.draw(scene, t, tr, theme, presence);
         if ready {
             self.txt_right(scene, tr, "✓ match", 12.0, c.semantic.success, inp.x1 - 12.0, inp.y0 + 10.0, TextWeight::Semibold);
         }
@@ -1408,8 +1410,8 @@ impl DisksApp {
     /// True once the typed confirmation matches the target — gates Erase.
     fn confirm_ready(&self) -> bool {
         match self.pending {
-            Some(p) => !self.confirm_input.trim().is_empty()
-                && self.confirm_input.trim() == self.pending_target_leaf(p),
+            Some(p) => !self.confirm_field.value().trim().is_empty()
+                && self.confirm_field.value().trim() == self.pending_target_leaf(p),
             None => false,
         }
     }
@@ -1431,7 +1433,8 @@ impl DisksApp {
             // Open the type-to-confirm modal — nothing executes until the user
             // types the device name and confirms.
             self.pending = Some(Pending { action, drive: self.selected, part });
-            self.confirm_input.clear();
+            self.confirm_field.set_text("");
+            self.confirm_field.set_focus(true);
             DisksDoc::set_pending(
                 state,
                 &format!("{}:{}:{}", action.key(), self.selected, part.map(|i| i as i64).unwrap_or(-1)),
@@ -1494,14 +1497,16 @@ impl DisksApp {
             return;
         }
         let Some(p) = self.pending.take() else { return };
-        self.confirm_input.clear();
+        self.confirm_field.set_text("");
+        self.confirm_field.set_focus(false);
         DisksDoc::set_pending(state, "");
         self.dispatch_action(state, p.action, p.part);
     }
 
     fn cancel_pending(&mut self, state: &mut AutoCommit) {
         self.pending = None;
-        self.confirm_input.clear();
+        self.confirm_field.set_text("");
+        self.confirm_field.set_focus(false);
         DisksDoc::set_pending(state, "");
     }
 
@@ -1798,7 +1803,7 @@ impl Widget for DisksApp {
         self.flap.is_animating(self.split_layout()) || self.action_rx.is_some()
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         // App background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
@@ -1877,7 +1882,7 @@ impl Widget for DisksApp {
         self.draw_topbar(scene, tr, theme, transform, &lay);
 
         if let (Some(ml), Some(p)) = (lay.modal, self.pending) {
-            self.draw_modal(scene, tr, theme, transform, &ml, p);
+            self.draw_modal(scene, tr, theme, transform, &ml, p, presence);
         }
     }
 
@@ -1885,13 +1890,13 @@ impl Widget for DisksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
+        modifiers: &ui::winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
         use ui::winit::keyboard::{Key, NamedKey};
@@ -2092,25 +2097,17 @@ impl Widget for DisksApp {
                             *handled = true;
                             self.dirty = true;
                         }
-                        Key::Named(NamedKey::Backspace) => {
-                            self.confirm_input.pop();
-                            *handled = true;
+                        // Text, backspace, caret motion, selection, and
+                        // Ctrl+C/V/X all go to the shared field, which owns the
+                        // real caret / selection / clipboard.
+                        _ => {
+                            let mut sink = None;
+                            self.confirm_field.handle_event(
+                                event, scale_factor, modifiers, state, path,
+                                handled, &mut sink, node_id, taffy,
+                            );
                             self.dirty = true;
                         }
-                        Key::Named(NamedKey::Space) => {
-                            self.confirm_input.push(' ');
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        Key::Character(s) => {
-                            // Device names are printable ASCII; append them.
-                            for ch in s.chars().filter(|c| !c.is_control()) {
-                                self.confirm_input.push(ch);
-                            }
-                            *handled = true;
-                            self.dirty = true;
-                        }
-                        _ => {}
                     }
                     return;
                 }
@@ -2289,18 +2286,44 @@ mod tests {
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "confirm is a no-op while locked");
 
-        app.confirm_input = "wrong".into();
+        app.confirm_field.set_text("wrong");
         assert!(!app.confirm_ready());
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_some(), "a mismatched name stays locked");
 
-        app.confirm_input = "nvme0n1".into(); // the whole-disk device name
+        app.confirm_field.set_text("nvme0n1"); // the whole-disk device name
         assert!(app.confirm_ready(), "the exact name unlocks Erase");
         app.confirm_pending(&mut doc);
         assert!(app.pending.is_none(), "confirming clears the modal");
         assert_eq!(DisksDoc::pending(&doc), "");
         // Hermetic build reports the plan rather than executing.
         assert!(DisksDoc::status(&doc).contains("Block.Format"));
+    }
+
+    #[test]
+    fn typing_the_device_name_through_the_shared_field_unlocks_erase() {
+        // Proves the confirm gate is driven by the shared `TextInput` on the
+        // real event path: keystrokes routed through `handle_event` land in the
+        // field, and `confirm_ready` reads the field's value.
+        let mut h = Harness::new(1280.0, 800.0);
+        h.app.trigger_action(&mut h.doc, ActionKind::Format); // whole nvme disk
+        h.draw(); // a real frame: places + draws the embedded field
+        assert!(h.app.pending.is_some(), "format opens the type-to-confirm gate");
+        assert!(!h.app.confirm_ready(), "empty field keeps Erase locked");
+
+        h.type_str("wrong");
+        assert_eq!(h.app.confirm_field.value(), "wrong", "keys land in the shared field");
+        assert!(!h.app.confirm_ready(), "a wrong name stays locked");
+
+        // Backspace (a real caret op the old String-splice had) clears it.
+        for _ in 0.."wrong".len() {
+            h.dispatch(&key_input_event(ui::winit::keyboard::Key::Named(ui::winit::keyboard::NamedKey::Backspace), None));
+        }
+        assert_eq!(h.app.confirm_field.value(), "", "backspace erases through the field");
+
+        h.type_str("nvme0n1");
+        assert_eq!(h.app.confirm_field.value(), "nvme0n1");
+        assert!(h.app.confirm_ready(), "the exact typed name unlocks Erase");
     }
 
     #[test]
@@ -2419,6 +2442,23 @@ mod tests {
         unsafe { std::mem::zeroed() }
     }
 
+    /// Build a `KeyboardInput` winit event. `KeyEvent`'s `platform_specific`
+    /// field is crate-private, so the struct is zero-initialised then the
+    /// public fields we read are overwritten. `text` is what a focused
+    /// `TextInput` actually inserts.
+    fn key_input_event(logical_key: ui::winit::keyboard::Key, text: Option<&str>) -> WindowEvent {
+        use ui::winit::event::KeyEvent;
+        use ui::winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key = PhysicalKey::Unidentified(ui::winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = text.map(SmolStr::new);
+        WindowEvent::KeyboardInput { device_id: device_id(), event: ev, is_synthetic: false }
+    }
+
     /// A laid-out + drawn app that pumps real winit events. The draw pass
     /// populates the scroll extents (`content_h` / `list_h`) exactly as the
     /// live renderer does each frame.
@@ -2501,6 +2541,18 @@ mod tests {
         fn wheel(&mut self, p: Point, lines: f32) {
             self.move_to(p);
             self.dispatch(&WindowEvent::MouseWheel { device_id: device_id(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: ui::winit::event::TouchPhase::Moved });
+        }
+
+        /// Type a string one character at a time through the real
+        /// `handle_event` path (each key routed to the focused shared field).
+        fn type_str(&mut self, s: &str) {
+            for ch in s.chars() {
+                let t = ch.to_string();
+                self.dispatch(&key_input_event(
+                    ui::winit::keyboard::Key::Character(ui::winit::keyboard::SmolStr::new(&t)),
+                    Some(&t),
+                ));
+            }
         }
 
         fn lay(&self) -> Layout {
