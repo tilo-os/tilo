@@ -476,6 +476,23 @@ impl Widget for SettingsApp {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
+    /// Fold the settings panes into the unified Ctrl+K palette: a stateless
+    /// [`SettingsSearchProvider`](crate::search_provider::SettingsSearchProvider)
+    /// makes every pane findable there by title, summary, or keyword synonym,
+    /// alongside the individual-toggle actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::SettingsSearchProvider)]
+    }
+
+    /// Navigate to the pane a chosen palette row identifies. Pane selection is
+    /// app-local presentation (per-peer, never in the shared doc), so the doc
+    /// args are unused.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut automerge::AutoCommit, _path: &automerge::ObjId) {
+        if let Some(category) = crate::search_provider::SettingsSearchProvider::parse_action_id(action_id) {
+            self.select(category);
+        }
+    }
+
     /// Bubble an on-screen control's dispatched-action undo bracket up from
     /// whichever pane produced it. A settings control lives deep under the shell
     /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
