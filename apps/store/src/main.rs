@@ -134,6 +134,17 @@ impl ui::widget::Widget for LiveStore {
         self.inner
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
     }
+    fn draw_overlay(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text_renderer: &mut ui::text_render::TextRenderer,
+        theme: &ui::theme::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        self.inner
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
