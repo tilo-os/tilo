@@ -196,19 +196,25 @@ mod tests {
             .collect()
     }
 
-    /// Run `f` with both store roots pinned, restoring the previous
-    /// values afterwards.
+    /// Run `f` with both store roots pinned, putting every variable
+    /// back afterwards — including the ones that were already unset.
+    /// A test that leaves `HOME` or `XDG_DATA_HOME` pointing somewhere
+    /// of its own devising is a flake in whichever test runs next.
     fn with_stores<T>(system: Option<&Path>, user: Option<&Path>, f: impl FnOnce() -> T) -> T {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["QOS_APPS_SYSTEM_DIR", "QOS_APPS_DATA_DIR", "XDG_DATA_HOME"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
         // SAFETY: serialised by ENV above; nothing else in this crate
         // reads these variables concurrently.
         unsafe {
-            std::env::remove_var("QOS_APPS_SYSTEM_DIR");
-            std::env::remove_var("QOS_APPS_DATA_DIR");
-            std::env::remove_var("XDG_DATA_HOME");
-            match system {
-                Some(p) => std::env::set_var("QOS_APPS_SYSTEM_DIR", p),
-                None => std::env::set_var("HOME", "/nonexistent-home-for-tests"),
+            for (k, _) in &saved {
+                std::env::remove_var(k);
+            }
+            if let Some(p) = system {
+                std::env::set_var("QOS_APPS_SYSTEM_DIR", p);
             }
             if let Some(p) = user {
                 std::env::set_var("QOS_APPS_DATA_DIR", p);
@@ -216,8 +222,12 @@ mod tests {
         }
         let out = f();
         unsafe {
-            std::env::remove_var("QOS_APPS_SYSTEM_DIR");
-            std::env::remove_var("QOS_APPS_DATA_DIR");
+            for (k, v) in saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
         }
         out
     }
@@ -240,11 +250,7 @@ mod tests {
     fn a_bare_data_dir_override_suppresses_the_system_store() {
         // `QOS_APPS_DATA_DIR` alone means "the store is here" — a test
         // fixture must not be joined by /usr/share/qos-apps.
-        let paths = with_stores(None, Some(Path::new("/fixture")), || {
-            // Drop the explicit system dir the helper set.
-            unsafe { std::env::remove_var("QOS_APPS_SYSTEM_DIR") };
-            registry_paths()
-        });
+        let paths = with_stores(None, Some(Path::new("/fixture")), registry_paths);
         assert_eq!(
             paths,
             vec![(Store::User, PathBuf::from("/fixture/registry.toml"))]
