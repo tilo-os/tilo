@@ -33,6 +33,7 @@ const SCENARIOS: &[&str] = &[
     "indexing",
     "goto",
     "close-prompt",
+    "status",
 ];
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -271,6 +272,7 @@ fn render_scenario_to_png(
             app.shots_open_goto(&n);
         }
         Some("close-prompt") => app.shots_close_prompt(),
+        Some("status") => app.shots_status(),
         Some("indexing") => {
             app.shots_indexing();
             // The status bar and the Problems panel read the server state
