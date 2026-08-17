@@ -7,10 +7,14 @@
 //! permissions) is always this curated set, because we have no offline
 //! AppStream mirror.
 
+use crate::images;
 use crate::model::{AppEntry, Category, Compat, Permission, Review, Shot, Source};
 
 fn shot(tone_a: usize, tone_b: usize, caption: &str) -> Shot {
-    Shot { tone_a, tone_b, caption: caption.into() }
+    // `url` is filled in per-app by `app()` (below) so the offline sample
+    // drives the real fetch→decode→paint image path with synthesised
+    // screenshots, keeping the duotone tones only as a fallback.
+    Shot { tone_a, tone_b, caption: caption.into(), url: None }
 }
 
 /// Build one catalog entry with sensible defaults; callers override the
@@ -35,6 +39,14 @@ fn app(
     permissions: Vec<Permission>,
     shots: Vec<Shot>,
 ) -> AppEntry {
+    // Give the sample entry a real (synthesised) icon + per-shot bitmap URLs
+    // so the offline `--shots`/first-run catalog drives the same async
+    // fetch→decode→paint pipeline the live Flathub icons/screenshots use —
+    // the detail page shows real decoded images, not a permanent placeholder.
+    let mut shots = shots;
+    for (i, s) in shots.iter_mut().enumerate() {
+        s.url = Some(images::demo_shot(id, i));
+    }
     AppEntry {
         id: id.into(),
         name: name.into(),
@@ -52,6 +64,7 @@ fn app(
         featured,
         icon_tone,
         monogram: monogram.into(),
+        icon_url: Some(images::demo_icon(id)),
         reviews: Vec::new(),
         compat: Vec::new(),
         download_count: None,

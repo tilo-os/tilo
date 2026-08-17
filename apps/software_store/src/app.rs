@@ -30,13 +30,16 @@ use winit::keyboard::{Key, NamedKey};
 use ui::Widget;
 use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
+use ui::image_store::paint_image_cover;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, ModalDialog, SegmentedFace, SplitLayout, ToggleGroup};
+use ui::widget::{FlapState, ModalDialog, SegmentedFace, SplitLayout, TextInput, ToggleGroup};
+use ui::{ImageStore, LoadState};
 use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::catalog::sample_catalog;
+use crate::images;
 use crate::doc::StoreDoc;
 use crate::draw::{self, alpha, mix};
 use crate::flatpak::Remote;
@@ -153,8 +156,29 @@ pub struct SoftwareStore {
     detail: Option<String>,
     /// Active category filter on the Browse screen (None = all).
     active_category: Option<Category>,
+    /// Mirror of the embedded search field's text, read by every screen.
+    /// The authoritative editor is [`Self::search_input`] (a real
+    /// [`ui::widget::TextInput`] — caret, selection, clipboard, IME, a11y);
+    /// this string is refreshed from it each event/frame so the pure filter
+    /// queries stay simple.
     search_query: String,
+    /// Mirror of the search field's focus state (kept in lockstep with
+    /// `search_input`), used for the pill's focus ring + key routing.
     search_focused: bool,
+    /// The real editable search field. A [`ui::widget::TextInput`] embedded in
+    /// this monolithic widget and driven through its passes manually — so the
+    /// store's search box gets the shared text core (selection, clipboard,
+    /// IME, theming, a11y) instead of a hand-rolled `String` + fake caret.
+    search_input: TextInput,
+    /// Async image loader/cache for real app icons + screenshots, keyed by
+    /// URL. Fetch + decode happen off the UI thread; a frame paints whatever
+    /// has resolved and an honest loading skeleton for the rest.
+    image_store: ImageStore,
+    /// Whether a usable `flatpak` binary is present (from the live probe).
+    /// `true` by default (offline `--shots`/tests never show the banner);
+    /// set `false` on the live path when the probe finds no flatpak, which
+    /// drives the honest "Flatpak unavailable" banner.
+    flatpak_available: bool,
     /// Vertical scroll offset of the body, in logical px.
     scroll: f64,
     /// Total content height computed during the last `draw`, used to
@@ -256,6 +280,13 @@ impl SoftwareStore {
             active_category: None,
             search_query: String::new(),
             search_focused: false,
+            search_input: TextInput::local()
+                .with_plain_chrome()
+                .with_placeholder("Search apps")
+                .with_font_size(14.0)
+                .with_id("software-store-search"),
+            image_store: ImageStore::with_workers(images::fetcher(), 3),
+            flatpak_available: true,
             scroll: 0.0,
             content_height: 0.0,
             install_start: HashMap::new(),
@@ -354,6 +385,7 @@ impl SoftwareStore {
             // i.e. at a narrow viewport.
             self.nav_flap.snap(true);
         } else if let Some(q) = spec.strip_prefix("search:") {
+            self.search_input.set_text(q);
             self.search_query = q.to_string();
             self.tab = Tab::Browse;
         } else if let Some(id) = spec.strip_prefix("detail:") {
@@ -361,8 +393,52 @@ impl SoftwareStore {
         }
     }
 
+    /// Synchronously fetch + decode every catalog icon/screenshot and block
+    /// until the image store settles. Used **only** by the `--shots` path so a
+    /// single offscreen frame captures real, resolved images rather than the
+    /// loading skeleton. Never call on a live UI thread. A no-op on the live
+    /// path (empty catalog) — those images stream in over real frames.
+    pub fn prewarm_images(&self, timeout: Duration) {
+        for app in &self.catalog.apps {
+            if let Some(u) = app.icon_url.as_deref().filter(|u| !u.is_empty()) {
+                let _ = self.image_store.get(u);
+            }
+            for shot in &app.shots {
+                if let Some(u) = shot.url.as_deref().filter(|u| !u.is_empty()) {
+                    let _ = self.image_store.get(u);
+                }
+            }
+        }
+        self.image_store.block_until_idle(timeout);
+    }
+
     fn body_rect(&self) -> Rect {
-        Rect::new(self.rect.x0, self.rect.y0 + HEADER_H, self.rect.x1, self.rect.y1)
+        Rect::new(self.rect.x0, self.rect.y0 + HEADER_H + self.banner_h(), self.rect.x1, self.rect.y1)
+    }
+
+    /// Height of the "Flatpak unavailable" banner strip (0 when flatpak is
+    /// present, so no chrome is reserved on a normal system / in `--shots`).
+    fn banner_h(&self) -> f64 {
+        if self.flatpak_available { 0.0 } else { 34.0 }
+    }
+
+    /// Draw the honest "Flatpak unavailable" strip between the header and the
+    /// body, shown only when the live probe found no flatpak binary. Browsing
+    /// the Flathub catalog still works; installing/managing does not — so we
+    /// say exactly that rather than faking success.
+    fn draw_flatpak_banner(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme) {
+        if self.flatpak_available {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let strip = Rect::new(self.rect.x0, self.rect.y0 + HEADER_H, self.rect.x1, self.rect.y0 + HEADER_H + self.banner_h());
+        draw::fill_rect(scene, t, strip, alpha(c.semantic.warning, 0.16));
+        draw::fill_rect(scene, t, Rect::new(strip.x0, strip.y1 - 1.0, strip.x1, strip.y1), alpha(c.semantic.warning, 0.5));
+        let dot = Circle::new(Point::new(strip.x0 + BODY_PAD_X + 4.0, strip.center().y), 4.0);
+        scene.fill(vello::peniko::Fill::NonZero, t, c.semantic.warning, None, &dot);
+        let msg = "Flatpak isn’t available here — you can browse the catalog, but installing and managing apps needs Flatpak.";
+        draw::text_w(scene, tr, t, msg, ty.sm, TextWeight::Medium, mix(c.text_primary, c.semantic.warning, 0.35), strip.x0 + BODY_PAD_X + 18.0, strip.center().y - ty.sm as f64 / 2.0 - 1.0, None);
     }
 
     /// Resolve the navigation layout from the *allocated* width. At or above
@@ -409,6 +485,38 @@ impl SoftwareStore {
 
     fn reset_scroll(&mut self) {
         self.scroll = 0.0;
+    }
+
+    /// Focus or blur the search field, keeping the mirror flag in lockstep
+    /// with the real [`TextInput`] so the pill's focus ring + key routing
+    /// agree with where edits actually land.
+    fn set_search_focus(&mut self, on: bool) {
+        self.search_focused = on;
+        self.search_input.set_focus(on);
+        self.dirty = true;
+    }
+
+    /// Set the search text through the shared text core (so caret/selection
+    /// stay consistent) and refresh the mirror + debounce clock.
+    fn set_search_text(&mut self, s: &str) {
+        self.search_input.set_text(s);
+        self.search_query = s.to_string();
+        self.search_changed_at = Some(Instant::now());
+        self.reset_scroll();
+        self.dirty = true;
+    }
+
+    /// Fold any pending edit from the embedded search field into the mirror
+    /// the screens read. Returns `true` when the query changed.
+    fn pull_search_edit(&mut self) -> bool {
+        if let Some(q) = self.search_input.take_dirty() {
+            self.search_query = q;
+            self.search_changed_at = Some(Instant::now());
+            self.reset_scroll();
+            self.dirty = true;
+            return true;
+        }
+        false
     }
 
     /// The set of updatable apps, used by the Updates badge + Update All.
@@ -684,10 +792,10 @@ impl SoftwareStore {
                 self.active_category = c;
                 self.reset_scroll();
             }
-            Action::FocusSearch => self.search_focused = true,
+            Action::FocusSearch => self.set_search_focus(true),
             Action::ClearSearch => {
-                self.search_query.clear();
-                self.search_focused = false;
+                self.set_search_text("");
+                self.set_search_focus(false);
             }
             Action::Install(id) => self.start_install(state, &id),
             Action::Update(id) => {
@@ -1050,11 +1158,12 @@ fn short_target(t: &str) -> String {
 
 impl SoftwareStore {
     fn draw_header(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
+        presence: &PresenceCtx,
         targets: &mut Vec<HitTarget>,
     ) {
         let c = &theme.tokens.colors;
@@ -1173,69 +1282,70 @@ impl SoftwareStore {
         // Search pill, to the left of the tabs. Draw it only while it clears the
         // left cluster (nav toggle / Back chevron) rather than the old wordmark.
         let search_w = 280.0_f64;
-        let search_r = Rect::new(tabs_origin - GAP - search_w, cy - 16.0, tabs_origin - GAP, cy + 16.0);
+        let search_r = Rect::new(tabs_origin - GAP - search_w, cy - 18.0, tabs_origin - GAP, cy + 18.0);
         if search_r.x0 > self.rect.x0 + BODY_PAD_X + 80.0 {
-            self.draw_search_bar(scene, tr, t, theme, targets, search_r);
+            self.draw_search_bar(scene, tr, t, theme, presence, targets, search_r);
+        } else {
+            // No room for the field this frame — keep it laid out off-view so
+            // its state stays consistent.
+            self.search_input.apply_layout_external(Rect::ZERO);
         }
     }
 
-    /// The single canonical search field for the store — one component,
-    /// used everywhere the store shows search (currently the header).
-    ///
-    /// Everything is centred on the pill's vertical midline via measured
-    /// glyph/text heights rather than magic offsets, so the leading
-    /// magnifier, the placeholder/query text, the caret and the clear (✕)
-    /// affordance all share one baseline. When the shared `ui` `SearchBar`
-    /// widget lands this method is the single swap-in point; keeping the
-    /// field self-contained here makes that migration a one-liner.
+    /// The store's canonical search field: a rounded pill with a leading
+    /// magnifier, the shared editable [`ui::widget::TextInput`] in the middle
+    /// (caret, selection, clipboard, IME, theming, a11y — no hand-rolled
+    /// string), and a trailing clear affordance while there is a query. The
+    /// pill chrome is decoration around the real widget; a click anywhere on
+    /// it focuses the field.
     fn draw_search_bar(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         t: Affine,
         theme: &Theme,
+        presence: &PresenceCtx,
         targets: &mut Vec<HitTarget>,
         rect: Rect,
     ) {
         let c = &theme.tokens.colors;
-        let tsize = theme.tokens.typography.scale.sm;
         let cy = rect.center().y;
-        let focused = self.search_focused;
+        let focused = self.search_input.is_focused();
         let border = if focused { c.border_focus } else { c.border_standard };
         draw::fill_round(scene, t, rect, theme.tokens.radii.full, c.surfaces.raised);
         draw::stroke_round(scene, t, rect, theme.tokens.radii.full, border, if focused { 2.0 } else { 1.0 });
 
-        // Leading magnifier glyph, vertically centred on the pill: `draw::text`
-        // places the glyph's top-left at `y`, so we offset by half its measured
-        // height to centre it (a prior fixed offset left it riding high in the
-        // 32px pill).
+        // Leading magnifier glyph, vertically centred on the pill.
         let glyph = "⌕";
         let glyph_size = 16.0_f32;
         let (_, gh) = draw::measure(tr, glyph, glyph_size);
-        draw::text(scene, tr, t, glyph, glyph_size, c.text_dim, rect.x0 + 12.0, cy - gh / 2.0, None);
+        let mag_col = if focused { c.text_primary } else { c.text_dim };
+        draw::text(scene, tr, t, glyph, glyph_size, mag_col, rect.x0 + 12.0, cy - gh / 2.0, None);
 
-        // Query / placeholder text, centred on the same midline as the glyph.
-        let tx = rect.x0 + 32.0;
-        let text_y = cy - draw::measure(tr, "Ag", tsize).1 / 2.0;
-        if self.search_query.is_empty() && !focused {
-            draw::text(scene, tr, t, "Search apps…", tsize, c.text_dim, tx, text_y, None);
-        } else {
-            draw::text(scene, tr, t, &self.search_query, tsize, c.text_primary, tx, text_y, None);
-            if focused {
-                let cw = draw::measure(tr, &self.search_query, tsize).0;
-                let caret = Rect::new(tx + cw + 1.0, cy - 9.0, tx + cw + 2.5, cy + 9.0);
-                draw::fill_rect(scene, t, caret, c.accent[5]);
-            }
-            // Trailing clear (✕) affordance, centred vertically.
-            if !self.search_query.is_empty() {
-                let clr = Rect::new(rect.x1 - 26.0, cy - 11.0, rect.x1 - 6.0, cy + 11.0);
-                let hov = clr.contains(self.mouse);
-                let (xw, xh) = draw::measure(tr, "✕", 13.0);
-                draw::text(scene, tr, t, "✕", 13.0, if hov { c.text_primary } else { c.text_dim }, clr.center().x - xw / 2.0, cy - xh / 2.0, None);
-                targets.push(HitTarget { rect: clr, action: Action::ClearSearch });
-            }
-        }
+        // Whether a clear button is showing decides the trailing inset the
+        // editable text stops at.
+        let has_query = !self.search_query.is_empty();
+        let lead = 34.0;
+        let trail = if has_query { 30.0 } else { 12.0 };
+        let inner = Rect::new(rect.x0 + lead, rect.y0, rect.x1 - trail, rect.y1);
+
+        // Position + draw the real editable field inside the pill.
+        self.search_input.apply_layout_external(inner);
+        self.search_input.draw(scene, t, tr, theme, presence);
+
+        // A click anywhere on the pill focuses the field. Registered first so
+        // the trailing clear button (pushed after) wins the reverse hit-test
+        // where they overlap.
         targets.push(HitTarget { rect, action: Action::FocusSearch });
+
+        // Trailing clear (✕) affordance while there's a query.
+        if has_query {
+            let clr = Rect::new(rect.x1 - 28.0, cy - 11.0, rect.x1 - 8.0, cy + 11.0);
+            let hov = clr.contains(self.mouse);
+            let (xw, xh) = draw::measure(tr, "✕", 13.0);
+            draw::text(scene, tr, t, "✕", 13.0, if hov { c.text_primary } else { c.text_dim }, clr.center().x - xw / 2.0, cy - xh / 2.0, None);
+            targets.push(HitTarget { rect: clr, action: Action::ClearSearch });
+        }
     }
 
     /// The hamburger / close toggle shown in the header on narrow windows.
@@ -1358,11 +1468,90 @@ impl SoftwareStore {
         }
     }
 
-    /// Draw an icon tile for `app` at `rect`, theme-derived colour.
+    /// Draw an icon tile for `app` at `rect`.
+    ///
+    /// Prefers the app's **real** icon: when `icon_url` is set the shared
+    /// [`ImageStore`] fetches + decodes it off-thread; a resolved bitmap is
+    /// painted (rounded, cover-fit), a still-loading fetch shows an honest
+    /// skeleton that resolves on a later frame, and only a genuinely missing
+    /// or failed icon falls back to the theme-derived monogram tile. A
+    /// permanent placeholder letter is the bug this fixes.
     fn icon(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, rect: Rect, app: &AppEntry) {
+        let radius = (rect.width() * 0.24).min(20.0);
+        if let Some(url) = app.icon_url.as_deref().filter(|u| !u.is_empty()) {
+            if let Some(img) = self.image_store.get(url) {
+                paint_image_cover(scene, t, rect, &img, radius);
+                return;
+            }
+            // Still resolving (or a transient miss) → skeleton, not a letter.
+            // Only a definitive failure falls through to the monogram.
+            if self.image_store.load_state(url) != Some(LoadState::Failed) {
+                self.draw_skeleton(scene, t, theme, rect, radius);
+                return;
+            }
+        }
         let base = theme.tokens.colors.accent[app.icon_tone.min(10)];
         let sheen = mix(base, Color::WHITE, 0.5);
         draw::icon_tile(scene, tr, t, rect, base, sheen, &app.monogram, Color::WHITE);
+    }
+
+    /// An honest loading placeholder: a muted rounded surface with a lighter
+    /// shimmer bar. Reads as "loading", and resolves to the real image once
+    /// the async fetch/decode lands (the loop keeps polling while
+    /// `image_store` has work). Theme-driven so it tracks light/dark.
+    fn draw_skeleton(&self, scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, radius: f64) {
+        let c = &theme.tokens.colors;
+        draw::fill_round(scene, t, rect, radius, c.surface_white_10);
+        // A centred shimmer band + a shorter one, the canonical skeleton look.
+        let bx0 = rect.x0 + rect.width() * 0.18;
+        let bx1 = rect.x1 - rect.width() * 0.18;
+        let bh = (rect.height() * 0.06).clamp(3.0, 7.0);
+        let cy = rect.center().y;
+        draw::fill_round(scene, t, Rect::new(bx0, cy - bh, bx1, cy - bh * 0.2), bh, c.surface_white_20);
+        draw::fill_round(scene, t, Rect::new(bx0, cy + bh * 0.4, bx1 - rect.width() * 0.14, cy + bh * 1.2), bh, c.surface_white_20);
+        draw::stroke_round(scene, t, rect, radius, c.border_standard, 1.0);
+    }
+
+    /// Draw one detail-page screenshot into `rect`: a real decoded bitmap
+    /// when the fetch has resolved, an honest loading skeleton while it is in
+    /// flight, or the duotone faux-UI thumbnail as the fallback (no URL, or a
+    /// failed fetch) — never a blank grey bar. Paints the caption underneath.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_shot(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        rect: Rect,
+        shot: &crate::model::Shot,
+    ) {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let radius = 12.0;
+        let mut painted = false;
+        if let Some(url) = shot.url.as_deref().filter(|u| !u.is_empty()) {
+            if let Some(img) = self.image_store.get(url) {
+                paint_image_cover(scene, t, rect, &img, radius);
+                draw::stroke_round(scene, t, rect, radius, c.border_standard, 1.0);
+                painted = true;
+            } else if self.image_store.load_state(url) != Some(LoadState::Failed) {
+                self.draw_skeleton(scene, t, theme, rect, radius);
+                painted = true;
+            }
+        }
+        if !painted {
+            // Fallback: the duotone faux-UI thumbnail (still designed, not blank).
+            let tone_a = c.accent[shot.tone_a.min(10)];
+            let tone_b = mix(c.neutral[shot.tone_b.min(10)], c.surfaces.base, 0.2);
+            draw::screenshot_thumb(scene, tr, t, rect, tone_a, tone_b, c.border_standard, "", c.text_dim, ty.xs);
+        }
+        // Caption underneath (kept out of the image so a real bitmap isn't
+        // covered).
+        if !shot.caption.is_empty() {
+            let cap = draw::ellipsize(tr, &shot.caption, ty.xs, rect.width());
+            draw::text(scene, tr, t, &cap, ty.xs, c.text_dim, rect.x0, rect.y1 + 6.0, None);
+        }
     }
 
     /// A pill button; records a hit target. `hovered` is precomputed by
@@ -1805,14 +1994,19 @@ impl SoftwareStore {
         let icon_r = Rect::new(x0, top, x0 + icon_sz, top + icon_sz);
         self.icon(scene, tr, t, theme, icon_r, app);
 
-        let info_x = icon_r.x1 + 20.0;
-        draw::text_w(scene, tr, t, &app.name, ty.x2l, TextWeight::Bold, c.text_primary, info_x, top, None);
-        draw::text(scene, tr, t, &app.developer, ty.base, c.text_dim, info_x, top + 38.0, None);
-        draw::text(scene, tr, t, app.source.label(), ty.xs, c.text_dim, info_x, top + 60.0, None);
-        // Rating.
-        let rw = draw::rating_stars(scene, t, info_x, top + 84.0, app.rating, 8.0, 3.0, c.semantic.warning, c.surface_white_20);
-        draw::text_w(scene, tr, t, &app.rating_label(), ty.sm, TextWeight::Semibold, c.text_primary, info_x + rw + 12.0, top + 78.0, None);
-        draw::text(scene, tr, t, &app.rating_count_label(), ty.xs, c.text_dim, info_x + rw + 12.0, top + 95.0, None);
+        // Title / publisher / source / rating column, on an even vertical
+        // rhythm so the block reads as a clear title → detail hierarchy.
+        let info_x = icon_r.x1 + 22.0;
+        draw::text_w(scene, tr, t, &app.name, ty.x2l, TextWeight::Bold, c.text_primary, info_x, top + 2.0, None);
+        draw::text_w(scene, tr, t, &app.developer, ty.base, TextWeight::Medium, mix(c.text_primary, c.text_dim, 0.35), info_x, top + 40.0, None);
+        draw::text(scene, tr, t, app.source.label(), ty.xs, c.text_dim, info_x, top + 64.0, None);
+        // Rating: stars + one-decimal value + count, all on one baseline.
+        let rating_cy = top + 90.0;
+        let rw = draw::rating_stars(scene, t, info_x, rating_cy, app.rating, 8.0, 3.0, c.semantic.warning, c.surface_white_20);
+        let (rvw, rlh) = draw::measure(tr, &app.rating_label(), ty.sm);
+        draw::text_w(scene, tr, t, &app.rating_label(), ty.sm, TextWeight::Semibold, c.text_primary, info_x + rw + 12.0, rating_cy - rlh / 2.0, None);
+        let count_h = draw::measure(tr, "Ag", ty.xs).1;
+        draw::text(scene, tr, t, &app.rating_count_label(), ty.xs, c.text_dim, info_x + rw + 12.0 + rvw + 10.0, rating_cy - count_h / 2.0, None);
 
         // Primary action (top-right). qOS-native apps get the bespoke
         // "Open directly" / "Add" affordances instead of Install.
@@ -1843,23 +2037,25 @@ impl SoftwareStore {
             draw::text_w(scene, tr, t, &upd, ty.xs, TextWeight::Medium, c.semantic.warning, btn.x1 - uw, meta_y, None);
         }
 
-        let mut y = top + icon_sz + 30.0;
+        let mut y = top + icon_sz + 36.0;
 
         // ---- Screenshot strip ----
+        // Real fetched bitmaps (with an honest loading skeleton until they
+        // resolve); the duotone thumbnail is only a per-shot fallback.
         if !app.shots.is_empty() {
             y = self.section(scene, tr, t, theme, x0, y, "Screenshots");
-            y += 6.0;
-            let n = app.shots.len();
+            y += 10.0;
+            // Cap the tile count per row so wide windows don't stretch a
+            // single shot edge-to-edge; a landscape 16:10-ish tile reads best.
+            let n = app.shots.len().min(3);
             let shot_w = (width - GAP * (n as f64 - 1.0)) / n as f64;
-            let shot_h = (shot_w * 0.62).min(190.0);
-            for (i, sh) in app.shots.iter().enumerate() {
+            let shot_h = (shot_w * 0.60).min(200.0);
+            for (i, sh) in app.shots.iter().take(n).enumerate() {
                 let sx = x0 + i as f64 * (shot_w + GAP);
                 let r = Rect::new(sx, y, sx + shot_w, y + shot_h);
-                let tone_a = c.accent[sh.tone_a.min(10)];
-                let tone_b = mix(c.neutral[sh.tone_b.min(10)], c.surfaces.base, 0.2);
-                draw::screenshot_thumb(scene, tr, t, r, tone_a, tone_b, c.border_standard, &sh.caption, c.text_dim, ty.xs);
+                self.draw_shot(scene, tr, t, theme, r, sh);
             }
-            y += shot_h + 30.0;
+            y += shot_h + 34.0;
         }
 
         // ---- Compatibility notices ----
@@ -2825,6 +3021,10 @@ impl Widget for SoftwareStore {
         // seed. Only present in the live app — never in --shots.
         if !self.probe_merged {
             if let Some(probe) = self.probe.clone() {
+                // Surface the honest "Flatpak unavailable" state when the host
+                // has no flatpak binary — browsing the Flathub catalog still
+                // works, but installing/managing apps does not.
+                self.flatpak_available = probe.flatpak_available;
                 for (id, ver) in &probe.flatpak_versions {
                     if let Some(app) = self.catalog.get(id) {
                         let v = if ver.is_empty() { app.latest_version.clone() } else { ver.clone() };
@@ -2918,7 +3118,7 @@ impl Widget for SoftwareStore {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Expire the toast + any action error (errors linger a bit longer).
         if let Some((_, at)) = &self.toast {
@@ -2990,7 +3190,9 @@ impl Widget for SoftwareStore {
         self.content_height = content_height;
 
         // Header paints over any scrolled-up body content.
-        self.draw_header(scene, tr, t, theme, &mut targets);
+        self.draw_header(scene, tr, t, theme, presence, &mut targets);
+        // Honest "Flatpak unavailable" strip below the header (live-only).
+        self.draw_flatpak_banner(scene, tr, t, theme);
 
         self.draw_scrollbar(scene, t, theme);
 
@@ -3013,7 +3215,7 @@ impl Widget for SoftwareStore {
             self.ensure_ref_dialog();
             self.layout_ref_dialog();
             if let Some(rd) = self.ref_dialog.as_mut() {
-                rd.dialog.draw(scene, t, tr, theme, _presence);
+                rd.dialog.draw(scene, t, tr, theme, presence);
             }
         } else {
             self.ref_dialog = None;
@@ -3049,9 +3251,50 @@ impl Widget for SoftwareStore {
             return;
         }
 
+        // Track the pointer up-front so pill/hit-test maths agree with the
+        // frame the input was last laid out against.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+
+        // Drive the embedded search field (a real `ui::TextInput`): forward
+        // pointer events always (hover / caret placement / drag-select) and
+        // keyboard/IME only while it's focused — but keep Escape/Enter for the
+        // store so its clear / close / open-first-result behaviour stays. We
+        // manage the field's focus ourselves, so a throwaway `focus_target`
+        // absorbs the input's own focus request.
+        let forward = match event {
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => true,
+            WindowEvent::Ime(_) => self.search_input.is_focused(),
+            WindowEvent::KeyboardInput { event: ke, .. } => {
+                self.search_input.is_focused()
+                    && !matches!(
+                        ke.logical_key,
+                        Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter)
+                    )
+            }
+            _ => false,
+        };
+        if forward {
+            let mut sink = None;
+            let node = self.node.unwrap_or(_node_id);
+            self.search_input
+                .handle_event(event, scale_factor, modifiers, state, _path, handled, &mut sink, node, _taffy);
+        }
+        // Fold any edit from the field into the mirror the screens read.
+        if self.pull_search_edit() {
+            *handled = true;
+        }
+        // A keystroke/IME commit the field consumed is not a store shortcut.
+        if forward
+            && *handled
+            && matches!(event, WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_))
+        {
+            return;
+        }
+
         match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            WindowEvent::CursorMoved { .. } => {
                 // Resolve a hover tooltip: the topmost HoverTooltip target
                 // under the cursor wins (qOS affordance explainers).
                 self.tooltip = self
@@ -3079,16 +3322,13 @@ impl Widget for SoftwareStore {
                 if let Some(action) = hit {
                     // Clicking anywhere that isn't the search box unfocuses it.
                     if action != Action::FocusSearch {
-                        self.search_focused = false;
+                        self.set_search_focus(false);
                     }
                     self.apply(action, state);
                     *handled = true;
-                } else {
+                } else if self.search_focused {
                     // Click on empty space dismisses search focus.
-                    if self.search_focused {
-                        self.search_focused = false;
-                        self.dirty = true;
-                    }
+                    self.set_search_focus(false);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -3114,17 +3354,10 @@ impl Widget for SoftwareStore {
                             self.detail = None;
                             self.reset_scroll();
                         } else if !self.search_query.is_empty() {
-                            self.search_query.clear();
-                        } else {
-                            self.search_focused = false;
+                            self.set_search_text("");
+                        } else if self.search_focused {
+                            self.set_search_focus(false);
                         }
-                        self.dirty = true;
-                        *handled = true;
-                    }
-                    Key::Named(NamedKey::Backspace) if self.search_focused => {
-                        self.search_query.pop();
-                        self.search_changed_at = Some(Instant::now());
-                        self.reset_scroll();
                         self.dirty = true;
                         *handled = true;
                     }
@@ -3159,31 +3392,17 @@ impl Widget for SoftwareStore {
                         *handled = true;
                     }
                     Key::Character(s) if ctrl && s.eq_ignore_ascii_case("f") => {
-                        self.search_focused = true;
+                        self.set_search_focus(true);
                         self.tab = Tab::Browse;
                         self.detail = None;
-                        self.dirty = true;
                         *handled = true;
                     }
                     Key::Character(s) => {
-                        // `/` focuses search when not already typing.
+                        // `/` focuses search when the field isn't already active.
                         if !self.search_focused && s.as_str() == "/" {
-                            self.search_focused = true;
+                            self.set_search_focus(true);
                             self.tab = Tab::Browse;
                             self.detail = None;
-                            self.dirty = true;
-                            *handled = true;
-                            return;
-                        }
-                        if self.search_focused && !ctrl {
-                            for ch in s.chars() {
-                                if !ch.is_control() {
-                                    self.search_query.push(ch);
-                                }
-                            }
-                            self.search_changed_at = Some(Instant::now());
-                            self.reset_scroll();
-                            self.dirty = true;
                             *handled = true;
                         }
                     }
@@ -3211,6 +3430,7 @@ impl Widget for SoftwareStore {
             || !self.install_start.is_empty()
             || self.toast.is_some()
             || self.worker.has_inflight()
+            || self.image_store.pending() > 0
             || self.search_pending()
             || self.nav_flap.is_animating(self.nav_layout())
     }
@@ -3228,14 +3448,16 @@ impl Widget for SoftwareStore {
         !self.install_start.is_empty()
             || self.toast.is_some()
             || self.worker.has_inflight()
+            || self.image_store.pending() > 0
             || self.search_pending()
             || self.nav_flap.is_animating(self.nav_layout())
     }
 
     fn needs_idle_sync(&self) -> bool {
         // While the loop is otherwise idle, keep syncing so a debounced
-        // search dispatch + worker drain still run between user input.
-        self.worker.has_inflight() || self.search_pending()
+        // search dispatch + worker drain still run between user input, and so
+        // a resolved icon/screenshot repaints once its async load lands.
+        self.worker.has_inflight() || self.search_pending() || self.image_store.pending() > 0
     }
 
     fn needs_commit(&self) -> bool {

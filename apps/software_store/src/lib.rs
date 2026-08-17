@@ -54,6 +54,7 @@ pub mod doc;
 pub mod draw;
 pub mod flatpak;
 pub mod flatpakref;
+pub mod images;
 pub mod model;
 pub mod probe;
 pub mod worker;
@@ -104,6 +105,10 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
 
     if is_shots {
         store.apply_shot_view_env();
+        // Pre-decode the catalog's icons + screenshots so the single offscreen
+        // frame captures real, resolved images instead of loading skeletons.
+        // No-op on the live shot path (empty catalog).
+        store.prewarm_images(std::time::Duration::from_secs(6));
     }
     Box::new(store)
 }

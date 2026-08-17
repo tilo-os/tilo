@@ -23,3 +23,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
+# Synthesising the offline demo icons/screenshots and re-encoding fetched
+# bitmaps drives the exact same fetch → decode → paint image path as the live
+# Flathub icons/screenshots (no permanent placeholder stand-in).
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
