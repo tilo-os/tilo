@@ -249,6 +249,13 @@ impl AuthenticatorApp {
         self.selected
     }
 
+    /// The text of the toast currently showing, if any. Test observability for
+    /// the honest-error paths (portal failure, QR decode failure).
+    #[cfg(test)]
+    pub(crate) fn toast_message(&self) -> Option<&str> {
+        self.toast.as_ref().map(|(m, _)| m.as_str())
+    }
+
     /// Apply one list interaction. Reorder and delete are document mutations, so
     /// they dispatch a [`TotpAction`](crate::actions::TotpAction) through
     /// [`Self::perform_action`] (the same action the Ctrl+K palette dispatches);
@@ -398,6 +405,13 @@ impl AuthenticatorApp {
     /// `--shots`-only entry point for capturing the tall, scrolling form.
     pub fn seed_open_add_advanced(&mut self) {
         self.add_panel.open_with_advanced();
+    }
+
+    /// Open the Add-account screen with the paste-a-link row disclosed — a
+    /// `--shots`-only entry point that captures the expanded paste field
+    /// sitting cleanly above the reflowed manual details.
+    pub fn seed_open_add_link(&mut self) {
+        self.add_panel.open_with_link();
     }
 
     /// Open the Add-account screen — the surface the "Scan a QR image" import
@@ -1067,6 +1081,24 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// When the host portal is unavailable, the app must SAY so — not silently
+    /// do nothing. A `Failed` outcome on the per-frame drain (the same one a
+    /// portal-missing environment produces) must surface an honest toast.
+    #[test]
+    fn portal_failure_surfaces_an_honest_toast() {
+        use crate::portal::{inject_for_test, PortalOutcome};
+        let (mut app, mut state) = app_with_state();
+        app.add_panel.open();
+        app.portal_rx = Some(inject_for_test(PortalOutcome::Failed("no portal".into())));
+        app.sync(&mut state.doc, &state.root);
+        assert!(app.portal_rx.is_none(), "the portal channel clears after a failure");
+        let msg = app.toast_message().expect("a portal failure surfaces a toast");
+        assert!(
+            msg.contains("file chooser"),
+            "the toast honestly names the failed chooser, got: {msg}"
+        );
+    }
+
     /// A cancelled portal interaction is a no-op: the add panel's fields are
     /// left exactly as they were and the channel clears.
     #[test]
@@ -1238,15 +1270,16 @@ mod tests {
 
     #[test]
     fn every_shots_scenario_renders_a_nonblank_frame() {
-        // The five `--shots` entry points must each produce a real frame, not
+        // Every `--shots` entry point must each produce a real frame, not
         // collapse to nothing. Runs the exact host cycle (sync → build_layout →
         // compute_layout(measure) → apply_layout → draw) and asserts the scene
         // encoded draw commands. No GPU needed — this is pure Vello encoding.
-        let scenarios: [(&str, fn() -> Box<dyn Widget>); 5] = [
+        let scenarios: [(&str, fn() -> Box<dyn Widget>); 6] = [
             ("demo", crate::app_root_demo),
             ("empty", crate::app_root_empty),
             ("add", crate::app_root_add_screen),
             ("add-advanced", crate::app_root_add_advanced_screen),
+            ("add-link", crate::app_root_add_link_screen),
             ("add-picker", crate::app_root_add_picker_screen),
         ];
         for (name, build) in scenarios {

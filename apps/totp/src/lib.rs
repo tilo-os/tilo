@@ -85,6 +85,15 @@ pub fn app_root_add_advanced_screen() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Build the sample-seeded root on the Add-account screen with the
+/// paste-a-link row disclosed — the `--shots` renderer uses it to capture the
+/// expanded paste field reflowing the manual details below it (no overlap).
+pub fn app_root_add_link_screen() -> Box<dyn Widget> {
+    let mut app = AuthenticatorApp::demo();
+    app.seed_open_add_link();
+    Box::new(app)
+}
+
 /// Build the sample-seeded root on the Add-account screen — the entry point
 /// the "Scan a QR image" import flow starts from. At runtime that action hands
 /// off to the **host** file chooser via the XDG Desktop Portal (there is no
