@@ -127,7 +127,7 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 | chat | edit-sent-message | `app.rs:317 editing` → `events.rs:950 insert_str` | MIGRATE → `TextInput` multiline | M |
 | ebook | on-page note composer | `app.rs:587 composing` → `:2845 note.push_str` | MIGRATE → `TextInput` multiline (CRDT `Text`) | M/L |
 | containers | Create-container (5 text fields) | `doc.rs:285 CreateField` → `panels.rs:1742` | MIGRATE → `TextInput::local` ×5 | M |
-| db_client | connect-modal 7 fields (incl. **password**) | `connect_modal.rs:42` → `:224 field_mut().push_str` | MIGRATE → `TextInput::local` + `with_secret` for password | M/L |
+| db_client ✅ | connect-modal 7 fields (incl. **password**) | `connect_modal.rs:42` → `:224 field_mut().push_str` | **DONE** → `TextInput::local` ×7; password is a `with_secret` field (real bullets + kept out of a11y), replacing the hand-rolled `"•".repeat` mask + fake caret | M/L |
 | remote | draft name/host/user/group + search | `app.rs:179`/`model.rs:217` → `:654 push_str` | MIGRATE → `TextInput::local` (port stays numeric-filtered) | M/L |
 | slides | speaker-notes box | `app.rs:351 editing_notes` → `:2503 splice_notes` | MIGRATE → `TextInput` multiline (CRDT `Text`) | M |
 
