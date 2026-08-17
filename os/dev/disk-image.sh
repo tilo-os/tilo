@@ -92,6 +92,11 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
 
+# The image was built in whichever store keeps a layer's bytes, which is not
+# always the default one — look for it in the same place rather than reporting
+# that a freshly built image does not exist. A no-op when build-image.sh already
+# resolved it, since it exports the choice.
+use_build_store
 podman image exists "$IMAGE" || die "$IMAGE is not in rootless podman storage"
 
 # --- sizes -------------------------------------------------------------------

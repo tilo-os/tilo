@@ -361,6 +361,12 @@ enum Error {
     AlreadyInstalled(String),
     #[error("no such package installed: {0}")]
     NotInstalled(String),
+    #[error(
+        "{0} is preinstalled in the system store, which is part of the read-only \
+         image and cannot be changed on a running machine. Install your own build \
+         of it to take it over, or roll the image back."
+    )]
+    Preinstalled(String),
     #[error("registry read: {0}")]
     RegistryRead(String),
     #[error("registry write: {0}")]
@@ -520,14 +526,64 @@ fn bin_root() -> Result<PathBuf, Error> {
     Ok(data_root()?.join("bin"))
 }
 
+/// The **writable** registry: the per-user store, and nothing else.
+///
+/// Everything that changes what is installed loads through here, because
+/// the system store lives in a read-only `/usr` and a write path that
+/// could see it would eventually try to modify it. Read-only commands
+/// use [`load_merged_registry`] instead.
 fn load_registry() -> Result<Registry, Error> {
-    let p = registry_path()?;
+    read_registry_file(&registry_path()?)
+}
+
+/// Parse one `registry.toml`. A path that does not exist is an empty
+/// store, not an error — a machine with no preinstalled set has no
+/// system registry and a fresh user has no user registry. Anything else
+/// that goes wrong *is* an error: reporting "no packages" for a file
+/// that exists and does not parse would hide the breakage behind an
+/// answer that looks like a fact.
+fn read_registry_file(p: &Path) -> Result<Registry, Error> {
     if !p.exists() {
         return Ok(Registry::default());
     }
-    let bytes = fs::read(&p).map_err(|e| Error::RegistryRead(e.to_string()))?;
+    let bytes = fs::read(p).map_err(|e| Error::RegistryRead(e.to_string()))?;
     let text = String::from_utf8(bytes).map_err(|e| Error::RegistryRead(e.to_string()))?;
     toml::from_str(&text).map_err(|e| Error::RegistryRead(e.to_string()))
+}
+
+/// Every package on the machine: the system store at
+/// `/usr/share/qos-apps` and the per-user store merged, user shadowing
+/// system, in the order `pkg::store` defines.
+///
+/// This is what a *reader* has to use. `qos-install list` read the user
+/// store alone, so on an image whose apps are all preinstalled it
+/// printed "(no packages installed)" next to a launcher offering
+/// forty-five of them — the launcher had always merged both. Rows carry
+/// the store they came from so a command that would have to write can
+/// say which half it is looking at instead of claiming the package does
+/// not exist.
+fn load_merged_registry() -> Result<Vec<(pkg::store::Store, RegistryEntry)>, Error> {
+    pkg::store::merge_registries(
+        |p| read_registry_file(p).map(|r| r.entry),
+        |e| e.id.as_str(),
+    )
+}
+
+/// Look one id up across both stores.
+///
+/// The error distinguishes "no such package" from "preinstalled, and
+/// this command would have to write to a read-only store", which is the
+/// difference between a typo and a thing the machine genuinely cannot
+/// do.
+fn find_writable<'a>(
+    rows: &'a mut [(pkg::store::Store, RegistryEntry)],
+    pkg_id: &str,
+) -> Result<&'a mut RegistryEntry, Error> {
+    match rows.iter().position(|(_, e)| e.id == pkg_id) {
+        Some(at) if rows[at].0.is_writable() => Ok(&mut rows[at].1),
+        Some(_) => Err(Error::Preinstalled(pkg_id.to_string())),
+        None => Err(Error::NotInstalled(pkg_id.to_string())),
+    }
 }
 
 fn save_registry(reg: &Registry) -> Result<(), Error> {
@@ -1233,16 +1289,16 @@ fn fetch_from_registries(
 }
 
 fn list() -> Result<(), Error> {
-    let reg = load_registry()?;
-    if reg.entry.is_empty() {
+    let rows = load_merged_registry()?;
+    if rows.is_empty() {
         println!("(no packages installed)");
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
-        "id", "version", "pinned", "attested-by", "runtime", "installed"
+        "{:<32}  {:<8}  {:<7}  {:<6}  {:<18}  {:<18}  {}",
+        "id", "version", "store", "pinned", "attested-by", "runtime", "installed"
     );
-    for e in &reg.entry {
+    for (store, e) in &rows {
         let ago = age(e.installed_at);
         let attested = if e.attested_by.is_empty() {
             "-"
@@ -1264,9 +1320,10 @@ fn list() -> Result<(), Error> {
             }
         };
         println!(
-            "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
+            "{:<32}  {:<8}  {:<7}  {:<6}  {:<18}  {:<18}  {}",
             e.id,
             e.version,
+            store.label(),
             if e.pinned { "yes" } else { "no" },
             attested,
             runtime,
@@ -1298,11 +1355,21 @@ fn runtime_bundle_present(version: &str) -> bool {
 /// the state one is never made silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
     let mut reg = load_registry()?;
-    let idx = reg
-        .entry
-        .iter()
-        .position(|e| e.id == pkg_id)
-        .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
+    let idx = match reg.entry.iter().position(|e| e.id == pkg_id) {
+        Some(idx) => idx,
+        // Not in the writable store. Which of the two things that means
+        // matters to whoever typed it, so say which.
+        None => {
+            let preinstalled = load_merged_registry()?
+                .iter()
+                .any(|(store, e)| e.id == pkg_id && !store.is_writable());
+            return Err(if preinstalled {
+                Error::Preinstalled(pkg_id.into())
+            } else {
+                Error::NotInstalled(pkg_id.into())
+            });
+        }
+    };
 
     let data_home = data_home_root()?;
     let rooms = install::state::find(&data_home, pkg_id);
@@ -1452,15 +1519,18 @@ unsafe extern "C" {
 /// Replay the signature chain for one installed package, or all of
 /// them.
 fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
-    let reg = load_registry()?;
+    // Read-only, so it covers both stores. A preinstalled payload is as
+    // worth re-verifying as an installed one — more so, since nothing on
+    // the machine can replace a damaged one in place.
+    let rows = load_merged_registry()?;
     let targets: Vec<&RegistryEntry> = match pkg_id {
         Some(id) => vec![
-            reg.entry
-                .iter()
-                .find(|e| e.id == id)
+            rows.iter()
+                .find(|(_, e)| e.id == id)
+                .map(|(_, e)| e)
                 .ok_or_else(|| Error::NotInstalled(id.into()))?,
         ],
-        None => reg.entry.iter().collect(),
+        None => rows.iter().map(|(_, e)| e).collect(),
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -1532,13 +1602,17 @@ fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
 /// the store surfaces as "mark installed" — a pinned package is kept
 /// and ranked first, and is exempt from any future size-pressure GC.
 fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
-    let mut reg = load_registry()?;
-    let entry = reg
-        .entry
-        .iter_mut()
-        .find(|e| e.id == pkg_id)
-        .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
-    entry.pinned = pinned;
+    // Pinning writes, so it resolves against the merged view only to
+    // tell "no such package" from "that one is in the read-only store".
+    let mut rows = load_merged_registry()?;
+    find_writable(&mut rows, pkg_id)?.pinned = pinned;
+    let reg = Registry {
+        entry: rows
+            .into_iter()
+            .filter(|(s, _)| s.is_writable())
+            .map(|(_, e)| e)
+            .collect(),
+    };
     save_registry(&reg)?;
     println!("{}: {pkg_id}", if pinned { "pinned" } else { "unpinned" });
     Ok(())
@@ -1552,10 +1626,13 @@ fn run(
     no_landlock: bool,
     trust: TrustFlags,
 ) -> Result<(), Error> {
-    let reg = load_registry()?;
-    let entry = reg
-        .entry
+    // Launching reads. `qos-launcher` has always merged both stores, so
+    // resolving against the user store alone here meant `qos-install run`
+    // refused to start a preinstalled app the launcher could start.
+    let rows = load_merged_registry()?;
+    let entry = rows
         .iter()
+        .map(|(_, e)| e)
         .find(|e| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
 
@@ -1639,14 +1716,14 @@ fn print_path() -> Result<(), Error> {
 }
 
 fn inspect(pkg_id: &str) -> Result<(), Error> {
-    let reg = load_registry()?;
-    let entry = reg
-        .entry
+    let rows = load_merged_registry()?;
+    let (store, entry) = rows
         .iter()
-        .find(|e| e.id == pkg_id)
+        .find(|(_, e)| e.id == pkg_id)
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
     println!("id            : {}", entry.id);
     println!("version       : {}", entry.version);
+    println!("store         : {}", store.label());
     println!("package-id    : qpkg:{}", entry.package_id_hex);
     println!("publisher     : ed25519:{}", entry.publisher_key_hex);
     println!("payload-root  : {}", entry.payload_root.display());

@@ -39,6 +39,7 @@ pub mod id;
 pub mod manifest;
 pub mod pack;
 pub mod signed;
+pub mod store;
 pub mod trust;
 pub mod unpack;
 pub mod validate;

@@ -116,16 +116,35 @@ else
       else leaves every registry row pointing at a directory that is not there."
 fi
 
-# --- 5. the launcher actually reads that store -------------------------------
-reg="$REPO/crates/packaging/launcher/src/registry.rs"
+# --- 5. everything that reads the store agrees on where it is ----------------
+# One constant, in the crate both readers depend on. It used to live in the
+# launcher alone, which is how `qos-install list` came to read only the user
+# store while the launcher read both — the same machine reporting no packages
+# and forty-five of them depending on which binary you asked.
+reg="$REPO/crates/packaging/pkg/src/store.rs"
 if [ ! -r "$reg" ]; then
-  bad "missing $reg"
+  bad "missing $reg — the shared definition of where the app stores are"
 elif grep -q "SYSTEM_DATA_DIR: &str = \"$store\"" "$reg"; then
-  ok "the launcher's system store constant is $store"
+  ok "the shared system-store constant is $store"
 else
   bad "$reg does not point SYSTEM_DATA_DIR at $store — the image would ship a
       store nothing reads."
 fi
+# And that both readers take it from there rather than redeclaring it.
+for reader in crates/packaging/launcher/src/registry.rs crates/packaging/install/src/main.rs; do
+  f="$REPO/$reader"
+  if [ ! -r "$f" ]; then
+    bad "missing $f"
+  elif grep -q 'SYSTEM_DATA_DIR: &str = "' "$f"; then
+    bad "$reader declares its own SYSTEM_DATA_DIR. Two constants drift, and the
+      drift shows up as one reader listing packages the other cannot find."
+  elif grep -q 'pkg::store::' "$f"; then
+    ok "$reader resolves the stores through pkg::store"
+  else
+    bad "$reader does not go through pkg::store, so which stores it reads is
+      not decided in the one place that decides it."
+  fi
+done
 
 # --- 6. the runtime bundle is baked where qos-install looks for it ------------
 # pack-apps.sh installs each package with `qos-install install`, and that refuses

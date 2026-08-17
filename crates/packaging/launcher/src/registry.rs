@@ -27,6 +27,12 @@
 //! your own build of a preinstalled app replaces it rather than
 //! producing a duplicate row in the palette.
 //!
+//! Where those two stores are and in which order they are read is not
+//! decided here — it lives in [`pkg::store`], because `qos-install`
+//! reads the same two stores and the two readers disagreeing about what
+//! is installed is precisely the bug that module exists to prevent. This
+//! file keeps only the row shape the launcher needs.
+//!
 //! Kept intentionally thin — a future `app-host` socket
 //! (`docs/app-host.md`) will replace this file-based lookup.
 //! When it lands, the `run-installed` subcommand should try the
@@ -66,20 +72,10 @@ pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, Registry
 /// reporting "no apps" for a corrupt file would hide the breakage from
 /// whoever is looking at an empty launcher.
 pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
-    let mut out = match system_registry_path() {
-        Some(path) => read_registry(&path)?,
-        None => Vec::new(),
-    };
-    for entry in read_registry(&default_registry_path()?)? {
-        match out.iter().position(|e| e.id == entry.id) {
-            // Same id in both stores: the user's install is the one that
-            // runs. Replacing in place keeps the system store's ordering
-            // stable rather than moving the row to the end of the list.
-            Some(at) => out[at] = entry,
-            None => out.push(entry),
-        }
-    }
-    Ok(out)
+    Ok(pkg::store::merge_registries(read_registry, |e| e.id.as_str())?
+        .into_iter()
+        .map(|(_, entry)| entry)
+        .collect())
 }
 
 /// Parse one `registry.toml`. A path that does not exist yields no
@@ -113,53 +109,23 @@ pub fn default_registry_path() -> Result<PathBuf, RegistryError> {
 /// The image-wide app store. Read-only at runtime: it is populated
 /// during the image build and ships inside the immutable rootfs, so a
 /// first boot already has a registry to list.
-pub const SYSTEM_DATA_DIR: &str = "/usr/share/qos-apps";
+pub use pkg::store::SYSTEM_DATA_DIR;
 
 /// Root of the system store, or `None` when there is no system store to
-/// read.
-///
-/// `QOS_APPS_SYSTEM_DIR` names it explicitly. Otherwise it is
-/// [`SYSTEM_DATA_DIR`] — *unless* `QOS_APPS_DATA_DIR` is set, which
-/// suppresses it entirely.
-///
-/// That last rule is what makes the override usable for its documented
-/// purpose. `QOS_APPS_DATA_DIR` means "the store is here", and a test
-/// that says so and then asserts on how many packages exist has to get
-/// the answer it set up — otherwise the same test passes on a dev box
-/// with no `/usr/share/qos-apps` and fails inside a qOS image, where
-/// every preinstalled package would be counted alongside its fixtures.
-/// Production sets neither variable and reads both stores; a test that
-/// genuinely wants both sets `QOS_APPS_SYSTEM_DIR` too.
-pub fn system_data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("QOS_APPS_SYSTEM_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    if std::env::var_os("QOS_APPS_DATA_DIR").is_some() {
-        return None;
-    }
-    Some(PathBuf::from(SYSTEM_DATA_DIR))
-}
+/// read. See [`pkg::store::system_data_dir`] for the override rules.
+pub use pkg::store::system_data_dir;
 
 /// `registry.toml` of the system store, when there is one. Unlike the
 /// per-user path this needs no `HOME` — it resolves identically for
 /// every user and for a launch with no home at all.
-pub fn system_registry_path() -> Option<PathBuf> {
-    Some(system_data_dir()?.join("registry.toml"))
-}
+pub use pkg::store::system_registry_path;
 
 /// Root install directory. Honours the `QOS_APPS_DATA_DIR`
 /// override so integration tests (and dev-mode runs) can point
 /// the launcher at a temp dir. Falls back to `$XDG_DATA_HOME`
 /// or `$HOME/.local/share/qos-apps`.
 pub fn default_data_dir() -> Result<PathBuf, RegistryError> {
-    if let Some(override_dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
-        return Ok(PathBuf::from(override_dir));
-    }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(xdg).join("qos-apps"));
-    }
-    let home = std::env::var_os("HOME").ok_or(RegistryError::NoHome)?;
-    Ok(Path::new(&home).join(".local/share/qos-apps"))
+    pkg::store::user_data_dir().ok_or(RegistryError::NoHome)
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -116,15 +116,26 @@ struct Env {
     home: tempfile::TempDir,
     sk: SigningKey,
     pub_hex: String,
+    /// What `qos-install` is told the *system* store is. Empty by
+    /// default, and never unset: production reads
+    /// `/usr/share/qos-apps`, so a test that left this alone would see
+    /// the whole preinstalled fleet when run inside a qOS image and
+    /// nothing at all on a dev box — the same assertions passing and
+    /// failing for reasons that have nothing to do with the test.
+    system: PathBuf,
 }
 
 impl Env {
     fn new() -> Self {
         let (sk, pub_hex) = fresh_key();
+        let home = tempfile::tempdir().unwrap();
+        let system = home.path().join("empty-system-store");
+        std::fs::create_dir_all(&system).unwrap();
         Self {
-            home: tempfile::tempdir().unwrap(),
+            home,
             sk,
             pub_hex,
+            system,
         }
     }
 
@@ -142,6 +153,11 @@ impl Env {
 
     fn registry_toml(&self) -> String {
         std::fs::read_to_string(self.qos_apps().join("registry.toml")).unwrap_or_default()
+    }
+
+    /// The read-only store's registry, as it ships in the image.
+    fn system_registry(&self) -> PathBuf {
+        self.system.join("registry.toml")
     }
 
     /// Pack a `.qpkg` at `version` whose entrypoint holds `body`.
@@ -163,7 +179,30 @@ impl Env {
         c.env("XDG_CONFIG_HOME", self.home.path().join("config"));
         c.env("XDG_DATA_HOME", self.xdg_data());
         c.env("HOME", self.home.path());
+        c.env("QOS_APPS_SYSTEM_DIR", &self.system);
         c.args(args);
+        let out = c.output().expect("spawn qos-install");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    }
+
+    /// Install into the *system* store the way the image build does:
+    /// the ordinary installer, with `QOS_APPS_DATA_DIR` pointed at the
+    /// directory that ships read-only inside the image. Deliberately
+    /// the same binary and the same code path — a fixture that hand-wrote
+    /// a registry.toml would prove the reader parses a file this project
+    /// happens to write, not that the two halves agree.
+    fn install_into_system(&self, qpkg: &Path) -> (bool, String, String) {
+        let mut c = Command::new(install_bin());
+        c.env_clear();
+        c.env("PATH", std::env::var("PATH").unwrap_or_default());
+        c.env("XDG_CONFIG_HOME", self.home.path().join("config"));
+        c.env("HOME", self.home.path());
+        c.env("QOS_APPS_DATA_DIR", &self.system);
+        c.args(["install", qpkg.to_str().unwrap()]);
         let out = c.output().expect("spawn qos-install");
         (
             out.status.success(),
@@ -496,4 +535,118 @@ fn info_reports_the_runtime_the_integrity_record_and_the_saved_data() {
     assert!(out.contains("integrity     : recorded"), "{out}");
     assert!(out.contains("saved data    : 2 room(s)"), "{out}");
     assert!(out.contains("personal"), "{out}");
+}
+
+/// A machine whose apps are all preinstalled must not report that it
+/// has none.
+///
+/// This is the shape the qOS image actually ships: forty-five packages
+/// installed into `/usr/share/qos-apps` at build time and nothing in the
+/// user's own store. `qos-launcher` has always merged both stores, so it
+/// listed all forty-five; `qos-install list` read the user store alone
+/// and printed "(no packages installed)" on the same machine. Two
+/// readers of one store disagreeing about what is installed is the bug.
+#[test]
+fn list_reports_the_preinstalled_system_store() {
+    let env = Env::new();
+    let v1 = env.qpkg("1.0.0", b"preinstalled", None);
+    let (ok, out, err) = env.install_into_system(&v1);
+    assert!(ok, "system-store install failed: {out}{err}");
+
+    // Nothing in the user store at all — the fresh-boot case.
+    assert!(
+        !env.qos_apps().join("registry.toml").exists(),
+        "the user store must be untouched for this to be the preinstalled case"
+    );
+
+    let (ok, out, err) = env.cmd(&["list"]);
+    assert!(ok, "list failed: {out}{err}");
+    assert!(
+        out.contains("dev.qos.lifecycle"),
+        "a preinstalled package must be listed: {out}"
+    );
+    assert!(
+        !out.contains("(no packages installed)"),
+        "a machine with a populated system store must not report an empty one: {out}"
+    );
+    assert!(
+        out.contains("system"),
+        "the row has to say which store it came from, because that decides \
+         whether this machine can remove it: {out}"
+    );
+
+    // The same read path decides whether the app can be launched and
+    // inspected, so those have to agree with the listing.
+    let (ok, out, err) = env.cmd(&["info", "dev.qos.lifecycle"]);
+    assert!(ok, "info on a preinstalled package failed: {out}{err}");
+    assert!(out.contains("store         : system"), "{out}");
+}
+
+/// The system store is inside a read-only `/usr`. A command that would
+/// have to write to it must say that, not claim the package is missing.
+#[test]
+fn uninstalling_a_preinstalled_package_says_why_it_cannot() {
+    let env = Env::new();
+    let v1 = env.qpkg("1.0.0", b"preinstalled", None);
+    assert!(env.install_into_system(&v1).0);
+
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle"]);
+    assert!(!ok, "uninstalling from a read-only store must fail: {out}");
+    let said = format!("{out}{err}");
+    assert!(
+        said.contains("preinstalled"),
+        "the failure has to name the reason: {said}"
+    );
+    assert!(
+        !said.contains("no such package installed"),
+        "'not installed' is the wrong answer for a package that is listed: {said}"
+    );
+
+    // And a genuinely absent id still gets the plain answer.
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.nothing-here"]);
+    assert!(!ok);
+    assert!(
+        format!("{out}{err}").contains("no such package installed"),
+        "{out}{err}"
+    );
+}
+
+/// A user's own build of a preinstalled app replaces it in the listing
+/// rather than appearing beside it.
+#[test]
+fn a_user_install_shadows_the_preinstalled_row() {
+    let env = Env::new();
+    let sys = env.qpkg("1.0.0", b"preinstalled", None);
+    assert!(env.install_into_system(&sys).0);
+
+    let mine = env.qpkg("1.1.0", b"my build", None);
+    let (ok, out, err) = env.cmd(&["install", mine.to_str().unwrap()]);
+    assert!(ok, "{out}{err}");
+
+    let (ok, out, _) = env.cmd(&["list"]);
+    assert!(ok);
+    assert_eq!(
+        out.matches("dev.qos.lifecycle").count(),
+        1,
+        "one row per id, not one per store: {out}"
+    );
+    assert!(out.contains("1.1.0"), "the user's version is the one that runs: {out}");
+    assert!(!out.contains("1.0.0"), "the shadowed row must not show: {out}");
+
+    // Shadowed, so it is removable again — and removing it must not
+    // damage the system store's registry.
+    let sys_registry_before =
+        std::fs::read_to_string(env.system_registry()).expect("system registry");
+    let (ok, out, err) = env.cmd(&["uninstall", "dev.qos.lifecycle", "--keep-state"]);
+    assert!(ok, "{out}{err}");
+    assert_eq!(
+        std::fs::read_to_string(env.system_registry()).expect("system registry"),
+        sys_registry_before,
+        "uninstalling the user's copy must not rewrite the read-only store"
+    );
+
+    // With the user's copy gone, the preinstalled one is visible again.
+    let (ok, out, _) = env.cmd(&["list"]);
+    assert!(ok);
+    assert!(out.contains("1.0.0"), "the preinstalled row comes back: {out}");
 }
