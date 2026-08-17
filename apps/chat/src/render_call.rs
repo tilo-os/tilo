@@ -17,7 +17,6 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
 use crate::app::{ChatApp, Hit};
-use crate::emoji;
 use crate::model::{self, Presence, VoiceMember};
 use crate::paint::*;
 use crate::render_chat::draw_avatar;
