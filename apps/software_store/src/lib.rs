@@ -107,8 +107,10 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
         store.apply_shot_view_env();
         // Pre-decode the catalog's icons + screenshots so the single offscreen
         // frame captures real, resolved images instead of loading skeletons.
+        // Returns as soon as the store settles (well under a second for the
+        // synthesised sample); the generous cap only guards a thrashing box.
         // No-op on the live shot path (empty catalog).
-        store.prewarm_images(std::time::Duration::from_secs(6));
+        store.prewarm_images(std::time::Duration::from_secs(20));
     }
     Box::new(store)
 }
