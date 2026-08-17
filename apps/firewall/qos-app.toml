@@ -1,8 +1,13 @@
 # Firewall — qOS application manifest.
 #
-# Double-gated: it only applies a plan when `firewall-cmd` is on PATH
-# AND `QOS_FIREWALL_APPLY=1`. It never touches nft/iptables directly,
-# and it opens no socket of its own — a firewall UI needs no egress.
+# A firewall front-end needs to change firewall rules — a privileged
+# operation no sandboxed app may perform itself. It therefore declares
+# the `firewall-admin` capability (see `[capabilities]`) and applies
+# rules *through the privileged broker*: it computes a plan and sends it
+# over the `privbroker` service socket; the broker validates the
+# declaration, checks the user's consent, and runs `firewall-cmd` on the
+# app's behalf. The app never touches nft/firewall-cmd/iptables directly,
+# and it opens no network socket of its own — a firewall UI needs no egress.
 #
 # Pack and install:
 #
@@ -56,6 +61,19 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 qos-fs = "optional@1"
+# The trusted privileged broker. `optional` so the app still runs on a
+# host without one — it stays in dry-run and applies nothing, which is
+# the honest posture for a sandboxed app with no broker to act for it.
+privbroker = "optional@1"
+
+# Privileged operations this package will ask the broker to perform. A
+# ceiling, not a grant: at runtime the broker refuses any request for a
+# capability not listed here, then refuses again unless the user has
+# consented in the workspace.
+[capabilities]
+[[capabilities.privileged]]
+capability = "firewall-admin"
+reason     = "apply the firewall rules the user edits in this app"
 
 [entrypoint]
 bin             = "bin/firewall"
