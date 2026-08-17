@@ -17,6 +17,7 @@ pub mod draw;
 pub mod expand;
 pub mod highlight;
 pub mod model;
+pub mod search_provider;
 pub mod seed;
 
 pub use app::SnippetsApp;
