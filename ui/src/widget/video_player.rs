@@ -2214,6 +2214,22 @@ impl VideoPlayer {
 
 #[cfg(test)]
 mod tests {
+    // The in-process openh264 encoder/decoder ([`VideoPlayer::feed_frame`], and
+    // the `Encoder`/`Decoder` round-trip in `push_mode_feed_frame_updates_latest_image`)
+    // is a C library whose construction/decode is not safe to run concurrently
+    // with other heap-heavy work: run in parallel it scribbles the shared
+    // allocator, and whichever test is mid-draw at that moment sees corrupted
+    // text-shaping data — the time label measures to a garbage width and the
+    // controls layout collapses (a scrub track / setting icons that should be
+    // laid out come back `Rect::ZERO`). The failing set floats between runs and
+    // hits tests that never build a decoder, the signature of cross-test heap
+    // corruption rather than a logic bug.
+    //
+    // openh264's thread-safety is upstream C we can't fix here, so every test
+    // that touches the codec, builds a `MediaEngine`, or reveals the controls
+    // and draws (i.e. every potential perpetrator *or* victim) shares the
+    // `video_engine` serial group and runs mutually exclusive. Purely logical
+    // tests (state, key handling, MPRIS snapshots, layout style) stay parallel.
     use super::*;
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
@@ -2290,6 +2306,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn engine_mode_sync_pulls_a_frame_and_metadata() {
         let mut engine = media::MediaEngine::new_synthesized();
         engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
@@ -2302,6 +2319,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn space_toggles_play_on_focused_engine_player() {
         let mut engine = media::MediaEngine::new_synthesized();
         engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
@@ -2315,6 +2333,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn arrow_keys_seek_the_engine_playhead() {
         let mut engine = media::MediaEngine::new_synthesized();
         engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
@@ -2373,6 +2392,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn vertical_drag_right_half_raises_volume_left_half_changes_brightness() {
         // The Netflix/Grayjay gesture: a vertical drag on the right half adjusts
         // volume, on the left half brightness — driven through the real
@@ -2431,6 +2451,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn scrub_click_seeks_to_the_track_fraction() {
         let mut engine = media::MediaEngine::new_synthesized();
         engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
@@ -2456,6 +2477,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn clicking_the_video_surface_toggles_play_pause() {
         // A plain click on the surface (not on any control) must toggle
         // play/pause — the basic affordance, exercised through the real
@@ -2484,6 +2506,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn sponsor_marks_emit_bands_on_the_single_timeline() {
         // Marks set via `set_sponsor_marks` must paint onto the one scrub track,
         // proving the SponsorBlock segments render inline on the shared timeline
@@ -2517,6 +2540,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn dragging_the_scrub_track_seeks_continuously() {
         // Press on the track then drag: the playhead must follow the cursor the
         // whole way (drag-to-seek on the ONE timeline), through real events.
@@ -2601,6 +2625,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn external_media_command_pause_reaches_the_player() {
         let mut engine = media::MediaEngine::new_synthesized();
         engine.open(media::Source::Remote { url: "https://x/v.mp4".into() });
@@ -2636,6 +2661,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn mixed_priority_settings_surface_as_icons_and_under_the_gear() {
         let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -2663,6 +2689,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn higher_priority_wins_limited_space_and_overflow_falls_into_the_gear() {
         let mut vp = player_with_media();
         // Narrow bar + many priority settings ⇒ only the top few fit as icons.
@@ -2698,6 +2725,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn resolution_setting_round_trips_through_the_player() {
         let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -2741,6 +2769,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn gear_toggle_setting_flips_and_emits() {
         let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 960.0, 540.0);
@@ -2810,6 +2839,7 @@ mod tests {
     /// Push mode still works: a round-tripped openh264 frame lands in
     /// `latest_frame` without any engine attached.
     #[test]
+    #[serial_test::serial(video_engine)]
     fn push_mode_feed_frame_updates_latest_image() {
         use openh264::encoder::Encoder;
         use openh264::formats::YUVBuffer;
@@ -2829,6 +2859,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn empty_surface_paints_a_placeholder_and_no_image() {
         use vello_encoding::DrawTag;
         let mut vp = VideoPlayer::new();
@@ -2855,6 +2886,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn paint_with_image_uses_image_draw_command() {
         use vello_encoding::DrawTag;
         let mut vp = VideoPlayer::new();
@@ -2875,6 +2907,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn has_media_is_false_until_a_source_or_frame() {
         assert!(!VideoPlayer::new().has_media(), "no engine, no frame ⇒ empty");
         let mut engine = media::MediaEngine::new_synthesized();
@@ -2884,6 +2917,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn empty_player_shows_the_cta_and_no_transport_bar() {
         let mut vp = VideoPlayer::new().with_empty_state(EmptyMedia {
             icon: Some(Icon::Film),
@@ -2913,6 +2947,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn a_press_off_the_cta_does_not_fabricate_playback() {
         // On an empty player a click anywhere but the CTA must do nothing — in
         // particular it must not start "playing" a clip that does not exist.
@@ -2932,6 +2967,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(video_engine)]
     fn transport_bar_appears_once_media_is_loaded() {
         let mut vp = player_with_media();
         vp.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
