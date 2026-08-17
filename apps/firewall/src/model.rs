@@ -108,6 +108,85 @@ impl ZoneKind {
             ZoneKind::Trusted => 8,
         }
     }
+
+    /// The plain-language name the friendly view shows for this zone — the
+    /// "network trust profile" a non-expert picks, hiding the firewalld
+    /// zone vocabulary. The three [`PRIMARY_PROFILES`] read as everyday
+    /// places (Home / Public / Work); the rest keep a readable title so the
+    /// Advanced view stays honest about which firewalld zone it is.
+    pub fn profile_name(self) -> &'static str {
+        match self {
+            ZoneKind::Home => "Home",
+            ZoneKind::Public => "Public",
+            ZoneKind::Work => "Work",
+            ZoneKind::Trusted => "Fully trusted",
+            ZoneKind::Internal => "Internal",
+            ZoneKind::Dmz => "Public-facing (DMZ)",
+            ZoneKind::External => "Shared connection",
+            ZoneKind::Block => "Locked down",
+            ZoneKind::Drop => "Stealth",
+        }
+    }
+
+    /// A single friendly sentence describing what this profile does, in terms
+    /// of the person on the network — not chains, targets, or ICMP verbs.
+    pub fn profile_tagline(self) -> &'static str {
+        match self {
+            ZoneKind::Home => {
+                "Trusted network. Your devices can find each other — sharing and casting work."
+            }
+            ZoneKind::Public => {
+                "Untrusted network like café or airport Wi-Fi. Incoming connections are blocked unless you allow them."
+            }
+            ZoneKind::Work => {
+                "Managed work network. Most local services are reachable; a few things can reach you."
+            }
+            ZoneKind::Trusted => "Everything is allowed in and out. Only for a network you fully control.",
+            ZoneKind::Internal => "A private LAN where the other devices are mostly trusted.",
+            ZoneKind::Dmz => "For a machine exposed to the internet — only what you allow gets in.",
+            ZoneKind::External => "Sharing this machine's connection to others (NAT / router).",
+            ZoneKind::Block => "Everything incoming is refused. Outgoing still works.",
+            ZoneKind::Drop => "Incoming traffic is silently dropped — the machine looks offline.",
+        }
+    }
+}
+
+/// Resolve a [`ZoneKind`] back from the plain-language name
+/// [`ZoneKind::profile_name`] renders. Inverse of that mapping; `None` for an
+/// unrecognised label.
+pub fn zone_from_profile_name(name: &str) -> Option<ZoneKind> {
+    ZoneKind::ALL.iter().copied().find(|z| z.profile_name() == name)
+}
+
+/// The three everyday trust profiles the friendly view leads with. The full
+/// nine firewalld zones stay reachable in the Advanced view; these are the
+/// human front door. Ordered least → most exposed for a stable segmented
+/// control.
+pub const PRIMARY_PROFILES: [ZoneKind; 3] = [ZoneKind::Public, ZoneKind::Work, ZoneKind::Home];
+
+/// The services the friendly "What's allowed in" list offers as plain
+/// Allow/Block switches, in display order. A curated subset of
+/// [`ServiceCatalog`] — the everyday ones a person recognises — each with a
+/// human one-liner. The long tail (and raw port rules) lives in Advanced.
+pub const COMMON_SERVICE_IDS: &[&str] = &[
+    "ssh", "https", "http", "samba", "mdns", "ipp", "wireguard", "nfs", "cockpit",
+];
+
+/// The plain-language "allow this in" label for a common service — an
+/// intent, not a protocol name (e.g. "Remote login (SSH)").
+pub fn service_intent_label(id: &str) -> &'static str {
+    match id {
+        "ssh" => "Remote login (SSH)",
+        "https" => "Secure web server (HTTPS)",
+        "http" => "Web server (HTTP)",
+        "samba" => "File & printer sharing (Samba)",
+        "mdns" => "Local device discovery (mDNS)",
+        "ipp" => "Printer sharing (IPP)",
+        "wireguard" => "Incoming VPN (WireGuard)",
+        "nfs" => "Network file shares (NFS)",
+        "cockpit" => "Web admin console (Cockpit)",
+        _ => "Service",
+    }
 }
 
 /// A zone's default target — what happens to traffic no rule matched.
