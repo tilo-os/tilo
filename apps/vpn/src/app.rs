@@ -102,7 +102,6 @@ impl TransferHistory {
 }
 
 const HEADER_H: f64 = 72.0;
-const FOOTER_H: f64 = 56.0;
 const LIST_W: f64 = 440.0;
 const ROW_H: f64 = 74.0;
 const ROW_GAP: f64 = 8.0;
@@ -680,14 +679,20 @@ impl VpnApp {
     fn layout(&self) -> LayoutRects {
         let r = self.rect;
         let header = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
-        let footer = Rect::new(r.x0, r.y1 - FOOTER_H, r.x1, r.y1);
-        let body = Rect::new(r.x0, header.y1, r.x1, footer.y0);
+        // No bottom chrome strip: the body spans to the window bottom.
+        let body = Rect::new(r.x0, header.y1, r.x1, r.y1);
         let list = Rect::new(body.x0, body.y0, body.x0 + LIST_W, body.y1);
         let detail = Rect::new(list.x1, body.y0, body.x1, body.y1);
 
-        // Header controls (right aligned).
-        let add_btn = Rect::new(header.x1 - 24.0 - 132.0, header.y0 + 18.0, header.x1 - 24.0, header.y0 + 18.0 + 36.0);
-        let tor_pill = Rect::new(add_btn.x0 - 12.0 - 150.0, header.y0 + 18.0, add_btn.x0 - 12.0, header.y0 + 18.0 + 36.0);
+        // Header controls (right aligned), laid out right → left:
+        // [ Import .conf ][ Import .ovpn ][ Tor pill ][ + Add tunnel ].
+        let by0 = header.y0 + 18.0;
+        let by1 = by0 + 36.0;
+        let add_btn = Rect::new(header.x1 - 24.0 - 132.0, by0, header.x1 - 24.0, by1);
+        let tor_pill = Rect::new(add_btn.x0 - 12.0 - 150.0, by0, add_btn.x0 - 12.0, by1);
+        // Compact import buttons, to the left of the Tor pill.
+        let imp_ovpn = Rect::new(tor_pill.x0 - 10.0 - 106.0, by0, tor_pill.x0 - 10.0, by1);
+        let imp_conf = Rect::new(imp_ovpn.x0 - 8.0 - 106.0, by0, imp_ovpn.x0 - 8.0, by1);
 
         // Rows.
         let mut rows = Vec::new();
@@ -717,13 +722,6 @@ impl VpnApp {
         // recomputed here for hit-testing.
         let tor_row = kv_tor_rect(content);
 
-        // Footer buttons.
-        let fy0 = footer.y0 + 10.0;
-        let fy1 = footer.y1 - 10.0;
-        let add_conn = Rect::new(footer.x0 + 20.0, fy0, footer.x0 + 20.0 + 150.0, fy1);
-        let imp_conf = Rect::new(add_conn.x1 + 10.0, fy0, add_conn.x1 + 10.0 + 130.0, fy1);
-        let imp_ovpn = Rect::new(imp_conf.x1 + 10.0, fy0, imp_conf.x1 + 10.0 + 130.0, fy1);
-
         // Modal card (centered).
         let modal_card = {
             let w = 480.0;
@@ -735,7 +733,6 @@ impl VpnApp {
 
         LayoutRects {
             header,
-            footer,
             list,
             detail,
             add_btn,
@@ -745,7 +742,6 @@ impl VpnApp {
             tabs,
             content,
             tor_row,
-            add_conn,
             imp_conf,
             imp_ovpn,
             modal_card,
@@ -755,7 +751,6 @@ impl VpnApp {
 
 struct LayoutRects {
     header: Rect,
-    footer: Rect,
     list: Rect,
     detail: Rect,
     add_btn: Rect,
@@ -765,7 +760,6 @@ struct LayoutRects {
     tabs: Vec<(DetailTab, Rect)>,
     content: Rect,
     tor_row: Rect,
-    add_conn: Rect,
     imp_conf: Rect,
     imp_ovpn: Rect,
     modal_card: Rect,
@@ -883,18 +877,18 @@ impl VpnApp {
             None,
             &Line::new(Point::new(h.x0, h.y1), Point::new(h.x1, h.y1)),
         );
-        // Shield glyph mark.
-        let mark = Rect::new(h.x0 + 24.0, h.y0 + 20.0, h.x0 + 24.0 + 32.0, h.y0 + 20.0 + 32.0);
-        fill_round(scene, t, mark, 9.0, theme.tokens.colors.accent[5]);
-        text_center(tr, scene, t, "V", 18.0, Color::WHITE, mark, TextWeight::Bold);
-
-        text_w(tr, scene, t, "VPN", 20.0, theme.text_primary, h.x0 + 68.0, h.y0 + 14.0, TextWeight::Bold);
+        // Primary left label: the contextual saved/active tally. The compositor
+        // owns window chrome, so the app draws no wordmark or brand mark here.
         let sub = format!(
             "{} saved · {} active",
             self.vault.connections.len(),
             self.vault.active_count()
         );
-        text_w(tr, scene, t, &sub, 12.0, theme.text_dim, h.x0 + 68.0, h.y0 + 40.0, TextWeight::Regular);
+        text_vc(tr, scene, t, &sub, 14.0, theme.text_primary, h.x0 + 24.0, h.y0, h.height(), TextWeight::Semibold);
+
+        // Compact import buttons.
+        self.draw_secondary_button(scene, tr, t, theme, lay.imp_conf, "Import .conf");
+        self.draw_secondary_button(scene, tr, t, theme, lay.imp_ovpn, "Import .ovpn");
 
         // Tor global pill.
         self.draw_pill_toggle(scene, tr, t, theme, lay.tor_pill, "Tor", self.vault.tor_global);
@@ -904,6 +898,15 @@ impl VpnApp {
         let bg = if hov { theme.tokens.colors.accent[4] } else { theme.tokens.colors.accent[5] };
         fill_round(scene, t, lay.add_btn, theme.tokens.radii.md as f64, bg);
         text_center(tr, scene, t, "+ Add tunnel", 13.0, Color::WHITE, lay.add_btn, TextWeight::Semibold);
+    }
+
+    /// A compact bordered secondary button (used by the header import actions).
+    fn draw_secondary_button(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, r: Rect, label: &str) {
+        let hov = point_in(r, self.last_mouse);
+        let bg = if hov { theme.tokens.colors.surface_white_10 } else { theme.tokens.colors.surfaces.base };
+        fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
+        stroke_round(scene, t, r, theme.tokens.radii.md as f64, theme.tokens.colors.border_standard, 1.0);
+        text_center(tr, scene, t, label, 12.0, theme.text_primary, r, TextWeight::Medium);
     }
 
     fn draw_pill_toggle(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, r: Rect, label: &str, on: bool) {
@@ -1008,8 +1011,8 @@ impl VpnApp {
         let Some(c) = self.vault.selected_conn() else {
             // Composed zero-state centered in the detail pane. Distinguishes
             // "no tunnels yet" (a real onboarding prompt) from the transient
-            // "nothing selected" case. The two Add affordances already live in
-            // the header and footer, so this stays a non-interactive prompt.
+            // "nothing selected" case. The add + import affordances already live
+            // in the header, so this stays a non-interactive prompt.
             let (title, message): (&str, &str) = if self.vault.connections.is_empty() {
                 ("No VPN connections", "Add a tunnel or import a .conf / .ovpn file to connect.")
             } else {
@@ -1212,32 +1215,6 @@ impl VpnApp {
                 break;
             }
         }
-    }
-
-    fn draw_footer(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
-        let f = lay.footer;
-        fill_round(scene, t, f, 0.0, theme.tokens.colors.surfaces.raised);
-        scene.stroke(
-            &Stroke::new(1.0),
-            t,
-            theme.tokens.colors.border_white_10,
-            None,
-            &Line::new(Point::new(f.x0, f.y0), Point::new(f.x1, f.y0)),
-        );
-        for (r, label) in [
-            (lay.add_conn, "+ Add connection"),
-            (lay.imp_conf, "Import .conf"),
-            (lay.imp_ovpn, "Import .ovpn"),
-        ] {
-            let hov = point_in(r, self.last_mouse);
-            let bg = if hov { theme.tokens.colors.surface_white_10 } else { theme.tokens.colors.surfaces.base };
-            fill_round(scene, t, r, theme.tokens.radii.md as f64, bg);
-            stroke_round(scene, t, r, theme.tokens.radii.md as f64, theme.tokens.colors.border_standard, 1.0);
-            text_center(tr, scene, t, label, 12.0, theme.text_primary, r, TextWeight::Medium);
-        }
-        let tip = "↑/↓ select · Enter connect · a add · i import · t Tor · 1/2/3 tabs";
-        let (w, _) = tr.measure_weighted(tip, 11.0, None, TextWeight::Regular);
-        text_vc(tr, scene, t, tip, 11.0, theme.text_dim, f.x1 - 20.0 - w as f64, f.y0, f.height(), TextWeight::Regular);
     }
 
     /// Draw the hand-rolled Add form modal (scrim + card + fields). The Confirm
@@ -1582,7 +1559,6 @@ impl Widget for VpnApp {
         self.draw_list(scene, text_renderer, transform, theme, &lay);
         self.draw_detail(scene, text_renderer, transform, theme, &lay);
         self.draw_header(scene, text_renderer, transform, theme, &lay);
-        self.draw_footer(scene, text_renderer, transform, theme, &lay);
         // The Add form keeps its hand-rolled overlay (multi-field form); the
         // destructive/action Confirm routes through the shared ModalDialog.
         match self.modal {
@@ -1650,11 +1626,6 @@ impl Widget for VpnApp {
                 }
                 if point_in(lay.tor_pill, p) {
                     self.request_tor_global();
-                    return;
-                }
-                // Footer.
-                if point_in(lay.add_conn, p) {
-                    self.open_add(ConnKind::WireGuard);
                     return;
                 }
                 if point_in(lay.imp_conf, p) {
