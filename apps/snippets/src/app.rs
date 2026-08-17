@@ -106,7 +106,6 @@ enum Action {
     Duplicate,
     Delete,
     ClearSearch,
-    FilterTag(String),
     PushBack,
 }
 
@@ -559,13 +558,6 @@ impl SnippetsApp {
             Action::ClearSearch => {
                 self.search.set_text("");
                 self.list_scroll = 0.0;
-                self.recompute_visible();
-            }
-            Action::FilterTag(tag) => {
-                self.search.set_text(&format!("tag:{tag}"));
-                self.selection = Selection::Smart(SmartFolder::All);
-                self.list_scroll = 0.0;
-                self.focus = Focus::None;
                 self.recompute_visible();
             }
             Action::PushBack => {
@@ -1292,13 +1284,9 @@ impl SnippetsApp {
     fn draw_list_empty(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
         let library_empty = self.library.snippets.is_empty();
         let (title, msg, cta) = if library_empty {
-            (
-                "No snippets yet",
-                "Save a command, query, or block of code once — then reuse it anywhere.",
-                Some("New snippet"),
-            )
+            ("No snippets yet", "Save code you reuse once, then find it fast.", Some("New snippet"))
         } else {
-            ("No matches", "Try a different search, or clear the filter.", Some("Clear search"))
+            ("No matches", "Try a different search.", Some("Clear search"))
         };
         let cta_rect = EmptyState::paint(scene, t, tr, theme, area, Some(Icon::Code), title, Some(msg), cta, self.last_mouse);
         if let Some(rect) = cta_rect {
@@ -1329,17 +1317,24 @@ impl SnippetsApp {
             Icon::Star.draw_filled(scene, t, star, c.semantic.warning);
         }
 
-        let first_line = s.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-        let preview = clip(first_line, 44);
-        draw::mono(scene, tr, t, &preview, tx, row.y0 + 30.0, 12.0, c.text_dim, TextWeight::Regular);
-
         let hint = if s.has_placeholders() {
-            format!("{} vars", s.placeholders().len())
+            let n = s.placeholders().len();
+            if n == 1 { "1 var".to_string() } else { format!("{n} vars") }
         } else if s.uses > 0 {
             format!("{}×", s.uses)
         } else {
             String::new()
         };
+        let hint_w = if hint.is_empty() { 0.0 } else { tr.measure(&hint, 11.0, None).0 as f64 + 14.0 };
+
+        // Preview: the first non-blank body line, clipped to the space left of
+        // the trailing hint so the two never overlap.
+        let first_line = s.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let avail = (row.x1 - pad - hint_w) - tx;
+        let max_chars = (avail / draw::mono_width(tr, "m", 12.0)).max(4.0) as usize;
+        let preview = clip(first_line, max_chars);
+        draw::mono(scene, tr, t, &preview, tx, row.y0 + 30.0, 12.0, c.text_dim, TextWeight::Regular);
+
         if !hint.is_empty() {
             let hw = tr.measure(&hint, 11.0, None).0 as f64;
             draw::text(scene, tr, t, &hint, row.x1 - pad - hw, row.y0 + 32.0, 11.0, c.text_dim, TextWeight::Medium);
@@ -1403,7 +1398,7 @@ impl SnippetsApp {
         // Star toggle.
         let star_rect = Rect::new(bx, y, bx + 34.0, y + 32.0);
         let star_face = ButtonFace::new(star_rect, "")
-            .icon(if s.favorite { Icon::Star } else { Icon::Star })
+            .icon(Icon::Star)
             .radius(theme.radii_md())
             .hovered(star_rect.contains(self.last_mouse))
             .accessible_name(if s.favorite { "Unstar" } else { "Star" })
@@ -1474,7 +1469,7 @@ impl SnippetsApp {
             let col = i % 2;
             let cx = area.x0 + col as f64 * (col_w + col_gap);
             let label = format!("${{{name}}}");
-            let lw = tr.measure(&label, 12.0, None).0 as f64;
+            let lw = draw::mono_width(tr, &label, 12.0);
             draw::mono(scene, tr, t, &label, cx, y + 8.0, 12.0, c.semantic.warning, TextWeight::Semibold);
             let fr = Rect::new(cx + lw + 8.0, y, cx + col_w, y + 30.0);
             field.apply_layout_external(fr);
