@@ -11,11 +11,16 @@
 use crate::command::{new_sink, CommandSink, FileCommand};
 use crate::model::{initial_path, read_dir_sync, sort_entries, Entry, SortBy, SortOrder, ViewMode};
 use crate::places_sidebar::{self, FavStore, PlacesSidebar};
+use crate::views::file_view::ThumbCtx;
 use crate::{config, favorites, fileops, templates};
-use std::cell::Cell;
-use std::path::PathBuf;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use thumbnail::{ThumbKey, ThumbnailService};
+use vello::peniko::ImageData as PenikoImage;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
     Column, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput, Widget,
@@ -52,6 +57,20 @@ fn ensure_text_obj(
     state
         .put_object(root, key, ObjType::Text)
         .expect("put_object Text never fails")
+}
+
+/// Build the file manager's thumbnail service. The content-addressed cache
+/// lives under the app's persistence dir (a tempdir in tests, so they stay
+/// isolated) so previews survive across launches; it falls back to a temp dir
+/// when there is no persistence dir.
+fn build_thumb_service(config_dir: Option<&Path>) -> ThumbnailService {
+    let dir = config_dir
+        .map(|d| d.join("thumbnails"))
+        .unwrap_or_else(|| std::env::temp_dir().join("qos-file-explorer-thumbnails"));
+    ThumbnailService::open(&dir, 4).unwrap_or_else(|_| {
+        let fallback = std::env::temp_dir().join("qos-file-explorer-thumbnails");
+        ThumbnailService::open(&fallback, 4).expect("a temp thumbnail cache dir is creatable")
+    })
 }
 
 pub struct FileExplorerWidget {
@@ -184,6 +203,14 @@ pub struct FileExplorerWidget {
     /// rebuild the composition — would snap the list back to the top. Reset to
     /// `(0, 0)` whenever the directory changes (a new folder starts at top).
     scroll_offset: Rc<Cell<(f32, f32)>>,
+    /// The shared, off-thread thumbnail service (content-addressed cache +
+    /// worker pool). Cloned into each rebuilt file view so a folder of images /
+    /// PDFs / ebooks shows real previews (and workspace files show the host's
+    /// gossiped preview) without janking on the UI thread.
+    thumbs: Arc<ThumbnailService>,
+    /// App-lived memo turning a decoded thumbnail into a `peniko` image once, so
+    /// a scrolling grid never rebuilds the GPU blob per frame.
+    thumb_imgs: Rc<RefCell<HashMap<ThumbKey, PenikoImage>>>,
 }
 
 impl Default for FileExplorerWidget {
@@ -233,6 +260,7 @@ impl FileExplorerWidget {
         }
         sort_entries(SortBy::Name, SortOrder::Ascending, &mut entries);
         let cmds = new_sink();
+        let thumbs = Arc::new(build_thumb_service(config_dir.as_deref()));
         Self {
             current_path: cwd,
             home_path: home,
@@ -297,7 +325,18 @@ impl FileExplorerWidget {
             drag_hover: None,
             drop_targets: Rc::new(std::cell::RefCell::new(Vec::new())),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
+            thumbs,
+            thumb_imgs: Rc::new(RefCell::new(HashMap::new())),
         }
+    }
+
+    /// The thumbnail context (service + peniko memo) handed to each rebuilt file
+    /// view.
+    fn thumb_ctx(&self) -> Option<ThumbCtx> {
+        Some(ThumbCtx {
+            service: self.thumbs.clone(),
+            imgs: self.thumb_imgs.clone(),
+        })
     }
 
     /// The current zoom scale multiplier (icon/row size).
@@ -317,6 +356,15 @@ impl FileExplorerWidget {
     /// listing as-is.)
     pub fn displayed_entries(&self) -> Vec<Entry> {
         self.entries.clone()
+    }
+
+    /// Block until every in-flight thumbnail generation has settled (or the
+    /// timeout elapses). Requests are enqueued during `draw`, so a caller draws
+    /// once, calls this, then draws the frame it keeps — used by the `--shots`
+    /// pre-warm so a headless grid captures the real previews, never the
+    /// placeholders. Never call on a live UI thread.
+    pub fn prewarm_thumbnails(&self, timeout: std::time::Duration) {
+        self.thumbs.block_until_idle(timeout);
     }
 
     /// Wrap `child` in a full-width chrome band with a consistent horizontal
@@ -379,6 +427,7 @@ impl FileExplorerWidget {
                 self.rename_rect.clone(),
                 self.last_cursor,
                 self.drop_targets.clone(),
+                self.thumb_ctx(),
             ),
             ViewMode::Grid => crate::views::grid_view::build_grid(
                 &displayed,
@@ -389,6 +438,7 @@ impl FileExplorerWidget {
                 self.rename_rect.clone(),
                 self.last_cursor,
                 self.drop_targets.clone(),
+                self.thumb_ctx(),
             ),
         };
         let sp = &theme.tokens.spacing;
