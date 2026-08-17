@@ -72,7 +72,7 @@ impl ActionKind {
 // ---- layout constants (logical px) ---------------------------------
 const PAD: f64 = 18.0;
 const TOPBAR_H: f64 = 60.0;
-const LIST_W: f64 = 320.0;
+const LIST_W: f64 = 280.0;
 /// Height of the "DRIVES" section header sitting above the drive rows.
 const LIST_HEADER_H: f64 = 30.0;
 const CARD_H: f64 = 96.0;
@@ -86,9 +86,13 @@ const TAB_H: f64 = 40.0;
 
 /// Below this allocated width (logical px) the drive list stops fitting
 /// beside a readable detail pane, so it collapses from a docked column into
-/// an overlay flap summoned by the hamburger. Matches the shared toolkit's
-/// `DEFAULT_BREAKPOINT`.
-const BREAKPOINT: f64 = 900.0;
+/// an overlay drawer summoned by the always-visible "Drives" toggle. Chosen
+/// so the toolkit's default 800×600 window still **docks** the drive
+/// switcher (the sidebar is present, not hidden behind a toggle) while a
+/// genuinely narrow tile — a half-screen split — falls back to the overlay
+/// drawer. Above this the switcher is a permanent column; below it the
+/// labeled toggle keeps it one click away.
+const BREAKPOINT: f64 = 760.0;
 /// The full slide width of the overlay drive list (its column plus the
 /// padding gutters either side), so the eased slide and scrim line up.
 const SIDEBAR_W: f64 = PAD + LIST_W + PAD;
@@ -458,7 +462,9 @@ impl DisksApp {
                 let panel_x0 = v.x0 - SIDEBAR_W * (1.0 - slide);
                 let sidebar = Rect::new(panel_x0, v.y0, panel_x0 + SIDEBAR_W, v.y1);
                 let scrim = if self.flap.reveal() > 0.001 { v } else { Rect::ZERO };
-                let ham = Rect::new(PAD, (TOPBAR_H - 30.0) / 2.0, PAD + 38.0, (TOPBAR_H + 30.0) / 2.0);
+                // A labeled toggle (icon + "Drives"), not a bare glyph, so the
+                // drive switcher is unmistakable when the list is collapsed.
+                let ham = Rect::new(PAD, (TOPBAR_H - 34.0) / 2.0, PAD + 108.0, (TOPBAR_H + 34.0) / 2.0);
                 (sidebar, scrim, Some(ham), panel_x0 + PAD, v.x0 + PAD)
             }
         };
@@ -489,10 +495,12 @@ impl DisksApp {
         let btn_y = action_bar.y0 + 34.0;
         let mut bx = action_bar.x0 + 14.0;
         for a in ActionKind::bar() {
-            let w = (a.label().len() as f64) * 8.0 + 30.0;
+            // Compact metrics so all five actions seat on one row even when the
+            // detail pane is narrow (the docked layout at the 800px default).
+            let w = (a.label().len() as f64) * 7.2 + 24.0;
             let enabled = drive_ref.map(|d| self.action_enabled(d, a)).unwrap_or(false);
             action_buttons.push((Rect::new(bx, btn_y, bx + w, btn_y + btn_h), a, enabled));
-            bx += w + 10.0;
+            bx += w + 8.0;
         }
 
         // Tab bar.
@@ -651,23 +659,36 @@ impl DisksApp {
             &Line::new(Point::new(bar.x0, bar.y1), Point::new(bar.x1, bar.y1)),
         );
 
-        // Hamburger toggle (narrow window only): summons the drive-list flap.
-        // It nudges the title rightward so the two never collide.
+        // Drive-switcher toggle (overlay / narrow only): a *labeled* affordance
+        // — hamburger icon + "Drives" — so the collapsed switcher is obvious,
+        // never a bare glyph the user has to guess at. Docked wide, the list is
+        // a permanent column and needs no toggle.
         let title_x = if let Some(hb) = lay.hamburger {
+            let open = self.list_open();
             let hov = self.hover_menu;
-            Self::fill_rr(scene, t, hb, 8.0, if hov { c.neutral[3] } else { c.neutral[2] });
-            Self::stroke_rr(scene, t, hb, 8.0, c.border_standard, 1.0);
-            let lx = hb.x0 + 11.0;
+            let (bg, fg, border) = if open {
+                (with_alpha(theme.accent_primary, 46), theme.accent_primary, theme.accent_primary)
+            } else if hov {
+                (c.neutral[3], c.text_primary, c.border_standard)
+            } else {
+                (c.neutral[2], c.text_primary, c.border_standard)
+            };
+            Self::fill_rr(scene, t, hb, 9.0, bg);
+            Self::stroke_rr(scene, t, hb, 9.0, border, 1.0);
+            // Icon: three short bars, vertically centred in the pill.
+            let lx = hb.x0 + 13.0;
+            let mid = hb.y0 + hb.height() / 2.0;
             for i in 0..3 {
-                let ly = hb.y0 + 10.0 + i as f64 * 5.0;
+                let ly = mid - 5.0 + i as f64 * 5.0;
                 scene.stroke(
                     &Stroke::new(2.0),
                     t,
-                    c.text_primary,
+                    fg,
                     None,
-                    &Line::new(Point::new(lx, ly), Point::new(hb.x1 - 11.0, ly)),
+                    &Line::new(Point::new(lx, ly), Point::new(lx + 15.0, ly)),
                 );
             }
+            self.txt(scene, tr, "Drives", 13.5, fg, lx + 25.0, mid - 8.5, None, TextWeight::Semibold);
             hb.x1 + 12.0
         } else {
             PAD
@@ -680,7 +701,10 @@ impl DisksApp {
             fmt_size(self.topo.total_size()),
             fmt_size(self.topo.total_used()),
         );
-        self.txt(scene, tr, &summary, 14.0, c.text_primary, title_x, 18.0, None, TextWeight::Medium);
+        // Keep the summary from colliding with the Rescan button on a narrow
+        // window — clip it to the gap between the toggle and Rescan.
+        let summary_max = ((lay.refresh.x0 - 12.0) - title_x).max(0.0) as f32;
+        self.txt(scene, tr, &summary, 14.0, c.text_primary, title_x, 18.0, Some(summary_max), TextWeight::Medium);
 
         // Refresh button.
         let r = lay.refresh;
@@ -701,6 +725,13 @@ impl DisksApp {
         // Rows, clipped to the scrolling body so a long list can't spill over
         // the header or the window edge.
         scene.push_layer(Fill::NonZero, ui::vello::peniko::BlendMode::default(), 1.0, t, &lay.list_body);
+        // Empty list — say so plainly rather than leaving a blank column, so a
+        // collapsed switcher that opens to nothing still reads as intentional.
+        if self.topo.drives.is_empty() {
+            let bx = lay.list_body.x0 + 2.0;
+            self.txt(scene, tr, "No drives detected", 13.0, c.text_dim, bx, lay.list_body.y0 + 8.0, Some((LIST_W - 4.0) as f32), TextWeight::Medium);
+            self.txt(scene, tr, "Rescan to look again.", 11.5, with_alpha(c.text_dim, 170), bx, lay.list_body.y0 + 30.0, Some((LIST_W - 4.0) as f32), TextWeight::Regular);
+        }
         for (i, drive) in self.topo.drives.iter().enumerate() {
             let Some(&r) = lay.cards.get(i) else { continue };
             if r.y1 < lay.list_body.y0 || r.y0 > lay.list_body.y1 {
@@ -1363,14 +1394,22 @@ impl DisksApp {
             Self::stroke_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 110), 1.2);
         }
 
-        self.txt_center(scene, tr, "No storage devices found", 17.0, c.text_primary, cx, card.y0 + 96.0, TextWeight::Bold);
-        let line = if std::env::var("DISKS_LIVE").is_ok() {
-            "The system reported no block devices. Attach a drive, then Rescan."
+        self.txt_center(scene, tr, "No drives detected", 17.0, c.text_primary, cx, card.y0 + 94.0, TextWeight::Bold);
+        // Be honest about the two real reasons the live probe comes back empty
+        // on qOS — nothing is attached, or this workspace has not been granted
+        // storage access — and never invent devices to fill the space.
+        let (l1, l2) = if std::env::var("DISKS_LIVE").is_ok() {
+            (
+                "No block devices were reported for this workspace.",
+                "Grant it storage access, or attach a drive, then Rescan.",
+            )
         } else {
-            "No devices to display."
+            ("No devices to display.", "")
         };
-        self.txt_center(scene, tr, line, 12.5, c.text_dim, cx, card.y0 + 124.0, TextWeight::Regular);
-        self.txt_center(scene, tr, "Reflecting the live system — nothing is invented here.", 11.5, with_alpha(c.text_dim, 180), cx, card.y0 + 144.0, TextWeight::Regular);
+        self.txt_center(scene, tr, l1, 12.5, c.text_dim, cx, card.y0 + 122.0, TextWeight::Regular);
+        if !l2.is_empty() {
+            self.txt_center(scene, tr, l2, 12.5, with_alpha(c.text_dim, 210), cx, card.y0 + 142.0, TextWeight::Regular);
+        }
 
         // Rescan — re-runs the live probe (same path as the top-bar button).
         let hov = btn.contains(self.last_mouse);
@@ -2784,5 +2823,107 @@ mod tests {
         let lpt = center(h.lay().list_body);
         h.wheel(lpt, -3.0);
         assert!(h.app.list_scroll > 0.0, "wheel scrolls the drive list");
+    }
+
+    // ================================================================
+    // Drive-switcher discoverability — the reported "there is no
+    // sidebar / I can't switch drives" regression. The live app opens at
+    // the toolkit's 800×600 default, which must DOCK the switcher; a
+    // genuinely narrow tile must fall back to a labeled toggle, never a
+    // blank sidebar-less screen.
+    // ================================================================
+
+    #[test]
+    fn default_window_width_docks_the_drive_switcher() {
+        // The exact regression: the live window opens at 800×600. That width
+        // must dock the drive list as a permanent, visible column — not hide it
+        // behind a toggle the user can't find.
+        let app = at_width(800.0);
+        assert_eq!(app.split_layout(), SplitLayout::Docked, "the default width docks the switcher");
+        assert!(app.list_open(), "the docked switcher is visible by default");
+        let lay = app.compute_layout();
+        assert!(lay.hamburger.is_none(), "a docked switcher needs no toggle");
+        assert_eq!(lay.cards.len(), 4, "every drive has a pickable row");
+        // The detail is inset past the docked column, i.e. both are on screen.
+        assert!(lay.header.x0 >= PAD + LIST_W, "detail sits beside the docked list, got x0={}", lay.header.x0);
+    }
+
+    #[test]
+    fn docked_action_row_fits_within_the_detail_at_the_narrowest_dock() {
+        // Docking the switcher at the default width narrows the detail pane; the
+        // five action buttons must still seat inside it on one row (no overflow
+        // off the right edge). Prove it at the tightest docked width.
+        let app = at_width(BREAKPOINT);
+        assert_eq!(app.split_layout(), SplitLayout::Docked);
+        let lay = app.compute_layout();
+        assert_eq!(lay.action_buttons.len(), 5);
+        for (r, a, _) in &lay.action_buttons {
+            assert!(
+                r.x1 <= lay.action_bar.x1 + 0.5,
+                "action button {:?} (x1={}) overflows the detail band (x1={})",
+                a, r.x1, lay.action_bar.x1
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_tile_shows_a_labeled_drive_toggle_not_a_bare_glyph() {
+        // Below the dock breakpoint the switcher collapses, but the toggle that
+        // summons it must be an obvious, labeled affordance — wide enough to
+        // carry the "Drives" label — so it is never mistaken for chrome.
+        let app = at_width(640.0);
+        assert_eq!(app.split_layout(), SplitLayout::Overlay);
+        let lay = app.compute_layout();
+        let hb = lay.hamburger.expect("a collapsed switcher shows a toggle");
+        assert!(hb.width() >= 90.0, "the toggle is labeled, not a bare icon: width={}", hb.width());
+    }
+
+    #[test]
+    fn narrow_toggle_reveals_the_switcher_then_selecting_repoints_the_detail() {
+        // The whole recovery path a stranded user needs: on a narrow tile the
+        // toggle opens the switcher, and picking a drive repoints the detail and
+        // dismisses the drawer (single-pane feel).
+        let mut h = Harness::new(640.0, 800.0);
+        assert!(!h.app.list_open(), "the switcher starts collapsed on a narrow tile");
+        let hb = h.lay().hamburger.expect("toggle present");
+        assert!(h.click(center(hb)), "the toggle is clickable");
+        assert!(h.app.list_open(), "clicking the toggle reveals the switcher");
+
+        // Settle the eased drawer fully open so the row is on-screen, then pick it.
+        h.app.snap_sidebar(true);
+        h.relayout();
+        let card = h.lay().cards[2];
+        assert!(h.click(center(card)), "a revealed drive row is clickable");
+        assert_eq!(h.app.selected, 2, "picking a row switches the selected drive");
+        assert_eq!(h.app.drive().unwrap().name, h.app.topo.drives[2].name, "the detail repoints");
+        assert!(!h.app.list_open(), "selecting from the drawer dismisses it");
+    }
+
+    #[test]
+    fn empty_enumeration_keeps_the_switcher_reachable_not_a_blank_screen() {
+        // When the live probe finds nothing, the app must still present the
+        // switcher (a labeled toggle when narrow, the column when docked) and an
+        // honest empty state with a Rescan — never a sidebar-less blank.
+        let mut app = DisksApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ui::automerge::ROOT);
+        DisksDoc::write_topology(&mut doc, &Topology::default());
+        app.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(app.topo.drives.is_empty());
+
+        // Narrow: the labeled toggle is still there so the switcher is reachable.
+        layout_at(&mut app, 640.0);
+        let narrow = app.compute_layout();
+        assert_eq!(app.split_layout(), SplitLayout::Overlay);
+        assert!(narrow.hamburger.is_some(), "empty + narrow still offers the Drives toggle");
+        assert!(narrow.empty_rescan.is_some(), "empty state offers a Rescan");
+
+        // Docked: the DRIVES column is present (with its header), and the empty
+        // state carries the honest Rescan target.
+        layout_at(&mut app, 1024.0);
+        let wide = app.compute_layout();
+        assert_eq!(app.split_layout(), SplitLayout::Docked);
+        assert!(wide.list_header.width() > 0.0, "the DRIVES column is present even when empty");
+        assert!(wide.empty_rescan.is_some(), "empty state offers a Rescan");
     }
 }
