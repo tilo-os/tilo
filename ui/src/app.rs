@@ -2221,6 +2221,100 @@ impl App {
         if let Some(new_id) = best_candidate { self.set_focused_node(Some(new_id)); }
     }
 
+    /// Paint the **shared** keyboard-focus ring around the focused widget, on
+    /// top of the composed widget tree. This is the toolkit-wide safety net that
+    /// makes keyboard focus visible for *every* focusable widget: a control that
+    /// does not paint its own indicator (see
+    /// [`Widget::draws_own_focus_ring`](crate::widget::Widget::draws_own_focus_ring))
+    /// still gets an unmistakable themed ring, so an app makes a control
+    /// keyboard-navigable with nothing more than `is_focusable() -> true` and a
+    /// correct `get_rect()`.
+    ///
+    /// Draws exactly one stroke (`theme.border_focus`) when there is a focused
+    /// node whose widget declines to draw its own ring; a no-op otherwise (a
+    /// widget that renders its own ring, or no focus at all). Called from the
+    /// production draw pass right after the widget tree is encoded, and driven
+    /// directly by the focus-ring tests — so both exercise the same path.
+    pub(crate) fn compose_focus_ring(&self, scene: &mut Scene, transform: Affine) {
+        let Some(fid) = self.focused_node else { return };
+        let Some(&w_ptr) = self.node_map.get(&fid) else { return };
+        // SAFETY: `node_map` pointers are valid for the lifetime of the current
+        // tree; this read mirrors every other `node_map` deref in the App.
+        let (draws_own, rect) = unsafe { ((*w_ptr).draws_own_focus_ring(), (*w_ptr).get_rect()) };
+        if draws_own {
+            return;
+        }
+        // Skip a degenerate (never-laid-out) rect so an off-screen or zero-size
+        // focusable doesn't stroke a dot at the origin.
+        if rect.width() < 1.0 || rect.height() < 1.0 {
+            return;
+        }
+        // A 2px ring, rounded to the theme's small radius, outset by 1px so it
+        // hugs the control's outer edge without clipping its content — the same
+        // weight the shared widgets use for their own rings.
+        let radius = self.theme.tokens.radii.sm as f64;
+        let ring = vello::kurbo::RoundedRect::from_rect(rect.inflate(1.0, 1.0), radius);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(2.0),
+            transform,
+            self.theme.border_focus,
+            None,
+            &ring,
+        );
+    }
+
+    /// Synthesise a full pointer click (CursorMoved -> Pressed -> Released) at
+    /// `center` (window-**logical** coordinates), routed through the widget
+    /// tree's [`Widget::handle_event`](crate::widget::Widget::handle_event) —
+    /// the identical path a real or injected mouse click takes. Used as the
+    /// keyboard-activation fallback when a focused control declines
+    /// [`Action::Activate`](crate::a11y::Action::Activate): its existing mouse
+    /// handler (hover + press/release) drives the activation, so a custom
+    /// clickable needs no `perform_action` to be operable from the keyboard.
+    ///
+    /// `scale` converts the logical centre to the physical position
+    /// `handle_event` expects (it divides back by the scale factor). Returns
+    /// whether any of the synthesised events was consumed.
+    fn synth_activation_click(&mut self, center: Point, scale: f64) -> bool {
+        let Some(root_node) = self.root_node else { return false };
+        let pos = winit::dpi::PhysicalPosition::new(center.x * scale, center.y * scale);
+        let seq = [
+            WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: pos },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left,
+            },
+        ];
+        let mut any = false;
+        for ev in seq {
+            let mut handled = false;
+            let mut focus_target = None;
+            self.root_widget.handle_event(
+                &ev,
+                scale,
+                &self.modifiers,
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus_target,
+                root_node,
+                &self.taffy,
+            );
+            any |= handled;
+        }
+        if any {
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        any
+    }
+
     /// Whether the App's own keyboard focus navigation (Tab cycling and
     /// directional arrows) may run this frame.
     ///
@@ -2491,6 +2585,37 @@ impl App {
                 .get(&id)
                 .and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
+    }
+
+    /// Compute and apply layout for the current tree at a logical
+    /// `(width, height)`, then refresh the focus order — the same
+    /// `compute_layout_with_measure` -> `apply_layout` -> `update_focusable_order`
+    /// pass the per-frame draw loop runs, minus the GPU. Exposed (doc-hidden) so
+    /// headless tests can give widgets real [`Widget::get_rect`] bounds (needed
+    /// for directional focus and the shared focus ring) without a winit loop.
+    #[doc(hidden)]
+    pub fn layout_for_test(&mut self, width: f64, height: f64) {
+        let root_node = self.root_node.expect("init_layout must run before layout_for_test");
+        let node_map = &self.node_map;
+        let text_renderer = &mut self.text_renderer;
+        self.taffy
+            .compute_layout_with_measure(
+                root_node,
+                taffy::Size {
+                    width: AvailableSpace::Definite(width as f32),
+                    height: AvailableSpace::Definite(height as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&widget_ptr) = node_map.get(&node_id) {
+                        unsafe { (*widget_ptr).measure(known, available, text_renderer) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        self.root_widget.apply_layout(&self.taffy, root_node, Point::new(0.0, 0.0));
+        self.update_focusable_order();
     }
 
     /// Re-run the per-frame focus pass: pull widget state via `sync` (so a
@@ -3493,6 +3618,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // widgets stay "dirty" forever.
                 app.root_widget.mark_drawn();
 
+                // Shared keyboard-focus ring: paint a themed ring around the
+                // focused widget unless it draws its own indicator. Runs after
+                // the tree so the ring composites on top of the focused
+                // control, and before the overlay/palette passes so an open
+                // dropdown or modal still paints above it.
+                app.compose_focus_ring(&mut scene, transform);
+
                 // Top-layer overlay pass: widgets whose visual extent
                 // escapes their layout box (an open `Dropdown` list, a
                 // popover) paint here so they composite ABOVE every
@@ -4145,6 +4277,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // via its `Activate` action — the same mutation a mouse click
                 // performs. Buttons fire, checkboxes/switches flip. The state
                 // change is spoken below by `announce_state_change`.
+                //
+                // If the focused widget declines the action (its
+                // `perform_action` returns the default `false` — e.g. an
+                // app-level custom clickable that only wires up mouse handling),
+                // fall back to synthesising a real pointer click at its centre
+                // through the same `handle_event` path a mouse takes
+                // (CursorMoved -> Pressed -> Released). That makes *any*
+                // focusable clickable keyboard-activatable without per-app
+                // `perform_action` code — the mouse handler it already has is
+                // enough.
                 if !handled {
                     if let WindowEvent::KeyboardInput {
                         event:
@@ -4173,6 +4315,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                                     handled = true;
                                     app.needs_sync = true;
                                     app.layout_dirty = true;
+                                } else {
+                                    // Generic fallback: synthesise a click at the
+                                    // focused control's centre. Mirrors the a11y
+                                    // `Activate` fallback (`dispatch_a11y_action`)
+                                    // and the injected-click path.
+                                    let center = unsafe { (*w_ptr).get_rect().center() };
+                                    handled = app.synth_activation_click(center, window.scale_factor());
                                 }
                             }
                         }
@@ -7060,5 +7209,308 @@ mod semantic_tree_app_tests {
             _ => 0,
         };
         assert_eq!(via_a11y, via_affordance, "both paths produce the same result");
+    }
+}
+
+#[cfg(test)]
+mod keynav_focus_tests {
+    //! End-to-end proof of the shared keyboard-navigation contract on the real
+    //! `App` paths: Tab/Shift+Tab cycle + wrap the focus order, arrow keys move
+    //! focus directionally, Enter/Space activate a focused control (via the
+    //! synth-click fallback), and the shared focus ring is painted for a
+    //! focusable that draws none of its own — and suppressed for one that does.
+    use super::*;
+    use std::collections::HashMap;
+    use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+    use automerge::transaction::Transactable;
+    use vello_encoding::DrawTag;
+
+    const ROW_W: f32 = 300.0;
+    const ROW_H: f32 = 44.0;
+
+    /// An app-style custom clickable leaf — the pattern a system app writes for
+    /// a list row / card. It is `is_focusable`, reports a real `get_rect`, wires
+    /// up only *mouse* handling (writes a CRDT key on a release while hovered,
+    /// exactly like the settings `SidebarRow`), and implements **no**
+    /// `perform_action`. When `self_ring` is false it also paints no focus ring
+    /// and leaves `is_focused` at its default `false`, so the host's shared ring
+    /// and synth-click activation are what make it keyboard-operable — with zero
+    /// extra per-app code. When `self_ring` is true it tracks + reports its own
+    /// focus, standing in for a widget that renders its own indicator.
+    struct ClickRow {
+        key: &'static str,
+        rect: KurboRect,
+        hovered: bool,
+        pressed: bool,
+        self_ring: bool,
+        focused: bool,
+    }
+    impl ClickRow {
+        fn new(key: &'static str) -> Self {
+            Self { key, rect: KurboRect::ZERO, hovered: false, pressed: false, self_ring: false, focused: false }
+        }
+        fn self_ringing(key: &'static str) -> Self {
+            Self { self_ring: true, ..Self::new(key) }
+        }
+    }
+    impl Widget for ClickRow {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+            let node = taffy
+                .new_leaf(taffy::Style {
+                    size: taffy::Size {
+                        width: taffy::Dimension::length(ROW_W),
+                        height: taffy::Dimension::length(ROW_H),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            self.rect = KurboRect::new(
+                origin.x + l.location.x as f64,
+                origin.y + l.location.y as f64,
+                origin.x + l.location.x as f64 + l.size.width as f64,
+                origin.y + l.location.y as f64 + l.size.height as f64,
+            );
+        }
+        fn draw(&mut self, _s: &mut Scene, _t: Affine, _tr: &mut TextRenderer, _th: &Theme, _p: &PresenceCtx) {}
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            scale_factor: f64,
+            _m: &winit::event::Modifiers,
+            state: &mut AutoCommit,
+            root: &ObjId,
+            handled: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    self.hovered = self.rect.contains(logical);
+                }
+                WindowEvent::MouseInput { state: es, button: MouseButton::Left, .. } => {
+                    if self.hovered {
+                        let pressed = *es == ElementState::Pressed;
+                        if pressed {
+                            self.pressed = true;
+                            *handled = true;
+                        } else if self.pressed {
+                            self.pressed = false;
+                            *handled = true;
+                            let _ = state.put(root, self.key, true);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn name(&self) -> &str { "click-row" }
+        fn get_rect(&self) -> KurboRect { self.rect }
+        fn is_focusable(&self) -> bool { true }
+        fn set_focus(&mut self, f: bool) { self.focused = f; }
+        fn is_focused(&self) -> bool { self.self_ring && self.focused }
+    }
+
+    /// A vertical stack of focusable rows with a real flex layout, so the focus
+    /// order is well-defined and directional navigation has somewhere to go.
+    struct Board { kids: Vec<Box<dyn Widget>> }
+    impl Board {
+        fn new(kids: Vec<Box<dyn Widget>>) -> Self { Self { kids } }
+    }
+    impl Widget for Board {
+        fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+            for c in &mut self.kids { c.sync(s, p); }
+        }
+        fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+            let kids: Vec<_> = self.kids.iter_mut().map(|c| c.build_layout(taffy, theme, node_map)).collect();
+            let node = taffy
+                .new_with_children(
+                    taffy::Style {
+                        display: taffy::Display::Flex,
+                        flex_direction: taffy::FlexDirection::Column,
+                        align_items: Some(taffy::AlignItems::FlexStart),
+                        ..Default::default()
+                    },
+                    &kids,
+                )
+                .unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let l = taffy.layout(node).unwrap();
+            let new_origin = Point::new(origin.x + l.location.x as f64, origin.y + l.location.y as f64);
+            let children = taffy.children(node).unwrap();
+            for (child, cnode) in self.kids.iter_mut().zip(children.iter()) {
+                child.apply_layout(taffy, *cnode, new_origin);
+            }
+        }
+        fn draw(&mut self, s: &mut Scene, t: Affine, tr: &mut TextRenderer, th: &Theme, p: &PresenceCtx) {
+            for c in &mut self.kids { c.draw(s, t, tr, th, p); }
+        }
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            scale_factor: f64,
+            modifiers: &winit::event::Modifiers,
+            state: &mut AutoCommit,
+            path: &ObjId,
+            handled: &mut bool,
+            focus_target: &mut Option<NodeId>,
+            node_id: NodeId,
+            taffy: &TaffyTree<()>,
+        ) {
+            let child_nodes = taffy.children(node_id).unwrap();
+            for (child, &cnode) in self.kids.iter_mut().zip(child_nodes.iter()) {
+                child.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, cnode, taffy);
+                if *handled { break; }
+            }
+        }
+        fn children(&self) -> Vec<&dyn Widget> { self.kids.iter().map(|c| c.as_ref()).collect() }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.kids.iter_mut().map(|c| &mut **c as &mut (dyn Widget + '_)).collect()
+        }
+        fn name(&self) -> &str { "board" }
+        fn get_rect(&self) -> KurboRect { KurboRect::ZERO }
+    }
+
+    fn app_with_rows(kids: Vec<Box<dyn Widget>>) -> App {
+        let mut app = App::new(State::new(), Box::new(Board::new(kids)));
+        app.init_layout();
+        app.layout_for_test(800.0, 600.0);
+        app
+    }
+
+    /// Count the solid-colour draw ops the shared focus-ring pass emits — one
+    /// stroke per painted ring. Asserts on the production `compose_focus_ring`.
+    fn ring_color_ops(app: &App) -> usize {
+        let mut scene = Scene::new();
+        app.compose_focus_ring(&mut scene, Affine::IDENTITY);
+        scene.encoding().draw_tags.iter().filter(|t| **t == DrawTag::COLOR).count()
+    }
+
+    fn crdt_flag(app: &App, key: &str) -> bool {
+        match app.state.doc.get(&app.state.root, key) {
+            Ok(Some((Value::Scalar(s), _))) => matches!(s.as_ref(), ScalarValue::Boolean(true)),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn tab_advances_through_focusable_order_and_wraps() {
+        let mut app = app_with_rows(vec![
+            Box::new(ClickRow::new("a")),
+            Box::new(ClickRow::new("b")),
+            Box::new(ClickRow::new("c")),
+        ]);
+        assert_eq!(app.focusable_order.len(), 3, "all three rows are focusable");
+        app.set_focused_node(Some(app.focusable_order[0]));
+
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(app.focusable_order[1]), "Tab -> 2nd");
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(app.focusable_order[2]), "Tab -> 3rd");
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(app.focusable_order[0]), "Tab wraps last -> first");
+    }
+
+    #[test]
+    fn shift_tab_retreats_through_focusable_order_and_wraps() {
+        let mut app = app_with_rows(vec![
+            Box::new(ClickRow::new("a")),
+            Box::new(ClickRow::new("b")),
+            Box::new(ClickRow::new("c")),
+        ]);
+        app.set_focused_node(Some(app.focusable_order[0]));
+
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(app.focusable_order[2]), "Shift+Tab wraps first -> last");
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(app.focusable_order[1]), "Shift+Tab -> 2nd");
+        assert!(app.focus_tab(true));
+        assert_eq!(app.focused_node, Some(app.focusable_order[0]), "Shift+Tab -> 1st");
+    }
+
+    #[test]
+    fn arrow_keys_move_focus_directionally() {
+        let mut app = app_with_rows(vec![
+            Box::new(ClickRow::new("a")),
+            Box::new(ClickRow::new("b")),
+            Box::new(ClickRow::new("c")),
+        ]);
+        app.set_focused_node(Some(app.focusable_order[0]));
+
+        app.navigate_focus(Direction::Down);
+        assert_eq!(app.focused_node, Some(app.focusable_order[1]), "Down -> next row below");
+        app.navigate_focus(Direction::Down);
+        assert_eq!(app.focused_node, Some(app.focusable_order[2]), "Down -> third row");
+        app.navigate_focus(Direction::Up);
+        assert_eq!(app.focused_node, Some(app.focusable_order[1]), "Up -> row above");
+    }
+
+    #[test]
+    fn shared_focus_ring_drawn_for_focusable_without_own_ring() {
+        let mut app = app_with_rows(vec![Box::new(ClickRow::new("a")), Box::new(ClickRow::new("b"))]);
+        app.set_focused_node(Some(app.focusable_order[0]));
+        assert_eq!(
+            ring_color_ops(&app),
+            1,
+            "a focusable that paints no ring of its own gets exactly one shared focus ring",
+        );
+    }
+
+    #[test]
+    fn shared_focus_ring_suppressed_when_widget_draws_its_own() {
+        let mut app = app_with_rows(vec![Box::new(ClickRow::self_ringing("a"))]);
+        app.set_focused_node(Some(app.focusable_order[0]));
+        assert!(
+            unsafe { (*(*app.node_map.get(&app.focused_node.unwrap()).unwrap())).draws_own_focus_ring() },
+            "the self-ring row reports it draws its own indicator while focused",
+        );
+        assert_eq!(
+            ring_color_ops(&app),
+            0,
+            "the host must not double-ring a widget that draws its own focus indicator",
+        );
+    }
+
+    #[test]
+    fn no_shared_focus_ring_when_nothing_is_focused() {
+        let app = app_with_rows(vec![Box::new(ClickRow::new("a"))]);
+        assert_eq!(app.focused_node, None, "no autofocus in this fixture");
+        assert_eq!(ring_color_ops(&app), 0, "no focus -> no ring");
+    }
+
+    #[test]
+    fn enter_activates_custom_clickable_via_synthesized_click() {
+        let mut app = app_with_rows(vec![
+            Box::new(ClickRow::new("a")),
+            Box::new(ClickRow::new("b")),
+        ]);
+        // Focus the second row and take the exact steps the Enter/Space handler
+        // does: the widget declines `Activate` (default `perform_action`), so
+        // the host synthesises a click at its centre.
+        let fid = app.focusable_order[1];
+        app.set_focused_node(Some(fid));
+        let (declined, center) = {
+            let w = *app.node_map.get(&fid).unwrap();
+            let declined = !unsafe {
+                (*w).perform_action(&crate::a11y::Action::Activate, &mut app.state.doc, &app.state.root)
+            };
+            (declined, unsafe { (*w).get_rect().center() })
+        };
+        assert!(declined, "the custom row has no perform_action, so Activate falls through");
+
+        let consumed = app.synth_activation_click(center, 1.0);
+        assert!(consumed, "the synthesised click reaches the focused row's mouse handler");
+        assert!(crdt_flag(&app, "b"), "Enter activated the focused row (2nd), writing its key");
+        assert!(!crdt_flag(&app, "a"), "activation did not leak to the unfocused row");
     }
 }
