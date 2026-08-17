@@ -248,7 +248,7 @@ pub fn download_qpkg(url: &str, dest: &Path) -> Result<u64, String> {
 /// `qos-install install` (verify + cache) → `qos-install run`
 /// (launch). For an already-cached app `Open` skips straight to the
 /// launch. Every subprocess result is folded into the returned
-/// [`ActionOutcome`] so the status bar reflects reality.
+/// [`ActionOutcome`] so the status bubble reflects reality.
 pub fn execute(item: &StoreItem, action: ActionKind, staging_dir: &Path) -> ActionOutcome {
     match (action, &item.source) {
         (ActionKind::Open, StoreSource::Qos { .. })

@@ -14,11 +14,16 @@
 //! │  │  [icon]  Notes                v0.1.0 · qOS main [Add] │    │
 //! │  │  [ ⎔  ]  A CRDT notes app                             │    │
 //! │  └───────────────────────────────────────────────────────┘    │
-//! │  ... more cards ...                                           │
-//! ├───────────────────────────────────────────────────────────────┤
-//! │ Status: "Installing dev.qos.notes 0.1.0 from qOS main…"       │
-//! └───────────────────────────────────────────────────────────────┘
+//! │  ... more cards, spanning to the window bottom ...            │
+//! │                                    ╭─────────────────────────╮ │
+//! │                                    │ Installing dev.qos.notes…│ │  ← transient bubble
+//! └────────────────────────────────────╰─────────────────────────╯─┘
 //! ```
+//!
+//! There is no permanent footer strip: the catalog counts (`N apps · M
+//! shown`) and the running action status surface in a floating
+//! [`ui::StatusBubble`], revealed on a change or on hover of the
+//! bottom-right band, then faded — so the card list reclaims the height.
 //!
 //! The widget is intentionally read-mostly: the source-of-truth for
 //! the item list is refreshed by an outside "refresh" call
@@ -71,7 +76,9 @@ pub struct StoreApp {
     /// scope — the filter/chip pipeline is what proves the layout).
     query: String,
     /// Rolling status line the worker overwrites while an action
-    /// runs. Rendered in a small band at the bottom of the surface.
+    /// runs. Surfaced transiently in the floating status bubble (see
+    /// [`draw_status_bubble`](Self::draw_status_bubble)); the catalog
+    /// counts stand in while it is empty.
     status_line: String,
     /// Whether `flatpak` is available on the host — drives whether
     /// Flatpak items show "Install" or the "install flatpak first"
@@ -102,6 +109,21 @@ pub struct StoreApp {
     /// [`active_filter`]. Shared (`Rc`) because the closure is rebuilt
     /// into a fresh `ToggleGroup` every `build_layout`.
     filter_click: Rc<Cell<Option<usize>>>,
+    /// Transient floating status chip. The catalog counts / action
+    /// status surface here — revealed on a real change or while the
+    /// pointer hovers the bottom-right band, then faded — in place of a
+    /// permanent full-width footer strip, so the card list reclaims the
+    /// height. See [`draw_status_bubble`](Self::draw_status_bubble).
+    status_bubble: ui::StatusBubble,
+    /// The label the bubble last reflected, so we only poke it (reveal
+    /// + restart the linger) when the surfaced text actually changes.
+    last_status_label: String,
+    /// Last pointer position (window coords), tracked from `CursorMoved`
+    /// so the bubble can reveal on hover of its zone.
+    last_cursor: Point,
+    /// `--shots` forces the bubble fully visible so a single headless
+    /// frame captures the floating chip.
+    shots_status: bool,
 }
 
 impl Default for StoreApp {
@@ -125,6 +147,10 @@ impl StoreApp {
             root: None,
             pending_actions: Vec::new(),
             filter_click: Rc::new(Cell::new(None)),
+            status_bubble: ui::StatusBubble::new(),
+            last_status_label: String::new(),
+            last_cursor: Point::ZERO,
+            shots_status: false,
         }
     }
 
@@ -246,14 +272,15 @@ impl StoreApp {
         let filter_row = self.build_filter_row();
         let category_row = self.build_category_row();
         let list = self.build_list(theme);
-        let status = self.build_status_bar(theme);
+        // No permanent footer strip: the catalog counts / action status
+        // float as a transient bubble (see `draw_status_bubble`), so the
+        // card list spans to the window bottom.
         let column = Column::new()
             .with_intrinsic_height()
             .push(header)
             .push(filter_row)
             .push(category_row)
-            .push(list)
-            .push(status);
+            .push(list);
         Box::new(
             Container::new()
                 .filling()
@@ -378,8 +405,12 @@ impl StoreApp {
         )
     }
 
-    fn build_status_bar(&self, theme: &Theme) -> Box<dyn Widget> {
-        let line = if self.status_line.is_empty() {
+    /// The label for the floating status bubble: a running action
+    /// status while one is set, else the catalog counts (`N apps · M
+    /// shown`) — the same genuinely-contextual info the old permanent
+    /// footer strip carried. Never empty.
+    fn footer_label(&self) -> String {
+        if self.status_line.is_empty() {
             format!(
                 "{} apps · {} shown",
                 self.items.len(),
@@ -387,16 +418,62 @@ impl StoreApp {
             )
         } else {
             self.status_line.clone()
-        };
-        Box::new(
-            Container::new()
-                .with_background()
-                .with_child(Box::new(
-                    Text::new(&line)
-                        .with_size(11.0)
-                        .with_color(theme.text_dim),
-                )),
-        )
+        }
+    }
+
+    /// `--shots`: force the status bubble fully visible so a single
+    /// headless frame captures the floating chip.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        self.status_bubble.poke(std::time::Instant::now());
+    }
+
+    /// Draw the transient floating status bubble at the window's
+    /// bottom-right — the reclaimed home of the old footer strip. It
+    /// surfaces on a real change (catalog refresh, filter, an action
+    /// result) or while the pointer hovers the bottom-right band, then
+    /// fades. Colours come from the theme.
+    fn draw_status_bubble(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = std::time::Instant::now();
+        let label = self.footer_label();
+        if label != self.last_status_label {
+            self.last_status_label = label.clone();
+            self.status_bubble.poke(now);
+        }
+        if label.is_empty() {
+            return;
+        }
+        let text_size = 12.0f32;
+        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
+        let margin = 14.0;
+        let rect = Rect::new(
+            self.rect.x1 - margin - w,
+            self.rect.y1 - margin - h,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, self.rect.x1, self.rect.y1);
+        let over = self.shots_status || zone.contains(self.last_cursor);
+        self.status_bubble.set_hover(over, now);
+        let alpha = self.status_bubble.alpha(now);
+        if alpha <= 0.0 {
+            return;
+        }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            alpha,
+            transform,
+            &rect.inflate(12.0, 14.0),
+        );
+        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
+        scene.pop_layer();
     }
 
     // ---- CRDT sync helpers ----
@@ -616,6 +693,22 @@ impl Widget for StoreApp {
         }
     }
 
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Child overlays (any dropdown / popover) first, then the
+        // floating status bubble on top of the content.
+        if let Some(root) = self.root.as_mut() {
+            root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.draw_status_bubble(scene, transform, text_renderer, theme);
+    }
+
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
@@ -628,6 +721,11 @@ impl Widget for StoreApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        // Track the pointer so the bubble can reveal on hover of its
+        // bottom-right zone (coords are window-space, unscaled).
+        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), taffy.children(node_id)) {
             if let Some(&child_node) = children.first() {
                 root.handle_event(
@@ -683,6 +781,7 @@ impl Widget for StoreApp {
         self.root
             .as_ref()
             .is_some_and(|r| r.needs_animation_frame())
+            || self.status_bubble.needs_frame(std::time::Instant::now())
     }
 }
 
