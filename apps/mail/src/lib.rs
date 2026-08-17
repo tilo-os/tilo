@@ -67,6 +67,7 @@ pub fn shot_viewport(scenario: &str) -> (u32, u32) {
         "compose" => (1180, 820),
         "setup" | "setup_add" | "setup_oauth" | "firstrun" => (1100, 780),
         "html_mail" => (1280, 820),
+        "sidebar_collapsed" => (1200, 760),
         _ => (1280, 800),
     }
 }
@@ -92,6 +93,7 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         "setup_add" => app.prime_setup_add_shot(),
         "setup_oauth" => app.prime_setup_oauth_shot(),
         "html_mail" => app.prime_html_mail_shot(),
+        "sidebar_collapsed" => app.prime_sidebar_collapsed_shot(),
         _ => {}
     }
     Box::new(app)

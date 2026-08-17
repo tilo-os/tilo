@@ -248,8 +248,8 @@ pub struct Message {
     /// fallback).
     pub body: String,
     /// The original `text/html` part, when the message carried one. Rendered
-    /// sandboxed in the reader's WebView (remote content blocked by default);
-    /// `None` for plain-text-only mail, which renders as text. Never
+    /// natively as sanitized rich text + images (remote content blocked by
+    /// default); `None` for plain-text-only mail, which renders as text. Never
     /// serialised into the shared settings store — it is message content.
     #[serde(default)]
     pub html_body: Option<String>,

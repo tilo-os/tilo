@@ -201,6 +201,9 @@ pub struct MailApp {
     /// `sync`), re-applied to the shell during layout where the width is known.
     /// `None` ⇒ no explicit choice, follow the responsive default.
     persisted_sidebar_collapsed: Option<bool>,
+    /// `--shots`/test only: seed the document with an explicit sidebar collapse
+    /// so a wide-layout shot can show the persisted-collapse behaviour.
+    seed_sidebar_collapsed: bool,
     dirty: bool,
 }
 
@@ -271,6 +274,7 @@ impl MailApp {
             rect: Rect::ZERO,
             first_layout: true,
             persisted_sidebar_collapsed: None,
+            seed_sidebar_collapsed: false,
             dirty: true,
         }
     }
@@ -317,9 +321,9 @@ impl MailApp {
         self.focus_setup(Some(1));
     }
 
-    /// Select the bundled HTML newsletter so the reader renders it through the
-    /// sandboxed WebView (HTML-mail shot). Also demonstrates the filled-star
-    /// action (the newsletter is starred).
+    /// Select the bundled HTML newsletter so the reader renders it natively
+    /// (HTML-mail shot). Also demonstrates the filled-star action (the
+    /// newsletter is starred).
     pub fn prime_html_mail_shot(&mut self) {
         let id = {
             let st = self.shared.borrow();
@@ -335,6 +339,13 @@ impl MailApp {
             self.process_intents();
         }
         self.dirty = true;
+    }
+
+    /// Persist an explicit sidebar collapse so a *wide* shot shows the sidebar
+    /// staying collapsed (the user override beating the docked default). The
+    /// seed is applied to the document on the first `sync`.
+    pub fn prime_sidebar_collapsed_shot(&mut self) {
+        self.seed_sidebar_collapsed = true;
     }
 
     /// Open the sidebar overlay drawer and snap it (narrow drawer shot).
@@ -1676,18 +1687,25 @@ pub fn avatar_store_offline() -> ImageStore {
     ImageStore::new(noop_avatar_fetcher())
 }
 
-/// A fetcher that never touches the network — the hermetic default.
+/// A fetcher that never touches the network — the hermetic default. It still
+/// decodes inline `data:` URIs (an HTML mail's own bytes), so inline images
+/// render in `--shots` and tests without opening a socket.
 fn noop_avatar_fetcher() -> ui::Fetcher {
-    std::sync::Arc::new(|_url: &str| None)
+    std::sync::Arc::new(|url: &str| crate::html_mail::decode_data_uri(url))
 }
 
-/// Real Gravatar HTTP under `--features live` (default); a no-op otherwise so a
+/// Real Gravatar / remote-image HTTP under `--features live` (default), with
+/// inline `data:` URIs decoded locally first; a data-only fetcher otherwise so a
 /// build without `live` never opens a socket (avatars then render as initials).
 #[cfg(feature = "live")]
 fn avatar_fetcher() -> ui::Fetcher {
     use std::sync::{Arc, OnceLock};
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     Arc::new(|url: &str| {
+        // Inline `data:` images (mail's own bytes) never touch the network.
+        if let Some(bytes) = crate::html_mail::decode_data_uri(url) {
+            return Some(bytes);
+        }
         let client = CLIENT.get_or_init(|| {
             reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(8))
@@ -1700,7 +1718,7 @@ fn avatar_fetcher() -> ui::Fetcher {
             return None;
         }
         let bytes = resp.bytes().ok()?;
-        if bytes.is_empty() || bytes.len() > 2 * 1024 * 1024 {
+        if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
             return None;
         }
         Some(bytes.to_vec())
@@ -1756,6 +1774,11 @@ impl Widget for MailApp {
             } else {
                 self.seed_doc(state);
                 MailDoc::set_seeded(state);
+                // `--shots`/test: seed an explicit sidebar collapse so a wide
+                // shot demonstrates the persisted-collapse override.
+                if self.seed_sidebar_collapsed {
+                    MailDoc::set_sidebar_collapsed(state, Some(true));
+                }
             }
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();

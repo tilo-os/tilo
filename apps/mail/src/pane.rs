@@ -25,8 +25,9 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::webview::{SharedEngine, WebViewCommand};
-use ui::widget::{TextInput, WebView};
+use ui::widget::TextInput;
+
+use crate::html_mail::Block as HtmlBlock;
 
 use crate::account::AccountStore;
 use crate::draw::{
@@ -125,23 +126,28 @@ pub struct Pane {
     /// resolved during draw (the card layout is only known then). Clicking one
     /// saves the real attachment bytes to disk.
     reader_attachment_hits: Vec<(Rect, MessageId, usize)>,
-    /// Reader pane only: the sandboxed WebView that renders an HTML mail body,
-    /// its engine, and the (message, block_remote) key currently loaded into it.
-    /// Created lazily on the first HTML mail so text-only usage stays webview-free.
-    html_engine: Option<SharedEngine>,
-    html_view: Option<WebView>,
-    html_key: Option<(MessageId, bool)>,
-    /// The message the HTML view currently shows — distinct from `html_key`
-    /// (which the remote-images toggle clears to force a reload). Used to detect
-    /// a genuine message change so the remote-content opt-in resets per mail.
+    /// Reader pane only: the parsed, sanitized HTML body of the open message,
+    /// cached by message id so it is parsed once rather than every frame. `None`
+    /// for plain-text mail (which never touches the HTML path).
+    html_blocks: Option<(MessageId, Vec<HtmlBlock>)>,
+    /// The message whose HTML body is shown — used to detect a genuine message
+    /// change so the remote-content opt-in resets per mail.
     html_shown_id: Option<MessageId>,
     /// Whether the user has opted in to remote images for the open message.
     /// Reset whenever a different message is shown, so remote content is blocked
     /// again by default for each mail.
     html_load_remote: bool,
-    /// The rect the HTML body view occupies this frame (for scroll forwarding),
-    /// and the "Load remote images" toggle chip rect (for click handling).
-    html_view_rect: Option<Rect>,
+    /// The rect the HTML body occupies this frame (for wheel scrolling), the
+    /// vertical scroll offset, the last body content height (to clamp scroll),
+    /// and the link hit-rects resolved during the last draw.
+    html_body_rect: Option<Rect>,
+    html_scroll: f64,
+    html_content_h: f64,
+    html_link_hits: Vec<(Rect, String)>,
+    /// An opted-in HTML-body image is still fetching/decoding, so the frame pump
+    /// must stay alive until it settles and paints.
+    html_loading: bool,
+    /// The remote-images toggle chip rect (for click handling).
     html_toggle_rect: Option<Rect>,
     dirty: bool,
 }
@@ -164,12 +170,14 @@ impl Pane {
             swipe: None,
             mouse_down_row: None,
             reader_attachment_hits: Vec::new(),
-            html_engine: None,
-            html_view: None,
-            html_key: None,
+            html_blocks: None,
             html_shown_id: None,
             html_load_remote: false,
-            html_view_rect: None,
+            html_body_rect: None,
+            html_scroll: 0.0,
+            html_content_h: 0.0,
+            html_link_hits: Vec::new(),
+            html_loading: false,
             html_toggle_rect: None,
             dirty: true,
         }
@@ -622,7 +630,7 @@ impl Pane {
         }
     }
 
-    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
+    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
         let st = self.shared.borrow();
@@ -696,11 +704,11 @@ impl Pane {
         y += 16.0;
 
         // Render the thread. When the head (newest, being-read) message carries
-        // an HTML body, its body renders in the sandboxed WebView; older
-        // messages and plain-text mail render as text cards.
+        // an HTML body, its body renders natively (sanitized rich text + images);
+        // older messages and plain-text mail render as text cards.
         let head_id = head.id;
         let head_html = head.html_body.clone();
-        let mut webview_rect: Option<Rect> = None;
+        let mut body_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
             if y > rr.y1 - 40.0 {
                 break;
@@ -708,13 +716,13 @@ impl Pane {
             let is_head = i == msgs.len() - 1;
             if is_head && head_html.is_some() {
                 // Head card: draw the header, then reserve the rest of the
-                // reader for the sandboxed HTML body (painted once the shared
-                // borrow is released, since the view needs `&mut self`).
+                // reader for the native HTML body (painted once the shared
+                // borrow is released, since it needs `&mut self`).
                 y = self.draw_card_header(scene, t, tr, theme, m, content_x, y, content_w);
                 y += 8.0;
                 let bottom = rr.y1 - 46.0; // room for the remote-images bar
                 if bottom > y + 48.0 {
-                    webview_rect = Some(Rect::new(content_x, y, content_x + content_w as f64, bottom));
+                    body_rect = Some(Rect::new(content_x, y, content_x + content_w as f64, bottom));
                 }
             } else {
                 y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, is_head, &mut chip_hits);
@@ -722,101 +730,118 @@ impl Pane {
             }
         }
         self.reader_attachment_hits = chip_hits;
+        let images = st.images.clone();
         drop(st);
 
-        // The HTML body view + its remote-images toggle, now that the shared
+        // The native HTML body + its remote-images toggle, now that the shared
         // borrow is released (they need `&mut self`).
-        self.html_view_rect = None;
+        self.html_body_rect = None;
         self.html_toggle_rect = None;
-        match (webview_rect, head_html) {
+        self.html_link_hits.clear();
+        match (body_rect, head_html) {
             (Some(rect), Some(html)) => {
-                // Switching to a different message re-blocks remote content
-                // (keyed on the shown id, not `html_key`, which the toggle
-                // clears to force a reload of the *same* message).
+                // Switching to a different message re-blocks remote content and
+                // resets the scroll; parse the body once and cache it by id.
                 if self.html_shown_id != Some(head_id) {
                     self.html_load_remote = false;
+                    self.html_scroll = 0.0;
                     self.html_shown_id = Some(head_id);
                 }
-                self.load_html_body(head_id, &html);
-                let view = self.ensure_html_view();
-                view.set_viewport(rect, 1.0);
-                view.draw(scene, t, tr, theme, presence);
-                self.html_view_rect = Some(rect);
+                if self.html_blocks.as_ref().map(|(id, _)| *id) != Some(head_id) {
+                    self.html_blocks = Some((head_id, crate::html_mail::parse(&html)));
+                }
+                let blocks = self.html_blocks.as_ref().map(|(_, b)| b.as_slice()).unwrap_or(&[]);
+                let block_remote = !self.html_load_remote;
+                let rendered = crate::html_mail::draw_body(
+                    scene, t, tr, theme, &images, blocks, rect, self.html_scroll, block_remote,
+                );
+                // Clamp the scroll against the freshly-measured content height.
+                self.html_content_h = rendered.content_height;
+                let max_scroll = (rendered.content_height - rect.height()).max(0.0);
+                if self.html_scroll > max_scroll {
+                    self.html_scroll = max_scroll;
+                }
+                self.html_link_hits = rendered.links;
+                self.html_loading = rendered.loading;
+                self.html_body_rect = Some(rect);
                 self.draw_remote_toggle(scene, t, tr, theme, rect);
             }
             _ => {
-                // Plain-text mail this frame — drop any stale load so returning
-                // to an HTML mail reloads fresh (and blocked again by default).
-                self.html_key = None;
+                // Plain-text mail this frame — drop any cached body so returning
+                // to an HTML mail parses fresh (and blocked again by default).
+                self.html_blocks = None;
                 self.html_shown_id = None;
+                self.html_loading = false;
             }
         }
     }
 
-    /// Draw the "remote content blocked / loaded" pill under an HTML body and
-    /// record its rect for hit-testing. Off (blocked) by default; clicking it
-    /// opts the current message in to remote images.
+    /// Draw the remote-images control under an HTML body and record its rect for
+    /// hit-testing. Blocked by default (a clear warning colour); clicking loads
+    /// remote images, and the loaded state offers "Block again".
     fn draw_remote_toggle(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect) {
         let c = &theme.tokens.colors;
         let y = body.y1 + 8.0;
-        let (icon, label, col) = if self.html_load_remote {
-            (Icon::Image, "Remote images loaded", c.text_dim)
+        // Two visually distinct states, both keyed on a clear semantic colour —
+        // a warning (amber/gold) accent while blocked, neutral once loaded.
+        let (icon, label, accent) = if self.html_load_remote {
+            (Icon::Image, "Remote images loaded · Block again", c.text_dim)
         } else {
-            (Icon::Ban, "Remote content blocked · Load images", c.semantic.warning)
+            (Icon::Ban, "Remote images blocked · Load", c.semantic.warning)
         };
         let (lw, _) = tr.measure(label, 11.5, None);
         let pill = Rect::new(body.x0, y, body.x0 + 30.0 + lw as f64 + 14.0, y + 28.0);
         let hov = pill.contains(self.shared.borrow().last_mouse);
-        fill_round(scene, t, pill, 8.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
-        stroke_round(scene, t, pill, 8.0, 1.0, c.border_white_10);
-        icon.draw(scene, t, Rect::new(pill.x0 + 8.0, pill.y0 + 6.0, pill.x0 + 24.0, pill.y0 + 22.0), col);
+        // Blocked: a warning-tinted pill so it reads unmistakably as a warning
+        // (never a stray accent). Loaded: a plain neutral surface.
+        let (bg, border) = if self.html_load_remote {
+            (if hov { c.surface_white_10 } else { c.surface_white_5 }, c.border_white_10)
+        } else {
+            (
+                c.semantic.warning.with_alpha_factor(if hov { 0.22 } else { 0.14 }),
+                c.semantic.warning.with_alpha_factor(0.55),
+            )
+        };
+        fill_round(scene, t, pill, 8.0, bg);
+        stroke_round(scene, t, pill, 8.0, 1.0, border);
+        icon.draw(scene, t, Rect::new(pill.x0 + 8.0, pill.y0 + 6.0, pill.x0 + 24.0, pill.y0 + 22.0), accent);
         tr.draw_text(scene, label, 11.5, c.text_primary, t * Affine::translate((pill.x0 + 30.0, pill.y0 + 7.0)), None);
         self.html_toggle_rect = Some(pill);
     }
 
-    /// Lazily create the reader's HTML-body WebView (and its engine) on first
-    /// use. Text-only mail never touches this, so it stays webview-free.
-    fn ensure_html_view(&mut self) -> &mut WebView {
-        if self.html_view.is_none() {
-            let engine = self.html_engine.get_or_insert_with(new_html_engine).clone();
-            self.html_view = Some(WebView::new(engine).with_test_id("mail_html_body"));
-        }
-        self.html_view.as_mut().unwrap()
-    }
-
-    /// Load `html` for message `id` into the sandboxed view — building the
-    /// remote-blocked `data:` document and installing the matching content
-    /// filter — unless that exact (message, block state) is already loaded.
-    fn load_html_body(&mut self, id: MessageId, html: &str) {
-        let block_remote = !self.html_load_remote;
-        let key = (id, block_remote);
-        if self.html_key == Some(key) {
-            return;
-        }
-        let url = crate::html_mail::data_url(html, block_remote);
-        let filter = std::sync::Arc::new(crate::html_mail::content_filter_json(block_remote));
-        let engine = self.ensure_html_view().engine().clone();
-        engine.send(WebViewCommand::SetContentFilter(Some(filter)));
-        engine.send(WebViewCommand::Navigate(url));
-        self.html_key = Some(key);
-    }
-
-    /// Inject the HTML-body engine (tests use this to observe the commands the
-    /// reader sends). Must be called before the first HTML mail is drawn.
+    /// The colour the remote-images control paints its icon this frame — warning
+    /// (amber) while blocked, neutral once loaded. Lets a test prove the colour
+    /// regression (a stray non-warning tint) can't return.
     #[cfg(test)]
-    pub(crate) fn set_html_engine(&mut self, engine: SharedEngine) {
-        self.html_engine = Some(engine);
+    pub(crate) fn remote_toggle_icon_color(&self, theme: &Theme) -> Color {
+        if self.html_load_remote {
+            theme.tokens.colors.text_dim
+        } else {
+            theme.tokens.colors.semantic.warning
+        }
     }
 
-    /// The (message, block_remote) currently loaded into the HTML view, if any.
+    /// Whether the reader currently shows a native HTML body.
     #[cfg(test)]
-    pub(crate) fn html_loaded_key(&self) -> Option<(MessageId, bool)> {
-        self.html_key
+    pub(crate) fn html_body_shown(&self) -> bool {
+        self.html_body_rect.is_some()
+    }
+
+    /// The remote-images opt-in state (true = remote images loaded).
+    #[cfg(test)]
+    pub(crate) fn html_remote_loaded(&self) -> bool {
+        self.html_load_remote
+    }
+
+    /// The link hit-rects resolved during the last HTML-body draw.
+    #[cfg(test)]
+    pub(crate) fn html_links(&self) -> &[(Rect, String)] {
+        &self.html_link_hits
     }
 
     /// Draw the per-message card header (avatar · sender · date · recipients)
     /// and return the y where the body should start. Shared by the text card
-    /// path and the HTML-body (WebView) path so both read identically.
+    /// path and the native HTML-body path so both read identically.
     fn draw_card_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32) -> f64 {
         let c = &theme.tokens.colors;
         let card_x1 = x + w as f64;
@@ -1003,10 +1028,18 @@ impl Pane {
                 // in to (or back out of) loading remote content.
                 if self.html_toggle_rect.map(|r| r.contains(pt)).unwrap_or(false) {
                     self.html_load_remote = !self.html_load_remote;
-                    // Force a reload with the new policy on the next draw.
-                    self.html_key = None;
                     self.dirty = true;
                     self.shared.borrow_mut().dirty = true;
+                    *handled = true;
+                    return;
+                }
+                // A link in the HTML body: surface its destination (the reader
+                // has no browser wiring of its own — the sanitized href is shown
+                // so the user can see where a link leads).
+                if let Some((_, href)) = self.html_link_hits.iter().find(|(rc, _)| rc.contains(pt)).cloned() {
+                    let mut st = self.shared.borrow_mut();
+                    st.status = Some(format!("Link: {href}"));
+                    st.dirty = true;
                     *handled = true;
                     return;
                 }
@@ -1069,23 +1102,6 @@ impl Pane {
         st.search_focused = on;
         st.dirty = true;
     }
-}
-
-/// The web engine backing HTML-mail rendering. Under the `html-webview`
-/// feature this is the real WPE WebKit engine (the same one the browser uses),
-/// falling back to the hermetic test engine if it can't start; otherwise it is
-/// the deterministic test engine — which still exercises the full
-/// sandbox/remote-block plumbing in the default build and `--shots`.
-fn new_html_engine() -> SharedEngine {
-    #[cfg(feature = "html-webview")]
-    {
-        match ui::webview::wpe::WpeEngine::new() {
-            Ok(e) => return e,
-            Err(err) => tracing::warn!(%err, "mail: WPE engine unavailable; using test engine"),
-        }
-    }
-    let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
-    e
 }
 
 impl Widget for Pane {
@@ -1158,18 +1174,26 @@ impl Widget for Pane {
         }
         self.rebuild_hits();
 
-        // Reader: forward pointer-move and wheel into the sandboxed HTML body
-        // view (only while one is actually shown), so an HTML mail scrolls. The
-        // view consumes a wheel that lands over it.
-        if self.role == Role::Reader
-            && self.html_view_rect.is_some()
-            && matches!(event, WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. })
-        {
-            if let Some(view) = self.html_view.as_mut() {
-                view.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
-            }
-            if *handled {
-                return;
+        // Reader: a wheel over a native HTML body scrolls it (long newsletters
+        // exceed the reader height). Clamp to the measured content height.
+        if self.role == Role::Reader {
+            if let (WindowEvent::MouseWheel { delta, .. }, Some(rect)) = (event, self.html_body_rect) {
+                let over = rect.contains(self.shared.borrow().last_mouse);
+                if over {
+                    let dy = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) => (*y as f64) * 48.0,
+                        winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    };
+                    let max_scroll = (self.html_content_h - rect.height()).max(0.0);
+                    let next = (self.html_scroll - dy).clamp(0.0, max_scroll);
+                    if (next - self.html_scroll).abs() > f64::EPSILON {
+                        self.html_scroll = next;
+                        self.dirty = true;
+                        self.shared.borrow_mut().dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -1256,27 +1280,21 @@ impl Widget for Pane {
     }
 
     fn needs_redraw(&self) -> bool {
-        // NB: a leaf WebView's default `needs_redraw` is always true, so it is
-        // deliberately NOT folded in here (it would spin the compositor). A new
-        // engine frame instead surfaces through `needs_animation_frame`.
         self.dirty
             || self.shared.borrow().dirty
             || self.search_input.as_ref().map(|i| i.needs_redraw()).unwrap_or(false)
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the frame pump alive while the HTML body view has a freshly
-        // rendered engine frame the scene hasn't painted yet.
-        self.html_view.as_ref().map(|v| v.needs_animation_frame()).unwrap_or(false)
+        // Keep the frame pump alive while an opted-in HTML-body image is still
+        // fetching/decoding, so it appears the moment it is ready.
+        self.html_loading
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
         if let Some(i) = self.search_input.as_mut() {
             i.mark_drawn();
-        }
-        if let Some(v) = self.html_view.as_mut() {
-            v.mark_drawn();
         }
     }
 }
@@ -1414,9 +1432,7 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
     }
 
     #[test]
-    fn html_mail_renders_in_sandboxed_webview_with_remote_blocked() {
-        use ui::webview::WebViewCommand;
-        use ui::webview::test_engine::TestEngine;
+    fn html_only_mail_renders_a_readable_body_not_a_broken_block() {
         let sh = shared();
         let id = {
             let st = sh.borrow();
@@ -1427,37 +1443,48 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
                 .expect("the sample HTML newsletter is present")
                 .id
         };
-        {
-            let mut doc = AutoCommit::new();
-            sh.borrow_mut().select_message(&mut doc, id);
-            sh.borrow_mut().take_intents();
-        }
-        let mut p = Pane::new(Role::Reader, sh.clone());
-        // Inject a concrete engine we can inspect for the commands the reader sends.
-        let te = TestEngine::new();
-        p.set_html_engine(te.clone());
-        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
-        p.rebuild_hits();
+        let mut p = reader_for(&sh, id, 1000.0, 820.0);
         draw(&mut p);
 
-        // The HTML body was loaded, remote content blocked by default.
-        assert_eq!(p.html_loaded_key(), Some((id, true)), "HTML body loaded with remote blocked");
-        let cmds = te.commands();
-        let nav = cmds
-            .iter()
-            .find_map(|c| if let WebViewCommand::Navigate(u) = c { Some(u.clone()) } else { None })
-            .expect("the reader navigates the HTML body");
-        assert!(nav.starts_with("data:text/html"), "renders a sandboxed data: document, not a remote URL: {nav}");
-        assert!(
-            cmds.iter().any(|c| matches!(c, WebViewCommand::SetContentFilter(Some(_)))),
-            "a remote-blocking content filter is installed"
-        );
-        // The remote-images affordance is shown (blocked by default).
+        // The HTML body renders natively (not a webview colour block), remote
+        // content blocked by default, with its toggle shown.
+        assert!(p.html_body_shown(), "the HTML body is rendered");
+        assert!(!p.html_remote_loaded(), "remote content is blocked by default");
         assert!(p.html_toggle_rect.is_some(), "the remote-images toggle is shown");
+
+        // Real, readable text came through — headings + paragraphs, not an empty
+        // or opaque block.
+        let (_, blocks) = p.html_blocks.as_ref().expect("parsed body cached");
+        let text: String = blocks
+            .iter()
+            .flat_map(|b| match b {
+                HtmlBlock::Heading(_, s) | HtmlBlock::Paragraph(s) => s.clone(),
+                _ => vec![],
+            })
+            .map(|s| s.text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(text.contains("This week in qOS"), "heading text rendered: {text}");
+        assert!(text.contains("scrollable-strip"), "body text rendered: {text}");
+
+        // The article link is hit-testable (rendered as a real link).
+        assert!(
+            p.html_links().iter().any(|(_, href)| href.contains("qos.example/weekly")),
+            "the body link is resolved and clickable"
+        );
+
+        // The blocked-state toggle uses the warning (amber) colour — never a
+        // stray accent/purple tint.
+        let theme = Theme::dark();
+        assert_eq!(
+            p.remote_toggle_icon_color(&theme),
+            theme.tokens.colors.semantic.warning,
+            "the blocked toggle paints the warning colour"
+        );
     }
 
     #[test]
-    fn plain_text_mail_does_not_use_the_webview() {
+    fn plain_text_mail_renders_without_an_html_body() {
         let sh = shared();
         // The Apollo message is plain text/plain (no HTML part).
         let id = {
@@ -1471,31 +1498,28 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         };
         let mut p = reader_for(&sh, id, 900.0, 800.0);
         draw(&mut p);
-        assert!(p.html_loaded_key().is_none(), "a plain-text mail never loads the webview");
+        assert!(!p.html_body_shown(), "a plain-text mail renders no HTML body");
         assert!(p.html_toggle_rect.is_none(), "no remote-images toggle for plain text");
     }
 
     #[test]
-    fn loading_remote_images_reloads_the_body_unblocked() {
-        use ui::webview::test_engine::TestEngine;
+    fn remote_images_toggle_flips_state_and_uses_the_correct_colour() {
         let sh = shared();
         let id = {
             let st = sh.borrow();
             st.mailbox.messages.values().find(|m| m.from.email == "news@weekly.qos.example").unwrap().id
         };
-        {
-            let mut doc = AutoCommit::new();
-            sh.borrow_mut().select_message(&mut doc, id);
-            sh.borrow_mut().take_intents();
-        }
-        let mut p = Pane::new(Role::Reader, sh.clone());
-        p.set_html_engine(TestEngine::new());
-        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
-        p.rebuild_hits();
+        let mut p = reader_for(&sh, id, 1000.0, 820.0);
         draw(&mut p);
-        assert_eq!(p.html_loaded_key(), Some((id, true)), "blocked by default");
+        let theme = Theme::dark();
+        assert!(!p.html_remote_loaded(), "blocked by default");
+        assert_eq!(
+            p.remote_toggle_icon_color(&theme),
+            theme.tokens.colors.semantic.warning,
+            "blocked state is the warning colour"
+        );
 
-        // Click the remote-images toggle → opt in, reload unblocked.
+        // Click the toggle → opt in; state flips and the colour goes neutral.
         let toggle = p.html_toggle_rect.expect("toggle shown");
         sh.borrow_mut().last_mouse = toggle.center();
         let mut doc = AutoCommit::new();
@@ -1503,10 +1527,25 @@ Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
         p.on_left_press(&mut doc, toggle.center(), &mut handled);
         assert!(handled, "toggle click consumed");
         draw(&mut p);
+        assert!(p.html_remote_loaded(), "opting in loads remote images");
         assert_eq!(
-            p.html_loaded_key(),
-            Some((id, false)),
-            "opting in reloads the body with remote content allowed"
+            p.remote_toggle_icon_color(&theme),
+            theme.tokens.colors.text_dim,
+            "loaded state is neutral, not a warning"
+        );
+
+        // Click again → back to blocked + warning.
+        let toggle = p.html_toggle_rect.expect("toggle shown");
+        sh.borrow_mut().last_mouse = toggle.center();
+        let mut handled = false;
+        p.on_left_press(&mut doc, toggle.center(), &mut handled);
+        assert!(handled, "second toggle click consumed");
+        draw(&mut p);
+        assert!(!p.html_remote_loaded(), "blocking again re-blocks remote images");
+        assert_eq!(
+            p.remote_toggle_icon_color(&theme),
+            theme.tokens.colors.semantic.warning,
+            "re-blocking returns to the warning colour (never purple)"
         );
     }
 
