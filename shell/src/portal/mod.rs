@@ -629,6 +629,7 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+        Capability::Privileged { capability, .. } => Capability::Privileged { capability, scope },
     }
 }
 
