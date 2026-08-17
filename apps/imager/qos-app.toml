@@ -59,6 +59,18 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 qos-fs = "optional@1"
+# The privileged broker. Optional: without it the app cannot write a device.
+privbroker = "optional@1"
+
+# Writing an image to a raw block device is privileged and goes through the
+# broker, never the app. The broker's raw-device-write applier is a staged
+# follow-up; declaring the capability now is what lets the app request it and
+# the broker recognise (and, until the applier lands, refuse) it, rather than
+# the app opening /dev/sdX for write directly.
+[capabilities]
+[[capabilities.privileged]]
+capability = "raw-device-write"
+reason     = "write the selected image to the device the user selects"
 
 [entrypoint]
 bin             = "bin/imager"

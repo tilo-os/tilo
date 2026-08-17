@@ -60,6 +60,18 @@ mode = "off"
 [sandbox.services]
 collab = "optional@1"
 qos-fs = "optional@1"
+# The privileged broker. Optional: without it the app cannot drive podman.
+privbroker = "optional@1"
+
+# Driving the container runtime is privileged and goes through the broker,
+# never the app. The broker's container-runtime applier is a staged
+# follow-up; declaring the capability now is what lets the app request it and
+# the broker recognise (and, until the applier lands, refuse) it, rather than
+# the app reaching podman's socket directly.
+[capabilities]
+[[capabilities.privileged]]
+capability = "container-runtime"
+reason     = "run and manage the user's containers"
 
 [entrypoint]
 bin             = "bin/containers"
