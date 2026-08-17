@@ -27,6 +27,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -1901,7 +1902,7 @@ impl FeedsApp {
         scene.fill(Fill::NonZero, t, bg.with_alpha_factor(0.96), None, &shape);
         scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 150), None, &shape);
         let glyph_col = if self.show_reader_settings { Color::WHITE } else { c.text_primary };
-        icons::gear(scene, t, btn.center(), 6.5, glyph_col);
+        Icon::Settings.draw(scene, t, icons::glyph_box(btn.center(), 18.0), glyph_col);
 
         if !self.show_reader_settings {
             return;
@@ -2290,12 +2291,11 @@ fn draw_sidebar(
 
         match &row.role {
             RowRole::Folder { collapsed, .. } => {
-                icons::chevron(
+                let chevron = if *collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
+                chevron.draw(
                     scene,
                     t,
-                    Point::new(row.rect.x0 + 16.0, cy),
-                    4.0,
-                    !collapsed,
+                    icons::glyph_box(Point::new(row.rect.x0 + 16.0, cy), 15.0),
                     c.text_dim,
                 );
                 text_x = row.rect.x0 + 30.0;
@@ -2305,7 +2305,9 @@ fn draw_sidebar(
                 match kind {
                     SmartKind::All => icons::ring(scene, t, center, 5.0, c.text_dim),
                     SmartKind::Unread => icons::dot(scene, t, center, 4.0, c.accent[5]),
-                    SmartKind::Starred => icons::star(scene, t, center, 6.0, true, c.semantic.warning),
+                    SmartKind::Starred => {
+                        Icon::Star.draw_filled(scene, t, icons::glyph_box(center, 15.0), c.semantic.warning)
+                    }
                 }
                 text_x = row.rect.x0 + 32.0;
             }
@@ -2566,14 +2568,16 @@ fn draw_list(
         );
 
         // Star, bottom-right.
-        icons::star(
-            scene,
-            t,
+        let star_box = icons::glyph_box(
             Point::new(lr.star_rect.x1 - 14.0, lr.star_rect.y0 + 16.0),
-            6.5,
-            a.starred,
-            if a.starred { c.semantic.warning } else { alpha(c.text_dim, 160) },
+            16.0,
         );
+        let star_col = if a.starred { c.semantic.warning } else { alpha(c.text_dim, 160) };
+        if a.starred {
+            Icon::Star.draw_filled(scene, t, star_box, star_col);
+        } else {
+            Icon::Star.draw(scene, t, star_box, star_col);
+        }
     }
     scene.pop_layer();
 }
@@ -2788,7 +2792,7 @@ fn draw_reader(
         let lw = measure_w(tr, label, 13.0);
         let ox = rect.x1 - pad - lw - 22.0;
         tr.draw_text(scene, label, 13.0, palette.accent, t * Affine::translate((ox, y)), None);
-        icons::external_link(scene, t, Point::new(rect.x1 - pad - 7.0, y + 7.0), 5.0, palette.accent);
+        Icon::ExternalLink.draw(scene, t, icons::glyph_box(Point::new(rect.x1 - pad - 5.0, y + 7.0), 14.0), palette.accent);
         open_rect = Some(Rect::new(ox - 4.0, y - 4.0, rect.x1 - pad + 4.0, y + 20.0));
     }
     y += 24.0;
@@ -2948,11 +2952,15 @@ fn draw_toolbar(
         scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 120), None, &RoundedRect::from_rect(b.rect, 9.0));
         let col = c.text_primary;
         match b.action {
-            ToolbarAction::AddSubscription => icons::plus(scene, t, center, 7.0, c.accent[6]),
-            ToolbarAction::Refresh => icons::refresh(scene, t, center, 8.0, col),
-            ToolbarAction::MarkAllRead => icons::check(scene, t, center, 7.0, col),
-            ToolbarAction::ImportOpml => icons::import_arrow(scene, t, center, 6.0, col),
-            ToolbarAction::ExportOpml => icons::external_link(scene, t, center, 6.0, col),
+            ToolbarAction::AddSubscription => {
+                Icon::Plus.draw(scene, t, icons::glyph_box(center, 18.0), c.accent[6])
+            }
+            ToolbarAction::Refresh => Icon::RotateCw.draw(scene, t, icons::glyph_box(center, 18.0), col),
+            ToolbarAction::MarkAllRead => Icon::Check.draw(scene, t, icons::glyph_box(center, 18.0), col),
+            ToolbarAction::ImportOpml => Icon::Download.draw(scene, t, icons::glyph_box(center, 17.0), col),
+            ToolbarAction::ExportOpml => {
+                Icon::ExternalLink.draw(scene, t, icons::glyph_box(center, 16.0), col)
+            }
         }
         let _ = tr; // tooltips are not drawn statically
     }
@@ -2988,16 +2996,11 @@ fn draw_chrome_button(
     scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 150), None, &shape);
     let center = rect.center();
     match glyph {
-        ChromeGlyph::Menu => icons::hamburger(scene, t, center, 8.0, c.text_primary),
-        ChromeGlyph::Close => {
-            let r = 6.0;
-            let s = Stroke::new(1.8);
-            scene.stroke(&s, t, c.text_primary, None,
-                &Line::new(Point::new(center.x - r, center.y - r), Point::new(center.x + r, center.y + r)));
-            scene.stroke(&s, t, c.text_primary, None,
-                &Line::new(Point::new(center.x + r, center.y - r), Point::new(center.x - r, center.y + r)));
+        ChromeGlyph::Menu => Icon::Menu.draw(scene, t, icons::glyph_box(center, 20.0), c.text_primary),
+        ChromeGlyph::Close => Icon::X.draw(scene, t, icons::glyph_box(center, 18.0), c.text_primary),
+        ChromeGlyph::Back => {
+            Icon::ChevronLeft.draw(scene, t, icons::glyph_box(center, 18.0), c.text_primary)
         }
-        ChromeGlyph::Back => icons::back_arrow(scene, t, center, 6.0, c.text_primary),
     }
 }
 
