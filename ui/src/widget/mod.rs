@@ -109,6 +109,28 @@ pub trait Widget {
     fn set_focus(&mut self, _focused: bool) {}
     fn is_focused(&self) -> bool { false }
 
+    /// Whether this widget paints its **own** keyboard-focus indicator (a focus
+    /// ring, a caret, an inner-field ring) while focused. When it returns
+    /// `false`, the host ([`crate::app::App`]) paints a **shared** themed focus
+    /// ring around this widget's [`get_rect`](Widget::get_rect) so keyboard
+    /// focus is never invisible.
+    ///
+    /// The default derives from [`is_focused`](Widget::is_focused): a widget
+    /// that tracks its own focus state — which every shared `ui` primitive does,
+    /// via `set_focus`/`is_focused` — is assumed to render it too, so the host
+    /// suppresses the shared ring to avoid a double indicator. A widget that
+    /// leaves `is_focused` at its `false` default (e.g. an app-level custom row
+    /// or card that is `is_focusable` + has a rect but paints no ring of its
+    /// own) therefore gets the shared ring **for free**: making a control
+    /// keyboard-navigable takes only `is_focusable() -> true` and a correct
+    /// `get_rect()`.
+    ///
+    /// Override explicitly to break that coupling: return `true` to keep the
+    /// host's ring off while intentionally drawing nothing (rare), or `false`
+    /// to opt back into the shared ring even while tracking `is_focused` for a
+    /// non-ring appearance change.
+    fn draws_own_focus_ring(&self) -> bool { self.is_focused() }
+
     /// Whether this widget is an **open modal** that should trap keyboard
     /// focus. While any widget in the tree returns `true`, the host
     /// ([`crate::app::App`]) restricts Tab/Shift+Tab and directional focus to
