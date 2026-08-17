@@ -72,6 +72,85 @@ IME, no a11y, no caret-by-click. Several offenders also rewrite the whole CRDT
 field every keystroke (O(n²) tombstone churn — see `ui/HIG.md` §6). The
 calibration exemplar is feeds' `Modal::AddSubscription`.
 
+### 2026-08-17 re-sweep — authoritative current status (supersedes the tables below)
+
+A full fresh sweep of every app's text-entry surfaces (grepping
+`push_str`/`pop`/`insert`/`splice` on `Key::Character`/`Backspace`, fake caret
+strokes, and `TextInput`/`SearchField`/`EditableLabel`/`Autocomplete` adoption).
+The pre-existing tables in this section are historical; this block is the current
+truth. **Excluded this round (owned by other agents): `software_store`,
+`snippets`, `totp` — untouched.**
+
+The shared primitives all exist and fit: `TextInput::local()` (self-contained
+field — owns caret/selection/clipboard, read `.value()`, `with_enter_submits`/
+`take_submit`), `TextInput::new(path)` (CRDT-bound), `with_secret(true)` (masked),
+`multiline(true)`, `SearchField` (magnifier pill wrapping a local `TextInput`),
+`EditableLabel` (`EditOutcome::Committed`, blank-keeps-previous rename semantics),
+`Autocomplete` (a `TextInput` + suggestion dropdown). The embedding pattern for
+the monolithic immediate-mode apps is proven by `contacts`/`api_tester`: hold the
+widget as a struct field, place with `apply_layout_external(rect)`, forward
+`sync`/`draw`/`handle_event` (pass the app's own `node_id` + `taffy` + a throwaway
+`focus_target` sink), and drive focus explicitly with `set_focus`.
+
+**Already on the shared widget — nothing to do (verified this sweep):**
+
+| app | surface | now uses |
+|---|---|---|
+| weather | city search | `Autocomplete` (wraps `TextInput`) — `core.rs:136` |
+| feeds | add / rename / unsubscribe | `ModalBody` + real `TextInput` — `modal.rs:75` |
+| maps | search / origin / dest / download | `TextInput` ×3 + `Autocomplete` — `app.rs:214-304` |
+| music | playlist name prompt / library search | `ModalDialog<PromptBody>` + `TextInput` — `app.rs:512,228` |
+| typst_editor | source editor | `ui::CodeEditor` (prior wave) |
+| chat | composer (main + thread) | `TextInput` multiline — `app.rs:292-293` |
+| ebook | inline renames | `EditableLabel` — `app.rs:116` |
+| containers | single-field prompt (new-volume / tag / pull) | `ModalDialog<PromptBody>` — `app.rs:116` |
+| imager | 6 profile fields incl. **secret** password | `TextInput` (+ `with_secret`) — `customize.rs:105-135` |
+| pdf_viewer | inline comment / reply editor | `TextInput` — `app.rs:300` |
+| slides | deck title | `TextInput` — `app.rs:527` |
+
+**Still hand-rolled — MIGRATE (this round's scope):**
+
+| app | surface | state → key-mutation | verdict / target | effort |
+|---|---|---|---|---|
+| disks | format-confirm field | `app.rs:292 confirm_input` → `:2108 push(ch)` | MIGRATE → `TextInput::local` | S |
+| pdf_viewer | find query | `app.rs:406 query` → `app_events.rs:918 push(ch)` | MIGRATE → `SearchField` | S |
+| imager | "type device name to arm" confirm | `app.rs:104 confirm` → `:1421 push(c)` | MIGRATE → `TextInput::local` (paste-safety caveat) | S |
+| vpn | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | MIGRATE → `TextInput::local` ×2 | M |
+| monitor | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | MIGRATE → `SearchField` | M |
+| logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE → `SearchField` (mirror to doc) | M |
+| hex_editor | find search | `view.rs:69 search_query` → `:1285 push_str` | MIGRATE → `SearchField` (adds missing caret) | M |
+| hex_editor | go-to offset | `view.rs:77 goto_query` → `:1316 push_str` | MIGRATE → `TextInput::local` (hex parse stays; **not** `NumberInput`) | S |
+| sheets | name-box / go-to | `app.rs:139 NameBoxEdit` → `:3517 insert` | MIGRATE → `TextInput::local` (enter_submits) | M |
+| sheets | sheet-tab rename | `app.rs:127 TabRename` → `:3403 insert` | MIGRATE → `EditableLabel` | S |
+| word-processor | find / replace bar | `widget.rs:1595/1596` → `:2753 push_str` | MIGRATE → `TextInput::local` ×2 | M |
+| chat | inline channel rename | `app.rs:330 rename` → `events.rs:925 push_str` | MIGRATE → `EditableLabel` | S |
+| chat | edit-sent-message | `app.rs:317 editing` → `events.rs:950 insert_str` | MIGRATE → `TextInput` multiline | M |
+| ebook | on-page note composer | `app.rs:587 composing` → `:2845 note.push_str` | MIGRATE → `TextInput` multiline (CRDT `Text`) | M/L |
+| containers | Create-container (5 text fields) | `doc.rs:285 CreateField` → `panels.rs:1742` | MIGRATE → `TextInput::local` ×5 | M |
+| db_client | connect-modal 7 fields (incl. **password**) | `connect_modal.rs:42` → `:224 field_mut().push_str` | MIGRATE → `TextInput::local` + `with_secret` for password | M/L |
+| remote | draft name/host/user/group + search | `app.rs:179`/`model.rs:217` → `:654 push_str` | MIGRATE → `TextInput::local` (port stays numeric-filtered) | M/L |
+| slides | speaker-notes box | `app.rs:351 editing_notes` → `:2503 splice_notes` | MIGRATE → `TextInput` multiline (CRDT `Text`) | M |
+
+**Genuine KEEP-with-reason (document/structured engines whose buffer *is* the
+app, or a non-plain-text field):**
+
+| app | surface | why KEEP |
+|---|---|---|
+| terminal | PTY grid | the app *is* the grid; no side text field today |
+| code_editor | multiline code editor | full editor; adopts `ui::CodeEditor` (gap 2) — not a plain field |
+| calculator | mathfield + keypad | 2D structured math editor; keypad is a button grid |
+| sheets | grid cell/formula editor (`grid.rs:51`) | formula point-mode (click a cell to insert its ref) |
+| hex_editor | byte grid (`view.rs:698`) | the hex canvas cursor is the editor |
+| word-processor | rich-text document editor | paged rich-text CRDT editor (gap 3) |
+| slides | on-canvas free-position text | arbitrary position/rotation, not a rectangular inline field |
+| containers | Create-container **Image** field (`combobox.rs`) | typeable free-text ComboBox (value + filtered suggestions) — documented `ui` gap 6 |
+| ebook | `num_edit` page field (`app.rs:651`) | digit/`.`-filtered numeric entry — `NumberInput` shape, not plain text |
+
+**Counts.** Text-input surfaces across the fleet (excl. the 3 owned elsewhere):
+**11 apps already fully on the shared widget** (incl. the done halves of the 6
+partially-migrated apps), **18 surfaces across 15 apps still hand-rolled and in
+scope to MIGRATE**, **9 genuine KEEP-with-reason** engines/fields.
+
 ### Pure non-adoption — a fitting widget already exists (do these first)
 
 | file:symbol | app | evidence | ui alt | effort | risk |
