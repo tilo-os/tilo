@@ -16,6 +16,7 @@ pub mod places_sidebar;
 pub mod text_layout;
 pub mod toolbar;
 pub mod views;
+pub mod search_provider;
 pub mod files_app;
 
 pub use command::{FileCommand, CommandSink};
