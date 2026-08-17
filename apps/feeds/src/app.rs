@@ -5492,6 +5492,10 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         };
         dispatch(&mut a, &mut doc, &wheel);
+        // The shared Scrollable eases the offset toward its target over frames;
+        // settle the ease so the test reads the resolved offset, not a mid-glide
+        // value (matches the file-explorer/settings/tube harnesses).
+        a.list_scroll_ctl.settle_scroll();
         assert!(
             a.list_scroll() > 0.0,
             "a wheel scrolls the list through the shared Scrollable (offset {})",
