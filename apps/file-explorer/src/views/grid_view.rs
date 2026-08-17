@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use crate::command::CommandSink;
 use crate::model::{Entry, ViewMode};
-use crate::views::file_view::{DropTargets, FileView};
+use crate::views::file_view::{DropTargets, FileView, ThumbCtx};
 use ui::widget::Widget;
 use ui::SelectionModel;
 use vello::kurbo::{Point, Rect};
@@ -34,6 +34,7 @@ pub fn build_grid(
     rename_rect: Rc<Cell<Option<Rect>>>,
     cursor: Point,
     drop_targets: DropTargets,
+    thumbs: Option<ThumbCtx>,
 ) -> Box<dyn Widget> {
     Box::new(
         FileView::new(entries, selection, sink)
@@ -41,6 +42,7 @@ pub fn build_grid(
             .with_scale(scale)
             .with_rename(renaming, rename_rect)
             .with_cursor(cursor)
-            .with_drop_targets(drop_targets),
+            .with_drop_targets(drop_targets)
+            .with_thumbs(thumbs),
     )
 }

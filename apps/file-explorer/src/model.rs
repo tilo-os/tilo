@@ -62,6 +62,24 @@ pub fn read_sync_state(path: &Path) -> Option<SyncState> {
     }
 }
 
+/// The extended attribute the qOS FUSE driver answers with a file's **thumbnail**
+/// (a small PNG the host generates as metadata, ahead of / independent of the
+/// content). Kept in lock-step with `fs::THUMB_XATTR`.
+pub const THUMB_XATTR: &str = "user.qos.thumb";
+
+/// Read a host-provided thumbnail (raw PNG bytes) for `path` from the
+/// [`THUMB_XATTR`] extended attribute. `None` when the driver has no preview for
+/// it (a plain local file off any workspace mount, a non-previewable type, or
+/// content not yet local on the host). A single `getxattr`, exactly the metadata
+/// channel the FUSE driver exposes — the file manager never re-decodes a file
+/// the host already previewed.
+pub fn read_thumb_xattr(path: &Path) -> Option<Vec<u8>> {
+    match xattr::get(path, THUMB_XATTR) {
+        Ok(Some(bytes)) if !bytes.is_empty() => Some(bytes),
+        _ => None,
+    }
+}
+
 /// The qOS workspace roots the FUSE driver mounts (first-class sidebar
 /// locations, and the dirs whose entries carry sync state). Normally just
 /// [`WORKSPACE_ROOT`]; `QOS_WORKSPACE_ROOTS` (colon-separated) overrides it for
@@ -246,6 +264,20 @@ mod sync_state_tests {
         assert_eq!(read_sync_state(&f), Some(SyncState::Projected));
         xattr::set(&f, SYNC_XATTR, b"local").unwrap();
         assert_eq!(read_sync_state(&f), Some(SyncState::Local));
+    }
+
+    #[test]
+    fn read_thumb_xattr_round_trips_a_real_host_preview() {
+        // The FS-metadata channel: a host writes a preview into `user.qos.thumb`
+        // and the file manager reads the exact bytes back — the same `getxattr`
+        // the driver answers. Exercised on a tmpfile so it needs no live driver.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("photo.png");
+        std::fs::write(&f, b"content").unwrap();
+        assert_eq!(read_thumb_xattr(&f), None, "absent preview reads as None");
+        let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+        xattr::set(&f, THUMB_XATTR, &png).unwrap();
+        assert_eq!(read_thumb_xattr(&f), Some(png), "the host preview bytes come back verbatim");
     }
 
     #[test]

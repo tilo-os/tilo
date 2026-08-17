@@ -1229,13 +1229,17 @@ impl Filesystem for QuickFS {
         // The thumbnail attribute carries the generated PNG preview (binary),
         // served ahead of / independent of the file's content bytes.
         if name.to_str() == Some(crate::syncstate::THUMB_XATTR) {
-            let Some(png) = self.thumbnail_for(ino.0) else {
-                // Not a previewable type, no local content to generate from, and
-                // no peer has gossiped one: the attribute is simply absent.
-                reply.error(to_errno(libc::ENODATA));
-                return;
-            };
-            reply_xattr_bytes(reply, &png, size);
+            match self.thumbnail_for(ino.0) {
+                // The kernel caps a single xattr value at 64 KiB, so a larger
+                // preview cannot be delivered this way — report it absent and let
+                // the client fall back rather than fail the read with ERANGE.
+                Some(png) if png.len() <= crate::thumbs::MAX_XATTR_THUMB => {
+                    reply_xattr_bytes(reply, &png, size);
+                }
+                // Not a previewable type, no local content to generate from, no
+                // peer has gossiped one, or an oversize preview: simply absent.
+                _ => reply.error(to_errno(libc::ENODATA)),
+            }
             return;
         }
         if name.to_str() != Some(crate::syncstate::SYNC_XATTR) {
@@ -1355,7 +1359,7 @@ mod thumb_tests {
         let thumb = fs.thumbnail_for(ino).expect("host generates a preview");
         let decoded = thumbnail::decode_png(&thumb).expect("it is a valid PNG");
         assert!(decoded.is_valid());
-        assert_eq!(decoded.max_edge(), thumbnail::DEFAULT_EDGE, "downscaled to target");
+        assert_eq!(decoded.max_edge(), crate::thumbs::HOST_EDGE, "downscaled to the host preview size");
         assert!(
             decoded.max_edge() < png.len() as u32,
             "the preview is far smaller than the source"

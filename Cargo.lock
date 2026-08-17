@@ -3942,12 +3942,14 @@ dependencies = [
  "chrono",
  "dirs 6.0.0",
  "humansize",
+ "image",
  "infer",
  "mime_guess",
  "open",
  "qdoc",
  "taffy",
  "tempfile",
+ "thumbnail",
  "tracing",
  "tracing-subscriber",
  "trash",
@@ -3956,6 +3958,7 @@ dependencies = [
  "walkdir",
  "winit",
  "xattr",
+ "zip 4.6.1",
 ]
 
 [[package]]
