@@ -7111,7 +7111,25 @@ fn capability_label(cap: &Capability) -> String {
             Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
             _ => "Network access".to_string(),
         },
+        Capability::Privileged { capability, .. } => privileged_capability_label(capability),
     }
+}
+
+/// Human label for a privileged-broker capability, for the consent prompt and
+/// the Permissions tab. Falls back to the raw name for a capability this shell
+/// build does not have a phrase for, so a newer app's capability still reads
+/// as *something* rather than vanishing.
+fn privileged_capability_label(capability: &str) -> String {
+    let phrase = match capability {
+        "firewall-admin" => "Change firewall rules",
+        "block-device" => "Manage disks and partitions",
+        "raw-device-write" => "Write directly to a disk",
+        "container-runtime" => "Run containers",
+        "vpn-tun" => "Create a VPN tunnel",
+        "packet-capture" => "Capture network traffic",
+        other => return format!("Privileged system access ({other})"),
+    };
+    phrase.to_string()
 }
 
 /// Return a copy of `cap` with its `scope` field replaced. The portal
@@ -7127,6 +7145,7 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Print { .. } => Capability::Print { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
+        Capability::Privileged { capability, .. } => Capability::Privileged { capability, scope },
     }
 }
 

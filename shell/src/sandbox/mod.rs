@@ -23,9 +23,11 @@
 //!   [`profile`].
 
 pub mod landlock_shim;
+pub mod privileged_broker;
 pub mod profile;
 pub mod seccomp;
 
 pub use landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
+pub use privileged_broker::WorkspaceConsent;
 pub use profile::SandboxProfile;
 pub use seccomp::{cache_blob, cache_blob_at, compile_workspace_seccomp};

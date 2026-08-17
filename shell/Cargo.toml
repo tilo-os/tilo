@@ -209,6 +209,10 @@ png.workspace = true
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
+# The trusted privileged broker. The compositor is "outside the sandbox",
+# so it hosts the broker: `sandbox::WorkspaceConsent` supplies the broker's
+# consent gate straight from the workspace's capability list.
+qos-privileged-broker = { path = "../crates/system/qos-privileged-broker" }
 # The reusable video-streaming stack (H.264 encode/decode, per-share frame
 # transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
 # re-export from here so the compositor's surface streaming and the chat call

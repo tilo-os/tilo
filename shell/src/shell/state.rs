@@ -695,6 +695,24 @@ pub enum Capability {
         hosts: Option<Vec<String>>,
         scope: GrantScope,
     },
+    /// A privileged system operation performed by the trusted broker on the
+    /// app's behalf — a firewall change, a block-device write, a container,
+    /// a VPN tunnel. `capability` is the kebab-case capability name the
+    /// package declared in its `[capabilities]` manifest block (e.g.
+    /// `"firewall-admin"`).
+    ///
+    /// This is the consent side of the privileged-broker model. Like every
+    /// other variant it stores as a [`CapOverride`] — here on
+    /// `Scope::Device("privileged:<name>")` with `Verb::Admin` — so a
+    /// privileged grant is prompted, shown in the Permissions tab, persisted
+    /// and revoked exactly like a camera or network grant. Granting it adds
+    /// **no** bind mount and reaches no kernel surface itself: the broker
+    /// does the work, gated on this consent. Absence of the grant is the
+    /// enforcement (deny-by-default).
+    Privileged {
+        capability: String,
+        scope: GrantScope,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -863,6 +881,16 @@ impl Capability {
                     .collect(),
                 None => vec![(Scope::NetHost("*".into()), Verb::Write)],
             },
+            // A privileged capability is governance-level: it asks for
+            // `Admin` on its `privileged:<name>` device scope. The broker
+            // asks the same question of `decide_capability`, so the grant the
+            // prompt stores here is exactly what authorises the broker.
+            Capability::Privileged { capability, .. } => {
+                vec![(
+                    Scope::Device(format!("privileged:{capability}")),
+                    Verb::Admin,
+                )]
+            }
         }
     }
 
@@ -875,7 +903,8 @@ impl Capability {
             | Capability::Screencast { scope }
             | Capability::RemoteDesktop { scope }
             | Capability::Print { scope }
-            | Capability::Network { scope, .. } => *scope,
+            | Capability::Network { scope, .. }
+            | Capability::Privileged { scope, .. } => *scope,
         }
     }
 
@@ -892,6 +921,14 @@ impl Capability {
                 } else {
                     FsMode::Read
                 },
+                scope,
+            }),
+            // Privileged-capability grants come first: they are Device scopes
+            // too, distinguished by the `privileged:` prefix. Without this the
+            // Permissions tab would not render a firewall/disk/VPN grant and
+            // `lookup` would re-prompt on every brokered action.
+            Scope::Device(d) if d.starts_with("privileged:") => Some(Capability::Privileged {
+                capability: d.trim_start_matches("privileged:").to_string(),
                 scope,
             }),
             Scope::Device(d) if d == "camera" => Some(Capability::Camera { scope }),
@@ -4432,6 +4469,56 @@ mod bootstrap_default_tests {
         assert!(
             tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
             "at least one default workspace should seed >=1 collaborator"
+        );
+    }
+
+    #[test]
+    fn privileged_capability_round_trips_through_the_grant_flow() {
+        // A privileged grant is an ordinary capability: it stores on
+        // `privileged:<name>` with Admin, authorises exactly that scope+verb,
+        // renders back in the Permissions tab, and grants nothing wider.
+        let mut ws = Workspace::new(WorkspaceId::new(), "System");
+        let ids = ws.grant_app(
+            "dev.qos.firewall",
+            &Capability::Privileged {
+                capability: "firewall-admin".to_string(),
+                scope: GRANT_ALWAYS,
+            },
+        );
+        assert_eq!(ids.len(), 1, "one privileged capability is one grant");
+
+        let stored = &ws.capabilities[0];
+        assert_eq!(
+            stored.scope,
+            Scope::Device("privileged:firewall-admin".to_string())
+        );
+        assert_eq!(stored.verb, Verb::Admin);
+
+        // The broker's consent question — Admin on the privileged scope — is
+        // allowed; the same app is granted nothing on a different privileged
+        // scope, and Admin on the *workspace* (room governance) is not
+        // conferred by a device-scoped grant.
+        let actor = ws.actor_for_app("dev.qos.firewall");
+        assert!(ws.allows(
+            &actor,
+            &ResourceRef::Device("privileged:firewall-admin".into()),
+            Verb::Admin
+        ));
+        assert!(!ws.allows(
+            &actor,
+            &ResourceRef::Device("privileged:block-device".into()),
+            Verb::Admin
+        ));
+        assert!(!ws.allows(&actor, &ResourceRef::Workspace, Verb::Admin));
+
+        // It renders back as the same privileged descriptor for the tab.
+        let rendered = Capability::from_capability(stored).unwrap();
+        assert_eq!(
+            rendered,
+            Capability::Privileged {
+                capability: "firewall-admin".to_string(),
+                scope: GRANT_ALWAYS,
+            }
         );
     }
 

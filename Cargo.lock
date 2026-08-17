@@ -13190,6 +13190,7 @@ dependencies = [
  "qos-callstream",
  "qos-desktop-entry",
  "qos-power-mgmt",
+ "qos-privileged-broker",
  "qos-startup-metrics",
  "qos-user-identity",
  "rand 0.8.5",
