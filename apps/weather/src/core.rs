@@ -295,6 +295,22 @@ impl Core {
         }
     }
 
+    /// Open a saved city by id: select it, reset the forecast scroll, refresh
+    /// its forecast, and raise the show-detail push intent — the same path a
+    /// tap on the city list takes ([`OverAction::SelectLocation`]). Returns
+    /// `false` (touching nothing) for an id that is not a saved city. Used by
+    /// the app's Ctrl+K search activation.
+    pub fn open_location(&mut self, id: LocationId) -> bool {
+        let Some(pos) = self.model.locations.iter().position(|l| l.id == id) else {
+            return false;
+        };
+        self.model.select(pos);
+        self.scroll = 0.0;
+        self.refresh_selected();
+        self.nav_request = Some(NavIntent::ShowDetail);
+        true
+    }
+
     fn refresh_selected(&mut self) {
         if let Some(loc) = self.model.selected_location() {
             let (id, lat, lon) = (loc.id, loc.latitude, loc.longitude);
