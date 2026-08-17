@@ -115,7 +115,7 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 | disks ✅ | format-confirm field | `app.rs:292 confirm_input` → `:2108 push(ch)` | **DONE** → `TextInput::local` (plain chrome; app keeps its success-border box) | S |
 | pdf_viewer | find query | `app.rs:406 query` → `app_events.rs:918 push(ch)` | MIGRATE → `SearchField` | S |
 | imager | "type device name to arm" confirm | `app.rs:104 confirm` → `:1421 push(c)` | MIGRATE → `TextInput::local` (paste-safety caveat) | S |
-| vpn | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | MIGRATE → `TextInput::local` ×2 | M |
+| vpn ✅ | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | **DONE** → `TextInput::local` ×2 (plain chrome inside app boxes; Tab cycles focus) | M |
 | monitor | process filter | `app.rs:265 filter:String` → `:2656 push(ch)` | MIGRATE → `SearchField` | M |
 | logs | filter search | Automerge `Text` `"search"` → `app.rs:1424 search_push` | MIGRATE → `SearchField` (mirror to doc) | M |
 | hex_editor | find search | `view.rs:69 search_query` → `:1285 push_str` | MIGRATE → `SearchField` (adds missing caret) | M |
