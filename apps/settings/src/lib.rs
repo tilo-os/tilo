@@ -32,6 +32,7 @@ pub mod dispatcher;
 pub mod panes;
 pub mod prefs;
 pub mod region;
+pub mod search_provider;
 pub mod settings_app;
 pub mod shots;
 pub mod sidebar;
