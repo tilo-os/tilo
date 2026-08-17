@@ -470,14 +470,13 @@ struct Registry {
     entry: Vec<RegistryEntry>,
 }
 
+/// The writable store's root — the only directory this binary installs
+/// into. Resolved by `pkg::store` rather than here, so that "where the
+/// user's packages live" has one answer for the installer and the
+/// launcher both; two answers is what let `list` and the palette
+/// disagree about what is installed.
 fn data_root() -> Result<PathBuf, Error> {
-    // Honour QOS_APPS_DATA_DIR when set (integration tests, dev
-    // installs). Matches what qos-launcher::registry reads.
-    if let Some(dir) = std::env::var_os("QOS_APPS_DATA_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    let base = dirs::data_dir().ok_or(Error::NoDataDir)?;
-    Ok(base.join("qos-apps"))
+    pkg::store::user_data_dir().ok_or(Error::NoDataDir)
 }
 
 fn registry_path() -> Result<PathBuf, Error> {
