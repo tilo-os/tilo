@@ -504,7 +504,7 @@ impl Widget for DbClientApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         let p = theme.db();
         // App background.
@@ -548,7 +548,7 @@ impl Widget for DbClientApp {
 
         // Modal overlay drawn last (top layer).
         if self.modal.is_open() {
-            self.modal.draw(scene, transform, tr, theme, self.rect);
+            self.modal.draw(scene, transform, tr, theme, self.rect, presence);
         }
     }
 
