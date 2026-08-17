@@ -227,6 +227,24 @@ pub fn spawn_render_thread(
                 // simpler than an explicit Resize variant and keeps
                 // every wgpu call on the same thread that owns the
                 // surface.
+                //
+                // Clamp the requested size to the range GPU texture allocation
+                // allows before resizing. `vello::resize_surface` (and the
+                // `create_texture` underneath it) PANIC on a zero dimension and on
+                // anything past the device's `max_texture_dimension_2d`. A
+                // fullscreen configure can momentarily report a 0 dimension, and a
+                // borderless-fullscreen surface spanning a large/combined output
+                // can exceed the GPU limit (8192 on default limits) — either would
+                // panic the render worker and take the whole app down with it
+                // (that was the "fullscreen crashes the app" bug). The init path
+                // already clamps with `.max(1)`; mirror it here and additionally
+                // bound to the device max, then render at the clamped size so the
+                // frame's `RenderParams` match the surface.
+                let max_dim = render_cx.devices[surface.dev_id]
+                    .device
+                    .limits()
+                    .max_texture_dimension_2d;
+                let (width, height) = clamp_surface_dims(width, height, max_dim);
                 if surface.config.width != width || surface.config.height != height {
                     render_cx.resize_surface(&mut surface, width, height);
                 }
@@ -279,6 +297,27 @@ pub fn spawn_render_thread(
         frame_complete,
         join: Some(join),
     }
+}
+
+/// Clamp a requested surface size into the range GPU texture allocation allows.
+///
+/// `vello::resize_surface` — and the `wgpu::Device::create_texture` underneath it
+/// — panic on a **zero** dimension and on anything past the device's
+/// `max_texture_dimension_2d`. The worker's resize path calls `resize_surface`
+/// directly, so an un-clamped size panics the render thread and takes the whole
+/// app with it. Two real triggers, both on the fullscreen transition:
+///
+/// * a Wayland fullscreen configure can momentarily report a `0` dimension;
+/// * a borderless-fullscreen surface spanning a large or combined output can
+///   exceed the GPU limit (8192 under `wgpu`'s default limits).
+///
+/// The init-time surface creation already guards zero with `.max(1)`; this is the
+/// same guard for the resize path, plus an upper bound at the device max. A size
+/// past the limit renders at the clamped size and the compositor scales it — a
+/// slightly-soft frame instead of a dead app.
+pub(crate) fn clamp_surface_dims(width: u32, height: u32, max_dim: u32) -> (u32, u32) {
+    let max_dim = max_dim.max(1);
+    (width.clamp(1, max_dim), height.clamp(1, max_dim))
 }
 
 /// The seven GPU steps that used to live inline in
@@ -358,7 +397,13 @@ fn render_one_frame(
             panic!("wgpu surface lost — backend-level failure");
         }
         vello::wgpu::CurrentSurfaceTexture::Validation => {
-            panic!("wgpu surface validation error");
+            // A validation error acquiring the swapchain image is recoverable —
+            // it typically means the surface config drifted from the window (a
+            // fullscreen transition is the classic trigger). Reconfigure and ask
+            // main to redraw rather than panicking the worker and killing the app.
+            tracing::warn!("wgpu surface validation error — reconfiguring");
+            render_cx.configure_surface(surface);
+            return FrameOutcome::Reconfigured;
         }
     };
 
@@ -404,4 +449,35 @@ fn render_one_frame(
     //    nudge the queue.
     let _ = device_handle.device.poll(vello::wgpu::PollType::Poll);
     FrameOutcome::Presented
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_surface_dims;
+
+    /// The fullscreen-crash regression: the resize path must never hand
+    /// `vello::resize_surface` a zero or over-limit dimension (it panics on both,
+    /// killing the render worker and the app). `clamp_surface_dims` is exactly the
+    /// guard the production resize call runs before `resize_surface`.
+    #[test]
+    fn clamp_surface_dims_guards_zero_and_over_limit() {
+        const MAX: u32 = 8192; // wgpu default `max_texture_dimension_2d`
+
+        // A transient 0 dimension from a fullscreen configure → clamped to 1, never 0.
+        assert_eq!(clamp_surface_dims(0, 0, MAX), (1, 1));
+        assert_eq!(clamp_surface_dims(1920, 0, MAX), (1920, 1));
+        assert_eq!(clamp_surface_dims(0, 1080, MAX), (1, 1080));
+
+        // A combined/large fullscreen output past the GPU limit → clamped to MAX,
+        // never above (which is what panics on allocation).
+        assert_eq!(clamp_surface_dims(10_000, 4320, MAX), (MAX, 4320));
+        assert_eq!(clamp_surface_dims(15_360, 8640, MAX), (MAX, MAX));
+
+        // An ordinary in-range size passes through untouched.
+        assert_eq!(clamp_surface_dims(1920, 1080, MAX), (1920, 1080));
+        assert_eq!(clamp_surface_dims(3840, 2160, MAX), (3840, 2160));
+
+        // A degenerate device limit of 0 still yields a valid (non-panicking) size.
+        assert_eq!(clamp_surface_dims(1920, 1080, 0), (1, 1));
+    }
 }
