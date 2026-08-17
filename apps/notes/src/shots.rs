@@ -214,6 +214,8 @@ fn settle_layout(
 /// - `Some("slash_applied")` — pick a `/` command by click; the trigger is
 ///   stripped and the block converts.
 /// - `Some("heading")` — type a `# ` shortcut to promote a paragraph to an H1.
+/// - `Some("inline_markdown")` — type the inline markdown shortcuts
+///   (`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`) live.
 /// - `Some("title_edit")` — open the prominent title's inline rename.
 /// - `Some("recipes")` — select the Recipes page (shows a numbered list).
 pub fn render_to_path(
@@ -491,6 +493,22 @@ fn drive_scenario(
             send(app, &named_key(winit::keyboard::NamedKey::Enter));
             for s in ["S", "h", "i", "p", " ", "b", "y", " ", "Q", "3"] {
                 send(app, &char_key(s));
+            }
+        }
+        Some("inline_markdown") => {
+            // Fresh page → type the inline markdown shortcuts live. Each one
+            // closes on its delimiter and becomes a real formatting run
+            // (bold / italic / inline code / strikethrough), sharing its trigger
+            // detection with the word processor.
+            let btn = app.sidebar_new_page_btn_center_for_test();
+            send(app, &cursor(btn.x, btn.y));
+            send(app, &mouse(ElementState::Pressed, MouseButton::Left));
+            for c in "# Formatting".chars() {
+                send(app, &char_key(&c.to_string()));
+            }
+            send(app, &named_key(winit::keyboard::NamedKey::Enter));
+            for c in "You type **bold**, *italic*, `code` and ~~strikethrough~~ inline.".chars() {
+                send(app, &char_key(&c.to_string()));
             }
         }
         Some("title_edit") => {
