@@ -28,6 +28,7 @@ pub mod paginate;
 pub mod paint;
 pub mod portal;
 pub mod reader_theme;
+pub mod search_provider;
 pub mod xhtml;
 
 pub use app::BooksApp;
