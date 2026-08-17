@@ -195,7 +195,45 @@ impl<W: Widget> Harness<W> {
             delta: MouseScrollDelta::LineDelta(0.0, lines),
             phase: TouchPhase::Moved,
         });
-        self.frame();
+        // Smooth scrolling eases the rendered offset toward its target over
+        // several frames (via `sync`); pump frames until the laid-out tree
+        // stops moving so callers observe the settled scroll position rather
+        // than a mid-glide frame. The overlay fade doesn't move rects, so this
+        // returns as soon as the offset has converged.
+        self.settle_scroll();
+    }
+
+    /// Pump layout frames until the smooth-scroll ease settles (the tree's
+    /// laid-out rects stop moving). Bounded; runs at least one frame.
+    fn settle_scroll(&mut self) {
+        let mut prev = 0u64;
+        for i in 0..240 {
+            self.frame();
+            let fp = self.layout_fingerprint();
+            if i > 0 && fp == prev {
+                break;
+            }
+            prev = fp;
+        }
+    }
+
+    /// A cheap fingerprint of every widget's laid-out rect (pixel-rounded), so
+    /// `settle_scroll` can tell when the scroll animation has come to rest.
+    fn layout_fingerprint(&self) -> u64 {
+        fn walk(w: &dyn Widget, acc: &mut u64) {
+            let r = w.get_rect();
+            for v in [r.x0, r.y0, r.x1, r.y1] {
+                *acc = acc
+                    .wrapping_mul(1099511628211)
+                    .wrapping_add((v.round() as i64) as u64);
+            }
+            for c in w.children() {
+                walk(c, acc);
+            }
+        }
+        let mut acc = 1469598103934665603u64;
+        walk(&self.app, &mut acc);
+        acc
     }
 
     /// Inject a full left click (move → press → release) at a point, then relayout.

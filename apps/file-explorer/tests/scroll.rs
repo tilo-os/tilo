@@ -107,6 +107,25 @@ impl Harness {
         self.widget.apply_layout(&self.taffy, self.self_node, Point::ORIGIN);
     }
 
+    /// Pump the smooth-scroll ease to rest. A wheel now drives an eased target
+    /// that the rendered offset chases over several frames (via `sync`), so a
+    /// single relayout would observe a mid-glide position rather than the final
+    /// scroll. Pump sync+relayout until the applied offset stops changing
+    /// (bounded); a no-op once already settled. Thumb-drag scrolling is instant
+    /// and does not need this.
+    fn settle_scroll(&mut self) {
+        let mut prev = applied_offset(self);
+        for _ in 0..400 {
+            self.widget.sync(&mut self.state.doc, &self.state.root);
+            self.relayout();
+            let now = applied_offset(self);
+            if (now - prev).abs() < 0.01 {
+                break;
+            }
+            prev = now;
+        }
+    }
+
     /// Render the current laid-out frame to a PNG — the same offscreen path
     /// `--shots` uses, so the image is what a live window would show.
     fn shot(&mut self, out: &std::path::Path) {
@@ -226,7 +245,7 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
 
     // One wheel notch down must move the list.
     h.wheel(3.0);
-    h.relayout();
+    h.settle_scroll();
     let one_notch = applied_offset(&h);
     assert!(
         one_notch > 0.5,
@@ -236,7 +255,7 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     // Fling to the bottom: the content's bottom edge reaches the viewport
     // bottom, i.e. the previously-below-the-fold last entries are now visible.
     h.wheel(1000.0);
-    h.relayout();
+    h.settle_scroll();
     let content_after = h.rect_of("FileView");
     let max_offset = (content_before.height() - viewport.height()).max(0.0);
     let bottom = applied_offset(&h);
@@ -285,7 +304,7 @@ fn scroll_before_after_shots() {
         h.shot(&out.join(format!("{tag}-before.png")));
 
         h.wheel(1000.0);
-        h.relayout();
+        h.settle_scroll();
         h.shot(&out.join(format!("{tag}-after.png")));
 
         // The two frames must genuinely differ (the list moved).
