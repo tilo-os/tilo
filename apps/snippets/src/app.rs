@@ -1,20 +1,28 @@
 //! Root widget for the snippet manager.
 //!
-//! Owns the in-memory [`Library`], the per-peer view state (selection,
-//! search, focus), and renders the three-pane layout directly into the
-//! Vello scene:
+//! A snippet manager has one job: keep reusable fragments and get one into
+//! another app, filled in, fast. The layout answers that directly with two
+//! panes:
 //!
 //! ```text
-//! ┌──────────┬──────────────────┬─────────────────────────────┐
-//! │ sidebar  │  snippet list    │  detail / editor pane       │
-//! │ folders  │  (search above)  │  title · language · tags    │
-//! │ tags     │                  │  syntax-highlighted body    │
-//! └──────────┴──────────────────┴─────────────────────────────┘
+//! ┌──────────────────────┬──────────────────────────────────────┐
+//! │  LIBRARY             │  SNIPPET                              │
+//! │  🔍 search       +   │  Title (editable)          Copy       │
+//! │  All Favorites Recent│  language · #tags · ★                 │
+//! │  ─ selectable rows ─ │  code editor (syntax + ${vars})       │
+//! │  badge · title · use │  ── Variables ──  ${name}[ ] [Copy]   │
+//! └──────────────────────┴──────────────────────────────────────┘
 //! ```
 //!
-//! The library is mirrored into the shared Automerge document by
-//! [`crate::doc`] so two instances converge. Selection / search / the
-//! open expand-modal are view state and stay local to each peer.
+//! Every text surface is a shared `ui` widget (a [`TextInput`] for search /
+//! title / tags / description / each variable, a [`CodeEditor`] for the body,
+//! an [`Autocomplete`] for the language) hosted in this monolithic immediate
+//! -mode root — no hand-rolled fields. Every library mutation is a
+//! [`SnippetsAction`] dispatched through [`ui::ActionHost`], so a toolbar
+//! affordance and the Ctrl+K palette share one undoable, replicated path. The
+//! library is mirrored into the shared Automerge document by [`crate::doc`] so
+//! two instances converge; search, selection and the per-variable fill values
+//! are per-peer view state and stay local.
 
 use std::collections::HashMap;
 
@@ -29,147 +37,144 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat;
-use ui::widget::{Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout};
+use ui::icons::Icon;
+use ui::widget::autocomplete::{Autocomplete, AutocompleteOutcome, Suggestion};
+use ui::widget::code_editor::CodeEditor;
+use ui::widget::{
+    Button, ButtonFace, ButtonStyle, EmptyState, FlapState, PushPane, SplitLayout, TextInput,
+    Widget,
+};
 
 use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
 use crate::doc::SnippetsDoc;
 use crate::draw;
-use crate::expand::ExpandModal;
-use crate::highlight;
-use crate::model::{Language, Library, Selection, SmartFolder, Snippet, SnippetId};
+use crate::highlight::SnippetHighlighter;
+use crate::model::{self, Language, Library, Selection, SmartFolder, Snippet, SnippetId};
 use crate::seed;
 
-const SIDEBAR_W: f64 = 232.0;
-const LIST_W: f64 = 340.0;
-const ROW_H: f64 = 64.0;
-const SIDEBAR_ROW_H: f64 = 32.0;
-const SEARCH_H: f64 = 52.0;
-const BODY_FONT: f32 = 13.5;
-const BODY_LINE: f64 = 20.0;
+const LIST_W: f64 = 344.0;
+const ROW_H: f64 = 60.0;
+const PAD: f64 = 20.0;
 
-/// Below this allocated width (logical px) the primary sidebar (smart
-/// folders + folders + tags) stops sitting beside the list and detail and
-/// collapses into an overlay flap that slides over the content behind a
-/// dimming scrim — closed by default, summoned by the hamburger. Chosen so
-/// the 232px rail + 340px list + a readable detail pane stop fitting
-/// comfortably side by side.
-const SIDEBAR_BREAKPOINT: f64 = 820.0;
+/// Below this allocated width the list and the detail can't share the row, so
+/// the flow switches to single-pane push: the list OR the detail fills the
+/// pane, and opening a snippet slides the detail in with a Back affordance.
+const PUSH_BREAKPOINT: f64 = 720.0;
 
-/// Below this width even the list and the detail can't share the row, so the
-/// master-detail flow switches to single-pane push: the list OR the detail
-/// fills the pane, and opening a snippet slides the detail in with a Back
-/// affordance. Set so the 340px list + a usable code card stop coexisting.
-const PUSH_BREAKPOINT: f64 = 560.0;
-
-/// Top-left toggle (hamburger / Back / close) hit size, logical px.
+/// Top-left Back toggle hit size (logical px), single-pane push only.
 const TOGGLE_SIZE: f64 = 34.0;
 
-/// What kind of toast is currently showing (auto-dismisses on next event
-/// tick after a short hold — for the headless shot it simply persists).
+/// A transient bottom-right confirmation. Auto-dismisses on idle; for a
+/// headless shot it simply persists.
 #[derive(Clone)]
 struct Toast {
     message: String,
-    /// Frames remaining before the toast fades. Decremented on idle.
     ttl: u32,
 }
 
-pub struct SnippetsApp {
-    library: Library,
-    selection: Selection,
-    search: String,
-    /// Whether the search field has keyboard focus (captures typing).
-    search_focused: bool,
-    /// Currently open snippet in the detail pane.
-    open: Option<SnippetId>,
-    /// Ordered ids currently shown in the list pane (result of `query`).
-    visible: Vec<SnippetId>,
-    /// The expand-with-variables modal, when open.
-    expand: Option<ExpandModal>,
-    toast: Option<Toast>,
-    /// Whether we've mirrored the local library into the shared doc.
-    seeded: bool,
+/// Which hosted text surface currently owns keyboard input. Only one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Focus {
+    None,
+    Search,
+    Title,
+    Language,
+    Tags,
+    Description,
+    Body,
+    /// The i-th variable-fill field in the open snippet's fill panel.
+    Fill(usize),
+}
 
-    // Layout / hit-testing caches, recomputed each frame in `draw` so
-    // `handle_event` can map clicks to actions without a second layout
-    // pass. Each entry is (rect, action).
-    rect: Rect,
-    last_mouse: Point,
-    hit: Vec<(Rect, Action)>,
-    scroll: f64,
-
-    // ---- responsive layout (shared `ui` flap kernel) -------------------
-    /// Primary sidebar flap: docked beside the content on wide windows,
-    /// an overlay flap over the content behind a scrim on narrow ones.
-    /// Defaults open when docked, closed (summon-on-demand) when overlay.
-    sidebar: FlapState,
-    /// Single-pane master-detail push for the very-narrow case: animates
-    /// the list↔detail slide. `reveal == 1` means the detail is shown.
-    push: FlapState,
-    /// Which pane the push flow currently shows (list = master, detail).
-    push_pane: PushPane,
-    /// `false` until the first laid-out frame snaps the sidebar reveal to the
-    /// resolved layout default. Without this, a window that first appears at
-    /// narrow width would render one frame with the docked-default reveal
-    /// (1.0) before the animation ticks it closed — the overlay would flash
-    /// open. A staged `--shots` scenario sets this so its snap isn't undone.
-    settled_layout: bool,
-
-    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
-    /// [`SnippetsAction`] through this: the host brackets the undo boundary,
-    /// applies the action through the executor (so it replays byte-identically on
-    /// peers, exactly as the Ctrl+K palette does), and records the last one so a
-    /// test can prove a button and its [`qos_actions::ActionSpec`] build the
-    /// identical action.
-    actions: ui::ActionHost,
+impl Focus {
+    /// True for the detail-editor fields (as opposed to search / nothing). Used
+    /// to keep the open snippet pinned while its own fields are being edited,
+    /// even if a live edit filters it out of the current search.
+    fn is_detail(self) -> bool {
+        !matches!(self, Focus::None | Focus::Search)
+    }
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
 #[derive(Clone, Debug, PartialEq)]
 enum Action {
-    Select(Selection),
+    Scope(SmartFolder),
     OpenSnippet(SnippetId),
     NewSnippet,
-    Copy(SnippetId),
-    Expand(SnippetId),
-    ToggleFavorite(SnippetId),
-    Duplicate(SnippetId),
-    Delete(SnippetId),
-    FocusSearch,
+    Copy,
+    ToggleFavorite,
+    Duplicate,
+    Delete,
     ClearSearch,
-    SetLanguage(SnippetId, Language),
-    /// Toggle the primary sidebar flap (hamburger / overlay close).
-    ToggleSidebar,
-    /// Dismiss the open overlay sidebar (scrim tap).
-    DismissSidebar,
-    /// Return from the detail pane to the list in single-pane push mode.
+    FilterTag(String),
     PushBack,
+}
+
+pub struct SnippetsApp {
+    library: Library,
+    selection: Selection,
+    open: Option<SnippetId>,
+    visible: Vec<SnippetId>,
+    seeded: bool,
+
+    // ---- hosted shared widgets -----------------------------------------
+    search: TextInput,
+    title: TextInput,
+    language: Autocomplete,
+    tags: TextInput,
+    description: TextInput,
+    body: CodeEditor,
+    /// One (variable name, value field) per `${placeholder}` in the open
+    /// snippet's body. Values are ephemeral per-peer fill state, never stored.
+    fills: Vec<(String, TextInput)>,
+    focus: Focus,
+    /// The snippet the detail fields were last seeded from, so a selection
+    /// change re-seeds them and an in-place edit does not clobber the caret.
+    seeded_detail: Option<SnippetId>,
+
+    toast: Option<Toast>,
+
+    // ---- layout / hit caches (recomputed each draw) --------------------
+    rect: Rect,
+    last_mouse: Point,
+    hit: Vec<(Rect, Action)>,
+    list_scroll: f64,
+    // Detail field rects (last frame) for click routing.
+    title_rect: Rect,
+    language_rect: Rect,
+    tags_rect: Rect,
+    description_rect: Rect,
+    body_rect: Rect,
+    fill_rects: Vec<Rect>,
+    search_rect: Rect,
+
+    // ---- responsive single-pane push -----------------------------------
+    push: FlapState,
+    push_pane: PushPane,
+    settled_layout: bool,
+
+    actions: ui::ActionHost,
 }
 
 impl SnippetsApp {
     /// Build the live app on an **empty** library. A fresh install has no
     /// snippets — the user saves their own, or a peer's shared library is
-    /// adopted on the first `sync`. The starter set is demo/`--shots` only
-    /// (see [`Self::new_demo`]): a real install must never fabricate
-    /// snippets it would then persist to the user's store.
+    /// adopted on the first `sync`. The starter set is demo/`--shots` only.
     pub fn new() -> Self {
         Self::with_library(Library::new())
     }
 
-    /// Like [`Self::new`] but pre-seeded with the starter library and an
-    /// opened specimen — used by `--shots` and any "try it" walkthrough so a
-    /// capture shows the manager doing real work. Never the live first-run
-    /// path.
+    /// Like [`Self::new`] but pre-seeded with the starter library and an opened
+    /// specimen — used by `--shots` and any "try it" walkthrough. Never the
+    /// live first-run path.
     pub fn new_demo() -> Self {
         let mut library = Library::new();
         for s in seed::starter_library() {
             library.insert(s);
         }
         let mut app = Self::with_library(library);
-        // Open a substantial, templated snippet so the detail pane shows
-        // off the highlighter, line gutter and variable affordance. Prefer
-        // the visible snippet with the most body lines that also carries
-        // placeholders.
+        // Open a substantial, templated snippet so the detail shows the editor,
+        // highlighter and the variable-fill affordance doing real work.
         app.open = app
             .visible
             .iter()
@@ -185,21 +190,54 @@ impl SnippetsApp {
     }
 
     fn with_library(library: Library) -> Self {
+        let language = Autocomplete::new()
+            .with_id("snippet.language")
+            .with_placeholder("Language")
+            .with_suggester(|q| {
+                let q = q.to_lowercase();
+                Language::ALL
+                    .into_iter()
+                    .filter(|l| q.is_empty() || l.label().to_lowercase().contains(&q))
+                    .map(|l| Suggestion::new(l.label()).with_icon(Icon::Code))
+                    .collect()
+            });
+        let body = CodeEditor::local()
+            .with_id("snippet.body")
+            .with_placeholder("Write the snippet — use ${name} for a variable to fill on copy.")
+            .with_font_size(13.5);
         let mut app = Self {
             library,
             selection: Selection::default(),
-            search: String::new(),
-            search_focused: false,
             open: None,
             visible: Vec::new(),
-            expand: None,
-            toast: None,
             seeded: false,
+            search: TextInput::local().with_id("snippet.search").with_placeholder("Search snippets"),
+            title: TextInput::local()
+                .with_id("snippet.title")
+                .with_plain_chrome()
+                .with_font_size(22.0)
+                .with_placeholder("Untitled snippet"),
+            language,
+            tags: TextInput::local().with_id("snippet.tags").with_placeholder("tags, comma separated"),
+            description: TextInput::local()
+                .with_id("snippet.description")
+                .with_placeholder("Description (optional)"),
+            body,
+            fills: Vec::new(),
+            focus: Focus::None,
+            seeded_detail: None,
+            toast: None,
             rect: Rect::ZERO,
             last_mouse: Point::ZERO,
             hit: Vec::new(),
-            scroll: 0.0,
-            sidebar: FlapState::open_when_docked(),
+            list_scroll: 0.0,
+            title_rect: Rect::ZERO,
+            language_rect: Rect::ZERO,
+            tags_rect: Rect::ZERO,
+            description_rect: Rect::ZERO,
+            body_rect: Rect::ZERO,
+            fill_rects: Vec::new(),
+            search_rect: Rect::ZERO,
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
@@ -214,119 +252,115 @@ impl SnippetsApp {
         Self::new_demo()
     }
 
+    fn search_text(&self) -> String {
+        self.search.value().to_string()
+    }
+
     fn recompute_visible(&mut self) {
-        self.visible = self.library.query(&self.selection, &self.search);
-        // Keep the open snippet valid; otherwise open the first result.
-        if let Some(open) = self.open {
-            if !self.visible.contains(&open) {
-                self.open = self.visible.first().copied();
+        let search = self.search_text();
+        self.visible = self.library.query(&self.selection, &search);
+        // Keep the open snippet valid. While a detail field is being edited we
+        // pin the open snippet even if the live edit filtered it out, so typing
+        // never yanks the editor away mid-word.
+        match self.open {
+            Some(open) if self.visible.contains(&open) => {}
+            Some(open) if self.focus.is_detail() => {
+                // Pinned: leave `open` as-is even though it's filtered out.
+                let _ = open;
             }
-        } else {
-            self.open = self.visible.first().copied();
+            _ => self.open = self.visible.first().copied(),
         }
     }
 
-    fn select(&mut self, sel: Selection) {
-        self.selection = sel;
-        self.scroll = 0.0;
+    fn scope(&mut self, smart: SmartFolder) {
+        self.selection = Selection::Smart(smart);
+        self.list_scroll = 0.0;
+        self.focus = Focus::None;
         self.recompute_visible();
     }
 
     fn open_snippet(&mut self, id: SnippetId) {
         self.open = Some(id);
-        // In single-pane push mode, opening a snippet slides the detail in.
-        // (No-op in docked / overlay layouts, where both panes are visible.)
+        self.focus = Focus::None;
         if self.is_push_layout() {
             self.push_pane = PushPane::Detail;
             self.push.open();
         }
     }
 
-    /// Dispatch one [`SnippetsAction`] — the single mutation path shared with the
-    /// Ctrl+K palette. The action runs through the qOS executor (a pinned actor +
-    /// committed change, so it replays byte-identically on peers), the shared
-    /// document being authoritative; the in-memory library is then re-projected
-    /// from it so the panes reflect the change this frame. The heads captured
-    /// just before the first action of the event are stashed so the host records
-    /// **one** undo boundary bracketing it.
+    /// Dispatch one [`SnippetsAction`] — the single mutation path shared with
+    /// the Ctrl+K palette. The action runs through the qOS executor (so it
+    /// replays byte-identically on peers), the shared document being
+    /// authoritative; the in-memory library is re-projected so the panes
+    /// reflect it this frame.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: SnippetsAction) {
         self.actions.dispatch(doc, actions::SNIPPETS_ACTION_TYPE, &action);
         self.refresh_from_doc(doc);
     }
 
-    /// Re-project the authoritative document into the in-memory library. Called
-    /// after every dispatched action so the list/detail reflect it immediately,
-    /// before the next frame's `sync`.
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
         self.library.snippets = SnippetsDoc::list(doc);
     }
 
-    /// The presentation context Ctrl+K needs to build the library-level "New
-    /// snippet" action (which folder to file it under).
     pub(crate) fn snippets_resource_ctx(&self) -> SnippetsResourceCtx {
-        SnippetsResourceCtx {
-            current_folder: match &self.selection {
-                Selection::Folder(f) => f.clone(),
-                _ => String::new(),
-            },
-        }
+        SnippetsResourceCtx { current_folder: String::new() }
     }
 
     fn new_snippet(&mut self, doc: &mut AutoCommit) {
-        let folder = match &self.selection {
-            Selection::Folder(f) => f.clone(),
-            _ => String::new(),
-        };
-        // The uuid is minted here, at authoring time, and carried in the action
-        // payload so replay reproduces the identical row.
-        let s = Snippet::blank(&folder);
+        let s = Snippet::blank("");
         let id = s.id;
         self.perform_action(doc, actions::create_snippet_action(s));
         self.recompute_visible();
         self.open = Some(id);
-        self.toast("New snippet created");
+        self.reconcile_detail();
+        // Drop the user straight into the title so a new snippet is authorable
+        // immediately.
+        self.set_focus(Focus::Title);
+        self.toast("New snippet — start typing");
     }
 
-    fn copy(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        // If the body has placeholders, route through the expand flow so
-        // we never paste raw `${...}` onto the clipboard.
-        let needs_expand = self
-            .library
-            .get(id)
-            .map(|s| s.has_placeholders())
-            .unwrap_or(false);
-        if needs_expand {
-            self.start_expand(id);
-            return;
-        }
-        // Copying to the clipboard is presentation; the usage bump it records is
-        // a document mutation, so it goes through an action.
-        if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
-            ui::clipboard_copy(&body);
-            self.record_use(id, doc);
-            self.toast("Copied to clipboard");
-        }
+    /// Copy the open snippet, substituting the inline variable fields first so
+    /// raw `${...}` never lands on the clipboard. The one dominant action.
+    fn copy_open(&mut self, doc: &mut AutoCommit) {
+        self.reconcile_detail();
+        let Some(id) = self.open else { return };
+        let text = self.filled_text();
+        ui::clipboard_copy(&text);
+        self.record_use(id, doc);
+        let templated = !self.current_placeholders().is_empty();
+        self.toast(if templated { "Filled and copied" } else { "Copied to clipboard" });
     }
 
-    /// Record one use of a snippet (drives "Most Used" + the usage hint) through
-    /// the action path, so the bump replicates and is undoable like any mutation.
+    /// The text a copy would place on the clipboard: the live body with the
+    /// current variable-field values substituted in (unfilled slots stay
+    /// visible so a partial copy is honest).
+    fn filled_text(&self) -> String {
+        let body = self.body.value().to_string();
+        let values: HashMap<String, String> = self
+            .fills
+            .iter()
+            .map(|(name, f)| (name.clone(), f.value().to_string()))
+            .collect();
+        model::expand(&body, &values)
+    }
+
+    fn current_placeholders(&self) -> Vec<String> {
+        model::placeholders_in(self.body.value())
+    }
+
     fn record_use(&mut self, id: SnippetId, doc: &mut AutoCommit) {
         self.perform_action(doc, actions::record_use_action(id));
     }
 
-    fn start_expand(&mut self, id: SnippetId) {
-        if let Some(s) = self.library.get(id) {
-            self.expand = Some(ExpandModal::new(s));
-        }
-    }
-
-    fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn toggle_favorite(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.open else { return };
         let cur = self.library.get(id).map(|s| s.favorite).unwrap_or(false);
         self.perform_action(doc, actions::set_favorite_action(id, !cur));
         self.recompute_visible();
     }
 
-    fn duplicate(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn duplicate(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.open else { return };
         if let Some(src) = self.library.get(id).cloned() {
             let mut copy = src.clone();
             copy.id = uuid::Uuid::new_v4();
@@ -337,93 +371,213 @@ impl SnippetsApp {
             self.perform_action(doc, actions::create_snippet_action(copy));
             self.recompute_visible();
             self.open = Some(new_id);
+            self.reconcile_detail();
             self.toast("Duplicated");
         }
     }
 
-    fn delete(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+    fn delete(&mut self, doc: &mut AutoCommit) {
+        let Some(id) = self.open else { return };
         self.perform_action(doc, actions::delete_snippet_action(id));
-        if self.open == Some(id) {
-            self.open = None;
+        self.open = None;
+        self.focus = Focus::None;
+        self.recompute_visible();
+        if self.is_push_layout() {
+            self.push_pane = PushPane::Master;
+            self.push.close();
         }
-        self.recompute_visible();
         self.toast("Deleted");
-    }
-
-    fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
-        self.perform_action(doc, actions::set_language_action(id, lang));
-        self.recompute_visible();
     }
 
     fn toast(&mut self, message: &str) {
         self.toast = Some(Toast { message: message.to_string(), ttl: 90 });
     }
 
-    /// Reconcile the in-memory library with the shared document.
-    ///
-    /// The document is the source of truth: every mutation flows through a
-    /// dispatched [`SnippetsAction`] (see [`crate::actions`]). On first sync we
-    /// either seed our starter set into an empty document or adopt a peer's; from
-    /// then on we re-project the document so a peer's change — and our own
-    /// just-dispatched action — both surface. Guarded so an unchanged frame
-    /// doesn't churn the visible list.
-    fn sync_library(&mut self, doc: &mut AutoCommit) {
-        let remote = SnippetsDoc::list(doc);
-        if !self.seeded {
-            if remote.is_empty() {
-                // We're the origin — seed our starter set into the document,
-                // which becomes authoritative from here on.
-                for s in self.library.snippets.clone() {
-                    SnippetsDoc::upsert(doc, &s);
-                }
-            } else {
-                // A peer is already sharing — adopt their library.
-                self.library.snippets = remote;
-                self.recompute_visible();
-            }
-            self.seeded = true;
+    // ---- detail-field lifecycle ----------------------------------------
+
+    fn set_focus(&mut self, focus: Focus) {
+        self.focus = focus;
+        self.search.set_focus(focus == Focus::Search);
+        self.title.set_focus(focus == Focus::Title);
+        self.tags.set_focus(focus == Focus::Tags);
+        self.description.set_focus(focus == Focus::Description);
+        self.body.set_focused(focus == Focus::Body);
+        for (i, (_, f)) in self.fills.iter_mut().enumerate() {
+            f.set_focus(focus == Focus::Fill(i));
+        }
+        if focus != Focus::Language && self.language.is_open() {
+            self.language.close();
+        }
+    }
+
+    /// Re-seed the detail editor from the open snippet when the selection
+    /// changes. An in-place edit (open unchanged) never re-seeds, so the caret
+    /// is preserved while typing.
+    fn reconcile_detail(&mut self) {
+        if self.open == self.seeded_detail {
+            self.reconcile_fills();
             return;
         }
-        // Steady state: the document is authoritative — re-project it.
-        if self.library.snippets != remote {
-            self.library.snippets = remote;
-            self.recompute_visible();
+        match self.open.and_then(|id| self.library.get(id).cloned()) {
+            Some(s) => self.seed_detail(&s),
+            None => {
+                self.title.set_text("");
+                self.tags.set_text("");
+                self.description.set_text("");
+                self.body.set_text("");
+                self.language.set_text("");
+                self.fills.clear();
+                self.fill_rects.clear();
+            }
+        }
+        self.seeded_detail = self.open;
+    }
+
+    fn seed_detail(&mut self, s: &Snippet) {
+        self.title.set_text(&s.title);
+        self.language.set_text(s.language.label());
+        self.tags.set_text(&s.tags.join(", "));
+        self.description.set_text(&s.description);
+        self.body.set_text(&s.body);
+        self.body.set_highlighter(Some(SnippetHighlighter::boxed(s.language)));
+        self.rebuild_fills(&model::placeholders_in(&s.body));
+    }
+
+    /// Rebuild the variable-fill fields when the open body's `${...}` set
+    /// changes, preserving any values the user already typed for names that
+    /// persist. Only runs while the body is not being actively edited, so
+    /// adding a variable mid-word doesn't churn focus.
+    fn reconcile_fills(&mut self) {
+        if self.focus == Focus::Body {
+            return;
+        }
+        let wanted = self.current_placeholders();
+        let have: Vec<String> = self.fills.iter().map(|(n, _)| n.clone()).collect();
+        if wanted == have {
+            return;
+        }
+        self.rebuild_fills(&wanted);
+    }
+
+    fn rebuild_fills(&mut self, names: &[String]) {
+        let prior: HashMap<String, String> = self
+            .fills
+            .drain(..)
+            .map(|(n, f)| (n, f.value().to_string()))
+            .collect();
+        self.fills = names
+            .iter()
+            .map(|name| {
+                let mut field = TextInput::local().with_placeholder("value…");
+                if let Some(v) = prior.get(name) {
+                    field.set_text(v);
+                }
+                (name.clone(), field)
+            })
+            .collect();
+        self.fill_rects = vec![Rect::ZERO; self.fills.len()];
+        // Any prior focus into a fill field is now stale.
+        if matches!(self.focus, Focus::Fill(_)) {
+            self.focus = Focus::None;
+        }
+    }
+
+    /// After routing an event to the focused field, fold any resulting edit
+    /// back into the library through the shared action path (or, for search,
+    /// re-filter). This is the single place a hosted field's user edit becomes
+    /// a [`SnippetsAction`].
+    fn after_field_edit(&mut self, doc: &mut AutoCommit) {
+        match self.focus {
+            Focus::Search => {
+                if self.search.take_dirty().is_some() {
+                    self.list_scroll = 0.0;
+                    self.recompute_visible();
+                }
+            }
+            Focus::Title => {
+                if self.title.take_dirty().is_some() {
+                    if let Some(id) = self.open {
+                        let title = self.title.value().to_string();
+                        self.perform_action(doc, actions::rename_action(id, &title));
+                        self.recompute_visible();
+                    }
+                }
+            }
+            Focus::Tags => {
+                if self.tags.take_dirty().is_some() {
+                    if let Some(id) = self.open {
+                        let tags = actions::parse_tags(self.tags.value());
+                        self.perform_action(doc, actions::set_tags_action(id, &tags));
+                        self.recompute_visible();
+                    }
+                }
+            }
+            Focus::Description => {
+                if self.description.take_dirty().is_some() {
+                    if let Some(id) = self.open {
+                        let d = self.description.value().to_string();
+                        self.perform_action(doc, actions::set_description_action(id, &d));
+                    }
+                }
+            }
+            Focus::Body => {
+                if self.body.take_dirty().is_some() {
+                    if let Some(id) = self.open {
+                        let body = self.body.value().to_string();
+                        self.perform_action(doc, actions::set_body_action(id, &body));
+                    }
+                }
+            }
+            Focus::Language => match self.language.take_outcome() {
+                AutocompleteOutcome::Accepted(label) => {
+                    if let Some(id) = self.open {
+                        let lang = language_from_label(&label);
+                        self.perform_action(doc, actions::set_language_action(id, lang));
+                        self.body.set_highlighter(Some(SnippetHighlighter::boxed(lang)));
+                        self.recompute_visible();
+                    }
+                    self.set_focus(Focus::None);
+                }
+                AutocompleteOutcome::Cancelled | AutocompleteOutcome::None => {}
+            },
+            Focus::Fill(_) => {
+                // Ephemeral fill values: read on copy, never stored.
+            }
+            Focus::None => {}
         }
     }
 
     fn apply(&mut self, action: Action, doc: &mut AutoCommit) {
         match action {
-            Action::Select(sel) => self.select(sel),
+            Action::Scope(sf) => self.scope(sf),
             Action::OpenSnippet(id) => self.open_snippet(id),
             Action::NewSnippet => self.new_snippet(doc),
-            Action::Copy(id) => self.copy(id, doc),
-            Action::Expand(id) => self.start_expand(id),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
-            Action::Duplicate(id) => self.duplicate(id, doc),
-            Action::Delete(id) => self.delete(id, doc),
-            Action::FocusSearch => self.search_focused = true,
+            Action::Copy => self.copy_open(doc),
+            Action::ToggleFavorite => self.toggle_favorite(doc),
+            Action::Duplicate => self.duplicate(doc),
+            Action::Delete => self.delete(doc),
             Action::ClearSearch => {
-                self.search.clear();
+                self.search.set_text("");
+                self.list_scroll = 0.0;
                 self.recompute_visible();
             }
-            Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
-            Action::ToggleSidebar => self.sidebar.toggle(self.sidebar_layout()),
-            Action::DismissSidebar => self.sidebar.close(),
+            Action::FilterTag(tag) => {
+                self.search.set_text(&format!("tag:{tag}"));
+                self.selection = Selection::Smart(SmartFolder::All);
+                self.list_scroll = 0.0;
+                self.focus = Focus::None;
+                self.recompute_visible();
+            }
             Action::PushBack => {
                 self.push_pane = PushPane::Master;
                 self.push.close();
+                self.focus = Focus::None;
             }
         }
     }
 
-    /// Resolve a click at `p` against the recorded hit regions. Topmost
-    /// (last-recorded) match wins.
     fn action_at(&self, p: Point) -> Option<Action> {
-        self.hit
-            .iter()
-            .rev()
-            .find(|(r, _)| r.contains(p))
-            .map(|(_, a)| a.clone())
+        self.hit.iter().rev().find(|(r, _)| r.contains(p)).map(|(_, a)| a.clone())
     }
 
     fn record(&mut self, rect: Rect, action: Action) {
@@ -432,81 +586,62 @@ impl SnippetsApp {
 
     // ---- responsive geometry -------------------------------------------
 
-    /// How the primary sidebar resolves at the current allocated width:
-    /// docked beside the content (wide) or an overlay flap (narrow).
-    fn sidebar_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), SIDEBAR_BREAKPOINT)
-    }
-
-    /// Whether the window is narrow enough that the list and detail switch
-    /// to single-pane push navigation (show one or the other).
     fn is_push_layout(&self) -> bool {
         self.rect.width() < PUSH_BREAKPOINT
     }
 
-    /// `true` while the sidebar flap is (resolved) open.
-    fn sidebar_open(&self) -> bool {
-        self.sidebar.is_open(self.sidebar_layout())
-    }
-
-    /// The sidebar's on-screen rect for this frame. Docked: a fixed rail at
-    /// the left whose width eases with the reveal. Overlay: a fixed-width
-    /// rail that slides in from the left edge over the content.
-    fn sidebar_rect(&self) -> Rect {
-        let r = self.rect;
-        match self.sidebar_layout() {
-            SplitLayout::Docked => {
-                let w = SIDEBAR_W * self.sidebar.reveal();
-                Rect::new(r.x0, r.y0, r.x0 + w, r.y1)
+    fn sync_library(&mut self, doc: &mut AutoCommit) {
+        let remote = SnippetsDoc::list(doc);
+        if !self.seeded {
+            if remote.is_empty() {
+                for s in self.library.snippets.clone() {
+                    SnippetsDoc::upsert(doc, &s);
+                }
+            } else {
+                self.library.snippets = remote;
+                self.recompute_visible();
             }
-            SplitLayout::Overlay => {
-                let slide = self.sidebar.slide();
-                let x0 = r.x0 - SIDEBAR_W * (1.0 - slide);
-                Rect::new(x0, r.y0, x0 + SIDEBAR_W, r.y1)
-            }
+            self.seeded = true;
+            return;
         }
-    }
-
-    /// The horizontal band the list + detail occupy. Docked: inset by the
-    /// eased sidebar width so the rail doesn't overlap. Overlay/push: the
-    /// full width (the sidebar floats above it).
-    fn content_band(&self) -> Rect {
-        let r = self.rect;
-        match self.sidebar_layout() {
-            SplitLayout::Docked => {
-                let inset = SIDEBAR_W * self.sidebar.reveal();
-                Rect::new(r.x0 + inset, r.y0, r.x1, r.y1)
-            }
-            SplitLayout::Overlay => r,
+        if self.library.snippets != remote {
+            self.library.snippets = remote;
+            self.recompute_visible();
         }
-    }
-
-    /// Whether the primary sidebar should paint anything this frame.
-    fn sidebar_visible(&self) -> bool {
-        self.sidebar.reveal() > 0.001
     }
 
     // ---- shot scenarios -------------------------------------------------
 
-    /// Snap the responsive state to a deterministic configuration for the
-    /// single-frame `--shots` renderer (the live app eases via `update`).
+    /// Snap the responsive/interaction state to a deterministic configuration
+    /// for the single-frame `--shots` renderer.
     ///
-    /// * `"narrow"` — open the overlay sidebar over the content + scrim.
     /// * `"detail"` — single-pane push showing the detail with a Back chip.
+    /// * `"fill"` — open a templated snippet with its variables filled, so the
+    ///   capture shows the fill flow mid-use.
     /// * anything else — the default frame.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
-            "narrow" => {
-                self.sidebar.snap(true);
-                // Keep the staged open flap from being re-settled to the
-                // overlay default on the first laid-out frame.
-                self.settled_layout = true;
-            }
             "detail" => {
                 self.push_pane = PushPane::Detail;
                 self.push.snap(true);
-                self.sidebar.snap(false);
                 self.settled_layout = true;
+            }
+            "fill" => {
+                // Open the templated snippet with the most variables and pre-
+                // fill them so the capture shows a real, in-progress fill.
+                if let Some(id) = self
+                    .visible
+                    .iter()
+                    .copied()
+                    .max_by_key(|id| self.library.get(*id).map(|s| s.placeholders().len()).unwrap_or(0))
+                {
+                    self.open = Some(id);
+                    self.reconcile_detail();
+                    let samples = ["prod", "web-1", "api", "main", "42", "app"];
+                    for (i, (_, f)) in self.fills.iter_mut().enumerate() {
+                        f.set_text(samples[i % samples.len()]);
+                    }
+                }
             }
             _ => {}
         }
@@ -526,28 +661,13 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn set_search_for_test(&mut self, q: &str) {
-        self.search = q.to_string();
+        self.search.set_text(q);
         self.recompute_visible();
     }
 
     #[doc(hidden)]
     pub fn library_len_for_test(&self) -> usize {
         self.library.snippets.len()
-    }
-
-    #[doc(hidden)]
-    pub fn expand_open_for_test(&self) -> bool {
-        self.expand.is_some()
-    }
-
-    #[doc(hidden)]
-    pub fn copy_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.copy(id, doc);
-    }
-
-    #[doc(hidden)]
-    pub fn new_snippet_for_test(&mut self, doc: &mut AutoCommit) {
-        self.new_snippet(doc);
     }
 
     #[doc(hidden)]
@@ -560,27 +680,74 @@ impl SnippetsApp {
         self.actions.last_dispatched().cloned()
     }
 
-    /// Drive the toolbar Delete affordance exactly as a click resolves it (via
-    /// the shared `apply` dispatch), against the authoritative document.
+    /// Open `id` then copy it exactly as the Copy affordance resolves.
+    #[doc(hidden)]
+    pub fn copy_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.open = Some(id);
+        self.reconcile_detail();
+        self.copy_open(doc);
+    }
+
+    /// The number of variable-fill fields the open snippet exposes.
+    #[doc(hidden)]
+    pub fn fill_field_count_for_test(&mut self) -> usize {
+        self.reconcile_detail();
+        self.fills.len()
+    }
+
+    /// Type `value` into the fill field for `${name}` (test-only).
+    #[doc(hidden)]
+    pub fn set_fill_for_test(&mut self, name: &str, value: &str) {
+        self.reconcile_detail();
+        if let Some((_, f)) = self.fills.iter_mut().find(|(n, _)| n == name) {
+            f.set_text(value);
+        }
+    }
+
+    /// The text a copy of the open snippet would place on the clipboard.
+    #[doc(hidden)]
+    pub fn filled_text_for_test(&mut self) -> String {
+        self.reconcile_detail();
+        self.filled_text()
+    }
+
+    /// Type `text` into the open snippet's body editor and fold the edit back
+    /// through the action path, exactly as a keystroke would (test-only).
+    #[doc(hidden)]
+    pub fn edit_body_for_test(&mut self, text: &str, doc: &mut AutoCommit) {
+        self.reconcile_detail();
+        self.body.set_text(text);
+        if let Some(id) = self.open {
+            self.perform_action(doc, actions::set_body_action(id, text));
+        }
+    }
+
+    #[doc(hidden)]
+    pub fn new_snippet_for_test(&mut self, doc: &mut AutoCommit) {
+        self.new_snippet(doc);
+    }
+
     #[doc(hidden)]
     pub fn delete_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.apply(Action::Delete(id), doc);
+        self.open = Some(id);
+        self.apply(Action::Delete, doc);
     }
 
-    /// Drive the toolbar Star affordance the same way.
     #[doc(hidden)]
     pub fn toggle_favorite_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
-        self.apply(Action::ToggleFavorite(id), doc);
+        self.open = Some(id);
+        self.apply(Action::ToggleFavorite, doc);
     }
 
-    // ---- responsive test accessors -------------------------------------
+    #[doc(hidden)]
+    pub fn set_language_for_test(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
+        self.open = Some(id);
+        self.perform_action(doc, actions::set_language_action(id, lang));
+        self.recompute_visible();
+    }
 
-    /// Lay the app out at `width` x 800 through the real `build_layout` /
-    /// `apply_layout` passes (so `rect` + the layout reconcile run exactly as
-    /// in a live frame), then settle any pending reveal animation.
     #[doc(hidden)]
     pub fn layout_at_width_for_test(&mut self, width: f64) {
-        use ui::widget::Widget;
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -595,7 +762,6 @@ impl SnippetsApp {
             )
             .unwrap();
         self.apply_layout(&taffy, node, Point::ZERO);
-        // Settle the reveal so `sidebar_open`/reveal reflect the target.
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         for _ in 0..240 {
@@ -606,16 +772,6 @@ impl SnippetsApp {
     }
 
     #[doc(hidden)]
-    pub fn sidebar_is_overlay_for_test(&self) -> bool {
-        self.sidebar_layout() == SplitLayout::Overlay
-    }
-
-    #[doc(hidden)]
-    pub fn sidebar_open_for_test(&self) -> bool {
-        self.sidebar_open()
-    }
-
-    #[doc(hidden)]
     pub fn is_push_for_test(&self) -> bool {
         self.is_push_layout()
     }
@@ -623,13 +779,6 @@ impl SnippetsApp {
     #[doc(hidden)]
     pub fn push_showing_detail_for_test(&self) -> bool {
         self.push_pane == PushPane::Detail
-    }
-
-    #[doc(hidden)]
-    pub fn toggle_sidebar_for_test(&mut self) {
-        // Toggling the sidebar is pure presentation; a scratch document
-        // satisfies the shared dispatch signature without any mutation.
-        self.apply(Action::ToggleSidebar, &mut AutoCommit::new());
     }
 
     #[doc(hidden)]
@@ -646,7 +795,7 @@ impl Default for SnippetsApp {
     }
 }
 
-impl ui::widget::Widget for SnippetsApp {
+impl Widget for SnippetsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.sync_library(state);
     }
@@ -655,32 +804,18 @@ impl ui::widget::Widget for SnippetsApp {
         !self.seeded
     }
 
-    /// Publish the library + its snippets so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }
 
-    /// Fold the library into the unified Ctrl+K palette: a snapshot
-    /// [`SnippetSearchProvider`](crate::search_provider::SnippetSearchProvider)
-    /// makes every snippet findable there by title, language, folder, tag,
-    /// description or body, alongside the actions the app exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         vec![Box::new(crate::search_provider::SnippetSearchProvider::new(&self.library))]
     }
 
-    /// Open the snippet a chosen palette row identifies. Selection is app-local
-    /// presentation (per-peer, never in the shared doc), so the doc args are
-    /// unused.
     fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(id) = crate::search_provider::SnippetSearchProvider::parse_action_id(action_id) {
             if self.library.get(id).is_some() {
@@ -693,9 +828,8 @@ impl ui::widget::Widget for SnippetsApp {
         &mut self,
         taffy: &mut TaffyTree<()>,
         _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn ui::widget::Widget>,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // The app paints itself; it just needs one full-bleed leaf node.
         let node = taffy
             .new_leaf(Style {
                 size: taffy::Size {
@@ -705,7 +839,7 @@ impl ui::widget::Widget for SnippetsApp {
                 ..Default::default()
             })
             .unwrap();
-        node_map.insert(node, self as *mut dyn ui::widget::Widget);
+        node_map.insert(node, self as *mut dyn Widget);
         node
     }
 
@@ -717,20 +851,9 @@ impl ui::widget::Widget for SnippetsApp {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
-        // Crossing a breakpoint (a window resize) drops any stale user
-        // preference so the sidebar adopts the new layout's natural default.
-        let layout = self.sidebar_layout();
-        self.sidebar.reconcile(layout);
-        // On the first laid-out frame, snap the reveal to the resolved
-        // default so a window that opens narrow doesn't flash the overlay
-        // open before the animation settles. Subsequent frames ease via
-        // `update`. A staged shot scenario marks this already-settled.
         if !self.settled_layout {
-            self.sidebar.snap(self.sidebar.is_open(layout));
             self.settled_layout = true;
         }
-        // Leaving the very-narrow push range collapses the single-pane stack
-        // back so both panes show again on the next wider frame.
         if !self.is_push_layout() && self.push_pane == PushPane::Detail {
             self.push_pane = PushPane::Master;
             self.push.snap(false);
@@ -746,53 +869,44 @@ impl ui::widget::Widget for SnippetsApp {
         _presence: &PresenceCtx,
     ) {
         self.hit.clear();
+        self.reconcile_detail();
         let c = &theme.tokens.colors;
-        // Whole-window background.
         draw::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        // The content band (list + detail) is inset by the docked sidebar,
-        // or spans the full width when the sidebar is an overlay flap.
-        let band = self.content_band();
-        self.draw_content_band(scene, t, tr, theme, band);
-
-        // The primary sidebar: a docked rail beside the content, or — when
-        // narrow — an overlay flap that slides in over the content behind a
-        // dimming scrim. Painted last so it sits above the content.
-        if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_visible() {
-            // Scrim: fades in with the reveal, behind the sliding rail.
-            let scrim = c.surfaces.overlay.with_alpha_factor((self.sidebar.reveal() * 0.55) as f32);
-            draw::fill_rect(scene, t, self.rect, scrim);
-            self.record(self.rect, Action::DismissSidebar);
-        }
-        if self.sidebar_visible() {
-            let rail = self.sidebar_rect();
-            self.draw_sidebar(scene, t, tr, theme, rail);
-            // Right-edge divider for the rail.
+        if self.is_push_layout() {
+            let band = self.rect;
+            let w = band.width();
+            let p = self.push.slide();
+            let list = Rect::new(band.x0 - w * p, band.y0, band.x1 - w * p, band.y1);
+            let detail = Rect::new(band.x0 + w * (1.0 - p), band.y0, band.x1 + w * (1.0 - p), band.y1);
+            if p < 0.999 {
+                self.draw_list(scene, t, tr, theme, list);
+            }
+            if p > 0.001 {
+                self.draw_detail(scene, t, tr, theme, detail);
+            }
+        } else {
+            let band = self.rect;
+            let list_w = LIST_W.min((band.width() - 320.0).max(260.0));
+            let list = Rect::new(band.x0, band.y0, band.x0 + list_w, band.y1);
+            let detail = Rect::new(list.x1, band.y0, band.x1, band.y1);
+            self.draw_list(scene, t, tr, theme, list);
+            self.draw_detail(scene, t, tr, theme, detail);
             draw::fill_rect(
                 scene,
                 t,
-                Rect::new(rail.x1 - 0.5, rail.y0, rail.x1 + 0.5, rail.y1),
+                Rect::new(list.x1 - 0.5, band.y0, list.x1 + 0.5, band.y1),
                 c.border_standard,
             );
         }
 
-        // The hamburger toggle is shown whenever the sidebar isn't fully
-        // docked-open, so a collapsed rail can be summoned and an overlay
-        // rail dismissed. It records its own hit region.
-        if self.show_toggle() {
-            self.draw_toggle(scene, t, theme, band);
+        // The language picker's suggestion list floats above everything else.
+        if self.language.is_open() {
+            self.language.draw_overlay(scene, t, tr, theme, &PresenceCtx::empty());
         }
 
         if let Some(toast) = &self.toast {
             draw_toast(scene, t, tr, theme, self.rect, &toast.message);
-        }
-
-        // The expand modal renders above everything. While it's open the
-        // panes beneath are inert, so the modal records hit regions
-        // internally and the app's hit list isn't consulted.
-        if let Some(mut expand) = self.expand.take() {
-            expand.draw(scene, t, tr, theme, self.rect);
-            self.expand = Some(expand);
         }
     }
 
@@ -802,82 +916,73 @@ impl ui::widget::Widget for SnippetsApp {
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
-        // Track the cursor for hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // Feed hover to every hosted field.
+            self.forward_to_all_fields(event, scale_factor, modifiers, state, path, node_id, taffy);
+            return;
         }
 
-        // The expand modal is modal: it owns all input while open.
-        if let Some(mut modal) = self.expand.take() {
-            let outcome = modal.handle_event(event, self.last_mouse, modifiers);
-            match outcome {
-                ExpandOutcome::Stay => {
-                    self.expand = Some(modal);
-                    *handled = true;
-                    return;
-                }
-                ExpandOutcome::Cancel => {
-                    *handled = true;
-                    return;
-                }
-                ExpandOutcome::Copy(text, id) => {
-                    ui::clipboard_copy(&text);
-                    self.record_use(id, state);
-                    self.toast("Expanded and copied");
-                    *handled = true;
-                    return;
-                }
+        // The open language dropdown captures pointer input first.
+        if self.language.is_open() {
+            if let WindowEvent::MouseInput { state: ElementState::Pressed, .. } = event {
+                let mut throwaway = None;
+                self.language.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy,
+                );
+                self.after_field_edit(state);
+                *handled = true;
+                return;
             }
         }
 
         match event {
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(action) = self.action_at(self.last_mouse) {
-                    // Clicking anywhere that isn't the search field blurs it.
-                    if !matches!(action, Action::FocusSearch) {
-                        self.search_focused = false;
-                    }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                let p = self.last_mouse;
+                // A click inside a hosted field focuses it and positions the caret.
+                if let Some(f) = self.field_at(p) {
+                    self.set_focus(f);
+                    self.route_press_to_field(f, event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+                    self.after_field_edit(state);
+                    *handled = true;
+                    return;
+                }
+                if let Some(action) = self.action_at(p) {
+                    self.set_focus(Focus::None);
                     self.apply(action, state);
                     *handled = true;
                 } else {
-                    self.search_focused = false;
+                    self.set_focus(Focus::None);
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
-                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64 * BODY_LINE,
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => *y as f64 * ROW_H,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
                 };
-                self.scroll = (self.scroll - dy).max(0.0);
+                if self.body_rect.contains(self.last_mouse) {
+                    self.body.scroll_by(-dy);
+                } else {
+                    self.list_scroll = (self.list_scroll - dy).max(0.0);
+                }
                 *handled = true;
             }
             WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
+                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
                 ..
             } => {
                 let mods = modifiers.state();
-                // Cmd/Ctrl-F focuses search; Cmd/Ctrl-N new snippet;
-                // Cmd/Ctrl-C copies the open snippet.
                 if mods.control_key() || mods.super_key() {
                     if let Key::Character(ch) = logical_key {
                         match ch.to_lowercase().as_str() {
                             "f" => {
-                                self.search_focused = true;
+                                self.set_focus(Focus::Search);
                                 *handled = true;
                                 return;
                             }
@@ -886,10 +991,8 @@ impl ui::widget::Widget for SnippetsApp {
                                 *handled = true;
                                 return;
                             }
-                            "c" => {
-                                if let Some(id) = self.open {
-                                    self.copy(id, state);
-                                }
+                            "c" if !self.focus.is_detail() => {
+                                self.copy_open(state);
                                 *handled = true;
                                 return;
                             }
@@ -898,27 +1001,41 @@ impl ui::widget::Widget for SnippetsApp {
                     }
                 }
 
-                if self.search_focused {
-                    self.handle_search_key(logical_key, handled);
-                    return;
-                }
-
-                // Escape walks back through the responsive layers, then
-                // finally clears the search. In single-pane push showing the
-                // detail it returns to the list; with the overlay sidebar
-                // open it dismisses the flap; otherwise it clears the search.
+                // Escape unwinds: a push detail returns to the list; an open
+                // language menu closes; a non-empty search clears; else blur.
                 if let Key::Named(NamedKey::Escape) = logical_key {
                     if self.is_push_layout() && self.push.reveal() > 0.5 {
                         self.apply(Action::PushBack, state);
                         *handled = true;
-                    } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
-                        self.apply(Action::DismissSidebar, state);
+                        return;
+                    }
+                    if self.language.is_open() {
+                        self.language.close();
                         *handled = true;
-                    } else if !self.search.is_empty() {
-                        self.search.clear();
+                        return;
+                    }
+                    if !self.search_text().is_empty() && self.focus == Focus::Search {
+                        self.search.set_text("");
                         self.recompute_visible();
                         *handled = true;
+                        return;
                     }
+                    self.set_focus(Focus::None);
+                    return;
+                }
+
+                // Tab within the detail moves through the editor fields.
+                if let Key::Named(NamedKey::Tab) = logical_key {
+                    if self.focus.is_detail() {
+                        self.focus_next_detail(mods.shift_key());
+                        *handled = true;
+                        return;
+                    }
+                }
+
+                if self.focus != Focus::None {
+                    self.route_key_to_field(event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+                    self.after_field_edit(state);
                 }
             }
             _ => {}
@@ -926,20 +1043,12 @@ impl ui::widget::Widget for SnippetsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.toast.is_some()
-            || self.sidebar.is_animating(self.sidebar_layout())
-            || self.push.is_animating(SplitLayout::Docked)
+        self.toast.is_some() || self.push.is_animating(SplitLayout::Docked)
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Advance the sidebar reveal + the push (list↔detail) slide toward
-        // their targets. Frame-rate-independent; the host re-pumps frames
-        // while `needs_animation_frame` stays true.
         let dt = 1.0 / 60.0;
-        self.sidebar.tick(self.sidebar_layout(), dt);
         self.push.tick(SplitLayout::Docked, dt);
-
-        // Age out the toast.
         if let Some(toast) = &mut self.toast {
             if toast.ttl == 0 {
                 self.toast = None;
@@ -971,476 +1080,233 @@ impl ui::widget::Widget for SnippetsApp {
     }
 }
 
-/// Result of routing an event to the expand modal.
-pub enum ExpandOutcome {
-    /// Keep the modal open.
-    Stay,
-    /// User dismissed it.
-    Cancel,
-    /// User confirmed; the expanded text + originating snippet id.
-    Copy(String, SnippetId),
-}
-
 impl SnippetsApp {
-    // ---- content band (list + detail) ----------------------------------
+    // ---- event routing helpers -----------------------------------------
 
-    /// Paint the list and the detail within `band`. Wide / medium: the two
-    /// panes sit side by side (list fixed-width, detail fills the rest).
-    /// Very narrow: a single-pane push stack shows the list OR the detail,
-    /// sliding between them, with a Back affordance on the detail.
-    fn draw_content_band(
+    /// Which hosted field (if any) the point falls in, respecting the current
+    /// layout (detail fields are only hittable when the detail is on screen).
+    fn field_at(&self, p: Point) -> Option<Focus> {
+        if self.search_rect.contains(p) {
+            return Some(Focus::Search);
+        }
+        if !self.detail_on_screen() {
+            return None;
+        }
+        if self.title_rect.contains(p) {
+            return Some(Focus::Title);
+        }
+        if self.language_rect.contains(p) {
+            return Some(Focus::Language);
+        }
+        if self.tags_rect.contains(p) {
+            return Some(Focus::Tags);
+        }
+        if self.description_rect.contains(p) {
+            return Some(Focus::Description);
+        }
+        if self.body_rect.contains(p) {
+            return Some(Focus::Body);
+        }
+        for (i, r) in self.fill_rects.iter().enumerate() {
+            if r.contains(p) {
+                return Some(Focus::Fill(i));
+            }
+        }
+        None
+    }
+
+    fn detail_on_screen(&self) -> bool {
+        !self.is_push_layout() || self.push_pane == PushPane::Detail
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_press_to_field(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        band: Rect,
+        f: Focus,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
-        let c = &theme.tokens.colors;
-        if self.is_push_layout() {
-            // Single pane: list and detail each span the full band, offset
-            // horizontally by the eased push amount (0 = list, 1 = detail).
-            let w = band.width();
-            let p = self.push.slide();
-            let list = Rect::new(band.x0 - w * p, band.y0, band.x1 - w * p, band.y1);
-            let detail = Rect::new(band.x0 + w * (1.0 - p), band.y0, band.x1 + w * (1.0 - p), band.y1);
-            // Draw the off-screen pane first so the incoming one sits on top.
-            if p < 0.999 {
-                self.draw_list(scene, t, tr, theme, list);
+        let mut throwaway = None;
+        match f {
+            Focus::Search => self.search.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Title => self.title.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Language => self.language.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Tags => self.tags.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Description => self.description.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Body => self.body.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy),
+            Focus::Fill(i) => {
+                if let Some((_, field)) = self.fills.get_mut(i) {
+                    field.handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy);
+                }
             }
-            if p > 0.001 {
-                self.draw_detail(scene, t, tr, theme, detail);
-            }
-            return;
-        }
-
-        // Side-by-side: list rail + detail fills the remainder. The list
-        // narrows gracefully if the band can't fit the full fixed width.
-        let list_w = LIST_W.min((band.width() - 240.0).max(200.0));
-        let list = Rect::new(band.x0, band.y0, band.x0 + list_w, band.y1);
-        let detail = Rect::new(list.x1, band.y0, band.x1, band.y1);
-        self.draw_list(scene, t, tr, theme, list);
-        self.draw_detail(scene, t, tr, theme, detail);
-        // Divider between list and detail.
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(list.x1 - 0.5, band.y0, list.x1 + 0.5, band.y1),
-            c.border_standard,
-        );
-    }
-
-    // ---- toggles --------------------------------------------------------
-
-    /// Whether the top-left toggle (hamburger / Back) should be shown. It
-    /// appears whenever the primary sidebar isn't fully docked-open (so it
-    /// can be summoned / dismissed), or while the push stack shows the detail
-    /// (so the user can go Back to the list).
-    fn show_toggle(&self) -> bool {
-        let sidebar_collapsed = self.sidebar.reveal() < 0.999
-            || self.sidebar_layout() == SplitLayout::Overlay;
-        let push_in_detail = self.is_push_layout() && self.push.reveal() > 0.5;
-        sidebar_collapsed || push_in_detail
-    }
-
-    /// Draw the top-left toggle button + glyph and record its hit region.
-    /// In single-pane push showing the detail it's a Back chevron (returns to
-    /// the list); otherwise it's a hamburger (open) / close-X (dismiss the
-    /// overlay sidebar).
-    fn draw_toggle(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, band: Rect) {
-        let c = &theme.tokens.colors;
-        let pad = 10.0;
-        let bx = band.x0 + pad;
-        let by = band.y0 + pad;
-        let btn = Rect::new(bx, by, bx + TOGGLE_SIZE, by + TOGGLE_SIZE);
-        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
-        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
-
-        let cx = btn.x0 + TOGGLE_SIZE / 2.0;
-        let cy = btn.y0 + TOGGLE_SIZE / 2.0;
-        let push_back = self.is_push_layout() && self.push.reveal() > 0.5;
-        let overlay_open =
-            self.sidebar_layout() == SplitLayout::Overlay && self.sidebar.reveal() > 0.5;
-
-        if push_back {
-            // Back chevron "‹".
-            let r = 5.0;
-            draw::stroke_line(scene, t, Point::new(cx + r * 0.6, cy - r), Point::new(cx - r * 0.6, cy), 1.8, c.text_primary);
-            draw::stroke_line(scene, t, Point::new(cx - r * 0.6, cy), Point::new(cx + r * 0.6, cy + r), 1.8, c.text_primary);
-            self.record(btn, Action::PushBack);
-        } else if overlay_open {
-            // Close "X" when the overlay sidebar is showing.
-            let r = 6.0;
-            draw::stroke_line(scene, t, Point::new(cx - r, cy - r), Point::new(cx + r, cy + r), 1.8, c.text_primary);
-            draw::stroke_line(scene, t, Point::new(cx + r, cy - r), Point::new(cx - r, cy + r), 1.8, c.text_primary);
-            self.record(btn, Action::ToggleSidebar);
-        } else {
-            // Three-line hamburger to summon the sidebar.
-            let half = 7.0;
-            for i in 0..3 {
-                let ly = btn.y0 + 11.0 + i as f64 * 6.0;
-                draw::stroke_line(scene, t, Point::new(cx - half, ly), Point::new(cx + half, ly), 1.8, c.text_primary);
-            }
-            self.record(btn, Action::ToggleSidebar);
-        }
-    }
-
-    fn handle_search_key(&mut self, key: &Key, handled: &mut bool) {
-        match key {
-            Key::Character(s) => {
-                self.search.push_str(s.as_str());
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                self.search.push(' ');
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Backspace) => {
-                self.search.pop();
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Escape) => {
-                self.search.clear();
-                self.search_focused = false;
-                self.recompute_visible();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Enter) => {
-                self.search_focused = false;
-                *handled = true;
-            }
-            _ => {}
-        }
-    }
-
-    // ---- sidebar --------------------------------------------------------
-
-    fn draw_sidebar(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
-        let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, area, c.surfaces.base);
-        let pad = 16.0;
-        // No app-name wordmark: the OS titlebar shows "Snippets". Docked, the
-        // folder list starts at the top; as an overlay flap, keep a small band
-        // so the top-left close toggle floating over this corner has room.
-        let mut y = if self.sidebar_layout() == SplitLayout::Overlay {
-            area.y0 + TOGGLE_SIZE + 14.0
-        } else {
-            area.y0 + 14.0
-        };
-
-        // Smart folders.
-        for smart in [SmartFolder::All, SmartFolder::Favorites, SmartFolder::MostUsed] {
-            let active = matches!(&self.selection, Selection::Smart(s) if *s == smart);
-            let count = self
-                .library
-                .query(&Selection::Smart(smart), "")
-                .len();
-            let row = self.sidebar_row(
-                scene, t, tr, theme, area, y, smart.label(), Some(count), active, 0,
-            );
-            self.record(row, Action::Select(Selection::Smart(smart)));
-            y += SIDEBAR_ROW_H;
-        }
-
-        y += 10.0;
-        section_header(scene, t, tr, theme, "FOLDERS", area.x0 + pad, y);
-        y += 22.0;
-        for folder in self.library.folders() {
-            let active = matches!(&self.selection, Selection::Folder(f) if *f == folder);
-            let count = self
-                .library
-                .query(&Selection::Folder(folder.clone()), "")
-                .len();
-            let row =
-                self.sidebar_row(scene, t, tr, theme, area, y, &folder, Some(count), active, 1);
-            self.record(row, Action::Select(Selection::Folder(folder.clone())));
-            y += SIDEBAR_ROW_H;
-        }
-
-        y += 10.0;
-        section_header(scene, t, tr, theme, "TAGS", area.x0 + pad, y);
-        y += 22.0;
-        for (tag, cnt) in self.library.tags() {
-            let active = matches!(&self.selection, Selection::Tag(x) if *x == tag);
-            let label = format!("#{tag}");
-            let row =
-                self.sidebar_row(scene, t, tr, theme, area, y, &label, Some(cnt), active, 1);
-            self.record(row, Action::Select(Selection::Tag(tag.clone())));
-            y += SIDEBAR_ROW_H;
+            Focus::None => {}
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn sidebar_row(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        y: f64,
-        label: &str,
-        count: Option<usize>,
-        active: bool,
-        indent: u32,
-    ) -> Rect {
-        let c = &theme.tokens.colors;
-        let pad = 10.0;
-        let row = Rect::new(area.x0 + 8.0, y, area.x1 - 8.0, y + SIDEBAR_ROW_H - 4.0);
-        if active {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.accent[5]);
-        } else if row.contains(self.last_mouse) {
-            draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
+    fn route_key_to_field(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.route_press_to_field(self.focus, event, scale_factor, modifiers, state, path, handled, node_id, taffy);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn forward_to_all_fields(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let mut h = false;
+        let mut throwaway = None;
+        self.search.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+        if self.detail_on_screen() {
+            self.title.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            self.language.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            self.tags.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            self.description.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            self.body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            for (_, f) in self.fills.iter_mut() {
+                f.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut throwaway, node_id, taffy);
+            }
         }
-        let fg = if active { c.text_primary } else { c.neutral[7] };
-        let x = row.x0 + pad + indent as f64 * 12.0;
-        let ty = y + (SIDEBAR_ROW_H - 4.0 - 15.0) / 2.0;
-        draw::text(scene, tr, t, label, x, ty, 14.0, fg, TextWeight::Medium);
-        if let Some(n) = count {
-            let s = n.to_string();
-            let w = tr.measure(&s, 12.0, None).0 as f64;
-            let cfg = if active { c.accent[8] } else { c.text_dim };
-            draw::text(scene, tr, t, &s, row.x1 - pad - w, ty + 1.0, 12.0, cfg, TextWeight::Regular);
+    }
+
+    fn focus_next_detail(&mut self, backward: bool) {
+        let mut order = vec![Focus::Title, Focus::Language, Focus::Tags, Focus::Description, Focus::Body];
+        for i in 0..self.fills.len() {
+            order.push(Focus::Fill(i));
         }
-        row
+        let cur = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        let n = order.len();
+        let next = if backward { (cur + n - 1) % n } else { (cur + 1) % n };
+        self.set_focus(order[next]);
     }
 
     // ---- list pane ------------------------------------------------------
 
-    fn draw_list(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
+    fn draw_list(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.neutral[1]);
+        let pad = 14.0;
 
-        // Search bar.
-        let pad = 12.0;
-        let search_rect = Rect::new(
-            area.x0 + pad,
-            area.y0 + 10.0,
-            area.x1 - pad,
-            area.y0 + 10.0 + SEARCH_H - 16.0,
-        );
-        let focused = self.search_focused;
-        let border = if focused { c.border_focus } else { c.border_standard };
-        draw::fill_round(scene, t, search_rect, theme.radii_md(), c.surfaces.base);
-        draw::stroke_round(scene, t, search_rect, theme.radii_md(), 1.5, border);
-        let placeholder = self.search.is_empty();
-        let shown = if placeholder {
-            "Search  ·  try language:rust  or  tag:k8s".to_string()
-        } else {
-            self.search.clone()
-        };
-        let scolor = if placeholder { c.text_dim } else { c.text_primary };
-        let sy = search_rect.y0 + (search_rect.height() - 15.0) / 2.0;
-        draw::text(
-            scene,
-            tr,
-            t,
-            &shown,
-            search_rect.x0 + 12.0,
-            sy,
-            14.0,
-            scolor,
-            TextWeight::Regular,
-        );
-        // Caret when focused.
-        if focused {
-            let tw = if placeholder {
-                0.0
-            } else {
-                tr.measure(&self.search, 14.0, None).0 as f64
-            };
-            let cx = search_rect.x0 + 12.0 + tw + 1.0;
-            draw::fill_rect(
-                scene,
-                t,
-                Rect::new(cx, sy - 1.0, cx + 1.5, sy + 16.0),
-                c.border_focus,
-            );
-        }
-        self.record(search_rect, Action::FocusSearch);
-        if !placeholder {
-            // A small clear affordance.
-            let clear = Rect::new(search_rect.x1 - 26.0, search_rect.y0, search_rect.x1, search_rect.y1);
-            draw::text(
-                scene,
-                tr,
-                t,
-                "×",
-                clear.x0 + 6.0,
-                sy - 2.0,
-                18.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
+        // Search field: a rounded container with a magnifier, a plain-chrome
+        // TextInput inset past it, and a clear affordance when non-empty.
+        let sr = Rect::new(area.x0 + pad, area.y0 + 12.0, area.x1 - pad, area.y0 + 12.0 + 38.0);
+        let focused = self.focus == Focus::Search;
+        draw::fill_round(scene, t, sr, theme.radii_md(), c.surfaces.base);
+        draw::stroke_round(scene, t, sr, theme.radii_md(), if focused { 1.5 } else { 1.0 }, if focused { c.border_focus } else { c.border_standard });
+        let icon = Rect::new(sr.x0 + 10.0, sr.y0 + (sr.height() - 16.0) / 2.0, sr.x0 + 26.0, sr.y0 + (sr.height() - 16.0) / 2.0 + 16.0);
+        Icon::Search.draw(scene, t, icon, c.text_dim);
+        let has_query = !self.search_text().is_empty();
+        let field_right = if has_query { sr.x1 - 30.0 } else { sr.x1 - 10.0 };
+        self.search_rect = Rect::new(sr.x0 + 32.0, sr.y0, field_right, sr.y1);
+        self.search.apply_layout_external(self.search_rect);
+        self.search.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        if has_query {
+            let clear = Rect::new(sr.x1 - 28.0, sr.y0, sr.x1, sr.y1);
+            let g = Rect::new(clear.x0 + 4.0, clear.y0 + (clear.height() - 14.0) / 2.0, clear.x0 + 18.0, clear.y0 + (clear.height() - 14.0) / 2.0 + 14.0);
+            Icon::X.draw(scene, t, g, c.text_dim);
             self.record(clear, Action::ClearSearch);
         }
 
-        // "+ New" header row with the result count.
-        let header_y = area.y0 + SEARCH_H + 4.0;
-        let count_label = format!("{} snippets", self.visible.len());
-        draw::text(
-            scene,
-            tr,
-            t,
-            &count_label,
-            area.x0 + pad,
-            header_y,
-            12.0,
-            c.text_dim,
-            TextWeight::Medium,
-        );
-        let new_label = "+ New";
-        let nw = tr.measure(new_label, 13.0, None).0 as f64 + 20.0;
-        let new_rect = Rect::new(area.x1 - pad - nw, header_y - 4.0, area.x1 - pad, header_y + 18.0);
-        draw::fill_round(scene, t, new_rect, theme.radii_md(), c.accent[5]);
-        draw::text(
-            scene,
-            tr,
-            t,
-            new_label,
-            new_rect.x0 + 10.0,
-            new_rect.y0 + 4.0,
-            13.0,
-            c.text_primary,
-            TextWeight::Semibold,
-        );
+        // Scope segmented control + New button.
+        let seg_y = sr.y1 + 12.0;
+        let new_w = 34.0;
+        let seg_area = Rect::new(area.x0 + pad, seg_y, area.x1 - pad - new_w - 8.0, seg_y + 30.0);
+        self.draw_scopes(scene, t, tr, theme, seg_area);
+        let new_rect = Rect::new(area.x1 - pad - new_w, seg_y, area.x1 - pad, seg_y + 30.0);
+        let new_face = ButtonFace::new(new_rect, "")
+            .icon(Icon::Plus)
+            .radius(theme.radii_md())
+            .hovered(new_rect.contains(self.last_mouse))
+            .accessible_name("New snippet")
+            .style(ButtonStyle::Primary);
+        Button::paint(scene, t, tr, theme, &new_face);
         self.record(new_rect, Action::NewSnippet);
 
-        // Snippet rows (scrollable region).
-        let list_top = header_y + 26.0;
-        let mut y = list_top - self.scroll;
+        // Result rows (scrollable).
+        let list_top = seg_y + 42.0;
+        let clip = Rect::new(area.x0, list_top, area.x1, area.y1);
+        if self.visible.is_empty() {
+            self.draw_list_empty(scene, t, tr, theme, clip);
+            return;
+        }
+        let mut y = list_top - self.list_scroll;
         let ids = self.visible.clone();
         for id in ids {
             let Some(s) = self.library.get(id).cloned() else { continue };
             let row = Rect::new(area.x0 + 6.0, y, area.x1 - 6.0, y + ROW_H - 6.0);
-            // Cull rows scrolled out of view but still record the hit so
-            // clicks resolve; skip drawing if fully off-pane.
             if row.y1 >= list_top - 4.0 && row.y0 <= area.y1 {
                 self.draw_list_row(scene, t, tr, theme, row, &s, self.open == Some(id));
             }
-            self.record(row, Action::OpenSnippet(id));
+            if row.y1 >= list_top && row.y0 <= area.y1 {
+                self.record(row, Action::OpenSnippet(id));
+            }
             y += ROW_H;
         }
+    }
 
-        if self.visible.is_empty() {
-            self.draw_list_empty(scene, t, tr, theme, area, list_top);
+    fn draw_scopes(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
+        let scopes = [
+            (SmartFolder::All, "All"),
+            (SmartFolder::Favorites, "Starred"),
+            (SmartFolder::MostUsed, "Recent"),
+        ];
+        let gap = 6.0;
+        let w = (area.width() - gap * (scopes.len() as f64 - 1.0)) / scopes.len() as f64;
+        let mut x = area.x0;
+        for (sf, label) in scopes {
+            let r = Rect::new(x, area.y0, x + w, area.y1);
+            let active = matches!(&self.selection, Selection::Smart(s) if *s == sf);
+            let face = ButtonFace::new(r, label)
+                .radius(theme.radii_md())
+                .text_size(12.5)
+                .weight(TextWeight::Medium)
+                .hovered(r.contains(self.last_mouse))
+                .style(if active { ButtonStyle::Primary } else { ButtonStyle::Ghost });
+            Button::paint(scene, t, tr, theme, &face);
+            self.record(r, Action::Scope(sf));
+            x += w + gap;
         }
     }
 
-    /// The list pane's zero-state. A genuinely empty library gets a composed,
-    /// inviting onboarding with a primary "New snippet" call to action; a
-    /// non-empty library filtered down to nothing gets a "no match" note with
-    /// a Clear-search affordance. Never fabricated rows — an honest empty.
-    fn draw_list_empty(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        list_top: f64,
-    ) {
-        let c = &theme.tokens.colors;
-        let cx = area.x0 + area.width() / 2.0;
-        let top = list_top + (area.y1 - list_top).min(360.0) * 0.16;
-
-        // A soft rounded tile carrying a glyph — a real, composed anchor.
-        let tile = 56.0;
-        let tile_rect = Rect::new(cx - tile / 2.0, top, cx + tile / 2.0, top + tile);
-        draw::fill_round(scene, t, tile_rect, theme.radii_md() + 4.0, c.surfaces.raised);
-        draw::stroke_round(scene, t, tile_rect, theme.radii_md() + 4.0, 1.0, c.border_standard);
-        let glyph = "{ }";
-        let gw = tr.measure(glyph, 22.0, None).0 as f64;
-        draw::text(
-            scene, tr, t, glyph,
-            cx - gw / 2.0, top + 15.0, 22.0, c.accent[6], TextWeight::Bold,
-        );
-        let mut y = tile_rect.y1 + 20.0;
-
+    fn draw_list_empty(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
         let library_empty = self.library.snippets.is_empty();
-        let (headline, sub) = if library_empty {
+        let (title, msg, cta) = if library_empty {
             (
                 "No snippets yet",
-                "Save a command, query, or block of code once — reuse it anywhere.",
+                "Save a command, query, or block of code once — then reuse it anywhere.",
+                Some("New snippet"),
             )
         } else {
-            ("No snippets match", "Try a different search, or clear the filter.")
+            ("No matches", "Try a different search, or clear the filter.", Some("Clear search"))
         };
-        let hw = tr.measure(headline, 17.0, None).0 as f64;
-        draw::text(
-            scene, tr, t, headline,
-            cx - hw / 2.0, y, 17.0, c.text_primary, TextWeight::Bold,
-        );
-        y += 26.0;
-        // Sub-copy, wrapped to the available width so it never clips.
-        for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
-            let lw = tr.measure(&line, 13.0, None).0 as f64;
-            draw::text(scene, tr, t, &line, cx - lw / 2.0, y, 13.0, c.text_dim, TextWeight::Regular);
-            y += 19.0;
-        }
-        y += 12.0;
-
-        if library_empty {
-            // Primary call to action, centred.
-            let label = "New snippet";
-            let lw = tr.measure(label, 13.5, None).0 as f64;
-            let bw = lw + 34.0;
-            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
-            let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.accent[4] } else { c.accent[5] });
-            draw::text(
-                scene, tr, t, label,
-                btn.x0 + 17.0, btn.y0 + (36.0 - 14.0) / 2.0, 13.5, c.text_primary, TextWeight::Semibold,
-            );
-            self.record(btn, Action::NewSnippet);
-            // A quiet hint at the search grammar.
-            y = btn.y1 + 22.0;
-            let hint = "Tip: filter with  language:rust  or  tag:k8s";
-            let hw2 = tr.measure(hint, 11.5, None).0 as f64;
-            draw::text(scene, tr, t, hint, cx - hw2 / 2.0, y, 11.5, c.text_dim, TextWeight::Regular);
-        } else {
-            let label = "Clear search";
-            let lw = tr.measure(label, 13.0, None).0 as f64;
-            let bw = lw + 30.0;
-            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
-            let hovered = btn.contains(self.last_mouse);
-            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.surfaces.raised } else { c.neutral[2] });
-            draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
-            draw::text(
-                scene, tr, t, label,
-                btn.x0 + 15.0, btn.y0 + (34.0 - 14.0) / 2.0, 13.0, c.text_primary, TextWeight::Semibold,
-            );
-            self.record(btn, Action::ClearSearch);
+        let cta_rect = EmptyState::paint(scene, t, tr, theme, area, Some(Icon::Code), title, Some(msg), cta, self.last_mouse);
+        if let Some(rect) = cta_rect {
+            self.record(rect, if library_empty { Action::NewSnippet } else { Action::ClearSearch });
         }
     }
 
-    fn draw_list_row(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        row: Rect,
-        s: &Snippet,
-        active: bool,
-    ) {
+    fn draw_list_row(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, row: Rect, s: &Snippet, active: bool) {
         let c = &theme.tokens.colors;
         if active {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surfaces.raised);
@@ -1449,49 +1315,24 @@ impl SnippetsApp {
             draw::fill_round(scene, t, row, theme.radii_md(), c.surface_white_5);
         }
         let pad = 12.0;
-        // Language sigil badge.
-        let badge = Rect::new(row.x0 + pad, row.y0 + 12.0, row.x0 + pad + 30.0, row.y0 + 32.0);
+        let badge = Rect::new(row.x0 + pad, row.y0 + 11.0, row.x0 + pad + 30.0, row.y0 + 31.0);
         draw::fill_round(scene, t, badge, 6.0, lang_tint(theme, s.language));
         let sig = s.language.sigil();
         let sw = tr.measure(sig, 11.0, None).0 as f64;
-        draw::text(
-            scene,
-            tr,
-            t,
-            sig,
-            badge.x0 + (badge.width() - sw) / 2.0,
-            badge.y0 + 3.0,
-            11.0,
-            c.neutral[0],
-            TextWeight::Bold,
-        );
+        draw::text(scene, tr, t, sig, badge.x0 + (badge.width() - sw) / 2.0, badge.y0 + 3.0, 11.0, c.neutral[0], TextWeight::Bold);
 
         let tx = badge.x1 + 10.0;
-        // Title (+ star if favorite).
-        let title = if s.favorite {
-            format!("★ {}", s.title)
-        } else {
-            s.title.clone()
-        };
-        let tcolor = if s.favorite { c.semantic.warning } else { c.text_primary };
-        draw::text(scene, tr, t, &title, tx, row.y0 + 10.0, 14.5, tcolor, TextWeight::Semibold);
+        let title = if s.title.trim().is_empty() { "Untitled snippet" } else { s.title.as_str() };
+        draw::text(scene, tr, t, title, tx, row.y0 + 9.0, 14.5, c.text_primary, TextWeight::Semibold);
+        if s.favorite {
+            let star = Rect::new(row.x1 - pad - 16.0, row.y0 + 9.0, row.x1 - pad, row.y0 + 25.0);
+            Icon::Star.draw_filled(scene, t, star, c.semantic.warning);
+        }
 
-        // Subtitle: first body line, dimmed and clipped.
-        let first_line = s.body.lines().next().unwrap_or("").trim();
-        let preview = clip(first_line, 42);
-        draw::mono(
-            scene,
-            tr,
-            t,
-            &preview,
-            tx,
-            row.y0 + 30.0,
-            12.0,
-            c.text_dim,
-            TextWeight::Regular,
-        );
+        let first_line = s.body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+        let preview = clip(first_line, 44);
+        draw::mono(scene, tr, t, &preview, tx, row.y0 + 30.0, 12.0, c.text_dim, TextWeight::Regular);
 
-        // Trailing usage / placeholder hint.
         let hint = if s.has_placeholders() {
             format!("{} vars", s.placeholders().len())
         } else if s.uses > 0 {
@@ -1501,230 +1342,184 @@ impl SnippetsApp {
         };
         if !hint.is_empty() {
             let hw = tr.measure(&hint, 11.0, None).0 as f64;
-            draw::text(
-                scene,
-                tr,
-                t,
-                &hint,
-                row.x1 - pad - hw,
-                row.y0 + 11.0,
-                11.0,
-                c.text_dim,
-                TextWeight::Medium,
-            );
+            draw::text(scene, tr, t, &hint, row.x1 - pad - hw, row.y0 + 32.0, 11.0, c.text_dim, TextWeight::Medium);
         }
     }
 
     // ---- detail pane ----------------------------------------------------
 
-    fn draw_detail(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-    ) {
+    fn draw_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
-        let Some(open) = self.open else {
+
+        if self.open.is_none() {
             let msg = if self.library.snippets.is_empty() {
-                "Your snippets will appear here."
+                ("Nothing here yet", "Create a snippet to start your library.")
             } else {
-                "Select a snippet to preview it."
+                ("No snippet selected", "Pick one from the list to view and copy it.")
             };
-            let mw = tr.measure(msg, 15.0, None).0 as f64;
-            draw::text(
-                scene,
-                tr,
-                t,
-                msg,
-                area.x0 + (area.width() - mw) / 2.0,
-                area.y0 + area.height() * 0.4,
-                15.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
+            EmptyState::paint(scene, t, tr, theme, area, Some(Icon::FileText), msg.0, Some(msg.1), None, self.last_mouse);
+            self.clear_detail_rects();
             return;
         };
-        let Some(s) = self.library.get(open).cloned() else { return };
-        let pad = 28.0;
-        let mut y = area.y0 + 24.0;
+        let Some(s) = self.open.and_then(|id| self.library.get(id).cloned()) else {
+            self.clear_detail_rects();
+            return;
+        };
 
-        // Title. In single-pane push showing the detail, the top-left Back
-        // chevron floats over this corner, so indent the title past it.
         let back_shown = self.is_push_layout() && self.push.reveal() > 0.5;
-        let title_x = if back_shown { area.x0 + pad + TOGGLE_SIZE } else { area.x0 + pad };
-        draw::text(scene, tr, t, &s.title, title_x, y, 24.0, c.text_primary, TextWeight::Bold);
-        y += 36.0;
-
-        // Meta row: language pill + folder + tags.
-        let mut x = area.x0 + pad;
-        let lp = draw::pill(
-            scene,
-            tr,
-            t,
-            s.language.label(),
-            x,
-            y,
-            22.0,
-            12.0,
-            c.neutral[0],
-            lang_tint(theme, s.language),
-        );
-        // Clicking the language pill cycles to the next language.
-        let next = next_language(s.language);
-        self.record(lp, Action::SetLanguage(open, next));
-        x = lp.x1 + 8.0;
-        if !s.folder.is_empty() {
-            let fp = draw::pill(scene, tr, t, &s.folder, x, y, 22.0, 12.0, c.text_dim, c.neutral[2]);
-            x = fp.x1 + 8.0;
+        if back_shown {
+            self.draw_back(scene, t, theme, area);
         }
-        for tag in &s.tags {
-            let label = format!("#{tag}");
-            let tp = draw::pill(scene, tr, t, &label, x, y, 22.0, 12.0, c.accent[7], c.accent[1]);
-            self.record(tp, Action::Select(Selection::Tag(tag.clone())));
-            x = tp.x1 + 8.0;
-        }
-        y += 34.0;
+        let x0 = area.x0 + PAD + if back_shown { TOGGLE_SIZE + 4.0 } else { 0.0 };
+        let right = area.x1 - PAD;
+        let mut y = area.y0 + 20.0;
 
-        // Description.
-        if !s.description.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                t,
-                &s.description,
-                area.x0 + pad,
-                y,
-                14.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
-            y += 26.0;
-        }
-
-        // Action toolbar: Copy / Expand / Favorite / Duplicate / Delete.
-        y += 4.0;
-        let mut bx = area.x0 + pad;
-        let primary_label = if s.has_placeholders() { "Fill & Copy" } else { "Copy" };
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, primary_label, true, Action::Copy(open));
-        if s.has_placeholders() {
-            bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Variables…", false, Action::Expand(open));
-        }
-        let star_label = if s.favorite { "★ Starred" } else { "☆ Star" };
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, star_label, false, Action::ToggleFavorite(open));
-        bx = self.toolbar_button(scene, t, tr, theme, bx, y, "Duplicate", false, Action::Duplicate(open));
-        let _ = self.toolbar_button(scene, t, tr, theme, bx, y, "Delete", false, Action::Delete(open));
-        y += 44.0;
-
-        // Code card with syntax-highlighted body.
-        let card = Rect::new(area.x0 + pad, y, area.x1 - pad, area.y1 - 20.0);
-        draw::fill_round(scene, t, card, theme.radii_md(), c.neutral[0]);
-        draw::stroke_round(scene, t, card, theme.radii_md(), 1.0, c.border_standard);
-        self.draw_code(scene, t, tr, theme, card, &s);
-    }
-
-    /// Draw a toolbar button, record its hit region against `action`, and
-    /// return the x-coordinate the next button should start at.
-    #[allow(clippy::too_many_arguments)]
-    fn toolbar_button(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
-        label: &str,
-        primary: bool,
-        action: Action,
-    ) -> f64 {
-        let tw = tr.measure(label, 13.0, None).0 as f64;
-        let w = tw + 24.0;
-        let rect = Rect::new(x, y, x + w, y + 32.0);
-        let hovered = rect.contains(self.last_mouse);
-        let face = ButtonFace::new(rect, label)
+        // Header: title (editable) + Copy (primary) on the right.
+        let copy_label = if s.has_placeholders() { "Fill & Copy" } else { "Copy" };
+        let copy_w = tr.measure(copy_label, 14.0, None).0 as f64 + 40.0;
+        let copy_rect = Rect::new(right - copy_w, y, right, y + 38.0);
+        // Title fills the space left of Copy.
+        self.title_rect = Rect::new(x0, y, copy_rect.x0 - 14.0, y + 38.0);
+        self.title.apply_layout_external(self.title_rect);
+        self.title.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        let copy_face = ButtonFace::new(copy_rect, copy_label)
+            .icon(Icon::Copy)
             .radius(theme.radii_md())
-            .text_size(13.0)
+            .text_size(14.0)
             .weight(TextWeight::Semibold)
-            .hovered(hovered)
-            .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral });
-        Button::paint(scene, t, tr, theme, &face);
-        self.record(rect, action);
-        rect.x1 + 8.0
-    }
+            .hovered(copy_rect.contains(self.last_mouse))
+            .style(ButtonStyle::Primary);
+        Button::paint(scene, t, tr, theme, &copy_face);
+        self.record(copy_rect, Action::Copy);
+        y += 50.0;
 
-    fn draw_code(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        s: &Snippet,
-    ) {
-        let c = &theme.tokens.colors;
-        let pad = 16.0;
-        let gutter_w = 36.0;
-        let x0 = card.x0 + pad;
-        // Gutter background.
-        let gutter = Rect::new(card.x0, card.y0, card.x0 + gutter_w + pad, card.y1);
-        draw::fill_round(scene, t, gutter, theme.radii_md(), c.neutral[1]);
-        // Re-cover the right side so only the left edge keeps the radius.
-        draw::fill_rect(
-            scene,
-            t,
-            Rect::new(card.x0 + 10.0, card.y0, card.x0 + gutter_w + pad, card.y1),
-            c.neutral[1],
+        // Meta row: language picker · star · duplicate · delete.
+        let lang_w = 150.0;
+        self.language_rect = Rect::new(x0, y, x0 + lang_w, y + 32.0);
+        self.language.apply_layout_external(self.language_rect);
+        self.language.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        let mut bx = self.language_rect.x1 + 8.0;
+        // Star toggle.
+        let star_rect = Rect::new(bx, y, bx + 34.0, y + 32.0);
+        let star_face = ButtonFace::new(star_rect, "")
+            .icon(if s.favorite { Icon::Star } else { Icon::Star })
+            .radius(theme.radii_md())
+            .hovered(star_rect.contains(self.last_mouse))
+            .accessible_name(if s.favorite { "Unstar" } else { "Star" })
+            .style(if s.favorite { ButtonStyle::Primary } else { ButtonStyle::Ghost });
+        Button::paint(scene, t, tr, theme, &star_face);
+        self.record(star_rect, Action::ToggleFavorite);
+        bx = star_rect.x1 + 8.0;
+        // Duplicate + Delete, quiet.
+        let dup_rect = Rect::new(bx, y, bx + 34.0, y + 32.0);
+        Button::paint(scene, t, tr, theme, &ButtonFace::new(dup_rect, "").icon(Icon::Copy).radius(theme.radii_md()).hovered(dup_rect.contains(self.last_mouse)).accessible_name("Duplicate").style(ButtonStyle::Ghost));
+        self.record(dup_rect, Action::Duplicate);
+        bx = dup_rect.x1 + 4.0;
+        let del_rect = Rect::new(bx, y, bx + 34.0, y + 32.0);
+        Button::paint(scene, t, tr, theme, &ButtonFace::new(del_rect, "").icon(Icon::Trash2).radius(theme.radii_md()).hovered(del_rect.contains(self.last_mouse)).accessible_name("Delete").style(ButtonStyle::Ghost));
+        self.record(del_rect, Action::Delete);
+        y += 42.0;
+
+        // Tags + description fields.
+        self.tags_rect = Rect::new(x0, y, right, y + 30.0);
+        self.tags.apply_layout_external(self.tags_rect);
+        self.tags.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        y += 38.0;
+        self.description_rect = Rect::new(x0, y, right, y + 30.0);
+        self.description.apply_layout_external(self.description_rect);
+        self.description.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        y += 40.0;
+
+        // Fill panel (pinned at the bottom for a templated snippet), then the
+        // body editor fills the space between.
+        let placeholders = model::placeholders_in(&s.body);
+        let fill_h = if placeholders.is_empty() { 0.0 } else { self.fill_panel_height(&placeholders) };
+        let body_bottom = area.y1 - PAD - fill_h - if fill_h > 0.0 { 14.0 } else { 0.0 };
+        self.body_rect = Rect::new(x0, y, right, body_bottom.max(y + 80.0));
+        draw::fill_round(scene, t, self.body_rect, theme.radii_md(), c.neutral[0]);
+        draw::stroke_round(scene, t, self.body_rect, theme.radii_md(), 1.0, if self.focus == Focus::Body { c.border_focus } else { c.border_standard });
+        let inner = Rect::new(
+            self.body_rect.x0 + 8.0,
+            self.body_rect.y0 + 8.0,
+            self.body_rect.x1 - 8.0,
+            self.body_rect.y1 - 8.0,
         );
+        self.body.set_rect(inner);
+        self.body.draw_embedded(scene, t, tr, theme);
 
-        let mut y = card.y0 + pad;
-        let line_h = BODY_LINE;
-        let code_x = x0 + gutter_w;
-        for (i, line) in s.body.lines().enumerate() {
-            if y > card.y1 - line_h {
-                break;
-            }
-            // Line number.
-            let num = (i + 1).to_string();
-            let nw = draw::mono_width(tr, &num, 11.0);
-            draw::mono(
-                scene,
-                tr,
-                t,
-                &num,
-                x0 + gutter_w - 10.0 - nw,
-                y,
-                11.0,
-                c.text_dim,
-                TextWeight::Regular,
-            );
-            // Highlighted spans.
-            let mut sx = code_x;
-            for span in highlight::highlight_line(line, s.language) {
-                let color = span.kind.color(theme);
-                let weight = if matches!(span.kind, highlight::TokenKind::Keyword) {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                };
-                draw::mono(scene, tr, t, &span.text, sx, y, BODY_FONT, color, weight);
-                sx += draw::mono_width(tr, &span.text, BODY_FONT);
-            }
-            y += line_h;
+        if !placeholders.is_empty() {
+            let panel = Rect::new(x0, self.body_rect.y1 + 14.0, right, area.y1 - PAD);
+            self.draw_fill_panel(scene, t, tr, theme, panel);
+        } else {
+            self.fill_rects.clear();
         }
     }
+
+    fn fill_panel_height(&self, placeholders: &[String]) -> f64 {
+        let rows = placeholders.len().div_ceil(2) as f64;
+        // header + rows(32 each) + preview line.
+        22.0 + rows * 38.0 + 26.0
+    }
+
+    fn draw_fill_panel(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect) {
+        let c = &theme.tokens.colors;
+        section_header(scene, t, tr, theme, "FILL IN VARIABLES", area.x0, area.y0 + 4.0);
+        let mut y = area.y0 + 22.0;
+        let col_gap = 12.0;
+        let col_w = (area.width() - col_gap) / 2.0;
+        let n = self.fills.len();
+        self.fill_rects = vec![Rect::ZERO; n];
+        for (i, (name, field)) in self.fills.iter_mut().enumerate() {
+            let col = i % 2;
+            let cx = area.x0 + col as f64 * (col_w + col_gap);
+            let label = format!("${{{name}}}");
+            let lw = tr.measure(&label, 12.0, None).0 as f64;
+            draw::mono(scene, tr, t, &label, cx, y + 8.0, 12.0, c.semantic.warning, TextWeight::Semibold);
+            let fr = Rect::new(cx + lw + 8.0, y, cx + col_w, y + 30.0);
+            field.apply_layout_external(fr);
+            field.draw(scene, t, tr, theme, &PresenceCtx::empty());
+            self.fill_rects[i] = fr;
+            if col == 1 || i == n - 1 {
+                y += 38.0;
+            }
+        }
+        // Live preview of the filled result.
+        let preview = self.filled_text();
+        let first = preview.lines().next().unwrap_or("");
+        let shown = clip(first, ((area.width() - 70.0) / 7.0) as usize);
+        draw::text(scene, tr, t, "Preview", area.x0, y + 2.0, 11.0, c.text_dim, TextWeight::Bold);
+        draw::mono(scene, tr, t, &shown, area.x0 + 56.0, y + 1.0, 12.0, c.text_primary, TextWeight::Regular);
+    }
+
+    fn draw_back(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, area: Rect) {
+        let c = &theme.tokens.colors;
+        let btn = Rect::new(area.x0 + 10.0, area.y0 + 10.0, area.x0 + 10.0 + TOGGLE_SIZE, area.y0 + 10.0 + TOGGLE_SIZE);
+        draw::fill_round(scene, t, btn, theme.radii_md(), c.surfaces.raised);
+        draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+        let g = Rect::new(btn.x0 + 9.0, btn.y0 + 9.0, btn.x1 - 9.0, btn.y1 - 9.0);
+        Icon::ChevronLeft.draw(scene, t, g, c.text_primary);
+        self.record(btn, Action::PushBack);
+    }
+
+    fn clear_detail_rects(&mut self) {
+        self.title_rect = Rect::ZERO;
+        self.language_rect = Rect::ZERO;
+        self.tags_rect = Rect::ZERO;
+        self.description_rect = Rect::ZERO;
+        self.body_rect = Rect::ZERO;
+        self.fill_rects.clear();
+    }
 }
 
-/// Cycle to the next language in the canonical order (wraps).
-fn next_language(lang: Language) -> Language {
-    let i = Language::ALL.iter().position(|l| *l == lang).unwrap_or(0);
-    Language::ALL[(i + 1) % Language::ALL.len()]
+/// Resolve a language label back to a [`Language`] (the Autocomplete accepts a
+/// label; parse it, falling back to plain text).
+fn language_from_label(label: &str) -> Language {
+    Language::ALL.into_iter().find(|l| l.label() == label).unwrap_or(Language::PlainText)
 }
 
-/// A per-language accent tint for the badge. Derived from theme ramps so
-/// it tracks the active palette (never a hard-coded hex).
+/// A per-language accent tint for the row badge, from theme ramps so it tracks
+/// the active palette.
 fn lang_tint(theme: &Theme, lang: Language) -> vello::peniko::Color {
     let c = &theme.tokens.colors;
     match lang {
@@ -1734,45 +1529,16 @@ fn lang_tint(theme: &Theme, lang: Language) -> vello::peniko::Color {
         Language::Git => c.semantic.danger,
         Language::Python => c.semantic.success,
         Language::JavaScript => c.accent[6],
-        // Strong neutral slots: the pill ink is `neutral[0]` (the background
-        // tone), so the fill must sit deep in the ramp to carry it in *both*
-        // themes. A mid slot (neutral[4]/[5]) reads white-on-light-grey in the
-        // light theme and fails contrast.
         Language::Markdown | Language::Html | Language::Css => c.neutral[7],
         Language::PlainText => c.neutral[6],
     }
 }
 
-fn section_header(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    label: &str,
-    x: f64,
-    y: f64,
-) {
-    draw::text(
-        scene,
-        tr,
-        t,
-        label,
-        x,
-        y,
-        11.0,
-        theme.tokens.colors.text_dim,
-        TextWeight::Bold,
-    );
+fn section_header(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, label: &str, x: f64, y: f64) {
+    draw::text(scene, tr, t, label, x, y, 11.0, theme.tokens.colors.text_dim, TextWeight::Bold);
 }
 
-fn draw_toast(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    message: &str,
-) {
+fn draw_toast(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, area: Rect, message: &str) {
     let c = &theme.tokens.colors;
     let w = tr.measure(message, 14.0, None).0 as f64 + 40.0;
     let h = 40.0;
@@ -1781,39 +1547,7 @@ fn draw_toast(
     let rect = Rect::new(x, y, x + w, y + h);
     draw::fill_round(scene, t, rect, theme.radii_md(), c.surfaces.raised);
     draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.accent[5]);
-    draw::text(
-        scene,
-        tr,
-        t,
-        message,
-        x + 20.0,
-        y + (h - 15.0) / 2.0,
-        14.0,
-        c.text_primary,
-        TextWeight::Medium,
-    );
-}
-
-/// Greedy word-wrap `s` into lines no wider than `max_w` at font `size`,
-/// for centred multi-line zero-state copy. Falls back to the whole string
-/// when a single word already exceeds the width (it will clip rather than
-/// loop).
-fn wrap_center(s: &str, tr: &mut TextRenderer, size: f32, max_w: f64) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for word in s.split_whitespace() {
-        let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-        if tr.measure(&trial, size, None).0 as f64 > max_w && !cur.is_empty() {
-            lines.push(std::mem::take(&mut cur));
-            cur.push_str(word);
-        } else {
-            cur = trial;
-        }
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    lines
+    draw::text(scene, tr, t, message, x + 20.0, y + (h - 15.0) / 2.0, 14.0, c.text_primary, TextWeight::Medium);
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -1842,22 +1576,20 @@ mod tests {
     use crate::actions::SNIPPETS_ACTION_TYPE;
     use ui::widget::Widget;
 
+    fn seeded_app() -> (SnippetsApp, AutoCommit) {
+        let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        (app, doc)
+    }
+
     #[test]
     fn live_app_starts_empty() {
-        // Honest empty: a fresh install fabricates no snippets and persists
-        // none. The starter set is demo/`--shots` only.
         let app = SnippetsApp::new();
         assert_eq!(app.library_len_for_test(), 0, "live library starts empty");
         assert!(app.open_id_for_test().is_none(), "nothing is opened on an empty library");
         assert_eq!(app.visible_count_for_test(), 0);
-    }
-
-    #[test]
-    fn demo_seeds_and_opens_a_snippet() {
-        let app = SnippetsApp::new_demo();
-        assert!(app.library_len_for_test() >= 10);
-        assert!(app.open_id_for_test().is_some());
-        assert!(app.visible_count_for_test() >= 10);
     }
 
     #[test]
@@ -1866,10 +1598,14 @@ mod tests {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        assert!(
-            SnippetsDoc::list(&doc).is_empty(),
-            "an empty live library must write no snippets into the shared store"
-        );
+        assert!(SnippetsDoc::list(&doc).is_empty(), "an empty live library writes no snippets");
+    }
+
+    #[test]
+    fn demo_seeds_and_opens_a_snippet() {
+        let app = SnippetsApp::new_demo();
+        assert!(app.library_len_for_test() >= 10);
+        assert!(app.open_id_for_test().is_some());
     }
 
     #[test]
@@ -1883,46 +1619,70 @@ mod tests {
     }
 
     #[test]
-    fn copying_a_plain_snippet_bumps_uses() {
+    fn search_matches_body_text() {
         let mut app = SnippetsApp::new_demo();
-        // Seed the shared document (as the live app's per-frame sync does before
-        // any event) so the usage-bump action has an authoritative row to edit.
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        // Find a snippet without placeholders.
-        let id = app
-            .library
-            .snippets
-            .iter()
-            .find(|s| !s.has_placeholders())
-            .map(|s| s.id)
-            .expect("a placeholder-free snippet exists");
+        app.set_search_for_test("kubectl");
+        assert!(app.visible_count_for_test() >= 1, "a body-text term filters the list");
+        for id in app.visible.clone() {
+            let s = app.library.get(id).unwrap();
+            assert!(
+                s.title.to_lowercase().contains("kubectl") || s.body.to_lowercase().contains("kubectl"),
+                "every survivor actually matches the query"
+            );
+        }
+    }
+
+    #[test]
+    fn copying_a_plain_snippet_copies_the_body_and_bumps_uses() {
+        let (mut app, mut doc) = seeded_app();
+        let id = app.library.snippets.iter().find(|s| !s.has_placeholders()).map(|s| s.id).expect("a plain snippet");
+        let body = app.library.get(id).unwrap().body.clone();
         let before = app.snippet_uses_for_test(id);
+        app.open = Some(id);
+        app.reconcile_detail();
+        assert_eq!(app.filled_text_for_test(), body, "a plain snippet copies verbatim");
         app.copy_for_test(id, &mut doc);
         assert_eq!(app.snippet_uses_for_test(id), before + 1);
-        assert!(!app.expand_open_for_test());
     }
 
     #[test]
-    fn copying_a_templated_snippet_opens_expand() {
-        let mut app = SnippetsApp::new_demo();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        let id = app
-            .library
-            .snippets
-            .iter()
-            .find(|s| s.has_placeholders())
-            .map(|s| s.id)
-            .expect("a templated snippet exists");
-        app.copy_for_test(id, &mut doc);
-        assert!(app.expand_open_for_test(), "templated copy routes through expand");
+    fn templated_snippet_exposes_fill_fields_and_fills_on_copy() {
+        let (mut app, _doc) = seeded_app();
+        // Pick a templated snippet and open it.
+        let id = app.library.snippets.iter().find(|s| s.has_placeholders()).map(|s| s.id).expect("a templated snippet");
+        app.open = Some(id);
+        assert!(app.fill_field_count_for_test() >= 1, "a templated snippet exposes variable fields");
+
+        // Unfilled: placeholders survive in the copy (honest partial).
+        let raw = app.filled_text_for_test();
+        assert!(raw.contains("${"), "unfilled variables stay visible");
+
+        // Fill every variable, then the copy substitutes them.
+        let names = model::placeholders_in(&app.library.get(id).unwrap().body);
+        for (i, n) in names.iter().enumerate() {
+            app.set_fill_for_test(n, &format!("v{i}"));
+        }
+        let filled = app.filled_text_for_test();
+        assert!(!filled.contains("${"), "every variable was substituted: {filled}");
+        for (i, _) in names.iter().enumerate() {
+            assert!(filled.contains(&format!("v{i}")), "the typed value landed in the copy");
+        }
     }
 
     #[test]
-    fn new_snippet_grows_library_and_opens_it() {
+    fn editing_the_body_dispatches_setbody_and_persists() {
+        let (mut app, mut doc) = seeded_app();
+        let id = app.open_id_for_test().expect("the demo opens a snippet");
+        app.edit_body_for_test("echo ${greeting}", &mut doc);
+        assert_eq!(SnippetsDoc::get(&doc, id).unwrap().body, "echo ${greeting}", "the body edit reached the document");
+        let dispatched = app.last_dispatched_for_test().expect("an action was dispatched");
+        assert_eq!(dispatched.type_id, SNIPPETS_ACTION_TYPE);
+        // The new variable surfaces as a fill field.
+        assert!(app.fill_field_count_for_test() >= 1, "a newly typed ${{}} becomes fillable");
+    }
+
+    #[test]
+    fn new_snippet_grows_library_opens_and_focuses_title() {
         let mut app = SnippetsApp::new();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1931,12 +1691,7 @@ mod tests {
         app.new_snippet_for_test(&mut doc);
         assert_eq!(app.library_len_for_test(), before + 1);
         assert!(app.open_id_for_test().is_some());
-    }
-
-    #[test]
-    fn next_language_wraps() {
-        let last = *Language::ALL.last().unwrap();
-        assert_eq!(next_language(last), Language::ALL[0]);
+        assert_eq!(app.focus, Focus::Title, "a new snippet lands in the title, ready to author");
     }
 
     #[test]
@@ -1948,60 +1703,30 @@ mod tests {
         assert_eq!(SnippetsDoc::list(&doc).len(), app.library_len_for_test());
     }
 
-    // ---- responsive layout ---------------------------------------------
+    // ---- responsive ----------------------------------------------------
 
     #[test]
-    fn wide_keeps_sidebar_docked_and_open() {
+    fn wide_shows_both_panes() {
         let mut app = SnippetsApp::new();
         app.layout_at_width_for_test(1280.0);
-        assert!(!app.sidebar_is_overlay_for_test(), "wide window docks the sidebar");
-        assert!(app.sidebar_open_for_test(), "docked sidebar is open beside the content");
-        assert!(!app.is_push_for_test(), "wide window keeps list + detail side by side");
-    }
-
-    #[test]
-    fn narrow_collapses_sidebar_to_overlay_closed_by_default() {
-        let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(720.0);
-        assert!(app.sidebar_is_overlay_for_test(), "narrow window overlays the sidebar");
-        assert!(
-            !app.sidebar_open_for_test(),
-            "the overlay sidebar is closed by default, summoned by the hamburger"
-        );
-    }
-
-    #[test]
-    fn hamburger_toggles_the_overlay_sidebar() {
-        let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(720.0);
-        assert!(!app.sidebar_open_for_test());
-        app.toggle_sidebar_for_test();
-        assert!(app.sidebar_open_for_test(), "the toggle summons the overlay flap");
-        app.toggle_sidebar_for_test();
-        assert!(!app.sidebar_open_for_test(), "toggling again dismisses it");
+        assert!(!app.is_push_for_test(), "a wide window keeps list + detail side by side");
     }
 
     #[test]
     fn very_narrow_uses_single_pane_push() {
         let mut app = SnippetsApp::new();
-        app.layout_at_width_for_test(480.0);
-        assert!(app.is_push_for_test(), "very-narrow window switches to single-pane push");
-        assert!(
-            !app.push_showing_detail_for_test(),
-            "push starts on the master list"
-        );
+        app.layout_at_width_for_test(520.0);
+        assert!(app.is_push_for_test(), "a very-narrow window switches to single-pane push");
+        assert!(!app.push_showing_detail_for_test(), "push starts on the master list");
     }
 
     #[test]
-    fn opening_a_snippet_pushes_the_detail_when_very_narrow() {
+    fn opening_a_snippet_pushes_detail_when_narrow() {
         let mut app = SnippetsApp::new_demo();
-        app.layout_at_width_for_test(480.0);
+        app.layout_at_width_for_test(520.0);
         assert!(!app.push_showing_detail_for_test());
         app.open_first_for_test();
-        assert!(
-            app.push_showing_detail_for_test(),
-            "selecting a snippet pushes the detail pane in"
-        );
+        assert!(app.push_showing_detail_for_test(), "selecting a snippet pushes the detail in");
     }
 
     #[test]
@@ -2009,45 +1734,15 @@ mod tests {
         let mut app = SnippetsApp::new_demo();
         app.layout_at_width_for_test(1280.0);
         app.open_first_for_test();
-        assert!(
-            !app.push_showing_detail_for_test(),
-            "wide layout shows both panes; opening must not trigger a push"
-        );
-    }
-
-    #[test]
-    fn resizing_wide_again_restores_the_docked_default() {
-        let mut app = SnippetsApp::new();
-        // Narrow first (overlay, closed), then widen back.
-        app.layout_at_width_for_test(720.0);
-        assert!(!app.sidebar_open_for_test());
-        app.layout_at_width_for_test(1280.0);
-        assert!(
-            app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
-            "crossing back over the breakpoint restores the docked-open default"
-        );
+        assert!(!app.push_showing_detail_for_test(), "a wide layout shows both panes");
     }
 
     // ---- action model: affordances dispatch through the shared path ----
 
-    /// Seed a demo app + its shared document, as the live frame order does.
-    fn seeded_app() -> (SnippetsApp, AutoCommit) {
-        let mut app = SnippetsApp::new_demo();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
-        (app, doc)
-    }
-
-    /// The toolbar Delete button dispatches the byte-identical `EncodedAction`
-    /// the Ctrl+K palette's "Delete snippet" ActionSpec exports — proof the two
-    /// share one source of truth — and it actually removes the row.
     #[test]
     fn toolbar_delete_dispatches_the_same_action_as_the_palette() {
         let (mut app, mut doc) = seeded_app();
         let id = SnippetsDoc::list(&doc)[0].id;
-
-        // What the palette would dispatch for this snippet's "delete".
         let resources = Widget::resources(&app, &doc);
         let snip = resources[0]
             .children
@@ -2059,107 +1754,52 @@ mod tests {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
             _ => panic!("delete is immediate"),
         };
-
         app.delete_for_test(id, &mut doc);
-
         let dispatched = app.last_dispatched_for_test().expect("the button dispatched an action");
-        assert_eq!(dispatched.type_id, SNIPPETS_ACTION_TYPE);
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
-        assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the button and the palette build the identical EncodedAction",
-        );
-        assert!(
-            SnippetsDoc::get(&doc, id).is_none(),
-            "the snippet was deleted via the dispatched action",
-        );
-        assert!(
-            !app.library.snippets.iter().any(|s| s.id == id),
-            "the library re-projected the deletion",
-        );
+        assert_eq!(dispatched.payload, spec_encoded.payload, "button and palette build the identical EncodedAction");
+        assert!(SnippetsDoc::get(&doc, id).is_none(), "the snippet was deleted via the dispatched action");
     }
 
-    /// The toolbar Star button dispatches the same `EncodedAction` the palette's
-    /// "toggle-favorite" spec exports (both carry the flipped target value).
     #[test]
     fn toolbar_star_dispatches_the_same_action_as_the_palette() {
         let (mut app, mut doc) = seeded_app();
-        // Pick an unstarred snippet so both sides compute `favorite: true`.
-        let id = SnippetsDoc::list(&doc)
-            .into_iter()
-            .find(|s| !s.favorite)
-            .map(|s| s.id)
-            .expect("an unstarred seeded snippet");
-
+        let id = SnippetsDoc::list(&doc).into_iter().find(|s| !s.favorite).map(|s| s.id).expect("an unstarred snippet");
         let resources = Widget::resources(&app, &doc);
-        let snip = resources[0]
-            .children
-            .iter()
-            .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
-            .unwrap();
+        let snip = resources[0].children.iter().find(|r| r.id.as_str() == format!("snippets.snippet:{id}")).unwrap();
         let spec = snip.actions.iter().find(|a| a.id == "toggle-favorite").unwrap();
         let spec_encoded = match &spec.input {
             qos_actions::ActionInput::Immediate(e) => e.clone(),
             _ => panic!("toggle-favorite is immediate"),
         };
-
         app.toggle_favorite_for_test(id, &mut doc);
-
         let dispatched = app.last_dispatched_for_test().expect("the star dispatched an action");
-        assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the star and the palette build the identical EncodedAction",
-        );
+        assert_eq!(dispatched.payload, spec_encoded.payload, "the star and the palette build the identical EncodedAction");
         assert!(SnippetsDoc::get(&doc, id).unwrap().favorite, "the snippet is now starred");
     }
 
-    /// The full undo covenant through the real host path: a toolbar affordance
-    /// dispatches its action, the host drains `take_committed_action` to record
-    /// exactly one undo boundary, and Ctrl+Z reverts precisely that action.
     #[test]
     fn affordance_records_one_undo_boundary_through_the_host() {
         let mut app = SnippetsApp::new_demo();
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        let id = SnippetsDoc::list(&state.doc)
-            .into_iter()
-            .find(|s| !s.favorite)
-            .map(|s| s.id)
-            .expect("an unstarred snippet");
-
-        // Fire the toolbar Star through the shared dispatch path.
+        let id = SnippetsDoc::list(&state.doc).into_iter().find(|s| !s.favorite).map(|s| s.id).expect("an unstarred snippet");
         app.toggle_favorite_for_test(id, &mut state.doc);
         assert!(SnippetsDoc::get(&state.doc, id).unwrap().favorite);
-
-        // The host drains the captured heads and records ONE undo boundary.
         let before = Widget::take_committed_action(&mut app).expect("heads were captured");
-        assert!(
-            Widget::take_committed_action(&mut app).is_none(),
-            "rising-edge: the captured heads are cleared on read",
-        );
+        assert!(Widget::take_committed_action(&mut app).is_none(), "rising-edge: cleared on read");
         state.record_committed_action(before, None, None);
         assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
-
-        // Ctrl+Z reverts the star. Re-project so the library reflects the undo.
         state.undo(None, None).expect("an undo entry to pop");
         app.sync(&mut state.doc, &state.root);
-        assert!(
-            !SnippetsDoc::get(&state.doc, id).unwrap().favorite,
-            "undo reverted the star and nothing else",
-        );
+        assert!(!SnippetsDoc::get(&state.doc, id).unwrap().favorite, "undo reverted the star and nothing else");
     }
 
-    /// Actions make the document authoritative: a mutation applied straight to
-    /// the document (as a peer's replayed action would arrive) is re-projected
-    /// into the library on the next `sync`, and a local delete is not resurrected.
     #[test]
     fn steady_state_reprojects_the_document() {
         let (mut app, mut doc) = seeded_app();
         let before = app.library_len_for_test();
         let id = SnippetsDoc::list(&doc)[0].id;
-
-        // A peer deletes a snippet — it arrives in our replica as a raw document
-        // mutation (the shape a replayed `DeleteSnippet` action leaves behind).
         SnippetsDoc::remove(&mut doc, id);
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(app.library_len_for_test(), before - 1, "the deletion re-projected");

@@ -300,7 +300,10 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             ExecutionLocus::ClientLocal,
             move |t: &str| encode(&set_tags_action(id, &parse_tags(t))),
         ));
-        // Edit the description — prompted.
+        // Edit the description — prompted. The body is authored in the in-app
+        // multi-line editor (a one-line palette prompt is the wrong surface for
+        // it), so it is deliberately not exported as a palette action even
+        // though `SetBody` is a first-class, replayable action.
         r = r.with_action(ActionSpec::prompted(
             "edit-description",
             "Edit description",
@@ -308,16 +311,6 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
             "describe this snippet…",
             ExecutionLocus::ClientLocal,
             move |t: &str| encode(&set_description_action(id, t)),
-        ));
-        // Replace the body — prompted. The rich multi-line authoring surface is
-        // the in-app editor; this keeps the field reachable from Ctrl+K too.
-        r = r.with_action(ActionSpec::prompted(
-            "edit-body",
-            "Edit body",
-            "Body",
-            "snippet text (use ${var} for variables)…",
-            ExecutionLocus::ClientLocal,
-            move |t: &str| encode(&set_body_action(id, t)),
         ));
         // Star / unstar — immediate; carries the flipped target value, the same
         // EncodedAction the toolbar Star button dispatches.

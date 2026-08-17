@@ -1,11 +1,13 @@
 //! Snippets — a text & code snippet manager for qOS.
 //!
 //! A searchable, taggable library of reusable snippets. Each snippet has a
-//! title, language, tags and a body that may contain `${placeholder}`
-//! variables; the detail pane shows a syntax-highlighted preview, and the
-//! expand-with-variables flow fills the placeholders before copying to the
-//! clipboard. The library is a CRDT object (see [`doc`]) so it syncs across
-//! devices and collaborators converge on one shared set of snippets.
+//! title, language, tags and an editable body that may contain
+//! `${placeholder}` variables. The library list finds snippets fast; the
+//! detail pane is a real editor (shared `ui` text fields + a code editor)
+//! where a snippet is authored, and a single dominant Copy fills any
+//! variables from an inline panel before writing to the clipboard. The
+//! library is a CRDT object (see [`doc`]) so it syncs across devices and
+//! collaborators converge on one shared set of snippets.
 //!
 //! The single integration point is [`app_root`], used by both the live
 //! event loop and the `--shots` offscreen renderer in `main.rs`.
@@ -14,7 +16,6 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod draw;
-pub mod expand;
 pub mod highlight;
 pub mod model;
 pub mod search_provider;
@@ -34,10 +35,11 @@ pub fn app_root() -> Box<dyn Widget> {
 /// single headless screenshot (the live `--shots` renderer paints one frame
 /// and can't reach toggled states through input). Recognised scenarios:
 ///
-/// * `"narrow"` — pair with a sub-breakpoint `--viewport` to show the
-///   primary sidebar as an open overlay flap over the content + scrim.
-/// * `"detail"` — pair with a very-narrow `--viewport` to show the
-///   single-pane push stack on the detail with its Back affordance.
+/// * `"empty"` — the honest live zero-state (a fresh install has no snippets).
+/// * `"fill"` — open a templated snippet with its variables filled in, so the
+///   capture shows the fill-and-copy flow mid-use.
+/// * `"detail"` — pair with a very-narrow `--viewport` to show the single-pane
+///   push stack on the detail with its Back affordance.
 ///
 /// An empty / unknown name yields the same frame as [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
