@@ -1355,6 +1355,25 @@ impl Widget for NotesApp {
         self.actions.take_committed()
     }
 
+    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
+    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
+    /// every page findable there by title, alongside the actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::NoteSearchProvider::new(&self.workspace))]
+    }
+
+    /// Navigate to the page a chosen palette row identifies. Selection is
+    /// app-local presentation (per-peer, never in the shared doc), so the doc
+    /// args are unused — this mirrors the click-on-link / Cmd-K page jump.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::NoteSearchProvider::parse_action_id(action_id) {
+            if self.workspace.get(id).is_some() {
+                self.navigate_to(id);
+            }
+        }
+    }
+
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
         // Broadcast which page we're viewing as a Tab location so peers
         // can render "indicative mist" on the sidebar row that leads here.

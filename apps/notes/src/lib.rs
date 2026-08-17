@@ -14,6 +14,7 @@ pub mod sidebar;
 pub mod shortcuts_overlay;
 pub mod status_bar;
 pub mod app;
+pub mod search_provider;
 pub mod shots;
 
 pub use app::NotesApp;
