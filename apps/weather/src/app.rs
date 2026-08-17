@@ -127,6 +127,12 @@ impl WeatherApp {
         Self::assemble(core, false)
     }
 
+    /// The id of the currently selected city, if any. Lets a test observe where
+    /// a Ctrl+K activation navigated.
+    pub fn selected_city(&self) -> Option<crate::model::LocationId> {
+        self.core.borrow().model.selected_location().map(|l| l.id)
+    }
+
     /// Live event-loop configuration: the user's own saved places, real
     /// Open-Meteo fetches, and display units read from the shared Settings
     /// store. Nothing invented ever shows on a fresh launch — both the bundled
@@ -391,6 +397,28 @@ impl Widget for WeatherApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.nav]
+    }
+
+    /// Fold the saved cities into the unified Ctrl+K palette: a snapshot
+    /// [`CitySearchProvider`](crate::search_provider::CitySearchProvider) makes
+    /// every saved city findable there by name, region, or country, without
+    /// touching the geocoder.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::CitySearchProvider::new(
+            &self.core.borrow().model.locations,
+        ))]
+    }
+
+    /// Open the saved city a chosen palette row identifies: select it and push
+    /// its forecast into view, the same path a tap on the city list takes.
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::CitySearchProvider::parse_action_id(action_id) {
+            if self.core.borrow_mut().open_location(id) {
+                if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+                    self.nav.show_detail();
+                }
+            }
+        }
     }
 
     fn name(&self) -> &str {
