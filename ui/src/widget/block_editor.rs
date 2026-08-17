@@ -962,6 +962,156 @@ impl BlockEditor {
         true
     }
 
+    /// Apply any markdown shortcut completed by the latest keystroke in block
+    /// `idx`. `before` is the block text prior to this event; the shortcut only
+    /// fires when the text actually changed (so a click never transforms).
+    ///
+    /// The *decision* — is this a block prefix or an inline span, and which —
+    /// comes from the shared [`markdown_input`](crate::widget::markdown_input)
+    /// detector (the word-processor uses the same); the *rendering* (block
+    /// kind promotion / inline [`Mark`]) is this editor's own.
+    fn try_markdown_shortcut(&mut self, state: &mut AutoCommit, idx: usize, before: &str) {
+        use crate::widget::markdown_input::{self, BlockPrefix};
+        // Read text/kind/caret, then drop the borrow before mutating.
+        let (now, caret, is_para) = {
+            let Some(b) = self.blocks.get(idx) else {
+                return;
+            };
+            let now = b.line.value().to_string();
+            if now == before {
+                return;
+            }
+            let caret = b.line.cursor_pos().min(now.len());
+            (now, caret, matches!(b.kind, BlockKind::Paragraph))
+        };
+        let head = &now[..caret];
+
+        // 1. Block prefix — only from an untouched paragraph, completed by the
+        //    space right after the marker (everything before the caret is
+        //    exactly `<marker><space>`).
+        if is_para {
+            if let Some(marker) = head.strip_suffix(' ') {
+                if !marker.is_empty() && !marker.contains(' ') {
+                    if let Some(prefix) = markdown_input::detect_block_prefix(marker) {
+                        match prefix {
+                            BlockPrefix::Heading(_) => {
+                                let _ = self.try_promote_to_heading(idx);
+                            }
+                            BlockPrefix::BulletList => self.promote_to_list(idx, false),
+                            BlockPrefix::OrderedList => self.promote_to_list(idx, true),
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 2. Inline span — completed by the just-typed closing delimiter.
+        if let Some(m) = markdown_input::detect_inline(head) {
+            self.apply_inline_shortcut(state, idx, caret, m);
+        }
+    }
+
+    /// Convert paragraph `idx` into a bullet / numbered list item, stripping
+    /// the leading `- `/`* `/`1. ` marker. Mirrors [`try_promote_to_heading`]
+    /// (fresh line, caret parked at the start of the surviving text).
+    fn promote_to_list(&mut self, idx: usize, ordered: bool) {
+        let Some(b) = self.blocks.get_mut(idx) else {
+            return;
+        };
+        if !matches!(b.kind, BlockKind::Paragraph) {
+            return;
+        }
+        let text = b.line.value().to_string();
+        // Strip the marker up to and including the first space.
+        let rest = match text.find(' ') {
+            Some(i) => text[i + 1..].to_string(),
+            None => String::new(),
+        };
+        let kind = if ordered {
+            BlockKind::Numbered { indent: 0 }
+        } else {
+            BlockKind::Bullet { indent: 0 }
+        };
+        let font_size = kind.font_size();
+        b.kind = kind;
+        let mut new_line = RichTextLine::new().with_text(&rest).with_size(font_size);
+        new_line.set_focus(true);
+        new_line.set_cursor_pos(0);
+        b.line = new_line;
+        self.structure_dirty = true;
+        self.doc_structure_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Strip the delimiter bytes of a detected inline span and apply the real
+    /// [`Mark`] over the surviving content — this editor's rendering of a
+    /// shared-detector match. When the line is CRDT-bound the delimiter
+    /// deletion is spliced straight into the shared document (char offsets) so
+    /// the next `sync` doesn't resurrect the markers; the local line + marks
+    /// are updated to match. Pre-existing marks are shifted through the two
+    /// deletions.
+    fn apply_inline_shortcut(
+        &mut self,
+        state: &mut AutoCommit,
+        idx: usize,
+        caret: usize,
+        m: crate::widget::markdown_input::InlineMatch,
+    ) {
+        use crate::widget::markdown_input::InlineKind;
+        let Some(b) = self.blocks.get_mut(idx) else {
+            return;
+        };
+        let text = b.line.value().to_string();
+        let caret = caret.min(text.len());
+        // The detector ran on `text[..caret]`, so the closer ends at the caret.
+        if m.close.end != caret || m.open.end > m.content.start || m.content.start >= m.content.end
+        {
+            return;
+        }
+        let mark = match m.kind {
+            InlineKind::Bold => Mark::Bold,
+            InlineKind::Italic => Mark::Italic,
+            InlineKind::Code => Mark::Code,
+            InlineKind::Strikethrough => Mark::Strikethrough,
+        };
+
+        // New text with both delimiters removed:
+        //   [..open.start] + content + [close.end..]
+        let mut new_text = String::with_capacity(text.len());
+        new_text.push_str(&text[..m.open.start]);
+        new_text.push_str(&text[m.content.clone()]);
+        new_text.push_str(&text[m.close.end..]);
+
+        let mark_start = m.open.start;
+        let mark_end = m.open.start + (m.content.end - m.content.start);
+
+        // Adjust any pre-existing marks through the two deletions (close first,
+        // then open — open sits left of close so its offsets stay valid).
+        let mut marks = b.line.marks().to_vec();
+        delete_byte_range(&mut marks, m.close.clone());
+        delete_byte_range(&mut marks, m.open.clone());
+        marks.push(MarkSpan::new(mark_start..mark_end, mark));
+
+        // Splice the deletions into the bound CRDT Text (char offsets) so the
+        // change survives the next `sync`. Unbound (examples/tests) skip this.
+        if let Some(obj) = b.line.bound_obj() {
+            let close_cs = text[..m.close.start].chars().count();
+            let close_cn = text[m.close.clone()].chars().count();
+            let open_cs = text[..m.open.start].chars().count();
+            let open_cn = text[m.open.clone()].chars().count();
+            let _ = state.splice_text(&obj, close_cs, close_cn as isize, "");
+            let _ = state.splice_text(&obj, open_cs, open_cn as isize, "");
+        }
+
+        b.line.set_text(&new_text);
+        b.line.set_marks(marks);
+        b.line.set_cursor_pos(mark_end);
+        self.structure_dirty = true;
+        self.dirty = true;
+        self.edit_pending = true;
+    }
+
     /// Convert the block at `idx` to `new_kind`, preserving the
     /// current text content. Used by the SlashMenu Enter handler:
     /// the menu picks the target kind and this applies the conversion.
@@ -1290,12 +1440,29 @@ pub enum CursorPlacement {
     Byte(usize),
 }
 
-/// True when `s` is exactly a markdown heading prefix (`# `, `## `, `### `).
-/// Used by the editor's live shortcut: when the text before the caret equals
-/// one of these, the just-typed space completed the prefix and the paragraph
-/// should promote to the matching heading.
-fn is_heading_prefix(s: &str) -> bool {
-    matches!(s, "# " | "## " | "### ")
+/// Remove byte range `del` from a mark list: spans are clipped/shifted and any
+/// that collapse to empty are dropped. Used when an inline markdown shortcut
+/// splices delimiter bytes out of the line.
+fn delete_byte_range(marks: &mut Vec<MarkSpan>, del: std::ops::Range<usize>) {
+    let len = del.end.saturating_sub(del.start);
+    if len == 0 {
+        return;
+    }
+    let map = |p: usize| -> usize {
+        if p <= del.start {
+            p
+        } else if p >= del.end {
+            p - len
+        } else {
+            del.start
+        }
+    };
+    marks.retain_mut(|span| {
+        let s = map(span.range.start);
+        let e = map(span.range.end);
+        span.range = s..e;
+        s < e
+    });
 }
 
 /// Round `byte` down to the nearest UTF-8 char boundary inside `text`.
@@ -2508,7 +2675,9 @@ impl Widget for BlockEditor {
             let before_text = self
                 .blocks
                 .get(focused_idx)
-                .filter(|b| matches!(b.kind, BlockKind::Paragraph))
+                .filter(|b| {
+                    b.kind.is_editable() && !matches!(b.kind, BlockKind::CodeBlock { .. })
+                })
                 .map(|b| b.line.value().to_string());
             if let Some(b) = self.blocks.get_mut(focused_idx) {
                 if b.kind.is_editable() {
@@ -2533,22 +2702,13 @@ impl Widget for BlockEditor {
             {
                 self.apply_signal(focused_idx, sig);
             }
-            // Markdown heading shortcut: promote when this event just typed the
-            // space that completes a `# ` / `## ` / `### ` prefix at the very
-            // start of the line — i.e. the text changed AND everything before the
-            // caret is exactly that prefix. Gating on "text changed" means a click
-            // that only parks the caret after an existing "# " never promotes; the
-            // caret-at-prefix-end check means a space typed mid-line doesn't.
+            // Live "visual markdown": route the just-typed keystroke through
+            // the shared detector (identical logic to the word-processor) and
+            // apply the matching transform on this editor's own model. Gating
+            // on "text changed" means a click that only parks the caret after
+            // an existing `# ` never transforms.
             if let Some(before) = before_text {
-                if let Some(b) = self.blocks.get(focused_idx) {
-                    let now = b.line.value();
-                    if now != before {
-                        let caret = b.line.cursor_pos().min(now.len());
-                        if is_heading_prefix(&now[..caret]) {
-                            let _ = self.try_promote_to_heading(focused_idx);
-                        }
-                    }
-                }
+                self.try_markdown_shortcut(state, focused_idx, &before);
             }
         }
     }
@@ -3132,6 +3292,159 @@ mod tests {
         e.blocks.push(Block::paragraph("second"));
         e.focus_block(99, CursorPlacement::End);
         assert_eq!(e.focused_index(), Some(1));
+    }
+
+    // ---- live "visual markdown" via the real key-event path -------------
+
+    /// Type each `char` of `seq` into a fresh editor through the full
+    /// `handle_event` path (inner line insert → `try_markdown_shortcut`),
+    /// returning the editor so callers can assert on the resulting block.
+    fn type_seq(seq: &str) -> BlockEditor {
+        use winit::event::{ElementState, KeyEvent, WindowEvent};
+        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+
+        let mut e = BlockEditor::new();
+        e.blocks[0]
+            .line
+            .apply_layout_external(Rect::new(0.0, 0.0, 400.0, 24.0));
+        e.focus_block(0, CursorPlacement::End);
+
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let mods = Modifiers::default();
+
+        for c in seq.chars() {
+            let s = c.to_string();
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            // Space arrives as its own logical key on real keyboards; the inner
+            // TextInput inserts either way from `text`.
+            ev.logical_key = if c == ' ' {
+                Key::Named(NamedKey::Space)
+            } else {
+                Key::Character(s.as_str().into())
+            };
+            ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = Some(s.as_str().into());
+            let event = WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            };
+            let mut handled = false;
+            let mut ft = None;
+            e.handle_event(
+                &event,
+                1.0,
+                &mods,
+                &mut state,
+                &root,
+                &mut handled,
+                &mut ft,
+                NodeId::new(0),
+                &taffy,
+            );
+        }
+        e
+    }
+
+    fn only_mark(e: &BlockEditor) -> (Mark, std::ops::Range<usize>) {
+        let m = &e.blocks()[0].line.marks();
+        assert_eq!(m.len(), 1, "exactly one inline mark expected, got {m:?}");
+        (m[0].mark.clone(), m[0].range.clone())
+    }
+
+    #[test]
+    fn inline_bold_double_star_via_event_path() {
+        let e = type_seq("**x**");
+        assert_eq!(e.blocks()[0].text(), "x", "markers stripped");
+        let (mark, range) = only_mark(&e);
+        assert_eq!(mark, Mark::Bold);
+        assert_eq!(range, 0..1, "bold covers the kept content");
+    }
+
+    #[test]
+    fn inline_bold_double_underscore_via_event_path() {
+        let e = type_seq("__x__");
+        assert_eq!(e.blocks()[0].text(), "x");
+        assert_eq!(only_mark(&e).0, Mark::Bold);
+    }
+
+    #[test]
+    fn inline_italic_via_event_path() {
+        let e = type_seq("_x_");
+        assert_eq!(e.blocks()[0].text(), "x");
+        assert_eq!(only_mark(&e).0, Mark::Italic);
+
+        let e2 = type_seq("*y*");
+        assert_eq!(e2.blocks()[0].text(), "y");
+        assert_eq!(only_mark(&e2).0, Mark::Italic);
+    }
+
+    #[test]
+    fn inline_code_via_event_path() {
+        let e = type_seq("`x`");
+        assert_eq!(e.blocks()[0].text(), "x");
+        assert_eq!(only_mark(&e).0, Mark::Code);
+    }
+
+    #[test]
+    fn inline_strike_via_event_path() {
+        let e = type_seq("~~x~~");
+        assert_eq!(e.blocks()[0].text(), "x");
+        assert_eq!(only_mark(&e).0, Mark::Strikethrough);
+    }
+
+    #[test]
+    fn heading_shortcut_via_shared_detector_event_path() {
+        // The `# ` heading shortcut that notes already had, now routed through
+        // the shared detector, still promotes on the completing space.
+        let e = type_seq("# Title");
+        assert!(
+            matches!(e.blocks()[0].kind, BlockKind::Heading(1)),
+            "kind = {:?}",
+            e.blocks()[0].kind
+        );
+        assert_eq!(e.blocks()[0].text(), "Title", "prefix stripped");
+
+        let e2 = type_seq("### deep");
+        assert!(matches!(e2.blocks()[0].kind, BlockKind::Heading(3)));
+    }
+
+    #[test]
+    fn list_shortcuts_via_shared_detector_event_path() {
+        let bullet = type_seq("- item");
+        assert!(
+            matches!(bullet.blocks()[0].kind, BlockKind::Bullet { .. }),
+            "kind = {:?}",
+            bullet.blocks()[0].kind
+        );
+        assert_eq!(bullet.blocks()[0].text(), "item");
+
+        let numbered = type_seq("1. item");
+        assert!(matches!(numbered.blocks()[0].kind, BlockKind::Numbered { .. }));
+        assert_eq!(numbered.blocks()[0].text(), "item");
+    }
+
+    #[test]
+    fn plain_delimiters_do_not_transform() {
+        // A lone `*` with no closer stays literal — no spurious mark.
+        let e = type_seq("2 * 3 = 6");
+        assert_eq!(e.blocks()[0].text(), "2 * 3 = 6");
+        assert!(e.blocks()[0].line.marks().is_empty());
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Paragraph));
+    }
+
+    #[test]
+    fn inline_shortcut_preserves_surrounding_text() {
+        let e = type_seq("a **b** c");
+        assert_eq!(e.blocks()[0].text(), "a b c");
+        let (mark, range) = only_mark(&e);
+        assert_eq!(mark, Mark::Bold);
+        assert_eq!(&e.blocks()[0].text()[range], "b");
     }
 
     #[test]

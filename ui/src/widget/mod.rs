@@ -665,6 +665,7 @@ mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};
 pub mod autocomplete; pub use autocomplete::{Autocomplete, AutocompleteOutcome, Suggester, Suggestion};
 mod number_input; pub use number_input::NumberInput;
 pub mod marks; pub use marks::{Mark, MarkSpan};
+pub mod markdown_input; pub use markdown_input::{BlockPrefix, InlineKind, InlineMatch, detect_block_prefix, detect_inline};
 pub mod rich_text_line; pub use rich_text_line::{RichTextLine, LineSignal};
 pub mod rich_text_editor; pub use rich_text_editor::{RichTextEditor, RichBlockStyle};
 pub mod block_editor;   pub use block_editor::{Block, BlockEditor, BlockKind, CursorPlacement};

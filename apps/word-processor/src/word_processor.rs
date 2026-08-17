@@ -2167,14 +2167,16 @@ impl WordProcessor {
         }
         let text = qdoc::model::block_text(state, &c, &block).unwrap_or_default();
         let prefix: String = text.chars().take(self.caret.offset).collect();
-        let (kind, level, ordered): (&str, Option<i64>, Option<bool>) = match prefix.as_str() {
-            "-" | "*" | "+" => ("list_item", None, Some(false)),
-            "1." | "1)" => ("list_item", None, Some(true)),
-            "#" => ("heading", Some(1), None),
-            "##" => ("heading", Some(2), None),
-            "###" => ("heading", Some(3), None),
-            _ => return false,
-        };
+        // Shared with the notes editor: the same detector decides which markdown
+        // prefix (if any) the just-typed space completed.
+        use ui::widget::markdown_input::{detect_block_prefix, BlockPrefix};
+        let (kind, level, ordered): (&str, Option<i64>, Option<bool>) =
+            match detect_block_prefix(prefix.as_str()) {
+                Some(BlockPrefix::Heading(l)) => ("heading", Some(l as i64), None),
+                Some(BlockPrefix::BulletList) => ("list_item", None, Some(false)),
+                Some(BlockPrefix::OrderedList) => ("list_item", None, Some(true)),
+                None => return false,
+            };
         let plen = prefix.chars().count() as isize;
         if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut { doc: state, c: &c, ids };
@@ -2188,6 +2190,54 @@ impl WordProcessor {
             }
         }
         self.caret.offset = 0;
+        true
+    }
+
+    /// On a completing inline-markdown keystroke — the closing `**`/`__`,
+    /// `*`/`_`, `` ` ``, or `~~` — strip the delimiters around the just-closed
+    /// span and apply the matching run mark: `strong` (bold), `em` (italic),
+    /// `strike` (strikethrough), or a `mono` font run for inline code. Shares
+    /// its trigger detection with the notes editor via
+    /// [`ui::widget::detect_inline`]; only the rendering (automerge run marks)
+    /// is the word-processor's own. Returns true if it transformed (the caller
+    /// then skips nothing — the closing char was already inserted).
+    pub fn autoformat_inline(&mut self, state: &mut AutoCommit) -> bool {
+        use qdoc::document::MarkValue;
+        use ui::widget::markdown_input::{detect_inline, InlineKind};
+        if self.containers.is_none() {
+            return false;
+        }
+        let block = self.caret.block.clone();
+        let text = self.region_block_text(state, &block).unwrap_or_default();
+        // Head = the text before the caret; the model is char-indexed, so work
+        // in chars and convert the detector's byte ranges below.
+        let head: String = text.chars().take(self.caret.offset).collect();
+        let Some(m) = detect_inline(&head) else {
+            return false;
+        };
+        let to_char = |b: usize| head[..b].chars().count();
+        let open_s = to_char(m.open.start);
+        let open_e = to_char(m.open.end);
+        let cont_s = to_char(m.content.start);
+        let cont_e = to_char(m.content.end);
+        let close_s = to_char(m.close.start);
+        let close_e = to_char(m.close.end);
+        let (name, value): (&str, MarkValue) = match m.kind {
+            InlineKind::Bold => ("strong", MarkValue::Bool(true)),
+            InlineKind::Italic => ("em", MarkValue::Bool(true)),
+            InlineKind::Strikethrough => ("strike", MarkValue::Bool(true)),
+            InlineKind::Code => (qdoc::schema::STYLE_FONT, MarkValue::Str("mono".into())),
+        };
+        // Delete the closing delimiter first (higher offset), then the opening
+        // one — deleting the closer leaves the opener's offsets valid.
+        self.region_splice(state, &block, close_s, (close_e - close_s) as isize, "");
+        self.region_splice(state, &block, open_s, (open_e - open_s) as isize, "");
+        // After the opener is gone the content slides left by the opener width.
+        let del_open = open_e - open_s;
+        let mark_s = cont_s - del_open;
+        let mark_e = cont_e - del_open;
+        self.region_add_mark(state, &block, mark_s, mark_e, name, value);
+        self.caret.offset = mark_e;
         true
     }
 
@@ -2771,6 +2821,96 @@ mod tests {
         let (mut wp2, mut s2) = bound();
         wp2.insert_str(&mut s2, "a-");
         assert!(!wp2.autoformat_on_space(&mut s2), "mid-line dash not autoformatted");
+    }
+
+    /// Type `seq` char-by-char through the same model calls the widget's key
+    /// path makes: `insert_str` per char, `autoformat_on_space` on a space, and
+    /// `autoformat_inline` after a closing delimiter.
+    fn type_md(wp: &mut WordProcessor, state: &mut AutoCommit, seq: &str) {
+        for ch in seq.chars() {
+            if ch == ' ' {
+                if !wp.autoformat_on_space(state) {
+                    wp.insert_str(state, " ");
+                }
+            } else {
+                wp.insert_str(state, &ch.to_string());
+                if matches!(ch, '*' | '_' | '`' | '~') {
+                    wp.autoformat_inline(state);
+                }
+            }
+        }
+    }
+
+    fn caret_marks(wp: &WordProcessor, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+        let c = wp.containers.as_ref().unwrap();
+        let id = wp.caret.block.clone();
+        qdoc::model::materialize(state, c)
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| b.marks.iter().map(|m| (m.name.clone(), m.start, m.end)).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn autoformat_inline_bold_italic_code_strike() {
+        // **bold** → `strong` run over "bold".
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "**bold**");
+        assert_eq!(wp.current_text(&state), "bold", "markers stripped");
+        let marks = caret_marks(&wp, &state);
+        assert!(
+            marks.iter().any(|(n, s, e)| n == "strong" && *s == 0 && *e == 4),
+            "strong over 'bold', got {marks:?}"
+        );
+
+        // *italic* → `em`.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "*x*");
+        assert_eq!(wp.current_text(&state), "x");
+        assert!(caret_marks(&wp, &state).iter().any(|(n, ..)| n == "em"));
+
+        // `code` → `mono` font run.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "`c`");
+        assert_eq!(wp.current_text(&state), "c");
+        assert!(caret_marks(&wp, &state).iter().any(|(n, ..)| n == "font"));
+
+        // ~~gone~~ → `strike`.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "~~gone~~");
+        assert_eq!(wp.current_text(&state), "gone");
+        assert!(caret_marks(&wp, &state).iter().any(|(n, ..)| n == "strike"));
+    }
+
+    #[test]
+    fn autoformat_inline_only_on_completion_and_keeps_context() {
+        // "a **b**" bolds only "b"; the leading "a " stays plain.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "a **b**");
+        assert_eq!(wp.current_text(&state), "a b");
+        let marks = caret_marks(&wp, &state);
+        let strong: Vec<_> = marks.iter().filter(|(n, ..)| n == "strong").collect();
+        assert_eq!(strong.len(), 1, "one strong run, got {marks:?}");
+        assert_eq!((strong[0].1, strong[0].2), (2, 3), "strong covers just 'b'");
+
+        // A lone '*' with no closer must not transform or mark.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "2 * 3");
+        assert_eq!(wp.current_text(&state), "2 * 3");
+        assert!(caret_marks(&wp, &state).is_empty());
+    }
+
+    #[test]
+    fn autoformat_block_and_inline_share_one_detector() {
+        // The `# ` heading shortcut routes through the same detector as `**`.
+        let (mut wp, mut state) = bound();
+        type_md(&mut wp, &mut state, "# Title");
+        let b = wp.caret.block.clone();
+        let (kind, _, level) = wp.block_meta(&state, &b);
+        assert_eq!(kind, "heading");
+        assert_eq!(level, Some(1));
+        assert_eq!(wp.current_text(&state), "Title");
     }
 
     #[test]
