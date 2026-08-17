@@ -2,16 +2,16 @@
 //!
 //! A graphical systemd-journal viewer. It is a single self-rendering
 //! [`Widget`] (the data is read-only and the visuals — severity dots,
-//! coloured rows, a detail pane, a filter bar, a legend — are bespoke,
-//! exactly the case the toolkit calls out for "draw into the Vello
-//! Scene yourself"). All *view state* (selection, filters, search,
+//! coloured rows, a detail pane, a filter bar — are bespoke, exactly
+//! the case the toolkit calls out for "draw into the Vello Scene
+//! yourself"). All *view state* (selection, filters, search,
 //! live-tail) lives in the Automerge document via [`LogsDoc`]; the
 //! journal entries themselves are an external render cache.
 //!
 //! Layout (top → bottom):
 //! ```text
 //! ┌──────────────────────────────────────────────────────────────┐
-//! │ Header:  Logs · systemd journal        [counts] [● Live tail] │
+//! │ Header:              [counts]  [Clear filters]  [● Live tail] │
 //! ├──────────────────────────────────────────────────────────────┤
 //! │ Filter:  [search] [unit ▾] [boot ▾]         [severity chips]  │
 //! ├───────────────────────────────────┬──────────────────────────┤
@@ -19,10 +19,13 @@
 //! │  ● time  TAG  unit  message       │  big badge / unit        │
 //! │  ● …                              │  message (wrapped)       │
 //! │                                   │  field table             │
-//! ├───────────────────────────────────┴──────────────────────────┤
-//! │ Legend: ● Emerg ● Err ● Warn …          showing X of Y [Clear]│
-//! └──────────────────────────────────────────────────────────────┘
+//! └───────────────────────────────────┴──────────────────────────┘
 //! ```
+//!
+//! Per-row severity is colour-coded (and named in the level tag), so no
+//! standing colour key is drawn — the "Clear filters" control that used
+//! to share the old bottom legend now lives in the header, appearing
+//! only while a filter is active.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -49,7 +52,6 @@ use crate::theme_ext::{tint, ThemeColors};
 const PAD: f64 = 16.0;
 const HEADER_H: f64 = 60.0;
 const FILTER_H: f64 = 64.0;
-const LEGEND_H: f64 = 46.0;
 const ROW_H: f64 = 30.0;
 const LIST_HEADER_H: f64 = 26.0;
 const CONTROL_H: f64 = 34.0;
@@ -69,7 +71,6 @@ enum Popup {
 struct Regions {
     header: Rect,
     filter: Rect,
-    legend: Rect,
     search: Rect,
     unit_trigger: Rect,
     boot_trigger: Rect,
@@ -308,9 +309,10 @@ impl LogsApp {
 
         let header = Rect::new(x0, y0, x0 + w, y0 + HEADER_H);
         let filter = Rect::new(x0, header.y1, x0 + w, header.y1 + FILTER_H);
-        let legend = Rect::new(x0, y0 + h - LEGEND_H, x0 + w, y0 + h);
         let content_top = filter.y1;
-        let content_bottom = legend.y0;
+        // The list/detail content spans all the way to the window bottom —
+        // there is no standing legend strip to reserve room for.
+        let content_bottom = y0 + h;
 
         // Filter bar controls.
         let fy = filter.y0 + (FILTER_H - CONTROL_H) / 2.0;
@@ -333,15 +335,20 @@ impl LogsApp {
             })
             .collect();
 
-        // Header: live pill + clear, right-aligned.
+        // Header: live pill + clear filters, right-aligned. The live pill is
+        // the rightmost control; the "Clear filters" button sits just left of
+        // it and is only laid out (non-zero) while a filter is active.
         let hy = header.y0 + (HEADER_H - 30.0) / 2.0;
         let live_pill = Rect::new(x0 + w - PAD - 124.0, hy, x0 + w - PAD, hy + 30.0);
+        let clear_btn = if !self.filter.is_clear() {
+            let cy = header.y0 + (HEADER_H - 26.0) / 2.0;
+            let x1 = live_pill.x0 - 12.0;
+            Rect::new(x1 - 104.0, cy, x1, cy + 26.0)
+        } else {
+            Rect::ZERO
+        };
 
-        // Legend bar: clear button on the right.
-        let ly = legend.y0 + (LEGEND_H - 26.0) / 2.0;
-        let clear_btn = Rect::new(x0 + w - PAD - 104.0, ly, x0 + w - PAD, ly + 26.0);
-
-        // Content area between the filter bar and the legend.
+        // Content area between the filter bar and the window bottom.
         let cx0 = x0 + PAD;
         let cy0 = content_top + PAD;
         let cx1 = x0 + w - PAD;
@@ -412,7 +419,6 @@ impl LogsApp {
         Regions {
             header,
             filter,
-            legend,
             search,
             unit_trigger,
             boot_trigger,
@@ -516,15 +522,32 @@ impl LogsApp {
         line(scene, t, reg.header.x0, reg.header.y1, reg.header.x1, reg.header.y1, c.border_standard, 1.0);
 
         // The OS owns the window title/app-name — the header draws only its
-        // functional controls (the entry counts and the live-tail pill).
+        // functional controls (the entry counts, an optional Clear-filters
+        // button, and the live-tail pill).
 
-        // Counts, just left of the live pill.
+        // Clear-filters button — right-aligned, just left of the live pill,
+        // shown only while a filter is active (its rect is zero otherwise).
+        if !self.filter.is_clear() && reg.clear_btn.width() > 0.0 {
+            fill_round(scene, t, reg.clear_btn, theme.tokens.radii.md, tint(theme.accent_primary, 40));
+            stroke_round(scene, t, reg.clear_btn, theme.tokens.radii.md, theme.accent_primary, 1.0);
+            let bsz = theme.tokens.typography.scale.sm;
+            let label = "Clear filters";
+            let (bw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
+            text_at(tr, scene, t, label, bsz, theme.accent_primary, reg.clear_btn.center().x - bw as f64 / 2.0, vcenter(reg.clear_btn, bsz), TextWeight::Semibold, false);
+        }
+
+        // Counts, just left of whichever right-aligned control is present.
         let counts = format!(
             "{} shown · {} total",
             self.filtered.len(),
             self.entries.len()
         );
         let (cw, _) = tr.measure(&counts, theme.tokens.typography.scale.sm, None);
+        let counts_anchor = if reg.clear_btn.width() > 0.0 {
+            reg.clear_btn.x0
+        } else {
+            reg.live_pill.x0
+        };
         text_at(
             tr,
             scene,
@@ -532,7 +555,7 @@ impl LogsApp {
             &counts,
             theme.tokens.typography.scale.sm,
             theme.text_dim,
-            reg.live_pill.x0 - 14.0 - cw as f64,
+            counts_anchor - 14.0 - cw as f64,
             vcenter(reg.header, theme.tokens.typography.scale.sm),
             TextWeight::Medium,
             false,
@@ -884,39 +907,6 @@ impl LogsApp {
         let sz = theme.tokens.typography.scale.sm;
         text_at(tr, scene, t, "Back", sz, theme.text_primary, rect.x0 + 30.0, vcenter(rect, sz), TextWeight::Semibold, false);
     }
-
-    fn draw_legend(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, reg: &Regions) {
-        let c = &theme.tokens.colors;
-        let tc = Self::theme_colors(theme);
-        fill_rect(scene, t, reg.legend, c.surfaces.raised);
-        line(scene, t, reg.legend.x0, reg.legend.y0, reg.legend.x1, reg.legend.y0, c.border_standard, 1.0);
-
-        let sz = theme.tokens.typography.scale.xs;
-        let y = vcenter(reg.legend, sz);
-        let mut x = reg.legend.x0 + PAD;
-        text_at(tr, scene, t, "SEVERITY", sz, theme.text_dim, x, y, TextWeight::Bold, false);
-        let (lw, _) = tr.measure_weighted("SEVERITY", sz, None, TextWeight::Bold);
-        x += lw as f64 + 16.0;
-        for p in Priority::ALL {
-            let col = p.color(&tc);
-            fill_circle(scene, t, Point::new(x + 4.0, reg.legend.center().y), 4.0, col);
-            x += 13.0;
-            let label = p.long();
-            text_at(tr, scene, t, label, sz, theme.text_dim, x, y, TextWeight::Medium, false);
-            let (w, _) = tr.measure_weighted(label, sz, None, TextWeight::Medium);
-            x += w as f64 + 16.0;
-        }
-
-        // Clear-filters button (only when something is active).
-        if !self.filter.is_clear() {
-            fill_round(scene, t, reg.clear_btn, theme.tokens.radii.md, tint(theme.accent_primary, 40));
-            stroke_round(scene, t, reg.clear_btn, theme.tokens.radii.md, theme.accent_primary, 1.0);
-            let bsz = theme.tokens.typography.scale.sm;
-            let label = "Clear filters";
-            let (bw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
-            text_at(tr, scene, t, label, bsz, theme.accent_primary, reg.clear_btn.center().x - bw as f64 / 2.0, vcenter(reg.clear_btn, bsz), TextWeight::Semibold, false);
-        }
-    }
 }
 
 // Column geometry inside a list row / header.
@@ -1076,7 +1066,7 @@ impl Widget for LogsApp {
             // Single-pane push: clip both slabs to the content area so the
             // off-screen pane (sliding in/out) never bleeds past the edges,
             // and skip whichever pane is fully off-screen.
-            let content = Rect::new(self.rect.x0, reg.filter.y1, self.rect.x1, reg.legend.y0);
+            let content = Rect::new(self.rect.x0, reg.filter.y1, self.rect.x1, self.rect.y1);
             scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content);
             let slide = self.push.slide();
             if slide < 0.999 {
@@ -1090,7 +1080,6 @@ impl Widget for LogsApp {
             self.draw_list(scene, transform, tr, theme, &reg);
             self.draw_detail(scene, transform, tr, theme, &reg);
         }
-        self.draw_legend(scene, transform, tr, theme, &reg);
     }
 
     fn draw_overlay(
@@ -1534,5 +1523,53 @@ mod tests {
         LogsDoc::set_boot(&mut doc, &ROOT, &boot);
         app.sync(&mut doc, &ROOT);
         assert!(app.filtered.iter().all(|&i| app.entries[i].boot_id == boot));
+    }
+
+    #[test]
+    fn content_spans_to_window_bottom() {
+        // With the bottom legend strip gone, the list/detail content must
+        // reach the window's bottom edge (minus the usual content padding),
+        // not stop short to reserve a legend band.
+        let (app, _doc) = synced_app();
+        let reg = app.regions();
+        assert!(
+            reg.list_body.y1 >= app.rect.y1 - PAD - 1.0,
+            "list body {} should reach near the window bottom {}",
+            reg.list_body.y1,
+            app.rect.y1
+        );
+        assert!(reg.detail.y1 >= app.rect.y1 - PAD - 1.0);
+    }
+
+    #[test]
+    fn clear_filters_control_lives_in_header_and_resets() {
+        let (mut app, mut doc) = synced_app();
+        // A clear filter set means no Clear-filters control is laid out.
+        assert!(app.filter.is_clear());
+        assert_eq!(app.regions().clear_btn, Rect::ZERO);
+
+        // Activate a filter (errors-or-worse threshold).
+        LogsDoc::set_min_priority(&mut doc, &ROOT, Priority::Err.level());
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.filter.is_clear());
+
+        // The Clear-filters control now sits in the header, just left of the
+        // live-tail pill — not in any bottom strip.
+        let reg = app.regions();
+        assert!(reg.clear_btn.width() > 0.0, "clear button must be laid out");
+        assert!(
+            reg.header.contains(reg.clear_btn.center()),
+            "clear button center {:?} must be inside the header {:?}",
+            reg.clear_btn.center(),
+            reg.header
+        );
+        assert!(reg.clear_btn.x1 <= reg.live_pill.x0);
+
+        // Clicking it clears the filter through the production on_click path.
+        let mut handled = false;
+        app.on_click(reg.clear_btn.center(), &mut doc, &ROOT, &mut handled);
+        assert!(handled, "the header Clear-filters button must be hit-tested");
+        app.sync(&mut doc, &ROOT);
+        assert!(app.filter.is_clear(), "clicking Clear filters must reset the filter");
     }
 }
