@@ -294,8 +294,15 @@ impl ChatApp {
                 text(scene, tr, tf, &name, 14.0, name_col, row.x0 + 32.0, y + 8.0, weight, None);
             }
 
+            // On the live voice row, a small symbolic LEAVE button sits on the
+            // row itself (in addition to the call panel's own Leave control).
+            let mut leave_btn: Option<Rect> = None;
             if is_live {
-                fill_circle(scene, tf, Point::new(row.x1 - 16.0, row.center().y), 4.0, c.semantic.success);
+                let b = Rect::new(row.x1 - 30.0, row.center().y - 11.0, row.x1 - 8.0, row.center().y + 11.0);
+                fill_round(scene, tf, b, 7.0, c.semantic.danger);
+                let (xw, xh) = tr.measure("✕", 11.0, None);
+                label(scene, tr, tf, "✕", 11.0, Color::WHITE, b.center().x - xw as f64 / 2.0, b.center().y - xh as f64 / 2.0);
+                leave_btn = Some(b);
             } else if ch.unread > 0 {
                 let txt = ch.unread.to_string();
                 let (bw, _) = tr.measure(&txt, 11.0, None);
@@ -307,6 +314,10 @@ impl ChatApp {
             // click hit in `on_right_click`) opens the channel context menu.
             let click_hit = if ch.kind == ChannelKind::Voice { Hit::VoiceChannel(ch.id.clone()) } else { Hit::Channel(ch.id.clone()) };
             ChatApp::push_hit(hits, row, click_hit);
+            // Pushed after the row so the leave button wins the overlap.
+            if let Some(b) = leave_btn {
+                ChatApp::push_hit(hits, b, Hit::LeaveVoiceRow(ch.id.clone()));
+            }
             y += 34.0;
 
             // Voice presence: list connected members under a voice channel.
@@ -965,6 +976,9 @@ impl ChatApp {
         self.composer_main.apply_layout_external(inner);
         self.composer_main.set_focus(focused);
         self.composer_main.draw(scene, tf, tr, theme, presence);
+        // Top-layer pass so the inline `:emoji:` completion overlay (and the
+        // field's right-click menu) float above the composer chrome.
+        self.composer_main.draw_overlay(scene, tf, tr, theme, presence);
     }
 
     /// Draw the composer box chrome — the rounded field, the attach `+`, the
@@ -1086,6 +1100,7 @@ impl ChatApp {
         self.composer_thread.apply_layout_external(inner);
         self.composer_thread.set_focus(focused);
         self.composer_thread.draw(scene, tf, tr, theme, presence);
+        self.composer_thread.draw_overlay(scene, tf, tr, theme, presence);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1213,11 +1228,10 @@ impl ChatApp {
     }
 
     // ------------------------------------------------------- attach picker
-    /// The workspace file picker, anchored above the composer's "+". Lists the
-    /// real image files found in the shared workspace, each with a decoded
-    /// thumbnail (through the same [`ui::ImageStore`] the timeline uses), so a
-    /// share is always an actual file the user chose. An empty workspace says
-    /// so plainly rather than offering anything fabricated.
+    /// The attach popover, anchored above the composer's "+". Opens on a small
+    /// chooser (Media / Files / GIF); "Media" browses the real workspace, "Files"
+    /// hands off to the host file picker, and "GIF" is an honest placeholder
+    /// until a Giphy key is configured. Nothing is fabricated.
     pub(crate) fn draw_attach_picker(
         &self,
         scene: &mut Scene,
@@ -1226,82 +1240,138 @@ impl ChatApp {
         theme: &Theme,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
+        use crate::app::AttachView;
         let c = &theme.tokens.colors;
         // Full-window dismiss scrim (lowest priority).
         ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
 
         let comp = self.composer_rect(tr);
-        let w = 360.0_f64.min(self.rect.width() - 32.0).max(220.0);
-        let x0 = comp
-            .x0
-            .min(self.rect.x1 - w - 12.0)
-            .max(self.rect.x0 + 12.0);
+        let w = 360.0_f64.min(self.rect.width() - 32.0).max(240.0);
+        let x0 = comp.x0.min(self.rect.x1 - w - 12.0).max(self.rect.x0 + 12.0);
+        let elev = &theme.tokens.elevation.e3;
 
-        let head_h = 40.0;
-        let row_h = 52.0;
-        let max_rows = 6usize;
-        let shown = self.attach_entries.len().min(max_rows);
-        let body_h = if self.attach_entries.is_empty() {
-            46.0
-        } else {
-            shown as f64 * row_h + 8.0
+        // Shared panel chrome: shadow + surface + border for a `panel` rect.
+        let chrome = |scene: &mut Scene, panel: Rect| {
+            crate::paint::soft_shadow(scene, tf, panel, 14.0, elev);
+            fill_round(scene, tf, panel, 14.0, c.neutral[1]);
+            stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
         };
-        let more_h = if self.attach_entries.len() > max_rows { 20.0 } else { 0.0 };
-        let panel_h = head_h + body_h + more_h + 8.0;
-        let y1 = comp.y0 - 10.0;
-        let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
-        let panel = Rect::new(x0, y0, x0 + w, y1);
 
-        fill_round(scene, tf, panel.inflate(5.0, 5.0), 18.0, Color::from_rgba8(0, 0, 0, 70));
-        fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
-
-        label(scene, tr, tf, "Share a file", 13.5, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
-        let count = format!("{}", self.attach_entries.len());
-        let (cw, _) = tr.measure(&count, 11.5, None);
-        label(scene, tr, tf, &count, 11.5, c.text_dim, panel.x1 - cw as f64 - 14.0, panel.y0 + 14.0);
-        hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, panel.y0 + head_h - 4.0, c.border_standard);
-
-        if self.attach_entries.is_empty() {
-            let dir = crate::picker::attach_dir();
-            let s = format!("No media in {}", dir.display());
-            let s = truncate_to(tr, &s, 12.5, panel.width() - 28.0);
-            label(scene, tr, tf, &s, 12.5, c.text_dim, panel.x0 + 14.0, panel.y0 + head_h + 10.0);
-            return;
-        }
-
-        let mut y = panel.y0 + head_h + 4.0;
-        for e in self.attach_entries.iter().take(max_rows) {
-            let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
-            if row.contains(self.last_mouse) {
-                fill_round(scene, tf, row, 10.0, c.surface_white_5);
+        match self.attach_view {
+            AttachView::Menu => {
+                let opts: [(&str, &str, &str, Hit); 3] = [
+                    ("🖼", "Media", "Photos & videos from your workspace", Hit::AttachChooseMedia),
+                    ("📎", "Files", "Any file, via the system picker", Hit::AttachChooseFiles),
+                    ("🎞", "GIF", "Search animated GIFs", Hit::AttachChooseGif),
+                ];
+                let head_h = 38.0;
+                let row_h = 56.0;
+                let panel_h = head_h + opts.len() as f64 * row_h + 12.0;
+                let y1 = comp.y0 - 10.0;
+                let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
+                let panel = Rect::new(x0, y0, x0 + w, y1);
+                chrome(scene, panel);
+                label(scene, tr, tf, "Add to message", 13.5, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
+                hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, panel.y0 + head_h - 4.0, c.border_standard);
+                let mut y = panel.y0 + head_h + 2.0;
+                for (icon, title, sub, hit) in opts {
+                    let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
+                    if row.contains(self.last_mouse) {
+                        fill_round(scene, tf, row, 10.0, c.surface_white_5);
+                    }
+                    let ic = Rect::new(row.x0 + 8.0, row.y0 + 6.0, row.x0 + 46.0, row.y1 - 6.0);
+                    fill_round(scene, tf, ic, 9.0, c.surface_white_10);
+                    let (gw, gh) = tr.measure(icon, 18.0, None);
+                    text(scene, tr, tf, icon, 18.0, c.text_primary, ic.center().x - gw as f64 / 2.0, ic.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+                    label(scene, tr, tf, title, 14.0, c.text_primary, ic.x1 + 12.0, row.center().y - 13.0);
+                    let subt = truncate_to(tr, sub, 11.5, (row.x1 - (ic.x1 + 12.0) - 12.0).max(20.0));
+                    label(scene, tr, tf, &subt, 11.5, c.text_dim, ic.x1 + 12.0, row.center().y + 3.0);
+                    ChatApp::push_hit(hits, row, hit);
+                    y += row_h;
+                }
             }
-            let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
-            let key = e.key();
-            // A video shows a play glyph (no image decode); an image decodes its
-            // real thumbnail through the shared cache, with a neutral tile until
-            // the bytes hydrate.
-            if e.is_video {
-                fill_round(scene, tf, thumb, 8.0, c.neutral[2]);
-                let (gw, gh) = tr.measure("🎬", 16.0, None);
-                text(scene, tr, tf, "🎬", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
-            } else if let Some(img) = self.images.get(&key) {
-                ui::image_store::paint_image_cover(scene, tf, thumb, &img, 8.0);
-            } else {
-                fill_round(scene, tf, thumb, 8.0, c.surfaces.raised);
-                let (gw, gh) = tr.measure("🖼", 16.0, None);
-                text(scene, tr, tf, "🖼", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+            AttachView::Media => {
+                let head_h = 40.0;
+                let row_h = 52.0;
+                let max_rows = 6usize;
+                let shown = self.attach_entries.len().min(max_rows);
+                let body_h = if self.attach_entries.is_empty() { 46.0 } else { shown as f64 * row_h + 8.0 };
+                let more_h = if self.attach_entries.len() > max_rows { 20.0 } else { 0.0 };
+                let panel_h = head_h + body_h + more_h + 8.0;
+                let y1 = comp.y0 - 10.0;
+                let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
+                let panel = Rect::new(x0, y0, x0 + w, y1);
+                chrome(scene, panel);
+                // Back button + title.
+                let back = Rect::new(panel.x0 + 6.0, panel.y0 + 6.0, panel.x0 + 30.0, panel.y0 + 30.0);
+                if back.contains(self.last_mouse) { fill_round(scene, tf, back, 7.0, c.surface_white_10); }
+                let (bw, bh) = tr.measure("‹", 18.0, None);
+                label(scene, tr, tf, "‹", 18.0, c.text_primary, back.center().x - bw as f64 / 2.0, back.center().y - bh as f64 / 2.0);
+                ChatApp::push_hit(hits, back, Hit::AttachBack);
+                label(scene, tr, tf, "Media", 13.5, c.text_primary, back.x1 + 8.0, panel.y0 + 12.0);
+                hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, panel.y0 + head_h - 4.0, c.border_standard);
+
+                if self.attach_entries.is_empty() {
+                    let s = "No photos or videos in your workspace yet";
+                    let s = truncate_to(tr, s, 12.5, panel.width() - 28.0);
+                    label(scene, tr, tf, &s, 12.5, c.text_dim, panel.x0 + 14.0, panel.y0 + head_h + 10.0);
+                } else {
+                    let mut y = panel.y0 + head_h + 4.0;
+                    for e in self.attach_entries.iter().take(max_rows) {
+                        let row = Rect::new(panel.x0 + 6.0, y, panel.x1 - 6.0, y + row_h - 6.0);
+                        if row.contains(self.last_mouse) { fill_round(scene, tf, row, 10.0, c.surface_white_5); }
+                        let thumb = Rect::new(row.x0 + 6.0, row.y0 + 5.0, row.x0 + 62.0, row.y1 - 5.0);
+                        let key = e.key();
+                        if e.is_video {
+                            fill_round(scene, tf, thumb, 8.0, c.neutral[2]);
+                            let (gw, gh) = tr.measure("🎬", 16.0, None);
+                            text(scene, tr, tf, "🎬", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+                        } else if let Some(img) = self.images.get(&key) {
+                            ui::image_store::paint_image_cover(scene, tf, thumb, &img, 8.0);
+                        } else {
+                            fill_round(scene, tf, thumb, 8.0, c.surfaces.raised);
+                            let (gw, gh) = tr.measure("🖼", 16.0, None);
+                            text(scene, tr, tf, "🖼", 16.0, c.text_dim, thumb.center().x - gw as f64 / 2.0, thumb.center().y - gh as f64 / 2.0, TextWeight::Regular, None);
+                        }
+                        stroke_round(scene, tf, thumb, 8.0, c.border_white_10, 1.0);
+                        let name = truncate_to(tr, &e.name, 13.5, row.width() - 96.0);
+                        label(scene, tr, tf, &name, 13.5, c.text_primary, thumb.x1 + 12.0, row.center().y - 13.0);
+                        label(scene, tr, tf, &human_size(e.size), 11.0, c.text_dim, thumb.x1 + 12.0, row.center().y + 3.0);
+                        ChatApp::push_hit(hits, row, Hit::AttachPick(key));
+                        y += row_h;
+                    }
+                    if self.attach_entries.len() > max_rows {
+                        let more = format!("+{} more in the workspace", self.attach_entries.len() - max_rows);
+                        label(scene, tr, tf, &more, 11.0, c.text_dim, panel.x0 + 14.0, panel.y1 - 16.0);
+                    }
+                }
             }
-            stroke_round(scene, tf, thumb, 8.0, c.border_white_10, 1.0);
-            let name = truncate_to(tr, &e.name, 13.5, row.width() - 96.0);
-            label(scene, tr, tf, &name, 13.5, c.text_primary, thumb.x1 + 12.0, row.center().y - 13.0);
-            label(scene, tr, tf, &human_size(e.size), 11.0, c.text_dim, thumb.x1 + 12.0, row.center().y + 3.0);
-            ChatApp::push_hit(hits, row, Hit::AttachPick(key));
-            y += row_h;
-        }
-        if self.attach_entries.len() > max_rows {
-            let more = format!("+{} more in the workspace", self.attach_entries.len() - max_rows);
-            label(scene, tr, tf, &more, 11.0, c.text_dim, panel.x0 + 14.0, panel.y1 - 16.0);
+            AttachView::Gif => {
+                let head_h = 40.0;
+                let panel_h = head_h + 150.0;
+                let y1 = comp.y0 - 10.0;
+                let y0 = (y1 - panel_h).max(self.rect.y0 + 12.0);
+                let panel = Rect::new(x0, y0, x0 + w, y1);
+                chrome(scene, panel);
+                let back = Rect::new(panel.x0 + 6.0, panel.y0 + 6.0, panel.x0 + 30.0, panel.y0 + 30.0);
+                if back.contains(self.last_mouse) { fill_round(scene, tf, back, 7.0, c.surface_white_10); }
+                let (bw, bh) = tr.measure("‹", 18.0, None);
+                label(scene, tr, tf, "‹", 18.0, c.text_primary, back.center().x - bw as f64 / 2.0, back.center().y - bh as f64 / 2.0);
+                ChatApp::push_hit(hits, back, Hit::AttachBack);
+                label(scene, tr, tf, "GIF", 13.5, c.text_primary, back.x1 + 8.0, panel.y0 + 12.0);
+                hline(scene, tf, panel.x0 + 12.0, panel.x1 - 12.0, panel.y0 + head_h - 4.0, c.border_standard);
+                // Honest placeholder — no fabricated results.
+                let cx = panel.center().x;
+                let (gw, _) = tr.measure("🎞", 30.0, None);
+                text(scene, tr, tf, "🎞", 30.0, c.text_dim, cx - gw as f64 / 2.0, panel.y0 + head_h + 18.0, TextWeight::Regular, None);
+                let t = "GIF search";
+                let (tw, _) = tr.measure(t, 13.5, None);
+                label(scene, tr, tf, t, 13.5, c.text_primary, cx - tw as f64 / 2.0, panel.y0 + head_h + 60.0);
+                let s = "Connect a Giphy API key to search GIFs.";
+                let s = truncate_to(tr, s, 11.5, panel.width() - 28.0);
+                let (sw, _) = tr.measure(&s, 11.5, None);
+                label(scene, tr, tf, &s, 11.5, c.text_dim, cx - sw as f64 / 2.0, panel.y0 + head_h + 84.0);
+            }
         }
     }
 }

@@ -30,7 +30,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, VideoPlayer};
+use ui::widget::{EmojiPicker, TextInput, VideoPlayer};
 
 use crate::actions::{self, ChatAction};
 use crate::call::{CallState, OverlayDrag, SoundEngine};
@@ -47,7 +47,9 @@ pub(crate) const RAIL_W: f64 = 68.0;
 pub(crate) const SIDE_W: f64 = 248.0;
 pub(crate) const HEADER_H: f64 = 60.0;
 pub(crate) const THREAD_W: f64 = 360.0;
-pub(crate) const COMPOSER_MIN_H: f64 = 76.0;
+// One line of the 15px composer font by default; it auto-grows a line at a time
+// (see `composer_height`) up to `COMPOSER_MAX_H`, then the field scrolls.
+pub(crate) const COMPOSER_MIN_H: f64 = 48.0;
 pub(crate) const COMPOSER_MAX_H: f64 = 200.0;
 pub(crate) const AVATAR: f64 = 40.0;
 
@@ -64,6 +66,20 @@ pub(crate) const HUDDLE_VIDEO: (f64, f64, f64, f64) = (0.505, 0.300, 0.250, 0.23
 pub(crate) enum Focus {
     Main,
     Thread,
+}
+
+/// Which pane of the attach popover is showing. The `+` opens the [`Menu`]
+/// (media / files / GIF); choosing an option swaps to that pane.
+///
+/// [`Menu`]: AttachView::Menu
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AttachView {
+    /// The chooser: Media, Files, or a GIF search.
+    Menu,
+    /// Browse workspace images + video to attach.
+    Media,
+    /// The GIF / Giphy picker (a placeholder until an API key is configured).
+    Gif,
 }
 
 /// A right-click context menu over a channel or category row, or the
@@ -219,10 +235,20 @@ pub(crate) enum Hit {
     Attach,
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
+    /// Attach-menu chooser rows.
+    AttachChooseMedia,
+    AttachChooseFiles,
+    AttachChooseGif,
+    /// Back to the attach chooser from a sub-pane.
+    AttachBack,
     StartCall,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
+    /// Grab the floating huddle's bottom-right corner to resize it.
+    CallResizeHandle,
+    /// Leave the voice channel from its own row in the channel list.
+    LeaveVoiceRow(Id),
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
@@ -279,6 +305,10 @@ pub struct ChatApp {
     pub(crate) emoji_open: bool,
     pub(crate) emoji_target: Option<Id>,
     pub(crate) emoji_anchor: Point,
+    /// The shared [`EmojiPicker`] primitive, hosted as the composer's emoji
+    /// popover and its message-reaction picker. Replaces the app's old bespoke
+    /// grid so search + recents + categories come from the toolkit.
+    pub(crate) emoji_picker: EmojiPicker,
     pub(crate) history_open: Option<Id>,
     pub(crate) history_anchor: Point,
     /// Inline message editor: the id of your own message being edited plus its
@@ -286,9 +316,13 @@ pub struct ChatApp {
     /// through [`ChatDoc::edit_message`]; Esc/Cancel discards it.
     pub(crate) editing: Option<(Id, String)>,
 
-    // Attachment picker (browses the shared workspace for a file to share).
+    // Attachment picker. The `+` first opens a small menu (media / files /
+    // GIF); `attach_view` tracks which pane of it is showing.
     pub(crate) attach_open: bool,
+    pub(crate) attach_view: AttachView,
     pub(crate) attach_entries: Vec<crate::picker::PickEntry>,
+    /// Pending host file-chooser (portal) result for the "Files" option.
+    pub(crate) attach_portal: Option<ui::PortalChannel>,
 
     // Structure editing.
     pub(crate) menu: Option<ContextMenu>,
@@ -299,6 +333,8 @@ pub struct ChatApp {
     // Call state.
     pub(crate) call: CallState,
     pub(crate) overlay_drag: Option<OverlayDrag>,
+    /// In-progress corner resize of the floating huddle overlay.
+    pub(crate) resize_drag: Option<crate::call::OverlayResize>,
 
     // Responsive flaps.
     pub(crate) left_flap: FlapState,
@@ -352,6 +388,9 @@ pub struct ChatApp {
     /// can show the composer mid-compose (caret + wrapped text). `None` in every
     /// live/interactive path, so production is unaffected.
     shot_composer_draft: Option<String>,
+    /// `--shots` only: a composer draft ending in a `:token`, staged with the
+    /// inline emoji-completion overlay open (via `set_text_with_completion`).
+    shot_composer_complete: Option<String>,
     /// True for the live binary (`ChatApp::new`). A live instance always seeds
     /// the honest empty starter and never the fabricated demo workspace — even
     /// when nothing is persisting behind it. Only the ephemeral `--shots`/test
@@ -470,16 +509,20 @@ impl ChatApp {
             emoji_open: false,
             emoji_target: None,
             emoji_anchor: Point::ZERO,
+            emoji_picker: EmojiPicker::new(),
             history_open: None,
             history_anchor: Point::ZERO,
             editing: None,
             attach_open: false,
+            attach_view: AttachView::Menu,
             attach_entries: Vec::new(),
+            attach_portal: None,
             menu: None,
             rename: None,
             swipe: None,
             call: CallState::default(),
             overlay_drag: None,
+            resize_drag: None,
             left_flap: FlapState::open_when_docked(),
             right_flap: FlapState::closed_by_default(),
             left_mode: FlapMode::Docked,
@@ -503,6 +546,7 @@ impl ChatApp {
             flap_animating: false,
             shot_starter: false,
             shot_composer_draft: None,
+            shot_composer_complete: None,
             is_live: false,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -701,9 +745,17 @@ impl ChatApp {
                 self.call.sharing = true;
             }
             "attach" => {
-                // Show the workspace file picker with real, decodable
-                // thumbnails (the demo scheme drives the same decode path a
-                // projected FUSE image would). Ephemeral shot only.
+                // The redesigned attach chooser: Media / Files / GIF.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.attach_view = AttachView::Menu;
+                self.attach_open = true;
+            }
+            "attachmedia" => {
+                // The "Media" pane of the attach popover, listing real,
+                // decodable workspace thumbnails (the demo scheme drives the
+                // same decode path a projected FUSE image would).
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
@@ -721,7 +773,34 @@ impl ChatApp {
                         is_video: false,
                     },
                 ];
+                self.attach_view = AttachView::Media;
                 self.attach_open = true;
+            }
+            "emoji" => {
+                // The shared EmojiPicker open over the composer, mid-search.
+                self.thread_open = None;
+                self.right_flap.snap(false);
+                self.call = CallState::default();
+                self.emoji_open = true;
+                self.emoji_target = None;
+                self.emoji_anchor = Point::new(300.0, 120.0);
+                self.emoji_picker.open_reset();
+                self.emoji_picker.set_query("smile");
+            }
+            "emojicomplete" => {
+                // The inline `:emoji:` completion overlay open on the composer.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.focus = Focus::Main;
+                self.shot_composer_complete = Some("Shipping it :smi".into());
+            }
+            "composer1" => {
+                // The composer at its one-line resting height (empty draft).
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.focus = Focus::Main;
             }
             "edit" => {
                 // The inline message editor open on your own last message,
@@ -1067,6 +1146,7 @@ impl ChatApp {
         let mut t = TextInput::local()
             .multiline(true)
             .with_enter_submits(true)
+            .with_emoji_completion() // `:smile` → 🙂 inline completion
             .with_font_size(15.0);
         t.set_plain_chrome(true);
         t
@@ -1170,6 +1250,13 @@ impl ChatApp {
             self.composer_main.set_text(&draft);
             self.composer_main.set_cursor_pos(draft.len());
             self.draft_main = draft;
+        }
+        // `--shots` only: stage a draft ending in a `:token` and open the inline
+        // emoji-completion overlay against it, so a screenshot shows it.
+        if let Some(text) = self.shot_composer_complete.clone() {
+            self.composer_main.set_text_with_completion(&text);
+            self.draft_main = text;
+            self.focus = Focus::Main;
         }
         self.set_composer_focus();
         // Clamp the caret to whatever text the inline editor currently indexes
@@ -1411,7 +1498,15 @@ impl ChatApp {
             // that leaves the rest of the overlay empty.
             self.overlay_host_rect()
         } else {
-            frac_rect(self.rect, HUDDLE_VIDEO) + self.call.overlay_offset
+            // Scale the home rect by the user's corner-resize, anchored at the
+            // top-left so it grows toward the bottom-right grip.
+            let base = frac_rect(self.rect, HUDDLE_VIDEO);
+            let s = self
+                .call
+                .overlay_scale
+                .clamp(crate::call::OVERLAY_SCALE_MIN, crate::call::OVERLAY_SCALE_MAX);
+            let scaled = Rect::new(base.x0, base.y0, base.x0 + base.width() * s, base.y0 + base.height() * s);
+            scaled + self.call.overlay_offset
         }
     }
 
@@ -1429,6 +1524,8 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
 
 impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        // Fold in a completed host file-chooser pick (the "Files" attach option).
+        self.poll_attach_portal(doc);
         if self.is_live {
             // Live instance. `app-state` has already restored the previous
             // session's document by now, so an unseeded document really is a
@@ -1524,6 +1621,10 @@ impl Widget for ChatApp {
             }
         } else {
             let f = HUDDLE_VIDEO;
+            let s = self
+                .call
+                .overlay_scale
+                .clamp(crate::call::OVERLAY_SCALE_MIN, crate::call::OVERLAY_SCALE_MAX) as f32;
             Style {
                 position: Position::Absolute,
                 inset: taffy::Rect {
@@ -1532,7 +1633,7 @@ impl Widget for ChatApp {
                     right: LengthPercentageAuto::auto(),
                     bottom: LengthPercentageAuto::auto(),
                 },
-                size: Size { width: percent(f.2 as f32), height: percent(f.3 as f32) },
+                size: Size { width: percent(f.2 as f32 * s), height: percent(f.3 as f32 * s) },
                 ..Default::default()
             }
         };
@@ -1664,7 +1765,22 @@ impl Widget for ChatApp {
             self.draw_context_menu(scene, tf, tr, theme, &menu, &mut hits);
         }
         if self.emoji_open {
-            self.draw_emoji_picker(scene, tf, tr, theme, &mut hits);
+            // Host the shared `ui::EmojiPicker` (search + recents + categories)
+            // as the composer's emoji popover / reaction picker. Position it at
+            // the recorded anchor, clamped on-screen.
+            let (pw, ph) = self.emoji_picker.preferred_size();
+            let x0 = self
+                .emoji_anchor
+                .x
+                .clamp(self.rect.x0 + 8.0, (self.rect.x1 - pw - 8.0).max(self.rect.x0 + 8.0));
+            let y0 = self
+                .emoji_anchor
+                .y
+                .clamp(self.rect.y0 + 8.0, (self.rect.y1 - ph - 8.0).max(self.rect.y0 + 8.0));
+            let panel = Rect::new(x0, y0, x0 + pw, y0 + ph);
+            self.emoji_picker.apply_layout_external(panel);
+            self.emoji_picker.draw(scene, tf, tr, theme, presence);
+            self.emoji_picker.draw_overlay(scene, tf, tr, theme, presence);
         }
         if self.history_open.is_some() {
             self.draw_history_popover(scene, tf, tr, theme, &mut hits);

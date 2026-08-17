@@ -6,11 +6,26 @@
 //! colours from the [`Theme`] the caller passes — nothing here hardcodes
 //! a colour, in keeping with the OS-controlled theming contract.
 
+use ui::color_compat::ColorCompat;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Shadow;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
+
+/// Draw a soft themed drop shadow beneath a rounded panel from an elevation
+/// [`Shadow`] token: the token's vertical offset plus a two-stack blur
+/// approximation. Every floating surface (the call huddle, popovers) uses this
+/// so none invents its own oversized, hard-edged slab.
+pub fn soft_shadow(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, elev: &Shadow) {
+    let off = elev.offset_y as f64;
+    let base = Rect::new(rect.x0, rect.y0 + off, rect.x1, rect.y1 + off);
+    for (grow, alpha) in [(elev.blur as f64, 0.5f32), (elev.blur as f64 * 0.5, 0.9f32)] {
+        let shape = RoundedRect::from_rect(base.inflate(grow, grow), radius + grow);
+        scene.fill(Fill::NonZero, tf, elev.color.with_alpha_factor(alpha), None, &shape);
+    }
+}
 
 /// Fill a rounded rectangle.
 pub fn fill_round(scene: &mut Scene, tf: Affine, rect: Rect, radius: f64, color: Color) {
