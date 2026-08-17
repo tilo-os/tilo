@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::capabilities::Capabilities;
 use crate::id::Kind;
 
 /// Top-level manifest. Every field except those marked `Option`
@@ -44,6 +45,12 @@ pub struct Manifest {
     /// entrypoint declares `type = "cli"` or `type = "both"`.
     #[serde(default)]
     pub cli: Option<Cli>,
+    /// `[capabilities]` block — privileged system operations the package
+    /// declares it will ask the trusted broker to perform. A ceiling, not
+    /// a grant: absent (the default) means an ordinary app that touches no
+    /// privileged operation. See [`crate::capabilities`].
+    #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
+    pub capabilities: Capabilities,
 }
 
 /// `[package]` — the identifying metadata.
