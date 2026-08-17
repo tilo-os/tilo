@@ -17,6 +17,10 @@ ui = { path = "../../ui" }
 # replayable action dispatched through one executor, so undo, multi-peer replay
 # and the Ctrl+K command palette all work from a single implementation.
 qos-actions = { path = "../../crates/collab/actions" }
+# The trusted broker: the app sends a typed firewall plan and the broker
+# applies it after checking the manifest declaration and the user's consent.
+# The app never runs firewall-cmd itself.
+qos-privileged-broker = { path = "../../crates/system/qos-privileged-broker" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

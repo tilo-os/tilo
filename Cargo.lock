@@ -3996,6 +3996,7 @@ dependencies = [
  "anyhow",
  "automerge",
  "qos-actions",
+ "qos-privileged-broker",
  "serde",
  "serde_json",
  "taffy",

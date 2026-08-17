@@ -42,14 +42,19 @@
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, ResourceRef, Scope, decide_capability,
 };
-use pkg::capabilities::{Capabilities, PrivilegedCapability, PRIVILEGED_VERB};
+use pkg::capabilities::PRIVILEGED_VERB;
 use serde::{Deserialize, Serialize};
 
 pub mod firewall;
 pub mod wire;
 
 pub use firewall::{FirewallApplier, RecordingFirewall, SystemFirewall};
-pub use wire::{BrokerClient, WireError};
+pub use wire::{serve_connection, BrokerClient, WireError};
+
+// Re-export the manifest capability vocabulary so a consumer (the compositor
+// host, an app-side test) can name a declared capability without also
+// depending on `pkg` directly.
+pub use pkg::capabilities::{Capabilities, PrivilegedCapability, PrivilegedRequest};
 
 /// A typed request an app sends the broker.
 ///
