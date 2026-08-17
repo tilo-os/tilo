@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::backend::abr::StreamVariant;
 use crate::backend::{
     yt_thumb_url, BackendError, BackendOutcome, BackendResult, PlaybackSource, YtBackend,
 };
@@ -635,6 +636,63 @@ impl YtBackend for YtDlpBackend {
             ))
         })
     }
+
+    fn resolve_stream_variants(&self, id: &str) -> Result<Vec<StreamVariant>, BackendError> {
+        // Dump the full info JSON so we can see every rendition's height + bitrate,
+        // then let the ABR layer pick among them. `-J` returns the `formats` array
+        // with deciphered `url`s.
+        let url = format!("https://www.youtube.com/watch?v={id}");
+        let v = self.run_json(&["-J", "--no-warnings", &url], Duration::from_secs(45))?;
+        let variants = variants_from_info(&v);
+        if variants.is_empty() {
+            return Err(BackendError(format!(
+                "no directly-playable https renditions for {id}"
+            )));
+        }
+        Ok(variants)
+    }
+}
+
+/// Parse the `formats` array of a yt-dlp `-J` info object into the ABR quality
+/// ladder: the progressive (muxed video+audio) https renditions, each with a
+/// height, a bitrate and a directly-playable URL. Sorted ascending by height so
+/// selection is stable. Pure — the hermetic parse the live path relies on.
+fn variants_from_info(v: &Value) -> Vec<StreamVariant> {
+    let Some(formats) = v.get("formats").and_then(|f| f.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for f in formats {
+        let url = str_field(f, "url");
+        if url.is_empty() {
+            continue;
+        }
+        // Only whole, directly-playable https streams that carry BOTH audio and
+        // video (a progressive/muxed format) — those are what the engine can play
+        // from a single URL without a separate audio track.
+        if !str_field(f, "protocol").starts_with("https") {
+            continue;
+        }
+        let vcodec = str_field(f, "vcodec");
+        let acodec = str_field(f, "acodec");
+        if vcodec.is_empty() || vcodec == "none" || acodec.is_empty() || acodec == "none" {
+            continue;
+        }
+        let height = u64_field(f, "height") as u32;
+        // `tbr` is the total bitrate in kbps; fall back to `vbr`+`abr` if absent.
+        let tbr = {
+            let t = f64_field(f, "tbr");
+            if t > 0.0 { t } else { f64_field(f, "vbr") + f64_field(f, "abr") }
+        };
+        let bandwidth_bps = (tbr * 1000.0).max(0.0) as u64;
+        let quality = {
+            let note = str_field(f, "format_note");
+            if note.is_empty() { format!("{height}p") } else { note }
+        };
+        out.push(StreamVariant { url, height, bandwidth_bps, has_audio: true, quality });
+    }
+    out.sort_by_key(|s| (s.height, s.bandwidth_bps));
+    out
 }
 
 #[cfg(test)]
@@ -765,6 +823,42 @@ mod tests {
     fn no_url_yields_no_playback_source() {
         let v = serde_json::json!({ "ext": "mp4", "vcodec": "avc1" });
         assert!(playback_source_from_print(&v).is_none());
+    }
+
+    /// The ABR quality ladder is built from the progressive https renditions of a
+    /// `-J` info object: video-only and audio-only formats are dropped, heights +
+    /// bitrates are read, and the list comes back sorted ascending by height.
+    #[test]
+    fn builds_the_abr_ladder_from_progressive_formats() {
+        let info = serde_json::json!({
+            "formats": [
+                // audio-only — dropped
+                {"url": "https://gv/audio", "protocol": "https", "vcodec": "none", "acodec": "mp4a", "height": 0, "tbr": 130.0},
+                // video-only — dropped
+                {"url": "https://gv/vp9-1080", "protocol": "https", "vcodec": "vp9", "acodec": "none", "height": 1080, "tbr": 3500.0},
+                // progressive muxed renditions — kept
+                {"url": "https://gv/720", "protocol": "https", "vcodec": "avc1", "acodec": "mp4a", "height": 720, "tbr": 2800.0, "format_note": "720p"},
+                {"url": "https://gv/360", "protocol": "https", "vcodec": "avc1", "acodec": "mp4a", "height": 360, "tbr": 700.0, "format_note": "360p"},
+                // non-https (m3u8) muxed — dropped
+                {"url": "https://gv/hls", "protocol": "m3u8_native", "vcodec": "avc1", "acodec": "mp4a", "height": 480, "tbr": 1400.0}
+            ]
+        });
+        let ladder = variants_from_info(&info);
+        assert_eq!(ladder.len(), 2, "only the two progressive https renditions survive");
+        // Sorted ascending by height.
+        assert_eq!(ladder[0].height, 360);
+        assert_eq!(ladder[0].bandwidth_bps, 700_000);
+        assert_eq!(ladder[0].quality, "360p");
+        assert!(ladder[0].has_audio);
+        assert_eq!(ladder[1].height, 720);
+        assert_eq!(ladder[1].bandwidth_bps, 2_800_000);
+
+        // And the ABR selector picks among them by bandwidth.
+        use crate::backend::abr;
+        let pick = abr::select_variant(&ladder, Some(1_000_000), None).unwrap();
+        assert_eq!(ladder[pick].height, 360, "a ~1 Mbps link picks 360p from the real ladder");
+        let pick = abr::select_variant(&ladder, Some(5_000_000), None).unwrap();
+        assert_eq!(ladder[pick].height, 720, "a fat link picks the top rendition");
     }
 
     #[test]

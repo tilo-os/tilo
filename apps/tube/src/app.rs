@@ -335,6 +335,17 @@ impl TubeApp {
         self
     }
 
+    /// `--shots` hook: like [`Self::with_playing_demo_for_test`], but also reveals
+    /// the volume level indicator (as a right-half drag gesture would), so an
+    /// offscreen still captures the animated on-screen gesture overlay.
+    pub fn with_gesture_demo_for_test(mut self) -> Self {
+        self = self.with_playing_demo_for_test();
+        self.player
+            .borrow_mut()
+            .reveal_level_indicator(ui::LevelKind::Volume, 0.72);
+        self
+    }
+
     /// `--live-shots` hook: open the shared player on a real, directly-playable
     /// stream `url` and pump the media engine until a real frame decodes
     /// (bounded), so an offscreen still captures the ACTUAL decoded picture — the
@@ -487,7 +498,7 @@ impl TubeApp {
                 self.content_height(),
                 self.player.clone(),
             ),
-            Route::Channel(id) => screens::channel(m, theme, bus, imgs, id),
+            Route::Channel(id) => screens::channel(m, theme, bus, imgs, id, self.content_width()),
             Route::Playlist(id) => screens::playlist(m, theme, bus, imgs, id),
             Route::Search(q) => screens::search(m, theme, bus, imgs, q),
         };
@@ -686,7 +697,8 @@ impl TubeApp {
                 // source so a new video starts clean once its URL lands.
                 self.player_video = None;
                 self.player.borrow_mut().pause();
-                self.request_live(Request::PlayVideo(id));
+                let quality = self.model.settings.preferred_quality.clone();
+                self.request_live(Request::PlayVideo { id, quality });
             }
             // Left the watch page: pause the engine so audio stops and it isn't
             // still streaming a video the user is no longer watching.
@@ -766,6 +778,13 @@ impl TubeApp {
                     if self.model.settings.preferred_quality != *q {
                         self.model.settings.preferred_quality = q.to_string();
                         self.structure_dirty = true;
+                        // Re-resolve the current video's stream at the new quality
+                        // so the choice takes effect immediately. The switch keeps
+                        // the playhead (see `load_resolved_stream`), so it resumes
+                        // where it was rather than restarting.
+                        if let Route::Watch(vid) = self.model.route.clone() {
+                            self.request_live(Request::PlayVideo { id: vid, quality: q.to_string() });
+                        }
                     }
                 }
             }
@@ -782,6 +801,11 @@ impl TubeApp {
         if !matches!(&self.model.route, Route::Watch(id) if *id == video) {
             return false;
         }
+        // Switching the stream of the video already loaded (an ABR / manual
+        // resolution change) must keep the playhead so it resumes where it was
+        // rather than restarting from 0. A fresh video (or first load) starts at 0.
+        let resume_ms = (self.player_video.as_deref() == Some(video.as_str()))
+            .then(|| self.player.borrow().position_ms());
         // Now-playing metadata for the desktop media widget (MPRIS): title,
         // channel and the real thumbnail, built before we take the player borrow.
         let now_playing = self.model.video(&video).map(|v| {
@@ -796,6 +820,10 @@ impl TubeApp {
         {
             let mut p = self.player.borrow_mut();
             p.open(media::Source::Remote { url });
+            // Resume where we were when this is a stream switch for the same video.
+            if let Some(ms) = resume_ms {
+                p.seek_to_ms(ms);
+            }
             p.play();
             if let Some(np) = now_playing {
                 p.set_now_playing(np);
@@ -1944,6 +1972,36 @@ mod tests {
             }
             other => panic!("expected a remote source on the engine, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn switching_stream_for_the_same_video_preserves_the_playhead() {
+        // An ABR / manual resolution switch re-resolves the SAME video's stream.
+        // It must resume where it was (a smooth quality swap), not restart at 0.
+        let (mut app, _doc) = fresh_synth();
+        app.model.route = Route::Watch("vid_donut".into());
+        // First load of this video → starts fresh.
+        assert!(app.load_resolved_stream(
+            "vid_donut".into(),
+            "https://inv.example/480?local=true".into(),
+            true,
+            "480p".into(),
+        ));
+        // Advance the playhead as playback would.
+        app.player.borrow_mut().seek_to_ms(42_000);
+        assert_eq!(app.player.borrow().position_ms(), 42_000);
+        // A higher-quality stream for the SAME video lands → resume, don't restart.
+        assert!(app.load_resolved_stream(
+            "vid_donut".into(),
+            "https://inv.example/1080?local=true".into(),
+            true,
+            "1080p".into(),
+        ));
+        assert_eq!(
+            app.player.borrow().position_ms(),
+            42_000,
+            "the quality switch resumed at the prior playhead instead of restarting",
+        );
     }
 
     #[test]

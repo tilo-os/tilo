@@ -13,7 +13,7 @@ use crate::images::Imgs;
 use crate::model::{
     Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video,
 };
-use crate::util::{clock, human_count, human_views};
+use crate::util::{clock, human_count, human_views, views_time_line};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
     subtle_fill, subtle_surface, text, text_c, Align, ChannelAvatar, Flex, Icon, IconKind, ImageBox,
@@ -215,6 +215,38 @@ fn section_header(theme: &Theme, kind: IconKind, title: &str, subtitle: &str) ->
         .push(dim(theme, subtitle, 13.0))
 }
 
+/// A clean in-page section label: a bold title with an optional count in a
+/// subtle rounded chip. Separated from what precedes it by space + hierarchy
+/// (an accent tick + weight) rather than a hairline rule — the §7 way. Replaces
+/// the old `divider + tiny "Videos"` seam that read as an unfinished box edge.
+fn section_label(theme: &Theme, title: &str, count: Option<usize>) -> Flex {
+    let mut row = Flex::row()
+        .fill_w()
+        .gap(10.0)
+        .align(Align::Center)
+        // A short accent tick anchors the label without a full-width rule.
+        .push(Flex::row().fixed(4.0, 18.0).surface(Surface {
+            fill: Some(theme.accent_primary),
+            radius: 2.0,
+            border: None,
+        }))
+        .push(text(title, 18.0));
+    if let Some(n) = count {
+        row = row.push(
+            Flex::row()
+                .pad_xy(8.0, 2.0)
+                .align(Align::Center)
+                .surface(Surface {
+                    fill: Some(subtle_fill(theme)),
+                    radius: theme.tokens.radii.full as f64,
+                    border: None,
+                })
+                .push(text_c(&human_count(n as u64), 12.0, theme.text_dim)),
+        );
+    }
+    row
+}
+
 // ---------------------------------------------------------------------------
 // cards
 // ---------------------------------------------------------------------------
@@ -232,37 +264,32 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         thumb = thumb.progress(p);
     }
 
-    let mut meta = Flex::col().gap(3.0).grow(1.0);
-    meta = meta.push(text(v.display_title(dearrow), 14.5));
-    meta = meta.push(
-        Flex::row()
-            .gap(5.0)
-            .align(Align::Center)
-            .push(dim(theme, &v.channel_name, 12.5))
-            .push_if(
-                model.channel(&v.channel_id).map(|c| c.verified).unwrap_or(false),
-                icon(IconKind::Check, 12.0, theme.text_dim),
-            ),
-    );
-    meta = meta.push(dim(
-        theme,
-        format!("{} • {}", human_views(v.views), v.published),
-        12.5,
-    ));
-    if active_dearrow {
-        meta = meta.push(
+    // The uploader block: the channel icon on the left, then two lines — the
+    // channel name over a single "N views · <relative time>" line. No verified
+    // tick and no title here; the title spans full width above so the meta reads
+    // cleanly on one line and the card stays scannable.
+    let uploader = Flex::col()
+        .grow(1.0)
+        .gap(1.0)
+        .push(dim(theme, &v.channel_name, 12.5))
+        .push(text_c(&views_time_line(v.views, &v.published), 12.0, theme.text_tertiary));
+
+    let mut body = Flex::col()
+        .fill_w()
+        .grow(1.0)
+        .gap(9.0)
+        // Title: the card's primary line, full width.
+        .push(text(v.display_title(dearrow), 14.5))
+        .push(
             Flex::row()
-                .gap(4.0)
+                .fill_w()
+                .gap(10.0)
                 .align(Align::Center)
-                .pad_xy(6.0, 2.0)
-                .surface(Surface {
-                    fill: Some(Color::from_rgba8(0x9b, 0x59, 0xb6, 40)),
-                    radius: 4.0,
-                    border: None,
-                })
-                .push(icon(IconKind::Sparkle, 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0)))
-                .push(text_c("DeArrow title", 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0))),
+                .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 34.0))
+                .push(uploader),
         );
+    if active_dearrow {
+        body = body.push(dearrow_badge(theme));
     }
 
     // No fixed width: as a responsive-grid item the card stretches to fill its
@@ -270,7 +297,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     Flex::col()
         .id(&format!("video_card_{}", v.id))
         .fill_w()
-        .gap(9.0)
+        .gap(10.0)
         .pad(6.0)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
@@ -279,14 +306,23 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         })
         .on_click(bus, Action::OpenVideo(v.id.clone()))
         .push(thumb)
-        .push(
-            Flex::row()
-                .gap(10.0)
-                .fill_w()
-                .align(Align::Start)
-                .push(channel_avatar(imgs, model, &v.channel_id, &v.channel_name, 36.0))
-                .push(meta),
-        )
+        .push(body)
+}
+
+/// The small "DeArrow title" provenance badge shown on a card whose title has
+/// been replaced by a community-sourced one.
+fn dearrow_badge(_theme: &Theme) -> Flex {
+    Flex::row()
+        .gap(4.0)
+        .align(Align::Center)
+        .pad_xy(6.0, 2.0)
+        .surface(Surface {
+            fill: Some(Color::from_rgba8(0x9b, 0x59, 0xb6, 40)),
+            radius: 4.0,
+            border: None,
+        })
+        .push(icon(IconKind::Sparkle, 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0)))
+        .push(text_c("DeArrow title", 11.0, Color::from_rgb8(0xc8, 0x8e, 0xe0)))
 }
 
 /// Compact horizontal card for the "Up next" rail + history rows.
@@ -979,71 +1015,121 @@ pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, i
             .pad(24.0)
             .gap(18.0)
             .push(header)
-            .push(divider(theme))
-            .push(text("Videos", 16.0))
+            .push(gap(1.0, 4.0))
+            .push(section_label(theme, "Videos", Some(videos.len())))
             .push(list),
     )
 }
 
-pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
+/// Below this content width the channel banner is hidden entirely (it dominates
+/// a narrow column and adds no information), and the header stacks so the avatar
+/// isn't marooned beside clipped text.
+const CHANNEL_BANNER_MIN_W: f64 = 640.0;
+/// Below this content width the channel header switches from a single row
+/// (avatar · info · subscribe) to a stacked column so nothing is squeezed.
+const CHANNEL_STACK_W: f64 = 560.0;
+
+pub fn channel(
+    model: &TubeModel,
+    theme: &Theme,
+    bus: &ActionBus,
+    imgs: Imgs,
+    id: &str,
+    content_w: f64,
+) -> Scrollable {
     let Some(ch) = model.channel(id) else {
         return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Channel not found", "")));
     };
     let subscribed = model.is_subscribed(id);
+    let narrow = content_w < CHANNEL_STACK_W;
+    let show_banner = content_w >= CHANNEL_BANNER_MIN_W;
 
-    // Real banner image when the store has it, else the seed gradient.
-    let banner = ImageBox::new(&ch.seed, 160.0, theme.tokens.radii.lg as f64, None)
-        .source(imgs.store_handle(), &ch.banner_url);
+    let subscribe = if subscribed {
+        pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(ch.id.clone()), false)
+    } else {
+        pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(ch.id.clone()), true)
+    }
+    .id("subscribe_btn");
 
-    let header = Flex::row()
-        .fill_w()
-        .gap(18.0)
-        .align(Align::Center)
-        .push(channel_avatar(imgs, model, &ch.id, &ch.name, 86.0))
-        .push(
-            Flex::col()
-                .grow(1.0)
-                .gap(5.0)
-                .push(
-                    Flex::row()
-                        .gap(8.0)
-                        .align(Align::Center)
-                        .push(text(&ch.name, 26.0))
-                        .push_if(ch.verified, icon(IconKind::Check, 18.0, theme.text_dim)),
-                )
-                .push(dim(
-                    theme,
-                    &match subs_label(ch.subscribers) {
-                        Some(subs) => format!("{}  •  {}", ch.handle, subs),
-                        None => ch.handle.clone(),
-                    },
-                    13.5,
-                ))
-                .push(dim(theme, &ch.description, 13.0)),
-        )
-        .push(if subscribed {
-            pill(theme, bus, "Subscribed", Some(IconKind::Bell), Action::ToggleSubscribe(ch.id.clone()), false)
-        } else {
-            pill(theme, bus, "Subscribe", None, Action::ToggleSubscribe(ch.id.clone()), true)
-        });
+    // Name + handle·subs. No verified tick cluttering the name — the identity is
+    // the name itself; the handle carries the rest.
+    let meta_line = match subs_label(ch.subscribers) {
+        Some(subs) if !ch.handle.is_empty() => format!("{}  ·  {}", ch.handle, subs),
+        Some(subs) => subs,
+        None => ch.handle.clone(),
+    };
+
+    let avatar_size = if narrow { 66.0 } else { 88.0 };
+    let identity = Flex::col()
+        .grow(1.0)
+        .gap(5.0)
+        .push(text(&ch.name, if narrow { 21.0 } else { 26.0 }))
+        .push_if(!meta_line.is_empty(), dim(theme, &meta_line, 13.5))
+        .push_if(!ch.description.trim().is_empty(), dim(theme, &ch.description, 13.0));
+
+    // Wide: avatar · identity · subscribe on one row. Narrow: avatar + name in a
+    // row, then the description below, then a full-width Subscribe — so the avatar
+    // never floats alone and the text is never clipped.
+    let header = if narrow {
+        Flex::col()
+            .fill_w()
+            .gap(12.0)
+            .push(
+                Flex::row()
+                    .fill_w()
+                    .gap(14.0)
+                    .align(Align::Center)
+                    .push(channel_avatar(imgs, model, &ch.id, &ch.name, avatar_size))
+                    .push(
+                        Flex::col()
+                            .grow(1.0)
+                            .gap(3.0)
+                            .push(text(&ch.name, 21.0))
+                            .push_if(!meta_line.is_empty(), dim(theme, &meta_line, 13.0)),
+                    ),
+            )
+            .push_if(!ch.description.trim().is_empty(), dim(theme, &ch.description, 13.0))
+            .push(Flex::row().fill_w().push(subscribe))
+    } else {
+        Flex::row()
+            .fill_w()
+            .gap(18.0)
+            .align(Align::Center)
+            .push(channel_avatar(imgs, model, &ch.id, &ch.name, avatar_size))
+            .push(identity)
+            .push(subscribe)
+    };
 
     let cards: Vec<Flex> = model
         .channel_videos(id)
         .iter()
         .map(|v| video_card(model, theme, bus, imgs, v))
         .collect();
+    let video_count = cards.len();
 
-    scroll(
-        Flex::col()
-            .fill_w()
-            .pad(24.0)
-            .gap(18.0)
-            .push(banner)
-            .push(header)
-            .push(divider(theme))
-            .push(text("Videos", 16.0))
-            .push(grid(cards)),
-    )
+    let mut col = Flex::col().fill_w().pad(24.0).gap(18.0);
+    // Compact banner that scales with the column (a wide, short strip) and is
+    // dropped entirely on a narrow window where it would just eat vertical space.
+    if show_banner {
+        let banner_h = (content_w / 6.5).clamp(96.0, 168.0) as f32;
+        col = col.push(
+            ImageBox::new(&ch.seed, banner_h, theme.tokens.radii.lg as f64, None)
+                .source(imgs.store_handle(), &ch.banner_url),
+        );
+    }
+    col = col.push(header).push(gap(1.0, 4.0));
+    if cards.is_empty() {
+        // Uploads still loading — a skeleton grid, never a frozen blank section.
+        col = col
+            .push(section_label(theme, "Videos", None))
+            .push(skeleton_grid(theme, 6));
+    } else {
+        col = col
+            .push(section_label(theme, "Videos", Some(video_count)))
+            .push(grid(cards));
+    }
+
+    scroll(col)
 }
 
 fn empty_state(theme: &Theme, title: &str, body: &str) -> Flex {
@@ -1994,6 +2080,79 @@ mod search_screen_tests {
         assert!(
             images >= 1,
             "the search result row must paint the fetched thumbnail (IMAGE draw), got {images}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+    use ui::widget::Widget;
+
+    /// Collect every accessible text label in a widget subtree (Text nodes expose
+    /// their resolved string as the a11y name), so a test can assert on the exact
+    /// lines a card renders without a GPU.
+    fn labels(w: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(a) = w.accessibility() {
+            if let Some(n) = a.name {
+                out.push(n);
+            }
+        }
+        for c in w.children() {
+            labels(c, out);
+        }
+    }
+
+    /// Count widgets of a given `name()` in a subtree.
+    fn count_named(w: &dyn Widget, name: &str) -> usize {
+        let here = usize::from(w.name() == name);
+        here + w.children().iter().map(|c| count_named(*c, name)).sum::<usize>()
+    }
+
+    /// The redesigned video card: channel name over a single "N views ·
+    /// <relative time>" line, and NO verified checkmark — even when the uploader
+    /// is verified. Asserts on the real `video_card` composition.
+    #[test]
+    fn video_card_meta_is_channel_then_views_time_and_has_no_checkmark() {
+        let mut model = crate::sample::model();
+        // DeArrow off so no provenance badge (Sparkle icon) enters the card.
+        model.settings.dearrow_enabled = false;
+
+        let mut v = model.videos[0].clone();
+        v.views = 3_300_000;
+        v.published = "1 day ago".into();
+        v.dearrow_title = None;
+        // Mark the uploader verified so the OLD card would have injected a Check
+        // icon after the channel name — proving the removal, not merely absence.
+        if let Some(c) = model.channels.iter_mut().find(|c| c.id == v.channel_id) {
+            c.verified = true;
+        }
+
+        let theme = Theme::dark();
+        let bus = crate::action::new_bus();
+        let card = video_card(&model, &theme, &bus, Imgs::none(), &v);
+
+        let mut found = Vec::new();
+        labels(&card, &mut found);
+
+        // The channel name is its own line.
+        assert!(
+            found.iter().any(|l| l == &v.channel_name),
+            "channel-name line present; got {found:?}",
+        );
+        // The meta reads on ONE line with the middot separator.
+        let meta = views_time_line(v.views, &v.published);
+        assert_eq!(meta, "3.3M views · 1 day ago");
+        assert!(
+            found.iter().any(|l| l == &meta),
+            "single 'N views · <relative time>' line present ({meta:?}); got {found:?}",
+        );
+
+        // No verified checkmark (or any decorative Icon) in the card body.
+        assert_eq!(
+            count_named(&card, "Icon"),
+            0,
+            "the card must not render a verified checkmark; labels seen: {found:?}",
         );
     }
 }

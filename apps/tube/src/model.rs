@@ -799,10 +799,17 @@ impl TubeModel {
             let keep_avatar = std::mem::take(&mut slot.avatar_url);
             let keep_banner = std::mem::take(&mut slot.banner_url);
             *slot = c;
-            if slot.avatar_url.is_empty() {
+            // Keep an already-known avatar/banner URL rather than swapping to the
+            // freshly-fetched one. Images are keyed by URL in the `ImageStore`,
+            // and a channel-page fetch typically returns a *different-resolution*
+            // URL for the same creator than the feed/search item did — replacing
+            // it evicts the cached decode, so the avatar flickers (visible → blank
+            // while the new URL downloads → visible ~2s later). Adopt the new URL
+            // only when we had none.
+            if !keep_avatar.is_empty() {
                 slot.avatar_url = keep_avatar;
             }
-            if slot.banner_url.is_empty() {
+            if !keep_banner.is_empty() {
                 slot.banner_url = keep_banner;
             }
         } else {
@@ -1132,6 +1139,30 @@ mod tests {
         // whose URL didn't resolve) must not blank the working photo.
         m.upsert_channel(chan("UC_A", "Creator", ""));
         assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
+    }
+
+    #[test]
+    fn upsert_channel_keeps_the_existing_avatar_url_stable() {
+        // The avatar flicker: a channel-page fetch returns a *different-resolution*
+        // URL for the same creator than the card already resolved and cached. If
+        // upsert swapped to it, the `ImageStore` key would change, the cached
+        // decode would be evicted, and the avatar would blank for ~2s while the new
+        // URL downloaded. The already-known URL must survive the fetch so the image
+        // stays put.
+        let mut m = TubeModel::default();
+        m.upsert_channel(chan("UC_A", "Creator", "https://yt3/avatar=s176"));
+        // A full channel-page record for the same creator, with a *different* (but
+        // equivalent) avatar URL — must NOT replace the cached one.
+        let mut page = chan("UC_A", "Creator", "https://yt3/avatar=s900");
+        page.banner_url = "https://yt3/banner".into();
+        m.upsert_channel(page);
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/avatar=s176",
+            "the already-cached avatar URL stays stable across a channel-page fetch",
+        );
+        // A banner we never had before is still adopted (no churn to trade off).
+        assert_eq!(m.channel("UC_A").unwrap().banner_url, "https://yt3/banner");
     }
 
     #[test]
