@@ -369,61 +369,67 @@ RUN PUBKEY_OUT=/out/app-publisher.hex /build/os/scripts/pack-apps.sh
 FROM ${BASE_REF} AS rootfs
 
 # ---- Keeping the rpm database intact across a layer boundary ----------------
-# Two separate faults land on the same file, `/usr/lib/sysimage/rpm/rpmdb.sqlite`,
-# and both show up as dnf failing against a database the previous step wrote.
-# They have different causes and different fixes, and conflating them cost two
-# agents an afternoon each, so they are written down apart.
+# The image build has intermittently produced a corrupt rpm database — dnf
+# resolving against damaged indexes, concluding an installed package is missing,
+# and rpm refusing the transaction. It was blamed on SQLite's WAL sidecars, and
+# that turned out to be the wrong half of the machine. Both halves are written
+# down here, because the wrong one was believed for a while on the strength of a
+# single A/B pass.
 #
-# --- 1. The sidecars, which this stage drops --------------------------------
-# rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
-# than letting SQLite delete them when the last connection closes. `-shm` is the
-# WAL *index*: pure derived state, valid only for the processes that mapped it,
-# and meaningless once the transaction's processes are gone. `-wal` is left at
-# zero bytes — measured at every dnf step here, every time — i.e. fully
-# checkpointed. So neither file carries data, and a 32 KiB index describing a
-# WAL that no longer exists is exactly the sort of thing a later open should
-# not be handed. Measured, one transaction per arm, nothing else varied:
-# sidecars KEPT -> `rpm --verifydb` DIRTY in the next layer and the following
-# transaction fails; sidecars DROPPED -> clean. Hence the line below.
+# --- What actually breaks it: the container store ---------------------------
+# When podman's overlay driver runs through a mount program (fuse-overlayfs),
+# containers/storage cannot take a layer's changeset from overlayfs metadata. It
+# falls back to walking the tree and re-reading every file whose stat differs,
+# and that path does not reproduce a large file a transaction rewrote in place.
+# `podman info` names the condition directly:
 #
-# --- 2. The layer capture, which is not fixed here --------------------------
-# Dropping them is necessary and NOT sufficient. On a machine whose podman store
-# reports `Native Overlay Diff: false`, the database is corrupted at a layer
-# boundary with no sidecar anywhere near it.
+#     overlay / Native Overlay Diff: false
 #
-# What that flag means: the overlay driver is running through a mount program
-# (fuse-overlayfs), so containers/storage cannot read the changeset out of
-# overlayfs metadata and falls back to walking the tree and re-reading every
-# file whose stat differs. Replaying these real dnf steps onto a real parent
-# layer, sidecars dropped in both arms, everything else identical:
+# Replaying five real dnf steps onto a real parent layer, nothing varying but
+# the store:
 #
-#   fuse-overlayfs   the database comes back from the boundary with the SAME
-#                    length and the SAME allocated block count but different
+#   fuse-overlayfs   2 of 3 runs dirty. In both, the database was already
+#                    corrupt at the first boundary and all five dnf
+#                    transactions in the run then failed against it.
+#                    rpmdb.sqlite comes back from a boundary with the SAME
+#                    length and the SAME allocated block count and different
 #                    content — page images mixed from before and after the
-#                    transaction. `PRAGMA integrity_check` reports invalid page
-#                    numbers and btreeInitPage errors; the next transaction then
-#                    resolves against damaged indexes, decides an installed
-#                    package is missing, and rpm refuses it.
-#   native overlay   40 of 40 layer boundaries handed the file back
-#                    byte-identical; 48 of 48 integrity checks clean; 40 of 40
-#                    dnf transactions succeeded. It is also ~15x faster per
-#                    layer commit, because nothing re-reads the tree.
+#                    transaction. `PRAGMA integrity_check` then reports invalid
+#                    page numbers and btreeInitPage errors.
+#   native overlay   0 of 8 runs dirty, 40 of 40 boundaries byte-identical,
+#                    48 of 48 integrity checks clean, 40 of 40 transactions
+#                    succeeded — and ~15x faster per layer commit, because
+#                    nothing re-reads the tree.
 #
-# Same kernel, same btrfs, same Containerfile — the only difference is the
-# store. So this is not a property of the machine and not something to work
-# around in here: the fix is to build in a store that does not tear, which
-# os/tests/layer_capture.sh checks and os/dev/_common.sh arranges.
+# Same kernel, same btrfs, same Containerfile. So the fix is not in this file:
+# it is to build in a store that does not tear, which os/tests/layer_capture.sh
+# checks and os/dev/_common.sh arranges. The assertion at the end of this stage
+# is the backstop, and it stays: it fails the build the moment the indexes are
+# damaged, whatever the cause turns out to be.
 #
-# Ruled out as the mechanism, each by A/B trial rather than argument, so that
-# nobody re-tests them: `sync` before the layer ends (did not help; the sync arm
-# was dirtier); `VACUUM` before dropping the sidecars (rewrites in place, same
-# inode, did not help — and made it worse, which fits, since it rewrites the
-# whole file); and `--source-date-epoch` / `--rewrite-timestamp` (dirty and
-# clean runs on both sides).
+# Ruled out as the mechanism, each by A/B trial rather than argument, so nobody
+# spends another afternoon on them: `sync` before the layer ends (did not help,
+# and the sync arm was dirtier); `VACUUM` before dropping the sidecars (rewrites
+# in place, same inode, did not help); and `--source-date-epoch` /
+# `--rewrite-timestamp` (dirty and clean runs on both sides).
 #
-# The assertion near the end of this stage stays regardless. It is what closes
-# the loop for any mechanism not yet found, because it fails the build the
-# moment the indexes are damaged.
+# --- Why the sidecars are still dropped -------------------------------------
+# rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
+# than letting SQLite delete them when the last connection closes. `-wal` is
+# left at zero bytes — measured at every dnf step here, every time — so it is
+# fully checkpointed and carries nothing. `-shm` is the WAL *index*: derived
+# state describing a log that no longer exists, valid only to the processes that
+# mapped it. An immutable /usr is the last place that belongs.
+#
+# That is the whole reason, and it is deliberately not the one recorded here
+# before. The earlier note said keeping them corrupted the next layer, measured
+# one transaction per arm. That measurement was taken on the fuse-overlayfs
+# store, where about half of all runs go dirty on their own, so one sample per
+# arm could not have separated the two. Re-measured on a store that preserves
+# layers, with the sidecars deliberately KEPT across every boundary: 0 of 8 runs
+# dirty, 40 of 40 boundaries byte-identical, 48 of 48 integrity checks clean.
+# They do no harm to the database. They are dropped because they should not be
+# in an OS image, and the assertion below enforces exactly that.
 ARG DROP_RPMDB_WAL="rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm"
 
 # Graphics stack
