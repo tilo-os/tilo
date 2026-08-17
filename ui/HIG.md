@@ -288,6 +288,71 @@ shared widgets, and are themselves candidates for a shared editor primitive
 
 ---
 
+## 9. Keyboard navigation & focus (every app, every control)
+
+**Every interactive control must be operable from the keyboard.** The toolkit
+gives you the whole contract for free — you do not implement Tab order, arrow
+navigation, a focus ring, or Enter/Space activation. The host (`ui::App`) does:
+
+- **Tab / Shift+Tab** walk `App::focusable_order` (built by a depth-first walk
+  of the widget tree — a node is included when `is_focusable() && is_enabled()`),
+  wrapping last↔first. A modal that returns `traps_focus()` scopes the order to
+  itself so Tab cannot escape the dialog.
+- **Arrow keys** do 2D *directional* focus (`App::navigate_focus`) using each
+  focusable's on-screen `get_rect()`; **Alt+arrows** do the same when a widget
+  wants bare arrows for its own content. A focused range control (Slider,
+  NumberInput) takes Left/Right to change its value; Up/Down and Tab still move
+  focus, so you can always navigate away.
+- **Enter / Space** activate the focused control: the host calls
+  `perform_action(Activate)` and, if the widget declines, **synthesises a real
+  pointer click at its centre** through the same path a mouse takes — so any
+  focusable that wires up mouse handling is keyboard-activatable with no extra
+  code.
+- **Escape** pops / dismisses (a modal, a popover, an in-progress edit) via the
+  widget's own handling.
+- The host paints a **shared themed focus ring** (`theme.border_focus`) around
+  the focused control so keyboard focus is *never* invisible.
+
+### What your app must do
+
+For a control built from a shared `ui` widget (`Button`, `Toggle`, `Slider`,
+`TextInput`, `Dropdown`, …): **nothing** — all of the above already works, and
+the widget draws its own precise focus ring.
+
+For an app-level **custom** control (a list row, a card, a tile you draw
+yourself — and prefer not to; see §8), make it keyboard-navigable with just:
+
+1. `fn is_focusable(&self) -> bool { true }` — so it joins the Tab order.
+2. A correct `fn get_rect(&self) -> Rect` — so directional focus and the shared
+   ring can find it (you already return this for hit-testing).
+3. Mouse handling that performs the action on click (hover + press/release) —
+   which you already have. Enter/Space reuse it via the synth-click fallback.
+
+That is the whole recipe: **`is_focusable` + a rect + a click handler** ⇒ the
+control is reachable by Tab, movable to by arrows, activatable by Enter/Space,
+and shows the shared focus ring. No `set_focus`, no ring drawing, no
+`perform_action` required. (The settings sidebar rows and the notes tree are
+built exactly this way.)
+
+**The focus-ring rule.** The host paints the shared ring only when the focused
+widget's `draws_own_focus_ring()` returns `false`; it defaults to
+`self.is_focused()`. So:
+
+- A widget that tracks its own focus (overrides `set_focus`/`is_focused`, as
+  every shared primitive does) is assumed to render its own indicator — a ring,
+  a caret, an inner-field ring, or a selection highlight — and the host skips
+  the shared ring to avoid a double indicator. If you override `is_focused` to
+  return `true`, **you must draw a focus indicator** (or override
+  `draws_own_focus_ring()` to `false` to opt back into the shared ring).
+- A widget that leaves `is_focused` at its default gets the shared ring.
+
+**Never** rely on a hand-rolled control that isn't `is_focusable` — it is
+invisible to Tab, to directional focus, and to a screen reader (§8). A painted
+rect with a manual hit-test is a broken control, keyboard-inoperable by
+construction.
+
+---
+
 *This document is versioned with the toolkit. When a guideline here becomes a
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
