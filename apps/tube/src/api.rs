@@ -711,6 +711,11 @@ fn probe_bandwidth(
         .header(reqwest::header::RANGE, format!("bytes=0-{}", PROBE_BYTES - 1))
         .send()
         .ok()?;
+    // A 403/404 body (e.g. a UA mismatch) carries no throughput signal — don't
+    // let a tiny error page masquerade as "slow bandwidth".
+    if !resp.status().is_success() {
+        return None;
+    }
     let bytes = resp.bytes().ok()?;
     let dt = t.elapsed();
     if bytes.is_empty() {
