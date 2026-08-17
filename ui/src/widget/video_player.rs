@@ -28,11 +28,12 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
+use vello::peniko::{Blob, Color, Fill, Gradient, ImageAlphaType, ImageData as PenikoImage, ImageFormat as Format};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
+use crate::player_gesture::{DragSide, LevelIndicator, LevelKind, VerticalDrag};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -57,8 +58,18 @@ const SCRUB_THUMB_RADIUS: f64 = 7.0;
 /// Width reserved for the volume control (speaker + level track).
 const VOLUME_WIDTH: f64 = 78.0;
 
-/// Seek step for the ←/→ keyboard shortcuts.
-const KEY_SEEK_STEP: Duration = Duration::from_secs(5);
+/// Seek step for the ←/→ keyboard shortcuts (YouTube's 10-second skip).
+const KEY_SEEK_STEP: Duration = Duration::from_secs(10);
+
+/// How close (ms) the engine's reported playhead must get to a pending optimistic
+/// seek target before the widget resumes mirroring the engine. Until then the
+/// optimistic position is held on screen so scrubbing feels instant.
+const SEEK_CONVERGE_MS: u64 = 750;
+
+/// How long an optimistic seek is held before the widget gives up waiting for the
+/// engine to converge (a failed / no-op seek must not freeze the playhead
+/// forever). After this the engine position drives again.
+const SEEK_SETTLE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Fallback stream length (ms) used only in push mode, where the widget has no
 /// engine to report a real duration.
@@ -205,11 +216,28 @@ pub struct VideoPlayer {
     /// mode).
     position_ms: u64,
     duration_ms: u64,
+    /// An in-flight optimistic seek target (ms). While set, the scrubber shows
+    /// this position immediately — before the decoder produces the frame for it —
+    /// and `pump_engine` does NOT snap the playhead back to the engine's stale
+    /// position until it converges near the target (or the settle timeout fires).
+    pending_seek_ms: Option<u64>,
+    /// When the current optimistic seek was issued, for the settle timeout.
+    pending_seek_since: Option<Instant>,
     /// Buffering / prefetch progress 0..=100 (the buffered-range indicator).
     buffering: u8,
     /// Output volume 0..=1 and mute flag.
     volume: f32,
     muted: bool,
+    /// Video-surface brightness 0.15..=1.0 (1.0 = the source picture; lower dims
+    /// it via an overlay). Driven by the left-half vertical-drag gesture, the
+    /// Netflix/Grayjay brightness control.
+    brightness: f32,
+    /// The active vertical-drag gesture (volume on the right half, brightness on
+    /// the left), if the user is mid-press on the surface body.
+    drag: Option<VerticalDrag>,
+    /// The self-fading on-screen level indicator shown while a volume/brightness
+    /// drag is in flight (and briefly after).
+    level_indicator: Option<LevelIndicator>,
     /// Fullscreen intent, and whether the user has ever toggled it (so a fresh
     /// player expresses no fullscreen opinion until asked — see
     /// [`Widget::fullscreen_intent`]).
@@ -262,6 +290,8 @@ pub struct VideoPlayer {
     mpris: crate::mpris::MprisHandle,
     /// Fullscreen output target expressed when the user toggles fullscreen.
     fullscreen_target: crate::fullscreen::FullscreenTarget,
+    /// Phase anchor for the buffering spinner (a purely time-driven animation).
+    spin_anchor: Instant,
 }
 
 impl VideoPlayer {
@@ -275,9 +305,14 @@ impl VideoPlayer {
             state: PlaybackState::Paused,
             position_ms: 0,
             duration_ms: PUSH_MODE_DEFAULT_DURATION_MS,
+            pending_seek_ms: None,
+            pending_seek_since: None,
             buffering: 100,
             volume: 0.8,
             muted: false,
+            brightness: 1.0,
+            drag: None,
+            level_indicator: None,
             fullscreen: false,
             fullscreen_touched: false,
             on_seek: None,
@@ -304,6 +339,7 @@ impl VideoPlayer {
             now_playing: NowPlaying::default(),
             mpris: crate::mpris::MprisHandle::disabled(),
             fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
+            spin_anchor: Instant::now(),
         }
     }
 
@@ -648,9 +684,17 @@ impl VideoPlayer {
     }
 
     /// Seek to an absolute playhead position in milliseconds (clamped).
+    ///
+    /// The playhead moves **immediately** and optimistically: the scrubber jumps
+    /// to `target` at once, before the engine has decoded the frame for that
+    /// position. `pending_seek_ms` records the intent so `pump_engine` won't snap
+    /// the playhead back to the engine's (stale) position while the seek is in
+    /// flight — the picture catches up a few frames later.
     pub fn seek_to_ms(&mut self, ms: u64) {
         let target = ms.min(self.duration_ms);
         self.position_ms = target;
+        self.pending_seek_ms = Some(target);
+        self.pending_seek_since = Some(Instant::now());
         if let Some(e) = &mut self.engine {
             e.seek_ms(target);
         }
@@ -678,6 +722,21 @@ impl VideoPlayer {
 
     pub fn volume(&self) -> f32 {
         self.volume
+    }
+
+    /// The current video-surface brightness (0.15..=1.0; 1.0 = source picture).
+    pub fn brightness(&self) -> f32 {
+        self.brightness
+    }
+
+    /// Set the video-surface brightness (0.15..=1.0). Reusable entry point for a
+    /// future global brightness control; the left-half drag gesture calls it too.
+    pub fn set_brightness(&mut self, b: f32) {
+        let b = b.clamp(0.15, 1.0);
+        if (self.brightness - b).abs() > f32::EPSILON {
+            self.brightness = b;
+            self.dirty = true;
+        }
     }
 
     /// Toggle mute (engine volume drops to 0 while muted).
@@ -723,6 +782,14 @@ impl VideoPlayer {
     /// controls bar (which otherwise auto-hides when no cursor is moving).
     pub fn reveal_controls(&mut self) {
         self.controls_visible_until = Some(Instant::now() + Duration::from_secs(3600));
+        self.dirty = true;
+    }
+
+    /// Test / `--shots` hook: show the volume/brightness level indicator at
+    /// `level` (0..=1), exactly as a drag gesture would, so an offscreen still can
+    /// capture the animated gesture overlay.
+    pub fn reveal_level_indicator(&mut self, kind: LevelKind, level: f32) {
+        self.show_level_indicator(kind, level);
         self.dirty = true;
     }
 
@@ -799,10 +866,7 @@ impl VideoPlayer {
         let Some((pos, dur, buffering, playing, frame)) = snapshot else {
             return;
         };
-        if self.position_ms != pos {
-            self.position_ms = pos;
-            self.dirty = true;
-        }
+        self.reconcile_engine_position(pos);
         if let Some(d) = dur {
             if d > 0 && self.duration_ms != d {
                 self.duration_ms = d;
@@ -829,6 +893,71 @@ impl VideoPlayer {
         // dedups sub-second position jitter, so this is quiet on the bus.
         if self.mpris.is_active() {
             self.publish_mpris();
+        }
+    }
+
+    /// Reconcile the engine-reported playhead against an in-flight optimistic
+    /// seek. While a user seek is pending, keep the optimistic position on screen
+    /// (so the scrubber moves the instant the user acts, before the decoder
+    /// produces the frame for that position); only adopt the engine's position
+    /// once it converges near the target or the settle timeout elapses (so a
+    /// failed / no-op seek can't freeze the playhead). Called from `pump_engine`
+    /// every frame — this is the production path.
+    fn reconcile_engine_position(&mut self, engine_pos_ms: u64) {
+        match self.pending_seek_ms {
+            Some(target) => {
+                let converged = engine_pos_ms.abs_diff(target) <= SEEK_CONVERGE_MS;
+                let settled = self
+                    .pending_seek_since
+                    .map(|t| t.elapsed() >= SEEK_SETTLE_TIMEOUT)
+                    .unwrap_or(true);
+                if converged || settled {
+                    self.pending_seek_ms = None;
+                    self.pending_seek_since = None;
+                    if self.position_ms != engine_pos_ms {
+                        self.position_ms = engine_pos_ms;
+                        self.dirty = true;
+                    }
+                }
+                // Otherwise hold the optimistic position — do not overwrite it.
+            }
+            None => {
+                if self.position_ms != engine_pos_ms {
+                    self.position_ms = engine_pos_ms;
+                    self.dirty = true;
+                }
+            }
+        }
+    }
+
+    /// Apply an incremental level delta from a vertical-drag gesture: the right
+    /// half controls volume, the left half brightness. Shows the animated level
+    /// indicator. Reusable core the gesture layer drives.
+    fn apply_drag_delta(&mut self, side: DragSide, delta: f32) {
+        match side {
+            DragSide::Right => {
+                let v = (self.volume + delta).clamp(0.0, 1.0);
+                self.volume = v;
+                self.muted = false;
+                if let Some(e) = &mut self.engine {
+                    e.set_volume(v);
+                }
+                self.show_level_indicator(LevelKind::Volume, v);
+            }
+            DragSide::Left => {
+                let b = (self.brightness + delta).clamp(0.15, 1.0);
+                self.brightness = b;
+                self.show_level_indicator(LevelKind::Brightness, b);
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// Show (or refresh) the fading level indicator for a volume/brightness change.
+    fn show_level_indicator(&mut self, kind: LevelKind, level: f32) {
+        match &mut self.level_indicator {
+            Some(ind) => ind.refresh(kind, level),
+            None => self.level_indicator = Some(LevelIndicator::new(kind, level)),
         }
     }
 
@@ -871,6 +1000,25 @@ impl VideoPlayer {
             self.paint_empty_placeholder(scene, transform, theme);
         }
 
+        // 2.5) Brightness dim overlay (the left-half drag gesture). 1.0 = the
+        // source picture; anything lower lays a translucent black veil over the
+        // surface so the video visibly dims.
+        if self.brightness < 1.0 {
+            let a = ((1.0 - self.brightness) * 255.0).clamp(0.0, 235.0) as u8;
+            scene.fill(Fill::NonZero, transform, Color::from_rgba8(0, 0, 0, a), None, &self.rect);
+        }
+
+        // 2.6) The self-fading volume/brightness level indicator (drawn under the
+        // controls bar region, which it doesn't overlap). Drop it once it has
+        // fully faded so the animation loop can go idle.
+        if let Some(ind) = self.level_indicator {
+            if ind.is_visible() {
+                ind.draw(scene, transform, self.rect, theme, text_renderer);
+            } else {
+                self.level_indicator = None;
+            }
+        }
+
         // 3) Controls overlay — within the auto-hide window, or whenever a
         // settings menu is open (so it can't vanish under the user's cursor).
         if !self.controls_visible_now() && self.open_menu.is_none() {
@@ -900,8 +1048,23 @@ impl VideoPlayer {
         let colors = &theme.tokens.colors;
         let accent = colors.accent[ACCENT_PRIMARY_IDX];
 
-        // Scrim so controls read over bright frames.
-        scene.fill(Fill::NonZero, transform, Color::from_rgba8(0, 0, 0, 170), None, &bar);
+        // A soft, translucent center play affordance while paused — reads as
+        // "click to resume" without boxing the picture in (hidden mid-gesture so
+        // it never collides with the level indicator).
+        if !self.is_playing() && self.drag.is_none() && self.level_indicator.is_none() {
+            self.draw_center_button(scene, transform, colors.text_primary);
+        }
+
+        // Scrim so controls read over bright frames — a soft upward gradient
+        // rather than a hard black band, so the bar melts into the picture (§7).
+        let scrim_top = (bar.y0 - CONTROLS_BAR_HEIGHT * 0.7).max(self.rect.y0);
+        let scrim = Rect::new(bar.x0, scrim_top, bar.x1, bar.y1);
+        let scrim_grad = Gradient::new_linear((scrim.x0, scrim.y0), (scrim.x0, scrim.y1)).with_stops([
+            (0.0f32, Color::from_rgba8(0, 0, 0, 0)),
+            (0.55f32, Color::from_rgba8(0, 0, 0, 120)),
+            (1.0f32, Color::from_rgba8(0, 0, 0, 205)),
+        ]);
+        scene.fill(Fill::NonZero, transform, &scrim_grad, None, &scrim);
 
         let pad = theme.tokens.spacing.s2 as f64;
         let mid_y = bar.y0 + bar.height() * 0.5;
@@ -1126,11 +1289,26 @@ impl VideoPlayer {
             self.scrub_track_rect = Rect::ZERO;
         }
 
-        // Outline so the bar reads as a distinct surface.
-        scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &bar);
-
         // Settings menu (gear list or a choice popover) floats above the bar.
         self.paint_menu(scene, transform, text_renderer, theme);
+    }
+
+    /// A translucent circular play/pause affordance centred on the surface.
+    fn draw_center_button(&self, scene: &mut Scene, transform: Affine, color: Color) {
+        if self.rect.width() < 140.0 || self.rect.height() < 100.0 {
+            return;
+        }
+        let r = (self.rect.height() * 0.11).clamp(28.0, 46.0);
+        let c = self.rect.center();
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            Color::from_rgba8(0, 0, 0, 92),
+            None,
+            &Circle::new((c.x, c.y), r),
+        );
+        let glyph = Rect::new(c.x - r * 0.7, c.y - r * 0.7, c.x + r * 0.7, c.y + r * 0.7);
+        self.draw_play_glyph(scene, transform, glyph, color);
     }
 
     /// Paint the open settings overlay — the gear menu (every tucked setting) or
@@ -1323,6 +1501,14 @@ impl VideoPlayer {
         if r <= 0.0 {
             return;
         }
+        // While playback is running but no frame has decoded yet, the stream is
+        // buffering its first picture — show a rotating spinner so the surface
+        // reads as "loading", not frozen. Otherwise (idle / paused, nothing
+        // loaded) show the static "nothing here" play glyph.
+        if self.is_playing() {
+            self.paint_buffering_spinner(scene, transform, theme, cx, cy, r);
+            return;
+        }
         // Faint ring.
         scene.stroke(&Stroke::new(2.0), transform, dim, None, &Circle::new((cx, cy), r));
         // Play triangle inside it, nudged right so it reads centred.
@@ -1333,6 +1519,37 @@ impl VideoPlayer {
         p.line_to((cx - s * 0.35, cy + s * 0.62));
         p.close_path();
         scene.fill(Fill::NonZero, transform, dim, None, &p);
+    }
+
+    /// A rotating accent arc over a faint ring — the buffering/loading spinner.
+    /// Purely time-driven (rotates ~once per second), so `needs_animation_frame`
+    /// keeps it spinning while playback is buffering the first frame.
+    fn paint_buffering_spinner(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        cx: f64,
+        cy: f64,
+        r: f64,
+    ) {
+        let colors = &theme.tokens.colors;
+        let stroke = Stroke::new(3.0).with_caps(vello::kurbo::Cap::Round);
+        // Faint full track ring.
+        scene.stroke(
+            &stroke,
+            transform,
+            colors.text_dim.multiply_alpha(0.35),
+            None,
+            &Circle::new((cx, cy), r),
+        );
+        // Rotating ~120° accent arc. `Arc` implements `Shape`, so it strokes
+        // directly (no `to_path` — that needs the `Shape` trait imported).
+        let phase = (self.spin_anchor.elapsed().as_secs_f64()).fract();
+        let start = phase * std::f64::consts::TAU;
+        let sweep = std::f64::consts::TAU / 3.0;
+        let arc = vello::kurbo::Arc::new((cx, cy), (r, r), start, sweep, 0.0);
+        scene.stroke(&stroke, transform, colors.accent[ACCENT_PRIMARY_IDX], None, &arc);
     }
 
     fn draw_play_glyph(&self, scene: &mut Scene, transform: Affine, r: Rect, color: Color) {
@@ -1519,6 +1736,17 @@ impl Widget for VideoPlayer {
                     self.show_controls();
                     self.dirty = true;
                     *handled = true;
+                } else if self.drag.is_some() {
+                    // A vertical drag on the surface body: right half = volume,
+                    // left half = brightness (the Netflix/Grayjay gesture).
+                    let (side, delta) = {
+                        let drag = self.drag.as_mut().expect("drag present");
+                        (drag.side(), drag.update(logical))
+                    };
+                    if let Some(delta) = delta {
+                        self.apply_drag_delta(side, delta);
+                        *handled = true;
+                    }
                 } else if self.rect.contains(logical) {
                     self.show_controls();
                     self.dirty = true;
@@ -1542,6 +1770,14 @@ impl Widget for VideoPlayer {
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if self.scrubbing {
                     self.scrubbing = false;
+                    *handled = true;
+                } else if let Some(drag) = self.drag.take() {
+                    // A press that never became a drag is a tap → toggle play.
+                    // A drag already applied its volume/brightness change.
+                    if !drag.is_drag() {
+                        self.toggle_play();
+                        self.show_controls();
+                    }
                     *handled = true;
                 }
             }
@@ -1621,9 +1857,9 @@ impl Widget for VideoPlayer {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        // While mid-drag on the scrub track, own the pointer so the seek keeps
-        // tracking the cursor even after it leaves the thin track band.
-        self.scrubbing
+        // While mid-drag on the scrub track — or mid volume/brightness drag — own
+        // the pointer so the gesture keeps tracking even off the surface.
+        self.scrubbing || self.drag.map(|d| d.is_drag()).unwrap_or(false)
     }
 
     fn fullscreen_intent(&self) -> Option<bool> {
@@ -1653,9 +1889,12 @@ impl Widget for VideoPlayer {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep pumping while playing (to pull frames + advance the scrubber) and
-        // while the controls are fading so the auto-hide actually repaints.
-        self.is_playing() || self.controls_visible_now()
+        // Keep pumping while playing (to pull frames + advance the scrubber),
+        // while the controls are fading so the auto-hide actually repaints, and
+        // while the volume/brightness indicator is still fading out.
+        self.is_playing()
+            || self.controls_visible_now()
+            || self.level_indicator.as_ref().map(|i| i.is_visible()).unwrap_or(false)
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1746,8 +1985,11 @@ impl VideoPlayer {
             return true;
         }
 
-        // 5) A plain click on the video surface toggles play/pause.
-        self.toggle_play();
+        // 5) A plain press on the video surface starts a tap-or-drag gesture:
+        //    a quick tap toggles play/pause on release; a vertical drag adjusts
+        //    volume (right half) or brightness (left half). Deferring the toggle
+        //    to release is what lets a drag NOT also toggle play.
+        self.drag = Some(VerticalDrag::begin(self.last_cursor, self.rect));
         true
     }
 
@@ -1876,6 +2118,22 @@ mod tests {
         }
     }
 
+    fn mouse_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// A full tap at `(x, y)`: move there, press, release — the surface toggles
+    /// play/pause on the *release* of a press that never became a drag.
+    fn tap(vp: &mut VideoPlayer, x: f64, y: f64) {
+        dispatch(vp, &cursor_moved(x, y));
+        dispatch(vp, &mouse_press());
+        dispatch(vp, &mouse_release());
+    }
+
     fn dispatch(vp: &mut VideoPlayer, ev: &WindowEvent) -> bool {
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1928,11 +2186,108 @@ mod tests {
         vp.set_focus(true);
         vp.seek_to_ms(20_000);
         assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowRight))));
-        assert_eq!(vp.position_ms(), 25_000, "→ seeks forward 5s");
+        assert_eq!(vp.position_ms(), 30_000, "→ seeks forward 10s");
         assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowLeft))));
-        assert_eq!(vp.position_ms(), 20_000, "← seeks back 5s");
+        assert_eq!(vp.position_ms(), 20_000, "← seeks back 10s");
         // The seek propagated to the engine, not just the widget cache.
         assert_eq!(vp.engine().unwrap().position_ms(), 20_000);
+    }
+
+    #[test]
+    fn arrow_right_skips_ten_seconds() {
+        // The ←/→ shortcuts skip 10 seconds (YouTube's step), not the old 5.
+        let mut vp = VideoPlayer::new();
+        vp.duration_ms = 300_000;
+        vp.set_focus(true);
+        vp.seek_to_ms(60_000);
+        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowRight))));
+        assert_eq!(vp.position_ms(), 70_000, "→ skips forward 10s");
+        assert!(dispatch(&mut vp, &press(Key::Named(NamedKey::ArrowLeft))));
+        assert_eq!(vp.position_ms(), 60_000, "← skips back 10s");
+    }
+
+    #[test]
+    fn scrub_seek_is_optimistic_and_holds_until_the_engine_catches_up() {
+        // Issue: scrubbing must move the playhead IMMEDIATELY — before the frame
+        // for that position is decoded — and must NOT snap back to the engine's
+        // stale position while the async seek is in flight.
+        let mut vp = VideoPlayer::new();
+        vp.duration_ms = 120_000;
+
+        vp.seek_to_ms(30_000);
+        assert_eq!(vp.position_ms(), 30_000, "the playhead jumps to the target at once");
+
+        // The engine has not decoded the seek target yet — it still reports the
+        // old spot. The optimistic playhead must hold, not snap back.
+        vp.reconcile_engine_position(5_000);
+        assert_eq!(
+            vp.position_ms(),
+            30_000,
+            "the optimistic playhead holds; it does NOT revert to the engine's stale position",
+        );
+
+        // Once the engine's position converges near the target, the widget resumes
+        // mirroring it (the picture has caught up).
+        vp.reconcile_engine_position(29_950);
+        assert_eq!(vp.position_ms(), 29_950, "after convergence the engine drives the playhead again");
+
+        // And ordinary playback advancement mirrors normally afterwards.
+        vp.reconcile_engine_position(31_000);
+        assert_eq!(vp.position_ms(), 31_000);
+    }
+
+    #[test]
+    fn vertical_drag_right_half_raises_volume_left_half_changes_brightness() {
+        // The Netflix/Grayjay gesture: a vertical drag on the right half adjusts
+        // volume, on the left half brightness — driven through the real
+        // handle_event path (press → move-up → release).
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        vp.set_volume(0.5);
+        let v0 = vp.volume();
+        let b0 = vp.brightness();
+
+        // Right half: press, cross the drag threshold, then drag well up → volume
+        // rises. (The threshold-crossing move integrates from zero, so a real
+        // drag is two-plus moves — as it is live.)
+        dispatch(&mut vp, &cursor_moved(600.0, 300.0));
+        dispatch(&mut vp, &mouse_press());
+        dispatch(&mut vp, &cursor_moved(600.0, 290.0)); // crosses the drag threshold
+        dispatch(&mut vp, &cursor_moved(600.0, 60.0)); // drag up
+        dispatch(&mut vp, &mouse_release());
+        assert!(vp.volume() > v0, "right-half drag up raised volume ({v0} → {})", vp.volume());
+        assert_eq!(vp.brightness(), b0, "volume drag left brightness alone");
+        assert!(
+            matches!(vp.level_indicator.map(|i| i.kind()), Some(LevelKind::Volume)),
+            "a volume indicator was shown",
+        );
+
+        // Left half: press, cross the threshold, then drag down → brightness drops.
+        let b1 = vp.brightness();
+        dispatch(&mut vp, &cursor_moved(60.0, 60.0));
+        dispatch(&mut vp, &mouse_press());
+        dispatch(&mut vp, &cursor_moved(60.0, 70.0)); // crosses the drag threshold
+        dispatch(&mut vp, &cursor_moved(60.0, 320.0)); // drag down
+        dispatch(&mut vp, &mouse_release());
+        assert!(vp.brightness() < b1, "left-half drag down lowered brightness ({b1} → {})", vp.brightness());
+        assert!(
+            matches!(vp.level_indicator.map(|i| i.kind()), Some(LevelKind::Brightness)),
+            "a brightness indicator was shown",
+        );
+    }
+
+    #[test]
+    fn a_vertical_drag_does_not_also_toggle_play() {
+        // A press that becomes a drag must NOT toggle play on release (only a
+        // stationary tap does) — otherwise every volume swipe would pause.
+        let mut vp = VideoPlayer::new();
+        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
+        assert!(!vp.is_playing());
+        dispatch(&mut vp, &cursor_moved(600.0, 300.0));
+        dispatch(&mut vp, &mouse_press());
+        dispatch(&mut vp, &cursor_moved(600.0, 80.0)); // a clear vertical drag
+        dispatch(&mut vp, &mouse_release());
+        assert!(!vp.is_playing(), "a drag gesture must not toggle play/pause");
     }
 
     #[test]
@@ -1976,13 +2331,16 @@ mod tests {
         let mut scene = Scene::new();
         vp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         assert!(!vp.is_playing());
-        // Click near the top-centre of the surface — clear of the bottom controls
-        // bar, the scrub track and every button.
+        // Tap near the top-centre of the surface — clear of the bottom controls
+        // bar, the scrub track and every button. A tap is press+release with no
+        // drag; it toggles play on the release (so a volume/brightness drag from
+        // the same press does NOT also toggle play).
         dispatch(&mut vp, &cursor_moved(320.0, 40.0));
-        assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
-        assert!(vp.is_playing(), "surface click started playback");
-        dispatch(&mut vp, &mouse_press());
-        assert!(!vp.is_playing(), "a second surface click paused it");
+        assert!(dispatch(&mut vp, &mouse_press()), "surface press handled");
+        dispatch(&mut vp, &mouse_release());
+        assert!(vp.is_playing(), "a surface tap started playback");
+        tap(&mut vp, 320.0, 40.0);
+        assert!(!vp.is_playing(), "a second surface tap paused it");
     }
 
     #[test]
