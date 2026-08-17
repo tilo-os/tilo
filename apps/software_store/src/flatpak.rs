@@ -41,11 +41,47 @@
 //! worker is asked to run them.
 
 use std::collections::BTreeMap;
-use std::process::Command;
+use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use crate::model::{AppEntry, Category, Permission, Review, Shot};
+use crate::model::{AppEntry, Category, InstallPhase, Permission, Review, Shot};
+
+/// Which Flatpak *installation* an operation targets. Flathub is commonly
+/// registered in **both** the system and the per-user installation, so a
+/// bare `flatpak install flathub <ref>` is ambiguous and fails in
+/// non-interactive mode with `Remote 'flathub' found in multiple
+/// installations`. Pinning the installation with `--user` / `--system`
+/// resolves the remote to exactly one installation, which is what makes the
+/// mutating commands work non-interactively.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// The per-user installation (`~/.local/share/flatpak`). Our default — a
+    /// non-root desktop session installs here, and it needs no privilege
+    /// escalation.
+    User,
+    /// The system installation (`/var/lib/flatpak`).
+    System,
+}
+
+impl Scope {
+    /// The CLI flag that pins a command to this installation.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Scope::User => "--user",
+            Scope::System => "--system",
+        }
+    }
+
+    /// A short human label for the provenance line ("User" / "System").
+    pub fn label(self) -> &'static str {
+        match self {
+            Scope::User => "User",
+            Scope::System => "System",
+        }
+    }
+}
 
 /// Base URL for the Flathub API v2. Overridable via `FLATHUB_API_BASE`
 /// for tests / mirrors.
@@ -131,18 +167,88 @@ pub struct Remote {
     pub title: String,
     /// `true` when the remote is disabled (`Options` contains `disabled`).
     pub disabled: bool,
+    /// Which installation this remote is configured in, when known. A remote
+    /// (Flathub especially) can exist in **both** the user and system
+    /// installations; we tag each listing with its scope so installs can pin
+    /// the installation explicitly and avoid the "found in multiple
+    /// installations" ambiguity. `None` when the scope wasn't resolved.
+    pub scope: Option<Scope>,
+}
+
+/// One installed Flatpak app, resolved across installations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledApp {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    /// The remote the app was installed from (`origin` column).
+    pub origin: String,
+    /// The installation it lives in — so update/uninstall can pin the scope.
+    pub scope: Scope,
 }
 
 /// `flatpak list --app --columns=application,version` → app-id → version.
+///
+/// Queries **both** installations (user + system) and merges, so an app
+/// installed in either shows up. Kept returning `id → version` for the
+/// callers that only need the version map; [`list_installed_apps`] is the
+/// richer sibling that also carries the name / origin / scope.
 pub fn list_installed() -> BTreeMap<String, String> {
-    let Some(out) = run_with_timeout(
-        "flatpak",
-        &["list", "--app", "--columns=application,version"],
-        Duration::from_millis(1500),
-    ) else {
-        return BTreeMap::new();
-    };
-    parse_installed(&out)
+    let mut map = BTreeMap::new();
+    for app in list_installed_apps() {
+        map.entry(app.id).or_insert(app.version);
+    }
+    map
+}
+
+/// List installed apps across **all** installations (user + system), each
+/// tagged with the installation it lives in. This is what fixes the
+/// "Installed · 0" bug: a bare `flatpak list` on some hosts only reports one
+/// installation, so we query each scope explicitly and union the results.
+pub fn list_installed_apps() -> Vec<InstalledApp> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for scope in [Scope::User, Scope::System] {
+        if let Some(text) = run_with_timeout(
+            "flatpak",
+            &["list", "--app", scope.flag(), "--columns=application,name,version,origin"],
+            Duration::from_millis(2000),
+        ) {
+            for app in parse_installed_apps(&text, scope) {
+                if seen.insert(app.id.clone()) {
+                    out.push(app);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Parse the tab-separated `application\tname\tversion\torigin` output of
+/// `flatpak list --columns=application,name,version,origin` into
+/// [`InstalledApp`]s, tagging each with `scope`. Pure, so the real
+/// cross-installation listing path is unit-testable without `flatpak`.
+pub fn parse_installed_apps(out: &str, scope: Scope) -> Vec<InstalledApp> {
+    let mut apps = Vec::new();
+    for line in out.lines() {
+        let mut parts = line.split('\t');
+        let Some(id) = parts.next() else { continue };
+        let id = id.trim();
+        if id.is_empty() {
+            continue;
+        }
+        let name = parts.next().unwrap_or("").trim();
+        let version = parts.next().unwrap_or("").trim().to_string();
+        let origin = parts.next().unwrap_or("").trim().to_string();
+        apps.push(InstalledApp {
+            id: id.to_string(),
+            name: if name.is_empty() { id.to_string() } else { name.to_string() },
+            version,
+            origin,
+            scope,
+        });
+    }
+    apps
 }
 
 /// Parse the tab-separated `application\tversion` output of
@@ -164,22 +270,33 @@ pub fn parse_installed(out: &str) -> BTreeMap<String, String> {
     map
 }
 
-/// `flatpak remotes --columns=name,url,title,options` → list of remotes.
+/// List configured remotes across **both** installations (user + system),
+/// each tagged with its scope. Querying per-installation is what lets an
+/// install pin the right `--user` / `--system` flag when a remote (Flathub)
+/// exists in more than one.
 pub fn list_remotes() -> Vec<Remote> {
-    let Some(out) = run_with_timeout(
-        "flatpak",
-        &["remotes", "--columns=name,url,title,options"],
-        Duration::from_millis(1500),
-    ) else {
-        return Vec::new();
-    };
-    parse_remotes(&out)
+    let mut out = Vec::new();
+    for scope in [Scope::User, Scope::System] {
+        if let Some(text) = run_with_timeout(
+            "flatpak",
+            &["remotes", scope.flag(), "--columns=name,url,title,options"],
+            Duration::from_millis(1500),
+        ) {
+            out.extend(parse_remotes_scoped(&text, Some(scope)));
+        }
+    }
+    out
 }
 
 /// Parse the tab-separated `name\turl\ttitle\toptions` output of
-/// `flatpak remotes` into [`Remote`]s. Pure, so the real remote-listing
-/// path is unit-testable without the `flatpak` binary.
+/// `flatpak remotes` into [`Remote`]s (scope unknown). Pure, so the real
+/// remote-listing path is unit-testable without the `flatpak` binary.
 pub fn parse_remotes(out: &str) -> Vec<Remote> {
+    parse_remotes_scoped(out, None)
+}
+
+/// Scope-tagging variant of [`parse_remotes`].
+pub fn parse_remotes_scoped(out: &str, scope: Option<Scope>) -> Vec<Remote> {
     let mut remotes = Vec::new();
     for line in out.lines() {
         let mut parts = line.split('\t');
@@ -196,9 +313,38 @@ pub fn parse_remotes(out: &str) -> Vec<Remote> {
             title: if title.is_empty() { name.to_string() } else { title },
             url,
             disabled: options.contains("disabled"),
+            scope,
         });
     }
     remotes
+}
+
+/// Which installation `app_id` is installed in, if any — so update/uninstall
+/// can pin the right `--user`/`--system` scope. A live query across both
+/// installations.
+pub fn installed_scope(app_id: &str) -> Option<Scope> {
+    list_installed_apps().into_iter().find(|a| a.id == app_id).map(|a| a.scope)
+}
+
+/// Pick the installation to install `remote` from, given the known set of
+/// remotes. Prefers the **user** installation (no privilege escalation, the
+/// desktop-session default) when the remote exists there, otherwise falls
+/// back to whichever installation has it, and finally to `--user`. This is
+/// the disambiguation that turns an ambiguous `flatpak install flathub …`
+/// into an unambiguous `flatpak install --user flathub …`.
+pub fn resolve_install_scope(remote: &str, remotes: &[Remote]) -> Scope {
+    let scoped = |want: Scope| {
+        remotes
+            .iter()
+            .any(|r| r.name == remote && !r.disabled && r.scope == Some(want))
+    };
+    if scoped(Scope::User) {
+        Scope::User
+    } else if scoped(Scope::System) {
+        Scope::System
+    } else {
+        Scope::User
+    }
 }
 
 // ===================================================================
@@ -212,24 +358,104 @@ pub enum ActionOutcome {
     Failed(String),
 }
 
-/// `flatpak install -y --noninteractive <remote> <app-id>`.
-pub fn install(remote: &str, app_id: &str) -> ActionOutcome {
-    run_action(&["install", "-y", "--noninteractive", remote, app_id])
+/// A live progress sample streamed out of a running `flatpak` transaction.
+/// `fraction` is `None` until flatpak emits a parseable percentage — the UI
+/// shows an honest indeterminate "running" state until then, never a faked
+/// bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActionProgress {
+    pub fraction: Option<f64>,
+    pub phase: Option<InstallPhase>,
 }
 
-/// `flatpak update -y --noninteractive <app-id>`.
-pub fn update(app_id: &str) -> ActionOutcome {
-    run_action(&["update", "-y", "--noninteractive", app_id])
+// ---- argv builders (pure; the disambiguation lives here, unit-testable) ----
+
+/// The argv for a gated install, pinned to `scope` and its remote so it is
+/// **unambiguous and non-interactive-safe**: `flatpak install --user
+/// --noninteractive <remote> <app-id>`. Pinning the installation is what
+/// avoids `Remote '<remote>' found in multiple installations`. The remote is
+/// named explicitly so flatpak resolves the ref against exactly one source.
+pub fn install_args(scope: Scope, remote: &str, app_id: &str) -> Vec<String> {
+    vec![
+        "install".into(),
+        scope.flag().into(),
+        "--noninteractive".into(),
+        remote.into(),
+        app_id.into(),
+    ]
 }
 
-/// `flatpak uninstall -y --noninteractive <app-id>`.
-pub fn uninstall(app_id: &str) -> ActionOutcome {
-    run_action(&["uninstall", "-y", "--noninteractive", app_id])
+/// The argv for a gated update, pinned to the installation the app lives in:
+/// `flatpak update --user --noninteractive <app-id>`.
+pub fn update_args(scope: Scope, app_id: &str) -> Vec<String> {
+    vec!["update".into(), scope.flag().into(), "--noninteractive".into(), app_id.into()]
 }
 
-/// `flatpak remote-add --if-not-exists <name> <url>`.
+/// The argv for a gated uninstall, pinned to the installation the app lives
+/// in: `flatpak uninstall --user --noninteractive <app-id>`.
+pub fn uninstall_args(scope: Scope, app_id: &str) -> Vec<String> {
+    vec!["uninstall".into(), scope.flag().into(), "--noninteractive".into(), app_id.into()]
+}
+
+/// The argv for a `.flatpakref` install, pinned to the user installation so
+/// it runs non-interactively without a privilege prompt.
+pub fn install_ref_args(scope: Scope, path: &str) -> Vec<String> {
+    vec!["install".into(), scope.flag().into(), "--noninteractive".into(), path.into()]
+}
+
+/// `true` if `stderr` carries flatpak's "found in multiple installations"
+/// ambiguity — the exact failure the scope-pinned argv above prevents. We
+/// still detect it so a stray un-pinned path surfaces a clear message rather
+/// than a raw dump.
+pub fn is_multiple_installations_error(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("multiple installations")
+}
+
+/// Parse a live progress fraction (0.0..=1.0) out of one line/chunk of
+/// flatpak output. flatpak prints a percentage like `… 42%` while a
+/// transaction runs; we pull the last `NN%` token so a `\r`-updated line
+/// yields its most recent value. `None` when the chunk carries no percent.
+pub fn parse_progress_fraction(line: &str) -> Option<f64> {
+    let bytes = line.as_bytes();
+    let mut best: Option<f64> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            // Walk back over the digits immediately before the '%'.
+            let mut j = i;
+            while j > 0 && bytes[j - 1].is_ascii_digit() {
+                j -= 1;
+            }
+            if j < i {
+                if let Ok(n) = line[j..i].parse::<u32>() {
+                    if n <= 100 {
+                        best = Some(n as f64 / 100.0);
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    best
+}
+
+/// Detect the transaction phase from a flatpak output chunk, so the UI can
+/// label "Downloading" vs "Installing" honestly from the real stream.
+pub fn parse_progress_phase(line: &str) -> Option<InstallPhase> {
+    let l = line.to_lowercase();
+    if l.contains("installing") || l.contains("deploying") || l.contains("updating") {
+        Some(InstallPhase::Installing)
+    } else if l.contains("downloading") || l.contains("fetching") || l.contains("pulling") {
+        Some(InstallPhase::Downloading)
+    } else {
+        None
+    }
+}
+
+/// `flatpak remote-add --if-not-exists --user <name> <url>`.
 pub fn remote_add(name: &str, url: &str) -> ActionOutcome {
-    run_action(&["remote-add", "--if-not-exists", name, url])
+    run_action(&["remote-add", "--if-not-exists", "--user", name, url])
 }
 
 /// `flatpak remote-delete --force <name>`.
@@ -237,30 +463,124 @@ pub fn remote_delete(name: &str) -> ActionOutcome {
     run_action(&["remote-delete", "--force", name])
 }
 
-/// Install from a `.flatpakref` file path:
-/// `flatpak install -y --noninteractive <path>`.
-pub fn install_ref(path: &str) -> ActionOutcome {
-    run_action(&["install", "-y", "--noninteractive", path])
-}
-
 /// `flatpak run <app-id>` — launch an installed app (fire-and-forget).
 pub fn run_app(app_id: &str) {
     let _ = Command::new("flatpak").args(["run", app_id]).spawn();
 }
 
-/// Run a mutating `flatpak` action, capturing stderr on failure so the UI
-/// can show a useful message. Bounded so a stuck transaction can't wedge
-/// the worker forever (installs get a generous window; the UI shows
-/// progress independently).
+/// Run a `flatpak` action to completion, **streaming** its output so the UI
+/// reflects the real transaction state: `on_progress` is called with each
+/// parsed [`ActionProgress`] sample as flatpak emits it, and the returned
+/// [`ActionOutcome`] is the process's real exit result (success, or the last
+/// stderr line as the failure reason). No wall-clock faking — an install
+/// that fails ends as [`ActionOutcome::Failed`], never a full bar.
+pub fn run_action_streaming(
+    args: &[String],
+    on_progress: impl FnMut(ActionProgress),
+) -> ActionOutcome {
+    run_program_streaming("flatpak", args, on_progress)
+}
+
+/// Program-parameterised core of [`run_action_streaming`] — lets tests drive
+/// the real streaming/parse/outcome path with a stand-in command that emits
+/// flatpak-shaped progress, rather than mocking away the code under test.
+pub fn run_program_streaming(
+    program: &str,
+    args: &[String],
+    mut on_progress: impl FnMut(ActionProgress),
+) -> ActionOutcome {
+    let mut child = match Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return ActionOutcome::Failed(format!("could not run {program}: {e}")),
+    };
+
+    // Drain stderr on its own thread so a full pipe can't deadlock the child;
+    // keep the tail for the failure message.
+    let stderr = child.stderr.take();
+    let (etx, erx) = mpsc::channel::<String>();
+    let ehandle = std::thread::spawn(move || {
+        let mut captured = String::new();
+        if let Some(mut e) = stderr {
+            let mut buf = Vec::new();
+            let _ = e.read_to_end(&mut buf);
+            captured = String::from_utf8_lossy(&buf).into_owned();
+        }
+        let _ = etx.send(captured);
+    });
+
+    // Stream stdout, splitting on \r and \n so `\r`-updated progress lines are
+    // surfaced as they change.
+    if let Some(mut out) = child.stdout.take() {
+        let mut buf = [0u8; 4096];
+        let mut line = String::new();
+        loop {
+            match out.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for &b in &buf[..n] {
+                        if b == b'\n' || b == b'\r' {
+                            emit_progress(&line, &mut on_progress);
+                            line.clear();
+                        } else {
+                            line.push(b as char);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        emit_progress(&line, &mut on_progress);
+    }
+
+    let status = child.wait();
+    let stderr_text = erx.recv().unwrap_or_default();
+    let _ = ehandle.join();
+
+    match status {
+        Ok(s) if s.success() => ActionOutcome::Ok,
+        Ok(_) => ActionOutcome::Failed(failure_reason(&stderr_text)),
+        Err(e) => ActionOutcome::Failed(format!("could not run {program}: {e}")),
+    }
+}
+
+/// Emit a progress sample for `chunk` if it carries a percentage or a phase
+/// keyword — so an indeterminate stretch produces no misleading fraction.
+fn emit_progress(chunk: &str, on_progress: &mut impl FnMut(ActionProgress)) {
+    let fraction = parse_progress_fraction(chunk);
+    let phase = parse_progress_phase(chunk);
+    if fraction.is_some() || phase.is_some() {
+        on_progress(ActionProgress { fraction, phase });
+    }
+}
+
+/// Turn a captured stderr blob into a concise, honest failure reason — the
+/// last non-empty line, with the multiple-installations ambiguity flagged
+/// clearly should it ever slip through.
+pub fn failure_reason(stderr: &str) -> String {
+    if is_multiple_installations_error(stderr) {
+        return "remote is in multiple installations — retry with an explicit installation".into();
+    }
+    let msg = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .next_back()
+        .unwrap_or("flatpak failed");
+    if msg.is_empty() { "flatpak failed".into() } else { msg.to_string() }
+}
+
+/// Run a non-streaming `flatpak` action (remote add/delete), capturing
+/// stderr on failure.
 fn run_action(args: &[&str]) -> ActionOutcome {
     let out = Command::new("flatpak").args(args).output();
     match out {
         Ok(o) if o.status.success() => ActionOutcome::Ok,
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            let msg = err.lines().last().unwrap_or("flatpak failed").trim().to_string();
-            ActionOutcome::Failed(if msg.is_empty() { "flatpak failed".into() } else { msg })
-        }
+        Ok(o) => ActionOutcome::Failed(failure_reason(&String::from_utf8_lossy(&o.stderr))),
         Err(e) => ActionOutcome::Failed(format!("could not run flatpak: {e}")),
     }
 }
@@ -775,5 +1095,121 @@ mod tests {
         // A remote with no title falls back to its name; `disabled` is parsed.
         assert_eq!(remotes[1].title, "dev");
         assert!(remotes[1].disabled);
+    }
+
+    #[test]
+    fn install_args_are_noninteractive_and_pin_the_installation() {
+        // The core fix: a bare `flatpak install flathub <ref>` is ambiguous
+        // when flathub is in both installations. The argv MUST pin the
+        // installation (`--user`/`--system`), stay non-interactive, and name
+        // the remote — so flatpak resolves to exactly one source.
+        let args = install_args(Scope::User, "flathub", "org.gimp.GIMP");
+        assert_eq!(args, vec!["install", "--user", "--noninteractive", "flathub", "org.gimp.GIMP"]);
+        assert!(args.iter().any(|a| a == "--user"), "installation is pinned");
+        assert!(args.iter().any(|a| a == "--noninteractive"), "runs non-interactively");
+        assert!(args.iter().any(|a| a == "flathub"), "remote is named explicitly");
+        // The ambiguous bare form (`install flathub <ref>` with no scope flag)
+        // is never produced.
+        assert!(
+            args.iter().any(|a| a == "--user" || a == "--system"),
+            "an installation flag is always present so the remote is unambiguous",
+        );
+
+        let sys = install_args(Scope::System, "flathub", "a.b.C");
+        assert_eq!(sys[1], "--system");
+        assert_eq!(update_args(Scope::User, "a.b.C"), vec!["update", "--user", "--noninteractive", "a.b.C"]);
+        assert_eq!(uninstall_args(Scope::System, "a.b.C"), vec!["uninstall", "--system", "--noninteractive", "a.b.C"]);
+    }
+
+    #[test]
+    fn resolve_install_scope_prefers_user_then_system() {
+        let remotes = vec![
+            Remote { name: "flathub".into(), url: "u".into(), title: "Flathub".into(), disabled: false, scope: Some(Scope::User) },
+            Remote { name: "flathub".into(), url: "u".into(), title: "Flathub".into(), disabled: false, scope: Some(Scope::System) },
+        ];
+        // Flathub in BOTH → prefer the user installation (no privilege prompt).
+        assert_eq!(resolve_install_scope("flathub", &remotes), Scope::User);
+        // Only system has it → system.
+        let sys_only = vec![Remote { name: "fedora".into(), url: "u".into(), title: "Fedora".into(), disabled: false, scope: Some(Scope::System) }];
+        assert_eq!(resolve_install_scope("fedora", &sys_only), Scope::System);
+        // Unknown remote → default to user.
+        assert_eq!(resolve_install_scope("nope", &[]), Scope::User);
+    }
+
+    #[test]
+    fn parse_installed_apps_reads_all_columns_and_tags_scope() {
+        let out = "org.gimp.GIMP\tGIMP\t3.0.2\tflathub\n\
+                   org.mozilla.firefox\tFirefox\t129.0\tflathub\n\t\t\t\n";
+        let apps = parse_installed_apps(out, Scope::System);
+        assert_eq!(apps.len(), 2, "blank lines skipped");
+        assert_eq!(apps[0].id, "org.gimp.GIMP");
+        assert_eq!(apps[0].name, "GIMP");
+        assert_eq!(apps[0].version, "3.0.2");
+        assert_eq!(apps[0].origin, "flathub");
+        assert_eq!(apps[0].scope, Scope::System);
+    }
+
+    #[test]
+    fn parse_progress_reads_real_percent_and_phase() {
+        // A `\r`-updated line's most recent percent wins.
+        assert_eq!(parse_progress_fraction("Downloading… 12% 47%"), Some(0.47));
+        assert_eq!(parse_progress_fraction("Installing 1/1… 100%"), Some(1.0));
+        assert_eq!(parse_progress_fraction("no percent here"), None);
+        // Out-of-range tokens are ignored.
+        assert_eq!(parse_progress_fraction("999%"), None);
+
+        assert_eq!(parse_progress_phase("Downloading org.gimp.GIMP"), Some(InstallPhase::Downloading));
+        assert_eq!(parse_progress_phase("Installing 1/1"), Some(InstallPhase::Installing));
+        assert_eq!(parse_progress_phase("idle"), None);
+    }
+
+    #[test]
+    fn streaming_action_reports_real_progress_then_success() {
+        // Drive the REAL streaming/parse/outcome path with a stand-in command
+        // that emits flatpak-shaped progress and exits 0. Proves the UI would
+        // see live fractions and a genuine success — not a wall-clock fake.
+        let script = "printf 'Downloading 40%%\\r'; printf 'Installing 100%%\\n'; exit 0";
+        let mut samples: Vec<ActionProgress> = Vec::new();
+        let outcome = run_program_streaming(
+            "sh",
+            &["-c".into(), script.into()],
+            |p| samples.push(p),
+        );
+        assert_eq!(outcome, ActionOutcome::Ok, "a zero exit is a real success");
+        assert!(
+            samples.iter().any(|s| s.fraction == Some(0.4)),
+            "the 40% download sample surfaced: {samples:?}",
+        );
+        assert!(
+            samples.iter().any(|s| s.fraction == Some(1.0) && s.phase == Some(InstallPhase::Installing)),
+            "the 100% install sample surfaced: {samples:?}",
+        );
+    }
+
+    #[test]
+    fn streaming_action_surfaces_a_real_failure_reason() {
+        // A non-zero exit is a REAL failure carrying the stderr reason — the
+        // store must show FAILED, never keep filling a fake bar to 100%.
+        let script = "echo 'error: No such ref in remote flathub' 1>&2; exit 1";
+        let outcome = run_program_streaming("sh", &["-c".into(), script.into()], |_| {});
+        match outcome {
+            ActionOutcome::Failed(reason) => {
+                assert!(reason.contains("No such ref"), "real reason surfaced: {reason}");
+            }
+            ActionOutcome::Ok => panic!("a non-zero exit must be Failed, not Ok"),
+        }
+    }
+
+    #[test]
+    fn failure_reason_extracts_last_line_and_flags_ambiguity() {
+        // The real error from the bug report is recognised and reworded into
+        // an actionable message rather than dumped raw.
+        let amb = "error: Remote 'flathub' found in multiple installations, unable to proceed in non-interactive mode";
+        assert!(is_multiple_installations_error(amb));
+        assert!(failure_reason(amb).contains("multiple installations"));
+        // A generic failure surfaces its last meaningful line.
+        let generic = "Looking for matches…\nerror: No such ref 'app/x.Y/x86_64/stable' in remote flathub\n";
+        assert_eq!(failure_reason(generic), "error: No such ref 'app/x.Y/x86_64/stable' in remote flathub");
+        assert_eq!(failure_reason(""), "flatpak failed");
     }
 }

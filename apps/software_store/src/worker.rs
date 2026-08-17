@@ -33,8 +33,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::time::Duration;
 
-use crate::flatpak::{self, ActionOutcome, Remote};
+use crate::flatpak::{self, ActionOutcome, ActionProgress, Remote};
 use crate::model::AppEntry;
+use crate::qpkg::{self, QpkgApp};
 
 /// Bound on each result cache so a long session can't grow unboundedly.
 const CACHE_CAP: usize = 256;
@@ -66,6 +67,15 @@ pub enum Request {
     RemoteDelete(String),
     /// Launch an installed app: `flatpak run <app-id>`.
     Launch(String),
+    /// Re-read the installed qOS (`.qpkg`) apps (`qos-install list`).
+    RefreshQos,
+    /// Browse the qOS app registry for installable qOS apps.
+    QosBrowse,
+    /// Install / update a qOS app by id through the real qOS path
+    /// (`qos-install update <id>`).
+    QosInstall(String),
+    /// Remove an installed qOS app (`qos-install uninstall <id>`).
+    QosRemove(String),
 }
 
 impl Request {
@@ -79,6 +89,8 @@ impl Request {
             Request::Collection(c) => Some(format!("collection:{c}")),
             Request::Search(q) => Some(format!("search:{q}")),
             Request::Detail(id) => Some(format!("detail:{id}")),
+            Request::RefreshQos => Some("qos-installed".into()),
+            Request::QosBrowse => Some("qos-browse".into()),
             // Mutating actions: no dedup.
             _ => None,
         }
@@ -98,8 +110,15 @@ pub enum WorkerMsg {
     SearchResults { query: String, apps: Vec<AppEntry> },
     /// Detailed metadata for one app.
     Detail(Box<AppEntry>),
+    /// A live progress sample from a running install/update transaction. The
+    /// UI reflects the REAL parsed state — never a wall-clock fake.
+    ActionProgress { target: String, kind: ActionKind, progress: ActionProgress },
     /// A gated action finished: which app/remote + the outcome.
     ActionDone { target: String, kind: ActionKind, outcome: ActionOutcome },
+    /// Installed qOS (`.qpkg`) apps: `qos-install list` results.
+    QosInstalled(Vec<QpkgApp>),
+    /// Browsable qOS apps from the registry (empty = none configured).
+    QosCatalog(Vec<AppEntry>),
 }
 
 /// Which mutating action an [`WorkerMsg::ActionDone`] reports on.
@@ -111,6 +130,10 @@ pub enum ActionKind {
     RemoteAdd,
     RemoteDelete,
     InstallRef,
+    /// Install / update a qOS app through the qOS packaging path.
+    QosInstall,
+    /// Remove an installed qOS app.
+    QosRemove,
 }
 
 /// The in-flight dedup set: a request whose `dedup_key` is already present
@@ -277,7 +300,9 @@ impl Worker {
                     self.inflight.release(&format!("detail:{}", app.id));
                     self.caches.detail.insert(app.id.clone(), (**app).clone());
                 }
-                WorkerMsg::ActionDone { .. } => {}
+                WorkerMsg::QosInstalled(_) => self.inflight.release("qos-installed"),
+                WorkerMsg::QosCatalog(_) => self.inflight.release("qos-browse"),
+                WorkerMsg::ActionProgress { .. } | WorkerMsg::ActionDone { .. } => {}
             }
             apply(msg);
         }
@@ -297,71 +322,115 @@ impl Worker {
 }
 
 /// The worker thread body: block on the job channel, run each request to
-/// completion (subprocess / HTTP — all blocking is fine here), ship the
-/// result back. Exits when the UI drops the job sender.
+/// completion (subprocess / HTTP — all blocking is fine here), streaming any
+/// intermediate progress and shipping the final result back. Exits when the
+/// UI drops the job sender (or the message channel closes).
 fn worker_loop(job_rx: Receiver<Request>, msg_tx: Sender<WorkerMsg>) {
     while let Ok(req) = job_rx.recv() {
-        let msg = handle(req);
-        // If the UI is gone, stop.
-        if let Some(m) = msg {
-            if msg_tx.send(m).is_err() {
-                break;
-            }
+        if handle(req, &msg_tx).is_err() {
+            break; // UI is gone
         }
     }
 }
 
-/// Execute one request, producing the message to send back (if any).
-fn handle(req: Request) -> Option<WorkerMsg> {
+/// Send helper: `Err(())` when the UI has dropped the receiver so the loop
+/// can stop.
+fn send(msg_tx: &Sender<WorkerMsg>, msg: WorkerMsg) -> Result<(), ()> {
+    msg_tx.send(msg).map_err(|_| ())
+}
+
+/// Run a scope-pinned, streaming flatpak action: emit live [`ActionProgress`]
+/// as flatpak reports it, then a final [`WorkerMsg::ActionDone`] carrying the
+/// REAL outcome (Ok or Failed with a reason). No wall-clock faking.
+fn run_streaming_action(
+    msg_tx: &Sender<WorkerMsg>,
+    target: String,
+    kind: ActionKind,
+    args: Vec<String>,
+) -> Result<(), ()> {
+    let tx = msg_tx.clone();
+    let target_for_progress = target.clone();
+    let outcome = flatpak::run_action_streaming(&args, |progress| {
+        // Best-effort progress; ignore send errors here (the final ActionDone
+        // send below reports channel closure to the loop).
+        let _ = tx.send(WorkerMsg::ActionProgress {
+            target: target_for_progress.clone(),
+            kind,
+            progress,
+        });
+    });
+    send(msg_tx, WorkerMsg::ActionDone { target, kind, outcome })
+}
+
+/// Execute one request, sending 0+ progress messages and a final result
+/// through `msg_tx`. Returns `Err(())` when the UI is gone.
+fn handle(req: Request, msg_tx: &Sender<WorkerMsg>) -> Result<(), ()> {
     match req {
         Request::RefreshInstalled => {
             let installed = flatpak::list_installed().into_iter().collect();
-            Some(WorkerMsg::Installed(installed))
+            send(msg_tx, WorkerMsg::Installed(installed))
         }
-        Request::RefreshRemotes => Some(WorkerMsg::Remotes(flatpak::list_remotes())),
+        Request::RefreshRemotes => send(msg_tx, WorkerMsg::Remotes(flatpak::list_remotes())),
         Request::Collection(name) => {
             let apps = flatpak::collection(&name, 1, 24).unwrap_or_default();
-            Some(WorkerMsg::Collection { name, apps })
+            send(msg_tx, WorkerMsg::Collection { name, apps })
         }
         Request::Search(query) => {
             let apps = flatpak::search(&query).unwrap_or_default();
-            Some(WorkerMsg::SearchResults { query, apps })
+            send(msg_tx, WorkerMsg::SearchResults { query, apps })
         }
         Request::Detail(id) => {
-            let mut app = flatpak::appstream(&id)?;
+            let Some(mut app) = flatpak::appstream(&id) else { return Ok(()) };
             if let Some(d) = flatpak::downloads(&id) {
                 app.download_count = Some(d);
                 app.rating = flatpak::rating_from_downloads(d / 12);
             }
-            Some(WorkerMsg::Detail(Box::new(app)))
+            send(msg_tx, WorkerMsg::Detail(Box::new(app)))
         }
         Request::Install { remote, app_id } => {
-            let outcome = flatpak::install(&remote, &app_id);
-            Some(WorkerMsg::ActionDone { target: app_id, kind: ActionKind::Install, outcome })
+            // Resolve the installation from the live remote set so the argv is
+            // pinned + unambiguous (the "multiple installations" fix).
+            let scope = flatpak::resolve_install_scope(&remote, &flatpak::list_remotes());
+            let args = flatpak::install_args(scope, &remote, &app_id);
+            run_streaming_action(msg_tx, app_id, ActionKind::Install, args)
         }
         Request::Update(id) => {
-            let outcome = flatpak::update(&id);
-            Some(WorkerMsg::ActionDone { target: id, kind: ActionKind::Update, outcome })
+            let scope = flatpak::installed_scope(&id).unwrap_or(flatpak::Scope::User);
+            let args = flatpak::update_args(scope, &id);
+            run_streaming_action(msg_tx, id, ActionKind::Update, args)
         }
         Request::Remove(id) => {
-            let outcome = flatpak::uninstall(&id);
-            Some(WorkerMsg::ActionDone { target: id, kind: ActionKind::Remove, outcome })
+            let scope = flatpak::installed_scope(&id).unwrap_or(flatpak::Scope::User);
+            let args = flatpak::uninstall_args(scope, &id);
+            run_streaming_action(msg_tx, id, ActionKind::Remove, args)
         }
         Request::InstallRef(path) => {
-            let outcome = flatpak::install_ref(&path);
-            Some(WorkerMsg::ActionDone { target: path, kind: ActionKind::InstallRef, outcome })
+            let args = flatpak::install_ref_args(flatpak::Scope::User, &path);
+            run_streaming_action(msg_tx, path, ActionKind::InstallRef, args)
         }
         Request::RemoteAdd { name, url } => {
             let outcome = flatpak::remote_add(&name, &url);
-            Some(WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteAdd, outcome })
+            send(msg_tx, WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteAdd, outcome })
         }
         Request::RemoteDelete(name) => {
             let outcome = flatpak::remote_delete(&name);
-            Some(WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteDelete, outcome })
+            send(msg_tx, WorkerMsg::ActionDone { target: name, kind: ActionKind::RemoteDelete, outcome })
         }
         Request::Launch(id) => {
             flatpak::run_app(&id);
-            None
+            Ok(())
+        }
+        Request::RefreshQos => send(msg_tx, WorkerMsg::QosInstalled(qpkg::list_installed())),
+        Request::QosBrowse => {
+            send(msg_tx, WorkerMsg::QosCatalog(qpkg::browse_registry().unwrap_or_default()))
+        }
+        Request::QosInstall(id) => {
+            let outcome = qpkg::run_action(&qpkg::install_id_args(&id));
+            send(msg_tx, WorkerMsg::ActionDone { target: id, kind: ActionKind::QosInstall, outcome })
+        }
+        Request::QosRemove(id) => {
+            let outcome = qpkg::run_action(&qpkg::remove_args(&id));
+            send(msg_tx, WorkerMsg::ActionDone { target: id, kind: ActionKind::QosRemove, outcome })
         }
     }
 }
@@ -434,14 +503,26 @@ mod tests {
         assert!(!dup, "duplicate collection request is dropped");
     }
 
+    /// Run `handle` synchronously and collect every message it sent.
+    fn run_handle(req: Request) -> Vec<WorkerMsg> {
+        let (tx, rx) = channel();
+        handle(req, &tx).expect("handle completed");
+        drop(tx);
+        let mut msgs = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            msgs.push(m);
+        }
+        msgs
+    }
+
     #[test]
     fn handle_search_offline_yields_empty_results_not_panic() {
         // With no FLATHUB_API_BASE reachable, search degrades to empty.
         // (This runs the real handler but the curl call fails fast / is
         // unreachable in CI, so we only assert it doesn't panic and the
         // variant is correct.)
-        let msg = handle(Request::Search("definitely-not-real-zzz".into()));
-        match msg {
+        let msgs = run_handle(Request::Search("definitely-not-real-zzz".into()));
+        match msgs.first() {
             Some(WorkerMsg::SearchResults { query, .. }) => {
                 assert_eq!(query, "definitely-not-real-zzz");
             }
@@ -451,21 +532,23 @@ mod tests {
 
     #[test]
     fn install_and_remove_route_through_the_real_flatpak_path() {
-        // Drive the real handler: it shells out to `flatpak` and reports an
-        // `ActionDone` tagged with the right kind + target for the app to fold
-        // in. On a host without flatpak the outcome is `Failed` (surfaced
-        // honestly as an error toast) — either way the real mutating path is
-        // exercised, not a stub.
-        match handle(Request::Install { remote: "flathub".into(), app_id: "org.gimp.GIMP".into() }) {
+        // Drive the real handler: it shells out to `flatpak` (streaming) and
+        // reports an `ActionDone` tagged with the right kind + target for the
+        // app to fold in. On a host without flatpak the outcome is `Failed`
+        // (surfaced honestly) — either way the real mutating path is exercised,
+        // not a stub. The final message is always the ActionDone.
+        let msgs = run_handle(Request::Install { remote: "flathub".into(), app_id: "org.gimp.GIMP".into() });
+        match msgs.last() {
             Some(WorkerMsg::ActionDone { target, kind, .. }) => {
-                assert_eq!(kind, ActionKind::Install);
+                assert_eq!(*kind, ActionKind::Install);
                 assert_eq!(target, "org.gimp.GIMP");
             }
             other => panic!("expected an Install ActionDone, got {other:?}"),
         }
-        match handle(Request::Remove("org.gimp.GIMP".into())) {
+        let msgs = run_handle(Request::Remove("org.gimp.GIMP".into()));
+        match msgs.last() {
             Some(WorkerMsg::ActionDone { target, kind, .. }) => {
-                assert_eq!(kind, ActionKind::Remove);
+                assert_eq!(*kind, ActionKind::Remove);
                 assert_eq!(target, "org.gimp.GIMP");
             }
             other => panic!("expected a Remove ActionDone, got {other:?}"),
@@ -473,13 +556,31 @@ mod tests {
     }
 
     #[test]
+    fn qos_actions_route_through_the_qos_packaging_path() {
+        // qOS install/remove report ActionDone tagged with the qOS kinds —
+        // proving they route to `qos-install`, not flatpak. Outcome is Failed
+        // on a host without qos-install (surfaced honestly).
+        let msgs = run_handle(Request::QosInstall("dev.qos.notes".into()));
+        match msgs.last() {
+            Some(WorkerMsg::ActionDone { target, kind, .. }) => {
+                assert_eq!(*kind, ActionKind::QosInstall);
+                assert_eq!(target, "dev.qos.notes");
+            }
+            other => panic!("expected a QosInstall ActionDone, got {other:?}"),
+        }
+        let msgs = run_handle(Request::RefreshQos);
+        assert!(
+            matches!(msgs.first(), Some(WorkerMsg::QosInstalled(_))),
+            "RefreshQos lists installed qOS apps, got {msgs:?}",
+        );
+    }
+
+    #[test]
     fn refresh_installed_yields_an_installed_message() {
         // The real list path runs `flatpak list` and returns an Installed
         // message (an empty map on a host without flatpak — never a panic).
-        match handle(Request::RefreshInstalled) {
-            Some(WorkerMsg::Installed(_)) => {}
-            other => panic!("expected an Installed message, got {other:?}"),
-        }
+        let msgs = run_handle(Request::RefreshInstalled);
+        assert!(matches!(msgs.first(), Some(WorkerMsg::Installed(_))));
     }
 
     #[test]
