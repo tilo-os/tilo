@@ -254,6 +254,10 @@ pub struct SheetsApp {
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
+    /// An in-flight interchange file dialog: the operation and the channel its
+    /// chosen path arrives on, drained once per frame in [`Self::drain_io`].
+    /// `None` when no import/export chooser is open.
+    io: Option<(crate::portal::PendingIo, crate::portal::PortalChannel)>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
     /// beyond the plain-text payload other apps see on the system clipboard.
@@ -346,6 +350,7 @@ impl SheetsApp {
             seed_sample_data: false,
             saved_heads: Vec::new(),
             cache: None,
+            io: None,
             clipboard: None,
             palette: CommandPalette::commands(),
             actions: ui::ActionHost::new(),
@@ -1031,16 +1036,14 @@ impl SheetsApp {
     /// folder into a new sheet, running smart type inference on each field.
     /// No file picker exists in the toolkit yet, so "most recent in the
     /// folder" is the selection heuristic (drop a file there, then import).
-    fn import_csv(&mut self, doc: &mut AutoCommit) {
-        let Some(dir) = exports_dir() else {
-            self.status = "No documents folder available for import".into();
-            return;
-        };
-        let Some(path) = newest_with_ext(&dir, "csv") else {
-            self.status = format!("No .csv files to import in {}", dir.display());
-            return;
-        };
-        let text = match std::fs::read_to_string(&path) {
+    fn import_csv(&mut self, _doc: &mut AutoCommit) {
+        self.begin_import(crate::portal::Interchange::Csv);
+    }
+
+    /// Core: import the CSV file at `path` into a new sheet. Split out from the
+    /// portal opener so the drain and tests drive it against a real file.
+    fn import_csv_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) => {
                 self.status = format!("CSV import failed: {e}");
@@ -1049,7 +1052,7 @@ impl SheetsApp {
         };
         let parsed = crate::csv::parse_csv(&text);
         let count = parsed.len();
-        let idx = SheetsDoc::add_sheet(doc, &sheet_name_from_path(&path));
+        let idx = SheetsDoc::add_sheet(doc, &sheet_name_from_path(path));
         let cur = self.default_currency();
         for (addr, raw) in parsed {
             let inferred = infer_entry(&raw, cur);
@@ -1061,7 +1064,7 @@ impl SheetsApp {
         SheetsDoc::set_active_index(doc, idx);
         self.needs_commit = true;
         self.reload(doc);
-        self.status = format!("Imported {count} cells from {}", file_label(&path));
+        self.status = format!("Imported {count} cells from {}", file_label(path));
     }
 
     /// Build an export table for the active sheet from its computed values.
@@ -1083,7 +1086,12 @@ impl SheetsApp {
         crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
     }
 
-    fn export_csv(&mut self, doc: &mut AutoCommit) {
+    fn export_csv(&mut self, _doc: &mut AutoCommit) {
+        self.begin_export(crate::portal::Interchange::Csv);
+    }
+
+    /// Core: write the active sheet's computed values to `path` as CSV.
+    fn export_csv_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let cur = self.default_currency();
         let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
         let values = formula::recalculate(&snap.raw);
@@ -1103,36 +1111,34 @@ impl SheetsApp {
             rows.push(row);
         }
         let csv = crate::csv::to_csv(&rows);
-        let Some(path) = export_path(&snap.name, "csv") else {
-            self.status = "No documents folder available for export".into();
-            return;
-        };
-        match std::fs::write(&path, csv) {
-            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
+        match std::fs::write(path, csv) {
+            Ok(_) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("CSV export failed: {e}"),
         }
     }
 
-    fn export_xlsx(&mut self, doc: &mut AutoCommit) {
+    fn export_xlsx(&mut self, _doc: &mut AutoCommit) {
+        self.begin_export(crate::portal::Interchange::Xlsx);
+    }
+
+    /// Core: write the active sheet to `path` as an `.xlsx` workbook.
+    fn export_xlsx_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let table = self.active_table(doc);
-        let Some(path) = export_path(&table.name, "xlsx") else {
-            self.status = "No documents folder available for export".into();
-            return;
-        };
-        match crate::xlsx::write_xlsx(&path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
+        match crate::xlsx::write_xlsx(path, std::slice::from_ref(&table)) {
+            Ok(_) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Excel export failed: {e}"),
         }
     }
 
-    fn export_ods(&mut self, doc: &mut AutoCommit) {
+    fn export_ods(&mut self, _doc: &mut AutoCommit) {
+        self.begin_export(crate::portal::Interchange::Ods);
+    }
+
+    /// Core: write the active sheet to `path` as an `.ods` spreadsheet.
+    fn export_ods_to(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let table = self.active_table(doc);
-        let Some(path) = export_path(&table.name, "ods") else {
-            self.status = "No documents folder available for export".into();
-            return;
-        };
-        match crate::ods::write_ods(&path, std::slice::from_ref(&table)) {
-            Ok(_) => self.status = format!("Exported {}", file_label(&path)),
+        match crate::ods::write_ods(path, std::slice::from_ref(&table)) {
+            Ok(_) => self.status = format!("Exported {}", file_label(path)),
             Err(e) => self.status = format!("Calc export failed: {e}"),
         }
     }
@@ -1171,33 +1177,81 @@ impl SheetsApp {
         self.status = format!("Imported {total} cells from {kind}");
     }
 
-    fn import_xlsx(&mut self, doc: &mut AutoCommit) {
-        let Some(dir) = exports_dir() else {
-            self.status = "No documents folder available for import".into();
-            return;
-        };
-        let Some(path) = newest_with_ext(&dir, "xlsx") else {
-            self.status = format!("No .xlsx files to import in {}", dir.display());
-            return;
-        };
-        match crate::xlsx::read_xlsx(&path) {
-            Ok(tables) => self.import_tables(doc, tables, &file_label(&path)),
+    fn import_xlsx(&mut self, _doc: &mut AutoCommit) {
+        self.begin_import(crate::portal::Interchange::Xlsx);
+    }
+
+    /// Core: import the `.xlsx` workbook at `path` into new sheets.
+    fn import_xlsx_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        match crate::xlsx::read_xlsx(path) {
+            Ok(tables) => self.import_tables(doc, tables, &file_label(path)),
             Err(e) => self.status = format!("Excel import failed: {e}"),
         }
     }
 
-    fn import_ods(&mut self, doc: &mut AutoCommit) {
-        let Some(dir) = exports_dir() else {
-            self.status = "No documents folder available for import".into();
-            return;
-        };
-        let Some(path) = newest_with_ext(&dir, "ods") else {
-            self.status = format!("No .ods files to import in {}", dir.display());
-            return;
-        };
-        match crate::ods::read_ods(&path) {
-            Ok(tables) => self.import_tables(doc, tables, &file_label(&path)),
+    fn import_ods(&mut self, _doc: &mut AutoCommit) {
+        self.begin_import(crate::portal::Interchange::Ods);
+    }
+
+    /// Core: import the `.ods` spreadsheet at `path` into new sheets.
+    fn import_ods_from(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+        match crate::ods::read_ods(path) {
+            Ok(tables) => self.import_tables(doc, tables, &file_label(path)),
             Err(e) => self.status = format!("Calc import failed: {e}"),
+        }
+    }
+
+    /// Open the host file chooser to pick a file to import (unless one is
+    /// already in flight). The chosen path is handled in [`Self::drain_io`].
+    fn begin_import(&mut self, fmt: crate::portal::Interchange) {
+        if self.io.is_some() {
+            return;
+        }
+        self.io = Some((crate::portal::PendingIo::Import(fmt), crate::portal::request_import(fmt)));
+        self.status = format!("Choose a .{} file to import…", fmt.ext());
+    }
+
+    /// Open the host Save dialog to pick where to export the active sheet,
+    /// seeding the filename with the sheet's name (unless one is already in
+    /// flight). The chosen destination is handled in [`Self::drain_io`].
+    fn begin_export(&mut self, fmt: crate::portal::Interchange) {
+        if self.io.is_some() {
+            return;
+        }
+        let name = self.sheet_names.get(self.active_sheet).cloned().unwrap_or_else(|| "Sheet".into());
+        let suggested = format!("{name}.{}", fmt.ext());
+        self.io =
+            Some((crate::portal::PendingIo::Export(fmt), crate::portal::request_export(fmt, &suggested)));
+        self.status = "Choose where to save…".into();
+    }
+
+    /// Drain a finished interchange file dialog, if one landed since the last
+    /// frame, and run the chosen import/export against the picked path. The UI
+    /// thread never blocks: the portal round-trip lives on its own worker.
+    fn drain_io(&mut self, doc: &mut AutoCommit) {
+        use crate::portal::{Interchange, PendingIo, PortalOutcome};
+        let Some((op, rx)) = &self.io else { return };
+        let op = *op;
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.io = None;
+                match outcome {
+                    PortalOutcome::Opened(path) => match op {
+                        PendingIo::Import(Interchange::Csv) => self.import_csv_from(doc, &path),
+                        PendingIo::Import(Interchange::Xlsx) => self.import_xlsx_from(doc, &path),
+                        PendingIo::Import(Interchange::Ods) => self.import_ods_from(doc, &path),
+                        PendingIo::Export(Interchange::Csv) => self.export_csv_to(doc, &path),
+                        PendingIo::Export(Interchange::Xlsx) => self.export_xlsx_to(doc, &path),
+                        PendingIo::Export(Interchange::Ods) => self.export_ods_to(doc, &path),
+                    },
+                    PortalOutcome::Cancelled => {}
+                    PortalOutcome::Failed(e) => {
+                        self.status = format!("File chooser unavailable: {e}");
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.io = None,
         }
     }
 
@@ -2540,12 +2594,6 @@ fn tab_width(name: &str) -> f64 {
     (name.chars().count() as f64 * 7.5 + 26.0).clamp(64.0, 180.0)
 }
 
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
 /// Flatten a cell's display text into a single TSV field: tabs and newlines
 /// would break the row/column structure, so they collapse to spaces.
 fn tsv_cell(display: &str) -> String {
@@ -2561,49 +2609,6 @@ fn workbook_path() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
         .or_else(dirs::data_dir)?;
     Some(base.join("qos").join("sheets").join("workbook.automerge"))
-}
-
-/// The shared folder for CSV/Excel/Calc import and export — the user's
-/// documents directory when available, otherwise the app's data directory.
-/// The same folder is both the export target and the import source, so a
-/// file exported here (or dropped in) is the one a later import reads.
-fn exports_dir() -> Option<PathBuf> {
-    let base = dirs::document_dir().or_else(dirs::data_dir)?;
-    Some(base.join("qOS Sheets"))
-}
-
-/// Build an export path `<exports_dir>/<sheet>.<ext>`, creating the folder.
-fn export_path(sheet_name: &str, ext: &str) -> Option<PathBuf> {
-    let dir = exports_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    let name = sanitize(sheet_name);
-    let stem = if name.is_empty() { "Sheet".to_string() } else { name };
-    Some(dir.join(format!("{stem}.{ext}")))
-}
-
-/// The most recently modified file in `dir` whose extension matches `ext`
-/// (case-insensitive), or `None` when the folder holds no such file.
-fn newest_with_ext(dir: &std::path::Path, ext: &str) -> Option<PathBuf> {
-    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        let matches = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case(ext))
-            .unwrap_or(false);
-        if !matches {
-            continue;
-        }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
-            best = Some((mtime, path));
-        }
-    }
-    best.map(|(_, p)| p)
 }
 
 /// A new sheet name derived from an imported file's stem.
@@ -2664,6 +2669,9 @@ impl Widget for SheetsApp {
             self.initialize(state);
             self.seeded = true;
         }
+        // Land a finished import/export file dialog before reloading, so the
+        // imported sheet (or the export's status) is reflected this frame.
+        self.drain_io(state);
         self.reload(state);
         self.current_active_format = self.format_of_active();
         // Surface the floating status bubble only when the composed label
@@ -4602,37 +4610,28 @@ mod tests {
 
     // --- app-level import/export flows -------------------------------------
 
-    /// Force the import/export folder to resolve inside `tmp` (never the user's
-    /// real Documents dir) by scoping every path source the resolver consults.
-    fn scope_docs_env(tmp: &std::path::Path) {
-        unsafe {
-            std::env::set_var("HOME", tmp);
-            std::env::set_var("XDG_DATA_HOME", tmp);
-            std::env::set_var("XDG_CONFIG_HOME", tmp.join("config"));
-            std::env::remove_var("XDG_DOCUMENTS_DIR");
-        }
-    }
-
-    /// The menu-driven Export → write-file then Import → new-sheet round trip
-    /// for each interchange format, exercised end to end through real file I/O.
-    fn export_then_import_roundtrip(ext: &str, export: fn(&mut SheetsApp, &mut AutoCommit), import: fn(&mut SheetsApp, &mut AutoCommit)) {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    /// The Export → write-file then Import → new-sheet round trip for each
+    /// interchange format, exercised end to end through the real codecs + a real
+    /// file on disk — the exact path-cores the portal drain drives, given an
+    /// explicit temp path in place of a host file chooser.
+    fn export_then_import_roundtrip(
+        ext: &str,
+        export_to: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
+        import_from: fn(&mut SheetsApp, &mut AutoCommit, &std::path::Path),
+    ) {
         let tmp = std::env::temp_dir().join(format!("qos-sheets-io-{ext}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
-        scope_docs_env(&tmp);
-        // Guard: the resolved folder must be inside our temp before any write.
-        let ed = exports_dir().expect("exports dir");
-        assert!(ed.starts_with(&tmp), "exports dir escaped temp: {ed:?}");
+        let path = tmp.join(format!("Budget.{ext}"));
 
         let (mut app, mut doc) = seeded_app();
-        export(&mut app, &mut doc);
+        export_to(&mut app, &mut doc, &path);
         assert!(app.status.starts_with("Exported"), "export status: {}", app.status);
-        // The file physically exists in the folder.
-        assert!(newest_with_ext(&ed, ext).is_some(), "no .{ext} written to {ed:?}");
+        // The file physically exists at the chosen path.
+        assert!(path.exists(), "no .{ext} written to {path:?}");
 
         let before = SheetsDoc::sheet_count(&mut doc);
-        import(&mut app, &mut doc);
+        import_from(&mut app, &mut doc, &path);
         assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1, "import must add a sheet");
         assert!(app.status.starts_with("Imported"), "import status: {}", app.status);
         // The re-imported sheet carries the Budget header text through the file.
@@ -4644,17 +4643,68 @@ mod tests {
 
     #[test]
     fn csv_export_then_import_roundtrips() {
-        export_then_import_roundtrip("csv", SheetsApp::export_csv, SheetsApp::import_csv);
+        export_then_import_roundtrip("csv", SheetsApp::export_csv_to, SheetsApp::import_csv_from);
     }
 
     #[test]
     fn xlsx_export_then_import_roundtrips() {
-        export_then_import_roundtrip("xlsx", SheetsApp::export_xlsx, SheetsApp::import_xlsx);
+        export_then_import_roundtrip("xlsx", SheetsApp::export_xlsx_to, SheetsApp::import_xlsx_from);
     }
 
     #[test]
     fn ods_export_then_import_roundtrips() {
-        export_then_import_roundtrip("ods", SheetsApp::export_ods, SheetsApp::import_ods);
+        export_then_import_roundtrip("ods", SheetsApp::export_ods_to, SheetsApp::import_ods_from);
+    }
+
+    /// The portal drain path: a Save outcome writes the active sheet, and an
+    /// Open outcome imports it back — driving the exact per-frame `drain_io`
+    /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
+    #[test]
+    fn portal_drain_exports_then_imports_through_the_picked_path() {
+        use crate::portal::{Interchange, PendingIo, PortalOutcome};
+        let tmp = std::env::temp_dir().join(format!("qos-sheets-portal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let path = tmp.join("Exported.csv");
+
+        let (mut app, mut doc) = seeded_app();
+
+        // Inject a Save outcome as though the user picked `path`, then drain.
+        app.io = Some((
+            PendingIo::Export(Interchange::Csv),
+            crate::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+        ));
+        app.drain_io(&mut doc);
+        assert!(app.io.is_none(), "a delivered outcome clears the in-flight dialog");
+        assert!(path.exists(), "the export wrote the picked file");
+        assert!(app.status.starts_with("Exported"), "export status: {}", app.status);
+
+        // Inject an Open outcome for the same path and drain: it imports a sheet.
+        let before = SheetsDoc::sheet_count(&mut doc);
+        app.io = Some((
+            PendingIo::Import(Interchange::Csv),
+            crate::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
+        ));
+        app.drain_io(&mut doc);
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), before + 1, "import added a sheet");
+        assert!(app.status.starts_with("Imported"), "import status: {}", app.status);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A cancelled chooser clears the in-flight dialog and touches nothing.
+    #[test]
+    fn portal_cancel_is_silent() {
+        use crate::portal::{Interchange, PendingIo, PortalOutcome};
+        let (mut app, mut doc) = seeded_app();
+        let before = SheetsDoc::sheet_count(&mut doc);
+        app.io = Some((
+            PendingIo::Import(Interchange::Xlsx),
+            crate::portal::inject_for_test(PortalOutcome::Cancelled),
+        ));
+        app.drain_io(&mut doc);
+        assert!(app.io.is_none());
+        assert_eq!(SheetsDoc::sheet_count(&mut doc), before, "cancel imports nothing");
     }
 
     // -----------------------------------------------------------------------
