@@ -416,8 +416,9 @@ pub struct FeedsApp {
     /// rather than a feed one — the same `feed_menu` popover serves both, one
     /// at a time).
     article_menu_target: Option<Id>,
-    /// Article-menu actions aligned by index with `feed_menu`'s action rows.
-    article_menu_actions: Vec<ArticleMenuAction>,
+    /// Article-menu actions aligned by index with `feed_menu`'s rows — `None`
+    /// at a separator slot so a drained selection index maps straight through.
+    article_menu_actions: Vec<Option<ArticleMenuAction>>,
     /// Overflow-menu actions aligned by index; non-empty while the kebab menu
     /// is the open one.
     overflow_menu_actions: Vec<OverflowAction>,
@@ -1270,11 +1271,13 @@ impl FeedsApp {
         self.feed_menu = menu;
         self.clear_menu_contexts();
         self.article_menu_target = Some(article_id);
+        // Index-aligned with the menu rows above (a `None` for the separator).
         self.article_menu_actions = vec![
-            ArticleMenuAction::CopyUrl,
-            ArticleMenuAction::OpenInBrowser,
-            ArticleMenuAction::ToggleRead,
-            ArticleMenuAction::ToggleStar,
+            Some(ArticleMenuAction::CopyUrl),
+            Some(ArticleMenuAction::OpenInBrowser),
+            None,
+            Some(ArticleMenuAction::ToggleRead),
+            Some(ArticleMenuAction::ToggleStar),
         ];
     }
 
@@ -1379,7 +1382,7 @@ impl FeedsApp {
                 self.apply_feed_menu_action(action, fid, doc);
             }
         } else if let Some(aid) = self.article_menu_target {
-            if let Some(action) = self.article_menu_actions.get(sel).copied() {
+            if let Some(action) = self.article_menu_actions.get(sel).copied().flatten() {
                 self.apply_article_menu_action(action, aid, doc);
             }
         } else if let Some(action) = self.overflow_menu_actions.get(sel).copied() {
@@ -5137,6 +5140,271 @@ mod tests {
         assert!(
             a.toast.is_none(),
             "cancelling must not run subscribe"
+        );
+    }
+
+    // --- overflow (kebab) menu -------------------------------------------
+
+    #[test]
+    fn opml_actions_live_in_the_overflow_menu_not_the_toolbar() {
+        let mut a = app();
+        lay_out(&mut a, 1280.0, 800.0);
+        a.build_toolbar();
+        let actions: Vec<ToolbarAction> = a.toolbar_buttons.iter().map(|b| b.action).collect();
+        assert!(actions.contains(&ToolbarAction::Overflow), "the kebab is on the toolbar");
+        assert!(
+            !actions.iter().any(|act| matches!(act, ToolbarAction::AddSubscription))
+                || actions.len() <= 4,
+            "the toolbar is trimmed to primary actions plus the kebab"
+        );
+        // The overflow menu carries the OPML import/export secondary actions.
+        let kebab = a
+            .toolbar_buttons
+            .iter()
+            .find(|b| b.action == ToolbarAction::Overflow)
+            .unwrap()
+            .rect;
+        a.open_overflow_menu(kebab);
+        assert!(a.feed_menu.is_open(), "the kebab opens the overflow menu");
+        assert_eq!(
+            a.overflow_menu_actions,
+            vec![OverflowAction::ImportOpml, OverflowAction::ExportOpml],
+        );
+        assert!(a.feed_menu.items().iter().any(|i| i.label() == Some("Import OPML…")));
+    }
+
+    #[test]
+    fn overflow_menu_import_triggers_the_portal() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        lay_out(&mut a, 1280.0, 800.0);
+        a.build_toolbar();
+        let kebab = a
+            .toolbar_buttons
+            .iter()
+            .find(|b| b.action == ToolbarAction::Overflow)
+            .unwrap()
+            .rect;
+        a.open_overflow_menu(kebab);
+        // Selecting "Import OPML…" (row 0) runs the real request path.
+        a.dispatch_menu_selection(0, &mut doc);
+        assert!(a.import_rx.is_some(), "import opens the file-chooser portal");
+    }
+
+    // --- add-feed failure handling ---------------------------------------
+
+    #[test]
+    fn validate_feed_url_normalises_and_rejects() {
+        assert_eq!(
+            validate_feed_url("example.com/feed.xml").unwrap(),
+            "https://example.com/feed.xml",
+            "a bare host is https-normalised",
+        );
+        assert_eq!(validate_feed_url("https://a.example/rss").unwrap(), "https://a.example/rss");
+        assert!(validate_feed_url("").is_err(), "empty is rejected");
+        assert!(validate_feed_url("not a url").is_err(), "a space-bearing string is rejected");
+        assert!(validate_feed_url("localhostnodot").is_err(), "a scheme-less non-host is rejected");
+        assert!(validate_feed_url("ftp://x.example").is_err(), "an unsupported scheme is rejected");
+    }
+
+    #[test]
+    fn add_feed_with_bad_url_keeps_dialog_open_with_inline_error() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let feeds_before = a.store.feeds.len();
+
+        a.open_add_subscription();
+        a.modal.as_mut().unwrap().dialog.content_mut().set_value("not a url");
+        a.submit_modal(&mut doc);
+
+        assert!(a.modal.is_some(), "a bad URL keeps the dialog open");
+        assert!(
+            a.modal.as_ref().unwrap().dialog.content().error().is_some(),
+            "the dialog shows an inline error explaining why",
+        );
+        assert_eq!(a.store.feeds.len(), feeds_before, "no placeholder feed was created");
+    }
+
+    #[test]
+    fn add_feed_whose_fetch_fails_is_rolled_back_with_a_clear_error() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let tx = a.install_test_worker();
+        let feeds_before = a.store.feeds.len();
+
+        // Add a well-formed but (as the worker will report) unreachable feed.
+        a.subscribe("https://nope.example/feed.xml".into(), &mut doc);
+        assert_eq!(a.store.feeds.len(), feeds_before + 1, "the placeholder is created optimistically");
+        let new_id = a.store.feeds.iter().find(|f| f.url == "https://nope.example/feed.xml").unwrap().id;
+        assert!(a.pending_subscribe.contains_key(&new_id), "it's tracked as provisional");
+
+        // The worker reports the fetch failed.
+        tx.send(FetchResult::Failed {
+            feed_id: Some(new_id),
+            message: "request: dns error".into(),
+        })
+        .unwrap();
+        a.drain_fetches_live();
+
+        assert!(
+            a.store.feeds.iter().all(|f| f.id != new_id),
+            "the failed placeholder is rolled out of the store — no silent broken row",
+        );
+        assert!(!a.pending_subscribe.contains_key(&new_id), "provisional tracking is cleared");
+        let toast = a.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(toast.contains("Couldn't add"), "a clear failure toast is shown, got {toast:?}");
+        // The rollback is queued for the document too.
+        a.flush_doc_writes(&mut doc);
+        assert!(
+            FeedsDoc::load(&doc).feeds.iter().all(|f| f.id != new_id),
+            "the placeholder is removed from the document as well",
+        );
+    }
+
+    #[test]
+    fn add_feed_success_confirms_the_provisional_subscription() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let tx = a.install_test_worker();
+        a.subscribe("https://ok.example/feed.xml".into(), &mut doc);
+        let new_id = a.store.feeds.iter().find(|f| f.url == "https://ok.example/feed.xml").unwrap().id;
+        // A successful fetch clears provisional status; the feed stays.
+        tx.send(FetchResult::Articles { feed_id: new_id, title: Some("OK Blog".into()), articles: vec![] })
+            .unwrap();
+        a.drain_fetches_live();
+        assert!(!a.pending_subscribe.contains_key(&new_id), "a successful fetch confirms the subscription");
+        assert!(a.store.feeds.iter().any(|f| f.id == new_id), "the feed remains");
+    }
+
+    // --- per-article context menu ----------------------------------------
+
+    /// Lay out wide, build the list rows, and right-click the first article row
+    /// through the real dispatch path; returns that article's id.
+    fn open_first_article_menu(a: &mut FeedsApp, doc: &mut AutoCommit) -> Id {
+        lay_out(a, 1280.0, 800.0);
+        a.build_list_rows();
+        let row = a.list_rows.first().cloned().expect("a list row exists");
+        dispatch(a, doc, &cursor_at(row.rect.center()));
+        assert!(dispatch(a, doc, &right_press()), "right-click on an article is consumed");
+        assert!(a.feed_menu.is_open(), "right-click opens the article context menu");
+        assert_eq!(a.article_menu_target, Some(row.id), "the menu targets the clicked article");
+        row.id
+    }
+
+    #[test]
+    fn right_click_article_opens_menu_with_actions() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let _id = open_first_article_menu(&mut a, &mut doc);
+        let labels: Vec<Option<&str>> = a.feed_menu.items().iter().map(|i| i.label()).collect();
+        assert!(labels.contains(&Some("Copy link")));
+        assert!(labels.contains(&Some("Open in browser")));
+        // The read + favourite verbs both exist (exact wording tracks state).
+        assert!(labels.iter().any(|l| matches!(l, Some(s) if s.contains("read"))));
+    }
+
+    #[test]
+    fn article_menu_toggle_read_flips_state_through_the_real_path() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let id = open_first_article_menu(&mut a, &mut doc);
+        let before = a.store.article(id).unwrap().read;
+        // Click the "Mark as (un)read" row through the menu's real hit-test.
+        // Rows: 0 copy, 1 open, 2 separator, 3 toggle-read.
+        let p = menu_point_for(&a, 3);
+        dispatch(&mut a, &mut doc, &cursor_at(p));
+        assert!(dispatch(&mut a, &mut doc, &left_press()), "the menu row click is consumed");
+        assert_eq!(a.store.article(id).unwrap().read, !before, "read state flipped");
+        assert_eq!(
+            FeedsDoc::load(&doc).article(id).unwrap().read,
+            !before,
+            "the toggle persisted to the document",
+        );
+        assert!(!a.feed_menu.is_open(), "the menu closes after the action");
+    }
+
+    #[test]
+    fn article_menu_copy_link_copies_and_toasts() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let id = open_first_article_menu(&mut a, &mut doc);
+        a.article_menu_target = Some(id);
+        a.apply_article_menu_action(ArticleMenuAction::CopyUrl, id, &mut doc);
+        assert_eq!(
+            a.toast.as_ref().map(|(m, _)| m.as_str()),
+            Some("Link copied"),
+            "copying reports success",
+        );
+        assert!(ui::clipboard_paste().is_some(), "the URL reached the clipboard");
+    }
+
+    #[test]
+    fn article_menu_favourite_toggles_star() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let id = open_first_article_menu(&mut a, &mut doc);
+        let before = a.store.article(id).unwrap().starred;
+        a.apply_article_menu_action(ArticleMenuAction::ToggleStar, id, &mut doc);
+        assert_eq!(a.store.article(id).unwrap().starred, !before, "favourite toggled");
+        assert_eq!(FeedsDoc::load(&doc).article(id).unwrap().starred, !before, "star persisted");
+    }
+
+    // --- mark-all-read confirmation --------------------------------------
+
+    #[test]
+    fn mark_all_read_asks_for_confirmation_before_running() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        a.set_filter(Filter::All);
+        let unread_before = a.store.total_unread();
+        assert!(unread_before > 0, "the demo has unread articles to mark");
+
+        // Opening the confirm must NOT mark anything yet.
+        a.open_mark_all_read_confirm();
+        assert!(a.modal.is_some(), "a confirmation dialog opens");
+        assert_eq!(a.store.total_unread(), unread_before, "nothing is marked before confirming");
+
+        // Confirming (the dialog's primary action) runs it.
+        a.submit_modal(&mut doc);
+        assert!(a.modal.is_none(), "the dialog closes after confirming");
+        assert_eq!(a.store.total_unread(), 0, "confirming marks the view read");
+    }
+
+    // --- scrolling through the shared Scrollable -------------------------
+
+    #[test]
+    fn list_scroll_is_owned_by_the_shared_scrollable() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A short window so the demo list overflows its viewport.
+        lay_out(&mut a, 1280.0, 360.0);
+        a.build_list_rows();
+        assert!(
+            a.list_scroll_ctl.vertical_overflows(),
+            "precondition: the list content overflows the short viewport",
+        );
+        // Put the cursor over the list, then wheel down.
+        let mid = Point::new(a.list_rect.x0 + 40.0, a.list_rect.y0 + HEADER_H + 20.0);
+        dispatch(&mut a, &mut doc, &cursor_at(mid));
+        let wheel = WindowEvent::MouseWheel {
+            device_id: synth_device(),
+            delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
+            phase: winit::event::TouchPhase::Moved,
+        };
+        dispatch(&mut a, &mut doc, &wheel);
+        assert!(
+            a.list_scroll() > 0.0,
+            "a wheel scrolls the list through the shared Scrollable (offset {})",
+            a.list_scroll(),
         );
     }
 }
