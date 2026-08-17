@@ -387,6 +387,12 @@ impl SheetsApp {
         self.seed_sample_data = true;
     }
 
+    /// The index of the active sheet. Lets a test observe where a Ctrl+K
+    /// activation navigated.
+    pub fn active_sheet_index(&self) -> usize {
+        self.active_sheet
+    }
+
     /// `--shots`: force the floating status bubble fully visible so a single
     /// headless frame captures the floating Sum / Avg / Count pill (otherwise
     /// it would have faded, or never surfaced, by the time the frame renders).
@@ -2787,6 +2793,23 @@ impl Widget for SheetsApp {
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+
+    /// Fold the workbook's sheets into the unified Ctrl+K palette: a snapshot
+    /// [`SheetSearchProvider`](crate::search_provider::SheetSearchProvider)
+    /// makes every sheet findable there by name, alongside the actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::SheetSearchProvider::new(&self.sheet_names))]
+    }
+
+    /// Switch to the sheet a chosen palette row identifies.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(idx) = crate::search_provider::SheetSearchProvider::parse_action_id(action_id) {
+            if idx < self.sheet_names.len() {
+                self.switch_sheet(doc, idx);
+            }
+        }
     }
 
     fn handle_event(
