@@ -101,13 +101,17 @@ fi
 # Three *different* ones, and named from the registry rather than hardcoded, so
 # this keeps testing the shipped set rather than a list that rots.
 mapfile -t apps < <(gssh "awk -F'\"' '/^id/ {print \$2}' /usr/share/qos-apps/registry.toml" 2>/dev/null | tr -d '\r' | head -3)
+# Which socket the session bound, rather than a guess: the greeter's cage takes
+# wayland-0 and exits, so the compositor's number is not fixed.
+wl="$(gssh 'basename $(ls -1 /run/user/$(id -u)/wayland-[0-9] 2>/dev/null | head -1)' 2>/dev/null | tr -d '\r')"
+[ -n "$wl" ] && ok "the session's wayland socket is $wl" || bad "no wayland socket in the session runtime dir"
 if [ "${#apps[@]}" -lt 3 ]; then
   bad "fewer than three packages in the system registry to launch (${apps[*]:-none})"
 else
   for app in "${apps[@]}"; do
     msg "launching $app"
     gssh "systemd-run --user --quiet --collect \
-            --setenv=WAYLAND_DISPLAY=wayland-1 \
+            --setenv=WAYLAND_DISPLAY=$wl \
             --setenv=XDG_RUNTIME_DIR=/run/user/\$(id -u) \
             qos-launcher run-installed --package $app" >/dev/null 2>&1
     sleep 6
