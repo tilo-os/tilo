@@ -88,4 +88,12 @@ impl CompileWorker {
     pub fn in_flight(&self) -> bool {
         self.next_seq.saturating_sub(1) > self.last_done_seq
     }
+
+    /// Total number of compile jobs dispatched to the worker so far. Lets the
+    /// app prove — on the real request path — that a burst of keystrokes
+    /// coalesces into a single debounced compile rather than one compile per
+    /// key.
+    pub fn requests_made(&self) -> u64 {
+        self.next_seq.saturating_sub(1)
+    }
 }

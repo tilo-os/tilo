@@ -33,7 +33,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -76,6 +76,12 @@ const COMPACT_W: f64 = 760.0;
 
 /// How long a transient toast (Save / Open feedback) stays on screen.
 const FLASH_MS: u128 = 3200;
+
+/// Quiet-window after the last keystroke before an auto-compile is dispatched.
+/// Typing keeps re-arming this timer, so a burst of edits coalesces into a
+/// single background compile once the user pauses — the input path itself never
+/// waits on the compiler. Manual recompile (Ctrl+Enter) bypasses the debounce.
+const COMPILE_DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Which single pane the compact (narrow-window) layout is showing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +134,12 @@ pub struct TypstApp {
     /// Sequence number of the freshest compile result we've applied. Stale
     /// (lower-numbered) results from the worker are ignored.
     applied_seq: u64,
+    /// When set, a source edit is waiting to be compiled: the timestamp of the
+    /// most recent keystroke. The debounce ([`COMPILE_DEBOUNCE`]) fires a single
+    /// background compile once this has been quiet, so the input path never
+    /// awaits the compiler. `None` when the on-screen preview is up to date with
+    /// the source (or a compile is already covering the latest edit).
+    pending_compile: Option<Instant>,
 
     // --- panes ---
     editor: SourceEditor,
@@ -276,6 +288,7 @@ impl TypstApp {
             parts: WorldParts::new(),
             worker: None,
             applied_seq: 0,
+            pending_compile: None,
             editor: SourceEditor::new(),
             preview: PreviewPane::new(),
             diagnostics: DiagnosticsPanel::new(),
@@ -463,10 +476,44 @@ impl TypstApp {
         self.last_source = source.to_string();
     }
 
+    /// Fire a debounced auto-compile when one is due.
+    ///
+    /// A source edit arms [`Self::pending_compile`] with the keystroke time
+    /// (see `sync`); this dispatches the latest source to the worker only once
+    /// two conditions hold:
+    /// * **Debounce** — the last edit is at least [`COMPILE_DEBOUNCE`] old, so a
+    ///   burst of keystrokes coalesces into a single compile instead of one per
+    ///   key.
+    /// * **Throttle** — no compile is already in flight, so a slow compile can
+    ///   never accumulate a backlog of queued jobs; the pending edit simply
+    ///   waits and is picked up on a later frame once the worker is free.
+    ///
+    /// Called every frame from `draw` (and after each `sync`), never on the
+    /// keystroke path — so typing echoes instantly regardless of compile cost.
+    /// `now` is threaded in rather than read internally so tests can drive the
+    /// debounce clock deterministically.
+    fn maybe_dispatch_compile(&mut self, now: Instant) {
+        let Some(edited_at) = self.pending_compile else {
+            return;
+        };
+        if now.saturating_duration_since(edited_at) < COMPILE_DEBOUNCE {
+            return; // still inside the quiet window — keep waiting
+        }
+        if self.compiling() {
+            return; // throttle: retry once the in-flight compile lands
+        }
+        let src = self.source_cache.clone();
+        self.request_compile(&src);
+        self.pending_compile = None;
+    }
+
     fn force_recompile(&mut self, doc: &mut AutoCommit) {
         let src = self.read_source(doc);
         self.source_cache = src.clone();
         self.request_compile(&src);
+        // A manual recompile covers the current source, so drop any debounced
+        // edit that was still waiting — nothing left to auto-compile.
+        self.pending_compile = None;
         self.set_flash("Recompiling…".into());
     }
 
@@ -1496,11 +1543,19 @@ impl Widget for TypstApp {
         }
 
         if source != self.last_source {
-            self.request_compile(&source);
+            // Decouple compilation from the input path: record the edit and arm
+            // the debounce timer instead of compiling now. `maybe_dispatch_compile`
+            // fires a single background compile once typing pauses, so the
+            // keystroke that landed this edit repaints immediately — it never
+            // waits on the compiler.
+            self.last_source = source.clone();
+            self.pending_compile = Some(Instant::now());
         }
         self.source_cache = source;
-        // Consume any finished async compile.
+        // Consume any finished async compile, then fire a debounced compile if
+        // one is now due (e.g. this sync followed a pause in typing).
         self.pump_worker();
+        self.maybe_dispatch_compile(Instant::now());
     }
 
     fn build_layout(
@@ -1543,8 +1598,12 @@ impl Widget for TypstApp {
     ) {
         // Consume any finished async compile up front so its pages paint
         // this very frame (draw runs on animation frames even when sync
-        // doesn't).
+        // doesn't), then fire the debounced compile if the quiet window has
+        // elapsed since the last keystroke — the app keeps requesting frames
+        // while a compile is pending (see `needs_animation_frame`), so this is
+        // what actually wakes the worker once typing stops.
         self.pump_worker();
+        self.maybe_dispatch_compile(Instant::now());
 
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, t, c.surfaces.base, None, &self.rect);
@@ -1884,11 +1943,13 @@ impl Widget for TypstApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), a
-        // transient toast is still fading, or either floating status bubble is
-        // lingering / fading (so it hides itself without a stray pointer event).
+        // a compile is pending (so the debounce timer can fire once typing
+        // pauses) or in flight (so `draw` can consume its result), a transient
+        // toast is still fading, or either floating status bubble is lingering /
+        // fading (so it hides itself without a stray pointer event).
         let now = Instant::now();
         self.editor.wants_animation()
+            || self.pending_compile.is_some()
             || self.compiling()
             || self.flash_text().is_some()
             || self.status_bubble_left.needs_frame(now)
@@ -2414,5 +2475,108 @@ mod tests {
         let after = std::time::Instant::now();
         assert!(!app.status_bubble_left.is_visible(after), "left bubble hides after its linger");
         assert!(!app.status_bubble_right.is_visible(after), "right bubble hides after its linger");
+    }
+
+    /// The core latency contract: typing is O(keystroke) and never awaits a
+    /// compile. A whole burst of keystrokes splices into the CRDT immediately
+    /// (each character is visible before anything compiles) and dispatches
+    /// **zero** compiles; only after the debounce quiet-window does exactly
+    /// **one** background compile fire for the entire burst. Drives the real
+    /// `handle_event` → `sync` → `maybe_dispatch_compile` production path.
+    #[test]
+    fn typing_burst_updates_buffer_instantly_and_compiles_once() {
+        let (mut app, mut doc) = fresh();
+        // The first sync compiled synchronously; the async worker is idle.
+        assert_eq!(
+            app.worker.as_ref().unwrap().requests_made(),
+            0,
+            "no background compile before the first edit"
+        );
+        assert!(app.pending_compile.is_none(), "nothing pending before typing");
+
+        let start_len = app.read_source(&doc).chars().count();
+        let burst = "hello world";
+        for (i, ch) in burst.chars().enumerate() {
+            let ev = char_press(&ch.to_string());
+            assert!(send(&mut app, &mut doc, &ev), "keystroke consumed by the editor");
+            // The App re-syncs after each input, exactly as the live loop does.
+            app.sync(&mut doc, &ROOT);
+            // The buffer reflects this keystroke *now* — no wait on the compiler.
+            assert_eq!(
+                app.read_source(&doc).chars().count(),
+                start_len + i + 1,
+                "each keystroke splices into the CRDT immediately"
+            );
+            // ...and not a single compile has been dispatched mid-burst.
+            assert_eq!(
+                app.worker.as_ref().unwrap().requests_made(),
+                0,
+                "the input path must never trigger a compile per key"
+            );
+        }
+        assert!(
+            app.read_source(&doc).contains(burst),
+            "the whole burst landed contiguously in the source buffer"
+        );
+
+        // A compile is pending (debounced), and the app keeps requesting frames
+        // so the debounce can actually fire once typing stops.
+        assert!(app.pending_compile.is_some(), "a debounced compile is queued");
+        assert!(
+            app.needs_animation_frame(),
+            "the app keeps ticking so the pending compile can fire"
+        );
+
+        // Before the quiet-window elapses, still nothing compiles.
+        app.maybe_dispatch_compile(Instant::now());
+        assert_eq!(
+            app.worker.as_ref().unwrap().requests_made(),
+            0,
+            "no compile before the debounce quiet-window elapses"
+        );
+
+        // Once the quiet-window passes, exactly one compile fires for the burst.
+        let elapsed = Instant::now() + COMPILE_DEBOUNCE + Duration::from_millis(50);
+        app.maybe_dispatch_compile(elapsed);
+        assert_eq!(
+            app.worker.as_ref().unwrap().requests_made(),
+            1,
+            "the entire burst coalesced into a single debounced compile"
+        );
+        assert!(app.pending_compile.is_none(), "pending cleared once dispatched");
+    }
+
+    /// Throttle: a second edit that arrives while a compile is still in flight
+    /// does not queue another compile — the pending edit waits for the worker to
+    /// free up. This keeps a slow compile from accumulating a backlog of jobs.
+    #[test]
+    fn edit_during_in_flight_compile_is_throttled() {
+        let (mut app, mut doc) = fresh();
+
+        // First edit + elapsed debounce → one compile dispatched, now in flight
+        // (we never poll it, so `in_flight` stays true deterministically).
+        assert!(send(&mut app, &mut doc, &char_press("x")));
+        app.sync(&mut doc, &ROOT);
+        let t1 = Instant::now() + COMPILE_DEBOUNCE + Duration::from_millis(50);
+        app.maybe_dispatch_compile(t1);
+        assert_eq!(app.worker.as_ref().unwrap().requests_made(), 1);
+        assert!(app.compiling(), "worker is in flight right after dispatch");
+
+        // A further edit re-arms the debounce (mirroring what `sync` does on the
+        // next keystroke) but must not dispatch while the first compile runs.
+        app.editor.set_text("changed source");
+        app.source_cache = "changed source".to_string();
+        app.pending_compile = Some(Instant::now());
+        let t2 = t1 + COMPILE_DEBOUNCE + Duration::from_millis(50);
+        app.maybe_dispatch_compile(t2);
+        assert_eq!(
+            app.worker.as_ref().unwrap().requests_made(),
+            1,
+            "no second compile is queued behind an in-flight one"
+        );
+        assert!(
+            app.pending_compile.is_some(),
+            "the pending edit is retained, not dropped, until the worker frees up"
+        );
     }
 }
