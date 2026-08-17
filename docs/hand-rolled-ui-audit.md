@@ -112,7 +112,7 @@ widget as a struct field, place with `apply_layout_external(rect)`, forward
 
 | app | surface | state → key-mutation | verdict / target | effort |
 |---|---|---|---|---|
-| disks | format-confirm field | `app.rs:292 confirm_input` → `:2108 push(ch)` | MIGRATE → `TextInput::local` | S |
+| disks ✅ | format-confirm field | `app.rs:292 confirm_input` → `:2108 push(ch)` | **DONE** → `TextInput::local` (plain chrome; app keeps its success-border box) | S |
 | pdf_viewer | find query | `app.rs:406 query` → `app_events.rs:918 push(ch)` | MIGRATE → `SearchField` | S |
 | imager | "type device name to arm" confirm | `app.rs:104 confirm` → `:1421 push(c)` | MIGRATE → `TextInput::local` (paste-safety caveat) | S |
 | vpn | Add-tunnel name / endpoint | `app.rs:270/271` → `:1719 push_str` | MIGRATE → `TextInput::local` ×2 | M |
