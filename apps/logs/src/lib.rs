@@ -4,8 +4,8 @@
 //! The viewer is a single self-rendering [`app::LogsApp`] widget: a
 //! scrollable, severity-coloured entry list; a detail pane that surfaces
 //! every field of the selected record; and a filter bar (free-text
-//! search, unit, boot, and a syslog-priority threshold) plus a severity
-//! legend and a live-tail toggle. All *view state* lives in the Automerge
+//! search, unit, boot, and a syslog-priority threshold) plus a
+//! live-tail toggle. All *view state* lives in the Automerge
 //! document (see [`doc::LogsDoc`]) so selection, filters, and search sync
 //! across collaborators and participate in undo/redo for free; the
 //! journal entries themselves are an external render cache.
