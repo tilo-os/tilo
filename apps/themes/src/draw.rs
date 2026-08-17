@@ -144,16 +144,11 @@ pub fn text_center(
 
 /// Optically-centred top `y` for the two lines of a name-over-subtitle list row
 /// within `[y0, y0 + h]`. `d` is the distance between the two run tops (the line
-/// advance). Both tops are lifted so the block's optical centre lands on the row
-/// middle, level with a box-centred avatar / swatch — the same optical model
-/// `ui::centered_text_y` uses for single lines, extended to a two-line block.
+/// advance). Thin wrapper over the toolkit's canonical
+/// [`ui::text_render::centered_two_line_tops`] so the preview / sidebar rows use
+/// the one source of truth for list-row centring.
 pub fn two_line_tops(y0: f64, h: f64, size_top: f32, size_bottom: f32, d: f64) -> (f64, f64) {
-    // A run drawn at top `y` has its optical centre at `y + size·(0.5 + LIFT)`.
-    let k = 0.5 + ui::text_render::OPTICAL_LIFT;
-    // Vertical span between the two runs' optical centres, plus the run heights.
-    let optical_extent = d + k * (size_top as f64 + size_bottom as f64);
-    let y_top = y0 + h / 2.0 - optical_extent / 2.0;
-    (y_top, y_top + d)
+    ui::text_render::centered_two_line_tops(y0, h, size_top, size_bottom, d)
 }
 
 /// Filled smooth polyline area (for the preview sparkline). `pts` are
