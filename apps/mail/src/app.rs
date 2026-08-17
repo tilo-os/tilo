@@ -401,6 +401,12 @@ impl MailApp {
 
     // ---- intent processing ------------------------------------------------
 
+    /// The message currently selected, if any. Lets a test observe where a
+    /// Ctrl+K activation navigated.
+    pub fn selected_message(&self) -> Option<crate::model::MessageId> {
+        self.shared.borrow().selected
+    }
+
     fn process_intents(&mut self) {
         let intents = self.shared.borrow_mut().take_intents();
         for intent in intents {
@@ -1758,6 +1764,35 @@ impl Widget for MailApp {
     /// cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.shared.borrow_mut().take_committed_action()
+    }
+
+    /// Fold the mailbox into the unified Ctrl+K palette: a snapshot
+    /// [`MailSearchProvider`](crate::search_provider::MailSearchProvider) makes
+    /// every already-loaded message findable there by subject / sender / body,
+    /// alongside the actions the app exports. The provider never touches the
+    /// IMAP engine, so a Ctrl+K query stays synchronous.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::MailSearchProvider::new(
+            &self.shared.borrow().mailbox,
+        ))]
+    }
+
+    /// Open the message a chosen palette row identifies: switch to its folder,
+    /// select it (which marks it read + shows the detail pane), then pump the
+    /// resulting navigation intent. Selection is app-local presentation.
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
+        let Some(id) = crate::search_provider::MailSearchProvider::parse_action_id(action_id) else {
+            return;
+        };
+        let folder = self.shared.borrow().mailbox.get(id).map(|m| m.folder);
+        if let Some(folder) = folder {
+            {
+                let mut st = self.shared.borrow_mut();
+                st.select_folder(doc, folder);
+                st.select_message(doc, id);
+            }
+            self.process_intents();
+        }
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut HashMap<NodeId, *mut dyn Widget>) -> NodeId {
