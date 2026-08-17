@@ -35,6 +35,7 @@
 //!   `BlobStore` adapter over a real iroh `Store`.
 
 pub mod blobs;
+pub mod capabilities;
 pub mod id;
 pub mod manifest;
 pub mod pack;
@@ -45,6 +46,9 @@ pub mod validate;
 pub mod verify;
 
 pub use blobs::{BlobHash, BlobStore, BlobStoreError, Collection, MemoryBlobStore};
+pub use capabilities::{
+    Capabilities, PrivilegedCapability, PrivilegedRequest, PRIVILEGED_SCOPE_PREFIX, PRIVILEGED_VERB,
+};
 pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
     Cli, Entrypoint, EntrypointType, Manifest, ManifestParseError, NetMode, Package, PathPattern,

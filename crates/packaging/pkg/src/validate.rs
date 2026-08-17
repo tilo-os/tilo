@@ -61,6 +61,12 @@ pub enum ManifestError {
          device node — is a capability the user grants at runtime, not a line in a manifest."
     )]
     FsReadDeclared { package: String, entry: String },
+    #[error(
+        "package `{package}` declares the privileged capability `{capability}` more than once.\n  \
+         Declare each capability once; narrow it to several targets with distinct `scope` \
+         entries if that is what you mean."
+    )]
+    DuplicateCapability { package: String, capability: String },
 }
 
 /// Validate the manifest against the schema rules that don't
@@ -160,6 +166,21 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
     m.publisher
         .signature_bytes()
         .map_err(|e| ManifestError::BadPublisherSignature(e.to_string()))?;
+
+    // Privileged capabilities: the vocabulary itself was validated at TOML
+    // decode (an unknown capability cannot even parse). The one cross-field
+    // invariant left is that a capability is declared at most once, so the
+    // broker's ceiling check has an unambiguous answer.
+    let mut seen: Vec<crate::capabilities::PrivilegedCapability> = Vec::new();
+    for req in &m.capabilities.privileged {
+        if seen.contains(&req.capability) {
+            return Err(ManifestError::DuplicateCapability {
+                package: m.package.id.clone(),
+                capability: req.capability.wire().to_string(),
+            });
+        }
+        seen.push(req.capability);
+    }
 
     Ok(())
 }
@@ -267,5 +288,84 @@ mode = "off"
             matches!(e, ManifestError::AppMissingEntrypoint),
             "expected app-entrypoint error, got {e:?}"
         );
+    }
+
+    /// A minimal but valid `kind = "app"` manifest, so a `[capabilities]`
+    /// block can be validated on the real path a firewall qpkg takes rather
+    /// than in isolation.
+    fn minimal_app_manifest(extra: &str) -> Manifest {
+        let src = format!(
+            r#"
+[package]
+id = "dev.qos.firewall"
+version = "0.1.0"
+kind = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user", "pid", "uts", "ipc", "mount"]
+seccomp = "qos-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/firewall"
+type = "gui"
+{extra}
+"#
+        );
+        Manifest::from_toml_str(&src).unwrap()
+    }
+
+    #[test]
+    fn app_declaring_firewall_admin_validates() {
+        // The production shape: firewall declares one privileged capability.
+        let m = minimal_app_manifest(
+            r#"
+[capabilities]
+[[capabilities.privileged]]
+capability = "firewall-admin"
+reason = "apply firewall rules the user edits"
+"#,
+        );
+        assert_eq!(m.capabilities.privileged.len(), 1);
+        assert!(
+            m.capabilities
+                .declares(crate::capabilities::PrivilegedCapability::FirewallAdmin)
+        );
+        assert_eq!(validate_manifest(&m), Ok(()));
+    }
+
+    #[test]
+    fn duplicate_capability_is_rejected() {
+        let m = minimal_app_manifest(
+            r#"
+[capabilities]
+[[capabilities.privileged]]
+capability = "firewall-admin"
+[[capabilities.privileged]]
+capability = "firewall-admin"
+"#,
+        );
+        assert_eq!(
+            validate_manifest(&m),
+            Err(ManifestError::DuplicateCapability {
+                package: "dev.qos.firewall".into(),
+                capability: "firewall-admin".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn app_without_capabilities_block_declares_nothing() {
+        let m = minimal_app_manifest("");
+        assert!(m.capabilities.is_empty());
+        assert_eq!(validate_manifest(&m), Ok(()));
     }
 }
