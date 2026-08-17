@@ -145,6 +145,78 @@ pub enum Icon {
     Delete,
     /// Return / Enter key glyph (a down-then-left corner arrow).
     CornerDownLeft,
+    // --- Camera / capture set ---
+    /// Camera-flip / front-back toggle. Lucide `switch-camera`.
+    SwitchCamera,
+    /// Camera iris. Lucide `aperture`.
+    Aperture,
+    /// Countdown / self-timer. Lucide `timer`.
+    Timer,
+    /// Flash / lightning. Lucide `zap`.
+    Zap,
+    /// Framing / QR-scan brackets with a sweep line. Lucide `scan-line`.
+    ScanLine,
+    /// Adjustment sliders. Lucide `sliders-horizontal`.
+    SlidersHorizontal,
+    /// Rule-of-thirds overlay toggle. Lucide `grid-3x3`.
+    Grid3x3,
+    // --- People / sharing / places set ---
+    /// A single person. Lucide `user`.
+    User,
+    /// Share graph (three linked nodes). Lucide `share-2`.
+    Share2,
+    /// Location pin. Lucide `map-pin`.
+    MapPin,
+    /// Telephone handset. Lucide `phone`.
+    Phone,
+    /// Chain link. Lucide `link`.
+    Link,
+    // --- Container / shape set ---
+    /// A plain rounded square (also a "stop" affordance when filled).
+    /// Lucide `square`.
+    Square,
+    /// A shipping box / package. Lucide `package`.
+    Package,
+    /// Command-line prompt. Lucide `terminal`.
+    Terminal,
+    // --- Media-transport / library set ---
+    // (SkipBack, SkipForward and VolumeX already live in the OSK / quick-
+    // settings sections above and are reused here.)
+    /// Shuffle playback order. Lucide `shuffle`.
+    Shuffle,
+    /// Repeat the queue. Lucide `repeat`.
+    Repeat,
+    /// Repeat the current track. Lucide `repeat-1`.
+    Repeat1,
+    /// Favourite. Lucide `heart`.
+    Heart,
+    /// A track list. Lucide `list-music`.
+    ListMusic,
+    /// A numbered / play-queue list. Lucide `list-ordered`.
+    ListOrdered,
+    /// A vinyl disc / album. Lucide `disc-3`.
+    Disc3,
+    /// A group of people / artists. Lucide `users`.
+    Users,
+    // --- Feed / social / media-browser set ---
+    /// Trending / hot. Lucide `flame`.
+    Flame,
+    /// Like / upvote. Lucide `thumbs-up`.
+    ThumbsUp,
+    /// Dislike / downvote. Lucide `thumbs-down`.
+    ThumbsDown,
+    /// Highlights / "for you". Lucide `sparkles`.
+    Sparkles,
+    /// Visibility / views. Lucide `eye`.
+    Eye,
+    /// Hamburger menu. Lucide `menu`.
+    Menu,
+    /// A video-subscriptions screen. Lucide `monitor-play`.
+    MonitorPlay,
+    /// Watch/recent history. Lucide `history`.
+    History,
+    /// A video playlist. Lucide `list-video`.
+    ListVideo,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -274,7 +346,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         // lucide's `search.js` (v0.546.0).
         Icon::Search => vec![
             circle_path(11.0, 11.0, 8.0),
-            path_from_d("m21 21-4.3-4.3"),
+            path_from_d("m21 21-4.34-4.34"),
         ],
         // Pen-tool: nib body + handle + diagonal + ink dot. Transcribed
         // from lucide's `pen-tool.js` (v0.546.0).
@@ -330,12 +402,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         ],
         // Camera: body outline (with the lens-mount notch on top) plus
         // the central r=3 lens circle. Transcribed from lucide's
-        // `camera.svg` (v0.469); the body path is one continuous loop
+        // `camera.svg` (v0.546.0); the body path is one continuous loop
         // and the lens is a separate `<circle>` primitive that we route
         // through `circle_path` to match the existing convention.
         Icon::Camera => vec![
             path_from_d(
-                "M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z",
+                "M13.997 4a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 1.759-1.048l.489-.904A2 2 0 0 1 10.004 4z",
             ),
             circle_path(12.0, 13.0, 3.0),
         ],
@@ -419,7 +491,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         // Star: single five-point star outline. Transcribed from
         // lucide's `star.js` (v0.546.0).
         Icon::Star => vec![path_from_d(
-            "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.85a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 10.633a.53.53 0 0 1 .294-.904l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
+            "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
         )],
         // Sun: centre disc plus eight rays. From lucide's `sun.js`.
         Icon::Sun => vec![
@@ -510,14 +582,14 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"),
         ],
         // Play: single filled-look triangle traced as a stroked path so
-        // it matches the lucide stroke aesthetic. From `play.js`.
+        // it matches the lucide stroke aesthetic. From `play.svg` (v0.546.0).
         Icon::Play => vec![path_from_d(
-            "M6 3a1 1 0 0 1 1.514-.857l13 7a1 1 0 0 1 0 1.714l-13 7A1 1 0 0 1 6 21z",
+            "M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z",
         )],
-        // Pause: two rounded vertical bars. From lucide's `pause.js`.
+        // Pause: two rounded vertical bars. From lucide's `pause.svg` (v0.546.0).
         Icon::Pause => vec![
-            rect_path(14.0, 4.0, 4.0, 16.0, 1.0),
-            rect_path(6.0, 4.0, 4.0, 16.0, 1.0),
+            rect_path(14.0, 3.0, 5.0, 18.0, 1.0),
+            rect_path(5.0, 3.0, 5.0, 18.0, 1.0),
         ],
         // Check: single tick polyline. From lucide's `check.js`.
         Icon::Check => vec![path_from_d("M20 6 9 17l-5-5")],
@@ -653,11 +725,11 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         // Mail: envelope body rect + flap fold.
         Icon::Mail => vec![
             rect_path(2.0, 4.0, 20.0, 16.0, 2.0),
-            path_from_d("m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"),
+            path_from_d("m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7"),
         ],
-        // Paperclip: single hook path.
+        // Paperclip: single hook path. From lucide's `paperclip.svg` (v0.546.0).
         Icon::Paperclip => vec![path_from_d(
-            "M13.234 20.252 21 12.3a4.75 4.75 0 0 0-6.72-6.71l-8.94 8.94a2.375 2.375 0 0 0 3.36 3.36l7.09-7.09a1.188 1.188 0 0 0-1.68-1.68L7.5 15.7",
+            "m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551",
         )],
         // Calendar: two hanger ticks + body + header rule.
         Icon::Calendar => vec![
@@ -693,6 +765,220 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::CornerDownLeft => vec![
             path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
             path_from_d("M9 10 4 15l5 5"),
+        ],
+        // --- Camera / capture set — lucide v0.546.0 ---
+        // Switch-camera: two overlapping frame corners, a lens dot, and the
+        // two swap-arrow heads. This is the "flip to front/back camera" glyph.
+        Icon::SwitchCamera => vec![
+            path_from_d("M11 19H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h5"),
+            path_from_d("M13 5h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-5"),
+            circle_path(12.0, 12.0, 3.0),
+            path_from_d("m18 22-3-3 3-3"),
+            path_from_d("m6 2 3 3-3 3"),
+        ],
+        // Aperture: outer ring + six iris blades struck as chords.
+        Icon::Aperture => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("m14.31 8 5.74 9.94"),
+            path_from_d("M9.69 8h11.48"),
+            path_from_d("m7.38 12 5.74-9.94"),
+            path_from_d("M9.69 16 3.95 6.06"),
+            path_from_d("M14.31 16H2.83"),
+            path_from_d("m16.62 12-5.74 9.94"),
+        ],
+        // Timer: top button bar + the hand + the dial ring.
+        Icon::Timer => vec![
+            line_path(10.0, 2.0, 14.0, 2.0),
+            line_path(12.0, 14.0, 15.0, 11.0),
+            circle_path(12.0, 14.0, 8.0),
+        ],
+        // Zap: single closed lightning-bolt loop.
+        Icon::Zap => vec![path_from_d(
+            "M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z",
+        )],
+        // Scan-line: four rounded framing corners + a horizontal sweep.
+        Icon::ScanLine => vec![
+            path_from_d("M3 7V5a2 2 0 0 1 2-2h2"),
+            path_from_d("M17 3h2a2 2 0 0 1 2 2v2"),
+            path_from_d("M21 17v2a2 2 0 0 1-2 2h-2"),
+            path_from_d("M7 21H5a2 2 0 0 1-2-2v-2"),
+            path_from_d("M7 12h10"),
+        ],
+        // Sliders-horizontal: three rails with offset knobs.
+        Icon::SlidersHorizontal => vec![
+            path_from_d("M10 5H3"),
+            path_from_d("M12 19H3"),
+            path_from_d("M14 3v4"),
+            path_from_d("M16 17v4"),
+            path_from_d("M21 12h-9"),
+            path_from_d("M21 19h-5"),
+            path_from_d("M21 5h-7"),
+            path_from_d("M8 10v4"),
+            path_from_d("M8 12H3"),
+        ],
+        // Grid-3x3: framed rect + two inner rules each axis.
+        Icon::Grid3x3 => vec![
+            rect_path(3.0, 3.0, 18.0, 18.0, 2.0),
+            path_from_d("M3 9h18"),
+            path_from_d("M3 15h18"),
+            path_from_d("M9 3v18"),
+            path_from_d("M15 3v18"),
+        ],
+        // --- People / sharing / places set — lucide v0.546.0 ---
+        // User: shoulders arc + head circle.
+        Icon::User => vec![
+            path_from_d("M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"),
+            circle_path(12.0, 7.0, 4.0),
+        ],
+        // Share-2: three node dots + the two connecting links.
+        Icon::Share2 => vec![
+            circle_path(18.0, 5.0, 3.0),
+            circle_path(6.0, 12.0, 3.0),
+            circle_path(18.0, 19.0, 3.0),
+            line_path(8.59, 13.51, 15.42, 17.49),
+            line_path(15.41, 6.51, 8.59, 10.49),
+        ],
+        // Map-pin: teardrop body + inner dot.
+        Icon::MapPin => vec![
+            path_from_d("M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"),
+            circle_path(12.0, 10.0, 3.0),
+        ],
+        // Phone: single handset loop.
+        Icon::Phone => vec![path_from_d(
+            "M13.832 16.568a1 1 0 0 0 1.213-.303l.355-.465A2 2 0 0 1 17 15h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2A18 18 0 0 1 2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-.8 1.6l-.468.351a1 1 0 0 0-.292 1.233 14 14 0 0 0 6.392 6.384",
+        )],
+        // Link: two interlocking chain halves.
+        Icon::Link => vec![
+            path_from_d("M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"),
+            path_from_d("M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"),
+        ],
+        // --- Container / shape set — lucide v0.546.0 ---
+        // Square: single rounded-rect outline (fills to a "stop" glyph).
+        Icon::Square => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0)],
+        // Package: box body + vertical seam + top fold + side seam.
+        Icon::Package => vec![
+            path_from_d("M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"),
+            path_from_d("M12 22V12"),
+            path_from_d("M3.29 7 12 12 20.71 7"),
+            path_from_d("m7.5 4.27 9 5.15"),
+        ],
+        // Terminal: baseline + the prompt chevron.
+        Icon::Terminal => vec![
+            path_from_d("M12 19h8"),
+            path_from_d("m4 17 6-6-6-6"),
+        ],
+        // --- Media-transport / library set — lucide v0.546.0 ---
+        // (SkipBack / SkipForward / VolumeX are defined in the sections above.)
+        // Shuffle: two arrowheads + two crossing rails.
+        Icon::Shuffle => vec![
+            path_from_d("m18 14 4 4-4 4"),
+            path_from_d("m18 2 4 4-4 4"),
+            path_from_d("M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22"),
+            path_from_d("M2 6h1.972a4 4 0 0 1 3.6 2.2"),
+            path_from_d("M22 18h-6.041a4 4 0 0 1-3.3-1.8l-.359-.45"),
+        ],
+        // Repeat: arrowhead pair + the loop rails.
+        Icon::Repeat => vec![
+            path_from_d("m17 2 4 4-4 4"),
+            path_from_d("M3 11v-1a4 4 0 0 1 4-4h14"),
+            path_from_d("m7 22-4-4 4-4"),
+            path_from_d("M21 13v1a4 4 0 0 1-4 4H3"),
+        ],
+        // Repeat-1: repeat loop + the inner "1".
+        Icon::Repeat1 => vec![
+            path_from_d("m17 2 4 4-4 4"),
+            path_from_d("M3 11v-1a4 4 0 0 1 4-4h14"),
+            path_from_d("m7 22-4-4 4-4"),
+            path_from_d("M21 13v1a4 4 0 0 1-4 4H3"),
+            path_from_d("M11 10h1v4"),
+        ],
+        // Heart: single closed lobe path (fills cleanly for a "liked" state).
+        Icon::Heart => vec![path_from_d(
+            "M2 9.5a5.5 5.5 0 0 1 9.591-3.676.56.56 0 0 0 .818 0A5.49 5.49 0 0 1 22 9.5c0 2.29-1.5 4-3 5.5l-5.492 5.313a2 2 0 0 1-3 .019L5 15c-1.5-1.5-3-3.2-3-5.5",
+        )],
+        // List-music: three rules + the note stem and head.
+        Icon::ListMusic => vec![
+            path_from_d("M16 5H3"),
+            path_from_d("M11 12H3"),
+            path_from_d("M11 19H3"),
+            path_from_d("M21 16V5"),
+            circle_path(18.0, 16.0, 3.0),
+        ],
+        // List-ordered: three rules + the "1" and "2" number strokes.
+        Icon::ListOrdered => vec![
+            path_from_d("M11 5h10"),
+            path_from_d("M11 12h10"),
+            path_from_d("M11 19h10"),
+            path_from_d("M4 4h1v5"),
+            path_from_d("M4 9h2"),
+            path_from_d("M6.5 20H3.4c0-1 2.6-1.925 2.6-3.5a1.5 1.5 0 0 0-2.6-1.02"),
+        ],
+        // Disc-3: outer ring, two label arcs, and the spindle dot.
+        Icon::Disc3 => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M6 12c0-1.7.7-3.2 1.8-4.2"),
+            circle_path(12.0, 12.0, 2.0),
+            path_from_d("M18 12c0 1.7-.7 3.2-1.8 4.2"),
+        ],
+        // Users: two overlapping figures (shoulders + heads).
+        Icon::Users => vec![
+            path_from_d("M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"),
+            path_from_d("M16 3.128a4 4 0 0 1 0 7.744"),
+            path_from_d("M22 21v-2a4 4 0 0 0-3-3.87"),
+            circle_path(9.0, 7.0, 4.0),
+        ],
+        // --- Feed / social / media-browser set — lucide v0.546.0 ---
+        // Flame: single closed flame silhouette.
+        Icon::Flame => vec![path_from_d(
+            "M12 3q1 4 4 6.5t3 5.5a1 1 0 0 1-14 0 5 5 0 0 1 1-3 1 1 0 0 0 5 0c0-2-1.5-3-1.5-5q0-2 2.5-4",
+        )],
+        // Thumbs-up: forearm stroke + the closed hand body.
+        Icon::ThumbsUp => vec![
+            path_from_d("M7 10v12"),
+            path_from_d("M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"),
+        ],
+        // Thumbs-down: mirror of thumbs-up.
+        Icon::ThumbsDown => vec![
+            path_from_d("M17 14V2"),
+            path_from_d("M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"),
+        ],
+        // Sparkles: big four-point star + a small star and a dot.
+        Icon::Sparkles => vec![
+            path_from_d("M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"),
+            path_from_d("M20 2v4"),
+            path_from_d("M22 4h-4"),
+            circle_path(4.0, 20.0, 2.0),
+        ],
+        // Eye: outer lid loop + the iris.
+        Icon::Eye => vec![
+            path_from_d("M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"),
+            circle_path(12.0, 12.0, 3.0),
+        ],
+        // Menu: three equal rules.
+        Icon::Menu => vec![
+            path_from_d("M4 5h16"),
+            path_from_d("M4 12h16"),
+            path_from_d("M4 19h16"),
+        ],
+        // Monitor-play: screen rect + stand + the play triangle inside.
+        Icon::MonitorPlay => vec![
+            path_from_d("M15.033 9.44a.647.647 0 0 1 0 1.12l-4.065 2.352a.645.645 0 0 1-.968-.56V7.648a.645.645 0 0 1 .967-.56z"),
+            path_from_d("M12 17v4"),
+            path_from_d("M8 21h8"),
+            rect_path(2.0, 3.0, 20.0, 14.0, 2.0),
+        ],
+        // History: broken clock ring + the return arrowhead + the hands.
+        Icon::History => vec![
+            path_from_d("M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"),
+            path_from_d("M3 3v5h5"),
+            path_from_d("M12 7v5l4 2"),
+        ],
+        // List-video: three rules + the play triangle.
+        Icon::ListVideo => vec![
+            path_from_d("M21 5H3"),
+            path_from_d("M10 12H3"),
+            path_from_d("M10 19H3"),
+            path_from_d("M15 12.003a1 1 0 0 1 1.517-.859l4.997 2.997a1 1 0 0 1 0 1.718l-4.997 2.997a1 1 0 0 1-1.517-.86z"),
         ],
     }
 }
@@ -742,6 +1028,238 @@ pub fn icon_for_path(path: &std::path::Path, is_dir: bool) -> Icon {
 }
 
 impl Icon {
+    /// Every [`Icon`] variant, in declaration order. This is the single
+    /// source of truth for "the whole set" — the gallery example paints
+    /// from it and the test-suite audits every glyph through it, so a new
+    /// variant is covered the moment it is added here.
+    pub const ALL: &'static [Icon] = &[
+        Icon::LayoutGrid,
+        Icon::Settings2,
+        Icon::Wifi,
+        Icon::Bluetooth,
+        Icon::Monitor,
+        Icon::Battery,
+        Icon::Shield,
+        Icon::Maximize2,
+        Icon::Minimize2,
+        Icon::X,
+        Icon::ChevronUp,
+        Icon::ChevronDown,
+        Icon::ChevronLeft,
+        Icon::Plus,
+        Icon::Search,
+        Icon::PenTool,
+        Icon::Code,
+        Icon::FileText,
+        Icon::BarChart,
+        Icon::Layers,
+        Icon::Settings,
+        Icon::Home,
+        Icon::Camera,
+        Icon::Power,
+        Icon::Folder,
+        Icon::FolderOpen,
+        Icon::File,
+        Icon::Image,
+        Icon::Music,
+        Icon::Film,
+        Icon::Archive,
+        Icon::FileCode,
+        Icon::ArrowLeft,
+        Icon::ArrowRight,
+        Icon::ArrowUp,
+        Icon::ChevronRight,
+        Icon::RotateCw,
+        Icon::Copy,
+        Icon::Scissors,
+        Icon::ClipboardPaste,
+        Icon::Trash2,
+        Icon::Pencil,
+        Icon::FolderPlus,
+        Icon::FilePlus,
+        Icon::List,
+        Icon::Star,
+        Icon::HardDrive,
+        Icon::Check,
+        Icon::Info,
+        Icon::CloudDownload,
+        Icon::ArrowUpDown,
+        Icon::Bell,
+        Icon::Play,
+        Icon::Pause,
+        Icon::Refresh,
+        Icon::ExternalLink,
+        Icon::Trash,
+        Icon::MoreHorizontal,
+        Icon::Inbox,
+        Icon::Send,
+        Icon::Reply,
+        Icon::Mail,
+        Icon::Paperclip,
+        Icon::Calendar,
+        Icon::Ban,
+        Icon::Download,
+        Icon::Sun,
+        Icon::Volume2,
+        Icon::VolumeX,
+        Icon::WifiOff,
+        Icon::EthernetPort,
+        Icon::MicOff,
+        Icon::SkipForward,
+        Icon::SkipBack,
+        Icon::ArrowBigUp,
+        Icon::Delete,
+        Icon::CornerDownLeft,
+        Icon::SwitchCamera,
+        Icon::Aperture,
+        Icon::Timer,
+        Icon::Zap,
+        Icon::ScanLine,
+        Icon::SlidersHorizontal,
+        Icon::Grid3x3,
+        Icon::User,
+        Icon::Share2,
+        Icon::MapPin,
+        Icon::Phone,
+        Icon::Link,
+        Icon::Square,
+        Icon::Package,
+        Icon::Terminal,
+        Icon::Shuffle,
+        Icon::Repeat,
+        Icon::Repeat1,
+        Icon::Heart,
+        Icon::ListMusic,
+        Icon::ListOrdered,
+        Icon::Disc3,
+        Icon::Users,
+        Icon::Flame,
+        Icon::ThumbsUp,
+        Icon::ThumbsDown,
+        Icon::Sparkles,
+        Icon::Eye,
+        Icon::Menu,
+        Icon::MonitorPlay,
+        Icon::History,
+        Icon::ListVideo,
+    ];
+
+    /// The stable lucide kebab-ish name for this glyph — handy for gallery
+    /// labels and debugging. Mirrors the `Debug` variant name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Icon::LayoutGrid => "layout-grid",
+            Icon::Settings2 => "settings-2",
+            Icon::Wifi => "wifi",
+            Icon::Bluetooth => "bluetooth",
+            Icon::Monitor => "monitor",
+            Icon::Battery => "battery",
+            Icon::Shield => "shield",
+            Icon::Maximize2 => "maximize-2",
+            Icon::Minimize2 => "minimize-2",
+            Icon::X => "x",
+            Icon::ChevronUp => "chevron-up",
+            Icon::ChevronDown => "chevron-down",
+            Icon::ChevronLeft => "chevron-left",
+            Icon::Plus => "plus",
+            Icon::Search => "search",
+            Icon::PenTool => "pen-tool",
+            Icon::Code => "code",
+            Icon::FileText => "file-text",
+            Icon::BarChart => "bar-chart",
+            Icon::Layers => "layers",
+            Icon::Settings => "settings",
+            Icon::Home => "home",
+            Icon::Camera => "camera",
+            Icon::Power => "power",
+            Icon::Folder => "folder",
+            Icon::FolderOpen => "folder-open",
+            Icon::File => "file",
+            Icon::Image => "image",
+            Icon::Music => "music",
+            Icon::Film => "film",
+            Icon::Archive => "archive",
+            Icon::FileCode => "file-code",
+            Icon::ArrowLeft => "arrow-left",
+            Icon::ArrowRight => "arrow-right",
+            Icon::ArrowUp => "arrow-up",
+            Icon::ChevronRight => "chevron-right",
+            Icon::RotateCw => "rotate-cw",
+            Icon::Copy => "copy",
+            Icon::Scissors => "scissors",
+            Icon::ClipboardPaste => "clipboard-paste",
+            Icon::Trash2 => "trash-2",
+            Icon::Pencil => "pencil",
+            Icon::FolderPlus => "folder-plus",
+            Icon::FilePlus => "file-plus",
+            Icon::List => "list",
+            Icon::Star => "star",
+            Icon::HardDrive => "hard-drive",
+            Icon::Check => "check",
+            Icon::Info => "info",
+            Icon::CloudDownload => "cloud-download",
+            Icon::ArrowUpDown => "arrow-up-down",
+            Icon::Bell => "bell",
+            Icon::Play => "play",
+            Icon::Pause => "pause",
+            Icon::Refresh => "refresh-cw",
+            Icon::ExternalLink => "external-link",
+            Icon::Trash => "trash",
+            Icon::MoreHorizontal => "more-horizontal",
+            Icon::Inbox => "inbox",
+            Icon::Send => "send",
+            Icon::Reply => "reply",
+            Icon::Mail => "mail",
+            Icon::Paperclip => "paperclip",
+            Icon::Calendar => "calendar",
+            Icon::Ban => "ban",
+            Icon::Download => "download",
+            Icon::Sun => "sun",
+            Icon::Volume2 => "volume-2",
+            Icon::WifiOff => "wifi-off",
+            Icon::EthernetPort => "ethernet-port",
+            Icon::MicOff => "mic-off",
+            Icon::ArrowBigUp => "arrow-big-up",
+            Icon::Delete => "delete",
+            Icon::CornerDownLeft => "corner-down-left",
+            Icon::SwitchCamera => "switch-camera",
+            Icon::Aperture => "aperture",
+            Icon::Timer => "timer",
+            Icon::Zap => "zap",
+            Icon::ScanLine => "scan-line",
+            Icon::SlidersHorizontal => "sliders-horizontal",
+            Icon::Grid3x3 => "grid-3x3",
+            Icon::User => "user",
+            Icon::Share2 => "share-2",
+            Icon::MapPin => "map-pin",
+            Icon::Phone => "phone",
+            Icon::Link => "link",
+            Icon::Square => "square",
+            Icon::Package => "package",
+            Icon::Terminal => "terminal",
+            Icon::SkipBack => "skip-back",
+            Icon::SkipForward => "skip-forward",
+            Icon::Shuffle => "shuffle",
+            Icon::Repeat => "repeat",
+            Icon::Repeat1 => "repeat-1",
+            Icon::Heart => "heart",
+            Icon::VolumeX => "volume-x",
+            Icon::ListMusic => "list-music",
+            Icon::ListOrdered => "list-ordered",
+            Icon::Disc3 => "disc-3",
+            Icon::Users => "users",
+            Icon::Flame => "flame",
+            Icon::ThumbsUp => "thumbs-up",
+            Icon::ThumbsDown => "thumbs-down",
+            Icon::Sparkles => "sparkles",
+            Icon::Eye => "eye",
+            Icon::Menu => "menu",
+            Icon::MonitorPlay => "monitor-play",
+            Icon::History => "history",
+            Icon::ListVideo => "list-video",
+        }
+    }
+
     /// Convenience: paint this glyph centred inside `rect`, stroked in
     /// `color` at the concept's default 1.5 px lucide width. Equivalent
     /// to [`draw_icon`] with `self` and [`LUCIDE_DEFAULT_STROKE_PX`].
@@ -1296,5 +1814,99 @@ mod tests {
         // Unknown / extension-less → generic file.
         assert_eq!(icon_for_path(Path::new("Makefile"), false), Icon::File);
         assert_eq!(icon_for_path(Path::new("blob.qwerty"), false), Icon::File);
+    }
+
+    /// The whole-set audit: **every** [`Icon::ALL`] variant must resolve to
+    /// at least one non-empty subpath so no glyph ever ships as a blank
+    /// square, and every subpath must stay inside the lucide 24×24 viewBox
+    /// (a small tolerance covers arc/stroke overshoot). A misplaced sub-path
+    /// — the class of bug this module exists to prevent — lands a shape far
+    /// outside the box and trips the bounds assertion here.
+    #[test]
+    fn every_icon_is_non_empty_and_within_viewbox() {
+        use vello::kurbo::Shape;
+        // Generous margin: lucide authors to 0..24 but a few arcs and the
+        // rounded-rect flattening nudge a hair past the edge.
+        const LO: f64 = -1.0;
+        const HI: f64 = 25.0;
+        for &icon in Icon::ALL {
+            let subs = icon_subpaths(icon);
+            assert!(!subs.is_empty(), "{icon:?} produced no subpaths");
+            for (i, p) in subs.iter().enumerate() {
+                assert!(element_count(p) > 0, "{icon:?} subpath {i} is empty");
+                let bb = p.bounding_box();
+                assert!(
+                    bb.x0 >= LO && bb.y0 >= LO && bb.x1 <= HI && bb.y1 <= HI,
+                    "{icon:?} subpath {i} escapes the 24x24 viewBox: {bb:?}"
+                );
+            }
+        }
+    }
+
+    /// `Icon::ALL` must enumerate the set with no duplicates, and `name()`
+    /// must give each variant a distinct label — a copy-paste slip when
+    /// adding a variant (forgetting to change the `ALL` entry or the `name`
+    /// arm) is caught here rather than showing up as a doubled gallery cell.
+    #[test]
+    fn all_and_names_are_unique() {
+        use std::collections::HashSet;
+        let set: HashSet<Icon> = Icon::ALL.iter().copied().collect();
+        assert_eq!(set.len(), Icon::ALL.len(), "Icon::ALL has a duplicate variant");
+        let names: HashSet<&str> = Icon::ALL.iter().map(|i| i.name()).collect();
+        assert_eq!(names.len(), Icon::ALL.len(), "two Icon variants share a name()");
+    }
+
+    /// The freshly-added camera/media/container glyphs must transcribe into
+    /// non-empty subpaths with the expected primitive counts, so an upstream
+    /// lucide restructure or a bad hand-edit trips here.
+    #[test]
+    fn camera_media_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::SwitchCamera).len(), 5, "switch-camera = 2 frames + lens + 2 arrows");
+        assert_eq!(icon_subpaths(Icon::Aperture).len(), 7, "aperture = ring + 6 blades");
+        assert_eq!(icon_subpaths(Icon::Timer).len(), 3, "timer = bar + hand + dial");
+        assert_eq!(icon_subpaths(Icon::Zap).len(), 1, "zap = 1 bolt loop");
+        assert_eq!(icon_subpaths(Icon::ScanLine).len(), 5, "scan-line = 4 corners + sweep");
+        assert_eq!(icon_subpaths(Icon::SlidersHorizontal).len(), 9, "sliders = 3 rails + 3 knobs (6 segs)");
+        assert_eq!(icon_subpaths(Icon::Grid3x3).len(), 5, "grid = frame + 4 rules");
+        assert_eq!(icon_subpaths(Icon::User).len(), 2, "user = shoulders + head");
+        assert_eq!(icon_subpaths(Icon::Share2).len(), 5, "share-2 = 3 nodes + 2 links");
+        assert_eq!(icon_subpaths(Icon::MapPin).len(), 2, "map-pin = body + dot");
+        assert_eq!(icon_subpaths(Icon::Phone).len(), 1, "phone = 1 handset loop");
+        assert_eq!(icon_subpaths(Icon::Link).len(), 2, "link = 2 halves");
+        assert_eq!(icon_subpaths(Icon::Square).len(), 1, "square = 1 outline");
+        assert_eq!(icon_subpaths(Icon::Package).len(), 4, "package = body + seam + fold + side");
+        assert_eq!(icon_subpaths(Icon::Terminal).len(), 2, "terminal = baseline + chevron");
+    }
+
+    /// The media-transport / library glyphs must transcribe with the expected
+    /// primitive counts so the music chrome never ships a blank or half-glyph.
+    #[test]
+    fn media_library_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::SkipBack).len(), 2, "skip-back = triangle + bar");
+        assert_eq!(icon_subpaths(Icon::SkipForward).len(), 2, "skip-forward = bar + triangle");
+        assert_eq!(icon_subpaths(Icon::Shuffle).len(), 5, "shuffle = 2 heads + 3 rails");
+        assert_eq!(icon_subpaths(Icon::Repeat).len(), 4, "repeat = head + 3 rails");
+        assert_eq!(icon_subpaths(Icon::Repeat1).len(), 5, "repeat-1 = repeat + the 1");
+        assert_eq!(icon_subpaths(Icon::Heart).len(), 1, "heart = 1 closed lobe");
+        assert_eq!(icon_subpaths(Icon::VolumeX).len(), 3, "volume-x = cone + 2 cross strokes");
+        assert_eq!(icon_subpaths(Icon::ListMusic).len(), 5, "list-music = 3 rules + stem + head");
+        assert_eq!(icon_subpaths(Icon::ListOrdered).len(), 6, "list-ordered = 3 rules + 1 + 2");
+        assert_eq!(icon_subpaths(Icon::Disc3).len(), 4, "disc-3 = ring + 2 arcs + spindle");
+        assert_eq!(icon_subpaths(Icon::Users).len(), 4, "users = 2 bodies + arc + head");
+    }
+
+    /// The feed / social / media-browser glyphs must transcribe with their
+    /// expected primitive counts.
+    #[test]
+    fn feed_social_icon_subpath_counts() {
+        assert_eq!(icon_subpaths(Icon::Flame).len(), 1, "flame = 1 silhouette");
+        assert_eq!(icon_subpaths(Icon::ThumbsUp).len(), 2, "thumbs-up = arm + hand");
+        assert_eq!(icon_subpaths(Icon::ThumbsDown).len(), 2, "thumbs-down = arm + hand");
+        assert_eq!(icon_subpaths(Icon::Sparkles).len(), 4, "sparkles = big star + 2 strokes + dot");
+        assert_eq!(icon_subpaths(Icon::Eye).len(), 2, "eye = lid + iris");
+        assert_eq!(icon_subpaths(Icon::Menu).len(), 3, "menu = 3 rules");
+        assert_eq!(icon_subpaths(Icon::MonitorPlay).len(), 4, "monitor-play = play + stand + foot + screen");
+        assert_eq!(icon_subpaths(Icon::History).len(), 3, "history = ring + arrow + hands");
+        assert_eq!(icon_subpaths(Icon::ListVideo).len(), 4, "list-video = 3 rules + play");
     }
 }
