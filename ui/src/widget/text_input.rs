@@ -267,6 +267,27 @@ pub struct TextInput {
     /// arrow), so a wheel scroll away from the caret sticks instead of snapping
     /// straight back every frame. `None` before the first draw.
     last_scroll_caret: Option<usize>,
+
+    /// Opt-in: when true, typing a `:shortcode` token opens an inline fuzzy
+    /// emoji-completion overlay (see [`with_emoji_completion`]). Off by default,
+    /// so no existing field changes behaviour — an app enables it explicitly.
+    emoji_complete: bool,
+    /// Live completion state (only meaningful while `emoji_complete`).
+    ec: EmojiCompletion,
+}
+
+/// Inline `:shortcode:` emoji-completion state for a [`TextInput`]. Reads the
+/// shared [`crate::emoji`] dataset, so no app re-implements emoji search.
+#[derive(Default)]
+struct EmojiCompletion {
+    /// Whether the suggestion overlay is currently showing.
+    active: bool,
+    /// Byte offset of the `:` that starts the active token.
+    token_start: usize,
+    /// Current suggestions (best first), rebuilt on every edit.
+    matches: Vec<&'static crate::emoji::Emoji>,
+    /// Highlighted row within `matches`.
+    selected: usize,
 }
 
 /// One on-screen row of a multiline [`TextInput`]: either a whole short logical
@@ -348,7 +369,35 @@ impl TextInput {
             hl_line_starts: Vec::new(),
             hl_sig: u64::MAX,
             last_scroll_caret: None,
+            emoji_complete: false,
+            ec: EmojiCompletion::default(),
         }
+    }
+
+    /// Opt into inline `:shortcode:` emoji completion. While enabled, typing a
+    /// colon token (`:smi`) opens a small fuzzy-search overlay of matching emoji;
+    /// Up/Down move the selection, Enter/Tab accept it (replacing the `:token`
+    /// with the emoji), and Escape dismisses it. Typing the closing colon of an
+    /// exact shortcode (`:fire:`) auto-replaces it. Off by default so an app
+    /// turns it on only where it wants it (e.g. a chat composer).
+    pub fn with_emoji_completion(mut self) -> Self {
+        self.emoji_complete = true;
+        self
+    }
+
+    /// Mutable form of [`with_emoji_completion`](Self::with_emoji_completion).
+    pub fn set_emoji_completion(&mut self, on: bool) {
+        self.emoji_complete = on;
+        if !on {
+            self.ec.active = false;
+        }
+    }
+
+    /// Whether the inline emoji-completion overlay is currently open. A host can
+    /// use this to keep a submit key (Enter) from firing while the overlay owns
+    /// it — though the widget already consumes those keys itself.
+    pub fn emoji_completion_open(&self) -> bool {
+        self.ec.active
     }
 
     /// Set the local user's id for authorship stamping. Every subsequent
@@ -520,6 +569,187 @@ impl TextInput {
         // object id, so a local field mutates `self.text` alone.
         let mut sink = AutoCommit::new();
         self.insert_str(s, &mut sink, None);
+    }
+
+    // ---- inline :shortcode: emoji completion --------------------------------
+
+    /// If the caret sits inside an open `:word` token, return `(colon_byte,
+    /// query)`. The colon must sit at the start of the text or right after
+    /// whitespace so `http://`, `3:45`, and `key:value` don't trigger it.
+    fn emoji_token(&self) -> Option<(usize, String)> {
+        let cursor = self.cursor_pos.min(self.text.len());
+        let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '+' | '-');
+        // Walk back over the token's word-chars.
+        let mut start = cursor;
+        for (i, c) in self.text[..cursor].char_indices().rev() {
+            if is_word(c) {
+                start = i;
+            } else {
+                break;
+            }
+        }
+        // The char immediately before the token must be a ':'.
+        let colon_start = self.text[..start]
+            .char_indices()
+            .next_back()
+            .and_then(|(i, c)| (c == ':').then_some(i))?;
+        // ...and the char before the colon must be nothing or whitespace.
+        if colon_start > 0 {
+            let prev = self.text[..colon_start].chars().next_back();
+            if prev.is_some_and(|c| !c.is_whitespace()) {
+                return None;
+            }
+        }
+        let query = self.text[start..cursor].to_string();
+        if query.is_empty() {
+            return None;
+        }
+        Some((colon_start, query))
+    }
+
+    /// Recompute the emoji-completion overlay from the current text + caret, and
+    /// apply an exact-shortcode auto-replace when the user just closed a token
+    /// (`:fire:` → 🔥). No-op unless emoji completion is enabled.
+    fn refresh_emoji_completion(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if !self.emoji_complete {
+            self.ec.active = false;
+            return;
+        }
+        let is_word = |c: char| c.is_alphanumeric() || matches!(c, '_' | '+' | '-');
+        // Exact `:word:` auto-replace when the caret is just past a closing ':'.
+        let cursor = self.cursor_pos.min(self.text.len());
+        if self.text[..cursor].ends_with(':') {
+            let inner_end = cursor - 1;
+            if let Some(open) = self.text[..inner_end].rfind(':') {
+                let word = &self.text[open + 1..inner_end];
+                let ok_prefix = open == 0
+                    || self.text[..open]
+                        .chars()
+                        .next_back()
+                        .map_or(true, |c| c.is_whitespace());
+                if ok_prefix && !word.is_empty() && word.chars().all(is_word) {
+                    if let Some(e) = crate::emoji::exact(word) {
+                        let ch = e.ch.to_string();
+                        self.set_selection(open, cursor);
+                        self.insert_str(&ch, state, obj_id);
+                        self.ec.active = false;
+                        return;
+                    }
+                }
+            }
+        }
+        // Otherwise show fuzzy suggestions for an open `:token`.
+        match self.emoji_token() {
+            Some((start, query)) => {
+                let matches = crate::emoji::search(&query, 8);
+                if matches.is_empty() {
+                    self.ec.active = false;
+                } else {
+                    self.ec.token_start = start;
+                    self.ec.matches = matches;
+                    if self.ec.selected >= self.ec.matches.len() {
+                        self.ec.selected = 0;
+                    }
+                    self.ec.active = true;
+                }
+            }
+            None => self.ec.active = false,
+        }
+    }
+
+    /// Accept the highlighted emoji suggestion, replacing the `:token` with it.
+    fn accept_emoji_completion(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if !self.ec.active {
+            return;
+        }
+        let Some(e) = self.ec.matches.get(self.ec.selected).copied() else {
+            self.ec.active = false;
+            return;
+        };
+        let ch = e.ch.to_string();
+        let start = self.ec.token_start;
+        let end = self.cursor_pos.min(self.text.len());
+        self.set_selection(start, end);
+        self.insert_str(&ch, state, obj_id);
+        self.ec.active = false;
+    }
+
+    /// Paint the emoji-completion overlay (a small suggestion list anchored just
+    /// above the token's caret). Called from `draw_overlay`, so it composites
+    /// over sibling widgets.
+    fn draw_emoji_overlay(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if !self.ec.active || self.ec.matches.is_empty() {
+            return;
+        }
+        let tokens = &theme.tokens;
+        let caret = self.caret_rect(theme, self.ec.token_start.min(self.text.len()));
+        let row_h = 26.0;
+        let w = 244.0;
+        let n = self.ec.matches.len().min(8);
+        let h = n as f64 * row_h + 8.0;
+        let x0 = caret.x0;
+        // Anchor above the caret (composers sit near the window's bottom edge).
+        let y1 = caret.y0 - 4.0;
+        let y0 = y1 - h;
+        let panel = Rect::new(x0, y0, x0 + w, y1);
+        let radius = tokens.radii.md as f64;
+
+        // Themed drop shadow from the elevation token.
+        let elev = &tokens.elevation.e3;
+        let shadow = Rect::new(
+            panel.x0,
+            panel.y0 + elev.offset_y as f64,
+            panel.x1,
+            panel.y1 + elev.offset_y as f64,
+        )
+        .inflate(elev.blur as f64 * 0.5, elev.blur as f64 * 0.5);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            elev.color.with_alpha_factor(0.7),
+            None,
+            &RoundedRect::from_rect(shadow, radius + elev.blur as f64 * 0.5),
+        );
+        let surface = RoundedRect::from_rect(panel, radius);
+        scene.fill(vello::peniko::Fill::NonZero, transform, theme.bg_primary, None, &surface);
+        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &surface);
+
+        for (i, e) in self.ec.matches.iter().take(8).enumerate() {
+            let ry = panel.y0 + 4.0 + i as f64 * row_h;
+            let row = Rect::new(panel.x0 + 4.0, ry, panel.x1 - 4.0, ry + row_h);
+            if i == self.ec.selected {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.bg_active,
+                    None,
+                    &RoundedRect::from_rect(row, tokens.radii.sm as f64),
+                );
+            }
+            tr.draw_text(
+                scene,
+                e.ch,
+                16.0,
+                tokens.colors.text_primary,
+                transform * Affine::translate((row.x0 + 8.0, row.center().y - 9.0)),
+                None,
+            );
+            let name = format!(":{}:", e.name);
+            tr.draw_text(
+                scene,
+                &name,
+                13.0,
+                tokens.colors.text_dim,
+                transform * Affine::translate((row.x0 + 36.0, row.center().y - 8.0)),
+                None,
+            );
+        }
     }
 
     /// Current caret position as a byte index into [`value`]. Guaranteed
@@ -2359,6 +2589,40 @@ impl Widget for TextInput {
                 let shift = modifiers.state().shift_key();
                 let ctrl = modifiers.state().control_key();
 
+                // While the inline emoji-completion overlay is open it owns
+                // navigation + accept, ahead of the field's own Arrow/Enter/Tab.
+                if self.emoji_complete && self.ec.active {
+                    match logical_key {
+                        Key::Named(NamedKey::Escape) => {
+                            self.ec.active = false;
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Tab) => {
+                            self.accept_emoji_completion(state, obj_id_opt.as_ref());
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            let n = self.ec.matches.len();
+                            if n > 0 {
+                                self.ec.selected = (self.ec.selected + 1) % n;
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            let n = self.ec.matches.len();
+                            if n > 0 {
+                                self.ec.selected = (self.ec.selected + n - 1) % n;
+                            }
+                            *handled = true;
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
                 match logical_key {
                     Key::Named(NamedKey::ArrowLeft) => {
                         let new_pos = if ctrl {
@@ -2552,6 +2816,13 @@ impl Widget for TextInput {
                 }
             }
             _ => {}
+        }
+
+        // Re-derive the inline emoji-completion overlay after any edit / caret
+        // move (opt-in; a cheap no-op otherwise).
+        if self.emoji_complete {
+            let obj = self.resolve_text_obj(state, root);
+            self.refresh_emoji_completion(state, obj.as_ref());
         }
     }
 
@@ -2750,6 +3021,7 @@ impl Widget for TextInput {
         if self.context_menu.is_open() {
             Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
         }
+        self.draw_emoji_overlay(scene, transform, text_renderer, theme);
     }
 }
 
@@ -2983,6 +3255,89 @@ mod tests {
     fn text_input_test_id_can_be_overridden() {
         let ti = TextInput::new(Vec::new()).with_id("search_box");
         assert_eq!(Widget::test_id(&ti), Some("search_box"));
+    }
+
+    /// Opt-in `:shortcode` completion opens an overlay while a token is typed
+    /// and, on Enter, replaces the token with the chosen emoji glyph.
+    #[test]
+    fn emoji_completion_replaces_token_on_accept() {
+        let mut ti = TextInput::local().with_emoji_completion();
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let feed = |ti: &mut TextInput, ev: WindowEvent, doc: &mut AutoCommit, taffy: &TaffyTree<()>| {
+            let mut h = false;
+            let mut f = None;
+            ti.handle_event(&ev, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut h, &mut f, node, taffy);
+        };
+        for s in [":", "s", "m", "i"] {
+            feed(&mut ti, char_key_event(s), &mut doc, &taffy);
+        }
+        assert!(ti.emoji_completion_open(), "typing ':smi' opens the emoji overlay");
+        assert!(
+            ti.ec.matches.iter().any(|e| e.name == "smile"),
+            "':smi' should suggest :smile:",
+        );
+        feed(&mut ti, named_key_event(NamedKey::Enter), &mut doc, &taffy);
+        assert!(!ti.emoji_completion_open(), "accepting closes the overlay");
+        assert!(
+            !ti.value().contains(':'),
+            "the :token was replaced (no colon left): {:?}",
+            ti.value(),
+        );
+        assert_eq!(
+            ti.value().chars().count(),
+            1,
+            "value is a single emoji glyph: {:?}",
+            ti.value(),
+        );
+    }
+
+    /// Typing the closing colon of an exact shortcode auto-replaces it.
+    #[test]
+    fn emoji_completion_auto_replaces_exact_shortcode() {
+        let mut ti = TextInput::local().with_emoji_completion();
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        for s in [":", "f", "i", "r", "e", ":"] {
+            let mut h = false;
+            let mut f = None;
+            ti.handle_event(
+                &char_key_event(s), 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT,
+                &mut h, &mut f, node, &taffy,
+            );
+        }
+        assert_eq!(
+            ti.value(),
+            "\u{1f525}",
+            "typing ':fire:' auto-replaces with the fire emoji",
+        );
+    }
+
+    /// Emoji completion is opt-in: a plain field never opens the overlay.
+    #[test]
+    fn emoji_completion_off_by_default() {
+        let mut ti = TextInput::local();
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        let mut doc = AutoCommit::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        for s in [":", "s", "m", "i"] {
+            let mut h = false;
+            let mut f = None;
+            ti.handle_event(
+                &char_key_event(s), 1.0, &Modifiers::default(), &mut doc, &automerge::ROOT,
+                &mut h, &mut f, node, &taffy,
+            );
+        }
+        assert!(!ti.emoji_completion_open(), "default field never opens emoji completion");
+        assert_eq!(ti.value(), ":smi", "plain field just holds the literal text");
     }
 
     /// Drive a right (secondary) mouse press at `(x, y)` against `ti`, returning
