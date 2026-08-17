@@ -14,10 +14,15 @@
 //! │  syntax highlight)        ║                               │
 //! ├───────────────────────────┤                               │
 //! │ Problems panel            ║                               │
-//! ├───────────────────────────┴──────────────────────────────┤
-//! │ status: Ln/Col · pages · zoom            Compiled in N ms │
-//! └──────────────────────────────────────────────────────────┘
+//! │              ┌──────────┐  ║  ┌───────────────┐            │
+//! │              │Ln/Col·…·%│  ║  │● Compiled …ms │            │
+//! └──────────────└──────────┘──╨──└───────────────┘───────────┘
 //! ```
+//!
+//! There is no permanent bottom status strip: the caret/page/zoom readout and
+//! the compile status float as two transient [`ui::StatusBubble`] pills in the
+//! bottom corners (see [`TypstApp::draw_status_bubbles`]), so both content
+//! panes span all the way to the window bottom.
 //!
 //! State that belongs in the CRDT — the document source — lives in an
 //! Automerge `Text` object under `root["source"]`; the editor splices into it
@@ -58,7 +63,6 @@ use crate::worker::CompileWorker;
 const PPP: f32 = 2.0;
 
 const TOOLBAR_H: f64 = 46.0;
-const STATUS_H: f64 = 26.0;
 const DIVIDER_W: f64 = 6.0;
 const DIAG_H: f64 = 168.0;
 const PILL_H: f64 = 28.0;
@@ -180,7 +184,6 @@ pub struct TypstApp {
     // --- layout rects (filled by apply_layout) ---
     rect: Rect,
     toolbar_rect: Rect,
-    status_rect: Rect,
     divider_rect: Rect,
     editor_rect: Rect,
     preview_rect: Rect,
@@ -202,6 +205,26 @@ pub struct TypstApp {
     /// Cached overflow-menu hit regions from the last draw (compact layout).
     menu_hits: Vec<(TbAction, Rect)>,
     flash: Option<(String, Instant)>,
+
+    // --- floating status bubbles (replacing the old permanent strip) ---
+    /// Bottom-left readout: caret position · page count · zoom, or the current
+    /// transient action toast when one is active. Poked on any change to that
+    /// composed label, and pinned open while the pointer hovers the bottom-left
+    /// corner; fades otherwise.
+    status_bubble_left: ui::StatusBubble,
+    /// Bottom-right compile status: "Compiling…", error/warning counts, or the
+    /// last compile time — with a leading dot in the matching semantic colour.
+    /// Poked on a new compile result; revealed on bottom-right-corner hover.
+    status_bubble_right: ui::StatusBubble,
+    /// Last composed labels, so each bubble is poked only on a *real* change
+    /// (`draw` recomputes them every frame).
+    last_left_label: String,
+    last_right_label: String,
+    /// Whether the pointer currently sits in the (left, right) bottom-corner
+    /// reveal zones — tracked so a repaint is requested only when it changes.
+    status_hover: (bool, bool),
+    /// `--shots` forces both bubbles fully visible so a still frame captures them.
+    shots_status: bool,
 }
 
 impl TypstApp {
@@ -274,7 +297,6 @@ impl TypstApp {
             demo_stale: false,
             rect: Rect::ZERO,
             toolbar_rect: Rect::ZERO,
-            status_rect: Rect::ZERO,
             divider_rect: Rect::ZERO,
             editor_rect: Rect::ZERO,
             preview_rect: Rect::ZERO,
@@ -288,6 +310,12 @@ impl TypstApp {
             toolbar_hits: Vec::new(),
             menu_hits: Vec::new(),
             flash: None,
+            status_bubble_left: ui::StatusBubble::new(),
+            status_bubble_right: ui::StatusBubble::new(),
+            last_left_label: String::new(),
+            last_right_label: String::new(),
+            status_hover: (false, false),
+            shots_status: false,
         }
     }
 
@@ -323,6 +351,7 @@ impl TypstApp {
             "preview-pan" => self.demo_preview_pan = true,
             "select" => self.demo_preview_select = true,
             "stale" => self.demo_stale = true,
+            "status" => self.arm_status_bubble_for_shots(),
             _ => {}
         }
     }
@@ -665,9 +694,10 @@ impl TypstApp {
         self.rect = rect;
         let r = self.rect;
         self.toolbar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOOLBAR_H);
-        self.status_rect = Rect::new(r.x0, r.y1 - STATUS_H, r.x1, r.y1);
         let content_top = self.toolbar_rect.y1;
-        let content_bottom = self.status_rect.y0;
+        // No permanent status strip: the content spans to the window bottom and
+        // the status floats as two transient bubbles (see `draw_status_bubbles`).
+        let content_bottom = r.y1;
         let content_w = r.width();
 
         // Derive the layout mode from the *current* width every pass, so a
@@ -1193,53 +1223,26 @@ impl TypstApp {
         }
     }
 
-    fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let c = &theme.tokens.colors;
-        let sb = self.status_rect;
-        scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &sb);
-        scene.fill(
-            Fill::NonZero,
-            t,
-            c.border_standard,
-            None,
-            &Rect::new(sb.x0, sb.y0, sb.x1, sb.y0 + 1.0),
-        );
-        let ty = sb.y0 + (sb.height() - 12.0 * 1.25) / 2.0;
-
-        // left: caret + page + zoom
+    /// Compose the bottom-left readout: the current transient action toast when
+    /// one is active, otherwise `Ln L, Col C · N pages · Z%`.
+    fn status_left_label(&self) -> String {
+        if let Some(msg) = self.flash_text() {
+            return msg.to_string();
+        }
         let (ln, col) = self.caret_line_col();
         let pages = self.preview.page_count();
-        let left = format!(
-            "Ln {ln}, Col {col}     ·     {}     ·     {:.0}%",
+        format!(
+            "Ln {ln}, Col {col}   ·   {}   ·   {:.0}%",
             plural(pages, "page", "pages"),
             self.preview.zoom() * 100.0
-        );
-        tr.draw_text(
-            scene,
-            &left,
-            12.0,
-            c.text_dim,
-            t * Affine::translate((sb.x0 + 12.0, ty)),
-            None,
-        );
+        )
+    }
 
-        // center: transient flash
-        if let Some(msg) = self.flash_text() {
-            let (fw, _) = tr.measure(msg, 12.0, None);
-            let fx = sb.x0 + (sb.width() - fw as f64) / 2.0;
-            tr.draw_text_weighted(
-                scene,
-                msg,
-                12.0,
-                theme.accent_primary,
-                t * Affine::translate((fx, ty)),
-                None,
-                TextWeight::Medium,
-            );
-        }
-
-        // right: compile status
-        let (text, color) = if self.compiling() {
+    /// Compose the bottom-right compile status and the semantic colour of its
+    /// leading dot.
+    fn status_right_label(&self, theme: &Theme) -> (String, Color) {
+        let c = &theme.tokens.colors;
+        if self.compiling() {
             ("Compiling…".to_string(), c.semantic.info)
         } else if self.err_count > 0 {
             (
@@ -1254,17 +1257,117 @@ impl TypstApp {
             (plural(self.warn_count, "warning", "warnings"), c.semantic.warning)
         } else {
             (format!("Compiled in {} ms", self.elapsed_ms), c.semantic.success)
-        };
-        let (rw, _) = tr.measure_weighted(&text, 12.0, None, TextWeight::Medium);
-        tr.draw_text_weighted(
-            scene,
-            &text,
-            12.0,
-            color,
-            t * Affine::translate((sb.x1 - 12.0 - rw as f64, ty)),
-            None,
-            TextWeight::Medium,
+        }
+    }
+
+    /// The (left, right) bottom-corner reveal bands: nudging the pointer into
+    /// either one re-surfaces the matching bubble on demand.
+    fn status_zones(&self) -> (Rect, Rect) {
+        let r = self.rect;
+        let band_h = 56.0;
+        let band_w = 320.0_f64.min((r.width() / 2.0).max(0.0));
+        let top = (r.y1 - band_h).max(r.y0);
+        let left = Rect::new(r.x0, top, r.x0 + band_w, r.y1);
+        let right = Rect::new(r.x1 - band_w, top, r.x1, r.y1);
+        (left, right)
+    }
+
+    /// Draw the two transient floating status bubbles in the bottom corners, in
+    /// place of the old permanent status strip. The left pill carries the caret
+    /// / page / zoom readout (or the active toast); the right pill carries the
+    /// compile status with a leading dot in its semantic colour. Each shows on
+    /// a change to its label, or while the pointer hovers its corner, then
+    /// fades — all colours from the theme (via [`ui::status_bubble::draw_pill`]).
+    fn draw_status_bubbles(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let now = Instant::now();
+        let (left_zone, right_zone) = self.status_zones();
+        let text_size = 12.0f32;
+        let margin = 14.0;
+
+        // --- bottom-left: caret / page / zoom (or the active toast) ---
+        let left_label = self.status_left_label();
+        if left_label != self.last_left_label {
+            self.status_bubble_left.poke(now);
+            self.last_left_label = left_label.clone();
+        }
+        let (lw, lh) = ui::status_bubble::pill_size(&left_label, tr, text_size, 0.0);
+        let lrect = Rect::new(
+            self.rect.x0 + margin,
+            self.rect.y1 - margin - lh,
+            self.rect.x0 + margin + lw,
+            self.rect.y1 - margin,
         );
+        let left_over =
+            self.shots_status || left_zone.contains(self.mouse) || lrect.contains(self.mouse);
+        self.status_bubble_left.set_hover(left_over, now);
+        let la = self.status_bubble_left.alpha(now);
+        if la > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                la,
+                t,
+                &lrect.inflate(12.0, 14.0),
+            );
+            ui::status_bubble::draw_pill(scene, t, tr, theme, lrect, &left_label, text_size);
+            scene.pop_layer();
+        }
+
+        // --- bottom-right: compile status, with a leading semantic dot ---
+        let (right_label, dot_color) = self.status_right_label(theme);
+        if right_label != self.last_right_label {
+            self.status_bubble_right.poke(now);
+            self.last_right_label = right_label.clone();
+        }
+        // Reserve a leading control slot for the status dot.
+        let dot_slot = 16.0;
+        let (rw, rh) = ui::status_bubble::pill_size(&right_label, tr, text_size, dot_slot);
+        let rrect = Rect::new(
+            self.rect.x1 - margin - rw,
+            self.rect.y1 - margin - rh,
+            self.rect.x1 - margin,
+            self.rect.y1 - margin,
+        );
+        let right_over =
+            self.shots_status || right_zone.contains(self.mouse) || rrect.contains(self.mouse);
+        self.status_bubble_right.set_hover(right_over, now);
+        let ra = self.status_bubble_right.alpha(now);
+        if ra > 0.0 {
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                ra,
+                t,
+                &rrect.inflate(12.0, 14.0),
+            );
+            ui::status_bubble::draw_pill(scene, t, tr, theme, rrect, &right_label, text_size);
+            // Semantic status dot, centred in the reserved leading slot.
+            let cy = (rrect.y0 + rrect.y1) / 2.0;
+            let dcx = rrect.x0 + 8.0 + dot_slot / 2.0;
+            scene.fill(
+                Fill::NonZero,
+                t,
+                dot_color,
+                None,
+                &vello::kurbo::Circle::new(Point::new(dcx, cy), 3.5),
+            );
+            scene.pop_layer();
+        }
+    }
+
+    /// `--shots`: force both status bubbles fully visible so a single headless
+    /// frame captures the floating pills.
+    pub fn arm_status_bubble_for_shots(&mut self) {
+        self.shots_status = true;
+        let now = Instant::now();
+        self.status_bubble_left.poke(now);
+        self.status_bubble_right.poke(now);
     }
 }
 
@@ -1396,7 +1499,7 @@ impl Widget for TypstApp {
         if self.show_diagnostics && self.diag_rect.height() > 1.0 {
             self.diagnostics.draw(scene, t, tr, theme);
         }
-        self.draw_status(scene, t, tr, theme);
+        self.draw_status_bubbles(scene, t, tr, theme);
 
         // The overflow menu floats above everything else.
         if self.compact && self.menu_open {
@@ -1544,6 +1647,15 @@ impl Widget for TypstApp {
                 self.divider_hover =
                     !self.compact && self.divider_rect.inflate(2.0, 0.0).contains(p);
                 if self.divider_hover != prev_hover {
+                    self.dirty = true;
+                }
+                // Re-surface / hide the corner status bubbles as the pointer
+                // enters or leaves their reveal bands — repaint only on a change
+                // so idle hover doesn't spin the loop.
+                let (lz, rz) = self.status_zones();
+                let zones = (lz.contains(p), rz.contains(p));
+                if zones != self.status_hover {
+                    self.status_hover = zones;
                     self.dirty = true;
                 }
                 if self.dragging_divider {
@@ -1704,9 +1816,15 @@ impl Widget for TypstApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), or a
-        // transient toast is still fading.
-        self.editor.wants_animation() || self.compiling() || self.flash_text().is_some()
+        // a compile is in flight (so `draw` can consume its result), a
+        // transient toast is still fading, or either floating status bubble is
+        // lingering / fading (so it hides itself without a stray pointer event).
+        let now = Instant::now();
+        self.editor.wants_animation()
+            || self.compiling()
+            || self.flash_text().is_some()
+            || self.status_bubble_left.needs_frame(now)
+            || self.status_bubble_right.needs_frame(now)
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2133,5 +2251,47 @@ mod tests {
         let bytes = std::fs::read(&path).expect("the pdf was written to disk");
         assert!(bytes.starts_with(b"%PDF"), "the written file is a real PDF");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The status now floats as two transient bubbles instead of a permanent
+    /// bottom strip: the content panes reclaim its height (spanning to the
+    /// window bottom), and each bubble shows on its first label change then
+    /// fades once its linger elapses. Drives the real `layout_in` +
+    /// `draw_status_bubbles`.
+    #[test]
+    fn status_bubbles_reclaim_strip_and_fade() {
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        // Height reclaimed: both content panes reach the window bottom — no
+        // status strip is carved off the layout.
+        assert_eq!(app.editor_rect.y1, 720.0, "editor pane spans to the window bottom");
+        assert_eq!(app.preview_rect.y1, 720.0, "preview pane spans to the window bottom");
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let now = std::time::Instant::now();
+
+        // First draw composes both labels (differing from the empty caches) and
+        // pokes each bubble → both are visible.
+        app.draw_status_bubbles(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert!(app.status_bubble_left.is_visible(now), "left bubble shows on its first change");
+        assert!(app.status_bubble_right.is_visible(now), "right bubble shows on its first change");
+
+        // With an already-expired linger, no further label change, and the
+        // pointer away from the corners, a redraw lets both fade to hidden —
+        // proving they are transient overlays, not a permanent strip.
+        app.status_bubble_left =
+            ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+        app.status_bubble_right =
+            ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+        let past = now - std::time::Duration::from_millis(10);
+        app.status_bubble_left.poke(past);
+        app.status_bubble_right.poke(past);
+        app.mouse = Point::new(5.0, 5.0);
+        app.draw_status_bubbles(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let after = std::time::Instant::now();
+        assert!(!app.status_bubble_left.is_visible(after), "left bubble hides after its linger");
+        assert!(!app.status_bubble_right.is_visible(after), "right bubble hides after its linger");
     }
 }
