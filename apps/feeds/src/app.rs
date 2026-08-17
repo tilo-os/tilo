@@ -27,6 +27,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::icons::Icon;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
@@ -135,8 +136,9 @@ enum ToolbarAction {
     AddSubscription,
     Refresh,
     MarkAllRead,
-    ImportOpml,
-    ExportOpml,
+    /// The kebab (⋯) that opens the overflow menu of secondary actions
+    /// (OPML import / export) so they aren't permanent toolbar chrome.
+    Overflow,
 }
 
 /// An entry in the per-feed right-click context menu. Aligned by index with
@@ -147,6 +149,24 @@ enum FeedMenuAction {
     MarkAllRead,
     Rename,
     Unsubscribe,
+}
+
+/// An entry in the per-article right-click context menu. Index-aligned with the
+/// shared [`ContextMenu`]'s rows, same as [`FeedMenuAction`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArticleMenuAction {
+    CopyUrl,
+    OpenInBrowser,
+    ToggleRead,
+    ToggleStar,
+}
+
+/// An entry in the toolbar's overflow (kebab) menu — the secondary actions
+/// moved out of the always-visible toolbar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverflowAction {
+    ImportOpml,
+    ExportOpml,
 }
 
 #[derive(Clone, Debug)]
@@ -261,6 +281,27 @@ impl FeedsModal {
             210.0,
         )
     }
+
+    /// Confirm a bulk "mark all as read" for the current view before it runs.
+    fn mark_all_read_confirm(scope: &str, count: usize) -> Self {
+        let body = ModalBody::message(&format!(
+            "Mark all {count} articles in {scope} as read?",
+        ));
+        Self::new(
+            ModalIntent::MarkAllRead,
+            "Mark all as read",
+            body,
+            "Mark all read",
+            460.0,
+            200.0,
+        )
+    }
+
+    /// Surface an inline error on the dialog body while keeping it open and the
+    /// field usable — the honest "why the submit didn't go through".
+    fn show_error(&mut self, msg: impl Into<String>) {
+        self.dialog.content_mut().set_error(msg);
+    }
 }
 
 /// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
@@ -318,6 +359,9 @@ impl RefreshState {
 enum DocWrite {
     Article(Article),
     Feed(Feed),
+    /// Remove a feed (and its articles) from the document — used to roll back a
+    /// placeholder subscription whose first fetch failed.
+    RemoveFeed(Id),
 }
 
 pub struct FeedsApp {
@@ -361,9 +405,26 @@ pub struct FeedsApp {
     feed_menu_target: Option<Id>,
     /// Menu actions aligned by index with `feed_menu`'s action rows.
     feed_menu_actions: Vec<FeedMenuAction>,
+    /// The article the open context menu targets (when it's an article menu
+    /// rather than a feed one — the same `feed_menu` popover serves both, one
+    /// at a time).
+    article_menu_target: Option<Id>,
+    /// Article-menu actions aligned by index with `feed_menu`'s action rows.
+    article_menu_actions: Vec<ArticleMenuAction>,
+    /// Overflow-menu actions aligned by index; non-empty while the kebab menu
+    /// is the open one.
+    overflow_menu_actions: Vec<OverflowAction>,
     /// `--shots` staging: open the context menu over the first feed row once
     /// geometry is known (the single-frame renderer can't reach it via input).
     stage_menu_shot: bool,
+    /// `--shots` staging: open the per-article context menu over the first
+    /// article row once geometry is known.
+    stage_article_menu_shot: bool,
+    /// Feeds added optimistically that have not yet fetched successfully, keyed
+    /// to the URL the user typed. If the first fetch fails, the placeholder is
+    /// removed and the failure surfaced honestly rather than left as a silent,
+    /// empty, raw-URL-titled row.
+    pending_subscribe: HashMap<Id, String>,
 
     // --- article reading settings (reader pane) -------------------------
     settings: ReadSettings,
@@ -469,7 +530,12 @@ impl FeedsApp {
             feed_menu: ContextMenu::new(),
             feed_menu_target: None,
             feed_menu_actions: Vec::new(),
+            article_menu_target: None,
+            article_menu_actions: Vec::new(),
+            overflow_menu_actions: Vec::new(),
             stage_menu_shot: false,
+            stage_article_menu_shot: false,
+            pending_subscribe: HashMap::new(),
             settings: ReadSettings::default(),
             show_reader_settings: false,
             settings_btn_rect: Rect::ZERO,
@@ -543,6 +609,28 @@ impl FeedsApp {
     /// the sidebar geometry is known.
     pub fn force_feed_menu_open(&mut self) {
         self.stage_menu_shot = true;
+    }
+
+    /// Stage the per-article context menu open (for the `--shots` article
+    /// context-menu scenario). Anchored over the first article row in `paint`.
+    pub fn force_article_menu_open(&mut self) {
+        self.stage_article_menu_shot = true;
+    }
+
+    /// Stage the "mark all as read" confirmation dialog open for a `--shots`
+    /// capture of the confirm step.
+    pub fn force_mark_all_read_confirm(&mut self) {
+        self.open_mark_all_read_confirm();
+    }
+
+    /// Stage the Add-subscription dialog open with an inline validation error,
+    /// for a `--shots` capture of the honest failure state.
+    pub fn stage_add_subscription_error(&mut self, url: &str, error: &str) {
+        self.open_add_subscription();
+        if let Some(m) = self.modal.as_mut() {
+            m.dialog.content_mut().set_value(url);
+            m.show_error(error);
+        }
     }
 
     /// Open the Add-subscription dialog with `url` pre-typed into the field, so
@@ -954,6 +1042,9 @@ impl FeedsApp {
         };
         self.store.upsert_feed(feed);
         self.perform_action(doc, actions::add_subscription_action(id, &url, folder, order));
+        // Track this as provisional: if its first fetch fails, we roll the
+        // placeholder back instead of leaving a silent, empty, raw-URL row.
+        self.pending_subscribe.insert(id, url.clone());
         // Populate the new feed's title + articles off-thread (external).
         self.refresh_feeds(&[id]);
         self.set_filter(Filter::Feed(id));
@@ -1094,18 +1185,32 @@ impl FeedsApp {
         })
     }
 
+    /// Clamp a desired popover origin so a `w`×`h` menu stays inside the widget.
+    fn clamp_menu_origin(&self, at: Point, w: f64, h: f64) -> [f32; 2] {
+        let x = at.x.min((self.rect.x1 - w).max(self.rect.x0));
+        let y = at.y.min((self.rect.y1 - h).max(self.rect.y0));
+        [x as f32, y as f32]
+    }
+
+    /// Reset every menu-context holder so only the just-opened menu is live.
+    fn clear_menu_contexts(&mut self) {
+        self.feed_menu_target = None;
+        self.feed_menu_actions.clear();
+        self.article_menu_target = None;
+        self.article_menu_actions.clear();
+        self.overflow_menu_actions.clear();
+    }
+
     /// Open the per-feed context menu targeting `feed_id`, anchored near `at`
     /// (clamped so the popover stays within the widget).
     fn open_feed_menu(&mut self, feed_id: Id, at: Point) {
         let mut menu = ContextMenu::new();
-        menu.push(MenuItem::action("Mark all as read", || {}));
-        menu.push(MenuItem::action("Rename…", || {}));
-        menu.push(MenuItem::action("Unsubscribe", || {}));
-        // Keep the menu inside the widget (rough size: 220 wide, ~96 tall).
-        let x = at.x.min((self.rect.x1 - 224.0).max(self.rect.x0));
-        let y = at.y.min((self.rect.y1 - 108.0).max(self.rect.y0));
-        menu.open_at([x as f32, y as f32]);
+        menu.push(MenuItem::action_with_icon(Icon::Check, "Mark all as read", || {}));
+        menu.push(MenuItem::action_with_icon(Icon::Pencil, "Rename…", || {}));
+        menu.push(MenuItem::action_with_icon(Icon::Trash2, "Unsubscribe", || {}));
+        menu.open_at(self.clamp_menu_origin(at, 224.0, 108.0));
         self.feed_menu = menu;
+        self.clear_menu_contexts();
         self.feed_menu_target = Some(feed_id);
         self.feed_menu_actions = vec![
             FeedMenuAction::MarkAllRead,
@@ -1114,9 +1219,68 @@ impl FeedsApp {
         ];
     }
 
+    /// The article whose list row is under `p`, if any.
+    fn article_at(&self, p: Point) -> Option<Id> {
+        if !self.list_rect_content().contains(p) {
+            return None;
+        }
+        self.list_rows
+            .iter()
+            .find(|lr| lr.rect.contains(p))
+            .map(|lr| lr.id)
+    }
+
+    /// Open the per-article context menu targeting `article_id`. Labels reflect
+    /// the article's current read / starred state so the verbs are honest.
+    fn open_article_menu(&mut self, article_id: Id, at: Point) {
+        let (read, starred) = self
+            .store
+            .article(article_id)
+            .map(|a| (a.read, a.starred))
+            .unwrap_or((false, false));
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action_with_icon(Icon::Copy, "Copy link", || {}));
+        menu.push(MenuItem::action_with_icon(Icon::ExternalLink, "Open in browser", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action_with_icon(
+            if read { Icon::Eye } else { Icon::Check },
+            if read { "Mark as unread" } else { "Mark as read" },
+            || {},
+        ));
+        menu.push(MenuItem::action_with_icon(
+            Icon::Star,
+            if starred { "Remove favourite" } else { "Favourite" },
+            || {},
+        ));
+        menu.open_at(self.clamp_menu_origin(at, 224.0, 156.0));
+        self.feed_menu = menu;
+        self.clear_menu_contexts();
+        self.article_menu_target = Some(article_id);
+        self.article_menu_actions = vec![
+            ArticleMenuAction::CopyUrl,
+            ArticleMenuAction::OpenInBrowser,
+            ArticleMenuAction::ToggleRead,
+            ArticleMenuAction::ToggleStar,
+        ];
+    }
+
+    /// Open the toolbar overflow (kebab) menu with the secondary OPML actions,
+    /// anchored under the kebab button.
+    fn open_overflow_menu(&mut self, anchor: Rect) {
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action_with_icon(Icon::Download, "Import OPML…", || {}));
+        menu.push(MenuItem::action_with_icon(Icon::ExternalLink, "Export OPML…", || {}));
+        // Drop the popover just under the kebab, right-aligned to it.
+        let at = Point::new(anchor.x1 - 224.0, anchor.y1 + 6.0);
+        menu.open_at(self.clamp_menu_origin(at, 224.0, 80.0));
+        self.feed_menu = menu;
+        self.clear_menu_contexts();
+        self.overflow_menu_actions = vec![OverflowAction::ImportOpml, OverflowAction::ExportOpml];
+    }
+
     fn close_feed_menu(&mut self) {
         self.feed_menu.close();
-        self.feed_menu_target = None;
+        self.clear_menu_contexts();
     }
 
     fn apply_feed_menu_action(
@@ -1145,6 +1309,80 @@ impl FeedsApp {
             // rather than removing the feed on the spot.
             FeedMenuAction::Unsubscribe => self.open_unsubscribe_confirm(feed_id),
         }
+    }
+
+    /// Run a per-article context-menu action against the real store + document.
+    fn apply_article_menu_action(
+        &mut self,
+        action: ArticleMenuAction,
+        article_id: Id,
+        doc: &mut AutoCommit,
+    ) {
+        match action {
+            ArticleMenuAction::CopyUrl => {
+                if let Some(url) = self.store.article(article_id).map(|a| a.url.clone()) {
+                    if url.is_empty() {
+                        self.set_toast("This article has no link");
+                    } else {
+                        ui::clipboard_copy(&url);
+                        self.set_toast("Link copied");
+                    }
+                }
+            }
+            ArticleMenuAction::OpenInBrowser => {
+                if let Some(url) = self.store.article(article_id).map(|a| a.url.clone()) {
+                    if url.is_empty() {
+                        self.set_toast("This article has no link");
+                    } else {
+                        self.open_url(&url);
+                    }
+                }
+            }
+            ArticleMenuAction::ToggleRead => {
+                let now_read = self.store.article(article_id).map(|a| !a.read).unwrap_or(true);
+                if self.store.mark_read(article_id, now_read) {
+                    self.perform_action(doc, actions::mark_read_action(article_id, now_read));
+                    self.set_toast(if now_read { "Marked read" } else { "Marked unread" });
+                }
+            }
+            ArticleMenuAction::ToggleStar => self.toggle_star(article_id, doc),
+        }
+    }
+
+    /// Run a toolbar overflow-menu action.
+    fn apply_overflow_action(&mut self, action: OverflowAction) {
+        match action {
+            OverflowAction::ImportOpml => self.request_import(),
+            OverflowAction::ExportOpml => self.export_opml(),
+        }
+    }
+
+    /// Route a drained menu-row selection to whichever context (feed, article,
+    /// or overflow) is currently live.
+    fn dispatch_menu_selection(&mut self, sel: usize, doc: &mut AutoCommit) {
+        if let Some(fid) = self.feed_menu_target {
+            if let Some(action) = self.feed_menu_actions.get(sel).copied() {
+                self.apply_feed_menu_action(action, fid, doc);
+            }
+        } else if let Some(aid) = self.article_menu_target {
+            if let Some(action) = self.article_menu_actions.get(sel).copied() {
+                self.apply_article_menu_action(action, aid, doc);
+            }
+        } else if let Some(action) = self.overflow_menu_actions.get(sel).copied() {
+            self.apply_overflow_action(action);
+        }
+    }
+
+    /// Open the confirmation dialog for "mark all as read" over the current
+    /// view — a bulk change gets a confirm step rather than firing on click.
+    fn open_mark_all_read_confirm(&mut self) {
+        let count = self.store.unread_ids_for(self.filter).len();
+        if count == 0 {
+            self.set_toast("Nothing to mark read");
+            return;
+        }
+        let scope = self.filter_title().to_lowercase();
+        self.modal = Some(FeedsModal::mark_all_read_confirm(&scope, count));
     }
 
     /// Open the "Add subscription" dialog (real modal + real URL field).
@@ -1260,11 +1498,27 @@ impl FeedsApp {
         if intent.requires_input() && value.is_empty() {
             return;
         }
+        // Validate (and lightly normalise) an add-subscription URL up front: an
+        // obviously bad entry gets a clear inline error and the dialog stays
+        // open + usable, rather than creating a silent, broken placeholder feed.
+        let mut add_url = value.clone();
+        if matches!(intent, ModalIntent::AddSubscription) {
+            match validate_feed_url(&value) {
+                Ok(normalised) => add_url = normalised,
+                Err(msg) => {
+                    if let Some(m) = self.modal.as_mut() {
+                        m.show_error(msg);
+                    }
+                    return;
+                }
+            }
+        }
         self.modal = None;
         match intent {
-            ModalIntent::AddSubscription => self.subscribe(value, doc),
+            ModalIntent::AddSubscription => self.subscribe(add_url, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, value, doc),
             ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
+            ModalIntent::MarkAllRead => self.mark_all_read(doc),
         }
     }
 
@@ -1324,6 +1578,9 @@ impl FeedsApp {
         for r in results {
             match r {
                 FetchResult::Articles { feed_id, title, articles } => {
+                    // A result for a provisional subscription confirms it —
+                    // it's a real, reachable feed now.
+                    self.pending_subscribe.remove(&feed_id);
                     let mut feed_changed = false;
                     if let Some(t) = title {
                         if !t.is_empty() {
@@ -1369,13 +1626,18 @@ impl FeedsApp {
                     self.set_filter(Filter::Feed(feed.id));
                 }
                 FetchResult::Failed { feed_id, message } => {
-                    if feed_id.is_some() {
+                    if let Some(id) = feed_id {
                         // A refresh failure for a known feed counts toward the batch.
                         self.refresh.done += 1;
                         self.refresh.failed_feeds += 1;
                         self.maybe_finish_refresh();
+                        // If this was a just-added subscription, don't leave a
+                        // silent, empty placeholder — roll it back and say why.
+                        if let Some(url) = self.pending_subscribe.remove(&id) {
+                            self.rollback_failed_subscription(id, &url, &message);
+                        }
                     } else {
-                        self.set_toast(format!("Fetch failed: {message}"));
+                        self.set_toast(format!("Couldn't add feed: {}", friendly_fetch_error(&message)));
                     }
                 }
             }
@@ -1391,6 +1653,24 @@ impl FeedsApp {
         {
             self.refresh.finished_at = Some(Instant::now());
         }
+    }
+
+    /// Roll back a provisional subscription whose first fetch failed: drop the
+    /// placeholder feed from the store (queueing its removal from the document),
+    /// recover the filter/selection if they pointed at it, and surface a clear
+    /// error naming the URL + reason. No silent, empty, raw-URL row is left.
+    fn rollback_failed_subscription(&mut self, feed_id: Id, url: &str, message: &str) {
+        let removed = self.store.remove_feed(feed_id);
+        self.pending_doc_writes.push(DocWrite::RemoveFeed(feed_id));
+        if matches!(self.filter, Filter::Feed(f) if f == feed_id) {
+            self.set_filter(Filter::All);
+        }
+        if let Some(sel) = self.selected {
+            if removed.contains(&sel) {
+                self.selected = None;
+            }
+        }
+        self.set_toast(format!("Couldn't add {url}: {}", friendly_fetch_error(message)));
     }
 
     /// Persist changes the live drain queued, **bounded to a small budget per
@@ -1412,6 +1692,7 @@ impl FeedsApp {
             match w {
                 DocWrite::Article(a) => FeedsDoc::upsert_article(doc, &a),
                 DocWrite::Feed(f) => FeedsDoc::upsert_feed(doc, &f),
+                DocWrite::RemoveFeed(id) => FeedsDoc::remove_feed(doc, id),
             }
         }
         // Commit this batch so the pending-op buffer doesn't accumulate across
@@ -1697,8 +1978,8 @@ impl FeedsApp {
             (ToolbarAction::AddSubscription, "Add subscription"),
             (ToolbarAction::Refresh, "Refresh all"),
             (ToolbarAction::MarkAllRead, "Mark all read"),
-            (ToolbarAction::ImportOpml, "Import OPML"),
-            (ToolbarAction::ExportOpml, "Export OPML"),
+            // OPML import/export are secondary — tuck them behind the kebab.
+            (ToolbarAction::Overflow, "More"),
         ];
         for (action, tip) in specs {
             let rect = Rect::new(x - 18.0, cy - 18.0, x + 18.0, cy + 18.0);
@@ -1744,6 +2025,14 @@ impl FeedsApp {
                 _ => None,
             }) {
                 self.open_feed_menu(id, Point::new(rect.x0 + 40.0, rect.y0 + 6.0));
+            }
+        }
+        // `--shots` staging: open the per-article context menu over the first
+        // article row once the list geometry is known.
+        if self.stage_article_menu_shot && !self.feed_menu.is_open() {
+            if let Some(lr) = self.list_rows.first() {
+                let (id, rect) = (lr.id, lr.rect);
+                self.open_article_menu(id, Point::new(rect.x0 + 60.0, rect.y0 + 30.0));
             }
         }
 
@@ -2039,20 +2328,17 @@ impl FeedsApp {
             return true;
         }
 
-        // Open feed context menu: a click on a row runs its action, a click
-        // off the menu dismisses it. Either way the click is consumed so it
-        // never falls through to the panes behind the popover.
+        // Open context menu (feed / article / overflow — one at a time through
+        // the shared popover): a click on a row runs its action, a click off the
+        // menu dismisses it. Either way the click is consumed so it never falls
+        // through to the panes behind the popover.
         if self.feed_menu.is_open() {
             if let Some(idx) = self.feed_menu.item_at([p.x, p.y]) {
                 self.feed_menu.click_item(idx);
                 if let Some(sel) = self.feed_menu.take_selection() {
-                    let action = self.feed_menu_actions.get(sel).copied();
-                    let target = self.feed_menu_target;
-                    if let (Some(action), Some(fid)) = (action, target) {
-                        self.apply_feed_menu_action(action, fid, doc);
-                    }
+                    self.dispatch_menu_selection(sel, doc);
                 }
-                self.feed_menu_target = None;
+                self.clear_menu_contexts();
             } else {
                 self.close_feed_menu();
             }
@@ -2107,9 +2393,8 @@ impl FeedsApp {
                 match b.action {
                     ToolbarAction::AddSubscription => self.open_add_subscription(),
                     ToolbarAction::Refresh => self.refresh_all(),
-                    ToolbarAction::MarkAllRead => self.mark_all_read(doc),
-                    ToolbarAction::ImportOpml => self.request_import(),
-                    ToolbarAction::ExportOpml => self.export_opml(),
+                    ToolbarAction::MarkAllRead => self.open_mark_all_read_confirm(),
+                    ToolbarAction::Overflow => self.open_overflow_menu(b.rect),
                 }
                 return true;
             }
@@ -2449,13 +2734,17 @@ fn draw_list(
         TextWeight::Bold,
     );
     let count_label = format!("{count}");
-    let title_w0 = measure_w(tr, title, 17.0);
+    // Measure the title at the weight it is actually drawn (Bold). Measuring at
+    // regular weight under-reads a bold string, which pulled the count in and
+    // jammed it against the title; measuring bold and leaving a clear gap keeps
+    // them visibly separate.
+    let title_w0 = tr.measure_weighted(title, 17.0, None, TextWeight::Bold).0 as f64;
     tr.draw_text(
         scene,
         &count_label,
         13.0,
         c.text_dim,
-        t * Affine::translate((title_x + title_w0 + 10.0, rect.y0 + 19.0)),
+        t * Affine::translate((title_x + title_w0 + 14.0, rect.y0 + 19.0)),
         None,
     );
     let header_bottom = rect.y0 + HEADER_H;
@@ -2951,8 +3240,7 @@ fn draw_toolbar(
             ToolbarAction::AddSubscription => icons::plus(scene, t, center, 7.0, c.accent[6]),
             ToolbarAction::Refresh => icons::refresh(scene, t, center, 8.0, col),
             ToolbarAction::MarkAllRead => icons::check(scene, t, center, 7.0, col),
-            ToolbarAction::ImportOpml => icons::import_arrow(scene, t, center, 6.0, col),
-            ToolbarAction::ExportOpml => icons::external_link(scene, t, center, 6.0, col),
+            ToolbarAction::Overflow => icons::kebab(scene, t, center, 7.0, col),
         }
         let _ = tr; // tooltips are not drawn statically
     }
@@ -3025,6 +3313,58 @@ fn draw_toast(
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
     tr.measure(s, size, None).0 as f64
+}
+
+/// Validate and lightly normalise a user-typed feed / site URL. Returns the URL
+/// to actually subscribe with, or a short, human error for the inline field
+/// message. A bare host (`example.com/feed.xml`) is accepted and https-prefixed;
+/// spaces, empty input, a scheme-less non-host, and non web/gemini schemes are
+/// rejected up front so the add path never creates a doomed placeholder.
+fn validate_feed_url(input: &str) -> Result<String, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("Enter a feed or site URL.".into());
+    }
+    if s.chars().any(|c| c.is_whitespace()) {
+        return Err("A URL can't contain spaces.".into());
+    }
+    let normalised = if s.contains("://") {
+        s.to_string()
+    } else {
+        format!("https://{s}")
+    };
+    let scheme = normalised.split("://").next().unwrap_or("");
+    if !matches!(scheme, "http" | "https" | "gemini") {
+        return Err(format!(
+            "Unsupported scheme \u{201c}{scheme}\u{201d} — use http, https, or gemini."
+        ));
+    }
+    let after_scheme = normalised.splitn(2, "://").nth(1).unwrap_or("");
+    let host = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
+    if host.is_empty() || (!host.contains('.') && host != "localhost") {
+        return Err("That doesn't look like a URL — try https://example.com/feed.xml".into());
+    }
+    Ok(normalised)
+}
+
+/// Turn a raw fetch-worker error string (`"parse: …"`, `"HTTP 404"`, `"request:
+/// …"`, `"tls: …"`) into a short, human explanation for a toast.
+fn friendly_fetch_error(message: &str) -> String {
+    let m = message.to_ascii_lowercase();
+    if m.starts_with("parse") || m.contains("not a feed") || m.contains("no feed") {
+        "that page isn't an RSS or Atom feed".into()
+    } else if m.starts_with("http") {
+        format!("the server returned an error ({message})")
+    } else if m.starts_with("request")
+        || m.contains("dns")
+        || m.contains("connect")
+        || m.contains("timeout")
+        || m.contains("tls")
+    {
+        "couldn't reach the server — check the URL and your connection".into()
+    } else {
+        message.to_string()
+    }
 }
 
 /// Truncate `s` with an ellipsis so it fits in `max_w` on a single line.
@@ -3317,11 +3657,14 @@ impl Widget for FeedsApp {
                 button: MouseButton::Right,
                 ..
             } => {
-                // Right-click on a sidebar feed opens its context menu; a
-                // right-click anywhere else dismisses any open menu.
+                // Right-click on a sidebar feed opens its menu; on an article
+                // row, the per-article menu; anywhere else dismisses any menu.
                 let p = self.last_mouse;
                 if let Some(id) = self.feed_at(p) {
                     self.open_feed_menu(id, p);
+                    *handled = true;
+                } else if let Some(aid) = self.article_at(p) {
+                    self.open_article_menu(aid, p);
                     *handled = true;
                 } else if self.feed_menu.is_open() {
                     self.close_feed_menu();
@@ -3451,7 +3794,7 @@ impl FeedsApp {
                         *handled = true;
                     }
                     "a" => {
-                        self.mark_all_read(state);
+                        self.open_mark_all_read_confirm();
                         *handled = true;
                     }
                     "n" => {
