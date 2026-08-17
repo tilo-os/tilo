@@ -75,6 +75,10 @@ impl ChatApp {
         doc: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        // The hosted emoji picker is modal while open: it owns all input.
+        if self.emoji_open && self.route_emoji_event(event, scale, modifiers, doc, handled) {
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale, position.y / scale);
@@ -82,6 +86,15 @@ impl ChatApp {
                 if let Some(drag) = self.overlay_drag {
                     let delta = self.last_mouse - drag.origin;
                     self.call.overlay_offset = drag.start_offset + Vec2::new(delta.x, delta.y);
+                    self.request_relayout();
+                    *handled = true;
+                }
+                // Live corner-resize of the floating huddle.
+                if let Some(rz) = self.resize_drag {
+                    let d = self.last_mouse - rz.origin;
+                    let scale = rz.start_scale + (d.x + d.y) / 400.0;
+                    self.call.overlay_scale =
+                        scale.clamp(crate::call::OVERLAY_SCALE_MIN, crate::call::OVERLAY_SCALE_MAX);
                     self.request_relayout();
                     *handled = true;
                 }
@@ -106,10 +119,29 @@ impl ChatApp {
                 match self.hit_at(self.last_mouse) {
                     Some(Hit::CallDragHandle) => {
                         // Begin dragging the overlay (only meaningful docked).
+                        //
+                        // SHELL DEPENDENCY: this only repositions the huddle
+                        // *inside* the chat window (an in-window floating panel).
+                        // Dragging it partly outside the window to promote it to
+                        // a real, always-on-top OS window (with a floating
+                        // indicator) needs a new compositor window type and must
+                        // be coordinated with `shell` — it is out of scope here.
                         self.overlay_drag = Some(OverlayDrag {
                             origin: self.last_mouse,
                             start_offset: self.call.overlay_offset,
                         });
+                        *handled = true;
+                    }
+                    Some(Hit::CallResizeHandle) => {
+                        self.resize_drag = Some(crate::call::OverlayResize {
+                            origin: self.last_mouse,
+                            start_scale: self.call.overlay_scale,
+                        });
+                        *handled = true;
+                    }
+                    Some(Hit::LeaveVoiceRow(_)) => {
+                        // Leaving from the row leaves the active call.
+                        self.leave_voice(doc);
                         *handled = true;
                     }
                     Some(Hit::Channel(id)) => {
@@ -141,6 +173,7 @@ impl ChatApp {
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 self.overlay_drag = None;
+                self.resize_drag = None;
                 // End any composer drag-selection in progress.
                 self.forward_release_to_composers(event, scale, modifiers, doc);
                 if let Some(sw) = self.swipe.take() {
@@ -181,7 +214,11 @@ impl ChatApp {
                     && !self.emoji_open
                     && self.history_open.is_none()
                     && !self.attach_open
-                    && !matches!(logical_key, Key::Named(NamedKey::Escape));
+                    // Escape normally unwinds the top layer, but when the
+                    // composer's inline `:emoji:` overlay is open it owns Escape
+                    // so the field can dismiss the overlay.
+                    && (!matches!(logical_key, Key::Named(NamedKey::Escape))
+                        || self.focused_composer().emoji_completion_open());
                 if composer_owns {
                     self.route_composer_key(event, scale, modifiers, doc);
                     *handled = true;
@@ -388,9 +425,7 @@ impl ChatApp {
                 }
             }
             Hit::AddReaction { msg, anchor } => {
-                self.emoji_open = true;
-                self.emoji_target = Some(msg);
-                self.emoji_anchor = anchor;
+                self.open_emoji_picker(Some(msg), anchor);
             }
             Hit::OpenThread(id) => {
                 if self.thread_open.as_deref() == Some(id.as_str()) {
@@ -429,11 +464,13 @@ impl ChatApp {
             }
             Hit::Send => self.send_focused(doc),
             Hit::ComposerEmoji(anchor) => {
-                self.emoji_open = true;
-                self.emoji_target = None;
-                self.emoji_anchor = anchor;
+                self.open_emoji_picker(None, anchor);
             }
             Hit::Attach => self.open_attach_picker(),
+            Hit::AttachChooseMedia => self.open_attach_media(),
+            Hit::AttachChooseFiles => self.open_attach_files(),
+            Hit::AttachChooseGif => self.open_attach_gif(),
+            Hit::AttachBack => self.open_attach_picker(),
             Hit::AttachPick(path) => {
                 self.attach_open = false;
                 self.attach_file(doc, std::path::Path::new(&path));
@@ -463,6 +500,8 @@ impl ChatApp {
                 self.focus = Focus::Main;
             }
             Hit::CallDragHandle => {} // handled at press time
+            Hit::CallResizeHandle => {} // handled at press time (corner drag)
+            Hit::LeaveVoiceRow(_) => self.leave_voice(doc),
             Hit::CallParticipantsToggle => {
                 self.call.participants_expanded = !self.call.participants_expanded;
             }
@@ -1035,17 +1074,138 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    /// Open the workspace file picker (the composer "+"). Lists the real
-    /// image files in the shared workspace so the user shares an actual file —
-    /// nothing is fabricated. In a headless environment with no workspace the
-    /// list is empty and the picker says so.
+    /// Open the attach popover (the composer "+"). It starts on a small chooser
+    /// — Media / Files / GIF — rather than dumping a bare workspace listing.
     fn open_attach_picker(&mut self) {
         self.menu = None;
         self.emoji_open = false;
         self.emoji_target = None;
         self.history_open = None;
-        self.attach_entries = crate::picker::list_media(&crate::picker::attach_dir());
+        self.attach_view = crate::app::AttachView::Menu;
         self.attach_open = true;
+    }
+
+    /// "Media": browse the shared workspace for an image / video to share.
+    /// Nothing is fabricated; an empty workspace shows an honest empty state.
+    fn open_attach_media(&mut self) {
+        self.attach_entries = crate::picker::list_media(&crate::picker::attach_dir());
+        self.attach_view = crate::app::AttachView::Media;
+        self.attach_open = true;
+    }
+
+    /// "GIF": the GIF / Giphy picker pane. Wired but honest — until a Giphy API
+    /// key is configured it shows a "coming" placeholder, never fake results.
+    fn open_attach_gif(&mut self) {
+        self.attach_view = crate::app::AttachView::Gif;
+        self.attach_open = true;
+    }
+
+    /// "Files": hand off to the host file chooser through the XDG portal — the
+    /// OS owns the picker and is the file-access security boundary (never an
+    /// in-app filesystem browser). The chosen path arrives over `attach_portal`.
+    fn open_attach_files(&mut self) {
+        self.attach_open = false;
+        self.attach_portal = Some(
+            ui::portal::PickRequest::open("Attach a file", "Attach")
+                .thread_name("chat-attach")
+                .all_files()
+                .send(),
+        );
+    }
+
+    /// Drain a completed host file-chooser result and attach the file. Called
+    /// each frame from `sync`; `try_recv` never blocks the UI thread.
+    pub(crate) fn poll_attach_portal(&mut self, doc: &mut AutoCommit) {
+        let Some(rx) = &self.attach_portal else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                if let Some(p) = outcome.path() {
+                    let p = p.to_path_buf();
+                    self.attach_file(doc, &p);
+                }
+                self.attach_portal = None;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.attach_portal = None;
+            }
+        }
+    }
+
+    /// Open the shared emoji picker as the composer popover (`target = None`) or
+    /// a message-reaction picker (`target = Some(msg)`), anchored at `anchor`.
+    fn open_emoji_picker(&mut self, target: Option<Id>, anchor: Point) {
+        self.emoji_open = true;
+        self.emoji_target = target;
+        self.emoji_anchor = anchor;
+        self.attach_open = false;
+        self.menu = None;
+        self.history_open = None;
+        self.emoji_picker.open_reset();
+    }
+
+    fn close_emoji_picker(&mut self) {
+        self.emoji_open = false;
+        self.emoji_target = None;
+    }
+
+    /// While the emoji picker is open, route input to it: forward the event to
+    /// the hosted [`ui::widget::EmojiPicker`], dismiss on an outside click or
+    /// Escape, and apply a chosen emoji through the existing reaction/insert
+    /// path. Returns `true` when it consumed the event.
+    fn route_emoji_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale, position.y / scale);
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if !self.emoji_picker.rect().contains(self.last_mouse) {
+                self.close_emoji_picker();
+                *handled = true;
+                return true;
+            }
+        }
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.close_emoji_picker();
+            *handled = true;
+            return true;
+        }
+        // Forward everything else to the picker (search typing, hover, clicks).
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut h = false;
+        let mut f = None;
+        self.emoji_picker.handle_event(
+            event, scale, modifiers, doc, &automerge::ROOT, &mut h, &mut f, node, &taffy,
+        );
+        if let Some(emoji) = self.emoji_picker.take_picked() {
+            // Reuse the reaction-or-insert handler, which closes the popover.
+            self.on_hit(Hit::EmojiChoice(emoji), doc);
+        }
+        *handled = true;
+        true
     }
 
     /// Share the real file at `path` into the active channel by reference —
@@ -1480,12 +1640,98 @@ mod tests {
         // Point the workspace picker at the temp dir and open it via the real
         // event path (the composer "+").
         unsafe { std::env::set_var("QOS_CHAT_ATTACH_DIR", dir.path()) };
+        // The "+" opens the attach chooser (Media / Files / GIF)...
         app.on_hit(Hit::Attach, &mut doc);
+        assert!(app.attach_open, "the attach popover opens");
+        assert_eq!(
+            app.attach_view,
+            crate::app::AttachView::Menu,
+            "the '+' opens the chooser, not a bare file listing"
+        );
+        // ...and choosing "Media" lists the real workspace image.
+        app.on_hit(Hit::AttachChooseMedia, &mut doc);
         unsafe { std::env::remove_var("QOS_CHAT_ATTACH_DIR") };
-        assert!(app.attach_open, "the picker opens");
+        assert_eq!(app.attach_view, crate::app::AttachView::Media);
         assert!(
             app.attach_entries.iter().any(|e| e.name == "shot.png"),
             "a real workspace image is listed, not a synthesized stand-in"
+        );
+    }
+
+    #[test]
+    fn composer_starts_one_line_and_grows() {
+        use ui::text_render::TextRenderer;
+        let (mut app, _doc) = app_with_doc();
+        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.reconcile_flaps();
+        let mut tr = TextRenderer::new();
+        // Empty draft rests at the one-line minimum.
+        app.draft_main = String::new();
+        let empty_h = app.composer_height(&mut tr);
+        assert!(
+            (empty_h - crate::app::COMPOSER_MIN_H).abs() < 0.5,
+            "an empty composer is one line ({empty_h} vs {})",
+            crate::app::COMPOSER_MIN_H,
+        );
+        // A multi-line draft grows the field (up to the cap, then it scrolls).
+        app.draft_main = "one\ntwo\nthree\nfour\nfive".into();
+        let tall_h = app.composer_height(&mut tr);
+        assert!(tall_h > empty_h, "the composer grows with more lines ({tall_h} > {empty_h})");
+        assert!(tall_h <= crate::app::COMPOSER_MAX_H + 0.5, "growth is capped at COMPOSER_MAX_H");
+    }
+
+    #[test]
+    fn attach_menu_offers_media_files_and_gif() {
+        use crate::app::AttachView;
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Attach, &mut doc);
+        assert!(app.attach_open && app.attach_view == AttachView::Menu, "the '+' opens the chooser");
+        // The GIF pane (a placeholder — no fabricated results).
+        app.on_hit(Hit::AttachChooseGif, &mut doc);
+        assert_eq!(app.attach_view, AttachView::Gif);
+        // Back to the chooser, then Media (the workspace browser).
+        app.on_hit(Hit::AttachBack, &mut doc);
+        assert_eq!(app.attach_view, AttachView::Menu);
+        app.on_hit(Hit::AttachChooseMedia, &mut doc);
+        assert_eq!(app.attach_view, AttachView::Media);
+        // Files hands off to the host portal, closing the in-app popover.
+        app.on_hit(Hit::Attach, &mut doc);
+        app.on_hit(Hit::AttachChooseFiles, &mut doc);
+        assert!(!app.attach_open, "Files defers to the OS picker, closing the popover");
+        assert!(app.attach_portal.is_some(), "a host file-chooser request is pending");
+    }
+
+    #[test]
+    fn camera_is_off_by_default_and_toggles() {
+        assert!(
+            crate::call::CallState::default().audio_only,
+            "camera is off by default — an idle call shows no self-view / test pattern",
+        );
+        let (mut app, mut doc) = app_with_doc();
+        app.call.join("c_huddle");
+        let before = app.call.audio_only;
+        app.on_hit(Hit::CallAudioOnly, &mut doc);
+        assert_ne!(app.call.audio_only, before, "the camera control toggles the camera on/off");
+        // No real capture is fed, so the honest camera-off placeholder is the
+        // visible state — never fabricated bars.
+        assert!(
+            app.video.latest_frame().is_none(),
+            "no live frame is fed, so the camera-off placeholder shows (not test bars)",
+        );
+    }
+
+    #[test]
+    fn emoji_choice_inserts_into_the_composer() {
+        let (mut app, mut doc) = app_with_doc();
+        app.focus = crate::app::Focus::Main;
+        app.on_hit(Hit::ComposerEmoji(vello::kurbo::Point::new(200.0, 100.0)), &mut doc);
+        assert!(app.emoji_open, "the composer emoji picker opens");
+        // The same path `route_emoji_event` drives on a cell click.
+        app.on_hit(Hit::EmojiChoice("\u{1f525}".into()), &mut doc);
+        assert!(!app.emoji_open, "choosing an emoji closes the picker");
+        assert!(
+            app.composer_main.value().contains('\u{1f525}'),
+            "the chosen emoji is inserted into the composer",
         );
     }
 

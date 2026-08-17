@@ -400,6 +400,18 @@ impl TextInput {
         self.ec.active
     }
 
+    /// Programmatically set the text (local mode), park the caret at the end,
+    /// and re-run `:emoji:` completion against it so the overlay reflects the
+    /// new value. Used by a host that seeds a value and wants the completion
+    /// state to follow (e.g. a screenshot scenario). No-op on completion when
+    /// [`with_emoji_completion`](Self::with_emoji_completion) is off.
+    pub fn set_text_with_completion(&mut self, s: &str) {
+        self.set_text(s);
+        self.cursor_pos = self.text.len();
+        let mut sink = AutoCommit::new();
+        self.refresh_emoji_completion(&mut sink, None);
+    }
+
     /// Set the local user's id for authorship stamping. Every subsequent
     /// edit attributes the inserted run to this id. `None` disables it.
     pub fn set_local_author(&mut self, author: Option<String>) {

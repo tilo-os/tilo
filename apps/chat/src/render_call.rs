@@ -134,8 +134,9 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let panel = self.huddle_panel();
-        // drop shadow
-        fill_round(scene, tf, panel.inflate(6.0, 6.0), 20.0, Color::from_rgba8(0, 0, 0, 70));
+        // Drop shadow from the shared elevation token — soft and consistent with
+        // every other floating surface, not a hand-tuned oversized slab.
+        crate::paint::soft_shadow(scene, tf, panel, 16.0, &theme.tokens.elevation.e3);
         fill_round(scene, tf, panel, 16.0, c.neutral[1]);
         stroke_round(scene, tf, panel, 16.0, c.border_white_10, 1.0);
 
@@ -218,14 +219,16 @@ impl ChatApp {
         let gap = 6.0;
         let muted = self.call.muted;
         let deaf = self.call.deafened;
+        let cam_on = !self.call.audio_only;
         let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
             (if muted { "Unmute" } else { "Mute" }, if muted { "🔇" } else { "🎤" }, muted, false, Hit::CallMute),
             (if deaf { "Undeafen" } else { "Deafen" }, if deaf { "🔕" } else { "🎧" }, deaf, false, Hit::CallDeafen),
+            ("Camera", if cam_on { "📹" } else { "📷" }, cam_on, false, Hit::CallAudioOnly),
             ("Expand", "⤢", false, false, Hit::CallExpand),
             ("Leave", "✕", false, true, Hit::CallLeave),
         ];
-        if panel.width() < 300.0 {
-            ctrls.remove(2); // trim Expand on a cramped panel
+        if panel.width() < 340.0 {
+            ctrls.remove(3); // trim Expand on a cramped panel (the header also expands)
         }
         let n = ctrls.len() as f64;
         let cw = ((panel.width() - 2.0 * pad - (n - 1.0) * gap) / n).max(24.0);
@@ -237,6 +240,14 @@ impl ChatApp {
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
         }
+
+        // Bottom-right resize grip — drag it to scale the floating huddle. Drawn
+        // and hit-registered last so it wins the corner over the controls row.
+        let grip = "◢";
+        let (gw, gh) = tr.measure(grip, 11.0, None);
+        label(scene, tr, tf, grip, 11.0, c.text_dim, panel.x1 - gw as f64 - 4.0, panel.y1 - gh as f64 - 3.0);
+        let grip_hit = Rect::new(panel.x1 - 16.0, panel.y1 - 16.0, panel.x1, panel.y1);
+        ChatApp::push_hit(hits, grip_hit, Hit::CallResizeHandle);
     }
 
     // ----------------------------------------------------- expanded overlay
@@ -513,7 +524,7 @@ impl ChatApp {
         let specs: [(&'static str, bool, bool, Hit); 6] = [
             (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
             (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
-            ("Audio only", self.call.audio_only, false, Hit::CallAudioOnly),
+            (if self.call.audio_only { "Start camera" } else { "Stop camera" }, !self.call.audio_only, false, Hit::CallAudioOnly),
             (if sharing { "Stop share" } else { "Share screen" }, sharing, false, Hit::CallShareScreen),
             ("Collapse", false, false, Hit::CallExpand),
             ("Leave", false, true, Hit::CallLeave),
@@ -695,80 +706,8 @@ impl ChatApp {
         label(scene, tr, tf, label_txt, 13.0, fg, rect.center().x - lw as f64 / 2.0, rect.center().y - 8.0);
     }
 
-    // -------------------------------------------------------- emoji picker
-    pub(crate) fn draw_emoji_picker(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let c = &theme.tokens.colors;
-        // full-window dismiss scrim (lowest priority)
-        ChatApp::push_hit(hits, self.rect, Hit::Dismiss);
-
-        let w = 320.0;
-        let cols = 7usize;
-        let cell = (w - 24.0) / cols as f64;
-        // height: quick row + categories
-        let mut rows_total = 1; // quick row
-        for cat in emoji::CATEGORIES {
-            rows_total += 1 + (cat.emoji.len() + cols - 1) / cols; // label + grid rows
-        }
-        let h = 56.0 + rows_total as f64 * cell + 12.0;
-        let mut x0 = self.emoji_anchor.x;
-        let mut y0 = self.emoji_anchor.y;
-        x0 = x0.clamp(self.rect.x0 + 8.0, self.rect.x1 - w - 8.0);
-        y0 = y0.clamp(self.rect.y0 + 8.0, (self.rect.y1 - h - 8.0).max(self.rect.y0 + 8.0));
-        let panel = Rect::new(x0, y0, x0 + w, y0 + h);
-        fill_round(scene, tf, panel.inflate(5.0, 5.0), 18.0, Color::from_rgba8(0, 0, 0, 70));
-        fill_round(scene, tf, panel, 14.0, c.neutral[1]);
-        stroke_round(scene, tf, panel, 14.0, c.border_white_10, 1.0);
-
-        let title = if self.emoji_target.is_some() { "Add reaction" } else { "Emoji" };
-        label(scene, tr, tf, title, 13.0, c.text_primary, panel.x0 + 14.0, panel.y0 + 12.0);
-
-        let mut y = panel.y0 + 36.0;
-        // quick row
-        label(scene, tr, tf, "Frequent", 10.5, c.text_dim, panel.x0 + 14.0, y);
-        y += 16.0;
-        self.emoji_grid(scene, tf, tr, theme, &emoji::QUICK, panel.x0 + 12.0, &mut y, cols, cell, hits);
-        for cat in emoji::CATEGORIES {
-            label(scene, tr, tf, cat.name, 10.5, c.text_dim, panel.x0 + 14.0, y);
-            y += 16.0;
-            self.emoji_grid(scene, tf, tr, theme, cat.emoji, panel.x0 + 12.0, &mut y, cols, cell, hits);
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn emoji_grid(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        set: &[&str],
-        x0: f64,
-        y: &mut f64,
-        cols: usize,
-        cell: f64,
-        hits: &mut Vec<(Rect, Hit)>,
-    ) {
-        let c = &theme.tokens.colors;
-        for (i, e) in set.iter().enumerate() {
-            let col = i % cols;
-            let row = i / cols;
-            let cx = x0 + col as f64 * cell;
-            let cyy = *y + row as f64 * cell;
-            let cellr = Rect::new(cx, cyy, cx + cell - 4.0, cyy + cell - 4.0);
-            let (ew, eh) = tr.measure(e, 19.0, None);
-            text(scene, tr, tf, e, 19.0, c.text_primary, cellr.center().x - ew as f64 / 2.0, cellr.center().y - eh as f64 / 2.0, TextWeight::Regular, None);
-            ChatApp::push_hit(hits, cellr, Hit::EmojiChoice((*e).to_string()));
-        }
-        let rows = (set.len() + cols - 1) / cols;
-        *y += rows as f64 * cell + 6.0;
-    }
+    // The emoji picker popover is now the shared `ui::EmojiPicker`, hosted +
+    // positioned in `ChatApp::draw` and driven through `route_emoji_event`.
 
     // ------------------------------------------------------ history popover
     pub(crate) fn draw_history_popover(

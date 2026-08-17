@@ -157,8 +157,14 @@ pub struct CallState {
     pub muted: bool,
     /// Local output deafened (implies muted while active).
     pub deafened: bool,
-    /// Camera off / audio-only.
+    /// Camera off / audio-only. **Defaults to `true` (camera off)** — the
+    /// camera capture pipeline only starts once the user explicitly enables the
+    /// camera, so an idle call never shows a self-view (and never a fabricated
+    /// test pattern from a camera-less dev box).
     pub audio_only: bool,
+    /// User resize of the floating huddle panel; `1.0` is the default size. The
+    /// huddle's video rect (and thus its panel + taffy node) scale by this.
+    pub overlay_scale: f64,
     /// This peer is sharing its screen into the call. Set only once the portal
     /// grants a source (see [`crate::app::ChatApp::acquire_screen`]); mirrored
     /// into the shared voice membership so remote peers reserve the featured
@@ -176,10 +182,23 @@ impl Default for CallState {
             participants_expanded: true,
             muted: false,
             deafened: false,
-            audio_only: false,
+            audio_only: true,
+            overlay_scale: 1.0,
             sharing: false,
         }
     }
+}
+
+/// Minimum / maximum user resize of the floating huddle panel.
+pub const OVERLAY_SCALE_MIN: f64 = 0.7;
+pub const OVERLAY_SCALE_MAX: f64 = 2.2;
+
+/// In-progress corner resize of the floating huddle overlay: where the drag
+/// began and the scale it had at that moment.
+#[derive(Clone, Copy, Debug)]
+pub struct OverlayResize {
+    pub origin: Point,
+    pub start_scale: f64,
 }
 
 impl CallState {

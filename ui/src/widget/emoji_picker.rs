@@ -159,6 +159,15 @@ impl EmojiPicker {
         self.focus_search(true);
     }
 
+    /// Set the search query programmatically (e.g. to stage a screenshot or
+    /// preset a filter). Rebuilds the result list on the next draw.
+    pub fn set_query(&mut self, q: &str) {
+        self.search.set_text(q);
+        self.last_query.clear();
+        self.scroll = 0.0;
+        self.sel = 0;
+    }
+
     /// Focus (or unfocus) the internal search field.
     pub fn focus_search(&mut self, on: bool) {
         self.search.set_focus(on);
