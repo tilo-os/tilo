@@ -1790,6 +1790,66 @@ mod tests {
         assert!(!SnippetsDoc::get(&state.doc, id).unwrap().favorite, "undo reverted the star and nothing else");
     }
 
+    // ---- end-to-end through the real handle_event ----------------------
+
+    /// Drive one synthetic event through the production `handle_event` path.
+    fn drive(app: &mut SnippetsApp, ev: &WindowEvent, mods: &winit::event::Modifiers, doc: &mut AutoCommit) {
+        let root = automerge::ROOT;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        app.handle_event(ev, 1.0, mods, doc, &root, &mut handled, &mut focus_target, node, &taffy);
+    }
+
+    #[test]
+    fn ctrl_n_then_typing_authors_the_title_through_the_action_path() {
+        use crate::test_events::{char_press, ctrl, no_mods};
+        let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        // Ctrl+N creates a snippet and drops focus into the (empty) title.
+        drive(&mut app, &char_press("n"), &ctrl(), &mut doc);
+        assert_eq!(app.library_len_for_test(), 1, "Ctrl+N created a snippet");
+        assert_eq!(app.focus, Focus::Title, "and focused the title for authoring");
+
+        // Typing routes to the title field and each keystroke folds back into
+        // the document as a Rename action — real end-to-end authoring.
+        for ch in ["H", "i"] {
+            drive(&mut app, &char_press(ch), &no_mods(), &mut doc);
+        }
+        let id = app.open_id_for_test().expect("the new snippet is open");
+        assert_eq!(
+            SnippetsDoc::get(&doc, id).unwrap().title,
+            "Hi",
+            "keystrokes into the focused title field authored the snippet through the action path",
+        );
+    }
+
+    #[test]
+    fn ctrl_f_then_typing_filters_the_list_live() {
+        use crate::test_events::{char_press, ctrl, no_mods};
+        let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let total = app.visible_count_for_test();
+
+        drive(&mut app, &char_press("f"), &ctrl(), &mut doc);
+        assert_eq!(app.focus, Focus::Search, "Ctrl+F focused the search field");
+        for ch in ["r", "u", "s", "t"] {
+            drive(&mut app, &char_press(ch), &no_mods(), &mut doc);
+        }
+        let after = app.visible_count_for_test();
+        assert!(after < total, "typing into the focused search field narrowed the list ({after} < {total})");
+        assert!(after >= 1, "and left the matching snippets");
+        for id in app.visible.clone() {
+            let s = app.library.get(id).unwrap();
+            let hay = format!("{} {} {} {} {}", s.title, s.description, s.body, s.tags.join(" "), s.folder).to_lowercase();
+            assert!(hay.contains("rust"), "every survivor matches the live query");
+        }
+    }
+
     #[test]
     fn steady_state_reprojects_the_document() {
         let (mut app, mut doc) = seeded_app();
