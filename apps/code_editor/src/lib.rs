@@ -25,6 +25,7 @@ mod lint;
 /// entry points the app uses, rather than a copy of them.
 pub mod lsp;
 pub mod model;
+pub mod search_provider;
 mod sample_project;
 mod search;
 mod status_bar;
