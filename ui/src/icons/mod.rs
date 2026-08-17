@@ -1661,6 +1661,39 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::CornerDownLeft).len(), 2, "corner-down-left = hook + head");
     }
 
+    /// Centroid of a subpath's bounding box in the 24×24 lucide grid.
+    fn subpath_centroid(p: &BezPath) -> (f64, f64) {
+        let bb = p.bounding_box();
+        ((bb.x0 + bb.x1) / 2.0, (bb.y0 + bb.y1) / 2.0)
+    }
+
+    /// A reload glyph must read as a **clockwise** circular arrow: its arrowhead
+    /// tick sits in the top-right quadrant of the grid, pointing along the
+    /// clockwise sweep. A mirrored / reversed path — the classic "reload drawn
+    /// the wrong way around" bug — puts the head in the top-left instead. These
+    /// assert on the real arrowhead subpath geometry so a bad hand-edit to the
+    /// `d="…"` literal (or an upstream flip) trips here rather than shipping a
+    /// backwards reload button.
+    #[test]
+    fn rotate_cw_arrowhead_reads_clockwise() {
+        let sub = icon_subpaths(Icon::RotateCw);
+        assert_eq!(sub.len(), 2, "rotate-cw = arc + arrowhead");
+        let (cx, cy) = subpath_centroid(&sub[1]);
+        assert!(cx > 12.0, "rotate-cw arrowhead must sit right of centre (cx={cx})");
+        assert!(cy < 12.0, "rotate-cw arrowhead must sit above centre (cy={cy})");
+    }
+
+    #[test]
+    fn refresh_cw_reads_clockwise() {
+        // refresh-cw = [top arc, top-right head, bottom arc, bottom-left head].
+        let sub = icon_subpaths(Icon::Refresh);
+        assert_eq!(sub.len(), 4, "refresh = 2 arcs + 2 heads");
+        let (tx, ty) = subpath_centroid(&sub[1]);
+        let (bx, by) = subpath_centroid(&sub[3]);
+        assert!(tx > 12.0 && ty < 12.0, "top arrowhead must be top-right (got ({tx},{ty}))");
+        assert!(bx < 12.0 && by > 12.0, "bottom arrowhead must be bottom-left (got ({bx},{by}))");
+    }
+
     /// The mail glyph set must transcribe into non-empty subpaths so the
     /// mail sidebar / reader / attachment chrome never ships a blank square.
     #[test]
