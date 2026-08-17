@@ -89,9 +89,9 @@ impl BrokerClient {
     }
 }
 
-/// Handle exactly one request on an accepted connection: read the request,
-/// run it through the broker's three gates and applier for `app_id` /
-/// `declared` / `consent`, and write the response.
+/// Serve requests on an accepted connection until the peer hangs up: read a
+/// request, run it through the broker's three gates and applier for `app_id`
+/// / `declared` / `consent`, write the response, repeat.
 ///
 /// The compositor calls this per accepted connection, having resolved
 /// `app_id` and the app's `declared` capabilities from its per-workspace
@@ -99,6 +99,11 @@ impl BrokerClient {
 /// oracle over the workspace's capability list. Reading the *identity* from
 /// the connection rather than from the request is what keeps an app from
 /// speaking for another: it cannot claim a different `app_id`.
+///
+/// The loop is what lets one launcher-plumbed fd carry every apply for the
+/// life of the app. A clean end-of-stream on the *length prefix* (the peer
+/// closed between requests) is a normal shutdown and returns `Ok`; any other
+/// I/O or codec error propagates.
 pub fn serve_connection<F: FirewallApplier>(
     stream: &mut UnixStream,
     broker: &mut Broker<F>,
@@ -106,10 +111,18 @@ pub fn serve_connection<F: FirewallApplier>(
     declared: &Capabilities,
     consent: &dyn ConsentOracle,
 ) -> Result<(), WireError> {
-    let request: BrokerRequest = read_message(stream)?;
-    let response = broker.handle(app_id, declared, consent, &request);
-    write_message(stream, &response)?;
-    Ok(())
+    loop {
+        let request: BrokerRequest = match read_message(stream) {
+            Ok(req) => req,
+            // The peer closed cleanly between requests — normal shutdown.
+            Err(WireError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+        let response = broker.handle(app_id, declared, consent, &request);
+        write_message(stream, &response)?;
+    }
 }
 
 #[cfg(test)]
@@ -156,9 +169,43 @@ mod tests {
         let mut client = BrokerClient::from_stream(app_end);
         let resp = client.request(&plan()).unwrap();
         assert_eq!(resp, BrokerResponse::Applied { commands: 1 });
+        // Drop the client so the server's loop sees EOF and returns.
+        drop(client);
 
         let recorder = server.join().unwrap();
         assert_eq!(recorder.applied.len(), 1);
+    }
+
+    #[test]
+    fn one_connection_serves_many_requests() {
+        // The loop is what lets a single launcher-plumbed fd carry every
+        // apply for the life of the app.
+        let (app_end, broker_end) = UnixStream::pair().unwrap();
+        let server = thread::spawn(move || {
+            let mut broker_end = broker_end;
+            let mut broker = Broker::new(RecordingFirewall::default());
+            serve_connection(
+                &mut broker_end,
+                &mut broker,
+                "dev.qos.firewall",
+                &declares_firewall(),
+                &FixedConsent(true),
+            )
+            .unwrap();
+            broker.into_firewall_for_test()
+        });
+
+        let mut client = BrokerClient::from_stream(app_end);
+        for _ in 0..3 {
+            assert_eq!(
+                client.request(&plan()).unwrap(),
+                BrokerResponse::Applied { commands: 1 }
+            );
+        }
+        drop(client);
+
+        let recorder = server.join().unwrap();
+        assert_eq!(recorder.applied.len(), 3);
     }
 
     #[test]
@@ -184,6 +231,7 @@ mod tests {
             resp,
             BrokerResponse::Denied(DenyReason::NoConsent(PrivilegedCapability::FirewallAdmin))
         );
+        drop(client);
         let recorder = server.join().unwrap();
         assert!(recorder.applied.is_empty());
     }
