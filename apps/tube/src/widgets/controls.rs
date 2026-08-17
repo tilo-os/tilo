@@ -12,7 +12,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -71,241 +71,41 @@ impl Icon {
     }
 
     fn paint(&self, scene: &mut Scene, transform: Affine) {
-        let r = self.rect;
-        let s = r.width().min(r.height());
-        // Inset a touch so strokes don't clip the box edge.
-        let pad = s * 0.12;
-        let b = Rect::new(r.x0 + pad, r.y0 + pad, r.x0 + s - pad, r.y0 + s - pad);
-        let u = |x: f64, y: f64| Point::new(b.x0 + b.width() * x, b.y0 + b.height() * y);
-        let sw = (s * 0.09).max(1.4);
-        let stroke = Stroke::new(sw).with_caps(vello::kurbo::Cap::Round);
-        let line = |scene: &mut Scene, pts: &[(f64, f64)], close: bool| {
-            let mut p = BezPath::new();
-            for (i, &(x, y)) in pts.iter().enumerate() {
-                let pt = u(x, y);
-                if i == 0 {
-                    p.move_to(pt);
-                } else {
-                    p.line_to(pt);
-                }
-            }
-            if close {
-                p.close_path();
-            }
-            scene.stroke(&stroke, transform, self.color, None, &p);
+        use ui::icons::Icon as U;
+        // Every glyph comes from the shared `ui::icons::Icon` set so the
+        // player, nav rail and result badges match the rest of the OS. Only
+        // single closed silhouettes fill cleanly; the rest stroke so open
+        // accents (bars, rules) still render.
+        let filled = matches!(self.kind, IconKind::Play | IconKind::Pause | IconKind::Fire);
+        let glyph = match self.kind {
+            IconKind::Home => U::Home,
+            IconKind::Fire => U::Flame,
+            IconKind::Subscriptions => U::MonitorPlay,
+            IconKind::History => U::History,
+            IconKind::Settings => U::Settings,
+            IconKind::Search => U::Search,
+            IconKind::Like => U::ThumbsUp,
+            IconKind::Dislike => U::ThumbsDown,
+            IconKind::Bell => U::Bell,
+            IconKind::Play => U::Play,
+            IconKind::Pause => U::Pause,
+            IconKind::Check => U::Check,
+            IconKind::Plus => U::Plus,
+            IconKind::Chevron => U::ChevronRight,
+            IconKind::Back => U::ChevronLeft,
+            IconKind::Playlist => U::ListVideo,
+            IconKind::Shield => U::Shield,
+            IconKind::Sparkle => U::Sparkles,
+            IconKind::Eye => U::Eye,
+            IconKind::Skip => U::SkipForward,
+            IconKind::Menu => U::Menu,
         };
-
-        match self.kind {
-            IconKind::Home => {
-                line(scene, &[(0.1, 0.5), (0.5, 0.12), (0.9, 0.5)], false);
-                line(
-                    scene,
-                    &[(0.2, 0.45), (0.2, 0.9), (0.8, 0.9), (0.8, 0.45)],
-                    false,
-                );
-                line(scene, &[(0.42, 0.9), (0.42, 0.62), (0.58, 0.62), (0.58, 0.9)], false);
-            }
-            IconKind::Fire => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.5, 0.1));
-                p.curve_to(u(0.85, 0.4), u(0.85, 0.75), u(0.5, 0.92));
-                p.curve_to(u(0.15, 0.75), u(0.15, 0.45), u(0.42, 0.3));
-                p.curve_to(u(0.4, 0.5), u(0.55, 0.5), u(0.5, 0.1));
-                p.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &p);
-            }
-            IconKind::Subscriptions => {
-                line(scene, &[(0.15, 0.2), (0.85, 0.2)], false);
-                let rr = RoundedRect::new(
-                    u(0.15, 0.35).x,
-                    u(0.15, 0.35).y,
-                    u(0.85, 0.9).x,
-                    u(0.85, 0.9).y,
-                    sw,
-                );
-                scene.stroke(&stroke, transform, self.color, None, &rr);
-                let mut tri = BezPath::new();
-                tri.move_to(u(0.43, 0.5));
-                tri.line_to(u(0.43, 0.75));
-                tri.line_to(u(0.62, 0.625));
-                tri.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &tri);
-            }
-            IconKind::History => {
-                scene.stroke(
-                    &stroke,
-                    transform,
-                    self.color,
-                    None,
-                    &Circle::new(u(0.5, 0.5), b.width() * 0.4),
-                );
-                line(scene, &[(0.5, 0.3), (0.5, 0.5), (0.68, 0.6)], false);
-            }
-            IconKind::Settings => {
-                // A gear: a body ring + a hollow centre + short trapezoidal
-                // teeth straddling the rim (NOT long radial rays, which read
-                // as a sun).
-                let c = u(0.5, 0.5);
-                let r_body = b.width() * 0.26;
-                let r_tooth = b.width() * 0.40;
-                let n = 8;
-                let half = 0.20_f64; // angular half-width of each tooth (rad)
-                for k in 0..n {
-                    let a = std::f64::consts::TAU * k as f64 / n as f64;
-                    let pt = |ang: f64, r: f64| {
-                        Point::new(c.x + ang.cos() * r, c.y + ang.sin() * r)
-                    };
-                    let mut p = BezPath::new();
-                    p.move_to(pt(a - half, r_body));
-                    p.line_to(pt(a - half, r_tooth));
-                    p.line_to(pt(a + half, r_tooth));
-                    p.line_to(pt(a + half, r_body));
-                    p.close_path();
-                    scene.fill(Fill::NonZero, transform, self.color, None, &p);
-                }
-                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, r_body));
-                scene.stroke(&stroke, transform, self.color, None, &Circle::new(c, b.width() * 0.11));
-            }
-            IconKind::Search => {
-                scene.stroke(
-                    &stroke,
-                    transform,
-                    self.color,
-                    None,
-                    &Circle::new(u(0.42, 0.42), b.width() * 0.3),
-                );
-                line(scene, &[(0.63, 0.63), (0.88, 0.88)], false);
-            }
-            IconKind::Like => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.3, 0.45));
-                p.line_to(u(0.5, 0.15));
-                p.curve_to(u(0.62, 0.12), u(0.66, 0.28), u(0.55, 0.42));
-                p.line_to(u(0.85, 0.42));
-                p.curve_to(u(0.93, 0.42), u(0.93, 0.52), u(0.85, 0.85));
-                p.line_to(u(0.4, 0.85));
-                p.line_to(u(0.3, 0.78));
-                p.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &p);
-                let base = RoundedRect::new(u(0.12, 0.45).x, u(0.12, 0.45).y, u(0.3, 0.88).x, u(0.3, 0.88).y, sw);
-                scene.fill(Fill::NonZero, transform, self.color, None, &base);
-            }
-            IconKind::Dislike => {
-                // The Like glyph flipped vertically (thumb points down).
-                let d = |x: f64, y: f64| u(x, 1.0 - y);
-                let mut p = BezPath::new();
-                p.move_to(d(0.3, 0.45));
-                p.line_to(d(0.5, 0.15));
-                p.curve_to(d(0.62, 0.12), d(0.66, 0.28), d(0.55, 0.42));
-                p.line_to(d(0.85, 0.42));
-                p.curve_to(d(0.93, 0.42), d(0.93, 0.52), d(0.85, 0.85));
-                p.line_to(d(0.4, 0.85));
-                p.line_to(d(0.3, 0.78));
-                p.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &p);
-                let base = RoundedRect::new(d(0.12, 0.45).x, d(0.3, 0.88).y, d(0.3, 0.88).x, d(0.12, 0.45).y, sw);
-                scene.fill(Fill::NonZero, transform, self.color, None, &base);
-            }
-            IconKind::Bell => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.25, 0.7));
-                p.curve_to(u(0.25, 0.35), u(0.3, 0.2), u(0.5, 0.18));
-                p.curve_to(u(0.7, 0.2), u(0.75, 0.35), u(0.75, 0.7));
-                p.close_path();
-                scene.stroke(&stroke, transform, self.color, None, &p);
-                line(scene, &[(0.18, 0.7), (0.82, 0.7)], false);
-                line(scene, &[(0.43, 0.82), (0.57, 0.82)], false);
-            }
-            IconKind::Play => {
-                let mut tri = BezPath::new();
-                tri.move_to(u(0.3, 0.18));
-                tri.line_to(u(0.3, 0.82));
-                tri.line_to(u(0.85, 0.5));
-                tri.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &tri);
-            }
-            IconKind::Pause => {
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.3, 0.2).x, u(0.3, 0.2).y, u(0.43, 0.8).x, u(0.43, 0.8).y));
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.57, 0.2).x, u(0.57, 0.2).y, u(0.7, 0.8).x, u(0.7, 0.8).y));
-            }
-            IconKind::Check => {
-                line(scene, &[(0.2, 0.55), (0.42, 0.78), (0.82, 0.25)], false);
-            }
-            IconKind::Plus => {
-                line(scene, &[(0.5, 0.2), (0.5, 0.8)], false);
-                line(scene, &[(0.2, 0.5), (0.8, 0.5)], false);
-            }
-            IconKind::Chevron => {
-                line(scene, &[(0.4, 0.25), (0.65, 0.5), (0.4, 0.75)], false);
-            }
-            IconKind::Back => {
-                // Left-pointing arrow: a chevron head + a shaft.
-                line(scene, &[(0.45, 0.25), (0.2, 0.5), (0.45, 0.75)], false);
-                line(scene, &[(0.2, 0.5), (0.82, 0.5)], false);
-            }
-            IconKind::Playlist => {
-                // Three stacked lines with a small play triangle on the last row.
-                line(scene, &[(0.15, 0.28), (0.75, 0.28)], false);
-                line(scene, &[(0.15, 0.5), (0.75, 0.5)], false);
-                line(scene, &[(0.15, 0.72), (0.5, 0.72)], false);
-                let mut tri = BezPath::new();
-                tri.move_to(u(0.66, 0.62));
-                tri.line_to(u(0.66, 0.82));
-                tri.line_to(u(0.85, 0.72));
-                tri.close_path();
-                scene.fill(vello::peniko::Fill::NonZero, transform, self.color, None, &tri);
-            }
-            IconKind::Shield => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.5, 0.12));
-                p.line_to(u(0.85, 0.26));
-                p.line_to(u(0.85, 0.55));
-                p.curve_to(u(0.85, 0.78), u(0.68, 0.88), u(0.5, 0.92));
-                p.curve_to(u(0.32, 0.88), u(0.15, 0.78), u(0.15, 0.55));
-                p.line_to(u(0.15, 0.26));
-                p.close_path();
-                scene.stroke(&stroke, transform, self.color, None, &p);
-                line(scene, &[(0.36, 0.5), (0.47, 0.62), (0.66, 0.36)], false);
-            }
-            IconKind::Sparkle => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.5, 0.1));
-                p.line_to(u(0.58, 0.42));
-                p.line_to(u(0.9, 0.5));
-                p.line_to(u(0.58, 0.58));
-                p.line_to(u(0.5, 0.9));
-                p.line_to(u(0.42, 0.58));
-                p.line_to(u(0.1, 0.5));
-                p.line_to(u(0.42, 0.42));
-                p.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &p);
-            }
-            IconKind::Eye => {
-                let mut p = BezPath::new();
-                p.move_to(u(0.12, 0.5));
-                p.curve_to(u(0.35, 0.22), u(0.65, 0.22), u(0.88, 0.5));
-                p.curve_to(u(0.65, 0.78), u(0.35, 0.78), u(0.12, 0.5));
-                p.close_path();
-                scene.stroke(&stroke, transform, self.color, None, &p);
-                scene.fill(Fill::NonZero, transform, self.color, None, &Circle::new(u(0.5, 0.5), b.width() * 0.12));
-            }
-            IconKind::Skip => {
-                let mut tri = BezPath::new();
-                tri.move_to(u(0.2, 0.22));
-                tri.line_to(u(0.2, 0.78));
-                tri.line_to(u(0.6, 0.5));
-                tri.close_path();
-                scene.fill(Fill::NonZero, transform, self.color, None, &tri);
-                scene.fill(Fill::NonZero, transform, self.color, None,
-                    &Rect::new(u(0.66, 0.22).x, u(0.66, 0.22).y, u(0.78, 0.78).x, u(0.78, 0.78).y));
-            }
-            IconKind::Menu => {
-                line(scene, &[(0.18, 0.3), (0.82, 0.3)], false);
-                line(scene, &[(0.18, 0.5), (0.82, 0.5)], false);
-                line(scene, &[(0.18, 0.7), (0.82, 0.7)], false);
-            }
+        if filled {
+            glyph.draw_filled(scene, transform, self.rect, self.color);
+        } else {
+            let s = self.rect.width().min(self.rect.height());
+            let stroke_px = (s * 0.083).max(1.5);
+            glyph.draw_with_stroke(scene, transform, self.rect, self.color, stroke_px);
         }
     }
 }
