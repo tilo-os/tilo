@@ -860,6 +860,7 @@ impl SoftwareStore {
                         title: "Flathub".into(),
                         url: "https://dl.flathub.org/repo/".into(),
                         disabled: false,
+                        scope: Some(crate::flatpak::Scope::User),
                     });
                 }
                 if self.worker.is_live() {
@@ -931,6 +932,9 @@ impl SoftwareStore {
             }
             WorkerMsg::SearchResults { apps, .. } => new_live.extend(apps.iter().cloned()),
             WorkerMsg::Detail(app) => new_live.push((**app).clone()),
+            WorkerMsg::QosCatalog(apps) => new_live.extend(apps.iter().cloned()),
+            WorkerMsg::QosInstalled(_) => {}
+            WorkerMsg::ActionProgress { .. } => {}
             WorkerMsg::ActionDone { target, kind, outcome } => {
                 finished_actions.push((target.clone(), *kind));
                 if let crate::flatpak::ActionOutcome::Failed(e) = outcome {
@@ -1121,24 +1125,28 @@ impl SoftwareStore {
 /// The remotes shown on the Remotes screen in `--shots` / before the first
 /// live refresh lands, so the screen is always populated for screenshots.
 fn sample_remotes() -> Vec<Remote> {
+    use crate::flatpak::Scope;
     vec![
         Remote {
             name: "flathub".into(),
             title: "Flathub".into(),
             url: "https://dl.flathub.org/repo/".into(),
             disabled: false,
+            scope: Some(Scope::User),
         },
         Remote {
             name: "flathub-beta".into(),
             title: "Flathub Beta".into(),
             url: "https://dl.flathub.org/beta-repo/".into(),
             disabled: true,
+            scope: Some(Scope::System),
         },
         Remote {
             name: "fedora".into(),
             title: "Fedora Flatpaks".into(),
             url: "oci+https://registry.fedoraproject.org".into(),
             disabled: false,
+            scope: Some(Scope::System),
         },
     ]
 }

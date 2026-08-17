@@ -57,6 +57,7 @@ pub mod flatpakref;
 pub mod images;
 pub mod model;
 pub mod probe;
+pub mod qpkg;
 pub mod worker;
 
 pub use app::SoftwareStore;
