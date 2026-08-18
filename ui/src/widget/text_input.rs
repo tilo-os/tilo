@@ -4303,6 +4303,42 @@ mod tests {
         assert_eq!(ti.cursor_pos(), 5);
     }
 
+    /// A focused multiline field follows its caret with vertical scroll: a caret
+    /// below the viewport scrolls the body down to keep it visible, and a caret
+    /// back at the top scrolls back up. This is the shared editable view's
+    /// scroll-to-caret — the body never leaves the caret off-screen while typing.
+    #[test]
+    fn multiline_scrolls_to_keep_caret_visible() {
+        let text = (0..20).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        // ~5 rows fit in 120 px; 20 rows total, so the body must scroll.
+        let mut ti = ml_input(&text, 300.0, 120.0);
+        assert!(ti.lines.len() >= 20, "the 20 lines laid out as rows");
+
+        // Caret at the top pins the view to the top.
+        ti.set_cursor_pos(0);
+        draw_to_populate(&mut ti);
+        assert!(ti.scroll_y() < 1.0, "caret at the top keeps the view at the top");
+
+        // Caret at the end sits far below the viewport → the body scrolls down.
+        ti.set_cursor_pos(ti.value().len());
+        draw_to_populate(&mut ti);
+        let scrolled = ti.scroll_y();
+        assert!(scrolled > 1.0, "the view scrolled down to reveal the caret, got {scrolled}");
+        let (caret_row, _) = ti.locate_ml(ti.cursor_pos());
+        let caret_top = ti.lines[caret_row].y;
+        let view_h = ti.rect.height() - ML_PAD_Y * 2.0;
+        assert!(
+            caret_top >= scrolled && caret_top <= scrolled + view_h,
+            "the caret row {caret_top} is within the scrolled viewport [{scrolled}, {})",
+            scrolled + view_h
+        );
+
+        // Caret back to the top scrolls the body back up.
+        ti.set_cursor_pos(0);
+        draw_to_populate(&mut ti);
+        assert!(ti.scroll_y() < 1.0, "the view scrolled back to the caret at the top");
+    }
+
     // ---- secret / masked mode ----------------------------------------------
 
     /// The reveal toggle shows the real glyphs on screen, but the plaintext is
