@@ -79,8 +79,9 @@ impl MergeView {
             ours_label: String::new(),
             theirs_label: String::new(),
             rect: Rect::ZERO,
-            source_scroll: Scrollable::new_vertical(),
-            merged_scroll: Scrollable::new_vertical(),
+            // Persistent (semi-transparent) overlay bars — see DiffView::new.
+            source_scroll: Scrollable::new_vertical().always_visible(),
+            merged_scroll: Scrollable::new_vertical().always_visible(),
             hunk_spans: Vec::new(),
             action_hits: Vec::new(),
             active_hunk: None,

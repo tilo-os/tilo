@@ -28,11 +28,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // `--scenario <name>` drives the shot into a specific overlay state a
         // single still can't otherwise reach; `status` pins the floating status
         // bubble open. Default is the seeded demo (no forced overlay).
-        let widget = match parse_scenario_arg(&args).as_deref() {
+        let scenario = parse_scenario_arg(&args);
+        let widget = match scenario.as_deref() {
             Some("status") => diffmerge::app_root_status(),
+            Some("diff") => diffmerge::app_root_diff_demo(),
+            Some("edited") => diffmerge::app_root_diff_edited(),
             _ => diffmerge::app_root_demo(),
         };
-        render_shot_to_png(widget, DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // The diff scenarios use a shorter window so the tall sample overflows
+        // and the draggable overlay scrollbar reads as a partial thumb.
+        let viewport = match scenario.as_deref() {
+            Some("diff") | Some("edited") => (1280, 560),
+            _ => DEFAULT_SHOTS_VIEWPORT,
+        };
+        render_shot_to_png(widget, viewport, &out)?;
         return Ok(());
     }
 

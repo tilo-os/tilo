@@ -23,7 +23,6 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -160,6 +159,23 @@ impl DiffMergeApp {
             last_status: String::new(),
             shots_status: false,
         }
+    }
+
+    /// Screenshot-only: a taller two-way diff opened in Diff mode, so a single
+    /// still shows the aligned monospace columns, the per-line change tints, and
+    /// the draggable overlay scrollbar (the content overflows the viewport).
+    pub fn new_diff_demo() -> Self {
+        let mut app = Self::build(false);
+        let (l, r) = samples::diff_pair_long();
+        app.diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
+        app.mode = Mode::Diff;
+        app
+    }
+
+    /// Screenshot-only: the diff demo with the right panel focused and its caret
+    /// parked in the text — standing in for a just-typed / pasted editable panel.
+    pub fn arm_diff_edited_for_shots(&mut self) {
+        self.diff.focus_right_for_shots();
     }
 
     /// `--shots`: force the floating status bubble fully visible so a single

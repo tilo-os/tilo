@@ -100,6 +100,127 @@ impl RateLimiter {
     (left, right)
 }
 
+/// A longer two-way diff demo (a small module with edits scattered top to
+/// bottom) so a screenshot overflows the viewport — proving the aligned
+/// monospace columns, the per-line change tints, and the draggable overlay
+/// scrollbar all at once. Screenshot / demo use only.
+pub fn diff_pair_long() -> (Sample, Sample) {
+    let left = Sample::new(
+        "cache.rs · HEAD",
+        "\
+use std::collections::HashMap;
+use std::time::Instant;
+
+/// A tiny in-memory cache with per-entry expiry.
+pub struct Cache {
+    map: HashMap<String, Entry>,
+    capacity: usize,
+}
+
+struct Entry {
+    value: String,
+    stored: Instant,
+}
+
+impl Cache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            capacity,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.map.get(key).map(|e| e.value.as_str())
+    }
+
+    pub fn insert(&mut self, key: String, value: String) {
+        if self.map.len() >= self.capacity {
+            self.evict_one();
+        }
+        self.map.insert(key, Entry { value, stored: Instant::now() });
+    }
+
+    fn evict_one(&mut self) {
+        if let Some(k) = self.map.keys().next().cloned() {
+            self.map.remove(&k);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+",
+    );
+
+    let right = Sample::new(
+        "cache.rs · working tree",
+        "\
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// A tiny in-memory cache with per-entry TTL expiry.
+pub struct Cache {
+    map: HashMap<String, Entry>,
+    capacity: usize,
+    ttl: Duration,
+}
+
+struct Entry {
+    value: String,
+    stored: Instant,
+}
+
+impl Cache {
+    pub fn new(capacity: usize, ttl: Duration) -> Self {
+        Self {
+            map: HashMap::new(),
+            capacity,
+            ttl,
+        }
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        let e = self.map.get(key)?;
+        if e.stored.elapsed() > self.ttl {
+            return None;
+        }
+        Some(e.value.as_str())
+    }
+
+    pub fn insert(&mut self, key: String, value: String) {
+        if self.map.len() >= self.capacity {
+            self.evict_oldest();
+        }
+        self.map.insert(key, Entry { value, stored: Instant::now() });
+    }
+
+    fn evict_oldest(&mut self) {
+        if let Some(k) = self
+            .map
+            .iter()
+            .min_by_key(|(_, e)| e.stored)
+            .map(|(k, _)| k.clone())
+        {
+            self.map.remove(&k);
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+",
+    );
+
+    (left, right)
+}
+
 /// The three-way merge demo: a common base config and two divergent edits that
 /// genuinely conflict on the `timeout` line and the feature list, while other
 /// regions auto-resolve cleanly.

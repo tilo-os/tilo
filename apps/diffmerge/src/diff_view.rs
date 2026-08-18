@@ -86,8 +86,12 @@ impl DiffView {
         Self {
             left,
             right,
-            left_scroll: Scrollable::new_vertical(),
-            right_scroll: Scrollable::new_vertical(),
+            // A persistent (but semi-transparent) overlay bar: discoverable at
+            // rest and draggable, since a child-less Scrollable driven from
+            // `draw` never runs the sync-path flash that would otherwise reveal
+            // an auto-hiding bar.
+            left_scroll: Scrollable::new_vertical().always_visible(),
+            right_scroll: Scrollable::new_vertical().always_visible(),
             left_label: String::new(),
             right_label: String::new(),
             model: DiffModel::default(),
@@ -121,6 +125,17 @@ impl DiffView {
 
     pub fn active_block(&self) -> Option<usize> {
         self.active_block
+    }
+
+    /// Screenshot-only: focus the right panel and park a caret in its text so a
+    /// still frame reads as a live, editable panel.
+    pub fn focus_right_for_shots(&mut self) {
+        self.focus = Focus::Right;
+        self.right.set_focused(true);
+        self.left.set_focused(false);
+        // A caret a little into the buffer, clamped to a char boundary by core.
+        let target = self.right.value().len().min(40);
+        self.right.set_cursor_pos(target);
     }
 
     /// Recompute the diff from the two live buffers, caching the source so the
