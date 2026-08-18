@@ -43,6 +43,20 @@ pub fn app_root_status() -> Box<dyn Widget> {
     Box::new(app)
 }
 
+/// Screenshot-only: a taller two-way diff in Diff mode — aligned monospace
+/// columns, per-line change tints, and the draggable overlay scrollbar.
+pub fn app_root_diff_demo() -> Box<dyn Widget> {
+    Box::new(DiffMergeApp::new_diff_demo())
+}
+
+/// Screenshot-only: the diff demo with the right panel focused (its caret
+/// showing), standing in for a just-typed / pasted editable panel.
+pub fn app_root_diff_edited() -> Box<dyn Widget> {
+    let mut app = DiffMergeApp::new_diff_demo();
+    app.arm_diff_edited_for_shots();
+    Box::new(app)
+}
+
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new())
 }
