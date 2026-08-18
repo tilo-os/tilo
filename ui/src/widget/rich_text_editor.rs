@@ -1052,6 +1052,21 @@ mod tests {
         assert_eq!(ed.text(), "ne ");
     }
 
+    /// Ctrl+Delete removes the whole word after the caret (forward word-delete),
+    /// the word-processor's "delete word forward" — distinct from a char Delete —
+    /// and the removal reaches the CRDT `Text`.
+    #[test]
+    fn ctrl_delete_removes_word_after_caret() {
+        let (mut state, mut ed) = setup();
+        type_str(&mut ed, &mut state, "one two three");
+        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+        press(&mut ed, &mut state, &named_ev(NamedKey::Delete), &mods(true, false));
+        assert_eq!(ed.text(), "two three", "Ctrl+Delete removed the word after the caret");
+        assert_eq!(ed.caret(), 0, "the caret stays at the deletion point");
+        let tid = crdt_text_obj(&state);
+        assert_eq!(state.doc.text(&tid).unwrap(), "two three", "the word-delete reached the CRDT");
+    }
+
     #[test]
     fn enter_is_a_noop_and_pasted_newlines_fold_to_spaces() {
         let (mut state, mut ed) = setup();
