@@ -446,6 +446,15 @@ impl SheetsApp {
         self.arm_status_bubble_for_shots();
     }
 
+    /// Shots hook: from A1, Ctrl+Shift+Right to extend the selection across the
+    /// whole header row to its data edge (A1:G1) — the frame the Ctrl+Arrow
+    /// edge-jump produces, with the name box reading the landing range.
+    pub fn shots_edge_jump(&mut self) {
+        self.grid.select_only((0, 0));
+        self.grid.jump_to_edge(1, 0, true);
+        self.arm_status_bubble_for_shots();
+    }
+
     /// Shots hook: build a discontiguous multi-range selection (the Jan column
     /// body plus the Q1 Total column) so the frame shows two separate
     /// highlighted rectangles with lit row/column headers.
@@ -3285,6 +3294,25 @@ impl Widget for SheetsApp {
         self.rect
     }
 
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        // A modal overlay owns the pointer — keep the default arrow over it so
+        // the grid's cell/resize cursors don't bleed through the scrim.
+        if self.palette.is_open()
+            || self.open_menu != OpenMenu::None
+            || self.settings_panel != SettingsPanel::None
+            || self.tab_menu_target.is_some()
+            || self.tab_rename.is_some()
+        {
+            return None;
+        }
+        // The editable formula field and the Name box are text surfaces.
+        if self.formula_field_rect.contains(point) || self.name_box_rect.contains(point) {
+            return Some(winit::window::CursorIcon::Text);
+        }
+        // The grid resolves resize borders, the fill handle, and the cell area.
+        self.grid.cursor_at(point)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty || self.grid.dirty()
     }
@@ -4768,6 +4796,70 @@ mod tests {
         assert!(app.palette.is_open(), "Ctrl+K must open the palette");
         // The first action is the argument-taking "Go to cell".
         assert_eq!(app.palette.selected_id(), Some("goto"));
+    }
+
+    #[test]
+    fn ctrl_arrow_jumps_to_the_data_edge_through_handle_event() {
+        // Full production path: the app's `handle_event` must let a Ctrl+Arrow
+        // reach the grid (it is a Named key, so the Ctrl+letter clipboard chords
+        // never swallow it) and jump to the data edge. Row 1 of the seed is a
+        // contiguous A1:G1 header run; column A a contiguous A1:A7 run.
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 0)); // A1
+
+        let handled = feed(
+            &mut app,
+            &mut doc,
+            named_event(winit::keyboard::NamedKey::ArrowRight),
+            &ctrl_mods(),
+        );
+        assert!(handled, "Ctrl+Right must be consumed by the grid");
+        assert_eq!(app.grid.active(), (6, 0), "Ctrl+Right runs to G1, the end of the header row");
+
+        app.grid.select_only((0, 0));
+        let handled = feed(
+            &mut app,
+            &mut doc,
+            named_event(winit::keyboard::NamedKey::ArrowDown),
+            &ctrl_mods(),
+        );
+        assert!(handled, "Ctrl+Down must be consumed by the grid");
+        assert_eq!(app.grid.active(), (0, 6), "Ctrl+Down runs to A7, the end of the category column");
+    }
+
+    #[test]
+    fn cursor_shape_marks_text_field_cells_and_defers_under_a_modal() {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.relayout();
+
+        // The editable formula field reads as text.
+        let ff = app.formula_field_rect.center();
+        assert_eq!(
+            app.cursor_shape(ff),
+            Some(winit::window::CursorIcon::Text),
+            "formula field shows a text cursor",
+        );
+        // The grid body reads as a spreadsheet cell surface.
+        let body = app.grid_rect.center();
+        assert_eq!(
+            app.cursor_shape(body),
+            Some(winit::window::CursorIcon::Cell),
+            "grid body shows the cell cursor",
+        );
+        // A column border in the header strip reads as a horizontal resize.
+        let col_border = Point::new(
+            app.grid_rect.x0 + crate::grid::ROW_HEADER_W + crate::grid::DEFAULT_COL_W,
+            app.grid_rect.y0 + crate::grid::COL_HEADER_H / 2.0,
+        );
+        assert_eq!(
+            app.cursor_shape(col_border),
+            Some(winit::window::CursorIcon::EwResize),
+            "column border shows the resize cursor",
+        );
+        // While the palette is open the whole window keeps the default arrow.
+        app.open_command_palette();
+        assert_eq!(app.cursor_shape(body), None, "a modal overlay defers to the default cursor");
     }
 
     #[test]
