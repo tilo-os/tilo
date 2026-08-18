@@ -4032,6 +4032,47 @@ mod tests {
         assert_eq!(ti.value(), "world ", "Ctrl+Backspace removed the word before the caret");
     }
 
+    /// A keystroke splices only the delta into the CRDT `Text` — the per-keystroke
+    /// op count is independent of the field length, not an O(n) whole-Text rewrite.
+    /// Typing one char into a 2000-char field must cost the same handful of
+    /// Automerge ops as typing into a 1-char field (whether appended or inserted
+    /// mid-string), or a typing session accumulates O(n^2) tombstones and freezes.
+    #[test]
+    fn keystroke_splices_only_the_delta_regardless_of_field_length() {
+        use automerge::{transaction::Transactable, ObjType, ROOT};
+
+        // Ops added to the CRDT by typing one 'z' at `caret` in a field seeded
+        // with `initial`, driven through the real key path.
+        fn ops_for_keystroke(initial: &str, caret: usize) -> usize {
+            let mut doc = AutoCommit::new();
+            let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+            doc.splice_text(&tid, 0, 0, initial).unwrap();
+            let mut ti = TextInput::new(Vec::new()).with_on_change_path("t");
+            ti.set_focus(true);
+            Widget::sync(&mut ti, &mut doc, &ROOT);
+            ti.set_cursor_pos(caret);
+            let heads = doc.get_heads(); // commit the setup so we measure only the keystroke
+            drive(&mut ti, &mut doc, &char_key_event("z"), &mods(false, false));
+            doc.get_changes(&heads).iter().map(|c| c.len()).sum()
+        }
+
+        let big = "abcd ".repeat(400); // 2000 chars
+        let small_append = ops_for_keystroke("x", 1);
+        let big_append = ops_for_keystroke(&big, big.len());
+        let big_middle = ops_for_keystroke(&big, 1000);
+
+        assert_eq!(
+            big_append, small_append,
+            "appending a char to a 2000-char field costs the same ops as a 1-char field \
+             ({big_append} vs {small_append}) — the delta is spliced, not the whole Text",
+        );
+        assert_eq!(
+            big_middle, small_append,
+            "inserting mid-string is still a single-char delta ({big_middle} ops), not a rewrite",
+        );
+        assert!(big_append <= 4, "one typed char is a handful of ops, got {big_append}");
+    }
+
     /// Typing over a selection replaces it — the insert path respects the
     /// live selection when driven through `handle_event`.
     #[test]
