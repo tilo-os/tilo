@@ -16,6 +16,7 @@ use vello::peniko::{BlendMode, Color, Fill};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
+use winit::window::CursorIcon;
 
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -936,6 +937,114 @@ impl Grid {
         self.dirty = true;
     }
 
+    /// Jump the active cell to the next "data edge" along the unit direction
+    /// `(dc, dr)` — the Ctrl+Arrow move every desktop spreadsheet has. `extend`
+    /// grows the live range to the landing cell (Ctrl+Shift+Arrow) instead of
+    /// collapsing onto it.
+    fn move_active_to_edge(&mut self, dc: i32, dr: i32, extend: bool) {
+        self.extra_ranges.clear();
+        self.active = self.data_edge(dc, dr);
+        if !extend {
+            self.anchor = self.active;
+        }
+        self.ensure_visible();
+        self.dirty = true;
+    }
+
+    /// Move the active cell straight to `addr` (Ctrl+Home → A1, Ctrl+End → the
+    /// used range's far corner), clamped to the sheet. `extend` grows the live
+    /// range instead of collapsing onto the target.
+    fn move_active_to(&mut self, addr: Addr, extend: bool) {
+        self.extra_ranges.clear();
+        self.active = (
+            addr.0.min(self.n_cols.saturating_sub(1)),
+            addr.1.min(self.n_rows.saturating_sub(1)),
+        );
+        if !extend {
+            self.anchor = self.active;
+        }
+        self.ensure_visible();
+        self.dirty = true;
+    }
+
+    /// The landing cell for a Ctrl+Arrow jump from the active cell along the
+    /// unit direction `(dc, dr)`. Matches Excel/Sheets: from a filled cell
+    /// whose next neighbour is also filled, run to the last filled cell of that
+    /// contiguous block; otherwise skip across any blank gap to the next filled
+    /// cell; and when nothing lies ahead, land on the last cell of the sheet in
+    /// that direction.
+    fn data_edge(&self, dc: i32, dr: i32) -> Addr {
+        let max_c = self.n_cols.saturating_sub(1) as i64;
+        let max_r = self.n_rows.saturating_sub(1) as i64;
+        let (c0, r0) = (self.active.0 as i64, self.active.1 as i64);
+        let step = |c: i64, r: i64| (c + dc as i64, r + dr as i64);
+        let in_bounds = |c: i64, r: i64| c >= 0 && c <= max_c && r >= 0 && r <= max_r;
+        let occ = |c: i64, r: i64| self.cell_is_occupied((c as u32, r as u32));
+
+        let (nc, nr) = step(c0, r0);
+        if !in_bounds(nc, nr) {
+            return self.active; // already at the sheet edge in this direction
+        }
+
+        let (mut c, mut r) = (nc, nr);
+        if occ(c0, r0) && occ(nc, nr) {
+            // Inside a filled block: advance to its last filled cell.
+            loop {
+                let (tc, tr) = step(c, r);
+                if in_bounds(tc, tr) && occ(tc, tr) {
+                    c = tc;
+                    r = tr;
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // At a boundary or in blank space: skip forward to the next filled
+            // cell, or to the sheet edge when none lies ahead.
+            loop {
+                if occ(c, r) {
+                    break;
+                }
+                let (tc, tr) = step(c, r);
+                if in_bounds(tc, tr) {
+                    c = tc;
+                    r = tr;
+                } else {
+                    break;
+                }
+            }
+        }
+        (c as u32, r as u32)
+    }
+
+    /// The far corner of the used range (the furthest filled column and row,
+    /// taken independently — like Excel's Ctrl+End). `(0, 0)` when empty.
+    fn used_extent(&self) -> Addr {
+        let mut c1 = 0u32;
+        let mut r1 = 0u32;
+        let mut any = false;
+        let mut note = |c: u32, r: u32| {
+            c1 = c1.max(c);
+            r1 = r1.max(r);
+            any = true;
+        };
+        for (&(c, r), v) in &self.values {
+            if !v.is_empty() {
+                note(c, r);
+            }
+        }
+        for (&(c, r), s) in &self.raw {
+            if !s.is_empty() {
+                note(c, r);
+            }
+        }
+        if any {
+            (c1, r1)
+        } else {
+            (0, 0)
+        }
+    }
+
     // --- input handlers (called by the app) --------------------------------
 
     pub fn on_scroll(&mut self, dx: f64, dy: f64) {
@@ -1130,6 +1239,46 @@ impl Grid {
         }
     }
 
+    /// The OS cursor shape for the pointer at `p`: the column/row resize arrows
+    /// over a header border, a crosshair over the fill handle, and the
+    /// spreadsheet cell cursor over the cell matrix — so those affordances read
+    /// as interactive before a click (resize was previously invisible). An
+    /// in-flight drag keeps its cursor even if the pointer strays off the grab
+    /// line. `None` (default arrow) over the header strips and outside the grid.
+    pub fn cursor_at(&self, p: Point) -> Option<CursorIcon> {
+        // A live drag owns the cursor until release.
+        if let Some(drag) = &self.resize {
+            return Some(match drag.target {
+                ResizeTarget::Col(_) => CursorIcon::EwResize,
+                ResizeTarget::Row(_) => CursorIcon::NsResize,
+            });
+        }
+        if self.fill_drag.is_some() {
+            return Some(CursorIcon::Crosshair);
+        }
+        if !self.rect.contains(p) {
+            return None;
+        }
+        // A header-border resize hotspot.
+        if let Some(target) = self.resize_target_at(p) {
+            return Some(match target {
+                ResizeTarget::Col(_) => CursorIcon::EwResize,
+                ResizeTarget::Row(_) => CursorIcon::NsResize,
+            });
+        }
+        // The fill handle on the selection's bottom-right corner.
+        if let Some(hr) = self.fill_handle_rect() {
+            if hr.inflate(FILL_HANDLE_GRAB, FILL_HANDLE_GRAB).contains(p) {
+                return Some(CursorIcon::Crosshair);
+            }
+        }
+        // The cell matrix.
+        if self.body_rect().contains(p) {
+            return Some(CursorIcon::Cell);
+        }
+        None
+    }
+
     pub fn double_click(&mut self, p: Point, out: &mut Vec<GridCmd>) -> bool {
         let _ = out;
         if let Some(addr) = self.cell_at(p) {
@@ -1164,20 +1313,38 @@ impl Grid {
         }
 
         match &ke.logical_key {
+            // Ctrl+Arrow jumps to the data edge (Excel/Sheets); a bare arrow
+            // steps one cell. Shift with either extends the live range.
             Key::Named(NamedKey::ArrowUp) => {
-                self.move_active(0, -1, shift);
+                if ctrl {
+                    self.move_active_to_edge(0, -1, shift);
+                } else {
+                    self.move_active(0, -1, shift);
+                }
                 true
             }
             Key::Named(NamedKey::ArrowDown) => {
-                self.move_active(0, 1, shift);
+                if ctrl {
+                    self.move_active_to_edge(0, 1, shift);
+                } else {
+                    self.move_active(0, 1, shift);
+                }
                 true
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.move_active(-1, 0, shift);
+                if ctrl {
+                    self.move_active_to_edge(-1, 0, shift);
+                } else {
+                    self.move_active(-1, 0, shift);
+                }
                 true
             }
             Key::Named(NamedKey::ArrowRight) => {
-                self.move_active(1, 0, shift);
+                if ctrl {
+                    self.move_active_to_edge(1, 0, shift);
+                } else {
+                    self.move_active(1, 0, shift);
+                }
                 true
             }
             Key::Named(NamedKey::Tab) => {
@@ -1193,13 +1360,26 @@ impl Grid {
                 true
             }
             Key::Named(NamedKey::Home) => {
+                // Home → start of the row; Ctrl+Home → A1.
                 self.extra_ranges.clear();
-                self.active.0 = 0;
+                if ctrl {
+                    self.active = (0, 0);
+                } else {
+                    self.active.0 = 0;
+                }
                 if !shift {
                     self.anchor = self.active;
                 }
                 self.ensure_visible();
                 self.dirty = true;
+                true
+            }
+            // Ctrl+End → the used range's far corner. A bare End is left for
+            // the in-cell editor (caret to line end); in navigation it is a
+            // no-op rather than a surprising jump.
+            Key::Named(NamedKey::End) if ctrl => {
+                let target = self.used_extent();
+                self.move_active_to(target, shift);
                 true
             }
             Key::Named(NamedKey::PageDown) => {
@@ -1460,6 +1640,13 @@ impl Grid {
     /// Shots/test hook: type literal text into the active edit buffer.
     pub fn insert_text_public(&mut self, s: &str) {
         self.insert_text(s);
+    }
+
+    /// Shots/test hook: perform a Ctrl+Arrow data-edge jump along `(dc, dr)`
+    /// (Ctrl+Shift+Arrow when `extend`), driving the same path the keyboard does
+    /// so a screenshot can show the landing selection without a display.
+    pub fn jump_to_edge(&mut self, dc: i32, dr: i32, extend: bool) {
+        self.move_active_to_edge(dc, dr, extend);
     }
 
     // --- rendering ----------------------------------------------------------
@@ -2462,5 +2649,170 @@ mod tests {
         g.add_range_public((7, 8), (7, 8)); // H9
         assert!(g.col_in_selection(7) && g.row_in_selection(8));
         assert!(g.col_in_selection(2), "original range headers stay lit");
+    }
+
+    // --- Ctrl+Arrow / Ctrl+Home / Ctrl+End data-edge navigation -------------
+
+    fn ctrl_mods() -> Modifiers {
+        let mut s = winit::keyboard::ModifiersState::empty();
+        s.set(winit::keyboard::ModifiersState::CONTROL, true);
+        Modifiers::from(s)
+    }
+    fn ctrl_shift_mods() -> Modifiers {
+        let mut s = winit::keyboard::ModifiersState::empty();
+        s.set(winit::keyboard::ModifiersState::CONTROL, true);
+        s.set(winit::keyboard::ModifiersState::SHIFT, true);
+        Modifiers::from(s)
+    }
+    /// A pressed keyboard event for a named key (winit keeps `KeyEventExtra`
+    /// private, so zero-init like the toolkit's own tests).
+    fn named_event(k: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    /// Drive one key through the grid's real `key()` handler.
+    fn press(g: &mut Grid, k: NamedKey, mods: &Modifiers) {
+        let mut out = Vec::new();
+        g.key(&named_event(k), mods, &mut out);
+    }
+
+    #[test]
+    fn ctrl_arrow_runs_to_the_end_of_a_filled_block() {
+        // B2:E2 is a contiguous horizontal run (cols 1..=4, row 1). From the
+        // block's start, Ctrl+Right lands on its last filled cell — not one
+        // cell over, which is what a bare arrow (or the old code) would do.
+        let mut g = grid_with(&[
+            ((1, 1), CellValue::Number(1.0)),
+            ((2, 1), CellValue::Number(2.0)),
+            ((3, 1), CellValue::Number(3.0)),
+            ((4, 1), CellValue::Number(4.0)),
+        ]);
+        g.select_only((1, 1));
+        press(&mut g, NamedKey::ArrowRight, &ctrl_mods());
+        assert_eq!(g.active(), (4, 1), "Ctrl+Right stops at the block's last cell");
+        assert!(!g.is_multi_range());
+    }
+
+    #[test]
+    fn ctrl_arrow_skips_a_blank_gap_to_the_next_filled_cell() {
+        // B2:C2 filled, D2/E2 blank, F2 filled. From the run's end, Ctrl+Right
+        // jumps across the gap to F2 rather than crawling into the blanks.
+        let mut g = grid_with(&[
+            ((1, 1), CellValue::Number(1.0)),
+            ((2, 1), CellValue::Number(2.0)),
+            ((5, 1), CellValue::Number(6.0)),
+        ]);
+        g.select_only((2, 1));
+        press(&mut g, NamedKey::ArrowRight, &ctrl_mods());
+        assert_eq!(g.active(), (5, 1), "Ctrl+Right skips the gap to the next filled cell");
+    }
+
+    #[test]
+    fn ctrl_arrow_with_nothing_ahead_lands_on_the_sheet_edge() {
+        // A single filled cell with only blanks to its right: Ctrl+Right runs to
+        // the last column of the sheet (Excel behaviour), never off the end.
+        let mut g = grid_with(&[((1, 1), CellValue::Number(1.0))]);
+        g.select_only((1, 1));
+        press(&mut g, NamedKey::ArrowRight, &ctrl_mods());
+        assert_eq!(g.active(), (g.n_cols - 1, 1), "runs to the last column");
+        // And Ctrl+Left from a mid blank area skips back to the filled cell.
+        g.select_only((10, 1));
+        press(&mut g, NamedKey::ArrowLeft, &ctrl_mods());
+        assert_eq!(g.active(), (1, 1), "Ctrl+Left skips blanks back to the filled cell");
+    }
+
+    #[test]
+    fn ctrl_down_runs_to_the_end_of_a_vertical_block() {
+        // A1:A4 filled (col 0, rows 0..=3). Ctrl+Down from A1 lands on A4.
+        let mut g = grid_with(&[
+            ((0, 0), CellValue::Number(1.0)),
+            ((0, 1), CellValue::Number(2.0)),
+            ((0, 2), CellValue::Number(3.0)),
+            ((0, 3), CellValue::Number(4.0)),
+        ]);
+        g.select_only((0, 0));
+        press(&mut g, NamedKey::ArrowDown, &ctrl_mods());
+        assert_eq!(g.active(), (0, 3));
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_extends_the_selection_to_the_edge() {
+        // Ctrl+Shift+Right keeps the anchor and grows the range to the block end.
+        let mut g = grid_with(&[
+            ((1, 1), CellValue::Number(1.0)),
+            ((2, 1), CellValue::Number(2.0)),
+            ((3, 1), CellValue::Number(3.0)),
+        ]);
+        g.select_only((1, 1));
+        press(&mut g, NamedKey::ArrowRight, &ctrl_shift_mods());
+        assert_eq!(g.active(), (3, 1), "active moved to the block end");
+        assert_eq!(g.selection_bounds(), ((1, 1), (3, 1)), "range extended, anchor kept");
+    }
+
+    #[test]
+    fn ctrl_home_and_ctrl_end_jump_to_the_corners() {
+        // Used range spans A1..D6 (cols 0..=3, rows 0..=5), with an outlier at
+        // C6 driving the far row. Ctrl+End lands on the used range's far corner;
+        // Ctrl+Home returns to A1.
+        let mut g = grid_with(&[
+            ((0, 0), CellValue::Number(1.0)),
+            ((3, 2), CellValue::Number(2.0)),
+            ((2, 5), CellValue::Number(3.0)),
+        ]);
+        g.select_only((3, 2));
+        press(&mut g, NamedKey::End, &ctrl_mods());
+        assert_eq!(g.active(), (3, 5), "Ctrl+End → far filled column and row");
+        press(&mut g, NamedKey::Home, &ctrl_mods());
+        assert_eq!(g.active(), (0, 0), "Ctrl+Home → A1");
+    }
+
+    #[test]
+    fn bare_arrow_still_steps_one_cell() {
+        // Guard against a regression that would make every arrow jump: without
+        // Ctrl, an arrow moves exactly one cell even inside a filled block.
+        let mut g = grid_with(&[
+            ((1, 1), CellValue::Number(1.0)),
+            ((2, 1), CellValue::Number(2.0)),
+            ((3, 1), CellValue::Number(3.0)),
+        ]);
+        g.select_only((1, 1));
+        press(&mut g, NamedKey::ArrowRight, &Modifiers::default());
+        assert_eq!(g.active(), (2, 1), "a bare arrow steps one cell, not to the edge");
+    }
+
+    // --- pointer cursor affordances -----------------------------------------
+
+    #[test]
+    fn cursor_reflects_resize_borders_fill_handle_and_cells() {
+        let mut g = grid_with(&[]);
+        // A column-border hotspot in the column-header strip → horizontal resize.
+        let col_border = Point::new(ROW_HEADER_W + DEFAULT_COL_W, COL_HEADER_H / 2.0);
+        assert_eq!(g.cursor_at(col_border), Some(CursorIcon::EwResize));
+        // A row-border hotspot in the row-header strip → vertical resize.
+        let row_border = Point::new(ROW_HEADER_W / 2.0, COL_HEADER_H + DEFAULT_ROW_H);
+        assert_eq!(g.cursor_at(row_border), Some(CursorIcon::NsResize));
+        // A cell in the body → the spreadsheet cell cursor.
+        assert_eq!(g.cursor_at(cell_point(&g, 2, 2)), Some(CursorIcon::Cell));
+        // The fill handle on the selection's bottom-right corner → crosshair.
+        g.select_only((1, 1));
+        let corner = g.cell_screen_rect(1, 1);
+        assert_eq!(
+            g.cursor_at(Point::new(corner.x1, corner.y1)),
+            Some(CursorIcon::Crosshair),
+        );
+        // Outside the grid → default arrow (None).
+        assert_eq!(g.cursor_at(Point::new(-5.0, -5.0)), None);
     }
 }
