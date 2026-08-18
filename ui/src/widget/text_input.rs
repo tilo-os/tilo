@@ -436,7 +436,9 @@ impl TextInput {
     }
 
     /// Resolve the Automerge `Text` this input edits, if any. A directly
-    /// bound `ObjId` (via [`bind_text`]) wins over the string-path mode.
+    /// bound `ObjId` (via [`bind_text`]) wins over the string-path mode. This is
+    /// the read-only resolver: it never creates the object, so a caller that only
+    /// needs to read (or is on a non-mutating path) leaves the document untouched.
     fn resolve_text_obj(&self, state: &AutoCommit, root: &ObjId) -> Option<ObjId> {
         if let Some(obj) = &self.bound_text {
             return Some(obj.clone());
@@ -449,6 +451,44 @@ impl TextInput {
             }
         }
         None
+    }
+
+    /// Resolve the backing `Text` object for an *edit*, seeding it on first use
+    /// when the field is `crdt_bound` but the host never created one.
+    ///
+    /// A `with_on_change_path` field used to persist edits only if the host had
+    /// already parked a `Text` object at the key; otherwise a keystroke mutated
+    /// the local buffer alone and was silently lost on the next `sync` — the
+    /// caret had already moved, so a Backspace read as "jumps back a char without
+    /// deleting", and typed text vanished on a widget rebuild. Seeding here makes
+    /// every bound field self-sufficient. A scalar string previously parked at
+    /// the key (a seeded initial value) is preserved by splicing it into the new
+    /// object, mirroring the eager `ensure_text_object` helper apps carried.
+    fn resolve_or_seed_text_obj(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if let Some(obj) = &self.bound_text {
+            return Some(obj.clone());
+        }
+        if !self.crdt_bound || self.on_change_path.is_empty() {
+            return None;
+        }
+        let key = self.on_change_path.as_str();
+        // An existing Text object is used untouched.
+        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
+            return Some(id);
+        }
+        // Preserve a scalar string already at the key (a seeded value).
+        let existing = match state.get(root, key) {
+            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+                automerge::ScalarValue::Str(t) => t.to_string(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        let obj = state.put_object(root, key, ObjType::Text).ok()?;
+        if !existing.is_empty() {
+            let _ = state.splice_text(&obj, 0, 0, &existing);
+        }
+        Some(obj)
     }
 
     /// Builder-style: override the body font size in CSS-like pixels.
@@ -2492,7 +2532,8 @@ impl Widget for TextInput {
                     if *element_state == ElementState::Pressed {
                         let point = [self.last_mouse_pos.x, self.last_mouse_pos.y];
                         if let Some(idx) = self.context_menu.item_at(point) {
-                            let obj_id_opt = self.resolve_text_obj(state, root);
+                            // Cut / Paste mutate, so seed the backing object.
+                            let obj_id_opt = self.resolve_or_seed_text_obj(state, root);
                             self.dispatch_context_action(idx, state, obj_id_opt.as_ref());
                         } else {
                             self.context_menu.close();
@@ -2597,7 +2638,26 @@ impl Widget for TextInput {
                 if !self.is_focused {
                     return;
                 }
-                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
+                // A key that can mutate the buffer resolves-or-seeds the backing
+                // Text object so the edit actually persists (see
+                // `resolve_or_seed_text_obj`); pure navigation uses the read-only
+                // resolver so arrow/Home/End never create a document object.
+                let will_mutate = matches!(
+                    logical_key,
+                    Key::Named(NamedKey::Backspace)
+                        | Key::Named(NamedKey::Delete)
+                        | Key::Named(NamedKey::Enter)
+                        | Key::Named(NamedKey::Tab)
+                        | Key::Named(NamedKey::Space)
+                        | Key::Character(_)
+                ) || text
+                    .as_ref()
+                    .is_some_and(|t| !t.as_str().chars().all(|c| c.is_control()));
+                let obj_id_opt: Option<ObjId> = if will_mutate {
+                    self.resolve_or_seed_text_obj(state, root)
+                } else {
+                    self.resolve_text_obj(state, root)
+                };
                 let shift = modifiers.state().shift_key();
                 let ctrl = modifiers.state().control_key();
 
@@ -2821,8 +2881,8 @@ impl Widget for TextInput {
                 if !self.is_focused {
                     return;
                 }
-                let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
                 if !t.chars().all(|c| c.is_control()) {
+                    let obj_id_opt: Option<ObjId> = self.resolve_or_seed_text_obj(state, root);
                     self.insert_str(t.as_str(), state, obj_id_opt.as_ref());
                     *handled = true;
                 }
@@ -3893,6 +3953,62 @@ mod tests {
         drive(&mut ti, &mut doc, &char_key_event("x"), &mods(true, false));
         assert_eq!(ti.value(), "", "ctrl+X cuts the selection");
         assert_eq!(ti.selection_range(), None, "selection collapsed after cut");
+    }
+
+    /// A `with_on_change_path` field bound to a key that holds a *scalar* string
+    /// (a seeded value, not a Text object) must still persist a Backspace. The
+    /// old edit path spliced nowhere — so the next `sync` reverted the local
+    /// delete while the caret had already stepped back, which reads exactly as
+    /// "Backspace jumps back a char without deleting". The field now seeds its
+    /// own backing Text object on the first edit.
+    #[test]
+    fn crdt_bound_scalar_field_backspace_persists_across_sync() {
+        use automerge::{transaction::Transactable, ReadDoc, ROOT};
+        let mut doc = AutoCommit::new();
+        doc.put(&ROOT, "q", "abc").unwrap(); // scalar string, NOT a Text object
+
+        let mut ti = TextInput::new(Vec::new()).with_on_change_path("q");
+        ti.set_focus(true);
+        Widget::sync(&mut ti, &mut doc, &ROOT);
+        assert_eq!(ti.value(), "abc", "reads the seeded scalar value");
+        ti.set_cursor_pos(3);
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Backspace), &mods(false, false));
+        // The next frame's sync must NOT revert the delete.
+        Widget::sync(&mut ti, &mut doc, &ROOT);
+
+        assert_eq!(ti.value(), "ab", "Backspace deleted the char and it survived sync");
+        assert_eq!(ti.cursor_pos(), 2, "caret sits where the char was removed");
+        let (v, tid) = doc.get(&ROOT, "q").unwrap().unwrap();
+        assert!(
+            matches!(v, automerge::Value::Object(automerge::ObjType::Text)),
+            "the key was upgraded to a CRDT Text object so edits persist",
+        );
+        assert_eq!(doc.text(&tid).unwrap(), "ab", "the delete reached the CRDT");
+    }
+
+    /// Typed characters into a `with_on_change_path` field the host never seeded
+    /// must reach the CRDT, so they survive a widget rebuild (a fresh instance's
+    /// `sync` re-reads the same key). Without self-seeding the edits lived only
+    /// in the widget's local buffer and were lost on the next structure rebuild.
+    #[test]
+    fn crdt_bound_unseeded_field_typing_survives_widget_rebuild() {
+        use automerge::{ReadDoc, ROOT};
+        let mut doc = AutoCommit::new();
+
+        let mut ti = TextInput::new(Vec::new()).with_on_change_path("name");
+        ti.set_focus(true);
+        Widget::sync(&mut ti, &mut doc, &ROOT); // key absent → empty
+        drive(&mut ti, &mut doc, &char_key_event("h"), &mods(false, false));
+        drive(&mut ti, &mut doc, &char_key_event("i"), &mods(false, false));
+        assert_eq!(ti.value(), "hi");
+
+        // A brand-new widget instance (the "structure rebuild") reads the key.
+        let mut fresh = TextInput::new(Vec::new()).with_on_change_path("name");
+        Widget::sync(&mut fresh, &mut doc, &ROOT);
+        assert_eq!(fresh.value(), "hi", "typed text persisted to the CRDT, not just the buffer");
+        let (_, tid) = doc.get(&ROOT, "name").unwrap().unwrap();
+        assert_eq!(doc.text(&tid).unwrap(), "hi");
     }
 
     /// Typing over a selection replaces it — the insert path respects the
