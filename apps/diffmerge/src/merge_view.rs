@@ -14,13 +14,13 @@ use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{FontChoice, TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Scrollable, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
@@ -49,7 +49,11 @@ pub struct MergeView {
     ours_label: String,
     theirs_label: String,
     rect: Rect,
-    scroll_y: f64,
+    /// Shared overlay scrollbar for the base/ours/theirs source band (the three
+    /// columns scroll together — one offset, hunk-aligned across all three).
+    source_scroll: Scrollable,
+    /// Shared overlay scrollbar for the merged-result band below.
+    merged_scroll: Scrollable,
     /// Cached y-extent (in content space) of each hunk row in the source band.
     hunk_spans: Vec<(f64, f64)>,
     action_hits: Vec<ActionHit>,
@@ -75,7 +79,8 @@ impl MergeView {
             ours_label: String::new(),
             theirs_label: String::new(),
             rect: Rect::ZERO,
-            scroll_y: 0.0,
+            source_scroll: Scrollable::new_vertical(),
+            merged_scroll: Scrollable::new_vertical(),
             hunk_spans: Vec::new(),
             action_hits: Vec::new(),
             active_hunk: None,
@@ -99,7 +104,8 @@ impl MergeView {
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();
         self.theirs_label = theirs_label.to_string();
-        self.scroll_y = 0.0;
+        self.source_scroll.set_offset_y(0.0);
+        self.merged_scroll.set_offset_y(0.0);
         self.active_hunk = self.first_conflict().or_else(|| self.model.change_indices().first().copied());
         self.dirty = true;
         self.pending_seed = true;
@@ -201,9 +207,9 @@ impl MergeView {
 
     fn scroll_hunk_into_view(&mut self, hunk: usize) {
         if let Some((top, bot)) = self.hunk_spans.get(hunk).copied() {
-            let vh = self.source_band_height();
-            let mid = (top + bot) / 2.0;
-            self.scroll_y = (mid - vh / 2.0).max(0.0).min(self.max_scroll());
+            let h = (bot - top).max(1.0) as f32;
+            self.source_scroll.scroll_into_view(0.0, top as f32, 1.0, h);
+            self.dirty = true;
         }
     }
 
@@ -220,18 +226,6 @@ impl MergeView {
 
     fn content_height(&self) -> f64 {
         self.hunk_spans.last().map(|(_, b)| *b).unwrap_or(0.0)
-    }
-
-    fn max_scroll(&self) -> f64 {
-        (self.content_height() - self.source_band_height()).max(0.0)
-    }
-
-    fn scroll_by(&mut self, dy: f64) {
-        let new = (self.scroll_y + dy).max(0.0).min(self.max_scroll());
-        if (new - self.scroll_y).abs() > f64::EPSILON {
-            self.scroll_y = new;
-            self.dirty = true;
-        }
     }
 
     /// Recompute the per-hunk vertical spans (content space).
@@ -351,13 +345,17 @@ impl Widget for MergeView {
             );
         }
 
-        // --- Source band, clipped + scrolled ---
+        // --- Source band, clipped + scrolled (shared overlay scrollbar) ---
         let band_clip = Rect::new(r.x0, band_top, r.x1, band_bot);
+        self.source_scroll.set_viewport_rect(band_clip);
+        self.source_scroll
+            .set_content_size(r.width() as f32, self.content_height() as f32);
+        let source_off = self.source_scroll.offset_y() as f64;
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &band_clip);
 
         for (hi, h) in self.model.hunks.iter().enumerate() {
             let (top, _bot) = self.hunk_spans[hi];
-            let y = band_top + top - self.scroll_y;
+            let y = band_top + top - source_off;
             let rows = h.base.len().max(h.ours.len()).max(h.theirs.len()).max(1);
             let block_h = rows as f64 * ROW_H;
 
@@ -470,6 +468,8 @@ impl Widget for MergeView {
         }
 
         scene.pop_layer();
+        // The three source columns share one draggable overlay scrollbar.
+        self.source_scroll.draw_bar_overlay(scene, transform, theme);
 
         // Divider between source band and merged band.
         scene.stroke(
@@ -502,28 +502,37 @@ impl Widget for MergeView {
             None,
         );
 
-        // Merged buffer body.
+        // Merged buffer body (its own draggable overlay scrollbar).
         let merged_body = Rect::new(merged.x0, merged.y0 + HEADER_H, merged.x1, merged.y1);
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &merged_body);
         let lines: Vec<String> = self.model.merged_lines();
+        let merged_content_h = lines.len() as f64 * ROW_H + 8.0;
+        self.merged_scroll.set_viewport_rect(merged_body);
+        self.merged_scroll
+            .set_content_size(merged.width() as f32, merged_content_h as f32);
+        let moff = self.merged_scroll.offset_y() as f64;
+        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &merged_body);
         for (i, line) in lines.iter().enumerate() {
-            let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H;
-            if ly > merged_body.y1 {
-                break;
+            let ly = merged_body.y0 + 4.0 + i as f64 * ROW_H - moff;
+            if ly + ROW_H < merged_body.y0 || ly > merged_body.y1 {
+                continue;
             }
-            // Line number gutter.
+            // Line number gutter (monospace, so the numbers stay column-aligned).
             let no = (i + 1).to_string();
-            tr.draw_text(
+            tr.draw_text_font(
                 scene,
                 &no,
                 11.0,
                 c.text_dim,
                 transform * Affine::translate((merged_body.x0 + 6.0, ly + 2.0)),
                 None,
+                TextWeight::Regular,
+                false,
+                &FontChoice::Monospace,
             );
             draw_code_segments(scene, transform, tr, theme, merged_body.x0 + 44.0, ly, line);
         }
         scene.pop_layer();
+        self.merged_scroll.draw_bar_overlay(scene, transform, theme);
 
         self.dirty = false;
     }
@@ -532,33 +541,57 @@ impl Widget for MergeView {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
+        m: &winit::event::Modifiers,
+        s: &mut AutoCommit,
+        p: &ObjId,
         handled: &mut bool,
         _focus: &mut Option<NodeId>,
         _node: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        let band_bot = self.rect.y0 + HEADER_H + self.source_band_height();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Continue a thumb drag in whichever band captured the pointer.
+                if self.source_scroll.wants_pointer_capture() {
+                    feed_scroll(&mut self.source_scroll, event, scale_factor, m, s, p);
+                    self.dirty = true;
+                    *handled = true;
+                } else if self.merged_scroll.wants_pointer_capture() {
+                    feed_scroll(&mut self.merged_scroll, event, scale_factor, m, s, p);
+                    self.dirty = true;
+                    *handled = true;
+                } else {
+                    // Let the band under the pointer reveal its overlay bar near
+                    // the edge (never consumes).
+                    let scroll = if self.cursor.y <= band_bot {
+                        &mut self.source_scroll
+                    } else {
+                        &mut self.merged_scroll
+                    };
+                    feed_scroll(scroll, event, scale_factor, m, s, p);
+                }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Only scroll the source band when the cursor is above the
-                // merged divider; otherwise let the merged band stay put.
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => (-*y as f64) * 60.0,
-                    MouseScrollDelta::PixelDelta(pp) => -pp.y,
+            WindowEvent::MouseWheel { .. } => {
+                // The band under the pointer scrolls; the three source columns
+                // share one offset, so they move together.
+                let scroll = if self.cursor.y <= band_bot {
+                    &mut self.source_scroll
+                } else {
+                    &mut self.merged_scroll
                 };
-                self.scroll_by(dy);
-                *handled = true;
+                if feed_scroll(scroll, event, scale_factor, m, s, p) {
+                    self.dirty = true;
+                    *handled = true;
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
+                // A resolution chip wins the press.
                 let hit = self
                     .action_hits
                     .iter()
@@ -566,6 +599,30 @@ impl Widget for MergeView {
                     .copied();
                 if let Some(a) = hit {
                     self.resolve(a.hunk, a.choice);
+                    *handled = true;
+                    return;
+                }
+                // Otherwise offer it to the band's scrollbar (thumb / track).
+                let scroll = if self.cursor.y <= band_bot {
+                    &mut self.source_scroll
+                } else {
+                    &mut self.merged_scroll
+                };
+                if feed_scroll(scroll, event, scale_factor, m, s, p) {
+                    self.dirty = true;
+                    *handled = true;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.source_scroll.wants_pointer_capture() {
+                    feed_scroll(&mut self.source_scroll, event, scale_factor, m, s, p);
+                    *handled = true;
+                } else if self.merged_scroll.wants_pointer_capture() {
+                    feed_scroll(&mut self.merged_scroll, event, scale_factor, m, s, p);
                     *handled = true;
                 }
             }
@@ -586,12 +643,38 @@ impl Widget for MergeView {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        self.dirty || self.source_scroll.needs_redraw() || self.merged_scroll.needs_redraw()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.source_scroll.needs_animation_frame() || self.merged_scroll.needs_animation_frame()
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+        self.source_scroll.mark_drawn();
+        self.merged_scroll.mark_drawn();
     }
+}
+
+/// Forward one raw event into a child-less [`Scrollable`] (thumb-drag / track /
+/// wheel) using a throwaway taffy node — the bar lays out and draws no child.
+fn feed_scroll(
+    scroll: &mut Scrollable,
+    event: &WindowEvent,
+    scale_factor: f64,
+    modifiers: &winit::event::Modifiers,
+    state: &mut AutoCommit,
+    path: &ObjId,
+) -> bool {
+    let mut handled = false;
+    let mut ft = None;
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let node = taffy.new_leaf(Style::default()).unwrap();
+    scroll.handle_event(
+        event, scale_factor, modifiers, state, path, &mut handled, &mut ft, node, &taffy,
+    );
+    handled
 }
 
 fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
@@ -691,19 +774,132 @@ fn draw_code_segments(
         if seg.is_empty() {
             continue;
         }
-        tr.draw_text(
+        // Render in the embedded monospace so base / ours / theirs and the
+        // merged output all share one fixed-width grid and columns line up.
+        tr.draw_text_font(
             scene,
             &seg,
             FONT_SIZE,
             color,
             transform * Affine::translate((x, y + 2.0)),
             None,
+            TextWeight::Regular,
+            false,
+            &FontChoice::Monospace,
         );
-        let (w, _) = tr.measure(&seg, FONT_SIZE, None);
+        let (w, _) = tr.measure_font(
+            &seg, FONT_SIZE, None, TextWeight::Regular, false, &FontChoice::Monospace,
+        );
         x += w as f64;
     }
 }
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use ui::widget::ScrollAxis;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, Modifiers};
+
+    /// Run one real frame so the source band lays out and its shared overlay
+    /// scrollbar is configured from the hunk spans.
+    fn run_frame(view: &mut MergeView, w: f32, h: f32) {
+        let theme = Theme::dark();
+        let presence = PresenceCtx::empty();
+        let mut tr = TextRenderer::new();
+        let mut state = ui::State::new();
+        view.sync(&mut state.doc, &state.root);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = view.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(w), height: Dimension::length(h) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        {
+            let mm = node_map.clone();
+            let trr = &mut tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size {
+                        width: AvailableSpace::Definite(w),
+                        height: AvailableSpace::Definite(h),
+                    },
+                    |known, available, node_id, _, _| {
+                        if let Some(&ptr) = mm.get(&node_id) {
+                            unsafe { (*ptr).measure(known, available, trr) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+        }
+        view.apply_layout(&taffy, child, Point::ORIGIN);
+        let mut scene = Scene::new();
+        view.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved { device_id: DeviceId::dummy(), position: PhysicalPosition::new(x, y) }
+    }
+    fn mouse(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput { device_id: DeviceId::dummy(), state, button: MouseButton::Left }
+    }
+    fn send(view: &mut MergeView, ev: &WindowEvent) -> bool {
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        view.handle_event(ev, 1.0, &Modifiers::default(), &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        handled
+    }
+
+    /// The three source columns scroll together through the SHARED overlay
+    /// scrollbar, and its thumb drags: with a tall source band a thumb exists,
+    /// pressing it captures the pointer, and dragging it down advances the
+    /// shared source-band offset.
+    #[test]
+    fn source_band_thumb_drag_scrolls() {
+        let mut view = MergeView::new();
+        // A base/ours/theirs triple tall enough to overflow the source band.
+        let base: String = (0..60).map(|i| format!("row {i}\n")).collect();
+        let ours = format!("{base}ours-tail\n");
+        let theirs = format!("{base}theirs-tail\n");
+        view.set_inputs("base", &base, "ours", &ours, "theirs", &theirs);
+        run_frame(&mut view, 1000.0, 320.0);
+
+        let thumb = view
+            .source_scroll
+            .thumb_rect(ScrollAxis::Vertical)
+            .expect("the overflowing source band draws a draggable thumb");
+        let center = thumb.center();
+        let before = view.source_scroll.offset_y();
+        assert_eq!(before, 0.0, "source band starts at the top");
+
+        send(&mut view, &moved(center.x, center.y));
+        send(&mut view, &mouse(ElementState::Pressed));
+        assert!(
+            view.source_scroll.wants_pointer_capture(),
+            "pressing the thumb starts a drag"
+        );
+        send(&mut view, &moved(center.x, center.y + 90.0));
+        send(&mut view, &mouse(ElementState::Released));
+
+        let after = view.source_scroll.offset_y();
+        assert!(after > before + 1.0, "dragging the thumb scrolled the source band: {before} -> {after}");
+    }
 }

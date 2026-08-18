@@ -19,7 +19,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -56,7 +56,6 @@ enum Action {
     PrevChange,
     NextChange,
     Open,
-    LoadSample,
 }
 
 pub struct DiffMergeApp {
@@ -222,17 +221,6 @@ impl DiffMergeApp {
             Action::Open => {
                 self.request_open_via_portal();
             }
-            Action::LoadSample => {
-                let (l, r) = samples::diff_pair();
-                self.diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
-                let (base, ours, theirs) = samples::merge_triple();
-                self.merge.set_inputs(
-                    &base.label, &base.text, &ours.label, &ours.text, &theirs.label,
-                    &theirs.text,
-                );
-                self.pending_left = None;
-                self.dirty = true;
-            }
         }
     }
 
@@ -396,7 +384,6 @@ impl DiffMergeApp {
         let mut rx = r.x1 - 16.0;
         for (label, action) in [
             ("Open files", Action::Open),
-            ("Load sample", Action::LoadSample),
             ("Next ›", Action::NextChange),
             ("‹ Prev", Action::PrevChange),
         ] {
@@ -617,51 +604,8 @@ impl Widget for DiffMergeApp {
             self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
 
-        // Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
-        if let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
-            ..
-        } = event
-        {
-            match logical_key {
-                Key::Character(ch) => match ch.as_str() {
-                    "n" | "N" => {
-                        self.act(Action::NextChange);
-                        *handled = true;
-                        return;
-                    }
-                    "p" | "P" => {
-                        self.act(Action::PrevChange);
-                        *handled = true;
-                        return;
-                    }
-                    "1" => {
-                        self.act(Action::ModeDiff);
-                        *handled = true;
-                        return;
-                    }
-                    "2" => {
-                        self.act(Action::ModeMerge);
-                        *handled = true;
-                        return;
-                    }
-                    _ => {}
-                },
-                Key::Named(NamedKey::F8) => {
-                    self.act(Action::NextChange);
-                    *handled = true;
-                    return;
-                }
-                Key::Named(NamedKey::F7) => {
-                    self.act(Action::PrevChange);
-                    *handled = true;
-                    return;
-                }
-                _ => {}
-            }
-        }
-
-        // Toolbar clicks.
+        // Toolbar clicks (checked before the views so a button press never also
+        // lands in an editor panel beneath it).
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
@@ -680,7 +624,11 @@ impl Widget for DiffMergeApp {
             }
         }
 
-        // Route to the active view.
+        // Route to the active view FIRST, so the editable diff panels receive
+        // typing / paste / clicks and the panels' scrollbars receive wheel +
+        // thumb-drag. Only if the view leaves a key unconsumed do the app-level
+        // change-navigation shortcuts run — otherwise a character typed into a
+        // focused diff panel would trigger navigation instead of editing.
         match self.mode {
             Mode::Diff => {
                 if let Some(n) = self.diff_node {
@@ -698,6 +646,49 @@ impl Widget for DiffMergeApp {
                     self.perform_action(state, action);
                     *handled = true;
                 }
+            }
+        }
+        if *handled {
+            return;
+        }
+
+        // App-level shortcuts: F8/F7 for next/prev change (usable even while a
+        // panel is focused, since function keys never type text); n/p and the
+        // 1/2 mode switch apply only when no editor swallowed the key.
+        if let WindowEvent::KeyboardInput {
+            event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+            ..
+        } = event
+        {
+            match logical_key {
+                Key::Character(ch) => match ch.as_str() {
+                    "n" | "N" => {
+                        self.act(Action::NextChange);
+                        *handled = true;
+                    }
+                    "p" | "P" => {
+                        self.act(Action::PrevChange);
+                        *handled = true;
+                    }
+                    "1" => {
+                        self.act(Action::ModeDiff);
+                        *handled = true;
+                    }
+                    "2" => {
+                        self.act(Action::ModeMerge);
+                        *handled = true;
+                    }
+                    _ => {}
+                },
+                Key::Named(NamedKey::F8) => {
+                    self.act(Action::NextChange);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::F7) => {
+                    self.act(Action::PrevChange);
+                    *handled = true;
+                }
+                _ => {}
             }
         }
     }
@@ -764,10 +755,6 @@ impl Widget for DiffMergeApp {
     ) {
         self.draw(scene, transform, tr, theme, presence);
     }
-}
-
-fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
 
 #[cfg(test)]
@@ -1089,6 +1076,21 @@ mod tests {
             crate::doc::MergeDoc::resolutions(&state.doc),
             vec![(hunk, "theirs".to_string())],
             "the pointer-driven resolution was recorded in the CRDT"
+        );
+    }
+
+    /// The live app's toolbar carries no "Load sample" button — sample content
+    /// is demo-only (`--shots` / `new_demo`), never a live affordance. Drawing
+    /// the toolbar of a fresh (empty) app must yield exactly the 2 mode segments
+    /// plus Open / Next / Prev; the removed sample button would have made six.
+    #[test]
+    fn live_toolbar_omits_load_sample() {
+        let mut app = DiffMergeApp::new();
+        draw_merge_frame(&mut app, (1200.0, 760.0));
+        assert_eq!(
+            app.tool_hits.len(),
+            5,
+            "toolbar affordances are Diff / 3-way merge / Open / Next / Prev — no Load sample"
         );
     }
 }
