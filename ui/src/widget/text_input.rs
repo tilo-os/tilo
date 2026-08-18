@@ -4011,6 +4011,27 @@ mod tests {
         assert_eq!(doc.text(&tid).unwrap(), "hi");
     }
 
+    /// Ctrl+Backspace deletes the whole word before the caret; Ctrl+Delete the
+    /// whole word after — the word-granularity deletes, driven through the real
+    /// key path (word boundaries from `text_selection`).
+    #[test]
+    fn ctrl_backspace_and_ctrl_delete_remove_whole_words() {
+        let mut ti = TextInput::local().with_initial_value("hello world foo");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        // Ctrl+Delete from the start removes the whole word after the caret.
+        ti.set_cursor_pos(0);
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Delete), &mods(true, false));
+        assert_eq!(ti.value(), "world foo", "Ctrl+Delete removed the word after the caret");
+        assert_eq!(ti.cursor_pos(), 0, "the caret stays at the deletion point");
+
+        // Ctrl+Backspace from the end removes the whole word before the caret.
+        ti.set_cursor_pos(ti.value().len());
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Backspace), &mods(true, false));
+        assert_eq!(ti.value(), "world ", "Ctrl+Backspace removed the word before the caret");
+    }
+
     /// Typing over a selection replaces it — the insert path respects the
     /// live selection when driven through `handle_event`.
     #[test]
