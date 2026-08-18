@@ -1733,8 +1733,18 @@ pub struct WordProcessorWidget {
     spellcheck_on: bool,
     /// Per-block spell-check cache: block id → (text, misspelled byte spans). Keyed
     /// by the block's text so an edit (which changes the text) invalidates the
-    /// entry and re-checks; an unchanged block reuses the spans for free.
+    /// entry and re-checks; an unchanged block reuses the spans for free. Populated
+    /// by the background worker via [`Self::pump_spellcheck`] — never on the draw
+    /// path.
     spell_cache: HashMap<String, (String, Vec<(usize, usize)>)>,
+    /// The background spell-checker (lazily spawned the first time a spellable block
+    /// needs checking, while spell-check is on). `None` until then, and dropped —
+    /// stopping the worker thread — when the widget is.
+    spell: Option<SpellService>,
+    /// Blocks with a check in flight: block id → the exact text we asked the worker
+    /// to check. Guards against re-enqueuing the same text every frame and lets a
+    /// test/shots caller know when the worker has caught up.
+    spell_pending: HashMap<String, String>,
     /// Right-click context menu (Cut / Copy / Paste / Select All, plus spell-check
     /// "Add to dictionary" + suggestion rows when the clicked word is flagged).
     /// Reuses the shared [`ContextMenu`] primitive; painted in the overlay pass.
@@ -1862,6 +1872,141 @@ fn shared_dictionary() -> std::sync::Arc<spellcheck::Dictionary> {
     DICT.get_or_init(|| std::sync::Arc::new(spellcheck::Dictionary::builtin())).clone()
 }
 
+/// How long the spell-check worker waits for typing to pause before running a
+/// check, so a burst of keystrokes coalesces into a single re-check per block.
+const SPELL_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(180);
+
+/// A message to the background spell-check worker.
+enum SpellJob {
+    /// Re-check `text` for block `id` (coalesced with any newer request for the
+    /// same block; debounced so a burst settles into one check).
+    Check { id: String, text: String },
+    /// Teach the worker's dictionary a user-accepted word.
+    AddWord(String),
+    /// Shut the worker down.
+    Stop,
+}
+
+/// A completed spell check for one block: the block `id`, the exact `text` that was
+/// checked (so a result for text that has since changed can be dropped), and the
+/// misspelled byte `spans`.
+struct SpellResult {
+    id: String,
+    text: String,
+    spans: Vec<(usize, usize)>,
+}
+
+/// A background spell-checker. The widget hands it `(block, text)` on every edit;
+/// the worker thread debounces bursts, runs `spellcheck::check` **off the UI
+/// thread**, and returns the misspelled spans. Typing never blocks on it — the
+/// draw path only reads the last delivered spans from the cache. Mirrors the
+/// async-compile pattern of the code editor's live analysis.
+struct SpellService {
+    jobs: std::sync::mpsc::Sender<SpellJob>,
+    results: std::sync::mpsc::Receiver<SpellResult>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl SpellService {
+    /// Spawn the worker. The (expensive) dictionary build happens **on the worker
+    /// thread** on first use, never on the UI thread.
+    fn spawn() -> Self {
+        let (job_tx, job_rx) = std::sync::mpsc::channel::<SpellJob>();
+        let (res_tx, res_rx) = std::sync::mpsc::channel::<SpellResult>();
+        let handle = std::thread::Builder::new()
+            .name("wp-spellcheck".into())
+            .spawn(move || spell_worker(job_rx, res_tx))
+            .ok();
+        SpellService { jobs: job_tx, results: res_rx, handle }
+    }
+
+    fn request(&self, id: &str, text: &str) {
+        let _ = self.jobs.send(SpellJob::Check { id: id.to_string(), text: text.to_string() });
+    }
+
+    fn add_word(&self, word: &str) {
+        let _ = self.jobs.send(SpellJob::AddWord(word.to_string()));
+    }
+
+    /// Non-blocking drain of everything the worker has finished so far.
+    fn drain(&self) -> Vec<SpellResult> {
+        let mut out = Vec::new();
+        while let Ok(r) = self.results.try_recv() {
+            out.push(r);
+        }
+        out
+    }
+}
+
+impl Drop for SpellService {
+    fn drop(&mut self) {
+        let _ = self.jobs.send(SpellJob::Stop);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// The spell-check worker loop. Builds the dictionary once (off the UI thread),
+/// then debounce-coalesces incoming check requests — a block edited many times in
+/// quick succession is checked once, against its latest text — and streams the
+/// results back.
+fn spell_worker(
+    jobs: std::sync::mpsc::Receiver<SpellJob>,
+    results: std::sync::mpsc::Sender<SpellResult>,
+) {
+    use std::sync::mpsc::RecvTimeoutError;
+
+    // Built lazily on the worker thread: the shared built-in list plus this user's
+    // accepted words. `shared_dictionary` memoises the 75k-word parse process-wide.
+    let mut dict = (*shared_dictionary()).clone();
+    dict.load_user_dict();
+
+    // Pending checks, coalesced by block id (latest text wins).
+    let mut pending: HashMap<String, String> = HashMap::new();
+
+    let flush = |dict: &spellcheck::Dictionary,
+                 pending: &mut HashMap<String, String>,
+                 results: &std::sync::mpsc::Sender<SpellResult>| {
+        for (id, text) in pending.drain() {
+            let spans = spell_spans(dict, &text);
+            if results.send(SpellResult { id, text, spans }).is_err() {
+                break;
+            }
+        }
+    };
+
+    loop {
+        // Block for the next job — or, if we already hold pending work, only wait
+        // out the debounce window before flushing it.
+        let job = if pending.is_empty() {
+            match jobs.recv() {
+                Ok(j) => j,
+                Err(_) => break,
+            }
+        } else {
+            match jobs.recv_timeout(SPELL_DEBOUNCE) {
+                Ok(j) => j,
+                Err(RecvTimeoutError::Timeout) => {
+                    flush(&dict, &mut pending, &results);
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        match job {
+            SpellJob::Stop => break,
+            SpellJob::AddWord(w) => {
+                dict.add_word(&w);
+            }
+            SpellJob::Check { id, text } => {
+                pending.insert(id, text);
+            }
+        }
+    }
+    flush(&dict, &mut pending, &results);
+}
+
 impl Default for WordProcessorWidget {
     fn default() -> Self {
         Self::new()
@@ -1940,6 +2085,8 @@ impl WordProcessorWidget {
             dict: None,
             spellcheck_on: true,
             spell_cache: HashMap::new(),
+            spell: None,
+            spell_pending: HashMap::new(),
             context_menu: ContextMenu::new(),
             context_actions: Vec::new(),
             review_hits: Vec::new(),
@@ -2154,8 +2301,10 @@ impl WordProcessorWidget {
         })
     }
 
-    /// Misspelled byte spans for a body block, using `spell_cache` (keyed by the
-    /// block's text so an edit re-checks and an unchanged block is free).
+    /// Misspelled byte spans for a body block, computed **synchronously** against
+    /// `spell_cache`. This is the discrete-action path (right-click suggestions,
+    /// tests, the shots warm-up) — never the draw/typing path, which uses
+    /// [`Self::spell_spans_for_draw`] so a keystroke never runs the checker.
     fn block_spell_spans(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
         if let Some((cached_text, spans)) = self.spell_cache.get(id) {
             if cached_text == text {
@@ -2166,6 +2315,103 @@ impl WordProcessorWidget {
         let spans = spell_spans(dict, text);
         self.spell_cache.insert(id.to_string(), (text.to_string(), spans.clone()));
         spans
+    }
+
+    /// Squiggle spans for the **draw path**: read-only against `spell_cache`, plus a
+    /// debounced request to the background worker whenever the cached spans are
+    /// stale (the block's text changed) or missing. Returns whatever the cache last
+    /// held for the block — so the draw never blocks on a check and the squiggles
+    /// lag typing by the debounce interval instead of stalling the frame.
+    fn spell_spans_for_draw(&mut self, id: &str, text: &str) -> Vec<(usize, usize)> {
+        let fresh = self
+            .spell_cache
+            .get(id)
+            .is_some_and(|(cached, _)| cached == text);
+        if !fresh {
+            // The cache is stale/absent for this text: ask the worker to re-check,
+            // unless we already have that exact request in flight.
+            if self.spell_pending.get(id).map(String::as_str) != Some(text) {
+                self.ensure_spell_service();
+                if let Some(svc) = self.spell.as_ref() {
+                    svc.request(id, text);
+                    self.spell_pending.insert(id.to_string(), text.to_string());
+                }
+            }
+        }
+        // Paint the last known spans for the block (empty until the first result).
+        self.spell_cache.get(id).map(|(_, s)| s.clone()).unwrap_or_default()
+    }
+
+    /// Lazily spawn the background spell-check worker (only while spell-check is on).
+    fn ensure_spell_service(&mut self) {
+        if self.spell.is_none() && self.spellcheck_on {
+            self.spell = Some(SpellService::spawn());
+        }
+    }
+
+    /// Drain finished spell checks from the worker into `spell_cache`, clearing the
+    /// in-flight marker for any block whose delivered result matches the text we are
+    /// still waiting on. Called at the top of each draw; cheap when idle.
+    fn pump_spellcheck(&mut self) {
+        let Some(svc) = self.spell.as_ref() else {
+            return;
+        };
+        let done = svc.drain();
+        let mut changed = false;
+        for r in done {
+            if self.spell_pending.get(&r.id).map(String::as_str) == Some(r.text.as_str()) {
+                self.spell_pending.remove(&r.id);
+            }
+            self.spell_cache.insert(r.id.clone(), (r.text, r.spans));
+            changed = true;
+        }
+        if changed {
+            // New squiggles arrived — repaint to show them.
+            self.dirty = true;
+        }
+    }
+
+    /// Whether the background checker has caught up with every requested block.
+    /// Test/shots helper.
+    pub fn spellcheck_idle(&self) -> bool {
+        self.spell_pending.is_empty()
+    }
+
+    /// Block until the background checker has answered every outstanding request and
+    /// the results are drained into the cache. Test/shots helper only — the live
+    /// editor never blocks on the checker. Bounded so a hung worker cannot wedge a
+    /// caller.
+    pub fn flush_spellcheck_blocking(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !self.spell_pending.is_empty() && std::time::Instant::now() < deadline {
+            self.pump_spellcheck();
+            if self.spell_pending.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.pump_spellcheck();
+    }
+
+    /// Ask the next draw to scroll the caret into view (the same request an edit or
+    /// caret motion raises). Used by `--shots` to render a settled caret-follow
+    /// frame.
+    pub fn arm_caret_reveal(&mut self) {
+        self.follow_caret = true;
+    }
+
+    /// Warm `spell_cache` synchronously for every materialized block, so a single
+    /// headless `--shots` frame paints the squiggles deterministically without
+    /// waiting on the async worker. Shots/tests only — not the live path.
+    pub fn warm_spellcheck_for_shots(&mut self) {
+        if !self.spellcheck_on {
+            return;
+        }
+        let items: Vec<(String, String)> =
+            self.blocks.iter().map(|b| (b.id.clone(), b.text.clone())).collect();
+        for (id, text) in items {
+            let _ = self.block_spell_spans(&id, &text);
+        }
     }
 
     /// Toggle the spell-check squiggles on/off (default ON). View-only; forces a
@@ -5166,11 +5412,16 @@ impl Widget for WordProcessorWidget {
         // both the in-text superscript and the bottom-of-page footnote list.
         let note_nums = note_numbering(&self.blocks);
 
-        // Spell-check (squiggles): precompute the misspelled byte spans for every
-        // body block *near the viewport* before pass 2, so the read-only pass-2
-        // loop (which borrows `self` immutably) can look them up without a `&mut`
-        // borrow conflict. Cheap: cached per block keyed by text (an edit
-        // re-checks), and culled to a band around the visible canvas.
+        // Drain any results the background spell-checker produced since the last
+        // frame into the cache before the squiggle pass reads it.
+        self.pump_spellcheck();
+
+        // Spell-check (squiggles): the check itself never runs on this frame path.
+        // Squiggle spans are read from `spell_cache`, populated asynchronously by a
+        // background worker (drained by `pump_spellcheck`). For every in-band block
+        // whose cached spans are stale (its text changed) or missing, we enqueue a
+        // debounced re-check on the worker and paint whatever the cache last held —
+        // so typing stays instant and the squiggles catch up a moment after a pause.
         let mut spell_by_block: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         if self.spellcheck_on {
             // A generous band around the canvas (one screenful above/below) so a
@@ -5180,7 +5431,7 @@ impl Widget for WordProcessorWidget {
             let cull_hi = canvas.y1 + canvas.height();
             // Collect the (id, text) of in-band, spellable body blocks first to end
             // the immutable borrow of `laid`/`self.blocks` before the `&mut self`
-            // dictionary/cache calls below.
+            // cache/worker calls below.
             let targets: Vec<(String, String)> = laid
                 .iter()
                 .filter(|l| {
@@ -5193,7 +5444,7 @@ impl Widget for WordProcessorWidget {
                 .map(|l| (l.id.clone(), l.text.clone()))
                 .collect();
             for (id, text) in targets {
-                let spans = self.block_spell_spans(&id, &text);
+                let spans = self.spell_spans_for_draw(&id, &text);
                 if !spans.is_empty() {
                     spell_by_block.insert(id, spans);
                 }
@@ -7525,6 +7776,12 @@ impl WordProcessorWidget {
                     // squiggle clears on the next draw.
                     let _ = dict.save_user_dict();
                     self.spell_cache.clear();
+                    self.spell_pending.clear();
+                    // Teach the background worker the new word too, so its
+                    // re-checks agree with the synchronous right-click path.
+                    if let Some(svc) = self.spell.as_ref() {
+                        svc.add_word(&word);
+                    }
                 }
             }
             CtxAction::ApplySuggestion { block, start, end, replacement } => {
@@ -10738,6 +10995,206 @@ mod tests {
             },
             1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
         );
+    }
+
+    /// Build a `Modifiers` with the given Ctrl/Shift state (winit has no public
+    /// constructor besides `From<ModifiersState>`).
+    fn mods(ctrl: bool, shift: bool) -> Modifiers {
+        use winit::keyboard::ModifiersState;
+        let mut s = ModifiersState::empty();
+        if ctrl {
+            s |= ModifiersState::CONTROL;
+        }
+        if shift {
+            s |= ModifiersState::SHIFT;
+        }
+        Modifiers::from(s)
+    }
+
+    /// Drive a real named-key press (arrows, Home/End, Backspace/Delete/Enter) with
+    /// explicit modifiers through the production `handle_event` keyboard path.
+    fn press_mods(wp: &mut WordProcessorWidget, state: &mut ui::State, key: NamedKey, mods: Modifiers) {
+        use winit::keyboard::{NativeKeyCode, PhysicalKey};
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        // SAFETY: identical to `type_char`'s KeyEvent synthesis.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.logical_key = Key::Named(key);
+        ev.text = None;
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        wp.handle_event(
+            &WindowEvent::KeyboardInput { device_id: unsafe { std::mem::zeroed() }, event: ev, is_synthetic: false },
+            1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// The active selection as a single-block `(start, end)` char range, or `None`.
+    fn sel_range(wp: &WordProcessorWidget, state: &ui::State) -> Option<(usize, usize)> {
+        let blocks = wp.model().selection_blocks(&state.doc);
+        match blocks.as_slice() {
+            [(_, s, e)] => Some((*s, *e)),
+            _ => None,
+        }
+    }
+
+    /// Ctrl+Delete removes the whole word after the caret and Ctrl+Backspace the
+    /// whole word before it — driven through the real key path, so the app inherits
+    /// the shared word-boundary semantics (not the old single-char behaviour).
+    #[test]
+    fn ctrl_delete_and_ctrl_backspace_remove_whole_words_via_key_path() {
+        let (mut state, mut wp) = bound();
+        wp.set_focus(true);
+        for c in "one two three".chars() {
+            type_char(&mut wp, &mut state, c);
+        }
+        // Home, then Ctrl+Delete removes "one " (the word after the caret).
+        press_mods(&mut wp, &mut state, NamedKey::Home, mods(false, false));
+        press_mods(&mut wp, &mut state, NamedKey::Delete, mods(true, false));
+        assert_eq!(
+            wp.model().current_text(&state.doc),
+            "two three",
+            "Ctrl+Delete removed the whole word after the caret"
+        );
+        assert_eq!(wp.model().caret().offset, 0, "the caret stays at the deletion point");
+        // End, then Ctrl+Backspace removes "three" (the word before the caret).
+        press_mods(&mut wp, &mut state, NamedKey::End, mods(false, false));
+        press_mods(&mut wp, &mut state, NamedKey::Backspace, mods(true, false));
+        assert_eq!(
+            wp.model().current_text(&state.doc),
+            "two ",
+            "Ctrl+Backspace removed the whole word before the caret"
+        );
+    }
+
+    /// Shift, Ctrl+Shift, and Shift+End selection all extend consistently through
+    /// the real key path — matching the shared editor — and a plain Arrow over a
+    /// live selection collapses to its edge rather than stepping past it.
+    #[test]
+    fn shift_and_ctrl_shift_selection_ranges_via_key_path() {
+        let (mut state, mut wp) = bound();
+        wp.set_focus(true);
+        for c in "hello world foo".chars() {
+            type_char(&mut wp, &mut state, c);
+        }
+        press_mods(&mut wp, &mut state, NamedKey::Home, mods(false, false));
+
+        // Shift+Right selects one character.
+        press_mods(&mut wp, &mut state, NamedKey::ArrowRight, mods(false, true));
+        assert_eq!(sel_range(&wp, &state), Some((0, 1)), "Shift+Right selects one char");
+
+        // Reset, then Ctrl+Shift+Right extends by whole words.
+        press_mods(&mut wp, &mut state, NamedKey::Home, mods(false, false));
+        press_mods(&mut wp, &mut state, NamedKey::ArrowRight, mods(true, true));
+        assert_eq!(sel_range(&wp, &state), Some((0, 6)), "Ctrl+Shift+Right selects to the next word start");
+        press_mods(&mut wp, &mut state, NamedKey::ArrowRight, mods(true, true));
+        assert_eq!(sel_range(&wp, &state), Some((0, 12)), "extends by another word");
+
+        // Shift+End extends to the block end.
+        press_mods(&mut wp, &mut state, NamedKey::End, mods(false, true));
+        assert_eq!(sel_range(&wp, &state), Some((0, 15)), "Shift+End extends to the block end");
+
+        // A plain Left over the live selection collapses to its near (left) edge
+        // without stepping one char past it.
+        press_mods(&mut wp, &mut state, NamedKey::ArrowLeft, mods(false, false));
+        assert!(sel_range(&wp, &state).is_none(), "plain Left collapsed the selection");
+        assert_eq!(wp.model().caret().offset, 0, "collapsed to the near edge, not one char past it");
+    }
+
+    /// Viewport-follows-caret on the real draw path: typing to the end of a long
+    /// document scrolls the view down so the caret stays visible, and moving the
+    /// caret back to the top scrolls the view back up.
+    #[test]
+    fn caret_out_of_view_scrolls_the_viewport_both_ways() {
+        let (mut state, mut wp) = bound();
+        wp.set_focus(true);
+        // Author enough short paragraphs to overflow a short viewport several times.
+        for i in 0..24 {
+            for c in format!("Line {i} of the body.").chars() {
+                type_char(&mut wp, &mut state, c);
+            }
+            press_mods(&mut wp, &mut state, NamedKey::Enter, mods(false, false));
+        }
+        // One draw: the caret sits far below the fold, so the follow scrolls down.
+        pipeline_draw(&mut wp, &mut state, 900, 500);
+        assert!(wp.max_scroll > 1.0, "the document overflows the viewport");
+        let scrolled = wp.scroll_y;
+        assert!(scrolled > 1.0, "typing past the bottom scrolled the caret into view, got {scrolled}");
+        // The caret's captured band is inside the visible canvas after the follow.
+        let (top, bottom) = wp.caret_band.expect("the caret has a laid band");
+        assert!(bottom > top, "caret band is non-empty");
+
+        // Move the caret back to the very top; the next draw scrolls back up.
+        wp.model_mut().move_to_block(&state.doc, 0);
+        wp.model_mut().move_home();
+        wp.follow_caret = true;
+        pipeline_draw(&mut wp, &mut state, 900, 500);
+        assert!(
+            wp.scroll_y < scrolled - 1.0,
+            "moving the caret to the top scrolled the view back up ({} < {scrolled})",
+            wp.scroll_y
+        );
+    }
+
+    /// Typing does not run the spell checker on the frame path: a keystroke enqueues
+    /// a debounced check on the background worker and the frame paints without it.
+    /// Only after the worker catches up do the squiggle spans appear — so a typing
+    /// burst never blocks on spell-check.
+    #[test]
+    fn typing_defers_spellcheck_to_the_background_worker() {
+        let (mut state, mut wp) = bound();
+        wp.set_focus(true);
+        for c in "teh".chars() {
+            type_char(&mut wp, &mut state, c);
+        }
+        // The draw enqueues an async check; it must NOT have computed spans inline.
+        pipeline_draw(&mut wp, &mut state, 900, 600);
+        let id = wp.blocks[0].id.clone();
+        assert!(!wp.spellcheck_idle(), "the check was handed to the background worker, not run on the frame");
+        assert_ne!(
+            wp.spell_cache.get(&id).map(|(t, _)| t.as_str()),
+            Some("teh"),
+            "the frame did not compute fresh spans for the just-typed text"
+        );
+        // Let the worker catch up: the squiggle for ‘teh’ now lands in the cache.
+        wp.flush_spellcheck_blocking();
+        assert!(wp.spellcheck_idle(), "the worker answered the outstanding check");
+        assert_eq!(
+            wp.spell_cache.get(&id).map(|(_, s)| s.clone()),
+            Some(vec![(0usize, 3usize)]),
+            "the background check flagged ‘teh’ at bytes [0,3)"
+        );
+    }
+
+    /// A keystroke splices only the delta into the block's CRDT `Text`: typing one
+    /// char into a 2000-char paragraph costs the same handful of Automerge ops as a
+    /// tiny one, not an O(n) whole-Text rewrite (which accumulates O(n^2) tombstones
+    /// and freezes a typing session).
+    #[test]
+    fn a_keystroke_splices_only_the_delta_not_the_whole_block() {
+        fn ops_for_one_char(seed_len: usize) -> usize {
+            let (mut state, mut wp) = bound();
+            wp.set_focus(true);
+            let seed = "word ".repeat(seed_len / 5 + 1);
+            wp.model_mut().insert_str(&mut state.doc, &seed);
+            state.doc.commit();
+            let heads = state.doc.get_heads();
+            // The measured keystroke goes through the real key path.
+            type_char(&mut wp, &mut state, 'x');
+            state.doc.commit();
+            state.doc.get_changes(&heads).iter().map(|c| c.len()).sum()
+        }
+        let small = ops_for_one_char(5);
+        let big = ops_for_one_char(2000);
+        assert_eq!(
+            big, small,
+            "one char costs the same ops on a 2000-char block as a tiny one ({big} vs {small}) — the delta is spliced",
+        );
+        assert!(big <= 4, "one typed char is a handful of Automerge ops, got {big}");
     }
 
     /// Autosave: typing past the edit threshold (through the production keyboard

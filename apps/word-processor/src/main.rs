@@ -40,6 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut shots: Option<String> = None;
     let mut file: Option<PathBuf> = None;
     let mut history = false;
+    let mut scenario: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -50,6 +51,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             "--history" => {
                 history = true;
                 i += 1;
+            }
+            // `--scenario NAME` seeds a specific editor state for a `--shots` frame:
+            // `selection` (a live text selection), `caret-scroll` (viewport followed
+            // the caret to the bottom of a long document), `spellcheck` (misspelled
+            // words carry squiggles).
+            "--scenario" => {
+                scenario = args.get(i + 1).cloned();
+                i += 2;
             }
             a if a.starts_with("--") => i += 1,
             a => {
@@ -68,6 +77,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         seed_revisions(&mut state, &mut wp);
         // Pin the floating status readout visible so the shot captures it.
         wp.arm_status_bubble_for_shots();
+        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        return Ok(());
+    }
+
+    // `--shots --scenario NAME`: seed a specific editor state so the single
+    // headless frame proves a live behaviour (selection, caret-follow, squiggles).
+    if let (Some(out), Some(name)) = (shots.as_deref(), scenario.as_deref()) {
+        let (mut state, mut wp) = build_concrete(file.as_deref())?;
+        match name {
+            "selection" => seed_selection(&mut state, &mut wp),
+            "caret-scroll" => seed_caret_scroll(&mut state, &mut wp),
+            "spellcheck" => seed_spellcheck(&mut state, &mut wp),
+            other => return Err(format!("unknown --scenario {other:?}").into()),
+        }
         render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
         return Ok(());
     }
@@ -237,6 +260,105 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
 
     wp.toggle_history(&mut state.doc);
     wp.sync(&mut state.doc, &state.root);
+}
+
+/// `--scenario selection`: a short paragraph with the first few words selected, so
+/// the frame shows the selection highlight. The selection is built with the shared
+/// word-motion path (the same one Ctrl+Shift+Right drives).
+fn seed_selection(state: &mut State, wp: &mut WordProcessorWidget) {
+    state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(
+        &mut state.doc,
+        "The quick brown fox jumps over the lazy dog. Drag across any words to select them.",
+    );
+    wp.set_focus(true);
+    {
+        let m = wp.model_mut();
+        m.move_to_block(&state.doc, 0);
+        m.move_home();
+        m.set_anchor();
+        m.move_word_right(&state.doc);
+        m.move_word_right(&state.doc);
+        m.move_word_right(&state.doc);
+    }
+    wp.sync(&mut state.doc, &state.root);
+}
+
+/// `--scenario caret-scroll`: a long multi-paragraph document with the caret at the
+/// end. Focus + an armed caret-reveal, then a settle frame, so the viewport has
+/// already followed the caret to the bottom when the shot renders.
+fn seed_caret_scroll(state: &mut State, wp: &mut WordProcessorWidget) {
+    state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+    wp.sync(&mut state.doc, &state.root);
+    for i in 0..40 {
+        wp.model_mut().insert_str(
+            &mut state.doc,
+            &format!("Paragraph {}. This line carries a little body text so the page fills up.", i + 1),
+        );
+        wp.model_mut().enter(&mut state.doc);
+    }
+    wp.set_focus(true);
+    wp.arm_caret_reveal();
+    settle_frame(state, wp);
+}
+
+/// `--scenario spellcheck`: a sentence with several misspellings, with the spell
+/// cache warmed synchronously so the single frame paints the red squiggles (the
+/// live editor computes these on a background worker instead).
+fn seed_spellcheck(state: &mut State, wp: &mut WordProcessorWidget) {
+    state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(
+        &mut state.doc,
+        "This sentance conatins a few mispelled wrods to show the squiggle underlines.",
+    );
+    wp.set_focus(true);
+    // Repopulate the materialized blocks the warm pass reads, then warm the cache.
+    wp.sync(&mut state.doc, &state.root);
+    wp.warm_spellcheck_for_shots();
+}
+
+/// Run one headless five-pass frame (no PNG) so viewport-follow / layout settles
+/// before the real shot renders. Mirrors [`render_shot`]'s pipeline on borrowed
+/// state; the scroll math is theme-independent, so any theme suffices here.
+fn settle_frame(state: &mut State, wp: &mut WordProcessorWidget) {
+    let (w, h) = (1000u32, 700u32);
+    let theme = Theme::dark();
+    let permission = PermissionContext::permissive();
+    let presence = PresenceCtx::empty();
+    let mut tr = TextRenderer::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+
+    wp.sync(&mut state.doc, &state.root);
+    let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+            &[child],
+        )
+        .expect("settle layout root");
+    {
+        let measure_map = node_map.clone();
+        let trr = &mut tr;
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size { width: AvailableSpace::Definite(w as f32), height: AvailableSpace::Definite(h as f32) },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, trr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("settle layout compute");
+    }
+    wp.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    wp.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &permission);
 }
 
 /// Like [`build`] but keeps the concrete widget type.
