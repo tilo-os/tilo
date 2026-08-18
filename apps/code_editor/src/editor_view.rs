@@ -704,6 +704,25 @@ impl EditorView {
         GUTTER_PAD * 2.0 + digits as f64 * self.cell_w
     }
 
+    /// The line-number gutter's background rect, or `None` in the no-buffer
+    /// welcome state. There are no line numbers to show without a bound buffer,
+    /// so the raised gutter strip is suppressed there — otherwise it paints an
+    /// empty column down the left edge (glaring once the sidebar is collapsed
+    /// and it abuts the window edge). [`Widget::draw`] paints the gutter iff
+    /// this returns `Some`.
+    fn gutter_rect(&self) -> Option<Rect> {
+        if self.text_obj.is_none() {
+            return None;
+        }
+        let gutter_w = self.gutter_width();
+        Some(Rect::new(
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.x0 + gutter_w,
+            self.rect.y1,
+        ))
+    }
+
     /// Visible-line capacity of the viewport.
     fn visible_lines(&self) -> usize {
         (self.rect.height() / LINE_HEIGHT).ceil() as usize + 1
@@ -1277,25 +1296,25 @@ impl Widget for EditorView {
         // Editor background.
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
+        // The no-buffer welcome screen has no code and no line numbers, so it
+        // must not leave the line-number gutter behind it: that raised strip
+        // reads as an empty column on the left, most obviously when the sidebar
+        // is collapsed and the strip sits flush against the window edge. Paint
+        // the gutter only once a buffer is bound (`gutter_rect` is `None`
+        // otherwise), and draw the welcome on the clean full-width base.
+        if let Some(gutter_rect) = self.gutter_rect() {
+            scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
+        }
+        if self.text_obj.is_none() {
+            self.draw_welcome(scene, transform, text_renderer, theme);
+            return;
+        }
+
         let gutter_w = self.gutter_width();
         let code_x0 = self.rect.x0 + gutter_w + CODE_PAD_LEFT;
         let first_line = self.scroll_y.floor() as usize;
         let frac = self.scroll_y - first_line as f64;
         let n_visible = self.visible_lines();
-
-        // Gutter background (very subtly raised).
-        let gutter_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x0 + gutter_w,
-            self.rect.y1,
-        );
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
-
-        if self.text_obj.is_none() {
-            self.draw_welcome(scene, transform, text_renderer, theme);
-            return;
-        }
 
         let primary_line = self.carets[0].line;
 
