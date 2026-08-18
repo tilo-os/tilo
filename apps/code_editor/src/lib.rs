@@ -13,11 +13,13 @@ pub mod actions;
 mod app;
 mod bottom_panel;
 mod command_palette;
+pub mod command_provider;
 mod disk;
 mod doc;
 mod editor_view;
 mod file_tree;
 mod find;
+mod format;
 mod highlight;
 mod lint;
 /// The Language Server Protocol client. Public so the end-to-end test in

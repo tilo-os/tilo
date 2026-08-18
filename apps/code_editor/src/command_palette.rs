@@ -23,7 +23,7 @@ pub enum PaletteKind {
 }
 
 /// Commands the palette can dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     NewFile,
     OpenFolder,
@@ -31,6 +31,10 @@ pub enum Command {
     Save,
     SaveAs,
     SaveAll,
+    /// Run the language's external formatter over the active buffer now.
+    Format,
+    /// Flip whether a successful save first runs the formatter.
+    ToggleFormatOnSave,
     RevertFile,
     CloseTab,
     Find,
@@ -69,6 +73,8 @@ impl Command {
             (Command::Save, "File: Save", "Ctrl+S"),
             (Command::SaveAs, "File: Save As\u{2026}", "Ctrl+Shift+S"),
             (Command::SaveAll, "File: Save All", "Ctrl+Alt+S"),
+            (Command::Format, "Edit: Format Document", "Shift+Alt+F"),
+            (Command::ToggleFormatOnSave, "Preferences: Toggle Format on Save", ""),
             (Command::RevertFile, "File: Revert to Saved", ""),
             (Command::CloseTab, "View: Close Active Tab", "Ctrl+W"),
             (Command::Find, "Edit: Find in File", "Ctrl+F"),
@@ -87,6 +93,50 @@ impl Command {
             (Command::GoToSearch, "View: Focus Search Results", ""),
             (Command::GoToTerminal, "View: Focus Terminal", ""),
         ]
+    }
+
+    /// A stable, machine-readable slug for the command — the token the shell's
+    /// Ctrl+K palette hands back through `activate_search_result` to run it (see
+    /// [`crate::command_provider`]). Kept distinct from the display label so a
+    /// wording change never breaks the round-trip.
+    pub fn id(self) -> &'static str {
+        match self {
+            Command::NewFile => "new-file",
+            Command::OpenFolder => "open-folder",
+            Command::OpenFile => "open-file",
+            Command::Save => "save",
+            Command::SaveAs => "save-as",
+            Command::SaveAll => "save-all",
+            Command::Format => "format",
+            Command::ToggleFormatOnSave => "toggle-format-on-save",
+            Command::RevertFile => "revert-file",
+            Command::CloseTab => "close-tab",
+            Command::Find => "find",
+            Command::Replace => "replace",
+            Command::SearchProject => "search-project",
+            Command::GoToLine => "go-to-line",
+            Command::DuplicateLine => "duplicate-line",
+            Command::MoveLineUp => "move-line-up",
+            Command::MoveLineDown => "move-line-down",
+            Command::DeleteLine => "delete-line",
+            Command::ToggleComment => "toggle-comment",
+            Command::ToggleBottomPanel => "toggle-bottom-panel",
+            Command::ToggleSidebar => "toggle-sidebar",
+            Command::NextTheme => "next-theme",
+            Command::GoToProblems => "go-to-problems",
+            Command::GoToSearch => "go-to-search",
+            Command::GoToTerminal => "go-to-terminal",
+        }
+    }
+
+    /// Resolve a command from the slug [`Command::id`] produced. `None` for an
+    /// id from another app (or a stale one), so a foreign palette token is
+    /// ignored rather than misfiring a command.
+    pub fn from_id(id: &str) -> Option<Command> {
+        Self::catalogue()
+            .into_iter()
+            .map(|(c, _, _)| c)
+            .find(|c| c.id() == id)
     }
 }
 

@@ -108,6 +108,45 @@ impl EditorDoc {
     ) {
         let _ = doc.splice_text(text, char_pos, delete as isize, insert);
     }
+
+    /// Replace a buffer's whole contents with `new_text`, editing only the span
+    /// that actually changed.
+    ///
+    /// A whole-file reformat rewrites most lines the same and a few differently.
+    /// Deleting every character and re-inserting the new body would work, but it
+    /// tombstones the entire old buffer on every format — the O(n) churn that
+    /// bloats an Automerge document and shows up as a giant, uninformative diff
+    /// to a collaborator. Instead this trims the common prefix and suffix and
+    /// splices only the differing middle, so formatting a file whose first and
+    /// last lines are unchanged touches only the interior. The edit stays on the
+    /// native collaborative-text path, so it merges with a peer and is a single
+    /// undo step. No-op when the text is already identical.
+    pub fn replace_text(doc: &mut AutoCommit, node: NodeId, new_text: &str) {
+        let obj = Self::ensure_buffer(doc, node, "");
+        let old: Vec<char> = doc.text(&obj).unwrap_or_default().chars().collect();
+        let new: Vec<char> = new_text.chars().collect();
+
+        // Longest common prefix (in chars).
+        let mut prefix = 0;
+        while prefix < old.len() && prefix < new.len() && old[prefix] == new[prefix] {
+            prefix += 1;
+        }
+        // Longest common suffix that doesn't overlap the prefix.
+        let mut suffix = 0;
+        while suffix < old.len() - prefix
+            && suffix < new.len() - prefix
+            && old[old.len() - 1 - suffix] == new[new.len() - 1 - suffix]
+        {
+            suffix += 1;
+        }
+
+        let delete = old.len() - prefix - suffix;
+        let insert: String = new[prefix..new.len() - suffix].iter().collect();
+        if delete == 0 && insert.is_empty() {
+            return; // identical — nothing to do
+        }
+        let _ = doc.splice_text(&obj, prefix, delete as isize, &insert);
+    }
 }
 
 #[cfg(test)]
@@ -138,6 +177,34 @@ mod tests {
         // Delete "cd" (chars 2..4) and insert "XY".
         EditorDoc::splice(&mut doc, &t, 2, 2, "XY");
         assert_eq!(doc.text(&t).unwrap(), "abXYef");
+    }
+
+    #[test]
+    fn replace_text_edits_only_the_changed_middle() {
+        let mut doc = AutoCommit::new();
+        let obj = EditorDoc::ensure_buffer(&mut doc, 0, "fn main(){let x=1;}\n");
+        // A "reformat" that keeps the first and last lines and rewrites the body.
+        EditorDoc::replace_text(&mut doc, 0, "fn main() {\n    let x = 1;\n}\n");
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, 0).unwrap(),
+            "fn main() {\n    let x = 1;\n}\n"
+        );
+
+        // The edit was minimal: the shared "fn main(" prefix and trailing "}\n"
+        // were untouched, so a peer that only knew the prefix still shares the
+        // same Text object.
+        let mut peer = AutoCommit::load(&doc.save()).unwrap();
+        assert_eq!(EditorDoc::buffer_text(&peer, 0), Some(obj));
+        let _ = &mut peer;
+    }
+
+    #[test]
+    fn replace_text_is_a_noop_when_identical() {
+        let mut doc = AutoCommit::new();
+        EditorDoc::ensure_buffer(&mut doc, 0, "same\n");
+        let before = doc.get_heads();
+        EditorDoc::replace_text(&mut doc, 0, "same\n");
+        assert_eq!(doc.get_heads(), before, "no change ⇒ no new edit");
     }
 
     #[test]

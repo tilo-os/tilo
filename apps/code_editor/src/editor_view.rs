@@ -27,7 +27,7 @@ use ui::text_selection::{
 };
 use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::{EmptyState, Widget};
+use ui::widget::{Button, ButtonFace, EmptyState, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -48,6 +48,15 @@ pub enum LspAsk {
     Completion,
     Hover,
     Definition,
+}
+
+/// Which call-to-action the no-buffer welcome screen fired. Opening a whole
+/// project is the headline path for an IDE, so it leads; opening a single file
+/// sits beside it as the secondary action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmptyAction {
+    OpenFolder,
+    OpenFile,
 }
 
 /// A compact glyph hinting at a completion item's `CompletionItemKind`
@@ -180,12 +189,13 @@ pub struct EditorView {
     find_current: Option<usize>,
 
     // ---- empty state ----
-    /// The "Open File" action pill's rect in the no-buffer zero-state, recorded
-    /// each draw for hit-testing. Empty when a buffer is open.
-    empty_action_rect: Rect,
-    /// Rising-edge flag set when the zero-state's action pill is clicked; the
-    /// app drains it and opens the file picker.
-    empty_action: bool,
+    /// The welcome screen's two call-to-action rects (Open Folder, Open File),
+    /// recorded each draw for hit-testing. Empty when a buffer is open.
+    empty_folder_rect: Rect,
+    empty_file_rect: Rect,
+    /// Rising-edge: set when a welcome-screen button is clicked; the app drains
+    /// it and opens the matching picker.
+    empty_action: Option<EmptyAction>,
 }
 
 impl EditorView {
@@ -216,14 +226,72 @@ impl EditorView {
             lsp_ask: None,
             find_matches: Vec::new(),
             find_current: None,
-            empty_action_rect: Rect::ZERO,
-            empty_action: false,
+            empty_folder_rect: Rect::ZERO,
+            empty_file_rect: Rect::ZERO,
+            empty_action: None,
         }
     }
 
-    /// Drain the rising-edge "Open File" click from the zero-state, if any.
-    pub fn take_empty_action(&mut self) -> bool {
-        std::mem::take(&mut self.empty_action)
+    /// Drain the rising-edge welcome-screen action (Open Folder / Open File), if
+    /// any was clicked since the last frame.
+    pub fn take_empty_action(&mut self) -> Option<EmptyAction> {
+        self.empty_action.take()
+    }
+
+    /// The no-buffer welcome screen: the shared empty-state composition (a hero
+    /// icon, a title, and a one-line invitation) with a primary **Open Folder**
+    /// call to action — the headline path for an IDE — and a secondary **Open
+    /// File** button beneath it, both drawn through shared `ui` primitives.
+    /// Records the two hit rects for `handle_event`.
+    fn draw_welcome(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let folder = EmptyState::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            Some(Icon::FolderOpen),
+            "No project open",
+            Some("Open a folder to start a project, or open a single file."),
+            Some("Open Folder"),
+            self.last_cursor,
+        )
+        .unwrap_or(Rect::ZERO);
+        self.empty_folder_rect = folder;
+
+        if folder.width() > 0.0 {
+            // A secondary "Open File" button, centred just below the primary
+            // pill and sized to match it, drawn through the shared button face
+            // so it reads as a real secondary affordance rather than hand-rolled
+            // chrome.
+            let gap = 10.0;
+            let file = Rect::new(
+                folder.x0,
+                folder.y1 + gap,
+                folder.x1,
+                folder.y1 + gap + folder.height(),
+            );
+            self.empty_file_rect = file;
+            let hovered = file.contains(self.last_cursor);
+            Button::paint(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &ButtonFace::new(file, "Open File")
+                    .ghost()
+                    .icon(Icon::FileCode)
+                    .hovered(hovered),
+            );
+        } else {
+            self.empty_file_rect = Rect::ZERO;
+        }
     }
 
     /// Set the find bar's matches so they are tinted in the buffer.
@@ -1225,22 +1293,7 @@ impl Widget for EditorView {
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
 
         if self.text_obj.is_none() {
-            // A composed zero-state through the shared primitive: a hero icon,
-            // a title, a one-line invitation, and an actionable "Open File"
-            // pill that summons the portal picker.
-            self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                self.rect,
-                Some(Icon::FileCode),
-                "No file open",
-                Some("Open a file from the tree, or pick one to start editing."),
-                Some("Open File"),
-                self.last_cursor,
-            )
-            .unwrap_or(Rect::ZERO);
+            self.draw_welcome(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -1627,15 +1680,17 @@ impl Widget for EditorView {
         _taffy: &TaffyTree<()>,
     ) {
         if self.text_obj.is_none() {
-            // Unbound: the only interactive thing is the zero-state's "Open
-            // File" pill. Track the cursor for its hover (redrawing only when
-            // the pointer crosses the pill so an idle screen stays still), and
-            // fire the action on a click inside it.
+            // Unbound: the only interactive things are the welcome screen's two
+            // call-to-action buttons. Track the cursor for their hover (redrawing
+            // only when the pointer crosses one so an idle screen stays still),
+            // and fire the matching action on a click inside one.
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
                     let next = Point::new(position.x / scale_factor, position.y / scale_factor);
-                    let was = self.empty_action_rect.contains(self.last_cursor);
-                    let now = self.empty_action_rect.contains(next);
+                    let was = self.empty_folder_rect.contains(self.last_cursor)
+                        || self.empty_file_rect.contains(self.last_cursor);
+                    let now = self.empty_folder_rect.contains(next)
+                        || self.empty_file_rect.contains(next);
                     self.last_cursor = next;
                     if was != now {
                         self.dirty = true;
@@ -1646,8 +1701,11 @@ impl Widget for EditorView {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    if self.empty_action_rect.contains(self.last_cursor) {
-                        self.empty_action = true;
+                    if self.empty_folder_rect.contains(self.last_cursor) {
+                        self.empty_action = Some(EmptyAction::OpenFolder);
+                        *handled = true;
+                    } else if self.empty_file_rect.contains(self.last_cursor) {
+                        self.empty_action = Some(EmptyAction::OpenFile);
                         *handled = true;
                     }
                 }
