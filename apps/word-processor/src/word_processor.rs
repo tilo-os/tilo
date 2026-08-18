@@ -2447,6 +2447,21 @@ impl WordProcessor {
         self.caret.offset = self.block_len(state, &self.caret.block);
     }
 
+    /// Move the caret to the very start of the document (Ctrl+Home).
+    pub fn move_doc_start(&mut self, state: &AutoCommit) {
+        if let Some(first) = self.ordered_blocks(state).first() {
+            self.caret = Caret { block: first.clone(), offset: 0 };
+        }
+    }
+
+    /// Move the caret to the very end of the document (Ctrl+End).
+    pub fn move_doc_end(&mut self, state: &AutoCommit) {
+        if let Some(last) = self.ordered_blocks(state).last().cloned() {
+            let len = self.block_len(state, &last);
+            self.caret = Caret { block: last, offset: len };
+        }
+    }
+
     /// Move the caret one word to the left (Ctrl+Left). Within the block the stop
     /// is the previous word boundary from the shared `ui::text_selection` walker
     /// (so word-motion matches the shared editor exactly); at the block start it
