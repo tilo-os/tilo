@@ -20,20 +20,24 @@
 //!
 //! ## Responsive sidebar
 //!
-//! The file-tree sidebar adapts to the window's allocated width using the
-//! shared [`FlapState`] kernel from the toolkit (the same easing the weather
-//! and chat apps use, promoted into `ui`):
+//! The file-tree sidebar is driven by the shared [`SidebarDrawer`] controller
+//! from the toolkit (the promotion of the dock-vs-overlay + scrim + collapse
+//! pattern every app used to hand-roll), so its behaviour matches the rest of
+//! the OS:
 //!
 //! * **Wide** (≥ [`SIDEBAR_BREAKPOINT`]): the sidebar is **docked** beside the
-//!   editor exactly as before — a persistent column the content is inset by.
-//! * **Narrow** (< breakpoint): the sidebar collapses to an **overlay flap**.
-//!   It is closed by default so a narrow window opens straight to the code;
-//!   the content takes the full width and a hamburger in the tab bar summons
-//!   the tree, which slides in from the left over a dimming scrim. The scrim,
-//!   the Esc key, or the hamburger again dismiss it.
+//!   editor — a column the content is inset by. Collapsing it reclaims the full
+//!   width for the editor; a proper toggle re-expands it.
+//! * **Narrow** (< breakpoint): the sidebar becomes an **overlay drawer**,
+//!   closed by default so a narrow window opens straight to the code; it slides
+//!   in over a dimming scrim, dismissed by the scrim, Esc, or the toggle.
 //!
-//! The editor is not a master-detail list, so there is no push navigation —
-//! the single primary sidebar simply docks or overlays per the breakpoint.
+//! The single collapse **toggle** lives in a reserved slot at the left of the
+//! tab bar in *both* layouts — a clean, non-overlapping affordance drawn by the
+//! shared [`SidebarDrawer::draw_toggle`], never a popover over the toolbar — so
+//! a docked sidebar can be collapsed and brought back, not lost the moment it is
+//! hidden. The editor is not a master-detail list, so there is no push
+//! navigation — the single primary sidebar simply docks or overlays.
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -46,7 +50,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{SidebarDrawer, SplitLayout, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Fill;
@@ -77,9 +81,14 @@ const SIDEBAR_MIN: f64 = 160.0;
 /// side — narrower than that, the editor needs the whole width.
 const SIDEBAR_BREAKPOINT: f64 = 820.0;
 
-/// Hamburger toggle geometry, shown in the tab bar when the sidebar is an
-/// overlay (narrow window). Square button hugging the bar's left edge.
-const HAMBURGER_W: f64 = 40.0;
+/// The reserved slot at the left of the tab bar the sidebar toggle lives in,
+/// in *both* docked and overlay layouts. The tabs are inset by this much so the
+/// toggle never sits over a tab. `TOGGLE_W`/`TOGGLE_H` are the pill itself,
+/// `TOGGLE_MARGIN` its inset within the slot.
+const TOGGLE_SLOT: f64 = 46.0;
+const TOGGLE_W: f64 = 34.0;
+const TOGGLE_H: f64 = 26.0;
+const TOGGLE_MARGIN: f64 = 6.0;
 
 /// Width assumed before the window has been measured (first `build_layout`,
 /// before any `apply_layout`). Wide enough to dock — a fresh desktop window
@@ -123,22 +132,18 @@ pub struct CodeApp {
     /// Ctrl+K palette dispatch takes. See [`crate::actions`].
     actions: ui::ActionHost,
 
-    /// Adaptive open/closed state of the file-tree sidebar (the shared flap
-    /// kernel). Docked-open when wide, overlay-closed when narrow.
-    flap: FlapState,
-    /// Last animation tick, for the frame-rate-independent flap easing.
-    flap_tick: Instant,
-    /// The sidebar's resolved overlay rect (narrow mode), computed each draw
-    /// from the eased reveal — also the hit region for routing tree events.
-    overlay_sidebar_rect: Rect,
+    /// The shared collapsible-sidebar controller: it owns the docked-vs-overlay
+    /// decision, the eased reveal, the scrim, and the collapse memory, and hands
+    /// back the resolved rects. Docked-open when wide, overlay-closed when
+    /// narrow. Replaces the app's former hand-rolled flap + hamburger.
+    drawer: SidebarDrawer,
     /// Last known allocated width, cached so `build_layout` (which runs before
     /// `apply_layout` has measured the window) can resolve docked vs. overlay
     /// on the very first frame. Seeded wide so a fresh desktop window docks.
     last_width: f64,
-    /// The dimming scrim rect behind an open overlay sidebar (else empty).
-    scrim_rect: Rect,
-    /// The hamburger toggle's hit rect (narrow mode only; else empty).
-    hamburger_rect: Rect,
+    /// The sidebar toggle's hit rect: a reserved slot at the left of the tab bar
+    /// in both layouts (else empty until laid out).
+    toggle_rect: Rect,
     /// Last cursor position, since `MouseInput` carries no coordinates.
     last_cursor: Point,
     panel_visible: bool,
@@ -239,6 +244,15 @@ pub struct CodeApp {
     /// used by a search hit and a cross-file go-to-definition, both of which
     /// open a file that has no editor geometry until the next frame.
     pending_jump: Option<(usize, usize)>,
+
+    /// Whether a successful save first runs the language's formatter over the
+    /// buffer. On by default — an editor that quietly leaves your code
+    /// unformatted after you set up a formatter is an editor that ignored it.
+    format_on_save: bool,
+    /// A formatter command (argv) that overrides the built-in per-language
+    /// mapping for *every* language. Set from `QOS_CODE_FMT` (real config) or by
+    /// a test; `None` uses [`crate::format::formatter_command`].
+    formatter_override: Option<Vec<String>>,
 }
 
 /// What a pending portal pick is for.
@@ -456,15 +470,16 @@ impl CodeApp {
             panel: BottomPanel::new(),
             palette: CommandPalette::new(),
             actions: ui::ActionHost::new(),
-            flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            drawer: SidebarDrawer::new()
+                .left()
+                .docked_width(SIDEBAR_WIDTH)
+                .overlay_width(SIDEBAR_WIDTH)
+                .breakpoint(SIDEBAR_BREAKPOINT),
             // Seed wide so the first frame of a desktop window (and `--shots`,
             // 1280px) docks the sidebar; corrected from the real width once
             // `apply_layout` measures the window.
             last_width: DEFAULT_DOCKED_WIDTH_HINT,
-            overlay_sidebar_rect: Rect::ZERO,
-            scrim_rect: Rect::ZERO,
-            hamburger_rect: Rect::ZERO,
+            toggle_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             panel_visible: true,
             theme_index: None,
@@ -505,7 +520,19 @@ impl CodeApp {
             close_prompt_buttons: Vec::new(),
             notice: None,
             pending_jump: None,
+            format_on_save: true,
+            formatter_override: Self::formatter_override_from_env(),
         }
+    }
+
+    /// A formatter override read once from `QOS_CODE_FMT`, split on whitespace
+    /// into an argv (e.g. `QOS_CODE_FMT="rustfmt --edition 2018"`). Empty / unset
+    /// leaves the per-language defaults in place. This is the same shape as the
+    /// `QOS_CODE_LSP` opt-out — real configuration, not a hidden mock.
+    fn formatter_override_from_env() -> Option<Vec<String>> {
+        let raw = std::env::var("QOS_CODE_FMT").ok()?;
+        let argv: Vec<String> = raw.split_whitespace().map(str::to_string).collect();
+        if argv.is_empty() { None } else { Some(argv) }
     }
 
     /// The project root on disk, when a real directory is open.
@@ -543,7 +570,7 @@ impl CodeApp {
     /// particular `build_layout`, which runs before `apply_layout` has set
     /// `self.rect` to the real window size.
     fn sidebar_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.last_width, SIDEBAR_BREAKPOINT)
+        self.drawer.layout_for(self.last_width)
     }
 
     /// Seed the width used to resolve the responsive layout on the first frame,
@@ -552,42 +579,38 @@ impl CodeApp {
     /// docked/overlay layout (the live app self-corrects from `apply_layout`).
     ///
     /// Because a single offscreen frame never runs the animation `tick`, also
-    /// settle the flap to this layout's resting state (docked ⇒ open, overlay
+    /// settle the drawer to this layout's resting state (docked ⇒ open, overlay
     /// ⇒ closed) so the captured frame is the settled layout, not one frozen
     /// mid-slide. An explicit `shots_snap_sidebar(true)` after this still wins.
     pub fn set_width_hint(&mut self, width: f64) {
         self.last_width = width;
-        let layout = self.sidebar_layout();
-        self.flap.reconcile(layout);
-        self.flap.snap(self.flap.is_open(layout));
+        // Resolve against a synthetic outer of this width so the drawer adopts
+        // the layout (and its resting reveal) before any real frame runs.
+        self.drawer.resolve(Rect::new(0.0, 0.0, width.max(1.0), 800.0));
+        let open = self.drawer.is_open();
+        self.drawer.snap(open);
     }
 
     /// Whether the sidebar is currently resolved open (preference or default).
     fn sidebar_open(&self) -> bool {
-        self.flap.is_open(self.sidebar_layout())
+        self.drawer.is_open()
     }
 
-    /// Advance the flap easing using real elapsed time. Returns `true` while
-    /// still animating (so the host keeps pumping frames). Called once per
-    /// draw, mirroring the proven weather/chat pattern.
-    fn tick_flap(&mut self) -> bool {
-        let now = Instant::now();
-        let dt = (now - self.flap_tick).as_secs_f64().min(0.1);
-        self.flap_tick = now;
-        self.flap.reconcile(self.sidebar_layout());
-        self.flap.tick(self.sidebar_layout(), dt)
-    }
-
-    /// Flip the sidebar open/closed (hamburger, Ctrl+B, palette command).
+    /// Flip the sidebar open/closed (toggle button, Ctrl+B, palette command).
     fn toggle_sidebar(&mut self) {
-        self.flap.toggle(self.sidebar_layout());
+        self.drawer.toggle();
     }
 
-    /// Snap the flap to a final open/closed state with no animation — used by
+    /// Snap the drawer to a final open/closed state with no animation — used by
     /// the single-frame `--shots` renderer so a captured frame shows a settled
-    /// flap rather than one mid-slide.
+    /// sidebar rather than one mid-slide.
     pub fn shots_snap_sidebar(&mut self, open: bool) {
-        self.flap.snap(open);
+        if open {
+            self.drawer.open();
+        } else {
+            self.drawer.close();
+        }
+        self.drawer.snap(open);
     }
 
     /// The y-coordinate of the bottom of the editor content region, accounting
@@ -600,54 +623,27 @@ impl CodeApp {
         }
     }
 
-    /// Draw the hamburger toggle that summons the overlay sidebar. A small,
-    /// self-contained button over the tab bar's left corner (its own opaque
-    /// background, so it reads as a button on top of the bar). Records its hit
-    /// rect for `handle_event`.
-    fn draw_hamburger(&mut self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        // The bar is inset by HAMBURGER_W in overlay mode, so the hamburger
-        // occupies the reserved strip from the window's left edge up to it.
-        let bar = self.tabs.get_rect();
-        let left = self.rect.x0;
-        let rect = Rect::new(left, bar.y0, left + HAMBURGER_W, bar.y1);
-        self.hamburger_rect = rect;
-        let c = &theme.tokens.colors;
+    /// The outer rect the [`SidebarDrawer`] resolves its overlay geometry
+    /// against: the full window width, spanning from the tab bar's top to the
+    /// bottom of the content (below the panel when it is visible). In overlay
+    /// mode the drawer slides its panel in over exactly this region.
+    fn sidebar_outer(&self) -> Rect {
+        let top = self.tabs.get_rect().y0;
+        let bottom = self.editor.get_rect().y1.max(self.panel_bottom());
+        Rect::new(self.rect.x0, top, self.rect.x1, bottom)
+    }
 
-        // Button background (raised so it covers any tab edge underneath),
-        // tinted when the sidebar is open.
-        let bg = if self.sidebar_open() {
-            c.surface_white_10
-        } else {
-            c.surfaces.raised
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &rect);
-        // Right divider, matching the tab bar's seams.
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &Line::new(
-                Point::new(rect.x1, rect.y0 + 6.0),
-                Point::new(rect.x1, rect.y1 - 6.0),
-            ),
-        );
-
-        // Three glyph lines.
-        let cx = rect.x0 + rect.width() / 2.0;
-        let cy = rect.y0 + rect.height() / 2.0;
-        let half = 8.0;
-        let line_color = if self.sidebar_open() { c.text_primary } else { c.neutral[8] };
-        let stroke = Stroke::new(1.6);
-        for dy in [-5.0, 0.0, 5.0] {
-            scene.stroke(
-                &stroke,
-                transform,
-                line_color,
-                None,
-                &Line::new(Point::new(cx - half, cy + dy), Point::new(cx + half, cy + dy)),
-            );
-        }
+    /// The reserved toggle slot at the left of the tab bar, computed from the
+    /// bar's *pre-inset* rect (its `x0` is the editor column's left edge). Drawn
+    /// and hit-tested in both layouts.
+    fn compute_toggle_rect(&self, bar: Rect) -> Rect {
+        let y0 = bar.y0 + (bar.height() - TOGGLE_H) / 2.0;
+        Rect::new(
+            bar.x0 + TOGGLE_MARGIN,
+            y0,
+            bar.x0 + TOGGLE_MARGIN + TOGGLE_W,
+            y0 + TOGGLE_H,
+        )
     }
 
     /// Seed every open buffer's text into the CRDT (idempotent) and bind the
@@ -1040,6 +1036,104 @@ impl CodeApp {
         written
     }
 
+    // ---- formatting -------------------------------------------------------
+
+    /// The formatter argv for a language: the override when one is configured,
+    /// else the built-in per-language mapping. `None` means there is no
+    /// formatter for this language.
+    fn resolve_formatter(&self, lang: crate::model::Language) -> Option<Vec<String>> {
+        self.formatter_override
+            .clone()
+            .or_else(|| crate::format::formatter_command(lang))
+    }
+
+    /// Whether the active buffer's language has a formatter available.
+    fn active_has_formatter(&self) -> bool {
+        self.session
+            .active_buffer()
+            .map(|b| self.resolve_formatter(b.language).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Format one buffer through its language's external formatter, splicing the
+    /// result back through the CRDT text path so the reformat is one undoable,
+    /// collaborative edit.
+    ///
+    /// `announce` controls whether a *routine* outcome speaks: the manual Format
+    /// command wants "Formatted main.rs" / "no formatter for TOML" feedback,
+    /// while format-on-save must stay quiet on the happy path (the save note is
+    /// the message) and on a missing formatter (nagging on every Ctrl+S is
+    /// worse than the missing formatter). A real *failure* — the formatter ran
+    /// and rejected the file — is always surfaced either way, because silently
+    /// saving code a formatter refused would hide a syntax error.
+    ///
+    /// Returns whether the buffer's text actually changed.
+    fn format_buffer(&mut self, doc: &mut AutoCommit, node: TreeId, announce: bool) -> bool {
+        let Some(buf) = self.session.buffer_of(node) else {
+            return false;
+        };
+        let lang = buf.language;
+        let name = buf.name.clone();
+        let path = self.session.project.disk_path_of(node);
+        let Some(argv) = self.resolve_formatter(lang) else {
+            if announce {
+                self.note(format!("No formatter for {}", lang.label()), false);
+            }
+            return false;
+        };
+        let text = EditorDoc::read_buffer(doc, node).unwrap_or_default();
+        match crate::format::run(&argv, &text, path.as_deref(), lang) {
+            Ok(formatted) if formatted != text => {
+                EditorDoc::replace_text(doc, node, &formatted);
+                // A format changes the buffer, so dirty is recomputed against
+                // the on-disk text like any other edit.
+                if let Some(b) = self.session.buffer_of_mut(node) {
+                    b.dirty = b.is_dirty(&formatted);
+                }
+                self.bound_node = None; // re-bind so the editor picks up new text
+                if announce {
+                    self.note(format!("Formatted {name}"), false);
+                }
+                true
+            }
+            Ok(_) => {
+                if announce {
+                    self.note(format!("{name} is already formatted"), false);
+                }
+                false
+            }
+            Err(e) => {
+                // A real formatter failure is always worth showing.
+                self.note(format!("Could not format {name}: {e}"), true);
+                false
+            }
+        }
+    }
+
+    /// Format the active buffer (the manual "Format Document" command).
+    fn format_active(&mut self, doc: &mut AutoCommit) -> bool {
+        match self.session.active_buffer().map(|b| b.node) {
+            Some(node) => self.format_buffer(doc, node, true),
+            None => false,
+        }
+    }
+
+    /// Format-on-save hook: reformat `node` before it is written, quietly, when
+    /// the toggle is on and a formatter exists.
+    fn format_before_save(&mut self, doc: &mut AutoCommit, node: TreeId) {
+        if self.format_on_save {
+            self.format_buffer(doc, node, false);
+        }
+    }
+
+    /// Test/access hook: point the formatter at a specific argv for every
+    /// language, standing in for the built-in per-language binaries so a test can
+    /// drive the real spawn/splice/save path with a ubiquitous shell filter.
+    #[cfg(test)]
+    pub(crate) fn set_formatter_override(&mut self, argv: Vec<String>) {
+        self.formatter_override = Some(argv);
+    }
+
     /// Throw away this buffer's edits and take what is on disk.
     fn reload_buffer(&mut self, doc: &mut AutoCommit, node: TreeId) {
         let Some(idx) = self.session.open.iter().position(|b| b.node == node) else {
@@ -1199,7 +1293,7 @@ impl CodeApp {
     fn request_open_folder(&mut self) {
         self.portal_intent = Some(PortalIntent::OpenFolder);
         self.portal = Some(
-            ui::portal::PickRequest::open("Open a project folder", "Open")
+            ui::portal::PickRequest::open_directory("Open a project folder", "Open")
                 .thread_name("code-portal-folder")
                 .send(),
         );
@@ -1289,6 +1383,9 @@ impl CodeApp {
                     buf.stamp = None;
                 }
                 self.sidebar.set_project(&self.session.project);
+                // Now that the buffer has a name (and therefore a language),
+                // format-on-save applies to this first write too.
+                self.format_before_save(doc, node);
                 let snapshot = doc.clone();
                 self.save_buffer(&snapshot, node, true);
             }
@@ -1375,11 +1472,11 @@ impl CodeApp {
         match ev {
             TreeEvent::OpenFile(id) => {
                 self.open_node(id);
-                // In overlay mode, opening a file dismisses the flap so the
+                // In overlay mode, opening a file dismisses the drawer so the
                 // user lands on the freshly-opened buffer (single-pane feel).
                 // Docked mode keeps the sidebar pinned.
                 if self.sidebar_layout() == SplitLayout::Overlay {
-                    self.flap.close();
+                    self.drawer.close();
                 }
             }
             TreeEvent::ToggleFolder(id) => {
@@ -1588,6 +1685,12 @@ impl CodeApp {
             Command::OpenFolder => self.request_open_folder(),
             Command::OpenFile => self.request_open_file(),
             Command::Save => {
+                // Format-on-save runs first, mutating the real document, so the
+                // bytes written are the formatted ones and the buffer + disk stay
+                // in agreement.
+                if let Some(node) = self.session.active_buffer().map(|b| b.node) {
+                    self.format_before_save(doc, node);
+                }
                 let snapshot = doc.clone();
                 self.save_active(&snapshot);
             }
@@ -1597,8 +1700,26 @@ impl CodeApp {
                 }
             }
             Command::SaveAll => {
+                let dirty: Vec<TreeId> = self
+                    .session
+                    .open
+                    .iter()
+                    .filter(|b| b.dirty && b.path.is_some())
+                    .map(|b| b.node)
+                    .collect();
+                for node in dirty {
+                    self.format_before_save(doc, node);
+                }
                 let snapshot = doc.clone();
                 self.save_all(&snapshot);
+            }
+            Command::Format => {
+                self.format_active(doc);
+            }
+            Command::ToggleFormatOnSave => {
+                self.format_on_save = !self.format_on_save;
+                let state = if self.format_on_save { "on" } else { "off" };
+                self.note(format!("Format on save: {state}"), false);
             }
             Command::RevertFile => {
                 if let Some(node) = self.session.active_buffer().map(|b| b.node) {
@@ -2540,11 +2661,12 @@ impl Widget for CodeApp {
         // drawn off-flow, sliding in over the content (see `draw`).
         let layout = self.sidebar_layout();
         let sidebar_node = self.sidebar.build_layout(taffy, theme, node_map);
+        let reveal = self.drawer.reveal();
         let docked_w = match layout {
-            SplitLayout::Docked => SIDEBAR_WIDTH * self.flap.reveal(),
+            SplitLayout::Docked => SIDEBAR_WIDTH * reveal,
             SplitLayout::Overlay => 0.0,
         };
-        let docked_min = if layout == SplitLayout::Docked && self.flap.reveal() > 0.999 {
+        let docked_min = if layout == SplitLayout::Docked && reveal > 0.999 {
             SIDEBAR_MIN as f32
         } else {
             0.0
@@ -2676,11 +2798,6 @@ impl Widget for CodeApp {
         // across passes (it's read in `build_layout`, before this runs).
         self.last_width = self.rect.width();
 
-        // The allocated width is now known — reconcile the flap so a window
-        // resize that crosses the breakpoint adopts the new mode's default
-        // (wide ⇒ docked-open, narrow ⇒ overlay-closed) before the next draw.
-        self.flap.reconcile(self.sidebar_layout());
-
         if let Some(content_node) = self.content_node {
             let content_layout = taffy.layout(content_node).unwrap();
             let content_origin = Point::new(
@@ -2699,11 +2816,12 @@ impl Widget for CodeApp {
                 );
                 if let Some(n) = self.tabs_node {
                     self.tabs.apply_layout(taffy, n, col_origin);
-                    // Reserve the bar's left edge for the overlay hamburger so
-                    // the first tab isn't drawn beneath it.
-                    if self.sidebar_layout() == SplitLayout::Overlay {
-                        self.tabs.inset_left(HAMBURGER_W);
-                    }
+                    // Reserve a fixed slot at the bar's left for the sidebar
+                    // toggle — in BOTH layouts — computing the toggle rect from
+                    // the bar's pre-inset position before shifting the tabs, so
+                    // the toggle never overlaps a tab.
+                    self.toggle_rect = self.compute_toggle_rect(self.tabs.get_rect());
+                    self.tabs.inset_left(TOGGLE_SLOT);
                 }
                 if let Some(n) = self.find_node {
                     self.find.apply_layout(taffy, n, col_origin);
@@ -2716,6 +2834,12 @@ impl Widget for CodeApp {
                 }
             }
         }
+        // The child rects are now known — resolve the drawer's overlay geometry
+        // and adopt the width-driven layout (dropping a stale collapse
+        // preference when a resize crosses the breakpoint). No `tick` here: the
+        // event path must hit-test against the last painted geometry.
+        let outer = self.sidebar_outer();
+        self.drawer.resolve(outer);
         self.palette.set_viewport(self.rect);
     }
 
@@ -2730,12 +2854,12 @@ impl Widget for CodeApp {
         let active = self.active_theme(theme);
         let theme = active.as_ref();
 
-        // Advance the flap easing (frame-rate independent) before computing
-        // geometry, so the slide + scrim fade animate while the host keeps
-        // redrawing (`needs_animation_frame`). This mirrors the proven
-        // weather/chat pattern: the sidebar's overlay geometry is recomputed
-        // each frame from the current reveal rather than in `apply_layout`.
-        self.tick_flap();
+        // Advance the drawer's eased reveal (frame-rate independent) off the
+        // outer geometry `apply_layout` resolved, so the slide + scrim fade
+        // animate while the host keeps pumping frames (`needs_animation_frame`).
+        let outer = self.sidebar_outer();
+        self.drawer.resolve(outer);
+        self.drawer.tick(false);
         let layout = self.sidebar_layout();
 
         // Window background.
@@ -2750,11 +2874,9 @@ impl Widget for CodeApp {
         match layout {
             SplitLayout::Docked => {
                 // The sidebar is a real column laid out by taffy; draw it in
-                // place when it has any width (reveal > 0).
-                self.scrim_rect = Rect::ZERO;
-                self.overlay_sidebar_rect = Rect::ZERO;
-                self.hamburger_rect = Rect::ZERO;
-                if self.flap.reveal() > 0.001 {
+                // place when it has any width (reveal > 0). Collapsing it drives
+                // the column width to zero, so the editor reclaims the space.
+                if self.drawer.reveal() > 0.001 {
                     self.sidebar.draw(scene, transform, text_renderer, theme, presence);
                 }
                 self.tabs.draw(scene, transform, text_renderer, theme, presence);
@@ -2766,48 +2888,30 @@ impl Widget for CodeApp {
             }
             SplitLayout::Overlay => {
                 // Content spans the full width and is drawn first; the sidebar
-                // slides in over it behind a scrim.
+                // slides in over it behind the drawer's scrim.
                 self.tabs.draw(scene, transform, text_renderer, theme, presence);
                 self.find.draw(scene, transform, text_renderer, theme, presence);
                 self.editor.draw(scene, transform, text_renderer, theme, presence);
                 if self.panel_visible {
                     self.panel.draw(scene, transform, text_renderer, theme, presence);
                 }
-                // Scrim: opacity tracks the reveal (Adwaita-style dimming).
-                let reveal = self.flap.reveal();
-                if reveal > 0.001 {
-                    self.scrim_rect = Rect::new(
-                        self.rect.x0,
-                        self.tabs.get_rect().y0,
-                        self.rect.x1,
-                        self.editor.get_rect().y1.max(self.panel_bottom()),
-                    );
-                    let scrim = theme
-                        .tokens
-                        .colors
-                        .surfaces
-                        .overlay
-                        .with_alpha_factor((reveal * 0.6) as f32);
-                    scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
-                } else {
-                    self.scrim_rect = Rect::ZERO;
-                }
-                // The sidebar slides in from the left over the content. Off
-                // fully at reveal 0; flush at reveal 1.
-                let slide = self.flap.slide();
-                let top = self.tabs.get_rect().y0;
-                let bottom = self.editor.get_rect().y1.max(self.panel_bottom());
-                let x0 = self.rect.x0 - SIDEBAR_WIDTH * (1.0 - slide);
-                let sidebar_rect = Rect::new(x0, top, x0 + SIDEBAR_WIDTH, bottom);
-                self.overlay_sidebar_rect = sidebar_rect;
-                if reveal > 0.001 {
-                    self.sidebar.place_at(sidebar_rect);
+                // The shared scrim (subtle dim + edge shadow) behind the drawer.
+                self.drawer.draw_scrim(scene, transform);
+                // The drawer panel slides in over the content at the rect the
+                // shared controller resolved.
+                if self.drawer.reveal() > 0.001 {
+                    self.sidebar.place_at(self.drawer.sidebar_rect());
                     self.sidebar.draw(scene, transform, text_renderer, theme, presence);
                 }
-                // The hamburger toggle sits at the tab bar's left edge.
-                self.draw_hamburger(scene, transform, theme);
             }
         }
+
+        // The sidebar toggle: a reserved slot at the tab bar's left in both
+        // layouts, drawn through the shared controller's affordance (never a
+        // popover over the toolbar).
+        let toggle_hovered = self.toggle_rect.contains(self.last_cursor);
+        self.drawer
+            .draw_toggle(scene, transform, theme, self.toggle_rect, toggle_hovered);
 
         // The embedded terminal renders its live grid over the panel's content
         // region whenever the Terminal dock tab is showing.
@@ -2906,7 +3010,7 @@ impl Widget for CodeApp {
 
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
-        // Esc dismisses an open overlay flap before anything else sees it.
+        // Esc dismisses an open overlay drawer before anything else sees it.
         if overlay && self.sidebar_open() {
             if let WindowEvent::KeyboardInput {
                 event:
@@ -2918,35 +3022,30 @@ impl Widget for CodeApp {
                 ..
             } = event
             {
-                self.flap.close();
+                self.drawer.close();
                 *handled = true;
                 return;
             }
         }
 
-        // Left-click routing for the overlay-specific affordances.
+        // Left-click routing for the sidebar affordances.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
         {
-            // The hamburger toggle (drawn only in overlay mode).
-            if overlay && self.hamburger_rect.width() > 0.0
-                && self.hamburger_rect.contains(self.last_cursor)
-            {
+            // The sidebar toggle — a reserved slot at the tab bar's left, in
+            // BOTH layouts, so a docked sidebar can be collapsed and brought
+            // back, not only summoned when narrow.
+            if self.toggle_rect.width() > 0.0 && self.toggle_rect.contains(self.last_cursor) {
                 self.toggle_sidebar();
                 *handled = true;
                 return;
             }
-            // A click on the scrim (outside the open sidebar) dismisses it.
-            if overlay
-                && self.sidebar_open()
-                && self.scrim_rect.width() > 0.0
-                && self.scrim_rect.contains(self.last_cursor)
-                && !self.overlay_sidebar_rect.contains(self.last_cursor)
-            {
-                self.flap.close();
+            // A click on the scrim (outside the open overlay drawer) dismisses
+            // it — handled by the shared controller's hit-test.
+            if overlay && self.drawer.press_dismisses(self.last_cursor) {
                 *handled = true;
                 return;
             }
@@ -2987,6 +3086,7 @@ impl Widget for CodeApp {
                     "s" if alt => Some(Command::SaveAll),
                     "s" if shift => Some(Command::SaveAs),
                     "s" => Some(Command::Save),
+                    "f" if shift && alt => Some(Command::Format),
                     "f" if shift => Some(Command::SearchProject),
                     "f" => Some(Command::Find),
                     "h" => Some(Command::Replace),
@@ -3087,10 +3187,10 @@ impl Widget for CodeApp {
         // Sidebar routing depends on the layout:
         //  * Docked: route whenever the column has width (reveal > 0); the tree
         //    hit-tests against its taffy-derived column rect.
-        //  * Overlay: route only while the flap is open. The tree hit-tests
+        //  * Overlay: route only while the drawer is open. The tree hit-tests
         //    against the off-flow overlay rect set in `draw` via `place_at`.
         let sidebar_active = match self.sidebar_layout() {
-            SplitLayout::Docked => self.flap.reveal() > 0.001,
+            SplitLayout::Docked => self.drawer.reveal() > 0.001,
             SplitLayout::Overlay => self.sidebar_open(),
         };
         if sidebar_active {
@@ -3112,7 +3212,7 @@ impl Widget for CodeApp {
                 ..
             } = event
             {
-                if self.overlay_sidebar_rect.contains(self.last_cursor) {
+                if self.drawer.sidebar_contains(self.last_cursor) {
                     *handled = true;
                 }
             }
@@ -3142,10 +3242,12 @@ impl Widget for CodeApp {
             self.dispatch_lsp_ask(ask);
         }
 
-        // The zero-state's "Open File" pill routes to the same portal picker as
-        // the Open File command.
-        if self.editor.take_empty_action() {
-            self.request_open_file();
+        // The welcome screen's call-to-action buttons route to the same portal
+        // pickers the Open Folder / Open File commands do.
+        match self.editor.take_empty_action() {
+            Some(crate::editor_view::EmptyAction::OpenFolder) => self.request_open_folder(),
+            Some(crate::editor_view::EmptyAction::OpenFile) => self.request_open_file(),
+            None => {}
         }
 
         // Drain whatever the children produced, then refresh derived views.
@@ -3212,14 +3314,24 @@ impl Widget for CodeApp {
     /// each findable there by name or path, alongside the actions the app
     /// exports.
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FileSearchProvider::new(&self.session))]
+        vec![
+            Box::new(crate::search_provider::FileSearchProvider::new(&self.session)),
+            // Every editor command — Open Folder, Save, Format, Find, the panel
+            // toggles — surfaced to the shell-wide Ctrl+K so it is discoverable
+            // and runnable without first learning the app's private shortcut.
+            Box::new(crate::command_provider::CommandSearchProvider),
+        ]
     }
 
-    /// Open / focus the file a chosen palette row identifies. The row carries
-    /// the file's node id; opening it focuses the existing tab or creates one.
-    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+    /// Run whatever a chosen Ctrl+K palette row identifies. A file row carries a
+    /// node id (open / focus that file); a command row carries a command slug
+    /// (run it through the app's single [`Self::apply_command`] dispatch point,
+    /// the same path a keybinding or the local palette takes).
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(node) = crate::search_provider::FileSearchProvider::parse_action_id(action_id) {
             self.open_node(node);
+        } else if let Some(cmd) = crate::command_provider::CommandSearchProvider::parse_action_id(action_id) {
+            self.apply_command(cmd, doc);
         }
     }
 
@@ -3236,13 +3348,13 @@ impl Widget for CodeApp {
             || self.palette.is_visible()
             || self.conflict.is_some()
             || self.close_prompt.is_some()
-            || self.flap.is_animating(self.sidebar_layout())
+            || self.drawer.is_animating()
             // A live terminal repaints continuously while visible.
             || self.terminal_visible()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while the sidebar flap is
+        // Keep the event loop pumping frames while the sidebar drawer is
         // mid-transition (so the slide + scrim fade play out) OR while a live
         // terminal is visible — its PTY is drained from `sync`, which the App
         // only re-runs while an animation frame is requested.
@@ -3252,7 +3364,7 @@ impl Widget for CodeApp {
         // results would sit unread until the user happened to move the mouse.
         // A language server that is still working needs them too, so the
         // indexing readout actually advances.
-        self.flap.is_animating(self.sidebar_layout())
+        self.drawer.is_animating()
             || self.terminal_visible()
             || self.search_job.is_some()
             || self.portal.is_some()
@@ -3263,12 +3375,11 @@ impl Widget for CodeApp {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // While the flap eases in DOCKED mode the sidebar column's width is
+        // While the drawer eases in DOCKED mode the sidebar column's width is
         // taffy-driven (set from `reveal` in `build_layout`), so the tree must
         // be rebuilt each animating frame to widen/collapse smoothly. Overlay
         // mode computes its geometry in `draw` and needs no rebuild.
-        self.sidebar_layout() == SplitLayout::Docked
-            && self.flap.is_animating(self.sidebar_layout())
+        self.sidebar_layout() == SplitLayout::Docked && self.drawer.is_animating()
     }
 
     fn mark_drawn(&mut self) {
@@ -3936,5 +4047,271 @@ mod tests {
             "a saved tab closes without a prompt"
         );
         assert_eq!(app.session.open.len(), before - 1);
+    }
+
+    // ---- responsive sidebar (shared SidebarDrawer) ------------------------
+
+    /// Run the real five-pass layout at `w`×`h`, so a test can read the
+    /// production child rects (sidebar column, editor, tab bar, toggle slot)
+    /// rather than asserting on the controller in isolation.
+    fn lay_out(app: &mut CodeApp, w: f32, h: f32) {
+        use std::collections::HashMap as Map;
+        use taffy::prelude::*;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+        use ui::widget::Widget;
+        use vello::kurbo::Point;
+
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: Map<taffy::NodeId, *mut dyn Widget> = Map::new();
+        app.set_width_hint(w as f64);
+        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(w),
+                        height: Dimension::length(h),
+                    },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        let measure_map = node_map.clone();
+        let trm = &mut tr;
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w),
+                    height: AvailableSpace::Definite(h),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, trm) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, child, Point::ORIGIN);
+    }
+
+    #[test]
+    fn collapsing_the_docked_sidebar_reclaims_width() {
+        // The reported bug: a collapsed sidebar left a dead empty gutter. With
+        // the shared drawer, collapsing drives the taffy column to zero so the
+        // editor genuinely reclaims the space.
+        let mut app = CodeApp::with_sample();
+        lay_out(&mut app, 1200.0, 800.0);
+        assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
+        assert!(app.sidebar_open());
+        let open_sidebar_w = app.sidebar.rect().width();
+        let open_editor_w = app.editor.get_rect().width();
+        assert!(
+            open_sidebar_w > 200.0,
+            "an open docked sidebar has real width, got {open_sidebar_w}"
+        );
+
+        // Collapse and settle, then relayout.
+        app.toggle_sidebar();
+        app.shots_snap_sidebar(false);
+        lay_out(&mut app, 1200.0, 800.0);
+        assert!(!app.sidebar_open());
+        let closed_sidebar_w = app.sidebar.rect().width();
+        let closed_editor_w = app.editor.get_rect().width();
+        assert!(
+            closed_sidebar_w < 1.0,
+            "a collapsed sidebar reclaims its column (width {closed_sidebar_w}), no dead gutter"
+        );
+        assert!(
+            closed_editor_w > open_editor_w + 100.0,
+            "the editor grows by the reclaimed sidebar width ({open_editor_w} -> {closed_editor_w})"
+        );
+    }
+
+    #[test]
+    fn the_sidebar_toggle_never_overlaps_the_tabs() {
+        // The hamburger used to be drawn as a popover over the toolbar. The
+        // toggle now lives in a reserved slot the tabs are inset past, in both
+        // layouts, so it can never sit on top of a tab.
+        for w in [1200.0_f32, 600.0] {
+            let mut app = CodeApp::with_sample();
+            lay_out(&mut app, w, 800.0);
+            let toggle = app.toggle_rect;
+            let tabs = app.tabs.get_rect();
+            assert!(toggle.width() > 0.0, "the toggle is always present (w={w})");
+            assert!(
+                toggle.x1 <= tabs.x0 + 0.5,
+                "the toggle slot ends before the tabs begin (toggle.x1={}, tabs.x0={}, w={w})",
+                toggle.x1,
+                tabs.x0
+            );
+        }
+    }
+
+    #[test]
+    fn the_toggle_collapses_and_restores_a_docked_sidebar() {
+        // A docked sidebar must be reachable again after collapse — the old
+        // hamburger only existed in overlay mode, so a closed docked sidebar was
+        // lost. The single toggle now handles both directions in both layouts.
+        let mut app = CodeApp::with_sample();
+        app.set_width_hint(1200.0);
+        assert!(app.sidebar_open());
+        app.toggle_sidebar();
+        assert!(!app.sidebar_open(), "the toggle collapses the docked sidebar");
+        app.toggle_sidebar();
+        assert!(app.sidebar_open(), "the same toggle brings it back");
+    }
+
+    // ---- open folder ------------------------------------------------------
+
+    #[test]
+    fn open_folder_populates_the_tree_through_the_portal() {
+        // The production Open Folder path: a directory picked through the portal
+        // becomes the project, and its top level is read into the tree.
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("src")).unwrap();
+        std::fs::write(d.path().join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(d.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        // Start with no project — the honest cold-start state.
+        let mut app = CodeApp::new();
+        assert!(!app.session.project.is_disk_backed());
+        let mut doc = AutoCommit::new();
+
+        app.apply_portal_outcome(
+            &mut doc,
+            Some(PortalIntent::OpenFolder),
+            ui::portal::PortalOutcome::Opened(d.path().to_path_buf()),
+        );
+
+        assert!(
+            app.session.project.is_disk_backed(),
+            "opening a folder replaces the project with that directory"
+        );
+        let names: Vec<String> = app
+            .session
+            .project
+            .visible_rows()
+            .into_iter()
+            .filter_map(|id| app.session.project.get(id).map(|n| n.name.clone()))
+            .collect();
+        assert!(names.contains(&"src".to_string()), "{names:?}");
+        assert!(names.contains(&"Cargo.toml".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn the_open_folder_request_asks_for_a_directory() {
+        // The picker Open Folder raises is a directory chooser, not a file one.
+        let req = ui::portal::PickRequest::open_directory("Open a project folder", "Open");
+        assert!(req.is_directory());
+    }
+
+    // ---- format + format-on-save ------------------------------------------
+
+    /// A ubiquitous shell filter standing in for a real formatter: it reads the
+    /// buffer on stdin and writes an uppercased version to stdout, exactly the
+    /// stdin→stdout contract rustfmt/gofmt/black honour.
+    fn uppercase_formatter() -> Vec<String> {
+        ["sh", "-c", "tr a-z A-Z"].iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Open a single real file into an editor whose formatter is the uppercase
+    /// stand-in, returning the app, the doc, and the file path.
+    fn app_over_a_real_file(
+        body: &str,
+    ) -> (CodeApp, AutoCommit, std::path::PathBuf, tempfile::TempDir) {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("main.rs");
+        std::fs::write(&file, body).unwrap();
+        let mut app = CodeApp::open_path(&file);
+        app.set_formatter_override(uppercase_formatter());
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        (app, doc, file, d)
+    }
+
+    #[test]
+    fn format_on_save_runs_the_formatter_and_writes_formatted_bytes() {
+        let (mut app, mut doc, file, _d) = app_over_a_real_file("fn main() {}\n");
+        assert!(app.format_on_save, "format on save is on by default");
+
+        // Ctrl+S goes through the real Save command → format-on-save → disk.
+        app.apply_command(Command::Save, &mut doc);
+
+        let node = app.session.active_buffer().unwrap().node;
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("FN MAIN() {}\n"),
+            "the buffer was reformatted through the CRDT before saving"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "FN MAIN() {}\n",
+            "the formatted bytes are what reached disk"
+        );
+    }
+
+    #[test]
+    fn format_on_save_can_be_turned_off() {
+        let (mut app, mut doc, file, _d) = app_over_a_real_file("fn main() {}\n");
+        app.apply_command(Command::ToggleFormatOnSave, &mut doc);
+        assert!(!app.format_on_save);
+        app.apply_command(Command::Save, &mut doc);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn main() {}\n",
+            "with format-on-save off, the file is saved verbatim"
+        );
+    }
+
+    #[test]
+    fn the_manual_format_command_reformats_the_active_buffer() {
+        let (mut app, mut doc, _file, _d) = app_over_a_real_file("fn main() {}\n");
+        let node = app.session.active_buffer().unwrap().node;
+        app.apply_command(Command::Format, &mut doc);
+        assert_eq!(
+            EditorDoc::read_buffer(&doc, node).as_deref(),
+            Some("FN MAIN() {}\n"),
+            "Format Document runs the formatter over the active buffer"
+        );
+    }
+
+    // ---- Ctrl+K command export --------------------------------------------
+
+    #[test]
+    fn ctrl_k_exposes_and_runs_every_command() {
+        let mut app = CodeApp::with_sample();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        // The command provider is published alongside the file provider.
+        let providers = app.search_providers();
+        let commands: Vec<_> = providers
+            .iter()
+            .flat_map(|p| p.search("open folder"))
+            .filter(|r| r.kind == crate::command_provider::COMMAND_KIND)
+            .collect();
+        assert!(
+            commands.iter().any(|r| r.title.contains("Open Folder")),
+            "Open Folder is discoverable through the app's own Ctrl+K providers"
+        );
+
+        // Activating a command row runs it through the app's real dispatch.
+        let before = app.panel_visible;
+        app.activate_search_result(
+            &crate::command_provider::CommandSearchProvider::action_id(Command::ToggleBottomPanel),
+            &mut state.doc,
+            &state.root,
+        );
+        assert_ne!(
+            app.panel_visible, before,
+            "activating a Ctrl+K command row runs the command"
+        );
     }
 }

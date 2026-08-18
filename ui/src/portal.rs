@@ -121,7 +121,11 @@ impl FileFilter {
 /// Which chooser to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PickKind {
-    Open { multiple: bool },
+    /// A file (or, when `directory`, a folder) open chooser. `directory` asks
+    /// the host picker to select directories rather than files — the portal's
+    /// `OpenFile(directory: true)` mode — so "Open a project folder" grays out
+    /// files instead of hoping the user picks a directory in a file chooser.
+    Open { multiple: bool, directory: bool },
     Save { suggested_name: String },
 }
 
@@ -143,13 +147,34 @@ pub struct PickRequest {
 impl PickRequest {
     /// A single-file open chooser.
     pub fn open(title: &str, accept_label: &str) -> Self {
-        Self::new(title, accept_label, PickKind::Open { multiple: false })
+        Self::new(
+            title,
+            accept_label,
+            PickKind::Open { multiple: false, directory: false },
+        )
     }
 
     /// A multi-select open chooser: the user may pick arbitrarily many files
     /// at once and every local one comes back.
     pub fn open_multiple(title: &str, accept_label: &str) -> Self {
-        Self::new(title, accept_label, PickKind::Open { multiple: true })
+        Self::new(
+            title,
+            accept_label,
+            PickKind::Open { multiple: true, directory: false },
+        )
+    }
+
+    /// A directory open chooser: the host picker selects a **folder** rather
+    /// than a file (files are shown but not selectable). The returned
+    /// [`PortalOutcome::Opened`] path is the chosen directory. This is how an
+    /// app opens a project/workspace root through the portal — the sandbox's
+    /// file-access grant is made for the directory the user actually picked.
+    pub fn open_directory(title: &str, accept_label: &str) -> Self {
+        Self::new(
+            title,
+            accept_label,
+            PickKind::Open { multiple: false, directory: true },
+        )
     }
 
     /// A Save chooser, seeding the filename field with `suggested_name`.
@@ -197,7 +222,14 @@ impl PickRequest {
 
     /// Whether this request opens a multi-select chooser.
     pub fn is_multiple(&self) -> bool {
-        matches!(self.kind, PickKind::Open { multiple: true })
+        matches!(self.kind, PickKind::Open { multiple: true, .. })
+    }
+
+    /// Whether this request opens a directory (folder) chooser rather than a
+    /// file one. Lets an app assert on the chooser it configured without opening
+    /// one.
+    pub fn is_directory(&self) -> bool {
+        matches!(self.kind, PickKind::Open { directory: true, .. })
     }
 
     /// The filter dropdown labels, in order. Lets an app assert on the chooser
@@ -437,12 +469,15 @@ async fn run(req: PickRequest) -> Result<Vec<url::Url>, PortalFailure> {
     };
 
     let response = match &req.kind {
-        PickKind::Open { multiple } => {
+        PickKind::Open { multiple, directory } => {
             let mut r = SelectedFiles::open_file()
                 .title(req.title.as_str())
                 .accept_label(req.accept_label.as_str())
                 .modal(true)
-                .multiple(*multiple);
+                .multiple(*multiple)
+                // Select a folder rather than a file when this is a directory
+                // chooser; the portal grays out files in that mode.
+                .directory(*directory);
             for f in &req.filters {
                 r = r.filter(to_ashpd(f));
             }
@@ -491,6 +526,19 @@ mod tests {
 
     fn u(s: &str) -> url::Url {
         url::Url::parse(s).unwrap()
+    }
+
+    // ---- request builders --------------------------------------------
+
+    #[test]
+    fn open_directory_configures_a_folder_chooser() {
+        let req = PickRequest::open_directory("Open a project folder", "Open");
+        assert!(req.is_directory(), "a directory request selects a folder");
+        assert!(!req.is_multiple(), "a directory open is single-select");
+        assert_eq!(req.suggested_name(), None, "an open has no save name");
+        // A plain file open is NOT a directory chooser.
+        assert!(!PickRequest::open("Open a file", "Open").is_directory());
+        assert!(!PickRequest::open_multiple("Attach", "Attach").is_directory());
     }
 
     // ---- the security rule -------------------------------------------
