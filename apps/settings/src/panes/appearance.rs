@@ -31,7 +31,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{card, choice_row, rows, setting_row_described, value_row};
 
 pub const THEME_KEY: &str = "appearance.theme";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
@@ -199,18 +199,7 @@ impl AppearancePane {
             ]),
         );
 
-        let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Your theme, contrast, motion, UI-scale, and text-size choices \
-                 are read by the compositor and every qOS app, so the whole \
-                 system follows the look you pick here. UI scale grows the \
-                 entire interface and composes with each display's own \
-                 fractional scale; text size adjusts type on top.",
-            )]),
-        );
-
-        crate::widgets::cards(vec![theme_card, access_card, preview, explainer])
+        crate::widgets::cards(vec![theme_card, access_card, preview])
     }
 
     /// Persist the current prefs into the shared store, preserving other

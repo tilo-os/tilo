@@ -28,34 +28,27 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Column, Container, Scrollable, Text, Widget};
+use ui::widget::{Column, Container, Scrollable, Widget};
 
-use crate::categories::{Category, Section};
+use crate::categories::Category;
 use crate::widgets::{caption, vgap};
 
 /// CRDT key the top strip's search field writes its query into. Read by
 /// [`crate::SettingsApp::sync`] to filter the category list.
 pub const SEARCH_KEY: &str = "settings.search";
 
-/// Gap (logical px) injected above the first section header so it has clear
-/// breathing room at the top of the sidebar surface.
-const TITLE_GAP: f32 = 14.0;
-
-/// Extra gap (logical px) injected ABOVE each section header (beyond the
-/// first). Combined with the column's own inter-child gap this makes the
-/// space above a header noticeably larger than the space below it.
-const SECTION_GAP_ABOVE: f32 = 18.0;
-
-/// Small gap (logical px) injected BELOW a section header, before its
-/// first row. Deliberately smaller than [`SECTION_GAP_ABOVE`] so the
-/// header reads as belonging to the rows beneath it.
-const SECTION_GAP_BELOW: f32 = 2.0;
+/// Gap (logical px) between the search band and the first nav row. A small,
+/// even value: enough to detach the list from the search field without the
+/// yawning space a section header used to leave. Every subsequent row follows
+/// the same rhythm (the row's own pill inset gives the inter-row air), so the
+/// list reads as one evenly-spaced run rather than a stack of labelled blocks.
+const TOP_GAP: f32 = 4.0;
 
 /// Width (logical px) of the docked sidebar. Sized so the widest row
 /// ("Permissions & Roles" with its glyph, plus the row's horizontal padding)
@@ -153,6 +146,10 @@ pub struct SidebarRow {
     rect: Rect,
     is_hovered: bool,
     is_pressed: bool,
+    /// Whether the App's keyboard focus currently rests on THIS row. Tracked
+    /// per row (via `set_focus`) so the focus ring lands on the individual
+    /// row's chip, never around the whole sidebar container.
+    is_focused: bool,
 }
 
 impl SidebarRow {
@@ -164,6 +161,7 @@ impl SidebarRow {
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
+            is_focused: false,
         }
     }
 }
@@ -236,6 +234,16 @@ impl Widget for SidebarRow {
             scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &pill);
         }
 
+        // Keyboard focus: a themed ring hugging THIS row's chip. Because the
+        // row tracks its own focus (`is_focused`) it also draws its own ring,
+        // so the shared full-node ring the host would otherwise paint around
+        // the sidebar's scroll container never appears. The ring reads on both
+        // an inactive row (over the flat surface) and the active accent pill.
+        if self.is_focused {
+            let ring = RoundedRect::from_rect(geo.pill.inflate(1.0, 1.0), radius);
+            scene.stroke(&Stroke::new(2.0), transform, theme.border_focus, None, &ring);
+        }
+
         // Icon + label, left-aligned, vertically centred. The active row uses
         // a bright on-accent foreground; inactive rows use the primary text
         // colour so they stay legible against the sidebar surface.
@@ -272,8 +280,8 @@ impl Widget for SidebarRow {
         state: &mut AutoCommit,
         root: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
         match event {
@@ -292,6 +300,15 @@ impl Widget for SidebarRow {
             } => {
                 if self.is_hovered {
                     let pressed = *element_state == ElementState::Pressed;
+                    if pressed {
+                        // Claim keyboard focus for THIS row. The enclosing
+                        // `Scrollable` also flags itself as the focus target on
+                        // a press inside its region (so PageUp/Down scroll it);
+                        // overwriting it here makes the focus — and thus the
+                        // focus ring — land on the row the user actually
+                        // pressed, not the whole scroll container.
+                        *focus_target = Some(node_id);
+                    }
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
                         *handled = true;
@@ -336,48 +353,43 @@ impl Widget for SidebarRow {
     fn is_focusable(&self) -> bool {
         true
     }
+
+    /// Track focus per row so the ring the row draws (and the host's decision
+    /// to skip its own shared ring) is scoped to this row alone.
+    fn set_focus(&mut self, focused: bool) {
+        self.is_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.is_focused
+    }
 }
 
-/// Build the full sidebar surface: either the sectioned category list (when
-/// `query` is empty) or a flat filtered results list (when the user is
-/// searching). `selected` drives which row shows the active highlight. The
-/// app title and search field are NOT here — the OS pill carries the title and
-/// the search field lives in the app's top strip.
+/// Build the full sidebar surface: one flat, evenly-spaced list of category
+/// rows (or the filtered results when the user is searching). `selected`
+/// drives which row shows the active highlight. There are deliberately **no**
+/// loud CONNECTIVITY / DEVICES / SYSTEM section labels — the categories are
+/// already ordered by affinity, so an unbroken, calmly-spaced list reads as
+/// intentionally designed rather than a stack of shouting blocks.
 ///
-/// The whole thing is one [`Container`] tinted a step below the content
-/// background so it reads as a single cohesive sidebar pane, with the rows
-/// inside a [`Scrollable`] so every category stays reachable on short windows.
+/// The app title and search field are NOT here — the OS pill carries the title
+/// and the search field lives in the shell's search band above this list.
 pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
     // An intrinsic-height column lays out as a block stack and ignores the
-    // toolkit's inter-child gap, so we place explicit fixed-height spacers
-    // to control the vertical rhythm.
-    //
-    // The sidebar draws **no app title and no search field**: the app name is
-    // shown by the OS window-group pill (an app-drawn "Settings" header would
-    // duplicate it), and the search field lives in the app's top strip so it
-    // is reachable by keyboard focus (see [`crate::settings_app`]). The
-    // sidebar starts directly with its first section, inset from the top.
-    let mut col = Column::new().with_intrinsic_height().push(vgap(TITLE_GAP));
+    // toolkit's inter-child gap; each row carries its own vertical pill inset,
+    // so the rows already read at an even rhythm with no explicit inter-row
+    // spacers. Only the small top gap separates the list from the search band.
+    let mut col = Column::new().with_intrinsic_height().push(vgap(TOP_GAP));
 
     let trimmed = query.trim();
     if trimmed.is_empty() {
-        // Normal sectioned list. A clearly LARGER gap ABOVE each section
-        // header than below it groups the rows beneath the header.
-        for (i, section) in Section::ALL.iter().enumerate() {
-            if i != 0 {
-                col = col.push(vgap(SECTION_GAP_ABOVE));
-            }
-            col = col.push(section_header(section.label()));
-            col = col.push(vgap(SECTION_GAP_BELOW));
-            for category in Category::in_section(*section) {
-                col = col.push(Box::new(SidebarRow::new(category, category == selected)));
-            }
+        // The whole category list, flat and in affinity order.
+        for category in Category::ALL {
+            col = col.push(Box::new(SidebarRow::new(*category, *category == selected)));
         }
     } else {
-        // Filtered results — a flat list of matching categories under a
-        // "RESULTS" header, or an honest empty state.
-        col = col.push(section_header("Results"));
-        col = col.push(vgap(SECTION_GAP_BELOW));
+        // Filtered results — the matching categories as the same flat rows, or
+        // an honest empty state.
         let matches: Vec<Category> =
             Category::ALL.iter().copied().filter(|c| c.matches(trimmed)).collect();
         if matches.is_empty() {
@@ -400,15 +412,6 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
             .filling()
             .with_no_padding()
             .with_child(Box::new(scroll)),
-    )
-}
-
-/// An uppercase, dimmed section header line.
-fn section_header(label: &str) -> Box<dyn Widget> {
-    Box::new(
-        Text::new(&label.to_uppercase())
-            .with_size(11.0)
-            .with_color(Theme::dark().text_dim),
     )
 }
 
@@ -453,6 +456,79 @@ mod tests {
     fn row_is_addressable_by_category_label() {
         let row = SidebarRow::new(Category::MouseKeyboard, false);
         assert_eq!(Widget::test_id(&row), Some("Mouse & Keyboard"));
+    }
+
+    /// The flat list carries no section-header widgets: dropping the loud
+    /// CONNECTIVITY / DEVICES / SYSTEM labels means the sidebar tree contains
+    /// zero `Text` widgets (the rows draw their own labels directly), only the
+    /// focusable rows.
+    #[test]
+    fn flat_sidebar_has_no_section_header_widgets() {
+        fn count_text(w: &dyn Widget) -> usize {
+            let mut n = if w.name() == "Text" { 1 } else { 0 };
+            for c in w.children() {
+                n += count_text(c);
+            }
+            n
+        }
+        let sb = build(Category::Network, "");
+        assert_eq!(
+            count_text(sb.as_ref()),
+            0,
+            "the flat sidebar draws no section-header Text widgets"
+        );
+        // …and it is still the complete list of rows.
+        assert_eq!(count_rows(sb.as_ref()), Category::ALL.len());
+    }
+
+    /// A row is individually focusable and, once focused, owns its own ring —
+    /// so the host skips the shared full-node ring and it can never wrap the
+    /// whole sidebar container.
+    #[test]
+    fn row_is_individually_focusable_and_draws_its_own_ring() {
+        let mut row = SidebarRow::new(Category::Network, false);
+        assert!(Widget::is_focusable(&row), "each row joins the tab order");
+        assert!(!row.is_focused());
+        assert!(
+            !Widget::draws_own_focus_ring(&row),
+            "an unfocused row leaves the shared ring to the host"
+        );
+        row.set_focus(true);
+        assert!(row.is_focused());
+        assert!(
+            Widget::draws_own_focus_ring(&row),
+            "a focused row draws its own chip ring, so the host paints no full-node ring"
+        );
+    }
+
+    /// A press on a row claims keyboard focus for the ROW's node (overwriting
+    /// the enclosing `Scrollable`'s focus claim), so the focus ring lands on
+    /// the pressed row rather than the whole scroll container.
+    #[test]
+    fn press_claims_focus_for_the_row() {
+        let mut row = SidebarRow::new(Category::About, false);
+        row.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
+        row.is_hovered = true;
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        let mut handled = false;
+        let mut focus = None;
+        row.handle_event(&press, 1.0, &mods, &mut doc, &root, &mut handled, &mut focus, node, &taffy);
+        assert_eq!(
+            focus,
+            Some(node),
+            "a press focuses the row's own node so the ring lands on the row"
+        );
     }
 
     #[test]

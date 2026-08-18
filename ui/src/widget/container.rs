@@ -3,7 +3,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, RoundedRect, Rect};
 use winit::event::WindowEvent;
 use taffy::{TaffyTree, NodeId, Style};
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::{auto, length, percent};
 use crate::widget::Widget;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -28,6 +28,14 @@ pub struct Container {
     /// Mutually independent from [`Container::fill_height`] — when set this
     /// overrides the auto/percent height with `length(px)`.
     fixed_height: Option<f32>,
+    /// Cap the container's width at `px` while still filling a narrower
+    /// parent, and centre it horizontally in the leftover space. `Some(px)`
+    /// sets a taffy `max_size.width` plus `auto` left/right margins, so a wide
+    /// pane resolves to `min(parent, px)` centred — a reading-width column that
+    /// stops settings rows stretching edge-to-edge on a very wide window while
+    /// still shrinking to fit a phone-narrow one. Independent of
+    /// [`Container::with_width`] (an exact pin); prefer this for content.
+    max_width: Option<f32>,
     /// Explicit fill colour for the container's background surface. When
     /// `Some(c)`, the background is painted in `c` (still themed — callers
     /// pass a `Theme` token) rather than the default `theme.bg_primary`.
@@ -58,6 +66,7 @@ impl Container {
             no_padding: false,
             fixed_width: None,
             fixed_height: None,
+            max_width: None,
             fill_color: None,
             flex_grow: false,
         }
@@ -114,6 +123,16 @@ impl Container {
     pub fn with_size(mut self, width: f32, height: f32) -> Self {
         self.fixed_width = Some(width);
         self.fixed_height = Some(height);
+        self
+    }
+
+    /// Cap the width at `px` and centre the container horizontally, while still
+    /// shrinking to fit a narrower parent. The container resolves to
+    /// `min(parent_width, px)`, centred in any leftover space — a reading-width
+    /// column for content panes so their rows never stretch edge-to-edge on a
+    /// very wide window. See the [`Container::max_width`] field docs.
+    pub fn with_max_width(mut self, px: f32) -> Self {
+        self.max_width = Some(px);
         self
     }
 
@@ -176,6 +195,14 @@ impl Widget for Container {
             None if self.fill_height => percent(1.0),
             None => taffy::Dimension::auto(),
         };
+        // A capped, centred content column: cap the width at `max_width` while
+        // still shrinking to fit a narrower parent (via `max_size.width`), and
+        // centre it in any leftover space with `auto` left/right margins.
+        let (max_width_dim, side_margin): (taffy::Dimension, taffy::LengthPercentageAuto) =
+            match self.max_width {
+                Some(px) => (length(px), auto()),
+                None => (taffy::Dimension::auto(), length(0.0)),
+            };
         let style = Style {
             display: taffy::Display::Flex,
             flex_shrink: 0.0, // Prevent vertical squashing
@@ -195,6 +222,13 @@ impl Widget for Container {
                 top: length(pad),
                 bottom: length(pad),
             },
+            margin: taffy::Rect {
+                left: side_margin,
+                right: side_margin,
+                top: length(0.0),
+                bottom: length(0.0),
+            },
+            max_size: taffy::Size { width: max_width_dim, height: taffy::Dimension::auto() },
             size: taffy::Size { width, height },
             ..Default::default()
         };
@@ -386,6 +420,75 @@ mod tests {
             (rect.width() - 800.0).abs() < 0.5,
             "default container must fill the viewport width, got {}",
             rect.width()
+        );
+    }
+
+    #[test]
+    fn with_max_width_caps_and_centres_inside_a_wide_parent() {
+        // Mirror the real usage: the capped reading column is a Block child of
+        // an intrinsic-height column, so `margin: 0 auto` centres it.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut c = Container::new().with_no_padding().with_max_width(600.0);
+        let child = c.build_layout(&mut taffy, &theme, &mut node_map);
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Block,
+                    size: taffy::Size { width: percent(1.0), height: percent(1.0) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                parent,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(800.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        c.apply_layout(&taffy, child, Point::ZERO);
+        let rect = c.get_rect();
+        assert!(
+            (rect.width() - 600.0).abs() < 1.0,
+            "width capped at 600 inside an 800 parent, got {}",
+            rect.width()
+        );
+        assert!(
+            rect.x0 > 50.0 && (rect.x0 - (800.0 - rect.x1)).abs() < 1.0,
+            "the capped column is centred (equal side margins), left={} right_gap={}",
+            rect.x0,
+            800.0 - rect.x1
+        );
+    }
+
+    #[test]
+    fn with_max_width_shrinks_to_fit_a_narrow_parent() {
+        // On a parent narrower than the cap, the column fills the parent (no
+        // clamping to the cap, no overflow).
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut c = Container::new().with_no_padding().with_max_width(600.0);
+        let child = c.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout(
+                child,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        c.apply_layout(&taffy, child, Point::ZERO);
+        assert!(
+            c.get_rect().width() <= 400.5,
+            "a 600-cap column shrinks to a 400 parent, got {}",
+            c.get_rect().width()
         );
     }
 

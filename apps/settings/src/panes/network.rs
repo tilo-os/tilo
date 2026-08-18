@@ -29,7 +29,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::widgets::{card, card_with_action, caption, rows, value_row, El};
+use crate::widgets::{card, card_with_action, caption, rows, status_pill, value_row, El};
 
 pub const WIFI_ENABLED_KEY: &str = "network.wifi_enabled";
 pub const REFRESH_KEY: &str = "network.refresh";
@@ -366,11 +366,7 @@ impl NetworkPane {
                     "settings.network.refresh",
                     "\u{f0450}  Refresh",
                     Some(REFRESH_KEY),
-                ))),
-        ));
-        wifi_rows.push(caption(
-            "Wi-Fi scanning and connection are best-effort via nmcli; \
-             secure networks prompt for a password before joining.",
+                ).ghost())),
         ));
 
         let wifi_card = card_with_action("Wi-Fi", wifi_toggle, rows(wifi_rows));
@@ -395,18 +391,26 @@ impl NetworkPane {
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
         let key = connect_key(&net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
-        let cta_label = if net.connected {
-            "Connected"
-        } else if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
-            "Cancel"
+        // The network you're already on shows a calm status chip — there's
+        // nothing to press. Every other row carries a *ghost* affordance: a
+        // light, secondary button that tints only on hover/focus, so a long
+        // scan list reads as a clean list rather than a column of ten heavy,
+        // filled "Connect" pills.
+        let trailing: El = if net.connected {
+            status_pill("Connected", Theme::dark().status_success)
         } else {
-            "Connect"
+            let cta_label = if self.expanded_ssid.as_deref() == Some(net.ssid.as_str()) {
+                "Cancel"
+            } else {
+                "Connect"
+            };
+            Box::new(Button::new(&cta_id, cta_label, Some(&key)).ghost())
         };
         Box::new(
             Row::new()
                 .push(Box::new(Text::new(&label).with_size(13.0)))
                 .push(Box::new(Spacer::new()))
-                .push(Box::new(Button::new(&cta_id, cta_label, Some(&key)))),
+                .push(trailing),
         )
     }
 
