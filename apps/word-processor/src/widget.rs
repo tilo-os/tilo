@@ -2852,6 +2852,14 @@ impl WordProcessorWidget {
         }
     }
 
+    /// Scroll the document by (almost) a viewport in `dir` (+1 = down, -1 = up),
+    /// clamped to the overflow. A pure scroll gesture (PageUp/PageDown) — the caret
+    /// stays put, so it does not fight viewport-follow.
+    fn page_scroll(&mut self, dir: f64) {
+        let page = (self.rect.height() * 0.9 / self.zoom).max(40.0);
+        self.scroll_y = (self.scroll_y + dir * page).clamp(0.0, self.max_scroll);
+    }
+
     /// Viewport-follows-caret: given the caret's on-screen band captured this frame
     /// (`caret_band`, canvas space) and the visible `canvas`, adjust `scroll_y` so
     /// the caret line sits inside the viewport with a small margin — scrolling down
@@ -6752,14 +6760,40 @@ impl Widget for WordProcessorWidget {
                         motion = true;
                     }
                     Key::Named(NamedKey::Home) => {
+                        // Ctrl+Home jumps to the document start, plain Home to the
+                        // line (block) start; Shift extends either.
                         self.extend_or_clear(shift);
-                        self.inner.move_home();
+                        if ctrl {
+                            self.inner.move_doc_start(state);
+                        } else {
+                            self.inner.move_home();
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::End) => {
+                        // Ctrl+End jumps to the document end, plain End to the line end.
                         self.extend_or_clear(shift);
-                        self.inner.move_end(state);
+                        if ctrl {
+                            self.inner.move_doc_end(state);
+                        } else {
+                            self.inner.move_end(state);
+                        }
                         motion = true;
+                    }
+                    // PageUp / PageDown scroll the document by (almost) a viewport —
+                    // a pure scroll gesture (the caret stays put), so it never fights
+                    // viewport-follow. A subsequent edit brings the caret back.
+                    Key::Named(NamedKey::PageDown) => {
+                        self.page_scroll(1.0);
+                        changed = false;
+                        self.dirty = true;
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::PageUp) => {
+                        self.page_scroll(-1.0);
+                        changed = false;
+                        self.dirty = true;
+                        *handled = true;
                     }
                     Key::Named(NamedKey::Space) => {
                         if !self.inner.autoformat_on_space(state) {
@@ -10250,8 +10284,15 @@ mod tests {
     fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle() {
         // Redirect the persisted user-dict to a throwaway dir so the test never
         // writes the real `~/.config/qos/userdict.txt`. (The in-memory add is
-        // what the assertions below check; persistence is best-effort.)
-        let tmp = std::env::temp_dir().join(format!("qos-userdict-test-{}", std::process::id()));
+        // what the assertions below check; persistence is best-effort.) The dir is
+        // unique per run — pid alone is reused across runs, so a stale userdict.txt
+        // left on disk from an earlier run would pre-accept ‘qwordz’ and hide the
+        // squiggle this test needs; a nanosecond suffix keeps every run hermetic.
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let tmp = std::env::temp_dir().join(format!("qos-userdict-test-{}-{uniq}", std::process::id()));
         unsafe { std::env::set_var("XDG_CONFIG_HOME", &tmp); }
 
         let mut state = ui::State::new();
@@ -10267,13 +10308,15 @@ mod tests {
             "precondition: ‘qwordz’ is flagged"
         );
 
-        // Right-click on the first word.
+        // Right-click on the first word. Compare against the i18n-resolved label
+        // (`t`) rather than an English literal so the test is locale-independent.
+        let add_label = t("menu-add-to-dictionary");
         let pt = first_block_start_point(&wp);
         wp.open_context_menu(&state.doc, pt, [pt.x as f32, pt.y as f32]);
         let labels = wp.context_menu_labels();
         assert!(
-            labels.iter().any(|l| l == "Add to dictionary"),
-            "misspelled word offers ‘Add to dictionary’, got {labels:?}"
+            labels.iter().any(|l| l == &add_label),
+            "misspelled word offers ‘Add to dictionary’ ({add_label:?}), got {labels:?}"
         );
 
         // Invoke "Add to dictionary".
@@ -10281,7 +10324,7 @@ mod tests {
             .context_menu
             .items()
             .iter()
-            .position(|i| i.label() == Some("Add to dictionary"))
+            .position(|i| i.label() == Some(add_label.as_str()))
             .unwrap();
         assert_eq!(wp.context_actions[add_idx], Some(CtxAction::AddToDictionary("qwordz".to_string())));
         wp.dispatch_context_action(add_idx, &mut state.doc);
@@ -10338,18 +10381,20 @@ mod tests {
         // The clicked-word fallback selected "hello".
         assert!(wp.model().has_selection(), "a word was selected by the fallback");
         assert_eq!(wp.model().selection_text(&state.doc), "hello");
-        // With a selection, the menu has Cut + Copy.
+        // With a selection, the menu has Cut + Copy + Select All. Compare against
+        // the i18n-resolved labels so the test is locale-independent.
         let labels = wp.context_menu_labels();
-        assert!(labels.contains(&"Copy".to_string()), "got {labels:?}");
-        assert!(labels.contains(&"Cut".to_string()), "got {labels:?}");
-        assert!(labels.contains(&"Select All".to_string()), "got {labels:?}");
+        assert!(labels.contains(&t("menu-copy")), "got {labels:?}");
+        assert!(labels.contains(&t("menu-cut")), "got {labels:?}");
+        assert!(labels.contains(&t("menu-select-all")), "got {labels:?}");
 
         // item_at + dispatch maps the Copy row to the Copy action.
+        let copy_label = t("menu-copy");
         let copy_idx = wp
             .context_menu
             .items()
             .iter()
-            .position(|i| i.label() == Some("Copy"))
+            .position(|i| i.label() == Some(copy_label.as_str()))
             .unwrap();
         assert_eq!(wp.context_actions[copy_idx], Some(CtxAction::Copy));
     }
@@ -11103,6 +11148,38 @@ mod tests {
         press_mods(&mut wp, &mut state, NamedKey::ArrowLeft, mods(false, false));
         assert!(sel_range(&wp, &state).is_none(), "plain Left collapsed the selection");
         assert_eq!(wp.model().caret().offset, 0, "collapsed to the near edge, not one char past it");
+    }
+
+    /// Ctrl+Home / Ctrl+End jump to the document start / end (across blocks) and
+    /// Ctrl+Shift+Home extends the selection over the whole document — all on the
+    /// real key path.
+    #[test]
+    fn ctrl_home_and_ctrl_end_jump_document_ends_via_key_path() {
+        let (mut state, mut wp) = bound();
+        wp.set_focus(true);
+        for c in "first line".chars() {
+            type_char(&mut wp, &mut state, c);
+        }
+        press_mods(&mut wp, &mut state, NamedKey::Enter, mods(false, false));
+        for c in "second line".chars() {
+            type_char(&mut wp, &mut state, c);
+        }
+        // Ctrl+Home jumps to the document start (first block, offset 0).
+        press_mods(&mut wp, &mut state, NamedKey::Home, mods(true, false));
+        assert_eq!(wp.model().caret().offset, 0, "Ctrl+Home lands at the document start");
+        let first_block = wp.model().caret().block.clone();
+        // Ctrl+End jumps to the document end (last block, its end).
+        press_mods(&mut wp, &mut state, NamedKey::End, mods(true, false));
+        assert_eq!(wp.model().caret().offset, "second line".len(), "Ctrl+End lands at the document end");
+        let last_block = wp.model().caret().block.clone();
+        assert_ne!(first_block, last_block, "the document start and end are in different blocks");
+        // Ctrl+Shift+Home extends the selection from the end back over the whole doc.
+        press_mods(&mut wp, &mut state, NamedKey::Home, mods(true, true));
+        assert_eq!(
+            wp.model().selection_blocks(&state.doc).len(),
+            2,
+            "Ctrl+Shift+Home selects across both blocks"
+        );
     }
 
     /// Viewport-follows-caret on the real draw path: typing to the end of a long
