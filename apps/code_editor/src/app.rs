@@ -4140,6 +4140,56 @@ mod tests {
     }
 
     #[test]
+    fn collapsing_reclaims_width_in_both_the_welcome_and_project_states() {
+        // The reported gutter was most visible on the no-project welcome screen,
+        // which renders through a different path (`draw_welcome`) than an open
+        // buffer. The earlier reclaim test only covered the project state, so it
+        // could not catch a welcome-only regression. Prove the collapse reclaims
+        // the sidebar's column in BOTH states: the editor pane starts at ~the
+        // window's left edge (only the slim toggle slot, never a full sidebar
+        // width offset), leaving no dead column.
+        for project in [false, true] {
+            let mut app = if project {
+                CodeApp::with_sample()
+            } else {
+                CodeApp::new()
+            };
+            lay_out(&mut app, 1200.0, 800.0);
+            assert_eq!(app.sidebar_layout(), SplitLayout::Docked, "project={project}");
+            assert!(app.sidebar_open(), "docked default is open (project={project})");
+
+            // Collapse through the real toggle path, settle deterministically,
+            // and relayout so the assertions read the production child rects.
+            app.toggle_sidebar();
+            app.shots_snap_sidebar(false);
+            lay_out(&mut app, 1200.0, 800.0);
+            assert!(!app.sidebar_open(), "project={project}");
+
+            let sidebar_w = app.sidebar.rect().width();
+            let editor = app.editor.get_rect();
+            let window_left = app.rect.x0;
+            assert!(
+                sidebar_w < 1.0,
+                "collapsed sidebar column is zeroed (project={project}), got {sidebar_w}"
+            );
+            // The editor's left edge sits at ~the window edge — within the slim
+            // toggle slot — not pushed in by a whole sidebar (240px). This is the
+            // assertion the welcome path lacked.
+            assert!(
+                (editor.x0 - window_left).abs() <= TOGGLE_SLOT + 1.0,
+                "editor starts at ~the toggle slot, not offset by a sidebar width \
+                 (project={project}, editor.x0={}, window_left={window_left})",
+                editor.x0,
+            );
+            assert!(
+                editor.width() > 1000.0,
+                "editor fills the reclaimed width (project={project}), got {}",
+                editor.width()
+            );
+        }
+    }
+
+    #[test]
     fn the_sidebar_toggle_never_overlaps_the_tabs() {
         // The hamburger used to be drawn as a popover over the toolbar. The
         // toggle now lives in a reserved slot the tabs are inset past, in both

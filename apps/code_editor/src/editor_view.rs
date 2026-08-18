@@ -2183,6 +2183,30 @@ mod tests {
     }
 
     #[test]
+    fn welcome_state_paints_no_gutter_strip() {
+        // The no-buffer welcome screen has no code and no line numbers, so it
+        // must not leave the raised line-number gutter behind — that strip read
+        // as an empty column down the left edge, glaring once the sidebar was
+        // collapsed and it abutted the window edge. `draw` paints the gutter iff
+        // `gutter_rect()` is `Some`, so asserting that predicate asserts the
+        // exact branch the paint path takes.
+        let unbound = EditorView::new();
+        assert!(!unbound.is_bound(), "a fresh editor is the welcome state");
+        assert!(
+            unbound.gutter_rect().is_none(),
+            "the welcome screen paints no gutter strip"
+        );
+
+        // A bound buffer keeps its line-number gutter.
+        let (bound, _doc) = bound_editor("fn main() {}\n");
+        assert!(bound.is_bound());
+        let g = bound
+            .gutter_rect()
+            .expect("a bound buffer keeps its line-number gutter");
+        assert!(g.width() > 0.0, "the bound gutter has real width, got {}", g.width());
+    }
+
+    #[test]
     fn insert_text_splices_into_crdt() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
