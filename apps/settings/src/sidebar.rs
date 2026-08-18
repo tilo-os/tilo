@@ -13,14 +13,19 @@
 //! reads to switch the active category. No private message bus; the selection
 //! lives in the document like every other piece of state.
 //!
+//! Each row also tracks its own keyboard focus and draws a themed ring hugging
+//! its chip, so focus (and its ring) is scoped to the individual row — never
+//! the whole scroll container.
+//!
 //! ## What makes it a sidebar
 //!
-//! [`build`] assembles the rows into one [`Container`] surface tinted a step
-//! below the content background, with per-[`Section`] headers and the rows
-//! stacked inside a [`Scrollable`] so a short window can still reach every
-//! category. The surface — not the individual rows — is what reads as "the
-//! sidebar". It carries no app title (the OS pill does) and no search field
-//! (that lives in the app's top strip).
+//! [`build`] stacks the rows as one flat, evenly-spaced list inside a
+//! [`Scrollable`] (so a short window can still reach every category) on the
+//! shell's cohesive sidebar surface. There are deliberately no loud section
+//! labels — the categories are already ordered by affinity, so an unbroken,
+//! calmly-spaced run reads as intentionally designed. The sidebar carries no
+//! app title (the OS pill does) and no search field (the shell's search band
+//! above the list does).
 
 use std::collections::HashMap;
 
