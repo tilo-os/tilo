@@ -1645,6 +1645,15 @@ pub struct WordProcessorWidget {
     /// each frame from the laid-out content height.
     scroll_y: f64,
     max_scroll: f64,
+    /// When set, the next draw scrolls the viewport so the caret is visible (set on
+    /// every caret motion / edit; cleared once the reveal has been applied). This is
+    /// the viewport-follows-caret behaviour — a keystroke never leaves the caret
+    /// off-screen, in either direction.
+    follow_caret: bool,
+    /// The caret's on-screen vertical band `(top, bottom)` in canvas space, captured
+    /// during the draw's text pass. Feeds [`Self::reveal_caret`]; `None` when the
+    /// caret has no laid line this frame.
+    caret_band: Option<(f64, f64)>,
     /// The document's stylesheet (component-instance styles). Authoritative copy
     /// in the widget; reloaded from the doc when not mid-drag, persisted on edit.
     sheet: crate::styles::StyleSheet,
@@ -1897,6 +1906,8 @@ impl WordProcessorWidget {
             rich_clip: None,
             scroll_y: 0.0,
             max_scroll: 0.0,
+            follow_caret: false,
+            caret_band: None,
             sheet: crate::styles::StyleSheet::default(),
             margins: Edges::uniform(72.0),
             layout_mode: LayoutMode::None,
@@ -2592,6 +2603,42 @@ impl WordProcessorWidget {
             // l.y_top is screen-space (post-scroll); recover content space.
             let content_y = l.y_top + self.scroll_y;
             self.scroll_y = (content_y - 180.0).clamp(0.0, self.max_scroll);
+        }
+    }
+
+    /// Viewport-follows-caret: given the caret's on-screen band captured this frame
+    /// (`caret_band`, canvas space) and the visible `canvas`, adjust `scroll_y` so
+    /// the caret line sits inside the viewport with a small margin — scrolling down
+    /// when the caret has fallen below the fold and up when it has moved above the
+    /// top. A changed offset requests a repaint so the corrected frame follows. The
+    /// caret band and the visible window are both in canvas space (pre-zoom), where
+    /// the visible content height is `canvas.height() / zoom`.
+    fn reveal_caret(&mut self, canvas: Rect) {
+        let Some((top, bottom)) = self.caret_band else {
+            return;
+        };
+        let view_h = (canvas.height() / self.zoom).max(1.0);
+        let vis_top = canvas.y0;
+        let vis_bottom = canvas.y0 + view_h;
+        // Keep the caret a little inside the edges (but never more than ~40% of the
+        // viewport, so a very short viewport still resolves).
+        let margin = 28.0_f64.min(view_h * 0.4);
+        let delta = if bottom > vis_bottom - margin {
+            bottom - (vis_bottom - margin)
+        } else if top < vis_top + margin {
+            top - (vis_top + margin) // negative → scroll up
+        } else {
+            0.0
+        };
+        if delta == 0.0 {
+            return;
+        }
+        let new = (self.scroll_y + delta).clamp(0.0, self.max_scroll);
+        if (new - self.scroll_y).abs() > 0.5 {
+            self.scroll_y = new;
+            // Repaint so the content (laid this frame at the old offset) re-lays at
+            // the corrected offset.
+            self.dirty = true;
         }
     }
 
@@ -5174,7 +5221,9 @@ impl Widget for WordProcessorWidget {
 
         // Pass 2: draw cell borders, bullets, selection, text, caret. Everything
         // here renders through `ctf` (the zoom transform) so page content scales
-        // while the surrounding chrome stays at 100%.
+        // while the surrounding chrome stays at 100%. The caret's on-screen band is
+        // recaptured here for viewport-follow.
+        self.caret_band = None;
         for l in &laid {
             if l.kind == "image" {
                 let rect = Rect::new(l.text_x, l.y_top, l.text_x + l.width, l.y_top + l.height);
@@ -5414,15 +5463,37 @@ impl Widget for WordProcessorWidget {
                 }
             }
 
-            if self.focused && l.id == self.inner.caret.block && !self.inner.has_selection() {
+            if self.focused && l.id == self.inner.caret.block {
                 let byte = char_to_byte(&l.text, self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
-                let caret = Rect::new(l.text_x + cx as f64, ly + cy as f64, l.text_x + cx as f64 + CARET_WIDTH, ly + cy as f64 + ch as f64);
-                scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
+                let caret_top = ly + cy as f64;
+                // Record the caret's on-screen band for viewport-follow. On a
+                // page-split block several slices share this id; keep the one whose
+                // band actually contains the caret line so a split-block caret is
+                // followed to the right page.
+                if l.clip.is_none()
+                    || (caret_top >= l.y_top - 0.5 && caret_top <= l.y_top + l.height + 0.5)
+                {
+                    self.caret_band = Some((caret_top, caret_top + ch as f64));
+                }
+                // The blinking caret glyph paints only when nothing is selected (a
+                // selection shows the highlight instead).
+                if !self.inner.has_selection() {
+                    let caret = Rect::new(l.text_x + cx as f64, caret_top, l.text_x + cx as f64 + CARET_WIDTH, caret_top + ch as f64);
+                    scene.fill(Fill::NonZero, ctf, PAPER_CARET, None, &caret);
+                }
             }
             if clipped {
                 scene.pop_layer();
             }
+        }
+
+        // Viewport-follows-caret: with the caret's on-screen band now known for
+        // this frame, nudge the scroll offset so it sits inside the visible canvas
+        // (below the fold → scroll down; above the top → scroll up).
+        if self.follow_caret {
+            self.reveal_caret(canvas);
+            self.follow_caret = false;
         }
 
         // Review affordances (comment Resolve + tracked-change Accept/Reject
@@ -6344,6 +6415,8 @@ impl Widget for WordProcessorWidget {
                         self.needs_commit = true;
                         self.modified = true;
                         self.note_edit_for_autosave(state);
+                        // Paste / select-all move the caret; keep it in view.
+                        self.follow_caret = true;
                         *handled = true;
                         return;
                     }
@@ -6366,16 +6439,49 @@ impl Widget for WordProcessorWidget {
                         }
                     }
                     Key::Named(NamedKey::Enter) => self.inner.enter(state),
-                    Key::Named(NamedKey::Backspace) => self.inner.backspace(state),
-                    Key::Named(NamedKey::Delete) => self.inner.delete_forward(state),
+                    // Ctrl+Backspace / Ctrl+Delete remove a whole word (via the
+                    // shared word-boundary walker); a bare press removes one char.
+                    Key::Named(NamedKey::Backspace) => {
+                        if ctrl {
+                            self.inner.delete_word_backward(state);
+                        } else {
+                            self.inner.backspace(state);
+                        }
+                    }
+                    Key::Named(NamedKey::Delete) => {
+                        if ctrl {
+                            self.inner.delete_word_forward(state);
+                        } else {
+                            self.inner.delete_forward(state);
+                        }
+                    }
                     Key::Named(NamedKey::ArrowLeft) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_left(state);
+                        // A plain Arrow over a live selection collapses to its near
+                        // edge rather than stepping past it (shared EditCore
+                        // behaviour); Ctrl jumps a whole word; Shift extends.
+                        if !shift && !ctrl && self.inner.collapse_selection_to_edge(state, false) {
+                            // collapsed to the selection's left edge
+                        } else {
+                            self.extend_or_clear(shift);
+                            if ctrl {
+                                self.inner.move_word_left(state);
+                            } else {
+                                self.inner.move_left(state);
+                            }
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        self.extend_or_clear(shift);
-                        self.inner.move_right(state);
+                        if !shift && !ctrl && self.inner.collapse_selection_to_edge(state, true) {
+                            // collapsed to the selection's right edge
+                        } else {
+                            self.extend_or_clear(shift);
+                            if ctrl {
+                                self.inner.move_word_right(state);
+                            } else {
+                                self.inner.move_right(state);
+                            }
+                        }
                         motion = true;
                     }
                     Key::Named(NamedKey::ArrowUp) => {
@@ -6440,6 +6546,9 @@ impl Widget for WordProcessorWidget {
                     self.refresh_blocks(state);
                     self.dirty = true;
                     self.needs_commit = true;
+                    // Any edit or caret motion may have pushed the caret out of
+                    // view; ask the next frame to scroll it back into the viewport.
+                    self.follow_caret = true;
                     *handled = true;
                 }
             }
