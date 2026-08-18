@@ -49,6 +49,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // stages a specific view (terminal / selection / completion).
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let open_sidebar = args.iter().any(|a| a == "--sidebar-open");
+        let collapse_sidebar = args.iter().any(|a| a == "--sidebar-collapsed");
         let scenario = parse_scenario_arg(&args);
         if let Some(name) = scenario.as_deref() {
             // An unknown scenario used to fall through silently and render the
@@ -74,6 +75,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.set_width_hint(viewport.0 as f64);
         if open_sidebar {
             app.shots_snap_sidebar(true);
+        }
+        if collapse_sidebar {
+            // Snap the sidebar shut so a wide/docked shot captures the collapsed
+            // state — the editor reclaiming the full width, with the toggle in
+            // the tab bar to bring it back.
+            app.shots_snap_sidebar(false);
         }
         render_scenario_to_png(app, viewport, &out, scenario.as_deref())?;
         return Ok(());
