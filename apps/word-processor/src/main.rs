@@ -89,6 +89,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             "selection" => seed_selection(&mut state, &mut wp),
             "caret-scroll" => seed_caret_scroll(&mut state, &mut wp),
             "spellcheck" => seed_spellcheck(&mut state, &mut wp),
+            "word-drag-right" => seed_word_drag(&mut state, &mut wp, true),
+            "word-drag-left" => seed_word_drag(&mut state, &mut wp, false),
             other => return Err(format!("unknown --scenario {other:?}").into()),
         }
         render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
@@ -317,6 +319,31 @@ fn seed_spellcheck(state: &mut State, wp: &mut WordProcessorWidget) {
     // Repopulate the materialized blocks the warm pass reads, then warm the cache.
     wp.sync(&mut state.doc, &state.root);
     wp.warm_spellcheck_for_shots();
+}
+
+/// `--scenario word-drag-{right,left}`: double-click a word, then drag by a whole
+/// word in that direction — driven through the real pointer path — so the frame
+/// proves the double-clicked word stays anchored and the selection grows by
+/// whole words (dragging left used to drop the word and collapse to one char).
+///
+/// The sentence "The quick brown fox jumps over the lazy dog." double-clicks
+/// "jumps" (chars 20..25). Right drags into "over" (→ "jumps over"); left drags
+/// into "fox" (→ "fox jumps").
+fn seed_word_drag(state: &mut State, wp: &mut WordProcessorWidget, rightward: bool) {
+    state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(
+        &mut state.doc,
+        "The quick brown fox jumps over the lazy dog.",
+    );
+    wp.set_focus(true);
+    // Lay the page out first so pointer hit-testing resolves to real glyphs.
+    settle_frame(state, wp);
+    // Double-click char 22 (inside "jumps"), then drag: right to char 28 (inside
+    // "over"), or left to char 17 (inside "fox").
+    let to = if rightward { 28 } else { 17 };
+    wp.shots_word_drag(&mut state.doc, &state.root, 22, to);
+    wp.sync(&mut state.doc, &state.root);
 }
 
 /// Run one headless five-pass frame (no PNG) so viewport-follow / layout settles

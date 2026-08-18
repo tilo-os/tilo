@@ -3241,6 +3241,59 @@ impl WordProcessorWidget {
         self.inner.set_selection(anchor_caret, cursor_caret);
         self.dirty = true;
     }
+
+    /// Content-space point at the horizontal centre of the character at char
+    /// `offset` in `block`, from the laid geometry the hit-test inverts. `None`
+    /// when `block` is not currently laid out. At scale/zoom 1.0 and scroll 0
+    /// this is also the screen point a real pointer would carry — used by the
+    /// pointer-driven `--shots` scenarios and the selection tests.
+    fn point_of_char(&self, block: &str, offset: usize) -> Option<Point> {
+        let l = self.laid.iter().find(|l| l.id == block)?;
+        let (_, lay) = self.layout_cache.get(block)?;
+        let b0 = char_to_byte(&l.text, offset);
+        let b1 = char_to_byte(&l.text, offset + 1);
+        let (x0, y0, h) = lay.caret_geometry(b0);
+        let (x1, _, _) = lay.caret_geometry(b1);
+        let x = (x0 + x1) as f64 / 2.0;
+        Some(Point::new(l.text_x + x, l.layout_y + y0 as f64 + h as f64 / 2.0))
+    }
+
+    /// Headless-shot helper: drive the **production** pointer path to
+    /// double-click the word containing char `word_off` in the focused block,
+    /// then drag to char `to_off` — the real `handle_event` sequence a
+    /// double-click-then-drag produces (press, release, press held, move). The
+    /// widget must already be laid out (call after a settle frame). Renders
+    /// nothing; the caller draws the resulting selection. Proves word-granular
+    /// double-click-drag end to end for a `--shots` frame.
+    pub fn shots_word_drag(&mut self, doc: &mut AutoCommit, root: &ObjId, word_off: usize, to_off: usize) {
+        let block = self.inner.caret().block.clone();
+        let Some(anchor_pt) = self.point_of_char(&block, word_off) else {
+            return;
+        };
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let device_id = unsafe { std::mem::zeroed() };
+        let mut feed = |w: &mut Self, ev: WindowEvent, doc: &mut AutoCommit| {
+            w.handle_event(&ev, 1.0, &mods, doc, root, &mut handled, &mut focus, node, &taffy);
+        };
+        let moved = WindowEvent::CursorMoved { device_id, position: (anchor_pt.x, anchor_pt.y).into() };
+        let press = WindowEvent::MouseInput { device_id, state: ElementState::Pressed, button: MouseButton::Left };
+        let release = WindowEvent::MouseInput { device_id, state: ElementState::Released, button: MouseButton::Left };
+        // Double-click: move, press, release, press (the second press stays held
+        // for the drag). The two presses land at the same point microseconds
+        // apart, so the gesture tracker reads a double-click → word granularity.
+        feed(self, moved, doc);
+        feed(self, press.clone(), doc);
+        feed(self, release, doc);
+        feed(self, press, doc);
+        // Drag to the target char; the selection extends by whole words.
+        if let Some(to_pt) = self.point_of_char(&block, to_off) {
+            feed(self, WindowEvent::CursorMoved { device_id, position: (to_pt.x, to_pt.y).into() }, doc);
+        }
+    }
 }
 
 /// Screen axis of a margin/border guide for `side`: `(is_vertical, coordinate)`.
@@ -10928,6 +10981,163 @@ mod tests {
         wp.handle_event(
             &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
             1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy,
+        );
+    }
+
+    /// Feed one `WindowEvent` through the production `handle_event` at scale 1.0
+    /// (so screen == content space) with no modifiers.
+    fn send_event(wp: &mut WordProcessorWidget, state: &mut ui::State, ev: &WindowEvent) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        wp.handle_event(ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node, &taffy);
+    }
+
+    fn cursor_moved(pt: Point) -> WindowEvent {
+        WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: (pt.x, pt.y).into() }
+    }
+    fn mouse_left(pressed: bool) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: if pressed { ElementState::Pressed } else { ElementState::Released },
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Move the pointer to `pt` and press the left button (button stays held).
+    fn press_at(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        send_event(wp, state, &cursor_moved(pt));
+        send_event(wp, state, &mouse_left(true));
+    }
+    /// Release the left button in place.
+    fn release(wp: &mut WordProcessorWidget, state: &mut ui::State) {
+        send_event(wp, state, &mouse_left(false));
+    }
+    /// Move the pointer (a drag when the button is held).
+    fn move_to(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        send_event(wp, state, &cursor_moved(pt));
+    }
+
+    /// The content-space point at the horizontal centre of the character at
+    /// char `offset` in `block`, derived from the same laid geometry the
+    /// production hit-test inverts. At scale 1.0 / zoom 1.0 / scroll 0 this is
+    /// also the screen point a real pointer would carry.
+    fn point_at_offset(wp: &WordProcessorWidget, block: &str, offset: usize) -> Point {
+        wp.point_of_char(block, offset).expect("a laid line + cached layout for the block")
+    }
+
+    /// A bound widget over one paragraph `"alpha beta gamma delta"`, laid out so
+    /// pointer hit-testing resolves. Returns the paragraph's block id too.
+    fn doc_one_paragraph(text: &str) -> (ui::State, WordProcessorWidget, String) {
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, text);
+        wp.refresh_blocks(&state.doc);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let block = wp.model().caret().block.clone();
+        (state, wp, block)
+    }
+
+    /// The selected substring of `block`'s text, or `""` when nothing is selected.
+    fn selected_text(wp: &WordProcessorWidget, state: &ui::State, block: &str) -> String {
+        match wp.model().selection_span(&state.doc) {
+            Some((a, b)) if a.block == block && b.block == block => {
+                wp.model().current_text(&state.doc).chars().skip(a.offset).take(b.offset - a.offset).collect()
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Double-click a word, then drag **right** into the next word: the selection
+    /// stays anchored on the double-clicked word and grows by whole words — it
+    /// does not extend one character at a time. Driven entirely through the
+    /// production pointer path (`handle_event`).
+    #[test]
+    fn double_click_then_drag_right_extends_by_whole_words() {
+        let (mut state, mut wp, block) = doc_one_paragraph("alpha beta gamma delta");
+
+        // Double-click inside "gamma" (chars 11..16); target char 13.
+        let on_gamma = point_at_offset(&wp, &block, 13);
+        press_at(&mut wp, &mut state, on_gamma);
+        release(&mut wp, &mut state);
+        press_at(&mut wp, &mut state, on_gamma);
+        assert_eq!(selected_text(&wp, &state, &block), "gamma", "double-click selects the whole word");
+
+        // Drag right into "delta" (chars 17..22); target char 19. The selection
+        // must span "gamma delta", not "gamma d"/"gamma de" (char-granular).
+        let into_delta = point_at_offset(&wp, &block, 19);
+        move_to(&mut wp, &mut state, into_delta);
+        assert_eq!(
+            selected_text(&wp, &state, &block),
+            "gamma delta",
+            "dragging right extends by whole words, keeping the anchor word"
+        );
+        release(&mut wp, &mut state);
+    }
+
+    /// Double-click a word, then drag **left** into the previous word: the bug
+    /// dropped the anchor word and collapsed to a single-char selection. The
+    /// double-clicked word must stay fully selected and the selection grow left
+    /// by whole words.
+    #[test]
+    fn double_click_then_drag_left_keeps_the_anchored_word() {
+        let (mut state, mut wp, block) = doc_one_paragraph("alpha beta gamma delta");
+
+        let on_gamma = point_at_offset(&wp, &block, 13);
+        press_at(&mut wp, &mut state, on_gamma);
+        release(&mut wp, &mut state);
+        press_at(&mut wp, &mut state, on_gamma);
+        assert_eq!(selected_text(&wp, &state, &block), "gamma");
+
+        // Drag left into "beta" (chars 6..10); target char 8.
+        let into_beta = point_at_offset(&wp, &block, 8);
+        move_to(&mut wp, &mut state, into_beta);
+        assert_eq!(
+            selected_text(&wp, &state, &block),
+            "beta gamma",
+            "dragging left extends by whole words and never drops the anchor word"
+        );
+        // The anchor word itself is entirely inside the selection.
+        let (lo, hi) = wp.model().selection_span(&state.doc).expect("a live selection");
+        assert!(lo.offset <= 11 && hi.offset >= 16, "the double-clicked word 'gamma' (11..16) stays selected");
+        release(&mut wp, &mut state);
+    }
+
+    /// A plain single click then drag selects character-by-character (no word
+    /// snapping) — the char-granular path is unchanged by the word-drag fix.
+    #[test]
+    fn plain_click_drag_stays_char_granular() {
+        let (mut state, mut wp, block) = doc_one_paragraph("alpha beta gamma delta");
+
+        // Press inside "gamma" at char 11 (its start) and drag right to char 14.
+        let at_11 = point_at_offset(&wp, &block, 11);
+        let at_14 = point_at_offset(&wp, &block, 14);
+        press_at(&mut wp, &mut state, at_11);
+        move_to(&mut wp, &mut state, at_14);
+        let sel = selected_text(&wp, &state, &block);
+        // Char granularity yields a *partial* run inside "gamma"; word
+        // granularity would have snapped to the whole word (or beyond).
+        assert!(
+            !sel.is_empty() && sel.len() < "gamma".len() && "gamma".contains(sel.as_str()),
+            "a plain drag extends by characters within the word, not whole words (got {sel:?})"
+        );
+        release(&mut wp, &mut state);
+    }
+
+    /// Triple-click selects the whole paragraph (line granularity).
+    #[test]
+    fn triple_click_selects_the_paragraph() {
+        let (mut state, mut wp, block) = doc_one_paragraph("alpha beta gamma delta");
+        let pt = point_at_offset(&wp, &block, 13);
+        for _ in 0..3 {
+            press_at(&mut wp, &mut state, pt);
+            release(&mut wp, &mut state);
+        }
+        assert_eq!(
+            selected_text(&wp, &state, &block),
+            "alpha beta gamma delta",
+            "triple-click selects the entire paragraph"
         );
     }
 
