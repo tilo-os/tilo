@@ -1586,6 +1586,12 @@ pub struct WordProcessorWidget {
     actions: ui::ActionHost,
     pointer: Point,
     drag: DragSelect,
+    /// While a word/line-granular selection drag is live, the originally clicked
+    /// unit (a word or a whole block) as a document-ordered `(lo, hi)` caret
+    /// pair. A continuing drag keeps this span inside the selection and extends
+    /// by whole units around it (see `extend_selection_by_unit`). `None` for a
+    /// plain char-granular drag, which extends the caret directly.
+    drag_anchor_span: Option<(Caret, Caret)>,
     path: Option<PathBuf>,
     format: Option<WpFormat>,
     /// Unsaved changes since the last save (drives the status-bar `●` indicator).
@@ -2024,6 +2030,7 @@ impl WordProcessorWidget {
             actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
+            drag_anchor_span: None,
             path: None,
             format: None,
             modified: false,
@@ -3097,7 +3104,9 @@ impl WordProcessorWidget {
     /// Resolve a pointer position to a caret in the **active running region's**
     /// band (`region_laid`) and apply it. Mirrors the body `caret_from_pointer`
     /// but over the band's laid geometry.
-    fn band_caret_from_pointer(&mut self, p: Point, extend: bool) {
+    /// Resolve a pointer to a caret in the active header/footer band, without
+    /// applying it. `None` when the band has no laid geometry yet.
+    fn band_hit_caret(&self, p: Point) -> Option<Caret> {
         let mut hit: Option<(String, usize)> = None;
         for rl in &self.region_laid {
             let h = rl.layout.height() as f64;
@@ -3122,26 +3131,14 @@ impl WordProcessorWidget {
                 }
             }
         }
-        if let Some((block, offset)) = hit {
-            if extend {
-                self.inner.set_anchor();
-            } else {
-                self.inner.clear_anchor();
-            }
-            self.inner.set_caret(Caret { block, offset });
-            self.dirty = true;
-        }
+        hit.map(|(block, offset)| Caret { block, offset })
     }
 
     /// Resolve a pointer position to a caret and apply it (optionally extending
     /// the selection for click-drag).
-    fn caret_from_pointer(&mut self, p: Point, extend: bool) {
-        // When editing a running region, the caret lives in that band — hit-test
-        // its laid geometry, not the body's.
-        if self.inner.in_running_region() {
-            self.band_caret_from_pointer(p, extend);
-            return;
-        }
+    /// Resolve a pointer to a caret in the body flow, without applying it.
+    /// Returns `None` only when there is no laid geometry at all.
+    fn body_hit_caret(&self, p: Point) -> Option<Caret> {
         // Find the laid block under the pointer: cells hit by their full box (so
         // the right column is chosen), normal blocks by their vertical band.
         let mut hit: Option<(String, usize)> = None;
@@ -3185,15 +3182,64 @@ impl WordProcessorWidget {
                 }
             }
         }
-        if let Some((block, offset)) = hit {
+        hit.map(|(block, offset)| Caret { block, offset })
+    }
+
+    /// Resolve a pointer to a caret in whichever region is active (body or the
+    /// header/footer band), without applying it.
+    fn resolve_caret(&self, p: Point) -> Option<Caret> {
+        if self.inner.in_running_region() {
+            self.band_hit_caret(p)
+        } else {
+            self.body_hit_caret(p)
+        }
+    }
+
+    fn caret_from_pointer(&mut self, p: Point, extend: bool) {
+        if let Some(caret) = self.resolve_caret(p) {
             if extend {
                 self.inner.set_anchor();
             } else {
                 self.inner.clear_anchor();
             }
-            self.inner.set_caret(Caret { block, offset });
+            self.inner.set_caret(caret);
             self.dirty = true;
         }
+    }
+
+    /// Extend a word/line-granular selection drag to the pointer at content-space
+    /// `p`, keeping the originally clicked unit (`anchor_span`, in document order)
+    /// inside the selection and growing by whole units. This is the shared
+    /// `ui::extend_span_drag` rule — the exact model `TextInput` and the reader
+    /// use for double-click-then-drag — mapped onto this editor's block/offset
+    /// carets through a linear document index, so the double-clicked word is
+    /// never dropped as the pointer moves.
+    fn extend_selection_by_unit(
+        &mut self,
+        state: &AutoCommit,
+        p: Point,
+        gran: Granularity,
+        anchor_span: (Caret, Caret),
+    ) {
+        let Some(raw) = self.resolve_caret(p) else {
+            return;
+        };
+        let (unit_lo, unit_hi) = match gran {
+            Granularity::Line => self.inner.line_unit_at(state, &raw),
+            // Word (and, defensively, Char) snap to the word under the pointer.
+            _ => self.inner.word_unit_at(state, &raw),
+        };
+        let anchor_lo = self.inner.caret_to_linear(state, &anchor_span.0);
+        let anchor_hi = self.inner.caret_to_linear(state, &anchor_span.1);
+        let raw_lin = self.inner.caret_to_linear(state, &raw);
+        let unit_lo_lin = self.inner.caret_to_linear(state, &unit_lo);
+        let unit_hi_lin = self.inner.caret_to_linear(state, &unit_hi);
+        let (new_anchor, new_cursor) =
+            ui::extend_span_drag(anchor_lo, anchor_hi, raw_lin, unit_lo_lin, unit_hi_lin);
+        let anchor_caret = self.inner.linear_to_caret(state, new_anchor);
+        let cursor_caret = self.inner.linear_to_caret(state, new_cursor);
+        self.inner.set_selection(anchor_caret, cursor_caret);
+        self.dirty = true;
     }
 }
 
@@ -6170,10 +6216,20 @@ impl Widget for WordProcessorWidget {
                     self.apply_guide_drag(gd, self.pointer_to_content(self.pointer));
                     self.dirty = true; // repaint every move so the preview is live
                     *handled = true;
-                } else if self.drag.drag().is_some() {
-                    // Extend the selection: keep the anchor, move the caret. The
-                    // `Laid` rects are unscaled, so hit-test in content space.
-                    self.caret_from_pointer(self.pointer_to_content(self.pointer), true);
+                } else if let Some(gran) = self.drag.drag() {
+                    // Extend the selection. The `Laid` rects are unscaled, so
+                    // hit-test in content space.
+                    let cp = self.pointer_to_content(self.pointer);
+                    match (gran, self.drag_anchor_span.clone()) {
+                        // A double/triple-click armed a word/line drag: keep the
+                        // clicked unit inside the selection and grow by whole
+                        // units, so dragging never drops the anchored word.
+                        (Granularity::Word | Granularity::Line, Some(span)) => {
+                            self.extend_selection_by_unit(state, cp, gran, span);
+                        }
+                        // Plain char-granular drag: keep the anchor, move the caret.
+                        _ => self.caret_from_pointer(cp, true),
+                    }
                     // Claim the move so the host App repaints (its redraw is gated
                     // behind `handled`).
                     *handled = true;
@@ -6416,6 +6472,9 @@ impl Widget for WordProcessorWidget {
                         self.inner.focus_region(state, region);
                         self.refresh_blocks(state);
                         self.drag.press(self.pointer, shift);
+                        // A band switch seats a fresh caret; no unit is armed, so a
+                        // following drag in the band is char-granular.
+                        self.drag_anchor_span = None;
                         self.dirty = true;
                         self.needs_commit = true;
                         *handled = true;
@@ -6438,6 +6497,14 @@ impl Widget for WordProcessorWidget {
                     Granularity::Line => self.select_all_in_block(state),
                     Granularity::Char => {}
                 }
+                // Arm the drag: a double/triple-click remembers the selected unit
+                // (word / whole block) so a continuing drag extends by whole units
+                // around it. A char press extends the caret directly, so it needs
+                // no anchor span.
+                self.drag_anchor_span = match intent.granularity {
+                    Granularity::Word | Granularity::Line => self.inner.selection_span(state),
+                    Granularity::Char => None,
+                };
                 self.dirty = true;
                 *handled = true;
             }

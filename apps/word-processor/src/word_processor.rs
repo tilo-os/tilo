@@ -2258,6 +2258,74 @@ impl WordProcessor {
         self.caret.offset = e;
     }
 
+    /// Char span of the word under `caret` as a `(start, end)` caret pair inside
+    /// the caret's own block, via the shared `ui::word_boundaries_chars` walker —
+    /// the same predicate `select_word` uses. `start == end` means the caret sits
+    /// on whitespace / a boundary. Drives word-granular double-click-then-drag: a
+    /// continuing drag snaps to whole words using this span at the pointer.
+    pub fn word_unit_at(&self, state: &AutoCommit, caret: &Caret) -> (Caret, Caret) {
+        let text = self.region_block_text(state, &caret.block).unwrap_or_default();
+        let (s, e) = ui::word_boundaries_chars(&text, caret.offset);
+        (
+            Caret { block: caret.block.clone(), offset: s },
+            Caret { block: caret.block.clone(), offset: e },
+        )
+    }
+
+    /// Whole-block span `(home, end)` for `caret`'s block — the unit a
+    /// triple-click / line-granular drag extends by.
+    pub fn line_unit_at(&self, state: &AutoCommit, caret: &Caret) -> (Caret, Caret) {
+        let len = self.block_len(state, &caret.block);
+        (
+            Caret { block: caret.block.clone(), offset: 0 },
+            Caret { block: caret.block.clone(), offset: len },
+        )
+    }
+
+    /// Total-order linear index of `caret` across the active region's blocks:
+    /// each block contributes `block_len + 1` positions (the `+ 1` keeps
+    /// positions in different blocks from colliding and preserves document
+    /// order). Lets word/line-granular drag run through the shared
+    /// `ui::extend_span_drag` rule over a plain `usize`, so the same "keep the
+    /// clicked unit inside the selection and grow by whole units" logic the
+    /// `TextInput` and reader use drives this block-based editor too.
+    pub fn caret_to_linear(&self, state: &AutoCommit, caret: &Caret) -> usize {
+        let mut acc = 0;
+        for b in self.ordered_blocks(state) {
+            let len = self.block_len(state, &b);
+            if b == caret.block {
+                return acc + caret.offset.min(len);
+            }
+            acc += len + 1;
+        }
+        acc
+    }
+
+    /// Inverse of [`caret_to_linear`]: map a linear index back to a
+    /// `(block, offset)` caret, clamped into the active region.
+    pub fn linear_to_caret(&self, state: &AutoCommit, mut idx: usize) -> Caret {
+        let blocks = self.ordered_blocks(state);
+        for b in &blocks {
+            let len = self.block_len(state, b);
+            if idx <= len {
+                return Caret { block: b.clone(), offset: idx };
+            }
+            idx -= len + 1;
+        }
+        match blocks.last() {
+            Some(last) => Caret { block: last.clone(), offset: self.block_len(state, last) },
+            None => Caret::default(),
+        }
+    }
+
+    /// Replace the selection with an explicit `(anchor, cursor)` caret pair, used
+    /// to apply a word/line-granular drag extension. Equal endpoints collapse the
+    /// selection (no highlight).
+    pub fn set_selection(&mut self, anchor: Caret, cursor: Caret) {
+        self.selection_anchor = Some(anchor);
+        self.caret = cursor;
+    }
+
     /// Select the entire document (Ctrl+A).
     pub fn select_all(&mut self, state: &AutoCommit) {
         let blocks = self.ordered_blocks(state);
