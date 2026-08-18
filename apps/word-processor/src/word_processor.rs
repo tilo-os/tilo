@@ -2243,19 +2243,14 @@ impl WordProcessor {
 
     /// Select the whitespace-delimited word under the caret (double-click).
     pub fn select_word(&mut self, state: &AutoCommit) {
-        let chars: Vec<char> = self.current_text(state).chars().collect();
-        let off = self.caret.offset.min(chars.len());
-        let word = |c: char| !c.is_whitespace();
-        let mut s = off;
-        while s > 0 && word(chars[s - 1]) {
-            s -= 1;
-        }
-        let mut e = off;
-        while e < chars.len() && word(chars[e]) {
-            e += 1;
-        }
+        // The word under the caret, via the shared `ui::text_selection`
+        // char-indexed boundary walker — the same word semantics the shared
+        // RichTextEditor / EditCore use (alphanumeric + `_`), so a double-click
+        // here picks the same span it would in any other qOS editable surface.
+        let text = self.current_text(state);
+        let (s, e) = ui::word_boundaries_chars(&text, self.caret.offset);
         if s == e {
-            return; // caret is on whitespace
+            return; // caret is on whitespace / a boundary
         }
         self.caret.offset = s;
         self.clear_anchor();
@@ -2450,6 +2445,98 @@ impl WordProcessor {
 
     pub fn move_end(&mut self, state: &AutoCommit) {
         self.caret.offset = self.block_len(state, &self.caret.block);
+    }
+
+    /// Move the caret one word to the left (Ctrl+Left). Within the block the stop
+    /// is the previous word boundary from the shared `ui::text_selection` walker
+    /// (so word-motion matches the shared editor exactly); at the block start it
+    /// falls back to crossing into the previous block, like a plain Left.
+    pub fn move_word_left(&mut self, state: &AutoCommit) {
+        if self.caret.offset > 0 {
+            let text = self.current_text(state);
+            self.caret.offset = ui::prev_word_boundary_chars(&text, self.caret.offset);
+        } else {
+            self.move_left(state);
+        }
+    }
+
+    /// Move the caret one word to the right (Ctrl+Right). See [`Self::move_word_left`].
+    pub fn move_word_right(&mut self, state: &AutoCommit) {
+        let len = self.block_len(state, &self.caret.block);
+        if self.caret.offset < len {
+            let text = self.current_text(state);
+            self.caret.offset = ui::next_word_boundary_chars(&text, self.caret.offset);
+        } else {
+            self.move_right(state);
+        }
+    }
+
+    /// Delete the whole word before the caret (Ctrl+Backspace). Deletes the live
+    /// selection first if there is one; within a block it removes from the previous
+    /// word boundary to the caret; at the block start it merges like a plain
+    /// Backspace. Word boundaries come from the shared `ui::text_selection` walker.
+    pub fn delete_word_backward(&mut self, state: &mut AutoCommit) {
+        if self.delete_selection(state) {
+            return;
+        }
+        if self.containers.is_none() {
+            return;
+        }
+        let offset = self.caret.offset;
+        if offset > 0 {
+            let text = self.current_text(state);
+            let start = ui::prev_word_boundary_chars(&text, offset);
+            if start < offset {
+                let block = self.caret.block.clone();
+                self.region_splice(state, &block, start, (offset - start) as isize, "");
+                self.caret.offset = start;
+                return;
+            }
+        }
+        // At the block start (or nothing to remove): fall back to plain Backspace,
+        // which merges into the previous block / unlists a list item.
+        self.backspace(state);
+    }
+
+    /// Delete the whole word after the caret (Ctrl+Delete). Deletes the live
+    /// selection first if there is one; within a block it removes from the caret to
+    /// the next word boundary; at the block end it merges the next block in like a
+    /// plain Delete. The caret does not move. Boundaries come from the shared walker.
+    pub fn delete_word_forward(&mut self, state: &mut AutoCommit) {
+        if self.delete_selection(state) {
+            return;
+        }
+        if self.containers.is_none() {
+            return;
+        }
+        let offset = self.caret.offset;
+        let len = self.block_len(state, &self.caret.block);
+        if offset < len {
+            let text = self.current_text(state);
+            let end = ui::next_word_boundary_chars(&text, offset);
+            if end > offset {
+                let block = self.caret.block.clone();
+                self.region_splice(state, &block, offset, (end - offset) as isize, "");
+                return;
+            }
+        }
+        // At the block end: fall back to plain Delete (merge the next block in).
+        self.delete_forward(state);
+    }
+
+    /// Collapse a live selection onto one of its edges without stepping the caret
+    /// — the behaviour of a plain (un-shifted) Arrow when text is selected, so the
+    /// caret lands at the selection edge rather than one character past it, exactly
+    /// as the shared `EditCore` does. `to_end == true` collapses to the far (later)
+    /// edge (Right), `false` to the near (earlier) edge (Left). Returns whether a
+    /// selection was collapsed.
+    pub fn collapse_selection_to_edge(&mut self, state: &AutoCommit, to_end: bool) -> bool {
+        let Some((lo, hi)) = self.selection_span(state) else {
+            return false;
+        };
+        self.caret = if to_end { hi } else { lo };
+        self.clear_anchor();
+        true
     }
 
     /// Move the caret up/down by `delta` blocks (block-granular Up/Down).
