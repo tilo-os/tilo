@@ -2873,6 +2873,9 @@ impl Widget for CodeApp {
 
         match layout {
             SplitLayout::Docked => {
+                // Docked: the sidebar sits in its own column, clear of the
+                // toggle, so the header keeps its normal inset.
+                self.sidebar.set_header_pad(14.0);
                 // The sidebar is a real column laid out by taffy; draw it in
                 // place when it has any width (reveal > 0). Collapsing it drives
                 // the column width to zero, so the editor reclaims the space.
@@ -2898,7 +2901,9 @@ impl Widget for CodeApp {
                 // The shared scrim (subtle dim + edge shadow) behind the drawer.
                 self.drawer.draw_scrim(scene, transform);
                 // The drawer panel slides in over the content at the rect the
-                // shared controller resolved.
+                // shared controller resolved. Inset the header so the project
+                // name clears the toggle that sits over the drawer's top-left.
+                self.sidebar.set_header_pad(TOGGLE_SLOT + 8.0);
                 if self.drawer.reveal() > 0.001 {
                     self.sidebar.place_at(self.drawer.sidebar_rect());
                     self.sidebar.draw(scene, transform, text_renderer, theme, presence);

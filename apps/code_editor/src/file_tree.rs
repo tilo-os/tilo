@@ -43,6 +43,10 @@ pub struct FileTree {
     pending: Vec<TreeEvent>,
     last_cursor: Point,
     dirty: bool,
+    /// Left inset for the header label. Raised when the tree is shown as an
+    /// overlay drawer whose top-left corner the sidebar toggle sits over, so the
+    /// project name is not drawn under the toggle.
+    header_pad: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -67,6 +71,17 @@ impl FileTree {
             pending: Vec::new(),
             last_cursor: Point::ZERO,
             dirty: true,
+            header_pad: 14.0,
+        }
+    }
+
+    /// Set the left inset for the header label (see [`FileTree::header_pad`]).
+    /// The app raises this in the overlay layout so the toggle does not sit over
+    /// the project name.
+    pub fn set_header_pad(&mut self, px: f64) {
+        if (self.header_pad - px).abs() > f64::EPSILON {
+            self.header_pad = px;
+            self.dirty = true;
         }
     }
 
@@ -196,8 +211,8 @@ impl Widget for FileTree {
             &self.project_name.to_uppercase(),
             12.0,
             c.text_dim,
-            transform * Affine::translate((self.rect.x0 + 14.0, self.rect.y0 + 12.0)),
-            Some(self.rect.width() as f32),
+            transform * Affine::translate((self.rect.x0 + self.header_pad, self.rect.y0 + 12.0)),
+            Some((self.rect.width() - self.header_pad) as f32),
             TextWeight::Bold,
         );
 
