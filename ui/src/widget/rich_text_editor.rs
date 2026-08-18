@@ -1067,6 +1067,32 @@ mod tests {
         assert_eq!(state.doc.text(&tid).unwrap(), "two three", "the word-delete reached the CRDT");
     }
 
+    /// Keyboard selection parity with `TextInput`: Ctrl+Shift+Arrow extends by
+    /// whole words and Shift+Home / Shift+End extend to the line ends, all on the
+    /// real key path.
+    #[test]
+    fn ctrl_shift_arrow_and_shift_home_end_extend_selection() {
+        let (mut state, mut ed) = setup();
+        type_str(&mut ed, &mut state, "hello world foo");
+        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, false));
+
+        // Ctrl+Shift+Right grows the selection one word at a time.
+        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowRight), &mods(true, true));
+        assert_eq!(ed.selection(), 0..6, "Ctrl+Shift+Right selects to the next word start");
+        press(&mut ed, &mut state, &named_ev(NamedKey::ArrowRight), &mods(true, true));
+        assert_eq!(ed.selection(), 0..12, "extends by another word");
+
+        // Shift+End extends to the line end (the whole buffer here).
+        press(&mut ed, &mut state, &named_ev(NamedKey::End), &mods(false, true));
+        assert_eq!(ed.selection(), 0..15, "Shift+End extends to the line end");
+
+        // Collapse to the end, then Shift+Home selects back to the line start.
+        press(&mut ed, &mut state, &named_ev(NamedKey::End), &mods(false, false));
+        assert!(ed.selection().is_empty(), "plain End collapsed the selection");
+        press(&mut ed, &mut state, &named_ev(NamedKey::Home), &mods(false, true));
+        assert_eq!(ed.selection(), 0..15, "Shift+Home extends to the line start");
+    }
+
     #[test]
     fn enter_is_a_noop_and_pasted_newlines_fold_to_spaces() {
         let (mut state, mut ed) = setup();
