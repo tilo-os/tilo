@@ -191,6 +191,19 @@ impl SearchField {
         self.input.value().is_empty()
     }
 
+    /// The leading (magnifier by default) chrome icon. Exposed so a host — or a
+    /// test guarding that the field keeps its magnifier — can read it without
+    /// rasterising a frame.
+    pub fn leading_icon(&self) -> Icon {
+        self.leading
+    }
+
+    /// The placeholder hint shown while the query is empty and the field is
+    /// unfocused.
+    pub fn placeholder(&self) -> &str {
+        self.input.placeholder()
+    }
+
     /// Whether the embedded input currently holds focus — lets a host that
     /// paints its own surrounding chrome (focus ring, placeholder gating) read
     /// the field's focus state instead of tracking a parallel boolean.

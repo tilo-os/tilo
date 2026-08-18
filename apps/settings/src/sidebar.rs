@@ -50,10 +50,12 @@ pub const SEARCH_KEY: &str = "settings.search";
 
 /// Gap (logical px) between the search band and the first nav row. A small,
 /// even value: enough to detach the list from the search field without the
-/// yawning space a section header used to leave. Every subsequent row follows
-/// the same rhythm (the row's own pill inset gives the inter-row air), so the
-/// list reads as one evenly-spaced run rather than a stack of labelled blocks.
-const TOP_GAP: f32 = 4.0;
+/// yawning space a section header used to leave. The enclosing search band
+/// already carries its own bottom padding, so this only needs to be a hair —
+/// together they read as one normal sidebar gap, not a labelled block. Every
+/// subsequent row follows the same rhythm (the row's own pill inset gives the
+/// inter-row air), so the list reads as one evenly-spaced run.
+const TOP_GAP: f32 = 2.0;
 
 /// Width (logical px) of the docked sidebar. Sized so the widest row
 /// ("Permissions & Roles" with its glyph, plus the row's horizontal padding)
@@ -383,8 +385,13 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
     // An intrinsic-height column lays out as a block stack and ignores the
     // toolkit's inter-child gap; each row carries its own vertical pill inset,
     // so the rows already read at an even rhythm with no explicit inter-row
-    // spacers. Only the small top gap separates the list from the search band.
-    let mut col = Column::new().with_intrinsic_height().push(vgap(TOP_GAP));
+    // spacers. `with_no_padding` is essential: a bare `Column` otherwise applies
+    // the default `padding_standard * 2` (24 px) on every side, which pushed the
+    // first row a full row's worth below the search band and indented every row
+    // from the panel edge — a sidebar with a big top gap and misaligned rows,
+    // not a normal one. With it off the rows sit flush to the panel and only the
+    // small top gap separates them from the search band.
+    let mut col = Column::new().with_no_padding().with_intrinsic_height().push(vgap(TOP_GAP));
 
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -406,7 +413,23 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
         }
     }
 
-    let scroll = Scrollable::new_vertical().with_child(Box::new(col));
+    // `without_keyboard_focus`: the rows themselves are the keyboard-navigable
+    // destinations (each is `is_focusable`, reached by Tab / directional
+    // arrows), so the scroll container must not also be a Tab stop. Beyond the
+    // redundancy, keeping it out of the focus order is what makes a click land
+    // the focus ring on the row the user pressed: a scroll container's
+    // focusability depends on measured overflow, so a freshly rebuilt (not yet
+    // measured) one is transiently non-focusable. Were it in the order, the
+    // host's rebuild-then-restore-by-ordinal (it rebuilds the tree when the
+    // selection changes the content pane) would count one fewer focusable than
+    // when the click was captured and shift the restored focus down a row —
+    // exactly the "selection on Printers, ring on Appearance" divergence. Out
+    // of the order, the row ordinals are stable across the rebuild and focus
+    // stays on the selected row. Wheel scrolling and the overlay bar are
+    // unaffected.
+    let scroll = Scrollable::new_vertical()
+        .without_keyboard_focus()
+        .with_child(Box::new(col));
     // No surface tint or border here: the enclosing `AppShell` draws the one
     // cohesive sidebar panel (header + this list) as a single flat surface, so
     // the nav is just the transparent, scrollable list of rows that sits on it.
@@ -430,6 +453,61 @@ mod tests {
             n += count_rows(c);
         }
         n
+    }
+
+    /// Lay out the sidebar `build()` tree at `(w, h)` through the real five-pass
+    /// cycle, so the tests below can read genuine on-screen rects.
+    fn layout_sidebar(root: &mut dyn Widget, w: f32, h: f32) -> (TaffyTree<()>, NodeId) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut doc = AutoCommit::new();
+        let rootid = automerge::ROOT;
+        root.sync(&mut doc, &rootid);
+        let node = root.build_layout(&mut taffy, &theme, &mut node_map);
+        let measure = node_map.clone();
+        let mut tr = TextRenderer::new();
+        taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(w),
+                    height: taffy::AvailableSpace::Definite(h),
+                },
+                |known, avail, id, _, _| {
+                    measure
+                        .get(&id)
+                        .map(|&p| unsafe { (*p).measure(known, avail, &mut tr) })
+                        .unwrap_or(Size::ZERO)
+                },
+            )
+            .unwrap();
+        root.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
+    }
+
+    fn first_row_rect(w: &dyn Widget) -> Option<Rect> {
+        if w.name() == "SidebarRow" {
+            return Some(w.get_rect());
+        }
+        for c in w.children() {
+            if let Some(r) = first_row_rect(c) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    fn find_scrollable(w: &dyn Widget) -> Option<&dyn Widget> {
+        if w.name() == "Scrollable" {
+            return Some(w);
+        }
+        for c in w.children() {
+            if let Some(s) = find_scrollable(c) {
+                return Some(s);
+            }
+        }
+        None
     }
 
     #[test]
@@ -632,5 +710,61 @@ mod tests {
             matches!(got, Ok(Some((Value::Scalar(s), _))) if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))),
             "releasing a click on the row writes its select key true"
         );
+    }
+
+    /// A normal sidebar: the first row sits tight below the search band and the
+    /// rows are flush to the panel's left edge. Guards the regression where a
+    /// bare (padded) `Column` pushed the first row a full row's height down and
+    /// indented every row by 24 px. The row must start within a couple of
+    /// pixels of the list's own left edge, and near the top (only the small
+    /// `TOP_GAP`), not a `padding_standard * 2` inset.
+    #[test]
+    fn sidebar_is_tight_and_flush_not_indented() {
+        let mut sb = build(Category::Network, "");
+        let (_taffy, _node) = layout_sidebar(sb.as_mut(), SIDEBAR_WIDTH as f32, 700.0);
+        let list = sb.get_rect();
+        let row0 = first_row_rect(sb.as_ref()).expect("the sidebar renders rows");
+
+        // Flush left: the row's left edge is at the panel's left edge (no 24 px
+        // Column indent). Its selection pill then insets by ROW_INSET_X.
+        assert!(
+            (row0.x0 - list.x0).abs() < 1.0,
+            "rows must be flush to the sidebar's left edge (row0.x0={}, list.x0={}) — no Column indent",
+            row0.x0,
+            list.x0,
+        );
+        // Tight top: the first row starts within a hair of the list top (just
+        // TOP_GAP), not a full 24 px padding + a row's height below it.
+        assert!(
+            (row0.y0 - list.y0) <= TOP_GAP as f64 + 1.0,
+            "the first row must sit tight under the search band (gap={}), not a padded block",
+            row0.y0 - list.y0,
+        );
+    }
+
+    /// The sidebar's scroll container must NOT be a keyboard tab stop: the rows
+    /// are the focusable destinations, and keeping the scroll container out of
+    /// the focus order is what keeps a click's focus ring on the row the user
+    /// pressed (its measured-overflow focusability would otherwise shift a
+    /// rebuild's focus-by-ordinal restore). Asserted on the real, overflowing
+    /// sidebar tree so the opt-out is genuinely in force.
+    #[test]
+    fn sidebar_scroll_container_is_not_a_tab_stop() {
+        let mut sb = build(Category::Network, "");
+        // A short viewport so the 18-row list genuinely overflows — the case
+        // where a default scroll container *would* be focusable.
+        let _ = layout_sidebar(sb.as_mut(), SIDEBAR_WIDTH as f32, 300.0);
+        let scroll = find_scrollable(sb.as_ref()).expect("the list scrolls");
+        assert!(
+            !Widget::is_focusable(scroll),
+            "the sidebar's scroll container must stay out of the tab order (opted out via without_keyboard_focus)"
+        );
+        // …while the rows themselves remain individually focusable.
+        assert!(count_rows(sb.as_ref()) > 0);
+        fn any_focusable_row(w: &dyn Widget) -> bool {
+            (w.name() == "SidebarRow" && Widget::is_focusable(w))
+                || w.children().iter().any(|c| any_focusable_row(*c))
+        }
+        assert!(any_focusable_row(sb.as_ref()), "the rows are the focusable destinations");
     }
 }

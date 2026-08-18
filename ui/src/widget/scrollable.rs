@@ -210,6 +210,18 @@ pub struct Scrollable {
     /// Wall-clock stamp of the previous wheel notch, for the flick
     /// velocity boost (rapid successive notches travel further).
     last_wheel: Option<Instant>,
+    /// Whether this scroll container may join the keyboard-focus (Tab) order.
+    /// `true` by default: an overflowing scrollable is a Tab stop that takes
+    /// PageUp/Down, Home/End and arrows to scroll. Set `false` (via
+    /// [`Scrollable::without_keyboard_focus`]) for a container whose *children*
+    /// own keyboard navigation — a nav sidebar of directionally-focusable rows
+    /// — so the scroll container never appears in `focusable_order`. Keeping it
+    /// out matters there because its focusability is only known after layout
+    /// (it depends on measured overflow), so a rebuild-then-restore that counts
+    /// focusables by ordinal would otherwise shift by one when the freshly
+    /// built, not-yet-measured container is transiently non-focusable. Wheel
+    /// scrolling and the overlay bar are unaffected.
+    keyboard_focusable: bool,
 }
 
 impl Scrollable {
@@ -250,6 +262,7 @@ impl Scrollable {
             reduce_motion: false,
             last_ease: None,
             last_wheel: None,
+            keyboard_focusable: true,
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -261,6 +274,13 @@ impl Scrollable {
     /// content fits the viewport regardless of this flag; setting it
     /// `false` suppresses the bar unconditionally.
     pub fn with_scrollbar(mut self, show: bool) -> Self { self.show_scrollbar = show; self }
+
+    /// Keep this scroll container out of the keyboard-focus (Tab) order, for a
+    /// list whose children own keyboard navigation (e.g. a nav sidebar of
+    /// directionally-focusable rows). Wheel scrolling, the overlay bar, and
+    /// drag all still work; only the container's own Tab stop / PageUp-Down
+    /// keyboard scrolling is dropped. See [`Self::keyboard_focusable`].
+    pub fn without_keyboard_focus(mut self) -> Self { self.keyboard_focusable = false; self }
 
     /// Keep the scrollbar permanently visible instead of the default
     /// overlay auto-hide (fade-in-on-activity / fade-out-when-idle). Use for
@@ -1260,7 +1280,7 @@ impl Widget for Scrollable {
     /// tab order). While focused it consumes PageUp/Down, Home/End and arrow
     /// keys to scroll; see `handle_event`.
     fn is_focusable(&self) -> bool {
-        self.show_scrollbar && (self.vbar_active() || self.hbar_active())
+        self.keyboard_focusable && self.show_scrollbar && (self.vbar_active() || self.hbar_active())
     }
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
@@ -1869,6 +1889,26 @@ mod tests {
         let mut hidden = vertical(1200.0);
         hidden.show_scrollbar = false;
         assert!(!Widget::is_focusable(&hidden));
+    }
+
+    #[test]
+    fn without_keyboard_focus_keeps_it_out_of_the_tab_order() {
+        // A container whose children own keyboard navigation stays out of the
+        // focus order even while it overflows — so its measured-overflow
+        // focusability can't shift a rebuild's focus-by-ordinal restore.
+        assert!(
+            Widget::is_focusable(&vertical(1200.0)),
+            "an overflowing scrollable is a tab stop by default",
+        );
+        let mut opted_out = vertical(1200.0); // genuinely overflows (viewport 300, content 1200)
+        opted_out.keyboard_focusable = false;
+        assert!(opted_out.vbar_active(), "the opted-out container really does overflow");
+        assert!(
+            !Widget::is_focusable(&opted_out),
+            "without_keyboard_focus keeps an overflowing container out of the tab order",
+        );
+        // The builder sets the same flag.
+        assert!(!Scrollable::new_vertical().without_keyboard_focus().keyboard_focusable);
     }
 
     #[test]

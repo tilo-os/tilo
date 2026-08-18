@@ -2692,6 +2692,63 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// Move keyboard focus to the first focusable widget whose
+    /// [`Widget::test_id`](crate::widget::Widget::test_id) matches `id`,
+    /// returning whether one was found. The real `set_focused_node` path is
+    /// private; this is the click-free way a headless test lands focus on a
+    /// named control (a settings sidebar row, say) before exercising a rebuild.
+    #[doc(hidden)]
+    pub fn focus_test_id(&mut self, id: &str) -> bool {
+        let target = self.focusable_order.iter().copied().find(|n| {
+            self.node_map
+                .get(n)
+                .map(|&p| unsafe { (*p).test_id() } == Some(id))
+                .unwrap_or(false)
+        });
+        if let Some(t) = target {
+            self.set_focused_node(Some(t));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The [`Widget::test_id`](crate::widget::Widget::test_id) of the
+    /// currently keyboard-focused widget, if any — so a headless test can name
+    /// which control the focus ring lands on after a rebuild.
+    #[doc(hidden)]
+    pub fn focused_test_id(&self) -> Option<String> {
+        let id = self.focused_node?;
+        let &p = self.node_map.get(&id)?;
+        unsafe { (*p).test_id() }.map(|s| s.to_string())
+    }
+
+    /// The ephemeral [`Widget::get_state`](crate::widget::Widget::get_state) of
+    /// the currently keyboard-focused widget — for a sidebar row this reports
+    /// `"active"`/`"inactive"`, so a test can assert focus landed on the
+    /// *selected* row (focus == selection).
+    #[doc(hidden)]
+    pub fn focused_widget_state(&self) -> Option<String> {
+        let id = self.focused_node?;
+        let &p = self.node_map.get(&id)?;
+        unsafe { (*p).get_state() }
+    }
+
+    /// Run one production frame at logical `(width, height)`: `sync`, adopt any
+    /// structural rebuild the sync requested, then lay out and refresh the focus
+    /// order — the exact order (and thus the exact focus-restore behaviour) the
+    /// winit event loop runs. Lets a headless test drive the real
+    /// selection-rebuild path a click triggers without spinning a window.
+    #[doc(hidden)]
+    pub fn run_frame_for_test(&mut self, width: f64, height: f64) {
+        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.structure_dirty |= self.root_widget.take_structure_dirty();
+        if self.structure_dirty {
+            self.rebuild_structure();
+        }
+        self.layout_for_test(width, height);
+    }
+
     /// Rebuild the taffy tree from the current widget tree after a
     /// structural mutation, re-establishing keyboard focus.
     ///

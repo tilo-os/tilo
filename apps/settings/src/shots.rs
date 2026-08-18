@@ -187,6 +187,22 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
+    // `…clickfocus.png` proves the click-focus fix on the real path: it drives
+    // the actual `ui::App` (with `autofocus_on_structure_change`, as `main.rs`
+    // runs it), clicks the "Printers" row, lets the selection rebuild settle,
+    // and paints the shared frame + focus ring. The ring must hug Printers (the
+    // selected row) — not the neighbour below it — proving focus and selection
+    // no longer diverge on click. `QOS_SHOTS_THEME` selects light/dark.
+    // (Checked before the `focus` branch, since this filename also contains
+    // "focus".)
+    if fname.contains("clickfocus") {
+        let theme = std::env::var("QOS_SHOTS_THEME")
+            .ok()
+            .and_then(|n| Theme::named(&n))
+            .unwrap_or_else(Theme::dark);
+        return render_click_focus_shot("Printers", theme, out);
+    }
+
     // `…focus.png` proves keyboard focus is visible: the wide layout with a
     // single sidebar category row focused, showing the themed focus ring
     // hugging THAT row's chip. Each row tracks its own focus and draws its own
@@ -347,6 +363,56 @@ pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> 
         &permission,
     );
     scene
+}
+
+/// Drive the real `ui::App` the way `main.rs` does — clicking the sidebar row
+/// named `row` — and render the resulting frame (shared focus ring included) to
+/// a PNG at `out`. This is the live proof that a click leaves the focus ring on
+/// the clicked/selected row: the App's real selection rebuild and
+/// restore-focus-by-ordinal path run, not a hand-set focus.
+pub fn render_click_focus_shot(
+    row: &str,
+    theme: Theme,
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use automerge::transaction::Transactable;
+
+    let (w, h) = DEFAULT_SHOTS_VIEWPORT;
+    let mut app = ui::App::new(ui::State::new(), Box::new(SettingsApp::new()));
+    app.set_theme(theme);
+    app.autofocus_on_structure_change = true;
+    app.init_layout();
+    app.layout_for_test(w as f64, h as f64);
+
+    // A click focuses the row AND writes its select key; replay both, then run
+    // one real frame so the App rebuilds the panes/nav and restores focus.
+    if !app.focus_test_id(row) {
+        return Err(format!("no sidebar row named {row}").into());
+    }
+    let slug = Category::ALL
+        .iter()
+        .find(|c| c.label() == row)
+        .map(|c| c.slug())
+        .ok_or("unknown category")?;
+    {
+        let state = app.state_mut_for_test();
+        let root = state.root.clone();
+        let _ = state.doc.put(&root, &format!("settings.select.{slug}"), true);
+    }
+    app.run_frame_for_test(w as f64, h as f64);
+
+    let scene = app.render_to_scene_for_test();
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let mut renderer = OffscreenRenderer::new(w, h);
+    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    println!(
+        "settings: wrote click-focus shot to {} (focus now on {:?})",
+        out.display(),
+        app.focused_test_id()
+    );
+    Ok(())
 }
 
 /// Render `widget` at `viewport` size into a PNG at `out`. Mirrors the
