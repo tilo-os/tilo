@@ -25,7 +25,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{Currency, DateStyle, Measurement, RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, choice_row, rows};
+use crate::widgets::{card, choice_row, rows};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -121,16 +121,7 @@ impl RegionPane {
             ]),
         );
 
-        let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Sheets uses these formats for cells; Weather uses the \
-                 measurement setting for its units. Changes here apply \
-                 everywhere those apps read the shared locale.",
-            )]),
-        );
-
-        crate::widgets::cards(vec![formats, preview, explainer])
+        crate::widgets::cards(vec![formats, preview])
     }
 
     /// Read a dropdown key and, if it matches a known option, return it.

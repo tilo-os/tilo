@@ -127,13 +127,7 @@ impl AccountsPane {
 
         let mut intro: Vec<El> = Vec::new();
         intro.push(Box::new(
-            Text::new(
-                "Accounts you add here are shared across the system. \
-                 Mail reads your email accounts, Calendar reads your \
-                 CalDAV calendars, and the file apps mount your WebDAV \
-                 and Nextcloud shares.",
-            )
-            .with_size(12.0),
+            Text::new("Shared with Mail, Calendar, and the file apps.").with_size(12.0),
         ));
         if self.is_sample {
             // Be honest that the visible rows are an illustration, not real

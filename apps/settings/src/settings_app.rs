@@ -44,6 +44,14 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// placement gets the phone layout.
 pub const NAV_BREAKPOINT: f64 = 720.0;
 
+/// Maximum reading width (logical px) the content pane is constrained to and
+/// centred within on a wide window. Without it, a settings row on a very wide
+/// window pins its label to the far-left edge and its control to the far-right
+/// edge with a desert of space between; capping the column keeps every row a
+/// comfortable, scannable width. The cap still shrinks to fit a narrower
+/// content area (a split-screen placement or the narrow phone layout).
+pub const CONTENT_MAX_WIDTH: f32 = 680.0;
+
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
@@ -205,10 +213,18 @@ impl SettingsApp {
     /// pane starts directly with its first section card, inset from the top.
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
+        // Constrain the pane to a comfortable reading width and centre it, so
+        // settings rows never stretch edge-to-edge across a wide window (label
+        // pinned far-left, control far-right). The cap still shrinks to fit a
+        // narrow content column.
+        let capped = Container::new()
+            .with_no_padding()
+            .with_max_width(CONTENT_MAX_WIDTH)
+            .with_child(body);
         let inner = Column::new()
             .with_intrinsic_height()
             .push(crate::widgets::vgap(6.0))
-            .push(body);
+            .push(Box::new(capped));
         let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
@@ -622,6 +638,44 @@ mod tests {
         // Re-selecting the same category is a no-op (no spurious rebuild).
         app.select(Category::Users);
         assert!(!app.take_structure_dirty());
+    }
+
+    fn walk<F: FnMut(&dyn Widget)>(w: &dyn Widget, f: &mut F) {
+        f(w);
+        for c in w.children() {
+            walk(c, f);
+        }
+    }
+
+    /// On a very wide window the content column is capped to the reading width
+    /// and every settings row is constrained to it — the label/control no
+    /// longer stretch to opposite edges of a 1600 px window. Asserts on the
+    /// real laid-out tree, and proves the cap actually bit by checking the
+    /// content area is far wider than the cap.
+    #[test]
+    fn wide_window_constrains_content_row_width() {
+        let mut app = SettingsApp::with_selected(Category::Network).with_width_hint(1600.0);
+        layout_at(&mut app, 1600.0, 800.0);
+
+        let content_w = app.shell.as_ref().unwrap().content_area_rect().width();
+        assert!(
+            content_w > CONTENT_MAX_WIDTH as f64 + 100.0,
+            "the 1600px content area ({content_w}) is much wider than the reading cap, so the cap must bite"
+        );
+
+        let mut widest_row = 0.0_f64;
+        let mut rows = 0usize;
+        walk(&app, &mut |w| {
+            if w.name() == "Row" {
+                rows += 1;
+                widest_row = widest_row.max(w.get_rect().width());
+            }
+        });
+        assert!(rows > 0, "the Network pane renders settings rows");
+        assert!(
+            widest_row <= CONTENT_MAX_WIDTH as f64 + 1.0,
+            "widest settings row {widest_row} exceeds the reading cap {CONTENT_MAX_WIDTH} — rows are stretching across the window"
+        );
     }
 
     #[test]

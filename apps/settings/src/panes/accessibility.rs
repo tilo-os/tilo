@@ -32,7 +32,7 @@ use winit::event::{Modifiers, WindowEvent};
 
 use crate::panes::appearance::{text_size_label, text_size_scale, TEXT_SIZES};
 use crate::prefs::{AccessibilityPrefs, AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, choice_row, rows, setting_row_described, El};
+use crate::widgets::{card, choice_row, rows, setting_row_described, El};
 
 // Vision comforts (mirror the shared AppearancePrefs fields).
 pub const HIGH_CONTRAST_KEY: &str = "a11y.high_contrast";
@@ -173,23 +173,7 @@ impl AccessibilityPane {
             ]),
         );
 
-        let explainer = card(
-            "Shared with your apps",
-            rows(vec![caption(
-                "Vision comforts are the same settings the Appearance pane \
-                 offers — changing them here or there updates one shared value. \
-                 The pointer, typing, and hearing assists are read by the \
-                 compositor's input and accessibility layer.",
-            )]),
-        );
-
-        crate::widgets::cards(vec![
-            vision_card,
-            pointer_card,
-            typing_card,
-            hearing_card,
-            explainer,
-        ])
+        crate::widgets::cards(vec![vision_card, pointer_card, typing_card, hearing_card])
     }
 
     /// Persist both edited sections into the shared store, reading fresh so a

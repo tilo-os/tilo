@@ -188,11 +188,12 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .to_ascii_lowercase();
 
     // `…focus.png` proves keyboard focus is visible: the wide layout with a
-    // sidebar category row focused, showing the shared themed focus ring the
-    // compositor paints around any focusable control (the sidebar rows draw no
-    // ring of their own). `QOS_SHOTS_THEME` selects light/dark so both are
-    // captured from one binary. Routed through the real `App` frame so the ring
-    // is the exact one the live session paints.
+    // single sidebar category row focused, showing the themed focus ring
+    // hugging THAT row's chip. Each row tracks its own focus and draws its own
+    // ring around its pill, so the ring is scoped to the focused row and never
+    // wraps the whole sidebar container. `QOS_SHOTS_THEME` selects light/dark
+    // so both are captured from one binary. Routed through the real `App` frame
+    // so the ring is the exact one the live session paints.
     if fname.contains("focus") {
         let theme = std::env::var("QOS_SHOTS_THEME")
             .ok()
