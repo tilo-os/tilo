@@ -477,6 +477,10 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "severity": format!("{:?}", n.severity),
                 "persistent": n.dismiss_after >= crate::shell::notification::PERSISTENT_DISMISS,
             })).collect::<Vec<_>>(),
+            // The hosted file manager's drag, if one is in flight, and
+            // whether the compositor has taken it over to a client.
+            "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
+            "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
             // Mirrored from the compositor's SessionManager each tick; lets a
@@ -2592,6 +2596,10 @@ pub fn run() -> ! {
         // opening, or a window closing all move the keyboard immediately —
         // not only on the next keystroke.
         client_input::sync_keyboard_focus(&mut state, &frame_builder);
+
+        // A file dragged out of the hosted file manager over a client's
+        // window becomes a real Wayland drag here — see `pump_chrome_drag`.
+        client_input::pump_chrome_drag(&mut state, &frame_builder);
 
         // Hand the remote-input firewall this frame's screen: which
         // foreign tiles are up and where, which one holds the keyboard,
