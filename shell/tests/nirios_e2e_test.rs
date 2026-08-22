@@ -299,9 +299,10 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     let mut tree = WorkspaceTree::bootstrap_default();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    // The contract under test is per-workspace emptiness, so clear
-    // every workspace's own roster (including the active one) rather
-    // than relying on `bootstrap_default` leaving them empty.
+    // `bootstrap_default` starts every workspace with an empty roster,
+    // so the clear below is belt-and-braces: the contract under test is
+    // per-workspace emptiness, and it should hold whatever the tree
+    // happened to be built with.
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
     }
@@ -563,6 +564,60 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
         ctx.color_for(&UserId("b".into())),
         ui::presence::user_color("b"),
         "no-override peer must still use palette fallback",
+    );
+}
+
+/// An Editor tab with no peers in the workspace has no peer caret in it.
+///
+/// This used to assert the opposite. `seed_demo_editor_presence` put a
+/// caret and a selection for a peer called "alice" into the first Editor
+/// tab's body, so the peer-caret chrome had something to paint in
+/// single-process development — and the hosted compositor called it
+/// unconditionally at startup. What a person saw was a second cursor
+/// sitting in their own document, with a selection, belonging to nobody.
+///
+/// The seeder is gone, so the assertion is inverted: presence on the
+/// editor body comes from peers or it does not exist. The key is built the
+/// way `EditorApp` builds it — naming the tab's record as well as the body
+/// field — so this fails if anything starts publishing there again.
+#[test]
+fn an_editor_body_has_no_peer_caret_without_peers() {
+    use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
+    use shell::shell::tab_documents::scratch_tab_record;
+    use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
+
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    let editor_tab = {
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        let id = group.tabs[0].id ^ 0xEd;
+        group.tabs.push(shell::shell::state::Tab {
+            id,
+            title: "Editor".into(),
+            tile: TileContent::AppPlaceholder {
+                kind: AppKind::Other("Editor".into()),
+                label: "Editor".into(),
+            },
+        });
+        id
+    };
+
+    // The startup seeding the shell actually does: per-tab presence from
+    // the workspace's real collaborator roster, and nothing else.
+    let mut ctx = PresenceCtx::empty();
+    shell::shell::sync_tab_presence_from_tree(&tree, &mut ctx);
+
+    let key = PresenceKey::Widget {
+        path: vec![
+            PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
+            PathSegment::Field("editor_body".into()),
+        ],
+    };
+
+    let peers = ctx.peers_on(&key);
+    assert!(
+        peers.is_empty(),
+        "nothing may publish presence into an editor body on the strength \
+         of the tab merely existing; found {peers:?}"
     );
 }
 

@@ -208,6 +208,91 @@ of one that has not, and vice versa, because those are not the same document.
 Apps that have not adopted records keep the `(app, room)` addressing they always
 had.
 
+### Meeting a document you have no history for
+
+Two people who each *start* the same app hold two automerge documents
+with nothing in common. A delta names its dependencies by hash (§4), so
+one sent between them refers to changes the receiver has never seen and
+automerge parks it: presence crosses, the caret moves, and the page
+stays blank. Something has to carry the state the deltas are relative
+to, once.
+
+That frame is `CollabRequest::SyncCRDT` — a whole document — and it
+crosses the peer wire as `NeighbourMsg::AppCrdtSnapshot`, routed by the
+same `(app_id, cluster_id, record_id)` triple as a delta and admitted by
+the same room check.
+
+**It goes out on arrival, not on every commit.** `SyncCRDT` is not
+reliably a join reply: it also feeds same-host fan-out and the undo
+snapshot, and whether a commit produces one is a property of the toolkit
+build rather than anything visible in the frame. Republishing whatever
+arrives would risk a whole document on the room topic per commit —
+unbounded, growing with the session, and redundant with the delta that
+already carries the same edit to anyone who shares the history.
+
+The publish is therefore gated on somebody needing one. A peer's
+`Arrived` passes through the local broker's own drain on its way to
+local apps, so the broker sees the request even though the frame that
+answers it is indistinguishable from a commit's: the arrival arms the
+room (`ShellNetwork::note_snapshot_request`), the next whole document
+for it goes out, and the ones after stay local until somebody else
+arrives. Which snapshot is released does not matter — any full state
+serves a peer that has none.
+
+That makes the rate once per peer that arrives rather than once per
+keystroke, the same rare, single-shot shape as
+`ScrollbackRequest`/`ScrollbackResponse`, and it is what makes a
+broadcast medium tolerable for this at all.
+
+It is deliberately **not** addressed to the joiner. Merging a snapshot
+is idempotent and commutative, so a peer that missed one converges from
+somebody else's copy; addressing it would need the *app* to name a
+recipient and would buy nothing but a narrower path to the same state.
+
+**Bounded, and honest about the bound.** A document has no upper size
+and a gossipsub RPC has one — 64 KiB, the libp2p default this shell does
+not raise. `publish_app_crdt_snapshot` refuses above
+`MAX_APP_SNAPSHOT_BYTES` rather than handing the transport a message it
+would reject. A document past the cap does not converge, in a `warn`
+line naming the size; it does not half-converge, and it does not fail
+somewhere unattributable.
+
+The cap is 14 KiB, which is much smaller than the ceiling suggests, and
+the reason is the encoding rather than the transport: the actor
+publishes a `NeighbourMsg` with `serde_json`, and serde_json writes a
+`Vec<u8>` as an array of decimal numbers — up to four characters per
+byte. A snapshot costs up to 4x its size on the wire. Moving the publish
+path to the `postcard` encoding the protocol module's own round-trip
+tests already use would make it roughly 1:1 and raise the cap to
+~60 KiB; that is a wire-format change every peer must agree on, so it is
+a decision to take rather than a constant to edit.
+
+**Adoption is one-directional, and that is a real limit.** The arrival
+arms the room on the host that was *already there*, so its document
+crosses to the joiner and the joiner adopts it. Nothing arms the
+reverse: the joiner's own document — the one it created before it met
+anybody — never crosses, so the host has no history for it and parks the
+joiner's deltas. Two people converge on the document that was open
+first, and edits made by the second before it adopted are not merged in.
+
+That is enough for someone joining a document another person is already
+editing, which is the common case and the one the demo shows. It is not
+enough for two people who both typed before meeting. Closing it means
+the toolkit sending its own state once upon adopting a foreign document
+— a decision about the app protocol, where the two documents actually
+are, rather than about routing. Arming the reverse direction here
+instead would look equivalent and is not: with both sides armed, every
+commit re-arms the other, and the room is back to a whole document per
+commit.
+
+Raising the ceiling would move that failure rather than remove it, and
+would do it on a medium where every peer in the room pays for every
+byte. Past the cap the right carrier is a direct peer-to-peer stream —
+the substrate already exists in `shell/src/network/surface_stream.rs`,
+which video frames use for exactly the same two reasons: they are large,
+and they concern one peer rather than the room. Wiring a snapshot onto
+it is the next thing to build here.
+
 ### Legacy / foreign Wayland clients
 
 For non-collaboration-aware Wayland clients (anything bound through the per-workspace bridge socket):

@@ -274,11 +274,38 @@ pub const HOST_MINIMAL_PATHS: &[&str] = HOST_MINIMAL_PATHS_X86_64;
 /// slower search without it; still worth including when present.
 pub const HOST_LD_SO_CACHE: &str = "/etc/ld.so.cache";
 
+/// Environment override naming the root that holds `<version>/`
+/// bundle directories.
+///
+/// The counterpart of `QOS_APPS_DATA_DIR` on the registry side, and it
+/// exists for the same reason. A session that wants its own documents
+/// repoints `XDG_DATA_HOME`, and both the installed-app store and the
+/// runtime bundles live under it — so isolating documents silently
+/// isolates the runtime too, and every app in that session fails to
+/// launch with "no bundle was found". The two stores are shared
+/// machine state; the documents are not. This variable is what lets a
+/// caller say so about the runtime, without moving anything the
+/// session is supposed to keep to itself.
+pub const RUNTIME_DIR_ENV: &str = "QOS_RUNTIME_BUNDLE_DIR";
+
+/// Root holding the per-user bundles, before the version is appended.
+///
+/// [`RUNTIME_DIR_ENV`] when set and non-empty, else
+/// `$XDG_DATA_HOME/qos-runtime` (or `~/.local/share/qos-runtime`).
+pub fn bundle_root() -> Result<PathBuf, BundleError> {
+    if let Some(dir) = std::env::var_os(RUNTIME_DIR_ENV) {
+        if !dir.is_empty() {
+            return Ok(PathBuf::from(dir));
+        }
+    }
+    Ok(dirs::data_dir().ok_or(BundleError::NoDataDir)?.join("qos-runtime"))
+}
+
 /// Default per-user bundle directory: `$XDG_DATA_HOME/qos-runtime/<v>/`
-/// (or `~/.local/share/qos-runtime/<v>/`).
+/// (or `~/.local/share/qos-runtime/<v>/`), unless [`RUNTIME_DIR_ENV`]
+/// names another root.
 pub fn default_bundle_path(version: &str) -> Result<PathBuf, BundleError> {
-    let base = dirs::data_dir().ok_or(BundleError::NoDataDir)?;
-    Ok(base.join("qos-runtime").join(version))
+    Ok(bundle_root()?.join(version))
 }
 
 /// System-wide fallback: `/usr/lib/qos-runtime/<v>/`.
@@ -1176,9 +1203,53 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn default_bundle_path_uses_data_dir() {
+        // SAFETY: this test is in the `process_env` serial group.
+        unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
         if let Ok(p) = default_bundle_path("v") {
             assert!(p.ends_with("qos-runtime/v"));
+        }
+    }
+
+    /// A session that repoints `XDG_DATA_HOME` to keep its documents to
+    /// itself must still reach the machine's runtime bundles. Without
+    /// this the isolation silently takes the runtime with it, and every
+    /// app in that session fails to launch on a missing bundle.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_env_override_names_the_bundle_root() {
+        let shared = tempfile::tempdir().expect("tempdir");
+        // SAFETY: this test is in the `process_env` serial group.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", "/nonexistent/session/data");
+            std::env::set_var(RUNTIME_DIR_ENV, shared.path());
+        }
+        let resolved = default_bundle_path("2026.07");
+        unsafe {
+            std::env::remove_var(RUNTIME_DIR_ENV);
+            std::env::remove_var("XDG_DATA_HOME");
+        }
+        assert_eq!(
+            resolved.expect("the override needs no data dir"),
+            shared.path().join("2026.07"),
+            "the override must win over an isolated XDG_DATA_HOME",
+        );
+    }
+
+    /// An empty value is not a path. Treating it as one resolves the
+    /// bundle to `/<version>`, which exists nowhere — turning a stray
+    /// `QOS_RUNTIME_BUNDLE_DIR=` in a shell profile into "no app on
+    /// this machine launches".
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_empty_override_falls_back_to_the_data_dir() {
+        // SAFETY: this test is in the `process_env` serial group.
+        unsafe { std::env::set_var(RUNTIME_DIR_ENV, "") };
+        let resolved = default_bundle_path("v");
+        unsafe { std::env::remove_var(RUNTIME_DIR_ENV) };
+        if let Ok(p) = resolved {
+            assert!(p.ends_with("qos-runtime/v"), "got {p:?}");
         }
     }
 

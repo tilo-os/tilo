@@ -781,6 +781,13 @@ COPY os/usr/lib/tmpfiles.d/qos.conf /usr/lib/tmpfiles.d/qos.conf
 COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
 RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 
+# The user unit that mints that identity, `--global` enabled further down.
+# It has to be installed here and not only exist in the source tree:
+# `systemctl --global enable` resolves the unit file at build time, so a unit
+# that was never copied in fails the build outright with "does not exist" —
+# which is what a unit whose ExecStart is wrong looks like too.
+COPY os/usr/lib/systemd/user/qos-identity.service /usr/lib/systemd/user/qos-identity.service
+
 # xdg-desktop-portal backend registration.
 #
 # One file now: qos.portal, which tells xdg-desktop-portal which

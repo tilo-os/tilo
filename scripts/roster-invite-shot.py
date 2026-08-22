@@ -12,16 +12,19 @@ cross, and a debug-build app's first frame can be minutes of shader
 compile; the roster entry an accepted invite produces does not wait on
 any of that.
 
-`--with-presence` adds the other half. An accepted invite is what tells
-the *guest* who the host is; it tells the host nothing, because the
-signal a peer subscribing produces (`NetEvent::PeerJoined`) names no
-room -- v1 puts every workspace on one gossipsub topic -- and putting
-somebody on a room they may not be in is the fabrication this is all
-about. The host learns which room a peer is in from the first
-room-scoped presence frame that peer publishes, and only a real app
-pointing inside the room produces one. So this stage launches an app in
-each session, walks the guest's pointer inside its window, and
-photographs the host's bar acquiring a *named* peer off the wire.
+An accepted invite is what tells the *guest* who the host is. It tells
+the host nothing directly, because the signal a peer subscribing
+produces (`NetEvent::PeerJoined`) names no room -- v1 puts every
+workspace on one gossipsub topic -- and putting somebody on a room they
+may not be in is the fabrication this is all about. The host learns
+which room a peer is in from the first room-scoped presence frame that
+peer publishes. A session publishes its pointer with nothing open, so
+that frame arrives on the join rather than waiting for an app.
+
+`--with-presence` adds the other half: the same acquisition with a real
+application in the room. It launches an app in each session, walks the
+guest's pointer inside its window, and photographs the host's bar
+holding a *named* peer whose cursor is somewhere a person put it.
 
     roster-invite-shot.py --out DIR [--with-presence]
 """
@@ -160,11 +163,21 @@ def main() -> int:
         note(f"wrote {shot}")
         host.snapshot(os.path.join(out, "host-after-join.png"))
 
-        # The host has heard nobody yet, and says so. That is not the
-        # bar failing to report a peer -- it is the host having no
-        # evidence of which room that peer is in.
-        claim("the host's roster is still empty, having heard no presence",
-              roster_of(host), [])
+        # The host's side of the same fact, and it is the interesting
+        # one: the host accepted nothing. Its bar can only have learned
+        # the guest from a presence frame the guest's session published
+        # into the room, because an invite is a one-way statement and
+        # nothing else on this machine knows that person exists.
+        #
+        # A session publishes its pointer with nothing open and restates
+        # it once a second, so this holds from the moment the guest
+        # joins rather than waiting on an app. It did not always: while
+        # a cursor only reached the wire as a side effect of some local
+        # app publishing one, the host stayed empty until stage 5.
+        host_names = [c.get("name") for c in roster_of(host)]
+        note(f"host roster after the join = {json.dumps(roster_of(host))}")
+        claim("the host learned the guest off the wire, having accepted nothing",
+              "bob" in host_names, True)
 
         if args.with_presence:
             spec = collab.APPS[args.app]

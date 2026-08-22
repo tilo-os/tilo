@@ -78,6 +78,22 @@ export SOURCE_DATE_EPOCH
 # alternative is finding out ~20 minutes in from a message naming a path with a
 # leading slash that exists nowhere — which is how a stale `COPY docs/secure-boot.md`
 # blocked every image build on main until someone tried to build one.
+# QOS_SKIP_BUILD=1 images an image that is already in local storage instead of
+# building one. The image builds in CI on this project, so the local half of
+# this pipeline is usually the disk step alone:
+#
+#   podman pull code.sandbox.example/qos/qos:<tag>
+#   podman tag  code.sandbox.example/qos/qos:<tag> localhost/qos:latest
+#   QOS_SKIP_BUILD=1 ./os/dev/build-image.sh
+#
+# The seal loop further down still runs, and still has to: it rewrites the UKI
+# *inside* the image, which is a layer on top of whatever was pulled rather than
+# a rebuild of it, so it works the same on an image this machine never compiled.
+: "${QOS_SKIP_BUILD:=0}"
+
+# Both of these check what a build would produce, so they have nothing to say
+# about an image that already exists.
+if [ "$QOS_SKIP_BUILD" != "1" ]; then
 bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
   || { bash "$QOS_OS_DIR/tests/containerfile_sources.sh"; die "a Containerfile COPY source is missing (see above)"; }
 # Pre-flight: the preinstalled app store can be built and will resolve at run
@@ -86,6 +102,7 @@ bash "$QOS_OS_DIR/tests/containerfile_sources.sh" >/dev/null \
 # as an empty launcher rather than as a build error.
 bash "$QOS_OS_DIR/tests/app_store.sh" >/dev/null \
   || { bash "$QOS_OS_DIR/tests/app_store.sh"; die "the app store would not work (see above)"; }
+fi
 
 # Where the build unpacks layers. Two failure modes converge here, and neither
 # names its cause:
@@ -108,6 +125,14 @@ export TMPDIR
 # machine that will not unseal after a few updates. Reproducibility is
 # "same commit + same QOS_GENERATION -> same image" — a published image is genuinely
 # new content, so it must be a new generation.
+if [ -z "${QOS_GENERATION:-}" ] && [ "$QOS_SKIP_BUILD" = "1" ]; then
+  # Read back, not allocated: the number is already sealed into this image's
+  # UKI, and allocating a second would consume a generation that no published
+  # image carries -- which is the series the rollback floor counts along.
+  QOS_GENERATION="$(podman run --rm --entrypoint cat "$QOS_IMAGE" /usr/lib/qos/generation 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$QOS_GENERATION" ] || QOS_GENERATION="unknown"
+  msg "generation $QOS_GENERATION (read from $QOS_IMAGE, not allocated)"
+fi
 if [ -z "${QOS_GENERATION:-}" ]; then
   QOS_GENERATION="$("$QOS_OS_DIR/dev/next-generation.sh")" \
     || die "could not resolve the generation for this image (see above).
@@ -122,7 +147,6 @@ export QOS_GENERATION
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${QOS_WITH_BROWSER:=1}"
-msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
 # Extra podman-build flags, for the times the layer cache is the problem rather
 # than the source. A disk that fills mid-build can leave a cached layer holding a
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
@@ -156,7 +180,16 @@ RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py \\
 EOF
 }
 
-build_image ""
+if [ "$QOS_SKIP_BUILD" = "1" ]; then
+  podman image exists "$QOS_IMAGE" || die "QOS_SKIP_BUILD=1, but $QOS_IMAGE is not in local
+  storage, so there is nothing to image. Pull the published image and tag it:
+    podman pull code.sandbox.example/qos/qos:<tag>
+    podman tag  code.sandbox.example/qos/qos:<tag> $QOS_IMAGE"
+  msg "1/2 skipped (QOS_SKIP_BUILD=1): imaging the existing $QOS_IMAGE"
+else
+  msg "1/2 podman build $QOS_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; kernel=$KERNEL_RPMS_REF; browser=$QOS_WITH_BROWSER; generation=$QOS_GENERATION)"
+  build_image ""
+fi
 
 msg "2/2 disk image -> qcow2"
 # shellcheck disable=SC1091

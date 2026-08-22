@@ -5655,6 +5655,14 @@ impl Widget for WordProcessorWidget {
         // when the PresenceCtx carries no remote carets/selections (single-user,
         // no broker), so single-user rendering is unchanged.
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
+        // A peer's just-typed run, glowing in their colour and fading. Drawn
+        // first so it sits under the selection and the caret: it is a
+        // property of the text, not another cursor competing with them.
+        for (user, spans) in
+            self.remote_typing_overlays(presence, std::time::Instant::now())
+        {
+            presence.draw_peer_typing(scene, theme, &user, &spans);
+        }
         for sel in &remote_selections {
             for r in &sel.rects {
                 presence.draw_peer_selection(scene, theme, ctf, &sel.user, *r);
@@ -6742,6 +6750,60 @@ impl WordProcessorWidget {
     /// *who* is editing where. Drawn through the page content transform `ctf` so
     /// it tracks the page as it scrolls/zooms, exactly like the caret it labels.
     #[allow(clippy::too_many_arguments)]
+    /// A peer's just-typed runs, mapped onto this frame's laid-out blocks.
+    ///
+    /// `PresencePayload::Typing` names the span a peer just inserted. It
+    /// decays over `TYPING_FADE`, so the glow follows them through the
+    /// document instead of accumulating — which is what makes it read as
+    /// "someone is writing here" rather than as permanent highlighting.
+    ///
+    /// Resolved from the same `self.laid` + `self.layout_cache` the caret
+    /// and selection overlays use, so peer geometry is derived one way for
+    /// all three and cannot drift between them.
+    ///
+    /// This is the *ephemeral* half of authorship. The durable half —
+    /// "this paragraph is hers, that one is his", still coloured an hour
+    /// later — is not drawn here and cannot be: it needs a per-run author
+    /// recorded in the document, which this document model does not carry.
+    /// See the note on [`ui::presence::PresenceCtx::draw_peer_authorship`].
+    pub(crate) fn remote_typing_overlays(
+        &self,
+        presence: &PresenceCtx,
+        now: std::time::Instant,
+    ) -> Vec<(UserId, Vec<(Rect, f32)>)> {
+        let mut out = Vec::new();
+        for l in &self.laid {
+            let Some((_, layout)) = self.layout_cache.get(&l.id) else {
+                continue;
+            };
+            let key = block_presence_key(&l.id);
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                if range.start >= range.end {
+                    continue;
+                }
+                let spans: Vec<(Rect, f32)> = layout
+                    .selection_rects(range.start, range.end)
+                    .into_iter()
+                    .map(|(rx0, ry0, rx1, ry1)| {
+                        (
+                            Rect::new(
+                                l.text_x + rx0 as f64,
+                                l.y_top + ry0 as f64,
+                                l.text_x + rx1 as f64,
+                                l.y_top + ry1 as f64,
+                            ),
+                            alpha,
+                        )
+                    })
+                    .collect();
+                if !spans.is_empty() {
+                    out.push((user, spans));
+                }
+            }
+        }
+        out
+    }
+
     fn draw_remote_caret_label(
         &self,
         scene: &mut Scene,
