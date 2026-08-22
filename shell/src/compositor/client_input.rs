@@ -1033,7 +1033,9 @@ impl State {
     /// Forward a pointer button press / release to the surface the pointer
     /// is focused on. No-op when the pointer is over chrome.
     pub fn forward_client_pointer_button(&mut self, button: u32, pressed: bool) -> bool {
-        if self.client_input.pointer_focus.is_none() {
+        // A chrome drag's grab needs the release even with no client under
+        // the pointer — that is how it learns the drag was cancelled.
+        if self.client_input.pointer_focus.is_none() && self.selection.chrome_drag.is_none() {
             return false;
         }
         let Some(pointer) = self.seat.get_pointer() else {
@@ -1588,7 +1590,9 @@ pub fn route_input(
             state.client_input.cursor = (position.x, position.y);
             let hit = current_pointer_target(state, fb, captured);
             deliver_pointer(state, hit);
-            hit.is_some()
+            // During a chrome drag the file manager keeps drawing the ghost
+            // under the cursor, so it sees every move even over a client.
+            hit.is_some() && state.selection.chrome_drag.is_none()
         }
         WindowEvent::CursorLeft { .. } => {
             let global = state.client_input.cursor;
@@ -1624,8 +1628,13 @@ pub fn route_input(
             } else {
                 state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
             }
-            let to_client = matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
-                && state.client_input.pointer_focus.is_some();
+            // A chrome drag's release is the drop: the server-side grab
+            // smithay holds only ends on a button event, whether or not a
+            // client is under the pointer (no client → cancelled).
+            let chrome_drag = state.selection.chrome_drag.is_some();
+            let to_client = (matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
+                && state.client_input.pointer_focus.is_some())
+                || (chrome_drag && !pressed);
             let consumed = if to_client {
                 match evdev_button(*button) {
                     Some(code) => state.forward_client_pointer_button(code, pressed),
@@ -1643,7 +1652,9 @@ pub fn route_input(
                     deliver_pointer(state, hit);
                 }
             }
-            consumed
+            // The file manager has to see the release too, to end its own
+            // side of the gesture without moving anything.
+            consumed && !chrome_drag
         }
         WindowEvent::MouseWheel { delta, .. } => {
             // Niri parity: an Alt-modified wheel is a compositor
@@ -1743,10 +1754,101 @@ pub fn route_input(
     }
 }
 
+/// Promote a file drag from the hosted file manager into a Wayland drag.
+///
+/// Called every tick. Files publishes what it is carrying
+/// (`file_explorer::external_drag`); the moment that drag — still an
+/// in-process gesture under the chrome's implicit grab — has the pointer
+/// over a foreign tile, the compositor claims it, starts smithay's
+/// server-side drag offering the file, and delivers the enter. From then
+/// on `current_pointer_target` hit-tests normally so the client under the
+/// pointer receives `wl_data_device` enter/motion/drop, and the release is
+/// the drop. Files learns it was handed off and does not act on the
+/// release itself.
+pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
+    if state.selection.chrome_drag.is_some() || state.selection.dnd_active {
+        return;
+    }
+    let Some(pending) = file_explorer::external_drag::unclaimed() else {
+        return;
+    };
+    tracing::debug!(
+        target: "shell::selection",
+        grab = ?state.client_input.grab,
+        captured = chrome_captures_input(fb),
+        cursor = ?state.client_input.cursor,
+        paths = ?pending.paths,
+        "files drag pending"
+    );
+    if state.client_input.grab != Some(PointerOwner::Chrome) {
+        tracing::debug!(
+            target: "shell::selection",
+            grab = ?state.client_input.grab,
+            paths = ?pending.paths,
+            "files drag pending but the chrome does not hold the pointer grab"
+        );
+        return;
+    }
+    if chrome_captures_input(fb) {
+        return;
+    }
+    let hit = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+            .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
+    };
+    let Some(hit) = hit else {
+        return;
+    };
+    let Some(drag) = file_explorer::external_drag::hand_off() else {
+        return;
+    };
+    let drag = crate::compositor::selection::ChromeDrag::new(drag.paths);
+    tracing::info!(
+        target: "shell::selection",
+        paths = ?drag.paths,
+        mime_types = ?drag.mime_types,
+        surface = hit.surface_id,
+        "starting a chrome drag over a client"
+    );
+    let metadata = smithay::wayland::selection::data_device::SourceMetadata {
+        mime_types: drag.mime_types.clone(),
+        dnd_action: smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction::Copy,
+    };
+    state.selection.chrome_drag = Some(drag);
+    let serial = mint_serial(state);
+    let location = SmithayPoint::from(state.client_input.cursor);
+    // The gesture began on chrome, so there is no surface focus to record;
+    // the grab learns its target from the motion delivered right after.
+    let start = smithay::input::pointer::GrabStartData {
+        focus: None,
+        button: BTN_LEFT,
+        location,
+    };
+    let dh = state.display_handle.clone();
+    let seat = state.seat.clone();
+    smithay::wayland::selection::data_device::start_dnd(&dh, &seat, state, serial, Some(start), None, metadata);
+    deliver_pointer(state, Some(hit));
+}
+
 /// Where the pointer should be focused right now: the foreign tile under
 /// the cursor, or the implicit grab's owner while a button is held.
 fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
     match state.client_input.grab {
+        // A file carried out of the hosted file manager: the chrome still
+        // owns the gesture, but the drop target is whichever client the
+        // pointer is over, so hit-test normally — exactly as for a client's
+        // own drag below.
+        Some(PointerOwner::Chrome) if state.selection.chrome_drag.is_some() => {
+            if captured {
+                return None;
+            }
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            foreign_tile_at(&tree, fb.host(), state.client_input.cursor)
+                .filter(|h| state.client_input.surfaces.contains_key(&h.surface_id))
+        }
         // A grab owned by the chrome keeps the client out of the loop even
         // when the cursor wanders across a tile mid-drag.
         Some(PointerOwner::Chrome) => None,

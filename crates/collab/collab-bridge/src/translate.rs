@@ -47,6 +47,7 @@ pub fn hello_from_join(channel_id: &str, identity: &[u8]) -> CollabRequest {
         app_id: channel_id.to_owned(),
         cluster_id: cluster_id_from_identity(identity),
         record: None,
+        handle: None,
     }
 }
 
