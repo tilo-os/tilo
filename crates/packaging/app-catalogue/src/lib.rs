@@ -280,6 +280,36 @@ mod tests {
         assert_eq!(app.display_name, "Hex Editor");
     }
 
+    /// The wire contract with the compositor, pinned by exact field
+    /// name. The compositor's parser has the matching half of this
+    /// pin; a rename here without one there would silently produce an
+    /// empty catalogue rather than an error, so both tests have to be
+    /// edited together.
+    #[test]
+    fn the_json_envelope_field_names_are_the_contract() {
+        let listing = CatalogueListing {
+            apps: vec![CatalogueApp {
+                package_id: "dev.qos.sheets".into(),
+                display_name: "Sheets".into(),
+                description: "a spreadsheet".into(),
+                category: Some("Office".into()),
+                version: "2.0.0".into(),
+                registry: "main".into(),
+                download_url: "https://x/y.qpkg".into(),
+                trust: "verified".into(),
+            }],
+            unreachable: vec![UnreachableRegistry {
+                name: "mirror".into(),
+                detail: "connection refused".into(),
+            }],
+        };
+        let json = serde_json::to_string(&listing).expect("encodes");
+        assert_eq!(
+            json,
+            r#"{"apps":[{"package_id":"dev.qos.sheets","display_name":"Sheets","description":"a spreadsheet","category":"Office","version":"2.0.0","registry":"main","download_url":"https://x/y.qpkg","trust":"verified"}],"unreachable":[{"name":"mirror","detail":"connection refused"}]}"#
+        );
+    }
+
     #[test]
     fn installed_packages_are_subtracted() {
         let a = entry_to_app(&verified(entry("dev.qos.a", "A", vec![])), "main").unwrap();
