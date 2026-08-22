@@ -19,7 +19,10 @@ path = "src/main.rs"
 # is a file-pick plus metadata probe; it needs no GStreamer, so it must never be
 # gated behind the decode/export features.
 [dependencies]
-ui = { path = "../../ui", features = ["portal"] }
+# `gpu-video` brings in the planar upload + YUV shader the compositor
+# paints hardware-decoded frames with. Without it every decoded frame
+# would have to be converted to RGBA on the CPU first.
+ui = { path = "../../ui", features = ["portal", "gpu-video"] }
 qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
