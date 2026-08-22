@@ -317,38 +317,6 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         serde_json::json!({ "pointers": rows })
     }
 
-    /// Give every window group in the active strip an equal share of
-    /// it, through the same `WindowWidth::Fraction` + doc mirror a
-    /// width drag writes, so the resize is a share of the strip rather
-    /// than this machine's pixel count and peers observe it as one.
-    fn set_group_widths(&self, permille: u16) -> Result<serde_json::Value, String> {
-        use crate::shell::state::WindowWidth;
-        if permille == 0 || permille > 1000 {
-            return Err(format!("{permille} is not a share of a strip"));
-        }
-        let handle = self.fb.chrome_handle();
-        let mut touched: Vec<u64> = Vec::new();
-        {
-            let chrome = handle.borrow();
-            let mut tree = chrome.tree_mut();
-            let active = tree.active;
-            let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == active) else {
-                return Err("no active workspace".into());
-            };
-            for strip in ws.strips.iter_mut() {
-                for group in strip.window_groups.iter_mut() {
-                    group.width = WindowWidth::Fraction(permille);
-                    touched.push(group.id);
-                }
-            }
-            for id in &touched {
-                tree.doc_set_width(*id, permille);
-            }
-        }
-        handle.borrow_mut().bump();
-        Ok(serde_json::json!({ "groups": touched, "permille": permille }))
-    }
-
     fn workspace_tree_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         // `unwrap_or(Null)` — `WorkspaceTree`'s `Serialize` impl is
@@ -786,6 +754,11 @@ fn execute_planned_action(
                 &mut ctx.focus,
             );
         }
+        PlannedAction::SetGroupWidth { permille } => {
+            let touched = fb.host_mut().set_group_widths(*permille);
+            tracing::info!("test_control: set {} group(s) to {permille}permille", touched.len());
+            fb.with_chrome(|st| st.bump());
+        }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
@@ -897,7 +870,8 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
-        | PlannedAction::Snapshot { .. } => {}
+        | PlannedAction::Snapshot { .. }
+        | PlannedAction::SetGroupWidth { .. } => {}
     }
 }
 
