@@ -7,11 +7,23 @@ a roster and nothing is injected -- the only thing that changes between
 the two photographs of the guest is that it accepted a token the host
 signed.
 
-No application is launched. An app is what makes a *cursor* cross, and a
-debug-build app's first frame is minutes of shader compile; the roster
-entry an accepted invite produces does not wait on any of that.
+By default no application is launched. An app is what makes a *cursor*
+cross, and a debug-build app's first frame can be minutes of shader
+compile; the roster entry an accepted invite produces does not wait on
+any of that.
 
-    roster-invite-shot.py --out DIR
+`--with-presence` adds the other half. An accepted invite is what tells
+the *guest* who the host is; it tells the host nothing, because the
+signal a peer subscribing produces (`NetEvent::PeerJoined`) names no
+room -- v1 puts every workspace on one gossipsub topic -- and putting
+somebody on a room they may not be in is the fabrication this is all
+about. The host learns which room a peer is in from the first
+room-scoped presence frame that peer publishes, and only a real app
+pointing inside the room produces one. So this stage launches an app in
+each session, walks the guest's pointer inside its window, and
+photographs the host's bar acquiring a *named* peer off the wire.
+
+    roster-invite-shot.py --out DIR [--with-presence]
 """
 from __future__ import annotations
 
@@ -56,6 +68,11 @@ def main() -> int:
     ap.add_argument("--size", default="1600x900")
     ap.add_argument("--vulkan-icd", default=None)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--with-presence", action="store_true",
+                    help="also launch a real app in each session and walk "
+                         "the guest's pointer, so the host's bar acquires a "
+                         "named peer off the wire")
+    ap.add_argument("--app", default="word-processor")
     args = ap.parse_args()
 
     out = args.out
@@ -142,6 +159,54 @@ def main() -> int:
         guest.snapshot(shot)
         note(f"wrote {shot}")
         host.snapshot(os.path.join(out, "host-after-join.png"))
+
+        # The host has heard nobody yet, and says so. That is not the
+        # bar failing to report a peer -- it is the host having no
+        # evidence of which room that peer is in.
+        claim("the host's roster is still empty, having heard no presence",
+              roster_of(host), [])
+
+        if args.with_presence:
+            spec = collab.APPS[args.app]
+            app_bin = os.path.join(REPO, "target", "debug", spec["bin"])
+            if not os.path.exists(app_bin):
+                raise RuntimeError(
+                    f"missing {app_bin}; run: cargo build -p {spec['bin']}")
+            doc = None
+            if spec["needs_doc"]:
+                doc = os.path.join(out, "shared.md")
+                with open(doc, "w") as f:
+                    f.write("Shared document.\n")
+
+            step("5", f"launch a real {args.app} into each session")
+            host.launch_app(args.app, "alice", room, doc, out)
+            guest.launch_app(args.app, "bob", room, doc, out)
+            for s in sessions:
+                claim(f"{s.name}'s app painted a real frame",
+                      s.wait_for_app_frame(300.0), True)
+
+            step("6", "walk the guest's pointer inside its own window")
+            centre = guest.window_centre(spec["package"])
+            claim("the guest's window has a centre to point at",
+                  centre is not None, True)
+            guest.click_at(*centre)
+            found = False
+            deadline = time.time() + 120
+            while time.time() < deadline and not found:
+                for i in range(10):
+                    guest.pointer_move(centre[0] + i * 9 - 40,
+                                       centre[1] + i * 5 - 20)
+                    time.sleep(0.15)
+                names = [c.get("name") for c in roster_of(host)]
+                note(f"host roster = {json.dumps(roster_of(host))}")
+                found = "bob" in names
+            claim("the host's bar names the guest, learned off the wire",
+                  found, True)
+
+            step("7", "photograph the host's bar")
+            shot = os.path.join(out, "host-after-presence.png")
+            host.snapshot(shot)
+            note(f"wrote {shot}")
     finally:
         if not args.keep:
             for s in sessions:
