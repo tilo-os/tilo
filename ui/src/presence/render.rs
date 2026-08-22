@@ -231,62 +231,267 @@ impl PresenceCtx {
 }
 
 
-/// Paint every entry in `presence.remote_cursors` as a triangle + name
-/// pill, at scene-space coordinates transformed by `transform`. Used by
-/// the App's per-frame draw so non-shell apps (terminal, settings, file
-/// explorer) get cross-process ghost cursors without each having to
-/// re-implement the geometry. The shell has a richer overlay that
-/// clips to the active workspace's content rect; this helper covers
-/// the "I'm just an app inside a hosted-mode window and want my peers
-/// to be visible" case.
+// =====================================================================
+// Several peers at once
+// =====================================================================
+
+/// Radius of the solid dot at a peer's pointer.
+const DOT_R: f64 = 5.0;
+/// Outer edge of the dot including its contrast ring — what a name pill
+/// has to clear.
+const RING_R: f64 = 6.5;
+/// Breathing room between the dot and its pill, and between two pills.
+const PILL_GAP: f64 = 4.0;
+/// How far a pill is allowed to sit from its own pointer before it stops
+/// being self-evidently that pointer's and gets a tether drawn to it.
+const TETHER_AFTER: f64 = 4.0;
+
+/// One peer to paint: where their pointer is, what to call them, and the
+/// colour that is theirs on every screen.
+#[derive(Debug, Clone)]
+pub struct PeerCursor {
+    pub pos: (f64, f64),
+    pub label: String,
+    pub color: Color,
+}
+
+/// A pill wanting a home: the pointer it belongs to and how big it is.
+#[derive(Debug, Clone, Copy)]
+pub struct PillRequest {
+    pub at: (f64, f64),
+    pub size: (f64, f64),
+}
+
+/// Where a pill ended up, and whether it had to leave its pointer to get
+/// there (in which case the caller draws a tether so it stays legible
+/// *whose* it is).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PillPlacement {
+    pub rect: Rect,
+    pub tethered: bool,
+}
+
+/// Place one name pill per peer so that no two overlap and none leaves
+/// `viewport`.
 ///
-/// Mirrors the visual contract from
-/// `shell::shell::overlay_host::OverlayHost::draw_real_peers` so the
-/// two render paths look the same to a user comparing shell vs. app
-/// windows side-by-side.
-pub fn draw_remote_cursors(
+/// Two people working next to each other put their pointers a few pixels
+/// apart, and two pills at the same offset from two nearby pointers land
+/// on top of each other — which is not one name obscuring another, it is
+/// both names becoming unreadable. Someone near the right or bottom edge
+/// has the same problem against the window: a pill anchored below-right
+/// of them is half outside it.
+///
+/// So each pill is offered the four corners around its own pointer in
+/// turn and takes the first that is fully inside the viewport and clear
+/// of every pill already placed. Only when all four are taken does it
+/// slide away along the vertical, and then it is marked `tethered` so
+/// the caller can draw the line back.
+///
+/// Placement order is by position, not by arrival, so the same peers in
+/// the same places always produce the same picture — a cursor that
+/// reconnects does not reshuffle everyone else's names.
+pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlacement> {
+    // Normalise: a caller handing us an inverted rect would otherwise
+    // clamp every pill to nothing.
+    let vp = Rect::new(
+        viewport.x0.min(viewport.x1),
+        viewport.y0.min(viewport.y1),
+        viewport.x0.max(viewport.x1),
+        viewport.y0.max(viewport.y1),
+    );
+
+    let mut order: Vec<usize> = (0..pills.len()).collect();
+    order.sort_by(|&a, &b| {
+        let (pa, pb) = (pills[a].at, pills[b].at);
+        pa.1.total_cmp(&pb.1)
+            .then(pa.0.total_cmp(&pb.0))
+            .then(a.cmp(&b))
+    });
+
+    let mut out = vec![
+        PillPlacement {
+            rect: Rect::ZERO,
+            tethered: false,
+        };
+        pills.len()
+    ];
+    let mut placed: Vec<Rect> = Vec::with_capacity(pills.len());
+
+    let inside = |r: &Rect, vp: &Rect| {
+        r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1
+    };
+    let clear = |r: &Rect, placed: &[Rect]| {
+        placed
+            .iter()
+            .all(|p| p.inflate(PILL_GAP / 2.0, PILL_GAP / 2.0).intersect(*r).is_zero_area())
+    };
+
+    for i in order {
+        let PillRequest {
+            at: (px, py),
+            size: (w, h),
+        } = pills[i];
+        let right = px + RING_R + PILL_GAP;
+        let left = px - RING_R - PILL_GAP - w;
+        let below = py + RING_R + PILL_GAP;
+        let above = py - RING_R - PILL_GAP - h;
+        let corners = [
+            (right, below),
+            (right, above),
+            (left, below),
+            (left, above),
+        ];
+
+        let mut chosen = None;
+        for (x, y) in corners {
+            let r = Rect::new(x, y, x + w, y + h);
+            if inside(&r, &vp) && clear(&r, &placed) {
+                chosen = Some(r);
+                break;
+            }
+        }
+
+        let (rect, tethered) = match chosen {
+            Some(r) => (r, false),
+            None => {
+                // Every corner is taken or off-window. Keep the pill on
+                // the side of the pointer that fits and walk it down the
+                // vertical until it is clear, then back up if the bottom
+                // runs out.
+                let x = if right + w <= vp.x1 { right } else { left.max(vp.x0) };
+                let x = x.clamp(vp.x0, (vp.x1 - w).max(vp.x0));
+                let mut r = Rect::new(x, below, x + w, below + h);
+                let step = h + PILL_GAP;
+                let mut guard = 0;
+                while (!inside(&r, &vp) || !clear(&r, &placed)) && guard < 64 {
+                    let next_y = if r.y1 + step <= vp.y1 {
+                        r.y0 + step
+                    } else {
+                        // Out of room going down — restart above the
+                        // pointer and walk up instead.
+                        let up = if r.y0 > py { above } else { r.y0 - step };
+                        if up < vp.y0 {
+                            break;
+                        }
+                        up
+                    };
+                    r = Rect::new(x, next_y, x + w, next_y + h);
+                    guard += 1;
+                }
+                let r = Rect::new(
+                    r.x0,
+                    r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)),
+                    r.x0 + w,
+                    r.y0.clamp(vp.y0, (vp.y1 - h).max(vp.y0)) + h,
+                );
+                (r, true)
+            }
+        };
+
+        // A pill that ended up further from its pointer than a corner
+        // placement would have needs the line drawn, however it got there.
+        let dx = (rect.x0 - px).abs().min((rect.x1 - px).abs());
+        let dy = (rect.y0 - py).abs().min((rect.y1 - py).abs());
+        let far = dx.max(dy) > RING_R + PILL_GAP + TETHER_AFTER;
+        out[i] = PillPlacement {
+            rect,
+            tethered: tethered || far,
+        };
+        placed.push(rect);
+    }
+    out
+}
+
+/// Paint a whole room's worth of pointers in one pass — every dot, then
+/// every tether, then every pill.
+///
+/// The three layers are separate on purpose: pills carry the names, so
+/// nothing is allowed on top of one. Drawing peer-by-peer would let a
+/// later peer's halo wash over an earlier peer's name.
+///
+/// `viewport` bounds the pills. Pass the rect the peers are being drawn
+/// into; positions themselves are assumed already filtered to it.
+pub fn draw_peer_cursors(
     scene: &mut Scene,
     transform: Affine,
+    viewport: Rect,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
-    presence: &PresenceCtx,
+    peers: &[PeerCursor],
 ) {
-    if presence.remote_cursors.is_empty() {
+    if peers.is_empty() {
         return;
     }
-    for cursor in &presence.remote_cursors {
-        let peer = Color::from_rgba8(
-            (cursor.color[0].clamp(0.0, 1.0) * 255.0) as u8,
-            (cursor.color[1].clamp(0.0, 1.0) * 255.0) as u8,
-            (cursor.color[2].clamp(0.0, 1.0) * 255.0) as u8,
-            (cursor.color[3].clamp(0.0, 1.0) * 255.0) as u8,
+    let tokens = &theme.tokens;
+    let label_size = tokens.typography.scale.sm;
+    let pad_x = 7.0_f64;
+    let pad_y = 3.0_f64;
+
+    let requests: Vec<PillRequest> = peers
+        .iter()
+        .map(|p| {
+            let (tw, _th) = text_renderer.measure(&p.label, label_size, None);
+            PillRequest {
+                at: p.pos,
+                size: (
+                    tw as f64 + pad_x * 2.0,
+                    label_size as f64 + pad_y * 2.0,
+                ),
+            }
+        })
+        .collect();
+    let placements = layout_peer_pills(viewport, &requests);
+
+    // Layer 1 — the pointers themselves.
+    for p in peers {
+        draw_peer_dot(scene, transform, p.pos, p.color);
+    }
+
+    // Layer 2 — tethers, under the pills so a line never crosses a name.
+    for (p, place) in peers.iter().zip(&placements) {
+        if !place.tethered {
+            continue;
+        }
+        let from = Point::new(p.pos.0, p.pos.1);
+        let to = nearest_point_on(place.rect, from);
+        let mut line = vello::kurbo::BezPath::new();
+        line.move_to(from);
+        line.line_to(to);
+        scene.stroke(
+            &Stroke::new(1.5),
+            transform,
+            p.color.with_alpha_factor(0.75),
+            None,
+            &line,
         );
-        draw_one_remote_cursor(scene, transform, text_renderer, theme, cursor, peer);
+    }
+
+    // Layer 3 — the names, on top of everything.
+    for (p, place) in peers.iter().zip(&placements) {
+        draw_peer_pill(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            place.rect,
+            &p.label,
+            p.color,
+            (pad_x, pad_y),
+            label_size,
+        );
     }
 }
 
-/// Draw a single peer's round cursor dot + name pill at its scene position.
-/// Extracted from [`draw_remote_cursors`] so the viewport-aware
-/// [`draw_remote_presence`] paints on-screen peers identically.
-fn draw_one_remote_cursor(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    cursor: &super::RemoteCursor,
-    peer: Color,
-) {
-    let tokens = &theme.tokens;
-    let caret_size = 10.0_f64;
-    let chip_offset = 2.0_f64;
-    let pad_x = 6.0_f64;
-    let pad_y = 2.0_f64;
-    let label_size = tokens.typography.scale.sm;
-
-    let apex = Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
-    // Round, color-coded cursor dot at the pointer position: a soft halo,
-    // a solid dot in the peer's colour, and a thin white ring for contrast.
-    let t = transform * Affine::translate((apex.x, apex.y));
+/// A peer's pointer: soft halo, a shadow edge, the solid dot in their
+/// colour, and a white ring.
+///
+/// The shadow and the ring are what make one dot work over both the word
+/// processor's white page and the desktop behind it — the white ring
+/// separates a dark colour from a dark background, the shadow separates a
+/// light colour from a light one, and whichever is doing nothing is
+/// invisible rather than in the way.
+fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Color) {
+    let t = transform * Affine::translate((pos.0, pos.1));
     scene.fill(
         Fill::NonZero,
         t,
@@ -294,31 +499,99 @@ fn draw_one_remote_cursor(
         None,
         &Circle::new(Point::ORIGIN, 9.0),
     );
-    let dot = Circle::new(Point::ORIGIN, 5.0);
+    scene.stroke(
+        &Stroke::new(2.0),
+        t,
+        Color::BLACK.with_alpha_factor(0.18),
+        None,
+        &Circle::new(Point::ORIGIN, RING_R + 0.5),
+    );
+    let dot = Circle::new(Point::ORIGIN, DOT_R);
     scene.fill(Fill::NonZero, t, peer, None, &dot);
     scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
+}
 
-    // Name pill, anchored just below-right of the caret tip.
-    let label = &cursor.label;
-    let (tw, _th) = text_renderer.measure(label, label_size, None);
-    let chip_w = tw as f64 + pad_x * 2.0;
-    let chip_h = label_size as f64 + pad_y * 2.0;
-    let chip_x = apex.x + caret_size + chip_offset;
-    let chip_y = apex.y + caret_size + chip_offset;
-    let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-    let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-    scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &chip);
-    scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &chip);
-    let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
-    scene.fill(Fill::NonZero, transform, peer, None, &underline);
+/// A peer's name pill: their colour as the fill, a soft drop shadow, and
+/// the label in whichever of black or white reads on that colour.
+///
+/// Filling in the peer's colour rather than in a surface token is what
+/// makes several peers legible at once — the pill *is* the swatch, so a
+/// name and a cursor are matched by colour and not by proximity.
+#[allow(clippy::too_many_arguments)]
+fn draw_peer_pill(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    peer: Color,
+    pad: (f64, f64),
+    label_size: f32,
+) {
+    let radius = theme.tokens.radii.sm as f64;
+    let shadow = RoundedRect::from_rect(rect.inflate(0.5, 0.5) + vello::kurbo::Vec2::new(0.0, 1.0), radius);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        Color::BLACK.with_alpha_factor(0.20),
+        None,
+        &shadow,
+    );
+    let pill = RoundedRect::from_rect(rect, radius);
+    scene.fill(Fill::NonZero, transform, peer, None, &pill);
     text_renderer.draw_text(
         scene,
         label,
         label_size,
-        tokens.colors.text_primary,
-        transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
+        contrast_ink(peer),
+        transform * Affine::translate((rect.x0 + pad.0, rect.y0 + pad.1)),
         None,
     );
+}
+
+/// Closest point on `rect`'s boundary box to `p` — where a tether meets
+/// the pill it points at.
+fn nearest_point_on(rect: Rect, p: Point) -> Point {
+    Point::new(p.x.clamp(rect.x0, rect.x1), p.y.clamp(rect.y0, rect.y1))
+}
+
+/// Paint every entry in `presence.remote_cursors` as a dot + name pill,
+/// at scene-space coordinates transformed by `transform`. Used by the
+/// App's per-frame draw so non-shell apps (terminal, settings, file
+/// explorer) get cross-process ghost cursors without each having to
+/// re-implement the geometry.
+///
+/// No viewport is supplied here, so pills are only de-overlapped, not
+/// clamped. [`draw_remote_presence`] is the one to prefer: it knows the
+/// window and can keep a name on screen.
+pub fn draw_remote_cursors(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    let peers: Vec<PeerCursor> = presence.remote_cursors.iter().map(peer_of).collect();
+    if peers.is_empty() {
+        return;
+    }
+    let unbounded = Rect::new(f64::MIN / 4.0, f64::MIN / 4.0, f64::MAX / 4.0, f64::MAX / 4.0);
+    draw_peer_cursors(scene, transform, unbounded, text_renderer, theme, &peers);
+}
+
+/// A [`super::RemoteCursor`] as the renderer wants it.
+fn peer_of(cursor: &super::RemoteCursor) -> PeerCursor {
+    PeerCursor {
+        pos: (cursor.position[0] as f64, cursor.position[1] as f64),
+        label: cursor.label.clone(),
+        color: Color::from_rgba8(
+            (cursor.color[0].clamp(0.0, 1.0) * 255.0) as u8,
+            (cursor.color[1].clamp(0.0, 1.0) * 255.0) as u8,
+            (cursor.color[2].clamp(0.0, 1.0) * 255.0) as u8,
+            255,
+        ),
+    }
 }
 
 /// Pick black or white ink for text drawn on top of `bg`, by relative
@@ -464,14 +737,13 @@ pub fn draw_remote_presence(
     if presence.remote_cursors.is_empty() {
         return;
     }
+    // Split first, draw after: the on-screen peers are laid out together
+    // so their names cannot land on top of each other, which is only
+    // possible once the whole set is known.
+    let mut on_screen: Vec<PeerCursor> = Vec::new();
     for cursor in &presence.remote_cursors {
         let target = Point::new(cursor.position[0] as f64, cursor.position[1] as f64);
-        let peer = Color::from_rgba8(
-            (cursor.color[0].clamp(0.0, 1.0) * 255.0) as u8,
-            (cursor.color[1].clamp(0.0, 1.0) * 255.0) as u8,
-            (cursor.color[2].clamp(0.0, 1.0) * 255.0) as u8,
-            255,
-        );
+        let peer = peer_of(cursor);
         match super::geom::edge_mist_for(viewport, target) {
             Some(mist) => {
                 draw_edge_mist(
@@ -480,15 +752,14 @@ pub fn draw_remote_presence(
                     theme,
                     viewport,
                     &mist,
-                    peer,
+                    peer.color,
                     &cursor.label,
                 );
             }
-            None => {
-                draw_one_remote_cursor(scene, transform, text_renderer, theme, cursor, peer);
-            }
+            None => on_screen.push(peer),
         }
     }
+    draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
 }
 
 #[cfg(test)]
@@ -687,6 +958,201 @@ mod tests {
             lr < 20 && lg < 20 && lb < 20,
             "left edge should stay clear, got ({lr},{lg},{lb})"
         );
+    }
+
+    // -- several peers at once -----------------------------------------
+
+    fn req(x: f64, y: f64, w: f64, h: f64) -> PillRequest {
+        PillRequest {
+            at: (x, y),
+            size: (w, h),
+        }
+    }
+
+    /// Two people working next to each other put their pointers a few
+    /// pixels apart. Their names must still be two names.
+    #[test]
+    fn pills_of_adjacent_peers_do_not_overlap() {
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let out = layout_peer_pills(
+            vp,
+            &[req(400.0, 300.0, 60.0, 20.0), req(404.0, 302.0, 60.0, 20.0)],
+        );
+        assert!(
+            out[0].rect.intersect(out[1].rect).is_zero_area(),
+            "two pills landed on top of each other: {:?} and {:?}",
+            out[0].rect,
+            out[1].rect,
+        );
+    }
+
+    /// Four peers in a pile is the case that broke: four pills all at the
+    /// same offset from four nearly-identical pointers.
+    #[test]
+    fn four_piled_peers_get_four_readable_pills() {
+        let vp = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let pills: Vec<PillRequest> = (0..4)
+            .map(|i| req(600.0 + i as f64 * 3.0, 400.0 + i as f64 * 2.0, 70.0, 22.0))
+            .collect();
+        let out = layout_peer_pills(vp, &pills);
+        for i in 0..out.len() {
+            for j in i + 1..out.len() {
+                assert!(
+                    out[i].rect.intersect(out[j].rect).is_zero_area(),
+                    "pills {i} and {j} overlap: {:?} vs {:?}",
+                    out[i].rect,
+                    out[j].rect,
+                );
+            }
+        }
+    }
+
+    /// A peer in the bottom-right corner still gets a readable name: the
+    /// pill flips to the other side of them rather than running off the
+    /// window.
+    #[test]
+    fn a_pill_never_leaves_the_viewport() {
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let corners = [
+            (795.0, 595.0),
+            (2.0, 2.0),
+            (795.0, 2.0),
+            (2.0, 595.0),
+            (400.0, 598.0),
+        ];
+        for (x, y) in corners {
+            let out = layout_peer_pills(vp, &[req(x, y, 90.0, 22.0)]);
+            let r = out[0].rect;
+            assert!(
+                r.x0 >= vp.x0 && r.y0 >= vp.y0 && r.x1 <= vp.x1 && r.y1 <= vp.y1,
+                "a peer at ({x}, {y}) put its name at {r:?}, outside {vp:?}",
+            );
+        }
+    }
+
+    /// A pill that had to leave its pointer says so, so the caller draws
+    /// the line back to it. One that sits in its own corner does not — a
+    /// tether on every pill would be noise.
+    #[test]
+    fn only_a_displaced_pill_asks_for_a_tether() {
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let alone = layout_peer_pills(vp, &[req(400.0, 300.0, 60.0, 20.0)]);
+        assert!(!alone[0].tethered, "a peer on its own needs no tether");
+
+        // Six peers stacked within a few pixels: the corners run out and
+        // the later ones must be walked away and tethered.
+        let pile: Vec<PillRequest> = (0..6)
+            .map(|i| req(400.0 + i as f64, 300.0 + i as f64, 60.0, 20.0))
+            .collect();
+        let out = layout_peer_pills(vp, &pile);
+        assert!(
+            out.iter().any(|p| p.tethered),
+            "a six-deep pile placed every pill in a corner, which cannot be",
+        );
+    }
+
+    /// The same peers in the same places must produce the same picture
+    /// however the list is ordered — a peer reconnecting must not
+    /// reshuffle everyone else's names.
+    #[test]
+    fn placement_does_not_depend_on_arrival_order() {
+        let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let a = req(400.0, 300.0, 60.0, 20.0);
+        let b = req(404.0, 302.0, 70.0, 20.0);
+        let c = req(410.0, 306.0, 50.0, 20.0);
+        let forward = layout_peer_pills(vp, &[a, b, c]);
+        let backward = layout_peer_pills(vp, &[c, b, a]);
+        assert_eq!(forward[0], backward[2]);
+        assert_eq!(forward[1], backward[1]);
+        assert_eq!(forward[2], backward[0]);
+    }
+
+    /// A peer's name is painted in their own colour, and the label on it
+    /// is whichever of black or white can be read on that colour. Both
+    /// samples are taken off a real render.
+    #[test]
+    fn a_peer_pill_is_the_peer_colour_and_its_label_contrasts() {
+        let theme = Theme::default();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        // Orange (bob's pin) is light enough that its label must be black.
+        let peer = Color::from_rgb8(0xf9, 0x73, 0x16);
+        draw_peer_cursors(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            &mut tr,
+            &theme,
+            &[PeerCursor {
+                pos: (60.0, 60.0),
+                label: "bob".into(),
+                color: peer,
+            }],
+        );
+        let mut r = OffscreenRenderer::new(200, 200);
+        let rgba = r.render(&scene, Color::WHITE);
+
+        // The dot itself.
+        let (dr, dg, db, _) = OffscreenRenderer::sample(&rgba, 200, 60, 60);
+        assert!(
+            dr > 180 && dg > 80 && dg < 160 && db < 90,
+            "expected bob's orange at the pointer, got ({dr},{dg},{db})"
+        );
+        // The pill, below-right of the pointer.
+        let (pr, pg, pb, pa) = OffscreenRenderer::sample(&rgba, 200, 80, 78);
+        assert!(pa > 0, "expected an opaque pill below-right of the pointer");
+        assert!(
+            pr > pg && pg > pb,
+            "the pill should be the peer's orange (R>G>B), got ({pr},{pg},{pb})"
+        );
+        assert_eq!(contrast_ink(peer), Color::BLACK, "orange needs black ink");
+        assert_eq!(
+            contrast_ink(Color::from_rgb8(0x63, 0x66, 0xf1)),
+            Color::WHITE,
+            "indigo needs white ink",
+        );
+    }
+
+    /// A peer over a white page has to be as visible as one over the dark
+    /// desktop. The dot carries both a white ring and a dark edge so that
+    /// whichever background it lands on, one of the two separates it.
+    #[test]
+    fn a_peer_dot_reads_on_a_white_page_and_on_a_dark_desktop() {
+        let theme = Theme::default();
+        let mut tr = TextRenderer::new();
+        let peer = Color::from_rgb8(0xf4, 0xf1, 0x71); // a pale ring member
+        let mut render = |bg: Color| {
+            let mut scene = Scene::new();
+            draw_peer_cursors(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 120.0, 120.0),
+                &mut tr,
+                &theme,
+                &[PeerCursor {
+                    pos: (60.0, 60.0),
+                    label: "p".into(),
+                    color: peer,
+                }],
+            );
+            let mut r = OffscreenRenderer::new(120, 120);
+            r.render(&scene, bg)
+        };
+        for (name, bg) in [("a white page", Color::WHITE), ("the desktop", Color::BLACK)] {
+            let rgba = render(bg);
+            let bgc = bg.to_rgba8();
+            // Somewhere on the ring around the dot must differ from the
+            // background, or the cursor has no edge at all on it.
+            let edge = (0..360).step_by(15).any(|deg| {
+                let a = (deg as f64).to_radians();
+                let x = (60.0 + 6.8 * a.cos()).round() as u32;
+                let y = (60.0 + 6.8 * a.sin()).round() as u32;
+                let (r, g, b, _) = OffscreenRenderer::sample(&rgba, 120, x, y);
+                let d = super::super::color_distance((r, g, b), (bgc.r, bgc.g, bgc.b));
+                d > 60.0
+            });
+            assert!(edge, "a pale peer has no visible edge against {name}");
+        }
     }
 
     /// Clicking within an off-screen peer's mist band selects that peer to
