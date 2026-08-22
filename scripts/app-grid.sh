@@ -129,9 +129,18 @@ for a in $APPS; do
     continue
   fi
   # Offscreen: no Wayland socket, so the app takes its own headless path.
-  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" >/dev/null 2>&1
+  # Keep the output: when an app fails to produce a frame its own complaint is
+  # the only thing that explains why, and discarding it leaves a bare "noshot".
+  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" \
+    > "$SHOTS/$a.log" 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"
+    # Surface the tail of whatever it said, so a real failure is diagnosable
+    # from this run rather than needing the app re-run by hand.
+    if [ -s "$SHOTS/$a.log" ]; then
+      echo "  $a produced no frame; its last output was:" >&2
+      sed 's/\x1b\[[0-9;]*m//g' "$SHOTS/$a.log" | tail -3 | sed 's/^/    /' >&2
+    fi
     continue
   fi
   # `png:` forces the decoder rather than letting ImageMagick guess from the
