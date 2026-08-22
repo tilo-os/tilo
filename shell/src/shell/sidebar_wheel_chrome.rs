@@ -860,7 +860,7 @@ mod drag_rotate_tests {
     fn sidebar_with_workspaces(
         n: usize,
     ) -> (SidebarWheelChrome, crate::shell::chrome_state::Chrome) {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         for i in 1..n {
             tree.append_empty_workspace(&format!("WS-{}", i));
         }

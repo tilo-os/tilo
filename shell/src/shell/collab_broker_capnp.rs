@@ -1999,7 +1999,7 @@ mod tests {
     #[test]
     fn a_capnp_apps_delta_is_published_to_the_room() {
         let (json_path, capnp_path) = unique_paths("capnp-outbound");
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let handle = spawn_full(
             json_path.clone(),
@@ -2100,7 +2100,7 @@ mod tests {
     #[test]
     fn a_channel_naming_no_room_publishes_nothing() {
         let (json_path, capnp_path) = unique_paths("capnp-unaddressed");
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
         let handle = spawn_full(
             json_path.clone(),

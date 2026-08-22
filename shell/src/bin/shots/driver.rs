@@ -53,7 +53,7 @@ impl ShellDriver {
     /// `viewport` size. Equivalent to what `bin/shots`'s headless path
     /// did per-scene, but stateful across actions.
     pub fn new(viewport: (u32, u32)) -> Self {
-        Self::with_tree(WorkspaceTree::bootstrap_default(), viewport)
+        Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {

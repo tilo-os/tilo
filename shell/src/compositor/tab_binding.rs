@@ -455,7 +455,7 @@ mod tests {
     ///
     /// Rules 1 and 2 differ on exactly one thing — whether the selection
     /// is one tab of several — so a fixture for either has to say which
-    /// it is. `bootstrap_default` ships a four-tab group, which is the
+    /// it is. `bootstrap_demo` ships a four-tab group, which is the
     /// rule-2 shape; this is the rule-1 one.
     fn focus_lone_window(tree: &mut WorkspaceTree) -> (StripId, GroupId) {
         let strip_id = tree.workspaces[0].strips[0].id;
@@ -474,7 +474,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_launch_beside_a_lone_window_opens_its_own_group_to_the_right() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, focused) = focus_lone_window(&mut tree);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
         let tabs_in_focused = tree.workspaces[0].strips[0].window_groups[0].tabs.len();
@@ -522,9 +522,9 @@ mod tests {
     #[test]
     fn a_launch_from_inside_a_tabbed_group_becomes_the_next_tab_in_it() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.workspaces[0].strips[0].id;
-        // `bootstrap_default`'s group holds four tabs. Select the second
+        // `bootstrap_demo`'s group holds four tabs. Select the second
         // one, so "immediately right of the selected tab" is a position
         // distinct from both ends of the bar.
         let selected_idx = 1usize;
@@ -577,7 +577,7 @@ mod tests {
     fn the_new_group_is_inserted_beside_the_focused_group_not_at_the_end() {
         use crate::shell::state::{WindowGroup, WindowWidth, next_id};
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let (_strip_id, focused) = focus_lone_window(&mut tree);
         // Two more groups after the first, so "beside" and "at the end"
         // are distinguishable positions.
@@ -620,7 +620,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_document_opened_from_an_app_becomes_a_tab_in_that_apps_group() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.workspaces[0].strips[0].id;
         let opener = tree.workspaces[0].strips[0].window_groups[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -660,7 +660,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn a_tab_placement_naming_a_dead_group_falls_back_to_a_new_group() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.workspaces[0].strips[0].id;
         let focused = tree.workspaces[0].strips[0].window_groups[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -691,7 +691,7 @@ mod tests {
         use crate::shell::launcher;
         use crate::shell::state::{WindowGroup, WindowWidth, next_id};
         launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, selected) = focus_lone_window(&mut tree);
         // A second group the note can name — somewhere the rule would
         // never send a window, since the selection is elsewhere.
@@ -768,7 +768,7 @@ mod tests {
         use crate::shell::launcher;
         launcher::clear_pending_placements();
 
-        let mut protocol = WorkspaceTree::bootstrap_default();
+        let mut protocol = WorkspaceTree::bootstrap_demo();
         // A lone selected window, so the rule's answer (a column beside
         // it) differs from the note's (a tab inside it) — without that
         // the two placements coincide and the test proves nothing.
@@ -803,7 +803,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn group_id_for_surface_resolves_the_owning_group() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let _ = adopt_toplevel(&mut tree, 4243, Some("org.example.app".into()));
         let expected = group_of(&tree, 4243).id;
         assert_eq!(
@@ -820,7 +820,7 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn close_tab_for_destroyed_surface_removes_matching_foreign_tab() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let _ = adopt_toplevel(&mut tree, 42, Some("io.example.thing".into()));
         let owner = group_of(&tree, 42).id;
         let before = group_of(&tree, 42).tabs.len();
@@ -852,7 +852,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn rename_tab_for_app_id_rewrites_anon_placeholder() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // First adopt without an app-id so the tab gets the
         // `anon-<surface_id>` placeholder.
         let _ = adopt_toplevel(&mut tree, 99, None);
@@ -872,7 +872,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn rename_tab_for_app_id_returns_false_for_unknown_surface() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let renamed = rename_tab_for_app_id(&mut tree, 12345, "x".into());
         assert!(
             !renamed,
@@ -889,7 +889,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn adopt_toplevel_creates_strip_when_workspace_empty() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // Start from a known-good tree and erase the active workspace's
         // strips so we exercise the new branch. Other workspaces (if
         // any) are untouched.
@@ -954,7 +954,7 @@ mod tests {
             opens_extensions: Vec::new(),
         });
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // The client announces the bare app-id — the trailing component
         // of the package id, which is the reverse-DNS convention.
         let tab_id = adopt_toplevel(&mut tree, 31337, Some("adoptfixture".into()));
@@ -986,7 +986,7 @@ mod tests {
     /// tree and blank on screen.
     #[test]
     fn a_hosted_app_opened_beside_a_lone_window_takes_the_column_to_its_right() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, focused) = focus_lone_window(&mut tree);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
@@ -1039,7 +1039,7 @@ mod tests {
     #[test]
     #[serial_test::serial(process_env)]
     fn anonymous_app_id_falls_back_to_surface_synthetic() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let _ = adopt_toplevel(&mut tree, 7, None);
         let tab = tab_of(&tree, 7);
         match &tab.tile {
