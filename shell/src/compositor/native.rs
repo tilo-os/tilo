@@ -3940,8 +3940,8 @@ mod tests {
             .get("workspaces")
             .and_then(|v| v.as_array())
             .expect("workspace_tree_json should carry `workspaces` array");
-        // The bootstrap tree seeds at least one demo workspace —
-        // matches the assertions in `bootstrap_default` tests in
+        // `FrameBuilder::new` uses the demo tree, which carries
+        // workspaces — matches the `bootstrap_demo` assertions in
         // `shell/state.rs`.
         assert!(
             !workspaces.is_empty(),
