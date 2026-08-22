@@ -47,8 +47,8 @@
 //!   [`shell::state::WorkspaceTree`] + a structured view of the
 //!   [`ChromeState`] (overlays, search scope, ws-settings tab,
 //!   revision, …). The response shape is `Response::State {
-//!   workspace_tree, chrome }`, both `serde_json::Value` so future
-//!   ChromeState fields surface without bumping the wire schema.
+//!   workspace_tree, chrome, peers }`, each `serde_json::Value` so
+//!   future fields surface without bumping the wire schema.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -199,6 +199,16 @@ pub enum Command {
     /// only happens on a release that arrives after the pointer has moved
     /// over another client. These two ops decompose that.
     PointerMove { x: f64, y: f64 },
+    /// Give every window group in the active strip the same share of
+    /// it, in permille.
+    ///
+    /// A group takes about three quarters of its strip by default, so
+    /// two of them never fit on screen at once and the second is
+    /// scrolled off. A harness that needs to see two apps side by side
+    /// — a peer's cursor crossing from one to the other is the case —
+    /// has no other way to compose that scene. Drives the same
+    /// `WindowWidth::Fraction` + doc mirror a width drag does.
+    SetGroupWidth { permille: u16 },
     /// Press or release the left pointer button at the current position.
     PointerButton { pressed: bool },
     /// Copy `text` from **in-process chrome**, through the same
@@ -259,6 +269,9 @@ pub enum Response {
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
+        /// The peers this session would paint, straight off the
+        /// `PresenceCtx` the overlay reads.
+        peers: serde_json::Value,
     },
     /// Answer to a capability query or administration command
     /// (`grant`, `revoke`, `check_action`). Opaque JSON so the shape
@@ -317,6 +330,19 @@ pub trait ControlState {
     /// Default impl returns [`serde_json::Value::Null`] so test
     /// fixtures that don't exercise `state_dump` stay terse.
     fn chrome_state_json(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+    /// The peers this session would paint right now, read from the
+    /// same `PresenceCtx` the overlay draws from.
+    ///
+    /// Exposed because a peer cursor is otherwise only assertable by
+    /// looking at a picture, and "no peer arrived" and "a peer arrived
+    /// and was not drawn" produce the same picture. A harness that
+    /// cannot tell those apart cannot prove either.
+    ///
+    /// Default impl returns [`serde_json::Value::Null`] so mock
+    /// fixtures stay terse.
+    fn peers_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
     /// Per-surface frame ground truth: what the compositor itself knows
@@ -408,6 +434,10 @@ pub enum PlannedAction {
     /// invocation. Failures are logged via `eprintln!` — they don't
     /// propagate to the wire response (Phase 5 will).
     Snapshot { path: PathBuf },
+    /// Give every live window group the same share of its strip, in
+    /// permille. Applied against the widget tree because that is where
+    /// the laid-out width lives.
+    SetGroupWidth { permille: u16 },
 }
 
 /// Wire-friendly key identifier. Mirrors the subset of
@@ -703,6 +733,7 @@ pub fn dispatch_command<S: ControlState>(
                 Response::State {
                     workspace_tree: state.workspace_tree_json(),
                     chrome: state.chrome_state_json(),
+                    peers: state.peers_json(),
                 },
                 Vec::new(),
             )
@@ -746,6 +777,12 @@ pub fn dispatch_command<S: ControlState>(
         Command::PointerMove { x, y } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],
+        ),
+        Command::SetGroupWidth { permille } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::SetGroupWidth {
+                permille: *permille,
+            }],
         ),
         Command::PointerButton { pressed } => (
             Response::Ok { frame: 0 },
@@ -1458,6 +1495,7 @@ mod tests {
         let Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State, got something else");
@@ -1492,6 +1530,7 @@ mod tests {
         let Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State");
@@ -1503,12 +1542,13 @@ mod tests {
     /// Wire format for `Response::State` — the serialiser tags the
     /// variant `state` (snake_case) and the payload is the two JSON
     /// blobs. Guards against accidental rename of `workspace_tree` /
-    /// `chrome` in the response envelope.
+    /// `chrome` / `peers` in the response envelope.
     #[test]
-    fn serialise_state_response_emits_workspace_tree_and_chrome() {
+    fn serialise_state_response_emits_workspace_tree_chrome_and_peers() {
         let resp = Response::State {
             workspace_tree: serde_json::json!({ "workspaces": [] }),
             chrome: serde_json::json!({ "overlays": {} }),
+            peers: serde_json::json!({ "pointers": [] }),
         };
         let out = serialise_response(&resp);
         assert!(
@@ -1517,5 +1557,6 @@ mod tests {
         );
         assert!(out.contains("\"workspace_tree\""), "got {out}");
         assert!(out.contains("\"chrome\""), "got {out}");
+        assert!(out.contains("\"peers\""), "got {out}");
     }
 }
