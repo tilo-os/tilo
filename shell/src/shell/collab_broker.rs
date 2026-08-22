@@ -1131,6 +1131,31 @@ fn reader_loop(
                 }
             }
         }
+        // Presence takes the same bridge, and has to: the local
+        // fan-out below reaches apps on this host, so without this a
+        // peer's caret stopped at the machine that produced it and
+        // every collaborator looked like they were doing nothing.
+        //
+        // The frame crosses exactly as it arrived — the shell does not
+        // interpret a caret any more than it interprets a change blob —
+        // and the receiving broker re-addresses it to the peer it came
+        // from before handing it to local apps.
+        if let (Some(net), CollabRequest::Presence { .. }) = (peer_sync.as_ref(), &req) {
+            match &src_route {
+                Some(route) => net.publish_app_presence(
+                    route.app_id.clone(),
+                    route.cluster_id.clone(),
+                    frame.clone(),
+                ),
+                None => {
+                    tracing::debug!(
+                        "collab_broker: not republishing Presence from peer-{}: \
+                         no Hello, so the frame has no route",
+                        peer.id,
+                    );
+                }
+            }
+        }
         // Phase 6 cooperative-fetch outbound bridge: a local
         // `FetchScrollback` always replies first from the local op
         // log (handled by `translate`). When peer-sync is wired AND
@@ -1544,6 +1569,7 @@ pub fn spawn_full(
         .as_ref()
         .map(|net| {
             let inbound = net.inbound_app_crdt_handle();
+            let presence_inbound = net.inbound_app_presence_handle();
             let signed_inbound = net.inbound_app_crdt_signed_handle();
             let sb_req_inbound = net.inbound_scrollback_request_handle();
             let sb_resp_inbound = net.inbound_scrollback_response_handle();
@@ -1576,6 +1602,45 @@ pub fn spawn_full(
                                 entry.cluster_id,
                                 entry.record_id,
                             );
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain inbound presence and fan it to local
+                        // apps, attributed to the peer that sent it.
+                        //
+                        // Cluster scope, matching what a local presence
+                        // frame gets (`CrdtRoute::to_cluster_scope`).
+                        // Narrowing remote presence to a record would
+                        // make a peer visible to people on their own
+                        // machine and invisible to everyone else, which
+                        // is the asymmetry this bridge exists to remove.
+                        let drained_presence: Vec<_> = {
+                            let mut buf = match presence_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_presence {
+                            // The frame is the sender's own
+                            // `CollabRequest::Presence`. Anything else
+                            // is a peer speaking a protocol we do not
+                            // have, and is dropped rather than guessed at.
+                            let Ok(CollabRequest::Presence { key, payload }) =
+                                serde_json::from_slice::<CollabRequest>(&entry.frame)
+                            else {
+                                continue;
+                            };
+                            // Attributed to the publishing host, not to
+                            // a local peer slot: `user_id` is what the
+                            // receiving app colours the caret by, so two
+                            // peers must never collapse onto one id.
+                            let event = CollabEvent::RemotePresenceUpdate {
+                                user_id: format!("peer@{}", entry.peer),
+                                key,
+                                payload,
+                            };
+                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
