@@ -322,26 +322,32 @@ pub enum NeighbourMsg {
     /// land nowhere its widgets read. Something has to carry the state
     /// the deltas are relative to, once, and that is this variant.
     ///
-    /// # This is an answer, not an announcement
+    /// # Sent on arrival, not on every commit
     ///
-    /// The toolkit emits the frame behind it
-    /// (`ui::collaboration::CollabRequest::SyncCRDT`) from exactly one
-    /// place: a peer's `PresencePayload::Arrived` reaching a process
-    /// that holds the document. A commit does **not** produce one — a
-    /// commit produces a delta. So the join is the request and this is
-    /// the reply, and the rate is "once per peer that arrives", not
-    /// "once per keystroke".
+    /// The toolkit produces the frame behind this
+    /// (`ui::collaboration::CollabRequest::SyncCRDT`) on **every commit
+    /// that changes the document**, not only when a peer joins — it
+    /// feeds same-host fan-out and the undo snapshot. Republishing each
+    /// one would put a whole document on the room topic per commit:
+    /// unbounded, growing with the session, and redundant with the
+    /// delta that already carries the same edit to anyone who shares
+    /// the history.
     ///
-    /// That ordering is what makes gossip an acceptable carrier for it
-    /// at all, and it is the same shape
-    /// [`NeighbourMsg::ScrollbackRequest`] /
-    /// [`NeighbourMsg::ScrollbackResponse`] already take: rare,
-    /// single-shot, answered by whoever holds the data. It is not
-    /// addressed to the joiner, deliberately — merging a snapshot is
-    /// idempotent and commutative, so a peer that missed one earlier
-    /// converges from somebody else's copy, and the alternative
-    /// (naming a recipient) would need the *app* to say who its reply
-    /// is for.
+    /// So the publish is gated on somebody actually needing one. A
+    /// peer's `PresencePayload::Arrived` passes through the local
+    /// broker's own drain, which notes it
+    /// ([`crate::shell::network::ShellNetwork::note_snapshot_request`]);
+    /// the next whole document for that room goes out, and the ones
+    /// after it stay local until somebody else arrives. The rate is
+    /// therefore "once per peer that arrives", which is what makes a
+    /// broadcast medium acceptable for it at all — the same rare,
+    /// single-shot shape [`NeighbourMsg::ScrollbackRequest`] /
+    /// [`NeighbourMsg::ScrollbackResponse`] already take.
+    ///
+    /// It is not addressed to the joiner, deliberately: merging is
+    /// idempotent and commutative, so a peer that missed one converges
+    /// from somebody else's copy, and naming a recipient would need the
+    /// *app* to say who its reply is for.
     ///
     /// # Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`]
     ///
