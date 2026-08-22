@@ -19,8 +19,18 @@
 //!     the duration from the `data` chunk size over the byte rate.
 //!   * **PNG / JPEG**: pixel dimensions from the header (`IHDR` / `SOFn`).
 //!
-//! Anything we can't parse degrades honestly: the kind is guessed from the
-//! extension and the numeric fields stay zero / unknown, rather than fabricated.
+//! Anything we can't parse degrades honestly, in one of three ways:
+//!
+//!   * The bytes are **positively not media** (an HTML page, a text file, an
+//!     archive, an executable) — the probe *fails* with
+//!     [`ProbeError::NotMedia`] naming what they really are. A download that
+//!     went wrong and landed as `page.mp4` is refused at import instead of
+//!     becoming a `0x0`, zero-length "video" that can never play.
+//!   * The extension names no media format at all — [`ProbeError::Unrecognised`].
+//!   * The extension names a real format whose container we do not parse (AVI,
+//!     MPEG-TS, FLAC …) — the kind comes from the extension and the numeric
+//!     fields stay zero / unknown, never fabricated.
+//!
 //! Under `--features decode` the caller can additionally confirm duration
 //! against the real GStreamer pipeline, but the container parse here is already
 //! real and is what the default build relies on.
@@ -42,66 +52,215 @@ pub struct ProbedMedia {
     pub duration: f64,
     pub width: u32,
     pub height: u32,
+    /// Frames per second, read from the container's real per-sample timing
+    /// (ISOBMFF `stts` deltas over the `mdhd` timescale, Matroska
+    /// `DefaultDuration`). **`0.0` means unknown** — a fragmented or
+    /// non-timed container carries no frame timing in its header, and the
+    /// probe says so rather than inventing a rate. Callers must render
+    /// unknown as unknown; substituting a plausible default reports a number
+    /// the file never claimed.
     pub fps: f64,
     /// Container/codec tag (four-CC or format name), or `"unknown"`.
     pub codec: String,
 }
 
+/// Why a file yielded no real media metadata.
+///
+/// Every variant is a refusal, not a degraded guess: a caller that gets one
+/// must decline the import and say why, because there is nothing truthful to
+/// put in a [`crate::model::MediaItem`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeError {
+    /// The file could not be read at all.
+    Io(String),
+    /// The file has no bytes.
+    Empty,
+    /// The bytes are positively something other than media. `detected` names
+    /// what they actually are, for the message shown to the user.
+    NotMedia { detected: &'static str },
+    /// No container header matched and the extension names no media format we
+    /// recognise — nothing honest can be said about this file.
+    Unrecognised,
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProbeError::Io(e) => write!(f, "could not be read ({e})"),
+            ProbeError::Empty => write!(f, "is empty"),
+            ProbeError::NotMedia { detected } => {
+                write!(f, "is not a media file - it is {detected}")
+            }
+            ProbeError::Unrecognised => write!(f, "is not in a media format we recognise"),
+        }
+    }
+}
+
+impl std::error::Error for ProbeError {}
+
 /// Probe a file on disk into real [`ProbedMedia`]. Reads the bytes (the whole
 /// file for the small clips this handles; a large import is capped) and
 /// dispatches on the magic bytes.
-pub fn probe_file(path: &Path) -> std::io::Result<ProbedMedia> {
+///
+/// Fails with a [`ProbeError`] when the file holds nothing that can honestly
+/// be described as media — the caller must refuse the import and show
+/// [`ProbeError`]'s message rather than adding an item with invented metadata.
+pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
     // Read the file to parse its container header. Cap very large files: the
     // metadata we need lives in the header + `moov`, and a faststart MP4 puts
     // `moov` up front, so the first slice suffices for the common case.
     const CAP: u64 = 96 * 1024 * 1024;
-    let len = std::fs::metadata(path)?.len();
+    let len = std::fs::metadata(path).map_err(|e| ProbeError::Io(e.to_string()))?.len();
     let data = if len <= CAP {
-        std::fs::read(path)?
+        std::fs::read(path).map_err(|e| ProbeError::Io(e.to_string()))?
     } else {
         use std::io::Read;
-        let mut f = std::fs::File::open(path)?;
+        let mut f = std::fs::File::open(path).map_err(|e| ProbeError::Io(e.to_string()))?;
         let mut buf = vec![0u8; CAP as usize];
-        let n = f.read(&mut buf)?;
+        let n = f.read(&mut buf).map_err(|e| ProbeError::Io(e.to_string()))?;
         buf.truncate(n);
         buf
     };
-    Ok(probe_bytes(&data, path))
+    probe_bytes(&data, path)
 }
 
 /// Probe already-read `data`. Pure, so it is unit-testable on crafted bytes.
 /// `path` is used only as an extension hint when the magic bytes are unknown.
-pub fn probe_bytes(data: &[u8], path: &Path) -> ProbedMedia {
+///
+/// The order matters: every container we can genuinely parse is tried first,
+/// so a real file is never mistaken for something else. Only bytes that match
+/// no media header at all reach the not-media check.
+pub fn probe_bytes(data: &[u8], path: &Path) -> Result<ProbedMedia, ProbeError> {
+    if data.is_empty() {
+        return Err(ProbeError::Empty);
+    }
     if is_png(data) {
         let (w, h) = png_dimensions(data).unwrap_or((0, 0));
-        return image_probe(w, h, "png");
+        return Ok(image_probe(w, h, "png"));
     }
     if is_jpeg(data) {
         let (w, h) = jpeg_dimensions(data).unwrap_or((0, 0));
-        return image_probe(w, h, "jpeg");
+        return Ok(image_probe(w, h, "jpeg"));
     }
     if is_wav(data) {
         if let Some(p) = parse_wav(data) {
-            return p;
+            return Ok(p);
         }
     }
     if is_isobmff(data) {
         if let Some(p) = parse_isobmff(data) {
-            return p;
+            return Ok(p);
         }
     }
     if is_ebml(data) {
         if let Some(p) = parse_ebml(data) {
-            return p;
+            return Ok(p);
         }
     }
     if looks_like_mp3(data, path) {
         if let Some(p) = parse_mp3(data) {
-            return p;
+            return Ok(p);
         }
     }
-    // Unknown container: honest fallback from the extension, no invented metadata.
+    // No media header matched. Before falling back to the extension, check
+    // whether the bytes are positively something *else* — this is the case
+    // that used to slip through as a `0x0` zero-length "video": a saved web
+    // page, an error response, or a text file wearing a `.mp4` name.
+    if let Some(detected) = non_media_signature(data) {
+        return Err(ProbeError::NotMedia { detected });
+    }
+    // A container we do not parse but plausibly real media: kind from the
+    // extension, numeric fields left unknown.
     fallback_from_extension(path)
+}
+
+// ---- "this is not media at all" ------------------------------------------
+
+/// Positively identify bytes as something other than media, returning a short
+/// human-readable name for what they are. `None` means "could still be a
+/// container we simply do not parse" — never a claim that the bytes *are* media.
+fn non_media_signature(d: &[u8]) -> Option<&'static str> {
+    // Binary formats that are unambiguously not media containers.
+    const MAGIC: &[(&[u8], &str)] = &[
+        (b"%PDF-", "a PDF document"),
+        (b"PK\x03\x04", "a ZIP archive"),
+        (b"PK\x05\x06", "a ZIP archive"),
+        (b"PK\x07\x08", "a ZIP archive"),
+        (b"\x7FELF", "an ELF executable"),
+        (b"MZ", "a Windows executable"),
+        (b"Rar!\x1A\x07", "a RAR archive"),
+        (b"\x1F\x8B", "a gzip archive"),
+        (b"BZh", "a bzip2 archive"),
+        (b"\xFD7zXZ\x00", "an xz archive"),
+        (b"7z\xBC\xAF\x27\x1C", "a 7-Zip archive"),
+        (b"SQLite format 3\x00", "a SQLite database"),
+        (b"{\\rtf", "an RTF document"),
+        (b"\xD0\xCF\x11\xE0", "an Office document"),
+        (b"\xCA\xFE\xBA\xBE", "a compiled binary"),
+        (b"-----BEGIN ", "a PEM key or certificate"),
+    ];
+    for (magic, name) in MAGIC {
+        if d.starts_with(magic) {
+            return Some(name);
+        }
+    }
+    textual_kind(d)
+}
+
+/// Classify `d` as text, and say what kind. Media containers are binary — they
+/// carry NUL bytes and raw byte values in their first kilobyte — so bytes that
+/// read as clean text are never a container we failed to parse.
+fn textual_kind(d: &[u8]) -> Option<&'static str> {
+    let d = d.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(d); // UTF-8 BOM
+    let head = &d[..d.len().min(1024)];
+    if head.is_empty() {
+        return None;
+    }
+    // Any NUL, or a run of non-text control bytes, means binary.
+    let mut control = 0usize;
+    for &b in head {
+        if b == 0 {
+            return None;
+        }
+        if b < 0x20 && b != b'\t' && b != b'\n' && b != b'\r' {
+            control += 1;
+        }
+    }
+    if control * 100 > head.len() {
+        return None; // >1% control bytes: binary
+    }
+    // Must decode as UTF-8 up to the last whole character in the window.
+    let mut end = head.len();
+    while end > 0 && std::str::from_utf8(&head[..end]).is_err() {
+        end -= 1;
+        if head.len() - end > 4 {
+            return None; // not a truncated multi-byte char: genuinely not UTF-8
+        }
+    }
+    let text = std::str::from_utf8(&head[..end]).ok()?;
+    let lower = text.trim_start().to_ascii_lowercase();
+    if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
+        return Some("an HTML page");
+    }
+    if lower.starts_with("<?xml") {
+        return Some("an XML document");
+    }
+    if lower.starts_with("<svg") {
+        return Some("an SVG image");
+    }
+    if lower.starts_with("#extm3u") {
+        return Some("a playlist, not the media itself");
+    }
+    if lower.starts_with('{') || lower.starts_with('[') {
+        return Some("a JSON document");
+    }
+    if lower.starts_with("#!") {
+        return Some("a script");
+    }
+    if lower.starts_with('<') {
+        return Some("a markup document");
+    }
+    Some("a text file")
 }
 
 fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
@@ -115,19 +274,46 @@ fn image_probe(w: u32, h: u32, codec: &str) -> ProbedMedia {
     }
 }
 
-fn fallback_from_extension(path: &Path) -> ProbedMedia {
+/// Media containers we do not parse but which are unquestionably media, so an
+/// import of one is honest with unknown numbers rather than refused.
+const VIDEO_EXTS: &[&str] = &[
+    "mp4", "m4v", "mov", "qt", "mkv", "webm", "avi", "flv", "f4v", "wmv", "asf", "mpg", "mpeg",
+    "mpe", "m1v", "m2v", "ts", "m2ts", "mts", "ogv", "3gp", "3g2", "vob", "mxf", "divx", "rm",
+    "rmvb", "y4m",
+];
+const AUDIO_EXTS: &[&str] = &[
+    "wav", "wave", "mp3", "flac", "aac", "ogg", "oga", "opus", "m4a", "m4b", "wma", "aiff", "aif",
+    "aifc", "ape", "mka", "amr", "au", "caf", "dsf", "wv", "ac3", "dts",
+];
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "jpe", "gif", "webp", "bmp", "tif", "tiff", "avif", "heic", "heif",
+    "ico", "jxl", "tga",
+];
+
+/// Last resort once no container matched and the bytes are not positively
+/// something else: trust the extension for the *kind* only, and leave every
+/// number unknown.
+///
+/// An extension that names no media format at all is a refusal — guessing
+/// `Video` for an arbitrary file is what produced dead `0p / 0:00` bin items.
+fn fallback_from_extension(path: &Path) -> Result<ProbedMedia, ProbeError> {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let kind = match ext.as_str() {
-        "wav" | "mp3" | "flac" | "aac" | "ogg" | "opus" | "m4a" => MediaKind::Audio,
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" => MediaKind::Image,
-        _ => MediaKind::Video,
+    let e = ext.as_str();
+    let kind = if AUDIO_EXTS.contains(&e) {
+        MediaKind::Audio
+    } else if IMAGE_EXTS.contains(&e) {
+        MediaKind::Image
+    } else if VIDEO_EXTS.contains(&e) {
+        MediaKind::Video
+    } else {
+        return Err(ProbeError::Unrecognised);
     };
     let duration = if kind == MediaKind::Image { DEFAULT_IMAGE_DURATION } else { 0.0 };
-    ProbedMedia { kind, duration, width: 0, height: 0, fps: 0.0, codec: "unknown".into() }
+    Ok(ProbedMedia { kind, duration, width: 0, height: 0, fps: 0.0, codec: "unknown".into() })
 }
 
 // ---- magic-byte sniffers --------------------------------------------------
@@ -337,7 +523,7 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
     let moov = child(data, b"moov")?;
 
     // Movie duration from mvhd.
-    let (timescale, duration_units) = child(moov, b"mvhd").and_then(mvhd_time).unwrap_or((0, 0));
+    let (timescale, duration_units) = child(moov, b"mvhd").and_then(timescale_and_duration).unwrap_or((0, 0));
     let duration = if timescale > 0 {
         duration_units as f64 / timescale as f64
     } else {
@@ -375,10 +561,22 @@ fn parse_isobmff(data: &[u8]) -> Option<ProbedMedia> {
             if let Some(c) = &track_codec {
                 codec = c.clone();
             }
-            // fps ≈ video sample count / movie duration.
-            let samples = stbl.and_then(|s| child(s, b"stsz")).and_then(stsz_count);
-            if let (Some(n), true) = (samples, duration > 0.0) {
-                fps = n as f64 / duration;
+            // Real frame rate: the track's own sample deltas (`stts`) over its
+            // own media timescale (`mdhd`). That is the rate the container
+            // actually states — 30000/1001 comes out as 29.97, not 30 — and it
+            // is per-track, so an edit list or a trailing audio-only stretch
+            // cannot skew it the way sample-count-over-movie-duration did.
+            // A container that carries no sample table (fragmented MP4, where
+            // timing lives in `moof`) leaves `fps` at 0.0, meaning unknown.
+            let media_timescale = descend(trak, &[b"mdia", b"mdhd"])
+                .and_then(timescale_and_duration)
+                .map(|(ts, _)| ts)
+                .unwrap_or(0);
+            if let Some(rate) = stbl
+                .and_then(|s| child(s, b"stts"))
+                .and_then(|stts| stts_frame_rate(stts, media_timescale))
+            {
+                fps = rate;
             }
         } else if is_audio && codec == "unknown" && !saw_video {
             if let Some(c) = track_codec {
@@ -402,8 +600,11 @@ fn saw_video_recorded(w: u32, h: u32, codec: &str) -> bool {
     w != 0 && h != 0 && codec != "unknown"
 }
 
-/// (timescale, duration) from an `mvhd` payload.
-fn mvhd_time(body: &[u8]) -> Option<(u32, u64)> {
+/// (timescale, duration) from an `mvhd` **or** `mdhd` payload — the two boxes
+/// share this prefix layout, so the movie header and a track's media header
+/// both parse here. `mvhd`'s timescale times the movie; `mdhd`'s times that
+/// one track's samples, which is what frame timing must be measured against.
+fn timescale_and_duration(body: &[u8]) -> Option<(u32, u64)> {
     let version = *body.first()?;
     if version == 1 {
         // 1 + 3 flags + 8 create + 8 modify = 20, then timescale(4), duration(8)
@@ -456,12 +657,35 @@ fn stsd_codec(body: &[u8]) -> Option<String> {
     Some(String::from_utf8_lossy(fourcc).trim().to_string())
 }
 
-/// Sample count from an `stsz` payload (at offset 8).
-fn stsz_count(body: &[u8]) -> Option<u32> {
-    if body.len() < 12 {
+/// Average frame rate from an `stts` (time-to-sample) payload, in `timescale`
+/// units per second.
+///
+/// `stts` is a run-length table of `(sample_count, sample_delta)` pairs giving
+/// each sample's real duration. Summing both columns yields total samples over
+/// total time — exact for constant-rate video, and the true average for
+/// variable-rate video. `None` when the table is absent or empty, which is the
+/// honest "the container does not say" answer.
+fn stts_frame_rate(body: &[u8], timescale: u32) -> Option<f64> {
+    if timescale == 0 || body.len() < 8 {
         return None;
     }
-    Some(be_u32(&body[8..12]))
+    let entries = be_u32(&body[4..8]) as usize;
+    let mut samples: u64 = 0;
+    let mut units: u64 = 0;
+    for e in 0..entries {
+        let off = 8 + e * 8;
+        if off + 8 > body.len() {
+            break;
+        }
+        let count = be_u32(&body[off..off + 4]) as u64;
+        let delta = be_u32(&body[off + 4..off + 8]) as u64;
+        samples = samples.saturating_add(count);
+        units = units.saturating_add(count.saturating_mul(delta));
+    }
+    if samples == 0 || units == 0 {
+        return None;
+    }
+    Some(samples as f64 * timescale as f64 / units as f64)
 }
 
 // ---- Matroska / WebM (EBML) ----------------------------------------------
@@ -477,6 +701,8 @@ const EBML_TRACK_TYPE: u64 = 0x83;
 const EBML_VIDEO: u64 = 0xE0;
 const EBML_PIXEL_WIDTH: u64 = 0xB0;
 const EBML_PIXEL_HEIGHT: u64 = 0xBA;
+/// Nanoseconds per frame, stated by the track itself.
+const EBML_DEFAULT_DURATION: u64 = 0x23E3_83;
 
 /// Read one EBML variable-length integer at `d[i..]`.
 ///
@@ -571,6 +797,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
     let mut saw_audio = false;
     let mut width = 0u32;
     let mut height = 0u32;
+    let mut fps = 0.0f64;
     if let Some(tracks) = ebml_find(segment, EBML_TRACKS) {
         for (id, entry) in ebml_children(tracks) {
             if id != EBML_TRACK_ENTRY {
@@ -583,6 +810,16 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
                         if let Some(video) = ebml_find(entry, EBML_VIDEO) {
                             width = ebml_find(video, EBML_PIXEL_WIDTH).map(ebml_uint).unwrap_or(0) as u32;
                             height = ebml_find(video, EBML_PIXEL_HEIGHT).map(ebml_uint).unwrap_or(0) as u32;
+                        }
+                    }
+                    // The track's own nanoseconds-per-frame, when it states one.
+                    // Absent (the common WebM case) leaves fps unknown at 0.0.
+                    if fps == 0.0 {
+                        if let Some(ns) = ebml_find(entry, EBML_DEFAULT_DURATION)
+                            .map(ebml_uint)
+                            .filter(|&n| n > 0)
+                        {
+                            fps = 1e9 / ns as f64;
                         }
                     }
                 }
@@ -603,7 +840,7 @@ fn parse_ebml(d: &[u8]) -> Option<ProbedMedia> {
         duration,
         width,
         height,
-        fps: 0.0,
+        fps,
         codec: "matroska".to_string(),
     })
 }
@@ -774,25 +1011,78 @@ mod tests {
         stsd.extend_from_slice(&16u32.to_be_bytes()); // entry size
         stsd.extend_from_slice(b"avc1");
 
-        // stsz: ver+flags(4) sample_size(4=0) sample_count(4=150) → fps 25.
-        let mut stsz = vec![0u8; 12];
-        stsz[8..12].copy_from_slice(&150u32.to_be_bytes());
+        // stts: ver+flags(4) entry_count(4=1) then (count=150, delta=1001).
+        // With an mdhd timescale of 30000 that is exactly 30000/1001 = 29.97.
+        let mut stts = Vec::new();
+        stts.extend_from_slice(&[0, 0, 0, 0]); // ver+flags
+        stts.extend_from_slice(&1u32.to_be_bytes()); // entry count
+        stts.extend_from_slice(&150u32.to_be_bytes()); // sample count
+        stts.extend_from_slice(&1001u32.to_be_bytes()); // sample delta
 
-        let stbl = boxed(b"stbl", &[boxed(b"stsd", &stsd), boxed(b"stsz", &stsz)].concat());
+        // mdhd: v0, media timescale 30000 (the track's own clock, not the movie's).
+        let mut mdhd = vec![0u8; 20];
+        mdhd[12..16].copy_from_slice(&30000u32.to_be_bytes());
+        mdhd[16..20].copy_from_slice(&150_150u32.to_be_bytes()); // 150 × 1001
+
+        let stbl = boxed(b"stbl", &[boxed(b"stsd", &stsd), boxed(b"stts", &stts)].concat());
         let minf = boxed(b"minf", &stbl);
-        let mdia = boxed(b"mdia", &[boxed(b"hdlr", &hdlr), minf].concat());
+        let mdia = boxed(
+            b"mdia",
+            &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat(),
+        );
         let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
         let moov = boxed(b"moov", &[boxed(b"mvhd", &mvhd), trak].concat());
 
         let mut file = boxed(b"ftyp", b"isom\0\0\0\0isom");
         file.extend_from_slice(&moov);
 
-        let p = probe_bytes(&file, Path::new("clip.mp4"));
+        let p = probe_bytes(&file, Path::new("clip.mp4")).expect("a real mp4 probes");
         assert_eq!(p.kind, MediaKind::Video);
         assert!((p.duration - 6.0).abs() < 1e-6, "duration {}", p.duration);
         assert_eq!((p.width, p.height), (320, 180));
         assert_eq!(p.codec, "avc1");
-        assert!((p.fps - 25.0).abs() < 1e-6, "fps {}", p.fps);
+        // The container states 30000/1001; the probe must report exactly that,
+        // not the round number a human would guess.
+        assert!(
+            (p.fps - 30000.0 / 1001.0).abs() < 1e-6,
+            "fps {} should be the stated 29.97",
+            p.fps
+        );
+    }
+
+    #[test]
+    fn a_video_track_without_sample_timing_reports_unknown_fps() {
+        // A fragmented MP4 carries an empty `stts` in `moov` — the real timing
+        // lives in the `moof` boxes. There is nothing to read, so fps must stay
+        // unknown rather than being back-computed from the movie duration.
+        let mut mvhd = vec![0u8; 20];
+        mvhd[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd[16..20].copy_from_slice(&6000u32.to_be_bytes());
+        let mut tkhd = vec![0u8; 84];
+        let n = tkhd.len();
+        tkhd[n - 8..n - 4].copy_from_slice(&((640u32) << 16).to_be_bytes());
+        tkhd[n - 4..n].copy_from_slice(&((360u32) << 16).to_be_bytes());
+        let mut hdlr = vec![0u8; 12];
+        hdlr[8..12].copy_from_slice(b"vide");
+        let mut mdhd = vec![0u8; 20];
+        mdhd[12..16].copy_from_slice(&30000u32.to_be_bytes());
+        // stts with zero entries — the fragmented case.
+        let mut stts = vec![0u8; 8];
+        stts[4..8].copy_from_slice(&0u32.to_be_bytes());
+        let stbl = boxed(b"stbl", &boxed(b"stts", &stts));
+        let minf = boxed(b"minf", &stbl);
+        let mdia = boxed(
+            b"mdia",
+            &[boxed(b"mdhd", &mdhd), boxed(b"hdlr", &hdlr), minf].concat(),
+        );
+        let trak = boxed(b"trak", &[boxed(b"tkhd", &tkhd), mdia].concat());
+        let moov = boxed(b"moov", &[boxed(b"mvhd", &mvhd), trak].concat());
+        let mut file = boxed(b"ftyp", b"isom\0\0\0\0isom");
+        file.extend_from_slice(&moov);
+
+        let p = probe_bytes(&file, Path::new("frag.mp4")).expect("a real mp4 probes");
+        assert_eq!((p.width, p.height), (640, 360), "dimensions are still real");
+        assert_eq!(p.fps, 0.0, "no sample timing → unknown, never a stand-in rate");
     }
 
     #[test]
@@ -818,7 +1108,7 @@ mod tests {
         riff.extend_from_slice(&(data_bytes.len() as u32).to_le_bytes());
         riff.extend_from_slice(&data_bytes);
 
-        let p = probe_bytes(&riff, Path::new("a.wav"));
+        let p = probe_bytes(&riff, Path::new("a.wav")).expect("a real wav probes");
         assert_eq!(p.kind, MediaKind::Audio);
         assert!((p.duration - 1.0).abs() < 1e-6, "duration {}", p.duration);
         assert_eq!(p.codec, "pcm");
@@ -833,7 +1123,7 @@ mod tests {
         png.extend_from_slice(&640u32.to_be_bytes());
         png.extend_from_slice(&360u32.to_be_bytes());
         png.extend_from_slice(&[8, 2, 0, 0, 0]); // bit depth, colour type, ...
-        let p = probe_bytes(&png, Path::new("logo.png"));
+        let p = probe_bytes(&png, Path::new("logo.png")).expect("a real png probes");
         assert_eq!(p.kind, MediaKind::Image);
         assert_eq!((p.width, p.height), (640, 360));
         assert!((p.duration - DEFAULT_IMAGE_DURATION).abs() < 1e-9);
@@ -850,20 +1140,96 @@ mod tests {
         jpg.extend_from_slice(&(480u16).to_be_bytes()); // height
         jpg.extend_from_slice(&(720u16).to_be_bytes()); // width
         jpg.extend_from_slice(&[3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]);
-        let p = probe_bytes(&jpg, Path::new("frame.jpg"));
+        let p = probe_bytes(&jpg, Path::new("frame.jpg")).expect("a real jpeg probes");
         assert_eq!(p.kind, MediaKind::Image);
         assert_eq!((p.width, p.height), (720, 480));
     }
 
     #[test]
-    fn unknown_container_degrades_honestly_by_extension() {
-        let p = probe_bytes(b"not a real media file at all", Path::new("mystery.mkv"));
-        // No fabricated numbers — zero dims, unknown codec, video-ish default.
-        assert_eq!((p.width, p.height), (0, 0));
-        assert_eq!(p.codec, "unknown");
-        let audio = probe_bytes(b"still nonsense", Path::new("track.opus"));
-        assert_eq!(audio.kind, MediaKind::Audio);
-        assert_eq!(audio.duration, 0.0);
+    fn an_html_page_saved_as_mp4_is_refused_not_imported_as_video() {
+        // The real failing case: a download that returned the web page instead
+        // of the file, saved under the media name it asked for. It matches no
+        // container, and the old extension fallback turned it into a
+        // MediaKind::Video with 0x0 dimensions and 0:00 duration — a dead bin
+        // item that could never play.
+        let html = b"<!DOCTYPE html>\n<html lang=\"en\"><head><title>reddit</title>\
+</head><body><div id=\"app\">Everything wrong with the world</div></body></html>";
+        let err = probe_bytes(
+            html,
+            Path::new("redlib_everything_wrong_with_the_world_CMAF_480.mp4"),
+        )
+        .expect_err("an HTML page is not a video, whatever it is named");
+        assert_eq!(err, ProbeError::NotMedia { detected: "an HTML page" });
+        assert!(
+            err.to_string().contains("HTML page"),
+            "the refusal names what the file really is: {err}"
+        );
+    }
+
+    #[test]
+    fn the_same_bytes_on_disk_are_refused_through_probe_file() {
+        // Prove it through the production entry point the importer calls, not
+        // just the pure byte path.
+        let f = std::env::temp_dir().join(format!("qos-ve-fake-{}.mp4", std::process::id()));
+        std::fs::write(&f, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
+        let err = probe_file(&f).expect_err("probe_file refuses an HTML page named .mp4");
+        assert_eq!(err, ProbeError::NotMedia { detected: "an HTML page" });
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn other_non_media_bytes_are_refused_with_what_they_really_are() {
+        for (bytes, name, detected) in [
+            (&b"%PDF-1.7\n%\xE2\xE3\xCF\xD3"[..], "paper.mov", "a PDF document"),
+            (&b"PK\x03\x04\x14\x00"[..], "bundle.mp4", "a ZIP archive"),
+            (&b"\x7FELF\x02\x01\x01"[..], "clip.mkv", "an ELF executable"),
+            (&b"{\"error\": \"not found\"}"[..], "reply.mp4", "a JSON document"),
+            (&b"1\n00:00:01,000 --> 00:00:04,000\nhello\n"[..], "subs.mp4", "a text file"),
+            (&b"#EXTM3U\n#EXT-X-VERSION:3\n"[..], "stream.mp4", "a playlist, not the media itself"),
+        ] {
+            match probe_bytes(bytes, Path::new(name)) {
+                Err(ProbeError::NotMedia { detected: d }) => assert_eq!(
+                    d, detected,
+                    "{name} must be named for what it is"
+                ),
+                other => panic!("{name} must be refused as not-media, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_file_is_refused() {
+        assert_eq!(probe_bytes(b"", Path::new("empty.mp4")), Err(ProbeError::Empty));
+    }
+
+    #[test]
+    fn an_unknown_extension_is_refused_rather_than_guessed_video() {
+        // Arbitrary binary with no media extension: we know nothing about it,
+        // so say nothing rather than declaring it a video.
+        let err = probe_bytes(&[0x00, 0x11, 0x22, 0xFE, 0xED, 0x00], Path::new("blob.dat"))
+            .expect_err("an unknown extension is not a video");
+        assert_eq!(err, ProbeError::Unrecognised);
+    }
+
+    #[test]
+    fn a_real_format_we_do_not_parse_still_imports_with_unknown_numbers() {
+        // AVI and FLAC are genuine media we have no container parser for.
+        // These must keep working exactly as before: right kind, no invented
+        // numbers. Only the *positively-not-media* case became a refusal.
+        let avi = probe_bytes(
+            &[b'R', b'I', b'F', b'F', 0x10, 0x00, 0x00, 0x00, b'A', b'V', b'I', b' ', 0x00, 0x01],
+            Path::new("legacy.avi"),
+        )
+        .expect("an AVI is still importable");
+        assert_eq!(avi.kind, MediaKind::Video);
+        assert_eq!((avi.width, avi.height), (0, 0));
+        assert_eq!(avi.duration, 0.0);
+        assert_eq!(avi.codec, "unknown");
+
+        let flac = probe_bytes(b"fLaC\x00\x00\x00\x22\x10\x00", Path::new("track.flac"))
+            .expect("a FLAC is still importable");
+        assert_eq!(flac.kind, MediaKind::Audio);
+        assert_eq!(flac.duration, 0.0);
     }
 
     // ---- EBML (Matroska / WebM) test builders --------------------------
@@ -908,7 +1274,7 @@ mod tests {
         let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[0x42, 0x82]); // minimal EBML header
         let file = [header, segment].concat();
 
-        let p = probe_bytes(&file, Path::new("clip.webm"));
+        let p = probe_bytes(&file, Path::new("clip.webm")).expect("a real webm probes");
         assert_eq!(p.kind, MediaKind::Video);
         assert!((p.duration - 8.0).abs() < 1e-6, "duration {}", p.duration);
         assert_eq!((p.width, p.height), (320, 180));
@@ -925,7 +1291,7 @@ mod tests {
         let segment = ebml(&[0x18, 0x53, 0x80, 0x67], &[info, tracks].concat());
         let header = ebml(&[0x1A, 0x45, 0xDF, 0xA3], &[]);
         let file = [header, segment].concat();
-        let p = probe_bytes(&file, Path::new("sound.webm"));
+        let p = probe_bytes(&file, Path::new("sound.webm")).expect("a real webm probes");
         assert_eq!(p.kind, MediaKind::Audio);
         assert!((p.duration - 3.0).abs() < 1e-6);
     }
@@ -941,7 +1307,7 @@ mod tests {
         mp3.extend_from_slice(&1u32.to_be_bytes()); // flags: frame count present
         mp3.extend_from_slice(&1000u32.to_be_bytes());
         mp3.extend_from_slice(&[0u8; 64]);
-        let p = probe_bytes(&mp3, Path::new("song.mp3"));
+        let p = probe_bytes(&mp3, Path::new("song.mp3")).expect("a real mp3 probes");
         assert_eq!(p.kind, MediaKind::Audio);
         assert_eq!(p.codec, "mp3");
         // 1000 frames × 1152 samples / 44100 Hz ≈ 26.12 s.
@@ -960,7 +1326,7 @@ mod tests {
         mp3.extend_from_slice(&[0x11u8; 32]); // side info (not "Xing")
         mp3.extend_from_slice(&[0x22u8; 4000]); // audio payload
         let audio_bytes = mp3.len() - audio_start;
-        let p = probe_bytes(&mp3, Path::new("cbr.mp3"));
+        let p = probe_bytes(&mp3, Path::new("cbr.mp3")).expect("a real mp3 probes");
         assert_eq!(p.kind, MediaKind::Audio);
         let expected = audio_bytes as f64 * 8.0 / 128_000.0;
         assert!((p.duration - expected).abs() < 0.05, "duration {} vs {}", p.duration, expected);
