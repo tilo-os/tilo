@@ -103,6 +103,42 @@ struct Registry {
     entry: Vec<InstalledPackage>,
 }
 
+/// `dev.qos.text-editor` → `Text Editor`.
+///
+/// The fallback display name for a package whose metadata carries
+/// none — the trailing id component is the only signal there is.
+/// Separators become spaces and each word is title-cased; an id that
+/// is already a display-ish word (`Notes`) comes back unchanged.
+///
+/// It lives here rather than in either caller because the desktop
+/// derives it for an *installed* package with no manifest name, and
+/// the catalogue derives it for an *available* one with no registry
+/// name. The same package must not be called two different things
+/// depending on whether it happens to be installed yet.
+pub fn display_name_for_package_id(package_id: &str) -> String {
+    let last = package_id
+        .rsplit('.')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(package_id);
+    let words: Vec<String> = last
+        .split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect();
+    if words.is_empty() {
+        package_id.to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
 /// Resolve `~/.local/share/qos-apps/registry.toml`. Kept
 /// separate so tests can point the launcher at a temporary
 /// dir via `QOS_APPS_DATA_DIR`.
