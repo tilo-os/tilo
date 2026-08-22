@@ -281,6 +281,293 @@ shared widgets, and are themselves candidates for a shared editor primitive
 
 ---
 
+## 9. The shell chrome design language
+
+Sections 1–8 govern **apps**. This section governs the **shell** — the surfaces
+the OS itself paints around and between apps: the top bar, window decorations
+and tab pills, the workspace disc, the strip indicator, quick settings, the
+command palette, and the collaborator invite/roster surfaces.
+
+It exists because those surfaces drifted into separate design systems. Each was
+transliterated independently from its own mockup component, carrying that
+mockup's literal Tailwind values inward — `bg-black/80` for the bar,
+`bg-slate-900/80` for quick settings, `rounded-3xl` here and `rounded` there,
+`text-green-400` for a CPU label. The toolkit's token vocabulary was already
+good, and the chrome simply did not read from it. The result was four surfaces
+that share a screen without sharing a language.
+
+The rule that prevents the drift returning is the same one §8 applies to apps:
+
+> **Shell chrome does not invent appearance. It selects a role from this
+> section, and the role resolves to tokens.** A literal colour, a literal
+> radius, or a bespoke duration in a chrome draw path is a defect, the same way
+> a hand-rolled text field is.
+
+### 9.1 Roles, not pixels
+
+Every chrome surface is exactly one of six **roles**. Pick the role first; the
+role fixes radius, surface, border, elevation and motion together, so two
+surfaces of the same role are automatically consistent.
+
+| Role | What it is | Radius | Surface | Border | Elevation |
+|---|---|---|---|---|---|
+| **Ground** | the desktop behind everything | — | `surfaces.base` | — | none |
+| **Bar** | docked chrome fixed to a screen edge (top bar) | — (edge to edge) | `surfaces.overlay` @ `CHROME_SURFACE_ALPHA` | bottom hairline only | `e1`, downward only |
+| **Panel** | a floating surface that opens over content (quick settings, palette, popovers, sheets) | `radii.xl` (24) | `surfaces.overlay` @ `CHROME_SURFACE_ALPHA` | full hairline | `e4` |
+| **Control** | something inside a Bar or Panel that you press (action tile, list row, slider, field) | `radii.lg` (12) | selection tiers (§9.3) | per tier | none |
+| **Selector** | one of a set you choose between (tab pill, tray pill, workspace chip, strip segment, scope chip) | `radii.full` | selection tiers (§9.3) | per tier | none |
+| **Object** | a thing that holds app content (window card, tile) | `radii.xl` (24) | `surfaces.window_card` | `Colors::window_edge()` | `e3`; `e4` while dragged |
+
+Two consequences worth stating outright, because both were being violated:
+
+- **`radii.sm` (4) and `radii.md` (8) are not for interactive bodies.** They are
+  for details drawn *inside* a control — a progress track, a badge, a sparkline
+  clip. A pressable thing is `radii.lg` if it is a Control and `radii.full` if
+  it is a Selector, never a 4 px rectangle.
+- **16 px is not on the scale.** The radius scale is 4 / 8 / 12 / 24 / full and
+  deliberately omits 16 (see `tokens::radii`). A literal `16.0` in a chrome
+  draw path is off-scale by construction.
+
+### 9.2 Surfaces come from the semantic tier, never from a ramp slot
+
+Chrome reads `colors.surfaces.*`, which every theme defines for itself. It does
+**not** reach into `colors.neutral[n]`. A ramp slot is a colour; a surface token
+is a *promise about contrast* that each theme keeps in its own way, and only the
+latter survives a theme the author never saw.
+
+- Bar and Panel: `surfaces.overlay`.
+- Ground: `surfaces.base`. Object: `surfaces.window_card`.
+- Scrim behind a modal Panel: `surfaces.scrim`, faded in with the panel.
+
+One shared constant, `CHROME_SURFACE_ALPHA`, sets the translucency of every Bar
+and Panel, so the whole chrome is one material at one opacity. Per-surface alpha
+literals are what made quick settings read as a different substance from the bar
+it hangs off.
+
+### 9.3 Selection is a lift, and only a lift
+
+Every "which one is chosen" state in the shell — active tab, active workspace,
+active strip, selected row, chosen scope chip, current power profile — uses the
+**same four tiers**:
+
+| State | Fill | Border | Inner glow | Scale |
+|---|---|---|---|---|
+| idle | transparent | none | none | 1.0 |
+| hover | `colors.lift(0.5)` | none | none | 1.0 |
+| **active** | `colors.lift(1.0)` | `hairline_on(ground, 26)` | `hairline_on(ground, 51)` | 1.0 |
+| pressed | as active | as active | as active | 0.97 |
+
+This is `ui::chrome::selection_tier` (promoted out of `widget::tabs`, where it
+was `pub(crate)` and therefore unreachable from the shell — which is precisely
+why the shell grew its own incompatible answers). Call it; do not restate it.
+
+Why lift rather than an accent fill:
+
+- `Colors::lift` measures its move against the chrome's *own ground* by relative
+  luminance, so it lifts correctly on dark, light and high-contrast without a
+  per-theme branch. A fixed white wash only lifts over a dark ground, and a
+  fixed accent fill collides with whatever the accent is being used for.
+- It leaves the **accent free to mean one thing**: see §9.4.
+- Hover and active are the same *kind* of change at two strengths, so the
+  control reads as one continuous affordance rather than two unrelated looks.
+
+An active thing never gets *more* prominent on hover. The contrast gain belongs
+to the inactive things brightening toward the active tier.
+
+**Elevation and selection are different vocabularies and must not be mixed:**
+
+> **A shadow means "off the surface". A lift means "chosen on the surface".**
+
+A selected pill casts no shadow — it is not floating, it is picked. A dragged
+object casts `e4` — it is genuinely lifted and will land somewhere. Rows of
+idle pills each laying down a soft shadow is what made the tab strip read as
+muddy rather than as chrome.
+
+### 9.4 Accent means live, not selected
+
+`colors.accent` is reserved for **state the user did not choose and should
+notice**: recording, screen-sharing, a peer joining, a live collaborative
+session, an unread count, a sync in flight. Selection is a lift (§9.3); focus is
+`border_focus`; danger/warning/success are `colors.semantic.*`.
+
+This is the rule that kills per-surface palettes. A CPU label is not "green" —
+if a metric strip needs to distinguish its columns, it distinguishes them with
+`semantic.success` / `semantic.info` / `semantic.warning`, which every theme
+defines and high-contrast redefines. Literal `0x4a,0xde,0x80` is Tailwind
+green-400 wearing a costume, and it ignores the user's theme completely.
+
+Per-peer identity colours are the single sanctioned exception: they come from
+`ui::presence::user_color`, are derived from the peer id, and are *identity*,
+not decoration.
+
+### 9.5 Borders are derived, never declared
+
+Chrome borders call `Colors::hairline_on(ground, alpha)`, which picks white or
+black by whichever actually moves against that ground. A declared
+`border_standard` stroked onto a translucent Panel does not track the surface
+under it and disappears on one theme or glares on another.
+
+- hairline on a control: alpha 26 (`/10`)
+- inner glow on an active control: alpha 51 (`/20`)
+- separator inside a Panel: alpha 26, inset from the panel edge by
+  `spacing.s3`, never running full-bleed into the corner radius
+
+`surface_white_5` / `surface_white_10` / `border_white_10` are literal white at
+low alpha in **every** theme, including light ones where a white veneer over a
+white panel is invisible. Treat them as deprecated in chrome: use `lift` and
+`hairline_on`.
+
+### 9.6 Type and density
+
+Chrome type is a **compressed** version of the app scale — chrome labels a thing,
+it does not host prose.
+
+| Use | Size | Weight | Colour |
+|---|---|---|---|
+| Panel title | `scale.base` (14) | `semibold` | `text_primary` |
+| Section header inside a Panel | `scale.xs` (10) | `medium` | `text_tertiary` |
+| Control label | `scale.sm` (12) | `medium` | `text_primary` |
+| Control sub-line / value | `scale.sm` (12) | `regular` | `text_dim` |
+| Bar label | `scale.sm` (12) | `medium` | `text_primary` |
+| Numeric readout | `scale.sm` (12) | `semibold`, tabular | `text_primary` |
+
+Density, so two panels built by two people come out the same size:
+
+- Bar height 40; Bar control height 28.
+- Panel padding `spacing.s4` (16); gap between Panel sections `spacing.s4`.
+- Panel row / Control height 44; Selector height 28.
+- Minimum pointer target 32×32 — a 20 px glyph gets a 32 px hit rect.
+- Panel width: 320 for a utility Panel (quick settings), 360 for a roster or
+  list Panel, 560 for a sheet with a form in it.
+
+### 9.7 Motion
+
+All chrome animation reads `tokens.motion.durations` and nothing else:
+
+- `fast` (130 ms) — hover, press, chip toggle, drop-zone hint, pip elongation.
+- `base` (210 ms) — a Panel opening or closing, a tab in/out, a strip change,
+  a reflow.
+- `slow` (400 ms) — whole-view changes: overview, workspace switch, window
+  spawn.
+
+Panels open with the **one** entrance: opacity 0→1, y −10→0, scale 0.95→1,
+`Curve::EaseOut` over `base`, and reverse to close. Bespoke per-surface
+constants (the shell previously carried eight near-but-unequal ones) are a
+defect. Reduced-motion collapses every duration to 0 and keeps the end state.
+
+### 9.8 Chrome may not block the frame
+
+Chrome is the OS's own UI, so a stall in it looks like the machine is broken
+rather than like an app being slow. §6 applies with one extra, non-negotiable
+rule:
+
+> **No chrome draw path performs I/O.** No process spawn, no D-Bus round trip,
+> no filesystem scan, no network call — not on open, not on hover, not per
+> frame.
+
+State that comes from the OS is read on a worker and delivered to the frame
+asynchronously. The surface opens *immediately* with the last known values and
+fills in when the read lands; a value that has never been read shows its own
+"reading" state, never an empty panel and never a delayed one.
+
+Reads are also **tiered by what the surface actually shows**. A panel fetches
+what is on screen now, and defers what is only visible after a drill-in. Quick
+settings was the worked example: opening it ran seven blocking shell-outs, one
+of which (`nmcli device wifi list`) forces a Wi-Fi scan — 4.5 s of frozen
+compositor to populate a list the user had not yet asked to see.
+
+Every shell-out gets a timeout. An OS tool that hangs must degrade to a stale
+value, never to a hung desktop.
+
+### 9.9 The shell obeys §8
+
+Everything in §8 applies to chrome, and chrome has been the worst offender: the
+quick-settings sliders, its action tiles and its list rows are painted rects
+with manual hit-tests, which is why they have no keyboard path, no focus ring
+and no a11y node. New chrome uses `ui::widget::*`; a chrome control that the
+toolkit does not yet have is a toolkit gap to fill, not a rect to paint.
+
+### 9.10 Each level of the model owns one part of the screen
+
+The model is `Workspace → Strip → WindowGroup → Tab`: Niri-like scrollable
+strips inside collaborative workspaces. Three of those four levels are things
+the user moves between, and each gets a fixed, non-overlapping part of the
+screen so the control for a level is always in the same place:
+
+- **Left edge of the content — which workspace.** The workspace disc. The
+  outermost level, and the one changed least often.
+- **Right edge of the content — which strip.** The strip ribbon (§9.11), within
+  the workspace already in view.
+- **Horizontal, inside the content — which group, which tab.** Groups scroll
+  horizontally within a strip; tabs tile within a group. Nothing else may claim
+  horizontal scrolling of the content area.
+
+Keep these separate. Folding strip switching into the disc would mean one
+control moving between two different levels of the model, and nothing on the
+control would tell the user which of the two a given drag was about to do.
+Workspace switching already owns Ctrl/Super + Up/Down, so a strip binding must
+be distinct from it rather than a variant of it.
+
+### 9.11 A switcher must answer "which one am I on" without being asked
+
+Any control that moves between N things shows, at rest and without interaction:
+
+1. **how many** there are,
+2. **which one** is current,
+3. **which direction** the others lie in.
+
+A switcher that only appears once you already know the gesture is not a
+switcher; it is a shortcut for people who read the source. Strips failed all
+three — a workspace could hold four strips with nothing on screen indicating
+that a second one existed.
+
+The **strip ribbon** is the answer here: a slim vertical ribbon on the
+content's right edge, one segment per strip, ordered to match the order the
+strips are stacked in. The focused segment takes the active tier from §9.3 and
+elongates; the others sit at the idle tier and thicken on hover. It is
+`radii.full` (Selector role), it is click- and keyboard-addressable, and it
+animates at `base`.
+
+Note what it indicates. Every strip in a workspace is rendered at once, sharing
+the content height between them, so the ribbon does not say "this is the strip
+you can see" — it says **which strip has focus**, which is the thing that
+decides where a new window lands and what the keyboard is aimed at, and which
+had no representation on screen at all. It idles quiet enough to ignore and is
+never absent, so a second strip is discoverable by looking rather than by being
+told.
+
+### 9.12 Collaboration chrome is chrome
+
+Inviting a peer, showing who is here, and joining someone else's workspace are
+**shell** surfaces and take shell roles — a Panel with Control rows and a
+Selector for scope, not a bespoke dialog per entry point. Specifically:
+
+- Presence is not a toast that vanishes. Who is in this workspace is legible
+  from a persistent roster in the Bar; a toast may *announce* a change but never
+  be the only place the fact is available.
+- Every asynchronous collaboration action has a **designed pending, failure and
+  empty state**. "Waiting for peer", "peer refused", "no peers found" are
+  states, not log lines.
+- A peer address the user has to type is a `TextInput` with validation and a
+  paste path, never a painted field, and never the only way in — discovery and
+  a share code are the primary routes.
+- Per-peer colour comes from `presence::user_color` and is used consistently in
+  every surface that mentions that peer (roster, cursor, tab badge, invite row).
+
+### 9.13 Enforcement
+
+Grep a chrome diff for these; each hit is a role you skipped:
+
+- `Color::from_rgb8(` / `Color::from_rgba8(` / literal hex in a draw path
+- `colors.neutral[` in chrome (use `surfaces.*`)
+- a numeric literal passed as a corner radius
+- `Duration::from_millis(` with a literal in an animation
+- `surface_white_5` / `surface_white_10` / `border_white_10`
+- a `Command::new` / blocking read reachable from `draw`
+
+
+---
+
 *This document is versioned with the toolkit. When a guideline here becomes a
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
