@@ -992,14 +992,42 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
     }
 }
 
+/// The apps the shell hosts in-process under an `AppKind::Other` label,
+/// as `(tab title, label)`.
+///
+/// The two columns exist because the tree and the widget layer identify a
+/// tab differently. The persisted tree names the app by label, which is
+/// what [`to_ui_tile`] hydrates from. The widget layer only knows the
+/// toolkit's five app kinds, so a group rebuilt out of widgets — the one
+/// a user makes by dragging a tab out into its own window — has nothing
+/// but the tab's title to recover the label from. Keeping both columns in
+/// one table is what stops those two paths from disagreeing and turning a
+/// real app back into a placeholder card.
+const HOSTED_OTHER_APPS: &[(&str, &str)] = &[
+    ("Notes", "Notes"),
+    ("Editor", "Editor"),
+    ("Document", "Word"),
+];
+
 /// Whether an `AppKind::Other` label names one of the text editors the
-/// shell hosts in-process. One list, read by both the icon mapping and
-/// the tile hydration, so a label can never resolve to a live editor
-/// while its tab pill claims it is something else.
+/// shell hosts in-process. Read by the icon mapping so a label can never
+/// resolve to a live editor while its tab pill claims it is something
+/// else.
 fn is_editor_label(s: &str) -> bool {
-    s.eq_ignore_ascii_case("Notes")
-        || s.eq_ignore_ascii_case("Editor")
-        || s.eq_ignore_ascii_case("Word")
+    HOSTED_OTHER_APPS
+        .iter()
+        .any(|(_, label)| label.eq_ignore_ascii_case(s))
+}
+
+/// The label that hydrates back into the app a tab titled `title` was
+/// showing. Falls through to the title itself for anything the shell does
+/// not host, which is the behaviour a foreign or unknown tab needs.
+pub(crate) fn hosted_label_for_title(title: &str) -> String {
+    HOSTED_OTHER_APPS
+        .iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case(title))
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| title.to_string())
 }
 
 /// Test-only probe into [`to_ui_tile`]: returns `"App"` if the persisted
@@ -1498,4 +1526,51 @@ fn editor_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod hosted_app_tests {
+    use super::*;
+
+    /// Every app the shell lists as hosted has to survive the trip out
+    /// through the widget layer and back: drag a tab into its own window
+    /// and the group is rebuilt from widgets, which knows only the tab's
+    /// title. If the label that comes back is not the one the hydration
+    /// match arms name, the tab returns as a "coming soon" card — the
+    /// exact failure this table exists to prevent.
+    #[test]
+    fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
+        for (title, label) in HOSTED_OTHER_APPS {
+            let recovered = hosted_label_for_title(title);
+            assert_eq!(
+                &recovered, label,
+                "a tab titled {title:?} must recover the label {label:?}",
+            );
+
+            let tile = ShellTile::AppPlaceholder {
+                kind: ShellKind::Other(recovered.clone()),
+                label: (*title).to_string(),
+            };
+            assert_eq!(
+                resolve_tile_shape_for_test(&tile),
+                "App",
+                "{title:?} hydrated into a placeholder card instead of the \
+                 app it names",
+            );
+            assert_eq!(
+                to_ui_kind(&ShellKind::Other(recovered)),
+                UiKind::Editor,
+                "{title:?} must wear an editor glyph, not the unknown-kind \
+                 settings cog",
+            );
+        }
+    }
+
+    /// A title the shell does not host carries through untouched, so a
+    /// foreign or future app is not silently renamed into one of ours.
+    #[test]
+    fn an_unhosted_title_is_carried_through_unchanged() {
+        assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
+        assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+    }
 }

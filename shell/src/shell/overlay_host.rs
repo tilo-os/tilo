@@ -7386,11 +7386,11 @@ fn build_state_group_from_widget(
                 Some(ui::widget::AppKind::Files) => AppKind::FileExplorer,
                 Some(ui::widget::AppKind::Browser) => AppKind::Browser,
                 Some(ui::widget::AppKind::Settings) => AppKind::Settings,
-                // Editor / anything else / None → carry the tab's own
-                // title as an Other name so Notes-style tabs still
-                // classify (Notes tabs come through with title "Notes"
-                // and get filed under Other("Notes")).
-                _ => AppKind::Other(desc.title.clone()),
+                // Editor / anything else / None → recover the hosted
+                // app's label from the tab's title, which is all the
+                // widget layer kept. A title the shell does not host
+                // carries through unchanged.
+                _ => AppKind::Other(crate::shell::hosted_label_for_title(&desc.title)),
             };
             Tab {
                 id: desc.id,
