@@ -10994,7 +10994,11 @@ mod overview_panel_tests {
     /// A room only you own reads as private, and says so on its row.
     #[test]
     fn a_private_room_says_so_on_its_row() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // What boot does before the session paints: a room you made is a
+        // room you own. Without it the tree describes a workspace with no
+        // recorded access at all, which is a different claim.
+        tree.adopt_ownerless_workspaces(&crate::shell::state::local_user_id());
         let cards = room_cards(&tree);
         assert_eq!(cards.len(), 1);
         assert_eq!(room_access_label(&cards[0]), "Private to you");
