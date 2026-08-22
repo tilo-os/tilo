@@ -6,9 +6,10 @@
 //! scripted; the shape is what matters: the agent reads the same document
 //! everyone else does, and answers in it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use qdoc::snapshot::{AttrVal, BlockView, DocSnapshot};
+use word_processor::actions::{self as wp, WordProcessorAction};
 
 /// What the agent was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,29 +25,156 @@ pub enum Instruction {
 }
 
 impl Instruction {
-    /// Parse `text` as an instruction to `name` (case-insensitive), or
+    /// The body of a paragraph addressed to `name` (case-insensitive), or
     /// `None` when it is not addressed to the agent at all.
-    pub fn parse(text: &str, name: &str) -> Option<Instruction> {
+    ///
+    /// Who was spoken to is decided here and only here. It is deliberately
+    /// not part of the choice a model makes: a document can ask the agent
+    /// for something, but nothing written in a document can make the agent
+    /// answer to a different name.
+    pub fn addressed(text: &str, name: &str) -> Option<String> {
         let t = text.trim();
         let prefix = format!("{}:", name.to_lowercase());
         let lower = t.to_lowercase();
         if !lower.starts_with(&prefix) {
             return None;
         }
-        let rest = lower[prefix.len()..].trim().to_string();
-        if rest.is_empty() {
-            return Some(Instruction::Unknown(rest));
-        }
-        Some(if rest.contains("table") {
+        Some(lower[prefix.len()..].trim().to_string())
+    }
+
+    /// The keyword vocabulary: the decision the agent reaches on its own.
+    ///
+    /// This is what runs when no model is available — no key, switched off,
+    /// or a call that was slow, failed, or answered outside the catalogue.
+    /// It is the floor the demo cannot drop below, not the intended path.
+    pub fn from_keywords(rest: &str) -> Instruction {
+        if rest.contains("table") {
             Instruction::Table
         } else if rest.contains("caption") {
             Instruction::Caption
         } else if rest.contains("heading") || rest.contains("title") {
             Instruction::Heading
         } else {
-            Instruction::Unknown(rest)
-        })
+            Instruction::Unknown(rest.to_string())
+        }
     }
+
+    /// A catalogue id, validated against [`CATALOGUE`] — the gate every
+    /// answer from a model passes through before anything is dispatched.
+    ///
+    /// [`NOTHING_FITS`] is a legitimate answer, not a failure: it means no
+    /// exported action does what was asked, and the agent says so in the
+    /// document instead of guessing. Anything else outside the catalogue is
+    /// `None`, and the caller falls back rather than acting on it.
+    pub fn from_id(id: &str, rest: &str) -> Option<Instruction> {
+        if id == NOTHING_FITS {
+            return Some(Instruction::Unknown(rest.to_string()));
+        }
+        if !CATALOGUE.iter().any(|c| c.id == id) {
+            return None;
+        }
+        match id {
+            "table" => Some(Instruction::Table),
+            "caption" => Some(Instruction::Caption),
+            "heading" => Some(Instruction::Heading),
+            _ => None,
+        }
+    }
+
+    /// Parse `text` as an instruction to `name` using the keyword
+    /// vocabulary, or `None` when it is not addressed to the agent.
+    pub fn parse(text: &str, name: &str) -> Option<Instruction> {
+        Self::addressed(text, name).map(|rest| Self::from_keywords(&rest))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The catalogue: what the agent can be asked for, grounded in the actions the
+// word processor exports.
+// ---------------------------------------------------------------------------
+
+/// The answer that means "no exported action does what was asked".
+pub const NOTHING_FITS: &str = "none";
+
+/// One thing the agent can do, and the exported actions it does it with.
+///
+/// `actions` names [`WordProcessorAction`] variants. Nothing here is taken on
+/// trust: [`dispatched`] builds those very actions with the word processor's
+/// own builders, and `the_catalogue_only_offers_actions_the_app_exports`
+/// checks the names against what the app's encoder puts on the wire. A
+/// renamed or withdrawn action breaks the build or the test, never the demo.
+pub struct Capability {
+    /// The id a model answers with, and the only thing it may answer.
+    pub id: &'static str,
+    /// What it does, in the words the model is given.
+    pub summary: &'static str,
+    /// The exported actions carrying it out dispatches.
+    pub actions: &'static [&'static str],
+}
+
+/// Everything the agent can be asked for. The model chooses from this and
+/// nothing else; it never proposes a document mutation of its own.
+pub const CATALOGUE: &[Capability] = &[
+    Capability {
+        id: "table",
+        summary: "Turn the run of bullets immediately above the instruction into a table.",
+        actions: &["InsertTable", "SpliceText", "RemoveBlocks"],
+    },
+    Capability {
+        id: "caption",
+        summary: "Add a caption paragraph underneath the first image in the document.",
+        actions: &["InsertParagraph", "RemoveBlocks"],
+    },
+    Capability {
+        id: "heading",
+        summary: "Make the document's first line of text a level-1 heading.",
+        actions: &["SetParagraphStyle", "RemoveBlocks"],
+    },
+];
+
+/// The actions a capability dispatches, built with the word processor's own
+/// builders — the same calls [`crate::session`] makes to carry the work out.
+/// The arguments are placeholders; only the shape of the action matters.
+pub fn dispatched(id: &str) -> Vec<WordProcessorAction> {
+    let block = || "block".to_string();
+    match id {
+        "table" => vec![
+            wp::insert_table_action("block", 1, 1),
+            wp::splice_text_action(wp::RegionKind::Body, "block", 0, 0, ""),
+            wp::remove_blocks_action(vec![block()]),
+        ],
+        "caption" => vec![
+            wp::insert_paragraph_action("block", ""),
+            wp::remove_blocks_action(vec![block()]),
+        ],
+        "heading" => vec![
+            wp::set_paragraph_style_action(vec![block()], "heading", Some(1), None),
+            wp::remove_blocks_action(vec![block()]),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+/// The name the word processor's own encoder gives an action: the key of the
+/// envelope `encode` puts on the wire. Reading it back from the app rather
+/// than writing it down here is what makes the catalogue's claims checkable.
+pub fn exported_name(action: &WordProcessorAction) -> Option<String> {
+    let encoded = wp::encode(action);
+    match serde_json::from_slice::<serde_json::Value>(&encoded.payload).ok()? {
+        serde_json::Value::Object(map) => map.keys().next().cloned(),
+        // A unit variant encodes as a bare string.
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// Every exported action the catalogue can reach, as the app names it.
+pub fn exported_actions() -> BTreeSet<String> {
+    CATALOGUE
+        .iter()
+        .flat_map(|c| dispatched(c.id))
+        .filter_map(|a| exported_name(&a))
+        .collect()
 }
 
 /// One block, as the agent reads it.
@@ -74,14 +202,21 @@ pub fn blocks(snapshot: &DocSnapshot) -> Vec<Block> {
     snapshot.blocks.iter().map(Block::from).collect()
 }
 
-/// The first paragraph addressed to `name`, with its index.
-pub fn find_instruction(blocks: &[Block], name: &str) -> Option<(usize, Instruction)> {
+/// The first paragraph addressed to `name`, with its index — and the body of
+/// what it asked for, still undecided. Deciding is [`crate::model`]'s job.
+pub fn find_addressed(blocks: &[Block], name: &str) -> Option<(usize, String)> {
     blocks.iter().enumerate().find_map(|(i, b)| {
         if b.kind != "paragraph" {
             return None;
         }
-        Instruction::parse(&b.text, name).map(|ins| (i, ins))
+        Instruction::addressed(&b.text, name).map(|rest| (i, rest))
     })
+}
+
+/// The first paragraph addressed to `name`, decided by the keyword
+/// vocabulary. The model-free path, kept for tests and for the fallback.
+pub fn find_instruction(blocks: &[Block], name: &str) -> Option<(usize, Instruction)> {
+    find_addressed(blocks, name).map(|(i, rest)| (i, Instruction::from_keywords(&rest)))
 }
 
 /// The run of bullets the instruction refers to: the consecutive
@@ -191,6 +326,74 @@ mod tests {
             text: text.into(),
             attrs: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn the_catalogue_only_offers_actions_the_app_exports() {
+        // The names the model is shown are not a list kept by hand here:
+        // each one must be what the word processor's own encoder calls the
+        // action its own builder produced. Rename or withdraw an action and
+        // this fails rather than the demo offering something imaginary.
+        let exported = exported_actions();
+        assert!(!exported.is_empty(), "the app exports nothing");
+        for cap in CATALOGUE {
+            let built: BTreeSet<String> = dispatched(cap.id)
+                .iter()
+                .filter_map(exported_name)
+                .collect();
+            assert!(
+                !built.is_empty(),
+                "{} dispatches nothing the app can encode",
+                cap.id
+            );
+            let advertised: BTreeSet<String> =
+                cap.actions.iter().map(|a| a.to_string()).collect();
+            assert_eq!(
+                advertised, built,
+                "{} advertises {:?} but dispatches {:?}",
+                cap.id, advertised, built
+            );
+            for name in &advertised {
+                assert!(
+                    exported.contains(name),
+                    "{} offers {name}, which the app does not export",
+                    cap.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_catalogue_id_maps_to_an_instruction_and_nothing_else_does() {
+        for cap in CATALOGUE {
+            assert!(
+                Instruction::from_id(cap.id, "asked").is_some(),
+                "{} is offered but maps to no instruction",
+                cap.id
+            );
+        }
+        assert_eq!(
+            Instruction::from_id(NOTHING_FITS, "juggle"),
+            Some(Instruction::Unknown("juggle".into()))
+        );
+        assert_eq!(Instruction::from_id("InsertTable", "x"), None);
+        assert_eq!(Instruction::from_id("wander off", "x"), None);
+    }
+
+    #[test]
+    fn who_was_addressed_is_read_from_the_document_not_decided() {
+        assert_eq!(
+            Instruction::addressed("Scribe: turn the bullets into a table", "Scribe"),
+            Some("turn the bullets into a table".to_string())
+        );
+        // Nothing written in a document makes the agent answer to another
+        // name, or to a sentence that merely mentions it.
+        assert_eq!(Instruction::addressed("Dear Scribe: table", "Scribe"), None);
+        assert_eq!(Instruction::addressed("Scribe: table", "Ada"), None);
+        assert_eq!(
+            Instruction::addressed("Scribe:", "Scribe"),
+            Some(String::new())
+        );
     }
 
     #[test]
