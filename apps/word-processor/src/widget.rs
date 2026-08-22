@@ -2227,6 +2227,17 @@ impl WordProcessorWidget {
                 self.modified = true;
                 self.needs_commit = true;
                 self.dirty = true;
+                eprintln!(
+                    "word-processor: inserted image from {} ({} bytes)",
+                    path.display(),
+                    bytes.len()
+                );
+                // A drop arrives as a file the toolkit spooled into our
+                // runtime dir; once the bytes live in the document the
+                // spool copy has no owner.
+                if is_dnd_spool_path(path) {
+                    let _ = std::fs::remove_file(path);
+                }
                 true
             }
             Err(e) => {
@@ -12226,4 +12237,18 @@ mod history_strip_tests {
             "a click on the strip does not reseat the caret in the page"
         );
     }
+}
+
+/// A path the windowing toolkit spooled a drag-and-drop payload into: lives
+/// under `$XDG_RUNTIME_DIR` and is named `winit-dnd-…`. Only such files are
+/// deleted after an insert — never a file the user chose.
+fn is_dnd_spool_path(path: &std::path::Path) -> bool {
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+        return false;
+    };
+    path.starts_with(runtime)
+        && path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("winit-dnd-"))
 }
