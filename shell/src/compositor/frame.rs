@@ -346,13 +346,39 @@ impl FrameBuilder {
     }
 
     /// Fold everything peers have sent since the last frame into the
-    /// presence the next paint will read. Returns whether a peer
-    /// moved, which is a reason to repaint.
+    /// presence the next paint will read, and put whoever it heard from
+    /// on that room's roster. Returns whether a peer moved, which is a
+    /// reason to repaint.
+    ///
+    /// The two halves belong together. A presence frame is the moment
+    /// this session learns a named person is in one of its rooms; using
+    /// it only to move a cursor left the chrome — the avatar stack, the
+    /// wheel-disc dots, the collaborators overlay — with no way to know
+    /// anyone had arrived. A roster bumped here also means a peer
+    /// arriving repaints, because the revision changed.
     pub fn pump_peer_presence(&mut self) -> bool {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
-        relay.pump(&mut self.presence)
+        let seen = relay.pump(&mut self.presence);
+        if seen.is_empty() {
+            return false;
+        }
+        let mut roster_changed = false;
+        {
+            let chrome = self.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            for s in &seen {
+                let Some(room) = crate::shell::state::RoomId::parse(&s.room) else {
+                    continue;
+                };
+                roster_changed |= tree.note_peer_present(room, s.peer, &s.user);
+            }
+        }
+        if roster_changed {
+            self.chrome.borrow_mut().bump();
+        }
+        true
     }
 
     /// Read-only view of the presence the next paint will draw.
