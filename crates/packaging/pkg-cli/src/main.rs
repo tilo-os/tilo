@@ -153,6 +153,30 @@ enum Command {
         /// The .qpkg to publish.
         file: PathBuf,
     },
+    /// Generate a publisher identity and write it as the JSON file
+    /// `--identity` accepts everywhere else. Refuses to overwrite.
+    Keygen {
+        /// Where to write the identity JSON.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Print a signed registry entry for a .qpkg — the JSON shape a
+    /// registry's `/entries` serves and the Store + the shell's palette
+    /// consume. For a self-hosted registry that is a static directory,
+    /// collect the printed entries into an `entries` file next to the
+    /// packages and serve the directory over HTTP.
+    Entry {
+        /// Public URL the .qpkg will be downloadable from.
+        #[arg(long)]
+        url: String,
+        /// Publisher identity JSON that signs the entry. A fresh key
+        /// is generated when absent — fine for a local registry, since
+        /// `qos-install` verifies the package's own signature again.
+        #[arg(long)]
+        identity: Option<PathBuf>,
+        /// The .qpkg to describe.
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -187,6 +211,12 @@ fn main() -> Result<()> {
             dry_run,
             serve,
         ),
+        Command::Keygen { out } => cmd_keygen(&out),
+        Command::Entry {
+            url,
+            identity,
+            file,
+        } => cmd_entry(&file, &url, identity.as_deref()),
     }
 }
 
@@ -600,4 +630,95 @@ fn load_identity(path: &Path) -> Result<SigningIdentity> {
         .map_err(|_| anyhow!("identity secret-key must be 32 bytes"))?;
     let sk = SigningKey::from_bytes(&raw_arr);
     Ok(SigningIdentity::from_signing_key(sk))
+}
+
+/// The raw signing key behind an identity file — for signatures that
+/// are not package signatures (registry entries).
+fn load_signing_key(path: &Path) -> Result<SigningKey> {
+    let bytes = std::fs::read(path).with_context(|| format!("read identity {path:?}"))?;
+    let f: IdentityFile = serde_json::from_slice(&bytes).context("parse identity JSON")?;
+    let raw = hex::decode(&f.secret_key_hex).context("identity secret-key hex")?;
+    let raw_arr: [u8; 32] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow!("identity secret-key must be 32 bytes"))?;
+    Ok(SigningKey::from_bytes(&raw_arr))
+}
+
+fn cmd_keygen(out: &Path) -> Result<()> {
+    if out.exists() {
+        bail!("{out:?} exists; refusing to overwrite a signing identity");
+    }
+    let sk = SigningKey::generate(&mut rand::rngs::OsRng);
+    let file = IdentityFile {
+        secret_key_hex: hex::encode(sk.to_bytes()),
+    };
+    if let Some(parent) = out.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
+    }
+    std::fs::write(out, serde_json::to_vec_pretty(&file).context("encode identity")?)
+        .with_context(|| format!("write {out:?}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(out, std::fs::Permissions::from_mode(0o600));
+    }
+    eprintln!("wrote {}", out.display());
+    println!("{}", hex::encode(sk.verifying_key().to_bytes()));
+    Ok(())
+}
+
+/// Build the entry from the package's own manifest: id, name, category
+/// and version come from inside the signed package, so a registry row
+/// cannot describe a package as something it is not.
+fn registry_entry_for(
+    qpkg_bytes: &[u8],
+    url: &str,
+    signer: &SigningKey,
+) -> Result<registry_types::RegistryEntry> {
+    let meta = app_registry::qpkg::load(qpkg_bytes).map_err(|e| anyhow!("load qpkg: {e}"))?;
+    let package = &meta.manifest.package;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut entry = registry_types::RegistryEntry {
+        package_id: package.id.clone(),
+        name: package.name.clone().unwrap_or_else(|| package.id.clone()),
+        description: String::new(),
+        categories: package.category.clone().into_iter().collect(),
+        icon_url: None,
+        source_url: None,
+        homepage: None,
+        publisher_pubkey_hex: hex::encode(signer.verifying_key().to_bytes()),
+        versions: vec![registry_types::RegistryVersion {
+            version: package.version.clone(),
+            qpkg_url: url.to_string(),
+            qpkg_root_hash_hex: meta.package_id.to_hex(),
+            qpkg_size_bytes: qpkg_bytes.len() as u64,
+            released_at_unix: now,
+        }],
+        updated_at_unix: now,
+        signature_hex: String::new(),
+    };
+    registry_types::sign_entry(&mut entry, signer);
+    Ok(entry)
+}
+
+fn cmd_entry(file: &Path, url: &str, identity: Option<&Path>) -> Result<()> {
+    let qpkg_bytes = std::fs::read(file).with_context(|| format!("read {file:?}"))?;
+    let signer = match identity {
+        Some(p) => load_signing_key(p)?,
+        None => SigningKey::generate(&mut rand::rngs::OsRng),
+    };
+    let entry = registry_entry_for(&qpkg_bytes, url, &signer)?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&entry).context("encode entry")?
+    );
+    eprintln!(
+        "entry: {}@{} -> {url}",
+        entry.package_id, entry.versions[0].version
+    );
+    Ok(())
 }
