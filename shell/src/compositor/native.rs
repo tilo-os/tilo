@@ -90,6 +90,7 @@ use crate::compositor::backend::{
     headless,
 };
 use crate::compositor::client_input;
+use crate::compositor::drag_feedback;
 use crate::compositor::foreign;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
@@ -1011,7 +1012,22 @@ fn execute_planned_action(
             // the compositor on a stray bad path would defeat the
             // point of having a test surface. Phase 5 will route
             // these into structured wire responses.
-            write_snapshot_png(fb, path);
+            // A snapshot has to show what the screen shows, and during a
+            // drag that includes the thing being carried — which the
+            // live present loop draws on top of the painted scene. A
+            // capture taken through this path used to miss it, so a
+            // drag photographed mid-gesture came out as two windows and
+            // no drag.
+            let drag = state.as_ref().and_then(|s| {
+                (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
+                    let (cx, cy) = s.client_input.cursor();
+                    (
+                        vello::kurbo::Point::new(cx, cy),
+                        s.selection.dnd_label.clone(),
+                    )
+                })
+            });
+            write_snapshot_png(fb, path, drag);
         }
         PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
@@ -1144,7 +1160,11 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
 /// through `PlannedAction` dispatch.
-fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
+fn write_snapshot_png(
+    fb: &mut FrameBuilder,
+    path: &std::path::Path,
+    drag: Option<(vello::kurbo::Point, Option<String>)>,
+) {
     use std::io::Write;
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
@@ -1154,7 +1174,18 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
         );
         return;
     }
-    let scene = fb.paint();
+    let mut scene = fb.paint();
+    if let Some((cursor, label)) = drag {
+        let theme = fb.theme().clone();
+        drag_feedback::draw(
+            &mut scene,
+            cursor,
+            label.as_deref(),
+            &theme,
+            fb.text_renderer_mut(),
+        );
+    }
+    let scene = scene;
     // The renderer is kept between snapshots and rebuilt only when the
     // viewport changes size.
     //
@@ -3267,7 +3298,25 @@ pub fn run() -> ! {
                     &view,
                 )
             } else {
-                frame_builder.paint()
+                let mut scene = frame_builder.paint();
+                // On top of everything, because a drag is over whatever
+                // it is over. Drawn here rather than by either app: once
+                // the pointer has left the source window neither end can
+                // paint the thing being carried, so without this a drag
+                // across the desktop is invisible.
+                if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
+                    let label = state.selection.dnd_label.clone();
+                    let (cx, cy) = state.client_input.cursor();
+                    let theme = frame_builder.theme().clone();
+                    drag_feedback::draw(
+                        &mut scene,
+                        vello::kurbo::Point::new(cx, cy),
+                        label.as_deref(),
+                        &theme,
+                        frame_builder.text_renderer_mut(),
+                    );
+                }
+                scene
             };
             metrics.mark_scene(t_scene_start.elapsed());
             let t_submit_start = Instant::now();
