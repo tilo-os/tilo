@@ -143,7 +143,7 @@ pub struct FileView {
 
 /// Pointer travel (logical px) past which a held directory press becomes a
 /// drag rather than a click.
-const DRAG_THRESHOLD: f64 = 6.0;
+pub const DRAG_THRESHOLD: f64 = 6.0;
 
 impl FileView {
     pub fn new(entries: &[Entry], selection: &SelectionModel, sink: &CommandSink) -> Self {
@@ -987,6 +987,16 @@ impl Widget for FileView {
                     if !ctrl && !shift {
                         if let Some(entry) = self.entries.get(i) {
                             self.pressed_row = Some((self.last_cursor, entry.path.clone(), entry.is_dir));
+                            // The app arms the same drag: this view may be
+                            // rebuilt before the pointer moves.
+                            push(
+                                &self.sink,
+                                FileCommand::ArmDrag {
+                                    path: entry.path.clone(),
+                                    is_dir: entry.is_dir,
+                                    at: self.last_cursor,
+                                },
+                            );
                         }
                     }
                     *handled = true;
@@ -1017,6 +1027,21 @@ impl Widget for FileView {
 
     fn name(&self) -> &str { "FileView" }
     fn test_id(&self) -> Option<&str> { Some("file_view") }
+    /// Every item by name, so automation aims a drag at the row the
+    /// renderer laid out rather than at a guessed offset.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let rect = match self.mode {
+                    ViewMode::List => self.list_row_rect(i),
+                    ViewMode::Grid => self.cell_rect(i),
+                };
+                (format!("file_row:{}", e.name), rect)
+            })
+            .collect()
+    }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
     fn set_focus(&mut self, f: bool) { self.is_focused = f; }
