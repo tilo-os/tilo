@@ -1176,12 +1176,65 @@ def peer_id_of(s: Session) -> str:
     return "<unknown>"
 
 
+def frame_both_windows(s: Session) -> None:
+    """Give every group in the strip an even share of it.
+
+    The default is about three quarters each, which is right for reading
+    one window and wrong for filming two: the second one opens mostly
+    past the right edge, and a beat whose subject is that window shows
+    half of it. This is a camera decision, not a claim — it changes what
+    is in frame and nothing about what happened.
+    """
+    resp = s.set_group_width(500)
+    if "err" in resp:
+        note(f"{s.name}: could not even out the strip — "
+             f"{json.dumps(resp['err'])[:120]}")
+    s.settle(0.6)
+
+
+def peer_sync_card_up(s: Session) -> bool:
+    """Whether the peer-sync card is being painted over the middle of the
+    screen.
+
+    The compositor paints it whenever either field is set
+    (`overlay_host.rs:9104`), so both have to be clear before it is gone —
+    checking only the token left the connect prompt on screen.
+    """
+    ps = s.chrome()["peer_sync"]
+    return ps["invite_token"] is not None or ps["connect_input"] is not None
+
+
+def dismiss_peer_sync_card(s: Session, what: str) -> None:
+    """Close the peer-sync card, and prove it closed.
+
+    Sending Escape and moving on is what put a stale modal over the two
+    most interesting beats in a recorded run: the card sat in the middle
+    of the frame for a minute after the invite, and the word processor
+    opened behind it. Escape reaches the overlay host only when nothing
+    else has taken the key first, so the dismissal is retried and then
+    asserted — a beat filmed behind a dialog is a beat nobody can read.
+
+    It also holds a bearer credential. The token is a signed blob that
+    admits its holder to a real room, and it stays legible on screen for
+    as long as the card is up, so the frame is cleared as soon as the
+    token has been captured rather than whenever the next beat happens
+    to press a key.
+    """
+    for _ in range(4):
+        if not peer_sync_card_up(s):
+            return
+        s.key("Escape")
+        s.settle(0.4)
+    claim(f"{s.name}'s {what} card is off the screen",
+          peer_sync_card_up(s), False)
+
+
 def mint_invite(host: Session) -> str | None:
     host.run_palette_command("invite peer", expect_id="result:0")
     token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"], timeout=20)
-    # Dismiss the card: it is a modal over the middle of the screen.
-    host.key("Escape")
-    host.settle(0.3)
+    # The moment it has been read, and not one beat later: it is a modal
+    # over the middle of the screen and it is showing a live token.
+    dismiss_peer_sync_card(host, "invite")
     return token
 
 
@@ -1207,8 +1260,7 @@ def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
     joined = wait_for(
         lambda: (guest.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
         timeout=15)
-    guest.key("Escape")
-    guest.settle(0.3)
+    dismiss_peer_sync_card(guest, "connect")
     return bool(joined)
 
 
@@ -1770,6 +1822,12 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
          f"an unoptimised payload; not a number to quote")
     claim("and it is installed now, on the machine that lacked it",
           WORD_PROCESSOR in set(installed_ids(ada.apps_dir)), True)
+    # A group takes about three quarters of the strip by default, so the
+    # second window opens mostly past the right edge — the strip is
+    # working exactly as designed, and the app the beat is about is half
+    # off screen while it does. Give every group an even share, so the
+    # window this beat just opened is actually in the frame that shows it.
+    frame_both_windows(ada)
     ada.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
@@ -1854,6 +1912,7 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
         gap("bob has no word processor open, so there is no far screen "
             "to read a document back off")
         return
+    frame_both_windows(bob)
     # Both apps have to have attached to their broker and announced their
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
