@@ -3587,8 +3587,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // paints each on-screen peer as a round, color-coded dot +
                 // name pill, and each OFF-screen peer as a colored edge
                 // mist pointing the way they drifted, so nobody vanishes.
-                // `pointers` is kept populated for the shell overlay but
-                // not painted here, so no peer is drawn twice.
+                //
+                // Which peers this layer may paint is not up to this
+                // call: a pointer that arrived on a desktop scope is
+                // the compositor's to draw, and the helper skips it —
+                // see `presence::PointerOwner`. Both stores being
+                // populated from one arrival is deliberate (`pointers`
+                // feeds the overlay, `remote_cursors` feeds "follow
+                // that peer"); it is the *painting* that has one owner.
+                // A comment here once claimed populating two stores was
+                // enough to keep a peer from being drawn twice. That
+                // held only inside one process's own draw, which is not
+                // where the two painters were: the shell threads this
+                // very context into its overlay as well, so a peer came
+                // out twice from a single context.
                 crate::presence::draw_remote_presence(
                     &mut scene,
                     transform,
