@@ -282,6 +282,40 @@ pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> Ca
     plan
 }
 
+/// Move each resolved service socket onto the descriptor number the
+/// app was told to look at, and keep it open across `exec`.
+///
+/// Runs inside `pre_exec`, so everything here is async-signal-safe:
+/// `dup2` and `fcntl` only, no allocation and no locks.
+///
+/// This is the whole of the service handoff. bwrap has no flag that
+/// hands a live socket to the sandboxed process — `--file FD DEST`
+/// copies the descriptor's *contents* into a regular file and blocks
+/// reading a socket that never reaches EOF — so the descriptor travels
+/// the way descriptors normally do: left open, at a known number,
+/// inherited through bwrap's exec and the `__sandbox-exec` re-exec.
+///
+/// `child_fd`s start above the fixed seccomp descriptor so this cannot
+/// land on top of it. `dup2` onto a number that is already the right
+/// one is a no-op that still clears CLOEXEC, which is why the flag is
+/// cleared afterwards rather than before.
+fn place_service_fds(fds: &[(RawFd, RawFd)]) -> std::io::Result<()> {
+    for (host_fd, child_fd) in fds {
+        // SAFETY: async-signal-safe syscalls on descriptors this
+        // process owns; the child is single-threaded post-fork.
+        unsafe {
+            if host_fd != child_fd && libc::dup2(*host_fd, *child_fd) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(*child_fd, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(*child_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Resolve which runtime bundle to mount, if any.
 ///
 /// Priority:
@@ -1125,7 +1159,8 @@ pub fn run_with(
     // --file (bwrap should keep them, but stripping CLOEXEC is belt +
     // suspenders).
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<RawFd> = resolved.iter().map(|r| r.host_fd).collect();
+    let resolved_fds: Vec<(RawFd, RawFd)> =
+        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
     // Landlock plan: derived here so we can log it from the parent.
     // We deliberately do NOT install Landlock in `pre_exec` on the
     // bwrap process — bwrap needs broad FS access to mount and pivot
@@ -1171,12 +1206,7 @@ pub fn run_with(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            for fd in &resolved_fds {
-                let flags = libc::fcntl(*fd, libc::F_GETFD);
-                if flags != -1 {
-                    let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
+            place_service_fds(&resolved_fds)?;
             // Landlock is NOT installed here — bwrap needs broad FS
             // access to set up the namespace. It's installed by the
             // __sandbox-exec shim after bwrap's mount setup completes.
@@ -1316,7 +1346,8 @@ pub fn run_with_captured(
     cmd.stdout(std::process::Stdio::piped());
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<RawFd> = resolved.iter().map(|r| r.host_fd).collect();
+    let resolved_fds: Vec<(RawFd, RawFd)> =
+        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
     unsafe {
         cmd.pre_exec(move || {
             if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
@@ -1326,12 +1357,7 @@ pub fn run_with_captured(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            for fd in &resolved_fds {
-                let flags = libc::fcntl(*fd, libc::F_GETFD);
-                if flags != -1 {
-                    let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
+            place_service_fds(&resolved_fds)?;
             Ok(())
         });
     }
