@@ -2093,6 +2093,65 @@ mod tests {
     /// and the receiving host has to rebuild it. This drives the real inbound
     /// path: a frame queued as if it had just arrived off gossipsub, picked up
     /// by the broker's drain thread, routed by what the sender stamped.
+    /// The two transports must publish through the same thing.
+    ///
+    /// They did not. The JSON reader loop republished every
+    /// `SyncIncremental` over libp2p; the capnp server, which is the
+    /// one a sandboxed app dials, held no network handle at all — so
+    /// "does a local edit leave this machine" had two answers and the
+    /// sandboxed one was no. Asserting a shared publisher here is what
+    /// stops that from being re-derived independently a third time.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_json_edit_reaches_the_same_publisher_the_capnp_transport_uses() {
+        use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
+        use crate::shell::collab_outbound::{PeerPublishSink, PeerPublisher};
+
+        let socket_path = temp_sock("json-shared-publisher");
+        let sink = std::sync::Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
+        let handle = spawn_with_publisher(socket_path.clone(), None, publisher)
+            .expect("broker should bind");
+
+        let record = ui::record::RecordId::for_file("/work/shared.odt");
+        let mut app = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &record,
+        );
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = app.poll();
+
+        let (_, delta) = edited("body", "typed on this machine");
+        app.send(CollabRequest::SyncIncremental {
+            data: delta.clone(),
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let seen = loop {
+            let seen = sink.snapshot();
+            if !seen.is_empty() || std::time::Instant::now() > deadline {
+                break seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            seen,
+            vec![Sent::Incremental {
+                app_id: "dev.qos.word-processor".to_string(),
+                cluster_id: TEST_CLUSTER.to_string(),
+                record_id: record.as_str().to_string(),
+                data: delta,
+            }],
+            "the JSON transport must publish through the shared outbound \
+             path, carrying the same route it fanned out on",
+        );
+        drop(app);
+        drop(handle);
+    }
+
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
