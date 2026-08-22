@@ -317,6 +317,15 @@ pub struct SelectionState {
     /// to the source means the drop target never receives
     /// `wl_data_device.enter` and nothing can ever be dropped anywhere.
     pub dnd_active: bool,
+    /// What the drag in flight is carrying, as something a person can
+    /// read.
+    ///
+    /// The compositor is the only participant that can draw a drag once
+    /// it has left its source window, so it needs a name for what is
+    /// being carried. For a drag it started itself that is the file's
+    /// name; for a client's drag all it holds is the offer, so it is the
+    /// kind of thing. See [`crate::compositor::drag_feedback`].
+    pub dnd_label: Option<String>,
 }
 
 impl std::fmt::Debug for SelectionState {
@@ -358,6 +367,7 @@ impl SelectionState {
             focused_client: None,
             dnd_icon: None,
             dnd_active: false,
+            dnd_label: None,
             chrome_drag: None,
         }
     }
@@ -885,7 +895,21 @@ impl ExtDataControlHandler for State {
 }
 
 impl ClientDndGrabHandler for State {
-    fn started(&mut self, _source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+    fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
+        // What the drag is carrying, for the picture the compositor
+        // draws while it crosses the desktop. Only the offer is
+        // available here — the payload belongs to the source and is not
+        // read until a receiver asks for it — so this is the kind of
+        // thing rather than its name.
+        self.selection.dnd_label = source
+            .as_ref()
+            .and_then(|s| {
+                smithay::wayland::selection::data_device::with_source_metadata(s, |meta| {
+                    crate::compositor::drag_feedback::label_for_mimes(&meta.mime_types)
+                })
+                .ok()
+            })
+            .or_else(|| Some("1 item".to_string()));
         // The drag icon is a client surface with the `dnd_icon` role. qOS does
         // not composite it: the compositor draws its own cursor and its own
         // drag feedback, and a client-supplied icon surface would be painted
@@ -910,6 +934,7 @@ impl ClientDndGrabHandler for State {
         );
         self.selection.dnd_icon = None;
         self.selection.dnd_active = false;
+        self.selection.dnd_label = None;
     }
 }
 
