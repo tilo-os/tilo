@@ -183,7 +183,7 @@ impl HeadlessCompositor {
 mod tests {
     use super::*;
     use crate::model::{
-        Clip, ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
+        ClipEffect, EffectKind, Filters, MediaItem, MediaKind, Project, Track, TrackKind,
         Transition,
     };
     use crate::preview::{Rgb, palette_rgb};
@@ -624,6 +624,153 @@ mod tests {
         let head = px(&c.frame(&p, 0.05, 32, 32, &mut NoSources), 32, 16, 20).luma();
         let mid = px(&c.frame(&p, 5.0, 32, 32, &mut NoSources), 32, 16, 20).luma();
         assert!(head < mid * 0.2, "the head of a fade-in is near black: {head} vs {mid}");
+    }
+
+
+    /// The bundled demo clip, if this checkout has it.
+    #[cfg(feature = "decode")]
+    fn demo_clip() -> std::path::PathBuf {
+        if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
+            let p = std::path::PathBuf::from(p);
+            assert!(p.exists(), "$QOS_VE_TEST_CLIP does not exist: {}", p.display());
+            return p;
+        }
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for _ in 0..5 {
+            let candidate = dir.join(".claude/demo-artifacts/qos-demo-57s.mp4");
+            if candidate.exists() {
+                return candidate;
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        panic!(
+            "this test needs real footage at .claude/demo-artifacts/qos-demo-57s.mp4, \
+             or $QOS_VE_TEST_CLIP pointing at a clip — it cannot verify decode without it",
+        );
+    }
+
+    /// Mean horizontal neighbour variation. The representative fill is
+    /// built from horizontal bands, so it is constant along every row and
+    /// this collapses to zero; a real decoded picture never does. It is
+    /// the one measurement that tells "showing the footage" apart from
+    /// "showing a coloured rectangle".
+    fn horizontal_detail(buf: &[u8], w: u32, h: u32) -> f64 {
+        let mut total = 0.0;
+        for y in 0..h as usize {
+            for x in 1..w as usize {
+                let a = (y * w as usize + x - 1) * 4;
+                let b = (y * w as usize + x) * 4;
+                for c in 0..3 {
+                    total += buf[a + c].abs_diff(buf[b + c]) as f64;
+                }
+            }
+        }
+        total / (w * h) as f64
+    }
+
+    /// With a hydrated real source under the playhead, the canvas must
+    /// show the decoded picture — not the representative fallback.
+    ///
+    /// This is the failure mode a screenshot catches and a unit test
+    /// usually does not: the editor still renders, still looks plausible,
+    /// and is showing the user a coloured rectangle instead of their
+    /// footage. It drives the real decoder and asserts on what the
+    /// production compositor puts on the canvas.
+    #[cfg(feature = "decode")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_hydrated_source_puts_real_footage_on_the_canvas() {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+
+        let path = demo_clip();
+        let mut p = Project::new("live");
+        p.width = 1920;
+        p.height = 1080;
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "demo".into(),
+            kind: MediaKind::Video,
+            duration: 57.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            palette: 0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 57.0;
+
+        // Drive the real decoder the way the app's warm-up does: pump until
+        // a frame for the clip under the playhead lands, or give up loudly.
+        let playhead = 22.0;
+        let mut decoder = crate::preview::PreviewDecoder::new();
+        assert!(
+            decoder.is_real_decode(),
+            "the decode feature must stand up a real pipeline, not the synthesized fallback",
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut ready = false;
+        while std::time::Instant::now() < deadline {
+            if decoder.update(&p, playhead) {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            ready,
+            "the decoder produced no frame for a hydrated local file — the canvas would \
+             fall back to the representative fill and show a coloured rectangle",
+        );
+
+        // Hand that frame to the compositor exactly as the canvas does.
+        let frame = decoder.frame().expect("decoded frame").clone();
+        let decoded_media = decoder.frame_media();
+        assert_eq!(decoded_media, Some(mid), "the frame belongs to the clip under the playhead");
+        let mut sources = CpuFrames::new(move |media, _t| {
+            (media == mid).then(|| CpuFrame {
+                width: frame.width,
+                height: frame.height,
+                rgba: frame.rgba.clone(),
+                identity: frame.pts_ms,
+            })
+        });
+
+        let mut c = compositor();
+        let (w, h) = (192u32, 108u32);
+        let live = c.frame(&p, playhead, w, h, &mut sources);
+        let fallback = c.frame(&p, playhead, w, h, &mut NoSources);
+
+        assert_ne!(
+            live, fallback,
+            "the composite with a decoded frame must differ from the representative fallback",
+        );
+        let live_detail = horizontal_detail(&live, w, h);
+        let fallback_detail = horizontal_detail(&fallback, w, h);
+        println!(
+            "canvas horizontal detail: decoded={live_detail:.3}  fallback={fallback_detail:.3}",
+        );
+        assert!(
+            fallback_detail < 0.5,
+            "sanity: the representative fill is flat along its rows ({fallback_detail:.3})",
+        );
+        assert!(
+            live_detail > 2.0,
+            "the canvas is showing a flat fill ({live_detail:.3}), not decoded footage",
+        );
     }
 
     #[test]
