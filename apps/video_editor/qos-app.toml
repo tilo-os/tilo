@@ -67,6 +67,30 @@ type            = "gui"
 splash-segments = ["bin/video_editor[0x0:0x400000]"]
 splash-budget   = 250
 
+# The formats the importer can actually probe (see `probe.rs`): ISOBMFF,
+# Matroska/WebM, MP3, WAV and the two still formats. Nothing is claimed
+# that the probe would have to guess at — an editor offering to open a
+# file it cannot read is worse than not offering.
 [providers]
-mime = []
-ext  = []
+mime = [
+    "video/mp4",
+    "video/quicktime",
+    "video/x-matroska",
+    "video/webm",
+    "audio/mpeg",
+    "audio/wav",
+    "image/png",
+    "image/jpeg",
+]
+ext  = [
+    "mp4",
+    "m4v",
+    "mov",
+    "mkv",
+    "webm",
+    "mp3",
+    "wav",
+    "png",
+    "jpg",
+    "jpeg",
+]
