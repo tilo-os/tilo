@@ -21,6 +21,7 @@
 
 pub mod actions;
 pub mod browser_stub;
+pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
