@@ -1143,6 +1143,32 @@ fn reader_loop(
                 }
             }
         }
+        // A snapshot takes the bridge too, and it is the frame that
+        // makes two *separately created* documents one document.
+        //
+        // The toolkit sends this in reply to a peer's `Arrived`, never
+        // on a commit, so publishing it is answering a question rather
+        // than announcing into the room. Without it the deltas above
+        // cross correctly and refer to objects the receiving document
+        // has never seen — the peer's caret moves over a blank page,
+        // which is what this looked like from the outside.
+        if let (Some(net), CollabRequest::SyncCRDT { data }) = (peer_sync.as_ref(), &req) {
+            match &src_route {
+                Some(route) => net.publish_app_crdt_snapshot(
+                    route.app_id.clone(),
+                    route.cluster_id.clone(),
+                    route.record_id.clone(),
+                    data.clone(),
+                ),
+                None => {
+                    tracing::debug!(
+                        "collab_broker: not republishing SyncCRDT from peer-{}: \
+                         no Hello, so the frame has no route",
+                        peer.id,
+                    );
+                }
+            }
+        }
         // Presence takes the same bridge, and has to: the local
         // fan-out below reaches apps on this host, so without this a
         // peer's caret stopped at the machine that produced it and
@@ -1582,6 +1608,7 @@ pub fn spawn_full(
         .map(|net| {
             let inbound = net.inbound_app_crdt_handle();
             let presence_inbound = net.inbound_app_presence_handle();
+            let snapshot_inbound = net.inbound_app_crdt_snapshot_handle();
             let signed_inbound = net.inbound_app_crdt_signed_handle();
             let sb_req_inbound = net.inbound_scrollback_request_handle();
             let sb_resp_inbound = net.inbound_scrollback_response_handle();
@@ -1609,6 +1636,38 @@ pub fn spawn_full(
                             // local apps that announced the same pair. No
                             // local peer is skipped by id — the update
                             // originated outside this host.
+                            let route = CrdtRoute::record(
+                                entry.app_id,
+                                entry.cluster_id,
+                                entry.record_id,
+                            );
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain inbound whole-document snapshots. A
+                        // peer sent one because this host's app told
+                        // it that it had just arrived, so the app on
+                        // this side is the one with no history and
+                        // this is the frame it has been waiting for.
+                        //
+                        // Delivered as `CRDTUpdate`, which the toolkit
+                        // *merges* rather than assigns — a snapshot
+                        // arriving after the local user has already
+                        // typed must not discard what they typed.
+                        //
+                        // Routed by the full record triple, like an
+                        // increment: a document is the state of one
+                        // record, and handing it to a different one
+                        // would be unrecoverable rather than noisy.
+                        let drained_snapshots: Vec<_> = {
+                            let mut buf = match snapshot_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_snapshots {
+                            let event = CollabEvent::CRDTUpdate { data: entry.data };
                             let route = CrdtRoute::record(
                                 entry.app_id,
                                 entry.cluster_id,
@@ -2101,6 +2160,116 @@ mod tests {
 
         drop(alice);
         drop(bob);
+        drop(handle);
+    }
+
+    /// Fold inbound **full-state** frames into `doc` the way the toolkit
+    /// does: load the snapshot as its own document and merge it, rather
+    /// than assigning over the top. A snapshot that arrives after the
+    /// local user has typed must not discard what they typed.
+    fn absorb_snapshots_within(
+        mgr: &mut CollaborationManager,
+        doc: &mut automerge::AutoCommit,
+        window: Duration,
+    ) -> usize {
+        let mut applied = 0;
+        for event in poll_until(mgr, 1, window) {
+            if let CollabEvent::CRDTUpdate { data } = event {
+                let mut incoming = automerge::AutoCommit::load(&data).expect("snapshot loads");
+                doc.merge(&mut incoming).expect("snapshot merges");
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// A document created here adopts the state of the one it meets.
+    ///
+    /// This is the shape two people get when they each *start* the same
+    /// app rather than opening a document someone shared: two automerge
+    /// documents with no history in common. Deltas between them name
+    /// changes the receiver has never seen, so the receiving widgets
+    /// read nothing — the app looks alive, a peer's caret moves, and the
+    /// page stays blank.
+    ///
+    /// The frame that resolves it is the whole-document snapshot the
+    /// toolkit sends when a peer announces it has arrived. This drives
+    /// the real inbound path for it: queued exactly as
+    /// `ShellNetwork::tick` queues one off gossipsub, picked up by the
+    /// broker's drain thread, delivered as `CRDTUpdate`, and routed by
+    /// the record the sender stamped.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_document_created_here_adopts_the_state_of_the_one_it_meets() {
+        let socket_path = temp_sock("snapshot-adoption");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
+        let net = std::sync::Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
+
+        let record = ui::record::RecordId::for_file("/work/report.odt");
+        let other = ui::record::RecordId::for_file("/work/elsewhere.odt");
+        let mut on_record = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &record,
+        );
+        let mut on_other = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &other,
+        );
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = on_record.poll();
+        let _ = on_other.poll();
+
+        // The peer's document: created on the other machine, with
+        // content, sharing no history with anything here.
+        let (peer_doc, _) = edited("body", "written on another machine");
+        let snapshot = {
+            let mut d = peer_doc;
+            d.save()
+        };
+
+        net.handle_app_crdt_snapshot_message(
+            0xFACEu64,
+            "dev.qos.word-processor".to_string(),
+            TEST_CLUSTER.to_string(),
+            record.as_str().to_string(),
+            snapshot,
+        );
+
+        // A document that started empty here now reads what was typed
+        // there. This is the assertion the whole path exists for.
+        let mut here = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_millis(2000)),
+            1,
+            "the app on that record receives the snapshot"
+        );
+        assert_eq!(
+            field(&here, "body").as_deref(),
+            Some("written on another machine"),
+            "the document created here adopted the peer's state"
+        );
+
+        // And the record boundary holds for a whole document exactly as
+        // it does for a delta — more so, since a document merged into
+        // the wrong record cannot be taken back out.
+        let mut elsewhere = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_millis(1000)),
+            0,
+            "the app on a different record receives nothing"
+        );
+        assert_eq!(field(&elsewhere, "body"), None);
+
+        drop(on_record);
+        drop(on_other);
         drop(handle);
     }
 
