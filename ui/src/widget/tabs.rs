@@ -1419,11 +1419,18 @@ const PILL_GAP: f64 = 6.0;
 const PILL_PAD_X: f64 = 12.0;
 /// Close-chip width, and its inset from the pill's right edge.
 const CLOSE_W: f64 = 18.0;
-const CLOSE_INSET: f64 = 4.0;
+const CLOSE_INSET: f64 = 3.0;
 /// Width of each hover-reveal action chip (maximize, search) and the gap
 /// between chips in the cluster.
-const ACTION_W: f64 = 16.0;
-const ACTION_GAP: f64 = 2.0;
+///
+/// Narrower than the close chip on purpose. Every unpinned pill pays for
+/// this cluster whether or not it is painted (see [`CHIP_CLUSTER_W`]), so
+/// each pixel here is a pixel of blank space between two tab titles —
+/// and close is the chip that has to stay a comfortable pointer target,
+/// while maximize and search are secondary and also reachable from the
+/// tab's context menu.
+const ACTION_W: f64 = 14.0;
+const ACTION_GAP: f64 = 1.0;
 /// Leading app-glyph width and its gap to the title.
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
@@ -1444,6 +1451,16 @@ const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
 /// frame, because they appear on hover and a pill that grew to make room
 /// for them would shove every pill to its right sideways under the
 /// pointer. See [`close_affordance_visible`] for the paint rule.
+///
+/// This reserve is why an idle row reads sparse: an inactive pill paints
+/// no body, so all the reader sees is a title followed by this much
+/// nothing before the next title starts. It cannot simply be dropped —
+/// a pill has to be at least `pad + title + cluster` wide for the whole
+/// title and the whole cluster to coexist, so anything narrower either
+/// reflows the row on hover or re-elides the title under the pointer.
+/// The only real lever is how many chips are in the cluster: with
+/// maximize and search on the pill it is ~50 px, with close alone it
+/// would be ~21 px.
 const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
 
 /// Fallback per-character advance for a title that has not been shaped
@@ -4621,7 +4638,7 @@ mod tests {
             ],
             1,
         );
-        lay_out_at_width(&mut b, 340.0);
+        lay_out_at_width(&mut b, 320.0);
 
         let long = b
             .visible_title(1, &mut tr, &theme)
@@ -4633,6 +4650,17 @@ mod tests {
         assert!(
             "file-explorer".starts_with(long.trim_end_matches('\u{2026}')),
             "the elided title must be a prefix of the real one, got {long:?}",
+        );
+        // An ellipsis on its own would satisfy the two checks above while
+        // telling the reader nothing. The pill is squeezed, not erased —
+        // it must still carry a readable stem of the name.
+        assert!(
+            long.chars().count() >= 4,
+            "the elided title must keep a readable stem, got {long:?}",
+        );
+        assert!(
+            long.chars().count() < "file-explorer".chars().count(),
+            "the elided title must be shorter than the real one, got {long:?}",
         );
 
         // And a title that does fit is left exactly alone.
