@@ -492,6 +492,20 @@ pub struct ChromeState {
     /// [`crate::shell::placement`] — without reaching into the widget
     /// tree. `None` before the first layout, or when the active
     /// workspace has no strip.
+    /// Where the workspace wheel has been summoned to, if anywhere.
+    ///
+    /// The wheel is docked at the left edge of the strip's content and
+    /// pans with it, so scrolling right through a strip carries it off
+    /// screen along with everything else to the left. `Some(point)`
+    /// detaches it and places it at the pointer instead, so the
+    /// workspace list is reachable without scrolling the whole strip
+    /// home first. Cleared on Escape and on picking a workspace.
+    ///
+    /// Held here rather than on the widget because both the wheel and
+    /// the overlay host need it: the host decides whether to anchor the
+    /// wheel's origin to the strip's pan, and the wheel places itself
+    /// within whatever slot it is handed.
+    wheel_summon: Option<vello::kurbo::Point>,
     strip_viewport: Option<crate::shell::placement::StripViewport>,
 }
 
@@ -540,9 +554,24 @@ impl ChromeState {
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
+            wheel_summon: None,
             strip_viewport: None,
             records: RecordStore::in_memory(),
         }))
+    }
+
+    /// Summon the workspace wheel to `at`, or send it back to its dock
+    /// with `None`. See [`ChromeState::wheel_summon`].
+    pub fn set_wheel_summon(&mut self, at: Option<vello::kurbo::Point>) {
+        if self.wheel_summon != at {
+            self.wheel_summon = at;
+            self.bump();
+        }
+    }
+
+    /// Where the wheel is summoned to, if it is.
+    pub fn wheel_summon(&self) -> Option<vello::kurbo::Point> {
+        self.wheel_summon
     }
 
     /// Publish the active strip's layout so the placement rule can read
