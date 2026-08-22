@@ -2637,6 +2637,21 @@ impl ShellOverlayHost {
         use crate::shell::launcher::LaunchEventKind;
         let mut posted = false;
         for event in events {
+            // An open that had to fetch the app first raised a notice
+            // saying so. Every one of these events settles that open —
+            // it started, or it did not — so the notice is retired by
+            // what actually happened rather than by its timer running
+            // out. `Exited` is not a settlement: by then the app has
+            // already started, and the notice is long gone.
+            if !matches!(event.kind, LaunchEventKind::Exited) {
+                if let Some(notice) = crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
+            }
             let (title, body) = match event.kind {
                 LaunchEventKind::Started { pid } => {
                     eprintln!("shell: launched {} (pid {pid})", event.package_id);
