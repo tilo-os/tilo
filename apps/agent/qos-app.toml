@@ -1,0 +1,73 @@
+# qos-agent — qOS application manifest.
+#
+# A headless participant, not a desktop app: it joins a document through
+# the compositor's collaboration broker and edits it with the host app's
+# own exported actions. It draws nothing and is never opened from the
+# launcher, so `kind = "service"` and the entrypoint is `cli` — the same
+# reasoning the on-screen keyboard's manifest spells out, minus the
+# drawing.
+#
+# `collab` is `required`, not `optional`: without the broker there is no
+# document to join and the binary has nothing to do. Everything it edits
+# arrives over that socket, so it needs no filesystem grant of its own
+# and opens no socket of its own.
+#
+# Pack and install:
+#
+#     cargo build -p agent -p pkg-cli -p install
+#     mkdir -p target/qpkg/agent/bin
+#     cp target/debug/qos-agent target/qpkg/agent/bin/qos-agent
+#     target/debug/qos-pkg pack --manifest apps/agent/qos-app.toml \
+#         --payload target/qpkg/agent --output target/agent.qpkg
+#     target/debug/qos-install install target/agent.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.agent"
+name     = "qOS Agent"
+category = "Utilities"
+version  = "0.1.0"
+kind     = "service"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: the agent speaks to the
+# broker over the compositor's Unix socket and opens no socket itself.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "required@1"
+
+[entrypoint]
+bin  = "bin/qos-agent"
+type = "cli"
+
+[providers]
+mime = []
+ext  = []
