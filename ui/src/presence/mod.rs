@@ -24,14 +24,21 @@ pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(25
 ///
 /// The concept pins a fixed palette for four canonical ids — `me`,
 /// `alice`, `bob`, `charlie` — matching the reference mockup's
-/// `cursorColor` table. Any other id falls through to a stable FNV-1a
-/// hash → HSL so the same peer keeps the same hue everywhere they
-/// render, but two different peers are visually distinguishable from
-/// each other.
+/// `cursorColor` table. Any other id hashes onto [`PEER_PALETTE`], a
+/// closed ring whose members are far enough apart to tell apart at a
+/// glance.
+///
+/// The colour is a pure function of the id and nothing else. That is
+/// what lets two machines agree: each host paints the peers it can see,
+/// and the sets differ (everyone sees everyone but themselves), so a
+/// colour chosen from "who is here" would give the same person a
+/// different colour on every screen.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     // Concept-pinned palette. Matches `nirios-concept/src/data.ts`
     // USERS[*].cursorColor so the Rust render is pixel-identical to the
-    // reference mockup for these names.
+    // reference mockup for these names. Each is also a member of
+    // `PEER_PALETTE`, so a pin and a hash never land near-but-not-quite
+    // on the same colour.
     match user_id {
         "me" => (0x63, 0x66, 0xf1),      // indigo-500
         "alice" => (0xec, 0x48, 0x99),   // pink-500
@@ -45,30 +52,63 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
                 h ^= *b as u64;
                 h = h.wrapping_mul(0x100000001b3);
             }
-            let hue = (h % 360) as f32;
-            hsl_to_rgb(hue, 0.65, 0.55)
+            PEER_PALETTE[(h % PEER_PALETTE.len() as u64) as usize]
         }
     }
 }
 
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hh = h / 60.0;
-    let x = c * (1.0 - (hh.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match hh as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    (
-        ((r1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-    )
+/// Every colour a peer can be drawn in.
+///
+/// The hash used to pick a hue out of all 360, which sounds like more
+/// choice and is in practice worse: uniform sampling puts two peers a
+/// couple of degrees apart often enough to see it. `dave`, `erin` and
+/// `sara` landed on hues 87, 89 and 88 — three different people in one
+/// indistinguishable green, which reads as a rendering fault rather
+/// than as three people.
+///
+/// A closed ring trades that for an honest failure: two ids either get
+/// clearly different colours or exactly the same one, and the name on
+/// the pill is what settles an exact tie. Twelve hues spaced no closer
+/// than 26°, then twelve more offset half a step and lifted in
+/// lightness, so neighbours differ in brightness as well as hue and
+/// nothing is dark enough to sink into the desktop or pale enough to
+/// wash out on a white page.
+pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
+    (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
+    (0xdf, 0xdc, 0x3a),
+    (0x87, 0xdf, 0x3a),
+    (0x3a, 0xdf, 0x4a),
+    (0x10, 0xb9, 0x81), // emerald-500 — pinned for "charlie"
+    (0x3a, 0xce, 0xdf),
+    (0x3a, 0x84, 0xdf),
+    (0x63, 0x66, 0xf1), // indigo-500 — pinned for "me"
+    (0x89, 0x3a, 0xdf),
+    (0xdf, 0x3a, 0xdf),
+    (0xec, 0x48, 0x99), // pink-500 — pinned for "alice"
+    (0xdf, 0x3a, 0x42),
+    (0xf4, 0xcd, 0x71),
+    (0xd1, 0xf4, 0x71),
+    (0x89, 0xf4, 0x71),
+    (0x71, 0xf4, 0xa3),
+    (0x71, 0xf4, 0xe4),
+    (0x71, 0xc8, 0xf4),
+    (0x71, 0x90, 0xf4),
+    (0x90, 0x71, 0xf4),
+    (0xd3, 0x71, 0xf4),
+    (0xf4, 0x71, 0xd3),
+    (0xf4, 0x71, 0x94),
+    (0xf4, 0x89, 0x71),
+];
+
+/// How far apart two colours are, weighted the way an eye weights them
+/// (the "redmean" approximation). Used to state, as a test rather than
+/// as a hope, that no two peers can be painted in confusable colours.
+pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    let rm = (a.0 as f32 + b.0 as f32) / 2.0;
+    let dr = a.0 as f32 - b.0 as f32;
+    let dg = a.1 as f32 - b.1 as f32;
+    let db = a.2 as f32 - b.2 as f32;
+    ((2.0 + rm / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - rm) / 256.0) * db * db).sqrt()
 }
 
 #[cfg(test)]
@@ -90,6 +130,76 @@ mod color_tests {
         let c = user_color("eve");
         assert_eq!(a, b, "same id must map to same color");
         assert_ne!(a, c, "different ids should map to different colors");
+    }
+
+    /// Two people in the same room must never be painted in two colours
+    /// that only a colour-picker can tell apart. Enumerated over the
+    /// whole closed set `user_color` can return, so the guarantee holds
+    /// for every id rather than for the handful anyone thought to try.
+    ///
+    /// The bar is a redmean distance of 60. For scale: the scheme this
+    /// replaced put `dave` and `sara` 4.8 apart, and `host` and `peer3`
+    /// 4.4 apart — different people rendered in the same colour.
+    #[test]
+    fn no_two_peer_colours_are_confusable() {
+        for (i, a) in PEER_PALETTE.iter().enumerate() {
+            for b in &PEER_PALETTE[i + 1..] {
+                let d = color_distance(*a, *b);
+                assert!(
+                    d >= 60.0,
+                    "#{:02x}{:02x}{:02x} and #{:02x}{:02x}{:02x} are only {d:.1} apart — \
+                     two peers wearing those read as one",
+                    a.0,
+                    a.1,
+                    a.2,
+                    b.0,
+                    b.1,
+                    b.2,
+                );
+            }
+        }
+    }
+
+    /// Every colour the pins hand out is also a ring member, so a pinned
+    /// peer and a hashed one can collide outright but never land
+    /// near-but-not-quite together — which is the case that looks broken.
+    #[test]
+    fn pinned_colours_are_ring_members() {
+        for id in ["me", "alice", "bob", "charlie"] {
+            let c = user_color(id);
+            assert!(
+                PEER_PALETTE.contains(&c),
+                "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                c.0,
+                c.1,
+                c.2,
+            );
+        }
+    }
+
+    /// A hashed id is drawn from the same closed set, so the distance
+    /// guarantee above covers real peers and not just the table.
+    #[test]
+    fn hashed_ids_land_on_the_ring() {
+        for id in ["carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade"] {
+            let c = user_color(id);
+            assert!(
+                PEER_PALETTE.contains(&c),
+                "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                c.0,
+                c.1,
+                c.2,
+            );
+        }
+        // The pairs that used to be indistinguishable now are not.
+        for (a, b) in [("dave", "sara"), ("dave", "erin"), ("ada", "ade")] {
+            let (ca, cb) = (user_color(a), user_color(b));
+            assert!(
+                ca == cb || color_distance(ca, cb) >= 60.0,
+                "{a} and {b} are {:.1} apart",
+                color_distance(ca, cb),
+            );
+        }
     }
 
     #[test]
