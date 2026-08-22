@@ -23,7 +23,7 @@ use ui::widget::Widget;
 
 #[test]
 fn root_builds_without_panic_for_bootstrap_tree() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let _root = build_nirios_root(&tree);
     // If the tree-walk diverged we'd have panicked by now; reaching here
     // means every chrome widget constructed cleanly against the default
@@ -31,8 +31,8 @@ fn root_builds_without_panic_for_bootstrap_tree() {
 }
 
 #[test]
-fn bootstrap_default_seeds_four_demo_tabs_in_order() {
-    let tree = WorkspaceTree::bootstrap_default();
+fn bootstrap_demo_carries_four_demo_tabs_in_order() {
+    let tree = WorkspaceTree::bootstrap_demo();
     let ws = tree.active_workspace().expect("active workspace");
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
@@ -71,7 +71,7 @@ fn bootstrap_default_seeds_four_demo_tabs_in_order() {
 
 #[test]
 fn chrome_state_shared_across_sibling_widgets() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
 
     // Two clones of the handle represent two chrome widgets (e.g.
@@ -92,7 +92,7 @@ fn chrome_state_shared_across_sibling_widgets() {
 
 #[test]
 fn sidebar_plus_button_appends_workspace_and_activates_it() {
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let before = tree.workspaces.len();
     let ws = SidebarWheel::new().click_management_new_workspace(&mut tree);
     assert_eq!(tree.workspaces.len(), before + 1);
@@ -105,7 +105,7 @@ fn sidebar_plus_button_appends_workspace_and_activates_it() {
 
 #[test]
 fn quick_settings_state_defaults_and_mutates_through_chrome() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     // Defaults are deliberate: brightness > 0 so the slider has a visible
     // fill, wifi on / bluetooth off to match most fresh installs.
@@ -132,7 +132,7 @@ fn quick_settings_state_defaults_and_mutates_through_chrome() {
 
 #[test]
 fn commit_workspace_name_applies_buffer_to_active_workspace() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
 
     // Seed an edit-in-flight and commit it.
@@ -160,7 +160,7 @@ fn commit_workspace_name_applies_buffer_to_active_workspace() {
 
 #[test]
 fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     // Default narrows ⌘K to the current workspace so peers don't get
     // cross-workspace result leakage by accident.
@@ -181,7 +181,7 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
     // The top bar reads the active workspace's roster first (with a
     // tree-level fallback only when the workspace is empty), so this
     // test seeds onto the active workspace directly.
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let active_id = tree.active;
     let active_ws = tree
         .workspaces
@@ -220,7 +220,7 @@ fn topbar_falls_back_to_tree_collaborators_when_active_workspace_empty() {
     // applied by `SidebarWheelChrome::sync_from_tree`. Without this
     // path, single-workspace demo trees that only set
     // `tree.collaborators` would render an empty avatar stack.
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let active_id = tree.active;
     let active_ws = tree
         .workspaces
@@ -240,7 +240,7 @@ fn sidebar_active_card_inherits_tree_collaborator_count() {
     // The default tree seeds Home with one demo collaborator (so the
     // top-bar avatar stack lights up on first boot); strip it before
     // exercising the tree-level fallback path.
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
     }
@@ -266,7 +266,7 @@ fn sidebar_cards_read_per_workspace_collaborator_rosters() {
     // Each workspace's own `Workspace::collaborators` populates its card,
     // with a tree-level fallback only on the active card (and only when
     // the workspace itself is empty).
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     // Seed a second workspace so we have two cards to compare.
     let w1_id = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
@@ -294,10 +294,10 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     // inactive card with no per-workspace peers should not borrow the
     // tree-level roster, otherwise every card would display the same
     // phantom "everyone is here" roster.
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let w0 = tree.workspaces[0].id;
     tree.append_empty_workspace("Second");
-    // `bootstrap_default` now seeds demo collaborators on Home (alice)
+    // `bootstrap_demo` carries collaborators on Home (alice)
     // and on Research (alice + bob) so the top-bar avatar stack has
     // data on first run; the fallback contract under test here is
     // per-workspace emptiness, so explicitly clear every workspace's
@@ -317,7 +317,7 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
 
 #[test]
 fn collaborators_overlay_defaults_off_and_toggles_through_chrome() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     // Defaults: all overlay flags off — the shell starts clean.
     assert!(!chrome.borrow().overlays.collaborators);
@@ -356,7 +356,7 @@ fn center_widget_cycles_forward_and_backward() {
     assert_eq!(CenterWidget::from_index(2), CenterWidget::Calendar);
     assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
     // And the top bar starts on Clock by default so the first frame is sane.
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     assert_eq!(
         TopBarChrome::from_tree(&tree).center_widget(),
         CenterWidget::Clock
@@ -476,7 +476,7 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
     use ui::permissions::UserId;
     use ui::presence::{PresenceCtx, PresenceKey};
 
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     // Pick a real tab id from the bootstrap tree so we're exercising the
     // actual id formatting (not a synthetic constant).
     let ws = tree.active_workspace().expect("active workspace");
@@ -531,7 +531,7 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
     use ui::permissions::UserId;
     use ui::presence::PresenceCtx;
 
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let ws_mut = tree
         .workspaces
         .iter_mut()
@@ -639,7 +639,7 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
     // state wraps the persisted tree (not the runtime tree) so this
     // also verifies the persisted-tree `apply_workspace_drop_from_path`
     // overload wires correctly.
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
     let before_rev = chrome.borrow().revision;
     let before_tab_count = chrome.borrow().tree().workspaces[0].strips[0].window_groups[0]
@@ -684,7 +684,7 @@ fn overview_button_click_toggles_overview_overlay() {
     use winit::dpi::PhysicalPosition;
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree.clone());
     assert!(
         !chrome.borrow().overlays.overview,
@@ -832,7 +832,7 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     const W: f32 = 1600.0;
     const H: f32 = 900.0;
 
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // Probe: a sibling TopBarChrome laid out standalone at the same width.
     // We draw it once so its overview_btn_rect is populated and we know
@@ -1032,7 +1032,7 @@ fn overview_toggle_signals_animation_frames_until_settled() {
     const W: f32 = 1600.0;
     const H: f32 = 900.0;
 
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
 
     // Before any interaction no animation is in flight.

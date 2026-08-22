@@ -96,7 +96,7 @@ fn solid(width: u32, height: u32, rgb: (u8, u8, u8)) -> Vec<u8> {
 /// client would have been adopted into, exactly the way the native
 /// compositor loop gets there.
 fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, WorkspaceTree) {
-    let mut protocol_tree = WorkspaceTree::bootstrap_default();
+    let mut protocol_tree = WorkspaceTree::bootstrap_demo();
     tab_binding::adopt_toplevel(&mut protocol_tree, surface_id, Some(app_id.to_string()));
 
     let mut fb = FrameBuilder::new((W, H));

@@ -4903,7 +4903,62 @@ impl WorkspaceTree {
         false
     }
 
+    /// A first-boot tree: one empty workspace, and nothing in it.
+    ///
+    /// This is what a machine with no `state.json` gets, so everything it
+    /// contains is a claim about a person who has not used the system yet.
+    /// It therefore contains no collaborators, no window groups and no
+    /// documents — a roster entry here would put a person who does not
+    /// exist into the user's workspace document and paint their avatar in
+    /// the top bar, and a seeded tab would be a window they never opened.
+    ///
+    /// The workspace itself is not fabrication: the tree needs an active
+    /// workspace for the compositor to render into and for the wheel disc
+    /// to have a spoke, and the disc's "+" adds more. Empty room, real
+    /// walls.
+    ///
+    /// For a populated tree — demo scenarios, screenshots, and the tests
+    /// that need tabs to act on — use [`Self::bootstrap_demo`].
     pub fn bootstrap_default() -> Self {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let home = Workspace {
+            id: ws_id,
+            room: RoomId::new(),
+            name: "Home".into(),
+            strips: vec![Strip {
+                id: strip_id,
+                name: "Main".into(),
+                window_groups: Vec::new(),
+            }],
+            collaborators: Vec::new(),
+            owner: None,
+            capabilities: Vec::new(),
+            shared_surfaces: HashMap::new(),
+        };
+
+        let mut active_strip = HashMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut tree = Self {
+            workspaces: vec![home],
+            active: ws_id,
+            active_strip,
+            active_group: HashMap::new(),
+            collaborators: vec![],
+            ..Default::default()
+        };
+        tree.seed_doc_from_cache();
+        tree
+    }
+
+    /// A populated tree for demos, `--shots` scenarios and tests.
+    ///
+    /// Everything in here is invented — three workspaces, a four-tab
+    /// window group, and named collaborators with fixed cursor hues — so
+    /// it must never be reachable from a normal boot. Production goes
+    /// through [`Self::bootstrap_default`]; this exists so a scenario can
+    /// act on a tab without building the tree by hand first.
+    pub fn bootstrap_demo() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let group_id = next_id();
@@ -4964,17 +5019,17 @@ impl WorkspaceTree {
                     maximized: false,
                 }],
             }],
-            // Home is active on first boot; seed one demo peer so
-            // the top-bar avatar stack paints immediately.
-            // `TopBarChrome::sync_from_tree` prefers the active
-            // workspace's roster (with a tree-level fallback), so
-            // without this seed the right cluster would be empty
-            // until the user navigates to Research. The local user
-            // ("me") is deliberately not seeded here so
-            // `draw_ws_settings` synthesizes its "You" tile from the
-            // fallback path — keeping the General-tab fill count
-            // stable for the Roles-tab parity-spec contract. Hex
-            // matches `nirios-concept/src/data.ts`'s `cursorColor`.
+            // Home is the active workspace in the demo tree, and it
+            // carries one invented peer so the top-bar avatar stack has
+            // something to paint. `TopBarChrome::sync_from_tree` prefers
+            // the active workspace's roster (with a tree-level fallback),
+            // so without this the right cluster would be empty until the
+            // demo navigates to Research. The local user ("me") is
+            // deliberately not seeded here so `draw_ws_settings`
+            // synthesizes its "You" tile from the fallback path — keeping
+            // the General-tab fill count stable for the Roles-tab
+            // parity-spec contract. Hex matches
+            // `nirios-concept/src/data.ts`'s `cursorColor`.
             collaborators: vec![
                 Collaborator::new("alice", "Alice")
                     .with_cursor_color("#ec4899")
@@ -4998,12 +5053,11 @@ impl WorkspaceTree {
             ..Default::default()
         };
 
-        // Research and Design seed empty strips so the overview overlay
-        // paints a meaningful 3-card grid on first run, matching the
-        // committed `e2e-open-close-overview-settled.png` golden. Research
-        // also seeds two demo collaborators so the top-bar avatar stack +
-        // per-tab presence dots have something to render — the canonical
-        // hex colours mirror `nirios-concept/src/data.ts`'s `cursorColor`.
+        // Research and Design add empty strips so the overview overlay
+        // has a 3-card grid to lay out. Research also carries two invented
+        // collaborators so the top-bar avatar stack + per-tab presence dots
+        // have something to render — the canonical hex colours mirror
+        // `nirios-concept/src/data.ts`'s `cursorColor`.
         let research_id = tree.append_empty_workspace("Research");
         if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == research_id) {
             ws.collaborators.push(
@@ -5020,12 +5074,12 @@ impl WorkspaceTree {
         tree.append_empty_workspace("Design");
 
         // Home stays active — `append_empty_workspace` doesn't change
-        // `tree.active`, so the user lands on the populated workspace
-        // rather than an empty one on first boot.
+        // `tree.active`, so the demo lands on the populated workspace
+        // rather than an empty one.
         //
         // Seed the automerge backing doc from the now-populated cache
         // so peer-sync exports (`current_heads`, `export_changes_since`)
-        // reflect the bootstrap state. `append_empty_workspace` already
+        // reflect the demo state. `append_empty_workspace` already
         // mirrors each appended workspace into the doc; this call
         // additionally writes the initial Home workspace + the active
         // pointer that the cache literal seeded directly.
@@ -5532,36 +5586,106 @@ pub fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
 }
 
 #[cfg(test)]
-mod bootstrap_default_tests {
-    //! Coverage for [`WorkspaceTree::bootstrap_default`]'s seeded fixture.
+mod bootstrap_tests {
+    //! Coverage for the two bootstrap trees, which exist for opposite
+    //! reasons and must not drift into each other.
     //!
-    //! The compositor boots straight into this tree on first run, so what
-    //! lives here is what an end user sees when they install QuickDesktop
-    //! and log in for the first time. The asserts below pin the
-    //! concept-driven contract:
+    //! [`WorkspaceTree::bootstrap_default`] is what the compositor boots
+    //! into on a machine with no `state.json`, so everything in it is a
+    //! statement about a person who has not used this machine yet. It is
+    //! therefore empty, and the tests below pin it that way: no invented
+    //! collaborators, no invented workspaces, no windows nobody opened.
+    //! The one workspace it does contain is structure, not content — the
+    //! tree needs an active workspace to render into and the wheel disc
+    //! needs a spoke, and the disc's "+" is how a second one appears.
     //!
-    //!   - At least three workspaces (Home / Research / Design) so the
-    //!     overview overlay paints a meaningful grid rather than a single
-    //!     lonely card.
-    //!   - At least one workspace seeded with collaborators so the top-bar
-    //!     avatar stack and per-tab presence dots have data to render.
-    //!   - The first group's [`WindowWidth`] is `Wide` (or wider) so the
-    //!     default tile fills more than half the viewport — matching
-    //!     `WindowFrame.tsx`'s "fill the container" behaviour.
+    //! [`WorkspaceTree::bootstrap_demo`] is the populated fixture for
+    //! `--shots` scenarios and for tests that need a tab to act on. Its
+    //! contents are invented, which is exactly why it is a separate
+    //! constructor that no boot path reaches.
     //!
-    //! Updates here are intentional fixture changes — when the tests are
-    //! re-pinned the e2e goldens may also need re-seeding (see
-    //! `tests/e2e_shell_flows.rs` for the `e2e-open-close-overview-settled`
-    //! golden which is a downstream consumer of this fixture).
+    //! Updates to the demo fixture are intentional fixture changes — when
+    //! those tests are re-pinned the e2e goldens may also need re-seeding
+    //! (see `tests/e2e_shell_flows.rs`).
 
     use super::*;
 
     #[test]
-    fn bootstrap_default_seeds_three_demo_workspaces() {
+    fn bootstrap_default_invents_no_people() {
         let tree = WorkspaceTree::bootstrap_default();
         assert!(
+            tree.collaborators.is_empty(),
+            "first-boot tree carries tree-level collaborators: {:?}",
+            tree.collaborators.iter().map(|c| &c.id).collect::<Vec<_>>()
+        );
+        for ws in &tree.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "first-boot workspace {:?} carries collaborators {:?} — a \
+                 roster entry here is a person who does not exist, written \
+                 into the user's workspace document and painted in the top bar",
+                ws.name,
+                ws.collaborators.iter().map(|c| &c.id).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_default_opens_no_windows() {
+        let tree = WorkspaceTree::bootstrap_default();
+        for ws in &tree.workspaces {
+            for strip in &ws.strips {
+                assert!(
+                    strip.window_groups.is_empty(),
+                    "first-boot workspace {:?} strip {:?} already holds {} \
+                     window group(s) — windows the person never opened",
+                    ws.name,
+                    strip.name,
+                    strip.window_groups.len()
+                );
+            }
+        }
+        assert!(
+            tree.active_group.is_empty(),
+            "first-boot tree points at an active group with no groups to point at"
+        );
+    }
+
+    #[test]
+    fn bootstrap_default_is_one_empty_workspace_with_somewhere_to_put_things() {
+        let tree = WorkspaceTree::bootstrap_default();
+        // Exactly one: two would mean naming a second one, and every name
+        // ("Research", "Design") is a claim about what this person does.
+        assert_eq!(
+            tree.workspaces.len(),
+            1,
+            "first boot should be a single empty workspace; got {:?}",
+            tree.workspaces.iter().map(|w| &w.name).collect::<Vec<_>>()
+        );
+        // Empty, but not structurally broken: the active pointer resolves,
+        // and the workspace has a strip for the first window to land in.
+        let active = tree
+            .active_workspace()
+            .expect("first boot must have a resolvable active workspace");
+        assert_eq!(active.id, tree.workspaces[0].id);
+        assert_eq!(
+            active.strips.len(),
+            1,
+            "the empty workspace still needs a strip to place a window into"
+        );
+        assert_eq!(
+            tree.active_strip.get(&active.id).copied(),
+            Some(active.strips[0].id),
+            "the active-strip pointer must resolve to the workspace's strip"
+        );
+    }
+
+    #[test]
+    fn bootstrap_demo_carries_three_workspaces() {
+        let tree = WorkspaceTree::bootstrap_demo();
+        assert!(
             tree.workspaces.len() >= 3,
-            "default tree should seed at least 3 workspaces (Home / Research / \
+            "demo tree should carry at least 3 workspaces (Home / Research / \
              Design) so the overview has meaningful content; got {}",
             tree.workspaces.len()
         );
@@ -5569,13 +5693,13 @@ mod bootstrap_default_tests {
         // avatar stack has something to render.
         assert!(
             tree.workspaces.iter().any(|w| !w.collaborators.is_empty()),
-            "at least one default workspace should seed >=1 collaborator"
+            "at least one demo workspace should carry >=1 collaborator"
         );
     }
 
     #[test]
-    fn bootstrap_default_first_group_uses_wide_or_larger() {
-        let tree = WorkspaceTree::bootstrap_default();
+    fn bootstrap_demo_first_group_uses_wide_or_larger() {
+        let tree = WorkspaceTree::bootstrap_demo();
         let first_ws = tree.workspaces.first().expect("at least one workspace");
         let first_strip = first_ws.strips.first().expect("at least one strip");
         let first_group = first_strip
@@ -5589,7 +5713,7 @@ mod bootstrap_default_tests {
         let share = first_group.width.permille();
         assert!(
             share >= ui::widget::WIDTH_NORMAL_PERMILLE,
-            "default group should fill at least the Normal share of the \
+            "the demo group should fill at least the Normal share of the \
              strip so the white card dominates the viewport; got {:?} \
              ({share}/1000)",
             first_group.width
@@ -5666,7 +5790,7 @@ mod automerge_foundation_tests {
         // explicitly out of scope for unit B — that's the
         // concurrent-appends test in unit-C/D where structural ops
         // need diff-aware seeding.
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let initial_count = tree_a.workspaces.len();
 
         tree_a.append_empty_workspace("Project X");
@@ -5700,7 +5824,7 @@ mod automerge_foundation_tests {
     /// prevent, arriving by the other route.
     #[test]
     fn a_workspaces_room_propagates_via_apply_changes() {
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let new_id = tree_a.append_empty_workspace("Project X");
         let room = tree_a.room_of(new_id).expect("the append mints a room");
         assert!(!room.is_nil());
@@ -5737,7 +5861,7 @@ mod automerge_foundation_tests {
     /// about a room change that never replicates.
     #[test]
     fn set_room_propagates_via_apply_changes() {
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let id = tree_a.workspaces[0].id;
         let inviters_room = RoomId::new();
         assert!(tree_a.set_room(id, inviters_room), "set_room must apply");
@@ -5772,12 +5896,12 @@ mod automerge_foundation_tests {
     /// Two trees in one room, so a record-index claim can be read back
     /// from the side that did not make it.
     fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
-        let mut host = WorkspaceTree::bootstrap_default();
+        let mut host = WorkspaceTree::bootstrap_demo();
         let host_ws = host.workspaces[0].id;
         let room = host.room_of(host_ws).expect("bootstrap mints a room");
         host.adopt_ownerless_workspaces(&"ada".to_string());
 
-        let mut guest = WorkspaceTree::bootstrap_default();
+        let mut guest = WorkspaceTree::bootstrap_demo();
         let guest_ws = guest.workspaces[0].id;
         assert!(guest.set_room(guest_ws, room));
         guest.adopt_ownerless_workspaces(&"bob".to_string());
@@ -6232,12 +6356,12 @@ mod automerge_foundation_tests {
             // The host's room is the one its own workspace was minted
             // with, so the host actually administers it — the room being
             // synced has a governance to be right about.
-            let mut host = WorkspaceTree::bootstrap_default();
+            let mut host = WorkspaceTree::bootstrap_demo();
             let host_ws = host.workspaces[0].id;
             let room = host.room_of(host_ws).expect("bootstrap mints a room");
             host.adopt_ownerless_workspaces(&"alice".to_string());
 
-            let mut guest = WorkspaceTree::bootstrap_default();
+            let mut guest = WorkspaceTree::bootstrap_demo();
             let guest_ws = guest.workspaces[0].id;
             assert!(guest.set_room(guest_ws, room));
             guest.adopt_ownerless_workspaces(&"bob".to_string());
@@ -6684,7 +6808,7 @@ mod automerge_foundation_tests {
     /// signal at all.
     #[test]
     fn set_room_refuses_the_nil_room() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let id = tree.workspaces[0].id;
         let before = tree.room_of(id).expect("bootstrap mints a room");
         assert!(
@@ -6705,7 +6829,7 @@ mod automerge_foundation_tests {
         // B uses `default()` for the same reason as the append test:
         // two `bootstrap_default` calls would race on the doc-side
         // workspaces list.
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target = tree_a
             .workspaces
             .iter()
@@ -6736,7 +6860,7 @@ mod automerge_foundation_tests {
         // unit-B tests: two `bootstrap_default` calls would race on
         // the doc-side workspaces list. Default-receiver pattern keeps
         // the convergence assertion clean.
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         assert!(
             !tree_a.workspaces[0].strips[0].window_groups[0].maximized,
@@ -6779,7 +6903,7 @@ mod automerge_foundation_tests {
         //
         // A share rather than a pixel count is the point: B's monitor is
         // not A's, so replicating pixels would reproduce A's screen on B's.
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
         let new_share: u16 = 600;
 
@@ -6818,7 +6942,7 @@ mod automerge_foundation_tests {
         // another. After `move_tab_across_strips` mirrors the move
         // into the doc, peer B sees the tab in the destination strip
         // after `apply_changes`.
-        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let mut tree_a = WorkspaceTree::bootstrap_demo();
         // bootstrap_default has one strip in the Home workspace. Add a
         // second strip with one empty group so the move has somewhere
         // to land. Mirror through the seed so the doc carries the new
@@ -7164,7 +7288,7 @@ mod active_group_tests {
         // bootstrap_default tree starts un-maximized; flipping
         // `maximized = true` on one group must serialize and
         // deserialize cleanly.
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ws = tree.workspaces.first_mut().expect("seed has workspaces");
         let strip = ws.strips.first_mut().expect("seed has strips");
         let group = strip.window_groups.first_mut().expect("seed has groups");

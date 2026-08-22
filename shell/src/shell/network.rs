@@ -1108,7 +1108,7 @@ mod tests {
     fn shell_network_spawns_with_default_keypair() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // `cmd_tx` capacity is the actor's bounded-channel size; just
         // assert it's nonzero so we know the channel was constructed.
@@ -1121,7 +1121,7 @@ mod tests {
     fn tick_with_no_events_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
@@ -1311,7 +1311,7 @@ mod tests {
         // into a `NetCmd::Publish { msg: PresenceMoved }` on the actor
         // command channel. Uses the test-only constructor so we own the
         // receiver and can drain commands without spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
         net.publish_presence("local-cursor".into(), (100.0, 200.0));
         let cmd = cmd_rx
@@ -1351,7 +1351,7 @@ mod tests {
         // that the entry round-trips with every field preserved so the
         // overlay can attribute the cursor to the right person, in the
         // right scope, at the right time.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_presence_handle();
         net.handle_presence_message(
@@ -1411,7 +1411,7 @@ mod tests {
         // Verify the wrapping is correct (peer id stamped, payload
         // round-trips verbatim, default workspace topic) without
         // spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         net.publish_app_crdt_incremental(
             "terminal".into(),
@@ -1454,7 +1454,7 @@ mod tests {
         // The inbound receive-side adapter pushes onto the buffer
         // the broker's drainer reads from. Verify all four fields
         // round-trip so the local fan-out can attribute payloads.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_handle();
         net.handle_app_crdt_message(
@@ -1517,7 +1517,7 @@ mod tests {
         // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
         // is correct (peer id stamped, envelope round-trips verbatim,
         // default workspace topic) without spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let envelope = make_envelope(7);
         net.publish_app_crdt_signed(
@@ -1562,7 +1562,7 @@ mod tests {
         // drainer reads from. Verify the entry preserves the peer hash,
         // the route the drainer delivers against, and the envelope
         // verbatim.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_signed_handle();
         let envelope = make_envelope(13);
@@ -1588,7 +1588,7 @@ mod tests {
         // contract is asserted explicitly so per-workspace routing
         // (Phase 3 follow-up) gets a tripping test rather than a
         // silent behaviour change.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
     }
@@ -1596,7 +1596,7 @@ mod tests {
     #[test]
     fn publish_scrollback_request_emits_a_publish_command() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
         let artifact = ArtifactId::new();
         net.publish_scrollback_request(artifact, 100, 25);
@@ -1628,7 +1628,7 @@ mod tests {
     #[test]
     fn handle_scrollback_request_message_buffers_for_drain() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_request_handle();
         let artifact = ArtifactId::new();
@@ -1644,7 +1644,7 @@ mod tests {
     #[test]
     fn handle_scrollback_response_message_buffers_for_drain() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_response_handle();
         let artifact = ArtifactId::new();

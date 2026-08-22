@@ -626,7 +626,7 @@ mod tests {
     }
 
     fn chrome_with_workspace() -> Chrome {
-        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_default()));
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_demo()));
         ChromeState::new_with_handle(handle)
     }
 
