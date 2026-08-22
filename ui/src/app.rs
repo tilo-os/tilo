@@ -1867,116 +1867,34 @@ impl App {
         self.focus_trap_active = trap_active;
     }
 
+    /// Fold one inbound `RemotePresenceUpdate` into this app.
+    ///
+    /// The decode itself lives on [`crate::presence::PresenceCtx`] so
+    /// the compositor — which subscribes to the same stream to paint
+    /// peers over its windows — reads presence exactly the way an app
+    /// does. What stays here is the part only a document holder can
+    /// do: follow a peer's viewport, and answer a late joiner with
+    /// full state.
     fn apply_remote_presence(
         &mut self,
         user_id: String,
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
-        use crate::collaboration::PresencePayload::*;
-        use crate::permissions::UserId;
-
-        // A View broadcast rides inside the routing key, not the payload
-        // (the subset has no `PresencePayload` variant). Recognise it here,
-        // store the peer's region/resource, and — if we're following them —
-        // move the local viewport to match. The paired payload is inert and
-        // deliberately never reaches the match below.
-        if let Some(subset) = key.as_view() {
-            self.presence_ctx
-                .set_peer_view(UserId(user_id), subset);
-            self.apply_follow();
-            return;
-        }
-
-        match payload {
-            Pointer { x, y } => {
-                // Populate BOTH presence stores: `pointers` (keyed by
-                // scope, read by the shell's per-workspace overlay and by
-                // `pointer_for`) and the screen-space `remote_cursors` vec
-                // the shared `draw_remote_cursors` helper renders. Only the
-                // latter is painted by the App, so there's no double-draw.
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_pointer(&key, uid, (x, y));
-                self.presence_ctx
-                    .upsert_remote_cursor(user_id, [x, y], None);
-            }
-            Caret { pos } => {
-                // Feed BOTH presence stores: the in-app BlockEditor reads
-                // `carets` (set_caret); the cross-process overlay reads
-                // the `remote_caret` map (set_remote_caret).
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_caret(&key, uid, pos);
-                self.presence_ctx.set_remote_caret(user_id, key, pos);
-            }
-            Selection { start, end } => {
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_selection(
-                    &key,
-                    uid,
-                    crate::presence::SelectionRange { start, end },
-                );
-                self.presence_ctx
-                    .set_remote_selection(user_id, key, start, end);
-            }
-            Typing { start, end } => {
-                // A peer inserted `start..end` under `key`: record a fading
-                // textmarker swipe in their colour. `Instant::now()` births
-                // the mark; the render fades it over `TYPING_FADE`, and the
-                // per-frame `prune_typing` reclaims it.
-                self.presence_ctx.record_peer_typing(
-                    crate::permissions::UserId(user_id),
-                    key,
-                    crate::presence::SelectionRange { start, end },
-                    Instant::now(),
-                );
-            }
-            Arrived => {
-                let uid = UserId(user_id.clone());
-                // Register in #280's cross-process peer registry too.
-                self.presence_ctx
-                    .register_peer_at(user_id.clone(), key.clone());
-                // Tab keys move the peer's dot between tabs/pages; non-Tab
-                // (app/workspace) arrivals are (possibly late) joiners, so
-                // reply with our full state to converge. The broker fans
-                // this to all peers; an already-synced peer merges it
-                // idempotently. (Page switches use Tab keys, never this.)
-                if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
-                    self.presence_ctx.set_tab_focus(&key, uid);
-                } else {
-                    self.presence_ctx.register_presence(&key, uid);
-                    let data = self.state.save();
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
-                            "[app] recv Arrived; replying full state {}B",
-                            data.len()
-                        );
-                    }
-                    self.collab_manager
-                        .send(crate::collaboration::CollabRequest::SyncCRDT { data });
+        use crate::presence::RemotePresenceEffect;
+        match self
+            .presence_ctx
+            .apply_remote_presence(user_id, key, payload)
+        {
+            RemotePresenceEffect::None => {}
+            RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
+            RemotePresenceEffect::PeerArrived => {
+                let data = self.state.save();
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!("[app] recv Arrived; replying full state {}B", data.len());
                 }
-            }
-            Left => {
-                // `Left` is broadcast on `WindowEvent::CursorLeft` —
-                // the peer's mouse pointer left their window viewport,
-                // not the peer themselves. Their caret + selection
-                // should KEEP rendering because they're still editing,
-                // they've just moved their mouse elsewhere. Wiping
-                // them via `unregister_peer` here was the
-                // "remote caret disappears a few seconds after it was
-                // placed" bug — any mouse-leave on the publisher side
-                // tore down the entire presence record on every
-                // subscriber.
-                //
-                // True peer disconnect arrives via the socket close
-                // path (broker drops the peer from its fan-out
-                // table); subscribers only need to clear pointer-
-                // related state here.
-                let uid = UserId(user_id.clone());
-                for list in self.presence_ctx.pointers.values_mut() {
-                    list.retain(|(u, _)| u != &uid);
-                }
-                self.presence_ctx.remove_remote_cursor(&user_id);
-                let _ = key;
+                self.collab_manager
+                    .send(crate::collaboration::CollabRequest::SyncCRDT { data });
             }
         }
     }

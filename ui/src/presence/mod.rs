@@ -167,6 +167,25 @@ pub struct RemoteCursor {
     pub label: String,
 }
 
+/// What a subscriber still has to do after
+/// [`PresenceCtx::apply_remote_presence`] has folded a frame in.
+///
+/// The presence stores are updated either way; these name the two
+/// consequences that reach past them — moving the local viewport, and
+/// answering a joiner with document state. A subscriber that holds no
+/// document (the compositor) ignores both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemotePresenceEffect {
+    /// Nothing beyond the presence stores changed.
+    None,
+    /// The peer broadcast a new view subset. A follower should
+    /// re-bind its viewport to them.
+    PeerViewChanged,
+    /// A peer arrived on a non-tab scope — possibly a late joiner, so
+    /// a document holder should reply with its full state.
+    PeerArrived,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct PresenceCtx {
     pub here: HashMap<PresenceKey, Vec<UserId>>,
@@ -646,6 +665,116 @@ impl PresenceCtx {
         } else {
             self.register_presence(&key, uid);
         }
+    }
+
+    /// Fold one inbound presence frame into this context.
+    ///
+    /// This is the whole decode of a `RemotePresenceUpdate` — which
+    /// store a payload lands in, and under which scope. It lives on
+    /// `PresenceCtx` rather than on `App` because an app is not the
+    /// only thing that subscribes to presence: the compositor draws
+    /// peers over its own windows and reads the identical stream. Two
+    /// decoders would drift, and a peer painted by one and not the
+    /// other is indistinguishable on screen from a peer who is not
+    /// there.
+    ///
+    /// The returned [`RemotePresenceEffect`] names the part a bare
+    /// presence store cannot do for itself: following a peer's
+    /// viewport, and answering a late joiner with document state. A
+    /// subscriber that holds no document ignores it.
+    pub fn apply_remote_presence(
+        &mut self,
+        user_id: String,
+        key: PresenceKey,
+        payload: crate::collaboration::PresencePayload,
+    ) -> RemotePresenceEffect {
+        use crate::collaboration::PresencePayload::*;
+
+        // A View broadcast rides inside the routing key, not the payload
+        // (the subset has no `PresencePayload` variant). Recognise it here,
+        // store the peer's region/resource, and let the caller decide
+        // whether it is following them. The paired payload is inert and
+        // deliberately never reaches the match below.
+        if let Some(subset) = key.as_view() {
+            self.set_peer_view(UserId(user_id), subset);
+            return RemotePresenceEffect::PeerViewChanged;
+        }
+
+        match payload {
+            Pointer { x, y } => {
+                // Populate BOTH presence stores: `pointers` (keyed by
+                // scope, read by the shell's per-workspace overlay and by
+                // `pointer_for`) and the screen-space `remote_cursors` vec
+                // the shared `draw_remote_cursors` helper renders.
+                let uid = UserId(user_id.clone());
+                self.set_pointer(&key, uid, (x, y));
+                self.upsert_remote_cursor(user_id, [x, y], None);
+            }
+            Caret { pos } => {
+                // Feed BOTH presence stores: the in-app BlockEditor reads
+                // `carets` (set_caret); the cross-process overlay reads
+                // the `remote_caret` map (set_remote_caret).
+                let uid = UserId(user_id.clone());
+                self.set_caret(&key, uid, pos);
+                self.set_remote_caret(user_id, key, pos);
+            }
+            Selection { start, end } => {
+                let uid = UserId(user_id.clone());
+                self.set_selection(&key, uid, SelectionRange { start, end });
+                self.set_remote_selection(user_id, key, start, end);
+            }
+            Typing { start, end } => {
+                // A peer inserted `start..end` under `key`: record a fading
+                // textmarker swipe in their colour. `Instant::now()` births
+                // the mark; the render fades it over `TYPING_FADE`, and the
+                // per-frame `prune_typing` reclaims it.
+                self.record_peer_typing(
+                    UserId(user_id),
+                    key,
+                    SelectionRange { start, end },
+                    Instant::now(),
+                );
+            }
+            Arrived => {
+                let uid = UserId(user_id.clone());
+                // Register in the cross-process peer registry too.
+                self.register_peer_at(user_id, key.clone());
+                // Tab keys move the peer's dot between tabs/pages; non-Tab
+                // (app/workspace) arrivals are (possibly late) joiners, so
+                // the caller should reply with its full state to converge.
+                // (Page switches use Tab keys, never this.)
+                if matches!(key, PresenceKey::Tab { .. }) {
+                    self.set_tab_focus(&key, uid);
+                } else {
+                    self.register_presence(&key, uid);
+                    return RemotePresenceEffect::PeerArrived;
+                }
+            }
+            Left => {
+                // `Left` is broadcast on `WindowEvent::CursorLeft` —
+                // the peer's mouse pointer left their window viewport,
+                // not the peer themselves. Their caret + selection
+                // should KEEP rendering because they're still editing,
+                // they've just moved their mouse elsewhere. Wiping
+                // them via `unregister_peer` here was the
+                // "remote caret disappears a few seconds after it was
+                // placed" bug — any mouse-leave on the publisher side
+                // tore down the entire presence record on every
+                // subscriber.
+                //
+                // True peer disconnect arrives via the socket close
+                // path (broker drops the peer from its fan-out
+                // table); subscribers only need to clear pointer-
+                // related state here.
+                let uid = UserId(user_id.clone());
+                for list in self.pointers.values_mut() {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                self.remove_remote_cursor(&user_id);
+                let _ = key;
+            }
+        }
+        RemotePresenceEffect::None
     }
 
     /// Drop every trace of `user_id`: remove them from every
