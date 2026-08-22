@@ -185,6 +185,11 @@ pub enum WordProcessorAction {
         block: String,
         at: usize,
     },
+    /// Insert a fresh paragraph carrying `text` directly after block `after`.
+    /// The action-level way to add a line: Enter is a live-edit path, not an
+    /// action, so a headless participant (an agent, a script) had no way to
+    /// append a paragraph with the same ops the app produces.
+    InsertParagraph { after: String, text: String },
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks {
@@ -460,6 +465,14 @@ impl Action for WordProcessorAction {
                 dm.set_attr(&new, "page_break_before", true);
             }
 
+            WordProcessorAction::InsertParagraph { after, text } => {
+                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                let new = dm.insert_block(Some(after), "paragraph");
+                if !text.is_empty() {
+                    dm.splice_text(&new, 0, 0, text);
+                }
+            }
+
             WordProcessorAction::RemoveBlocks { blocks } => {
                 let mut sorted = blocks.clone();
                 sorted.sort();
@@ -613,6 +626,14 @@ pub fn insert_image_action(
 }
 
 /// Remove `blocks` (an image, or a table's cells).
+/// Insert a paragraph carrying `text` after block `after`.
+pub fn insert_paragraph_action(after: &str, text: &str) -> WordProcessorAction {
+    WordProcessorAction::InsertParagraph {
+        after: after.to_string(),
+        text: text.to_string(),
+    }
+}
+
 pub fn remove_blocks_action(blocks: Vec<String>) -> WordProcessorAction {
     WordProcessorAction::RemoveBlocks { blocks }
 }
