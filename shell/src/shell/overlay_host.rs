@@ -13907,45 +13907,46 @@ mod peer_cursor_tests {
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
     };
-    use ui::presence::{PresenceCtx, PresenceKey, UserId};
+    use ui::permissions::UserId;
+    use ui::presence::{PresenceCtx, PresenceKey};
 
     fn one_group_seed() -> WorkspaceTree {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
         let group_id: GroupId = 100;
+        let tab_id = 1;
         let strip = Strip {
             id: strip_id,
             name: "Solo".into(),
             window_groups: vec![StateGroup {
                 id: group_id,
-                width: StateWidth::Half,
+                width: StateWidth::Normal,
                 maximized: false,
                 tabs: vec![Tab {
-                    id: 1,
+                    id: tab_id,
                     title: "Terminal".into(),
-                    app: AppKind::Terminal,
-                    content: TileContent::default(),
-                    ..Default::default()
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        label: "Terminal".into(),
+                    },
                 }],
-                active_tab: 0,
-                ..Default::default()
+                // A group's active tab has to name a tab it has; `0`
+                // names nothing, and the resolvers read this.
+                active_tab: tab_id,
             }],
-            ..Default::default()
         };
-        let ws = Workspace {
-            id: ws_id,
-            name: "Work".into(),
-            strips: vec![strip],
-            ..Default::default()
-        };
-        WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip: strip_id,
-            active_group: group_id,
-            collaborators: vec![],
-            ..Default::default()
-        }
+        // Through the constructor rather than a struct literal: a field
+        // added to `Workspace` should not break this fixture.
+        let mut ws = Workspace::test_default(ws_id, "Work");
+        ws.strips = vec![strip];
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces = vec![ws];
+        tree.active = ws_id;
+        // Both are per-parent maps, not single pointers: one active strip
+        // per workspace, one active group per strip.
+        tree.active_strip.insert(ws_id, strip_id);
+        tree.active_group.insert(strip_id, group_id);
+        tree
     }
 
     /// Draw the peer layer for `presence` and report how many draw
