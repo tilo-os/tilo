@@ -265,6 +265,15 @@ class Session:
             # not quietly an install in another.
             QOS_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
             QOS_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
+            # Makes a `ui` app name the record it checked out, on the
+            # session log. Beat 7 depends on two apps announcing the
+            # *same* address, and the only address two sessions can share
+            # here is the untitled one: a record identified by a path
+            # would be a different id on each side, because each session
+            # has a home of its own. If that beat ever reports that
+            # nobody answered, this line is what says whether the two
+            # apps were even listening on the same channel.
+            QUICK_COLLAB_DEBUG="1",
         )
         # The packaging chain, when it is on disk. Passed by path rather
         # than found on PATH so the run measures the binaries built for it.
