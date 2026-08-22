@@ -144,10 +144,20 @@ def cut_spans(cuts: list[dict], frames: list[dict]) -> list[dict]:
         inside = [f for f in frames if start <= f["captured"] < end]
         if not inside:
             continue
+        first = inside[0]["video_t"]
+        last = inside[-1]["video_t"] + inside[-1]["shown"]
+        # Cutting to whoever is already on camera is a no-op in the
+        # recorder, and the transcript prints it either way. Merged here
+        # so a span is a stretch of one session's pixels rather than a
+        # stretch of one `cut()` call.
+        if spans and spans[-1]["session"] == cut["session"]:
+            spans[-1]["to"] = last
+            spans[-1]["frames"] += len(inside)
+            continue
         spans.append({
             "session": cut["session"],
-            "from": inside[0]["video_t"],
-            "to": inside[-1]["video_t"] + inside[-1]["shown"],
+            "from": first,
+            "to": last,
             "frames": len(inside),
         })
     return spans
