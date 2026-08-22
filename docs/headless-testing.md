@@ -356,6 +356,39 @@ app had when it exited. Apps that need specific actions get them from
 widgets out of the app's own live tree, skipping anything whose name suggests
 a destructive operation.
 
+## Opening an app the machine does not have
+
+`scripts/install-on-open-demo.py` drives the one flow that cannot be
+exercised from an installed package, because its subject is a package
+that is not installed: typing the name of an app the configured
+registries offer, pressing Enter, and getting a tab.
+
+```bash
+cargo build -p shell -p sheets -p install -p launcher
+cargo build -p app-catalogue --bins --examples
+
+scripts/install-on-open-demo.py --out target/install-on-open
+scripts/install-on-open-demo.py --backend winit --stage-only   # drive it yourself
+```
+
+It packs the real Sheets binary into a signed `.qpkg`, serves it from a
+loopback registry, points a headless compositor at an empty install
+root, and then checks four things off the compositor's own state: that
+the app is offered and absent, that its palette row is worded
+identically to an installed app's, that `Enter` activates it, and that
+the resulting tab presents frames of its own rather than the
+first-frame placeholder. Three PNGs land in `--out`.
+
+Two things it pins that are easy to get wrong by hand:
+
+- The socket takes **winit** key names. `Enter` works; `Return` is an
+  xkb name and comes back as a `parse_error`.
+- **`Super+K`**, not `Ctrl+K`. `Ctrl+K` scopes to the focused app, and
+  only widens to global when nothing is focused — so it appears to work
+  on an empty workspace and stops working once there is a tab in front
+  of you. The script measures both scopes after the app is up, where
+  the difference is visible.
+
 ## What's still missing
 
 - **`browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.
