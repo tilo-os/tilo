@@ -563,6 +563,20 @@ pub struct Collaborator {
     /// member's membership capability — never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
+    /// The session this person is here through — the publishing peer's
+    /// libp2p handle ([`crate::network::behaviour::peer_liveness_handle`]).
+    ///
+    /// This is what makes leaving expressible. A departure arrives as a
+    /// peer id, not as a name: the transport notices a session has gone
+    /// quiet, and by then the roster row has usually been renamed from
+    /// that session's handle to the person at it. Without this the row
+    /// could not be found again and the avatar would stay on the bar for
+    /// the rest of the session.
+    ///
+    /// `None` for a row that came from somewhere other than a live
+    /// session — a persisted roster, or a test fixture.
+    #[serde(default)]
+    pub session: Option<u64>,
 }
 
 impl Collaborator {
@@ -579,7 +593,15 @@ impl Collaborator {
             cursor_color: None,
             avatar: None,
             role_id: None,
+            session: None,
         }
+    }
+
+    /// Record the live session this person is here through, so a
+    /// departure that names only that session can find their row.
+    pub fn with_session(mut self, peer: u64) -> Self {
+        self.session = Some(peer);
+        self
     }
 
     /// Same as [`Collaborator::new`] but also attributes the peer to a
@@ -2015,7 +2037,7 @@ impl WorkspaceTree {
             if let Some(i) = ws.collaborators.iter().position(|c| c.id == handle) {
                 let old = ws.collaborators.remove(i);
                 changed = true;
-                let mut upgraded = Collaborator::new(user, user);
+                let mut upgraded = Collaborator::new(user, user).with_session(peer);
                 upgraded.cursor_color = old.cursor_color;
                 upgraded.role_id = old.role_id;
                 let _ = Self::admit_into(&mut ws.collaborators, upgraded);
@@ -2023,11 +2045,32 @@ impl WorkspaceTree {
             }
         }
         let entry = if named {
-            Collaborator::new(user, user)
+            Collaborator::new(user, user).with_session(peer)
         } else {
-            Collaborator::new(handle.clone(), handle)
+            Collaborator::new(handle.clone(), handle).with_session(peer)
         };
         changed |= Self::admit_into(&mut ws.collaborators, entry);
+        changed
+    }
+
+    /// Take every person who was here through `peer`'s session off every
+    /// roster.
+    ///
+    /// A session going quiet is the one departure signal the transport
+    /// produces on its own, and it names a peer rather than a person —
+    /// which is why [`Collaborator::session`] is kept. Sweeping every
+    /// workspace rather than one is deliberate: a session can be in
+    /// several of this machine's rooms at once, and it left all of them.
+    ///
+    /// Returns whether any roster changed, so the caller can treat a
+    /// departure as a reason to repaint and otherwise do nothing.
+    pub fn retire_session(&mut self, peer: u64) -> bool {
+        let mut changed = false;
+        for ws in &mut self.workspaces {
+            let before = ws.collaborators.len();
+            ws.collaborators.retain(|c| c.session != Some(peer));
+            changed |= before != ws.collaborators.len();
+        }
         changed
     }
 
@@ -4689,6 +4732,61 @@ mod bootstrap_default_tests {
             0,
             "a room everyone left shows nobody"
         );
+    }
+
+    /// A session that goes quiet takes its person off the roster, by
+    /// whichever name they had acquired by then.
+    ///
+    /// The departure names a peer, never a person — so a row that had
+    /// already been renamed from the session handle to "alice" has to
+    /// still be findable. That is what [`Collaborator::session`] is for,
+    /// and it is why a departure arriving after the rename is the case
+    /// worth pinning.
+    #[test]
+    fn a_session_going_quiet_takes_its_person_off_the_roster() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.active_workspace().unwrap().room;
+        let alice = 0x11_u64;
+        let bob = 0x22_u64;
+        assert!(tree.note_peer_present(room, alice, "alice"));
+        assert!(tree.note_peer_present(room, bob, "bob"));
+        assert_eq!(active_workspace_peer_count(&tree), 2);
+
+        assert!(tree.retire_session(alice), "alice's session left");
+        let left = &tree.active_workspace().unwrap().collaborators;
+        assert_eq!(
+            left.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["bob"],
+            "the person whose session went quiet must come off the bar, \
+             and nobody else; got {left:?}"
+        );
+        assert!(
+            !tree.retire_session(alice),
+            "a session that already left changes nothing"
+        );
+    }
+
+    /// A departure reaches every room that session was in. One session
+    /// can be in several of this machine's rooms at once, and it left
+    /// all of them.
+    #[test]
+    fn a_departure_sweeps_every_room_the_session_was_in() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let rooms: Vec<RoomId> = tree.workspaces.iter().map(|w| w.room).collect();
+        assert!(rooms.len() >= 2, "need two rooms to tell a sweep from a hit");
+        let peer = 0x33_u64;
+        for r in &rooms {
+            assert!(tree.note_peer_present(*r, peer, "dana"));
+        }
+        assert!(tree.retire_session(peer));
+        for ws in &tree.workspaces {
+            assert!(
+                ws.collaborators.is_empty(),
+                "workspace {:?} still shows a peer whose session left: {:?}",
+                ws.name,
+                ws.collaborators
+            );
+        }
     }
 
     /// Roster avatars and peer cursors have to be the same colour for

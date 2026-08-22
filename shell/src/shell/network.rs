@@ -835,6 +835,19 @@ impl ShellNetwork {
                 self.publish_sync_requests();
                 continue;
             }
+            // A session going quiet is the one departure signal the
+            // transport produces on its own, and the roster has to act
+            // on it. Without this the avatar stack only ever grows: it
+            // would keep announcing everyone who had ever been in the
+            // room for the rest of the session, which is the same class
+            // of untruth as seeding it with people who never arrived.
+            if let NetEvent::PeerLeft { peer, .. } = event {
+                let handle = crate::network::behaviour::peer_liveness_handle(&peer);
+                if let Ok(replica) = self.replica.lock() {
+                    replica.tree.write().retire_session(handle);
+                }
+                continue;
+            }
             if let NetEvent::Msg { ws: _, peer, msg } = event {
                 // Presence updates skip the replica entirely — they're
                 // ephemeral overlay state, not CRDT state — and land
