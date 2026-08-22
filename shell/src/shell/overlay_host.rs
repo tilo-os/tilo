@@ -1692,13 +1692,29 @@ impl ShellOverlayHost {
     }
 
     /// Swap the workspace-scoped content when the active workspace
-    /// changes. Edge-triggered on `tree.active` against
-    /// [`Self::content_built_for_ws`]; on a change the content root and
-    /// the strip pointer map are rebuilt TOGETHER via
-    /// [`crate::shell::build_workspace_root`], so no reconciler can
-    /// ever observe pointers into freed rows. Returns `true` when a
-    /// swap happened (the caller must treat the widget structure as
-    /// dirty — every row is new).
+    /// changes, or when it grows a strip the content has no row for.
+    /// On either the content root and the strip pointer map are
+    /// rebuilt TOGETHER via [`crate::shell::build_workspace_root`], so
+    /// no reconciler can ever observe pointers into freed rows.
+    /// Returns `true` when a swap happened (the caller must treat the
+    /// widget structure as dirty — every row is new).
+    ///
+    /// The strip check is what makes a peer's window visible.
+    /// [`Self::resync_strips_from_tree`] splices new groups and tabs
+    /// incrementally, but it is keyed by strip and skips any strip it
+    /// has no row for — and a window opened on another machine arrives
+    /// in a strip of *theirs*, which is new here. So the window landed
+    /// in the tree, read back correctly, and was skipped by the only
+    /// code that could have drawn it.
+    ///
+    /// A rebuild rather than an incremental insert because there is no
+    /// incremental path for a strip: rows are built with the content
+    /// root and the pointer map has to be replaced with them or it
+    /// dangles. It costs the rows' widget-local state (scroll offsets),
+    /// and it runs only when the strip set actually changes, which is
+    /// rare. What the person is looking at — workspace, strip, group,
+    /// front tab — lives in the tree, not in the rows, so a rebuild
+    /// does not move them.
     ///
     /// Runs at the top of both [`Widget::update`] and
     /// [`Widget::take_structure_dirty`], BEFORE
@@ -1720,7 +1736,9 @@ impl ShellOverlayHost {
                     self.content_built_for_ws = Some(active_raw);
                     return false;
                 }
-                Some(cur) if cur == active_raw => return false,
+                Some(cur) if cur == active_raw && self.rows_cover_active_strips(&tree) => {
+                    return false;
+                }
                 Some(_) => {}
             }
             tree.clone()
@@ -1736,6 +1754,24 @@ impl ShellOverlayHost {
         // Per-strip memos of the old workspace die with its rows.
         self.last_scrolled_active_group.clear();
         true
+    }
+
+    /// Does the content tree have a row for every strip of the active
+    /// workspace?
+    ///
+    /// A strip with no row is a strip nothing can draw — the
+    /// incremental resync looks its row up by strip id and skips what
+    /// it cannot find. Extra rows count too: a strip that went away
+    /// leaves a row pointing at a group that is no longer in the tree.
+    fn rows_cover_active_strips(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
+        let Some(ws) = tree.active_workspace() else {
+            return true;
+        };
+        ws.strips.len() == self.group_row_ptrs.len()
+            && ws
+                .strips
+                .iter()
+                .all(|s| self.group_row_ptrs.contains_key(&s.id))
     }
 
     /// Test hook for the workspace-content reconcile — mirrors the
@@ -4076,12 +4112,12 @@ impl ShellOverlayHost {
     /// the peer count so a roster of 8 doesn't clip.
     fn collaborators_rect(&self) -> Rect {
         let popover_w = 260.0_f64;
-        let peers = self
+        let members = self
             .chrome
             .as_ref()
-            .map(|c| c.borrow().tree().collaborators.len())
+            .map(|c| collaborator_roster_rows(&c.borrow().tree()).len())
             .unwrap_or(0);
-        let rows = peers.max(1) as f64;
+        let rows = members.max(1) as f64;
         // + COLLAB_FOOTER_H for the "Room activity" row: the dropdown answers
         // "who is in this room", and "what has happened in this room" is the
         // question you ask next.
@@ -7567,6 +7603,83 @@ pub fn overview_card_faces<'a>(
         .collect()
 }
 
+/// One row of the collaborators dropdown.
+///
+/// People and agents are listed together because both are *in the room*,
+/// and a person asking "who else is here" is asking one question. They
+/// are tagged apart because they are not the same kind of participant:
+/// a row that did not say which it was would be the OS reporting a
+/// person present when none is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterRow {
+    /// What the row is called.
+    pub label: String,
+    /// Avatar initial.
+    pub initial: char,
+    /// Per-identity avatar colour.
+    pub color: Color,
+    /// True for an agent admitted by capability, false for a person.
+    pub is_agent: bool,
+}
+
+/// The rows the collaborators dropdown shows: the peers this session
+/// knows about, then the agents the active room has admitted.
+///
+/// The two halves come from different places on purpose. A peer is
+/// somebody a session has *met* — it is in `tree.collaborators` because
+/// presence arrived from them. An agent meets nobody and announces
+/// nothing a session could notice, so the only honest evidence it is
+/// here is the capability the room recorded when it was admitted, which
+/// is what `Workspace::agent_members` reads. The consequence worth
+/// stating: no agent row can exist before a grant did, and revoking the
+/// grant removes it.
+///
+/// Shared by the rect math and the paint so the two cannot drift — a
+/// card sized for one row painting two clipped the second.
+pub fn collaborator_roster_rows(tree: &crate::shell::state::WorkspaceTree) -> Vec<RosterRow> {
+    let mut rows: Vec<RosterRow> = tree
+        .collaborators
+        .iter()
+        .map(|p| {
+            let (r, g, b) = p
+                .cursor_color
+                .as_deref()
+                .and_then(ui::presence::parse_hex_color)
+                .unwrap_or_else(|| ui::presence::user_color(&p.id));
+            RosterRow {
+                initial: roster_initial(&p.name),
+                label: p.name.clone(),
+                color: Color::from_rgb8(r, g, b),
+                is_agent: false,
+            }
+        })
+        .collect();
+    if let Some(ws) = tree.active_workspace() {
+        for (agent, _role) in ws.agent_members() {
+            // The label is the principal itself. An agent has no display
+            // name in the room document yet — when peers grow one, this
+            // is the seam it arrives through, and until then showing the
+            // subject is both true and the string you would revoke.
+            let (r, g, b) = ui::presence::user_color(&agent);
+            rows.push(RosterRow {
+                initial: roster_initial(&agent),
+                label: agent,
+                color: Color::from_rgb8(r, g, b),
+                is_agent: true,
+            });
+        }
+    }
+    rows
+}
+
+/// The avatar letter for a roster row.
+fn roster_initial(name: &str) -> char {
+    name.chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase())
+        .unwrap_or('•')
+}
+
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     draw_scrim_at(scene, transform, rect, 1.0, theme);
 }
@@ -10508,36 +10621,16 @@ impl ShellOverlayHost {
             None,
         );
 
-        let peers: Vec<(String, char, Color)> = self
+        // Per-identity avatar colour (cursor colour, else the
+        // palette-pinned `user_color`) so a row's avatar matches that
+        // identity's cursor and top-bar chip.
+        let rows: Vec<RosterRow> = self
             .chrome
             .as_ref()
-            .map(|c| {
-                let chrome_ref = c.borrow();
-                let tree = chrome_ref.tree();
-                tree.collaborators
-                    .iter()
-                    .map(|p| {
-                        let initial = p
-                            .name
-                            .chars()
-                            .next()
-                            .map(|c| c.to_ascii_uppercase())
-                            .unwrap_or('•');
-                        // Per-identity avatar colour (cursor colour, else the
-                        // palette-pinned `user_color`) so a peer's row avatar
-                        // matches their cursor and top-bar chip.
-                        let (r, g, b) = p
-                            .cursor_color
-                            .as_deref()
-                            .and_then(ui::presence::parse_hex_color)
-                            .unwrap_or_else(|| ui::presence::user_color(&p.id));
-                        (p.name.clone(), initial, Color::from_rgb8(r, g, b))
-                    })
-                    .collect::<Vec<(String, char, Color)>>()
-            })
+            .map(|c| collaborator_roster_rows(&c.borrow().tree()))
             .unwrap_or_default();
 
-        if peers.is_empty() {
+        if rows.is_empty() {
             // "No peers connected" is true of a working session nobody
             // has joined and of a session with no collaboration at all,
             // and those need different words: the first is waiting, the
@@ -10564,30 +10657,45 @@ impl ShellOverlayHost {
             return;
         }
 
-        for (i, (name, initial, color)) in peers.iter().enumerate() {
+        for (i, row) in rows.iter().enumerate() {
             let row_y = rect.y0 + 48.0 + i as f64 * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-            // Row avatar = shared `ui::Avatar` chip (r = 11) in the peer's own
-            // colour, matching the top-bar stack and the overview.
+            // Row avatar = shared `ui::Avatar` chip (r = 11) in that
+            // identity's own colour, matching the top-bar stack and the
+            // overview.
             let avatar_rect =
                 Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
             ui::widget::Avatar::draw_at(
                 scene,
                 transform,
                 avatar_rect,
-                &initial.to_string(),
-                *color,
+                &row.initial.to_string(),
+                row.color,
                 theme,
                 text_renderer,
             );
             text_renderer.draw_text(
                 scene,
-                name,
+                &row.label,
                 tokens.typography.scale.sm,
                 colors.text_primary,
                 transform * Affine::translate((rect.x0 + 44.0, row_y + 7.0)),
                 None,
             );
+            // The tag is what keeps the shared list honest. Without it
+            // this dropdown says a name is in the room and lets the
+            // reader supply "person", which is the one thing it must
+            // never do on the reader's behalf.
+            if row.is_agent {
+                text_renderer.draw_text(
+                    scene,
+                    "agent",
+                    tokens.typography.scale.xs,
+                    colors.text_dim,
+                    transform * Affine::translate((rect.x1 - 56.0, row_y + 9.0)),
+                    None,
+                );
+            }
         }
         self.draw_collaborators_footer(scene, transform, text_renderer, theme);
     }
