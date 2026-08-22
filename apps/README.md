@@ -83,6 +83,7 @@ Toolkit exception: `browser` embeds Servo for page rendering.
 | Crate | What it is |
 |---|---|
 | `file-explorer` | Spatial file manager: walkdir / trash / infer / mime_guess; opens editable documents in the word processor via `qdoc`. Binary `file-explorer`. |
+| `agent` | `qos-agent`: a participant without a window. Joins a word-processor document through the session's collaboration broker and carries out instructions written in it (`Scribe: turn the bullets into a table`) with the word processor's own exported actions, under its own actor. |
 | `browser` | Web browser embedding Servo (libservo + surfman + glow) with adblock; chrome is a `ui` widget (migrated off iced). |
 
 ## Building
