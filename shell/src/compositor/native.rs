@@ -365,6 +365,14 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     serde_json::json!({
                         "room": scope,
                         "user": user.0,
+                        // What the pill over this cursor actually
+                        // reads. The id above is the identity and is
+                        // never blank; the name is what the room calls
+                        // that identity, and the two differing is the
+                        // whole point — a harness that could only see
+                        // the id could not tell a peer the room has
+                        // named from one it has not.
+                        "name": presence.display_name(user),
                         "x": x,
                         "y": y,
                     })
@@ -3064,22 +3072,35 @@ pub fn run() -> ! {
         let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
             let (cx, cy) = state.client_input.cursor();
             relay.set_cursor(cx, cy);
-            relay.set_rooms({
+            let (rooms, here) = {
                 let chrome = frame_builder.chrome_handle();
                 let chrome = chrome.borrow();
                 let tree = chrome.tree();
-                tree.workspaces
+                let rooms = tree
+                    .workspaces
                     .iter()
                     .map(|w| w.room.to_string())
-                    .collect::<Vec<_>>()
-            });
+                    .collect::<Vec<_>>();
+                // The room the user is looking at, which is where their
+                // pointer is. Distinct from the set above: that is every
+                // room the session listens to.
+                let here = tree
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == tree.active)
+                    .map(|w| w.room.to_string());
+                (rooms, here)
+            };
+            relay.set_rooms(rooms);
             // Say where this session's pointer is, whether or not
             // anything is running in front of it. The app-driven
             // republish only speaks while a local app publishes a
             // pointer, so on a desktop with nothing open it never
             // spoke — and two people in one room watched each other
             // not appear.
-            relay.publish_local_cursor();
+            if let Some(here) = here.as_deref() {
+                relay.publish_local_cursor(here);
+            }
             frame_builder.pump_peer_presence()
         } else {
             false
