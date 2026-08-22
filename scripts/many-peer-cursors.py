@@ -237,24 +237,44 @@ def main() -> int:
         app_sessions = sessions if args.host_app else guests
         for s in app_sessions:
             s.launch_app(args.app, s.user, room, doc, out)
-        # Wait on all of them against one deadline rather than each in
-        # turn against its own. Three debug builds compiling shaders on
-        # one GPU are slow and they are slow *concurrently*; a per-session
-        # timeout charges the first session for everyone else's start-up
-        # and reports "never painted" for an app that was seconds away.
+        # Two separate events, and both are required.
+        #
+        # Adoption is fast: the compositor takes the surface and lays it
+        # into a tab within seconds. Presenting the first frame is not --
+        # a debug build on a loaded machine can hold a window for many
+        # minutes before it paints.
+        #
+        # Waiting only for the window is tempting and wrong. A surface
+        # that has never committed a buffer is not mapped, so the pointer
+        # never enters it, so the app never publishes, so the session has
+        # nothing to republish and the host sees nobody. Measured: with
+        # three adopted-but-unpainted windows the host's peer list came
+        # back empty. So the paint is the thing to wait for; the window
+        # is reported on the way past because it separates "the app never
+        # started" from "the app started and is still compiling".
         deadline = time.time() + args.frame_timeout
+        windowed: set[str] = set()
         pending = list(app_sessions)
         while pending and time.time() < deadline:
-            pending = [s for s in pending
-                       if not any(f.get("frame_seq", 0) > 0 for f in s.surfaces())]
+            for s in list(pending):
+                frames = s.surfaces()
+                if s.name not in windowed and any(f.get("rect") for f in frames):
+                    windowed.add(s.name)
+                    note(f"{s.name}'s app has a window; waiting for it to paint")
+                if any(f.get("frame_seq", 0) > 0 for f in frames):
+                    pending.remove(s)
             if pending:
                 time.sleep(2.0)
         for s in app_sessions:
-            painted = any(f.get("frame_seq", 0) > 0 for f in s.surfaces())
-            claim(f"{s.name}'s app painted a real frame", painted, True)
+            frames = s.surfaces()
+            claim(f"{s.name}'s app has a window on screen",
+                  any(f.get("rect") for f in frames), True)
+            claim(f"{s.name}'s app painted a real frame",
+                  any(f.get("frame_seq", 0) > 0 for f in frames), True)
         if pending:
             raise RuntimeError(
-                f"an app never painted within {args.frame_timeout}s; see the logs in {out}")
+                f"an app never painted within {args.frame_timeout}s -- an unpainted "
+                f"window takes no pointer, so no peer would appear. Logs in {out}")
 
         step("4", "park each guest's pointer somewhere awkward")
         # The window every guest is pointing into. All the sessions lay
