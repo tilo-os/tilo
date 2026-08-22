@@ -330,16 +330,43 @@ class Compositor:
             body = body.get("frames", body)
         return body if isinstance(body, list) else []
 
-    def open_global_palette(self):
-        """Super+K — "search the machine".
+    def open_palette(self, chord: str):
+        """Open the command palette with one of its four chords.
 
-        The chord matters. `Ctrl+K` opens the palette scoped to the app
-        you are looking at; only the global scope offers to open
-        something you do not already have. `Super+Space` and
-        `Alt+Space` are the same question asked differently.
+        The chord matters, and it is the one thing about this beat that
+        is easy to get wrong on camera.
+
+        `Super+K`, `Super+Space` and `Alt+Space` open the palette in
+        global scope — "search the machine" — which is the only scope
+        that offers to open an app you do not already have. `Ctrl+K`
+        asks the narrower question, "search inside what I am looking
+        at", and is scoped to the focused app.
+
+        `Ctrl+K` is not simply broken for this: with nothing focused,
+        the scope widens to global and the row appears anyway. That is
+        exactly why it is the wrong chord to film — it works on an
+        empty workspace and stops working the moment there is a tab in
+        front of you. `--chord ctrl-k` exists so that difference can be
+        measured rather than argued about.
+
+        `Alt+Space` is the one to reach for when qOS is running as a
+        Wayland client inside another desktop: the host swallows Super
+        before the compositor sees it.
         """
-        self.modifiers(logo=True)
-        self.key("k")
+        if chord == "super-k":
+            self.modifiers(logo=True)
+            self.key("k")
+        elif chord == "ctrl-k":
+            self.modifiers(ctrl=True)
+            self.key("k")
+        elif chord == "super-space":
+            self.modifiers(logo=True)
+            self.key("Space")
+        elif chord == "alt-space":
+            self.modifiers(alt=True)
+            self.key("Space")
+        else:
+            raise ValueError(f"unknown chord {chord!r}")
         self.modifiers()
 
 
@@ -475,6 +502,12 @@ def main() -> int:
                    help="seconds to wait for the app's first frame (default: 120)")
     p.add_argument("--startup-timeout", type=float, default=60.0,
                    help="seconds to wait for the control socket (default: 60)")
+    p.add_argument("--chord", default="super-k",
+                   choices=("super-k", "super-space", "alt-space", "ctrl-k"),
+                   help="palette chord to open with. The three global ones "
+                        "offer apps this machine does not have; ctrl-k is "
+                        "scoped to the focused app and is here to be measured "
+                        "against, not to film (default: super-k)")
     p.add_argument("--hold", type=float, default=0.0,
                    help="extra seconds to leave the session up after the "
                         "final capture (for filming a live window)")
@@ -549,8 +582,10 @@ def main() -> int:
     shell_log = args.out / "compositor.log"
     registry_log = args.out / "registry.log"
     palette_png = args.out / "palette.png"
+    pending_png = args.out / "pending.png"
     tab_png = args.out / "tab.png"
 
+    print(f"chord: {args.chord}")
     print(f"staged HOME: {home}")
     print(f"install root: {apps_dir}  (empty)")
 
@@ -582,11 +617,18 @@ def main() -> int:
         # --- 2..4 through the live compositor -------------------------
         with Compositor(binaries, env_extra, shell_log, args.startup_timeout) as comp:
             try:
-                comp.open_global_palette()
+                comp.open_palette(args.chord)
                 time.sleep(0.6)
                 pal = comp.palette()
                 check(pal.get("visible") is True,
-                      f"Super+K must open the palette; palette was {pal}")
+                      f"{args.chord} must open the palette; palette was {pal}")
+                # Which question the chord asked. `All` is the scope
+                # that offers apps this machine does not have; report it
+                # rather than assume it, because `ActiveApp` widens to
+                # `All` when nothing is focused and the two are then
+                # indistinguishable from the outside.
+                scope = comp.state().get("chrome", {}).get("search_scope")
+                print(f"  scope: {scope}")
                 # The catalogue's first answer is a cold cache. Give the
                 # background fetch the moment it needs before typing, so
                 # the row is there when the name is finished.
@@ -607,6 +649,10 @@ def main() -> int:
                       f"{row.get('description')!r}  → {palette_png}")
 
                 # --- 3. Enter ---------------------------------------
+                # A keystroke, not a click on the row. The socket takes
+                # winit's key names, so this is "Enter"; "Return" is an
+                # xkb name and comes back as a parse_error rather than
+                # quietly doing nothing.
                 before = len(comp.notifications())
                 comp.key("Enter")
                 time.sleep(1.0)
@@ -619,6 +665,11 @@ def main() -> int:
                 if pending:
                     print(f"  activated: {pending[-1]['title']!r} — "
                           f"{pending[-1]['body']!r}")
+                # The one place the machine admits the app is coming
+                # from somewhere. Captured while it is still up: it is
+                # retired by the app starting, not by a timer, so it is
+                # gone from the final frame.
+                comp.snapshot(pending_png)
 
                 # --- 4. tab, then a frame of its own ----------------
                 adopted = wait_for_tab(comp, args.tab_timeout)
@@ -650,6 +701,7 @@ def main() -> int:
     print("\nOK — an app this machine did not have opened as a tab and drew "
           "itself, from one keystroke in the search box.")
     print(f"  {palette_png}")
+    print(f"  {pending_png}")
     print(f"  {tab_png}")
     return 0
 
