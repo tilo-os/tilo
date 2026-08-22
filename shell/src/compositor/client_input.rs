@@ -882,6 +882,19 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().palette_visible() {
         return true;
     }
+    // The portal's file chooser, for the same reason as the peer-sync
+    // card below. It is modal — drawn over a scrim, above every other
+    // overlay — but "drawn above" and "receives the click" are separate
+    // things, and this predicate is the one that decides the second.
+    // Without it, a chooser raised over a focused window was painted
+    // full-screen while every click in it hit-tested through to the app
+    // underneath: an app could ask for a file, the dialog would appear,
+    // and neither the row nor Open nor Escape could be reached with a
+    // mouse or a keyboard. The app asks, the OS chooses — but only if
+    // the OS is the one being clicked.
+    if fb.host().file_picker().is_some() {
+        return true;
+    }
     let chrome = fb.chrome();
     chrome.overlays.overview
         || chrome.overlays.quick_settings
