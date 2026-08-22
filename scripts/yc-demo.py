@@ -52,6 +52,7 @@ open, and nothing about `--release` changes.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -957,16 +958,65 @@ class Recorder:
         cap = self.max_hold if self.max_hold > 0 else float("inf")
         out: list[tuple[str, str, float]] = []
         self.trimmed = 0.0
-        for i, (t, rel, name) in enumerate(frames):
+
+        # How long each frame was the live state, before any editing.
+        lived: list[float] = []
+        for i, (t, _rel, _name) in enumerate(frames):
             begins = t_start if i == 0 else t
             # The last frame was the live state until the camera stopped;
             # it is shown for one tick and the video ends.
             ends = frames[i + 1][0] if i + 1 < len(frames) else t_end + tick
-            lived = max(tick, ends - begins)
-            shown = min(lived, max(tick, cap))
-            self.trimmed += lived - shown
+            lived.append(max(tick, ends - begins))
+
+        # Runs of *identical* frames are the dead air, and capping a
+        # single frame's screen time never touched them: the camera takes
+        # a fresh snapshot every fifth of a second, so a minute of an
+        # unchanging screen arrives as three hundred separate files that
+        # each lived a fifth of a second and none of which was ever held.
+        # A previous cut trimmed one second out of two hundred and forty
+        # while a third of it was a still page.
+        #
+        # So identical neighbours are collapsed: one of them is kept and
+        # shown for at most `max_hold`, and the rest are dropped. That
+        # takes frames out and never puts any in — nothing is repeated,
+        # nothing is interpolated, and every frame in the file is still a
+        # real render shown for no longer than its run was live.
+        runs: list[tuple[int, int]] = []          # (index, count)
+        digests = [self._digest(rel) for _t, rel, _n in frames]
+        i = 0
+        while i < len(frames):
+            j = i + 1
+            # A run has to stay on one session: a cut is a change even
+            # when the two screens happen to be identical.
+            while (j < len(frames)
+                   and digests[j] == digests[i]
+                   and digests[i] is not None
+                   and frames[j][2] == frames[i][2]):
+                j += 1
+            runs.append((i, j - i))
+            i = j
+
+        for start, count in runs:
+            _t, rel, name = frames[start]
+            was_live = sum(lived[start:start + count])
+            shown = min(was_live, max(tick, cap))
+            self.trimmed += was_live - shown
             out.append((rel, name, shown))
         return out
+
+    def _digest(self, rel: str) -> str | None:
+        """A frame's bytes, as a hash, or None when it cannot be read.
+
+        The compositor encodes the same scene to the same PNG, so equal
+        bytes mean an identical screen. An unreadable frame gets None,
+        which compares unequal to everything including itself, so a
+        frame that could not be hashed is never collapsed into a run.
+        """
+        try:
+            with open(os.path.join(self.dir, rel), "rb") as f:
+                return hashlib.sha1(f.read()).hexdigest()
+        except OSError:
+            return None
 
     def _concat_list(self, timeline: list[tuple[str, str, float]]) -> str:
         lines = ["ffconcat version 1.0"]
