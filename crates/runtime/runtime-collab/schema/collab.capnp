@@ -103,7 +103,33 @@ interface Stream {
   # this field on the RPC rather than folding it into the postcard
   # envelope lets non-Rust clients cheaply route by author without
   # decoding the payload.
-  read @0 () -> (op :Data, fromUserId :Text);
+  read @0 () -> (op :Data, fromUserId :Text, kind :OpKind);
+}
+
+enum OpKind {
+  # What `Stream.read`'s `op` bytes actually are. The stream carries
+  # three kinds of frame and they are not interchangeable: a delta
+  # must be applied incrementally, a whole document must be merged,
+  # and a signed envelope must be decoded before either. Without a
+  # discriminator a reader can only guess, and the only available
+  # guess — "try to decode a signed envelope, drop it if that fails"
+  # — silently discards every unsigned frame.
+  #
+  # `signed` is ordinal 0 so it is also the default: a producer that
+  # predates this field means the postcard-encoded `SignedOp` it has
+  # always sent.
+
+  signed @0;
+  # `op` is a postcard-encoded `SignedOp`.
+
+  unsignedIncremental @1;
+  # `op` is a raw Automerge change delta, applied incrementally on
+  # top of the document the reader already holds.
+
+  unsignedSnapshot @2;
+  # `op` is a whole Automerge document, merged into the reader's.
+  # Sent to a peer that has just arrived and has no history for the
+  # deltas to apply against.
 }
 
 interface PresenceHandle {

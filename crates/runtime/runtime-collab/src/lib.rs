@@ -233,15 +233,33 @@ impl ChannelHandle {
     }
 }
 
-/// A single signed op as delivered by [`OpStream::read`]. `op` is
-/// the postcard-encoded envelope; `from_user_id` is the broker's
-/// attribution string for the author. Duplicating the id on the
-/// RPC lets non-Rust clients cheaply route by author without
-/// decoding the payload.
+/// What an [`OpEvent`]'s bytes are.
+///
+/// Three kinds of frame share the op stream and they are not
+/// interchangeable: a delta is applied on top of the document the
+/// reader holds, a whole document is merged into it, and a signed
+/// envelope is decoded before either. A reader that assumes one kind
+/// discards the others without saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OpKind {
+    /// `op` is a postcard-encoded `SignedOp`.
+    #[default]
+    Signed,
+    /// `op` is a raw Automerge change delta.
+    UnsignedIncremental,
+    /// `op` is a whole Automerge document.
+    UnsignedSnapshot,
+}
+
+/// A single op as delivered by [`OpStream::read`]. `kind` says what
+/// `op` is; `from_user_id` is the broker's attribution string for the
+/// author. Duplicating the id on the RPC lets non-Rust clients cheaply
+/// route by author without decoding the payload.
 #[derive(Debug, Clone)]
 pub struct OpEvent {
     pub op: Vec<u8>,
     pub from_user_id: String,
+    pub kind: OpKind,
 }
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
@@ -263,7 +281,23 @@ impl OpStream {
             .to_str()
             .map_err(|e| capnp::Error::failed(format!("invalid utf8 from_user_id: {e}")))?
             .to_owned();
-        Ok(OpEvent { op, from_user_id })
+        // An unrecognised ordinal comes from a newer broker naming a
+        // kind this build has no handler for. Reading it as `Signed`
+        // would hand raw bytes to the envelope decoder; leaving it
+        // unmapped and letting the caller ignore it is the honest
+        // direction, so it decodes to the default and the caller's
+        // match arms decide.
+        let kind = match r.get_kind() {
+            Ok(collab_capnp::OpKind::Signed) => OpKind::Signed,
+            Ok(collab_capnp::OpKind::UnsignedIncremental) => OpKind::UnsignedIncremental,
+            Ok(collab_capnp::OpKind::UnsignedSnapshot) => OpKind::UnsignedSnapshot,
+            Err(_) => OpKind::Signed,
+        };
+        Ok(OpEvent {
+            op,
+            from_user_id,
+            kind,
+        })
     }
 }
 

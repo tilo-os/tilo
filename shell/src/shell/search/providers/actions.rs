@@ -2,134 +2,238 @@
 //! statically as `CommandEntry`s in `ShellOverlayHost::new`. Migrating
 //! them into the provider protocol keeps them under the same chip strip
 //! + grouping the notes / files providers use.
+//!
+//! # Parameters
+//!
+//! Most of these rows are nullary — "toggle the overview" needs nothing
+//! but the instruction. [`Action::params`] is what lets one of them take
+//! a typed value instead, which is what an action that edits a document
+//! needs: the text to insert is not discoverable from the chrome, it has
+//! to be supplied. The parameters are declared on the row, so an
+//! enumeration tells a caller what to pass rather than leaving it to be
+//! inferred from a label.
 
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
+mod text_insert;
+
+/// What `record.bring` must be told. Named rather than written inline so
+/// it is one `&'static [ActionParam]` the catalogue can hand out, the
+/// same shape `text_insert::PARAMS` has.
+const RECORD_BRING_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "id",
+        ParamType::Text,
+        "The record's id — `file:<absolute path>`, `tab:<id>`, or a minted id.",
+    ),
+    ActionParam::optional(
+        "kind",
+        ParamType::Text,
+        "The record's type, in the owning app's vocabulary. Defaults to `document`.",
+    ),
+];
+
 /// One action row. `id` is the palette command id (`overview.toggle`,
-/// `settings.open`, …); `apply` toggles the matching chrome flag when
-/// the user picks the row.
+/// `settings.open`, …); `apply` performs the action when the user picks
+/// the row (or an agent invokes its address).
+///
+/// `apply` takes the arguments bound against `params`, and it takes the
+/// live document alongside the chrome — an action that writes to a
+/// record's document needs both, and splitting the two shapes would mean
+/// two dispatch paths for one vocabulary. A nullary chrome toggle simply
+/// ignores what it does not use.
 #[derive(Clone)]
 struct Action {
     id: &'static str,
     label: &'static str,
     subtitle: &'static str,
-    apply: fn(&mut ChromeState),
+    /// What an invocation must carry. Empty for everything that only
+    /// needs to be told to happen.
+    params: &'static [ActionParam],
+    apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
+}
+
+/// A chrome toggle: no parameters, and nothing that can fail.
+const fn chrome(
+    id: &'static str,
+    label: &'static str,
+    subtitle: &'static str,
+    apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
+) -> Action {
+    Action {
+        id,
+        label,
+        subtitle,
+        params: &[],
+        apply,
+    }
 }
 
 impl Action {
     const ALL: &'static [Action] = &[
-        Action {
-            id: "overview.toggle",
-            label: "Toggle workspace overview",
-            subtitle: "Show all workspaces in the wheel view",
-            apply: |st| {
+        chrome(
+            "overview.toggle",
+            "Toggle workspace overview",
+            "Show all workspaces in the wheel view",
+            |st, _| {
                 st.overlays.overview = !st.overlays.overview;
+                Ok(())
             },
-        },
-        Action {
-            id: "settings.open",
-            label: "Open workspace settings",
-            subtitle: "Identity, members, permissions",
-            apply: |st| {
+        ),
+        chrome(
+            "settings.open",
+            "Open workspace settings",
+            "Identity, members, permissions",
+            |st, _| {
                 st.overlays.ws_settings = true;
+                Ok(())
             },
-        },
-        Action {
-            id: "quick-settings.open",
-            label: "Open quick settings",
-            subtitle: "Brightness, volume, Wi-Fi, Bluetooth, power profile",
-            apply: |st| {
+        ),
+        chrome(
+            "quick-settings.open",
+            "Open quick settings",
+            "Brightness, volume, Wi-Fi, Bluetooth, power profile",
+            |st, _| {
                 st.overlays.quick_settings = true;
+                Ok(())
             },
-        },
-        Action {
-            id: "collaborators.open",
-            label: "Show collaborators",
-            subtitle: "Peers currently editing this workspace",
-            apply: |st| {
+        ),
+        chrome(
+            "collaborators.open",
+            "Show collaborators",
+            "Peers currently editing this workspace",
+            |st, _| {
                 st.overlays.collaborators = true;
+                Ok(())
             },
-        },
-        Action {
-            id: "room.activity.open",
-            label: "Show room activity",
-            subtitle: "History of this workspace: changes, permissions, who did what and when",
-            apply: |st| {
+        ),
+        chrome(
+            "room.activity.open",
+            "Show room activity",
+            "History of this workspace: changes, permissions, who did what and when",
+            |st, _| {
                 st.overlays.room_activity = true;
                 // The sheet covers the dropdown that can also open it; leaving
                 // both up would put a menu on top of the surface it opened.
                 st.overlays.collaborators = false;
+                Ok(())
             },
-        },
+        ),
         // Peer sync. These live here rather than being appended to the
         // palette's entry list after the ranked hits, which is where
         // they were: an un-ranked row sits below every search result,
         // so typing "invite" put a file whose name contains the word on
         // the row Enter activates and the invite command was
         // unreachable from the palette it was listed in.
-        Action {
-            id: "peer.invite",
-            label: "Invite peer to workspace",
-            subtitle: "Mint a signed invite token for this room",
-            apply: |st| {
+        chrome(
+            "peer.invite",
+            "Invite peer to workspace",
+            "Mint a signed invite token for this room",
+            |st, _| {
                 st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
+                Ok(())
             },
-        },
-        Action {
-            id: "peer.connect",
-            label: "Connect to peer workspace",
-            subtitle: "Join a room from an invite token",
-            apply: |st| {
+        ),
+        chrome(
+            "peer.connect",
+            "Connect to peer workspace",
+            "Join a room from an invite token",
+            |st, _| {
                 st.push_peer_sync_request(
                     crate::shell::overlay_host::PeerSyncAction::PromptConnect,
                 );
+                Ok(())
             },
-        },
+        ),
         // Making a window. Before these existed the palette could open
         // every overlay the shell has and not one new tab, so the only
         // route to a second terminal was to find the app again — and
         // there was no route at all once the last one was closed.
-        Action {
-            id: "tab.new.terminal.here",
-            label: "New terminal tab here",
-            subtitle: "Open a terminal as a tab in the focused window group",
-            apply: |st| {
+        chrome(
+            "tab.new.terminal.here",
+            "New terminal tab here",
+            "Open a terminal as a tab in the focused window group",
+            |st, _| {
                 crate::shell::window_actions::open_terminal(
                     st,
                     crate::shell::window_actions::Destination::Here,
                 );
+                Ok(())
             },
-        },
-        Action {
-            id: "window.new.terminal",
-            label: "New terminal window",
-            subtitle: "Open a terminal beside the focused window",
-            apply: |st| {
+        ),
+        chrome(
+            "window.new.terminal",
+            "New terminal window",
+            "Open a terminal beside the focused window",
+            |st, _| {
                 crate::shell::window_actions::open_terminal(
                     st,
                     crate::shell::window_actions::Destination::Beside,
                 );
+                Ok(())
             },
-        },
-        Action {
-            id: "tab.duplicate",
-            label: "Duplicate this tab",
-            subtitle: "Open a second instance of the focused app beside it",
-            apply: |st| {
+        ),
+        chrome(
+            "tab.duplicate",
+            "Duplicate this tab",
+            "Open a second instance of the focused app beside it",
+            |st, _| {
                 if let Err(err) = crate::shell::window_actions::duplicate_active_tab(st) {
                     st.push_warning_notification("Can't duplicate this tab", err.user_message());
                 }
+                Ok(())
             },
-        },
-        Action {
-            id: "notifications.dnd.toggle",
-            label: "Toggle Do Not Disturb",
-            subtitle: "Silence notification banners; held notifications go to history",
-            apply: |st| {
+        ),
+        chrome(
+            "notifications.dnd.toggle",
+            "Toggle Do Not Disturb",
+            "Silence notification banners; held notifications go to history",
+            |st, _| {
                 st.toggle_dnd();
+                Ok(())
+            },
+        ),
+        // Writing into the focused document. The first exported action
+        // that changes a document rather than the chrome around one, and
+        // so the first that has to be told *what* to write.
+        Action {
+            id: text_insert::ACTION_ID,
+            label: "Insert text into the focused note",
+            subtitle: "Write into the focused Notes or Editor tab at a character offset",
+            params: text_insert::PARAMS,
+            apply: text_insert::apply,
+        },
+        // Bringing a record into the room you are in. The palette does
+        // this on Enter over a record row, which is the gesture the
+        // design picks (`plan/rooms.md`: "bringing your own is a search
+        // result") — but that row only exists once something already
+        // knows the record, so it is not an address a caller can reach
+        // for a record it names itself. This is that address.
+        Action {
+            id: "record.bring",
+            label: "Bring a record into this room",
+            subtitle: "Add a reference to this room's index. Moves no bytes.",
+            params: RECORD_BRING_PARAMS,
+            apply: |st, args| {
+                let id = args.text("id").unwrap_or_default();
+                if id.trim().is_empty() {
+                    return Err(ActionError::Refused(
+                        "a record id is required; nothing was brought here".into(),
+                    ));
+                }
+                if ui::record::RecordId::parse(id).is_none() {
+                    return Err(ActionError::Refused(format!(
+                        "{id:?} is not a record id this build can read"
+                    )));
+                }
+                let kind = args.text("kind").unwrap_or("document");
+                let kind = if kind.trim().is_empty() { "document" } else { kind };
+                st.push_record_request(id, kind);
+                Ok(())
             },
         },
     ];
@@ -183,10 +287,17 @@ impl SearchProvider for ActionsProvider {
                     title: action.label.to_string(),
                     subtitle: Some(action.subtitle.to_string()),
                     score,
-                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    params: action.params.to_vec(),
+                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome, args: &ActionArgs| {
                         let mut st = chrome.borrow_mut();
-                        apply(&mut st);
-                        st.bump();
+                        let outcome = apply(&mut st, args);
+                        // Repaint only on success. A refusal changed
+                        // nothing, and bumping the revision for it would
+                        // tell a watching harness that something moved.
+                        if outcome.is_ok() {
+                            st.bump();
+                        }
+                        outcome
                     }),
                 });
             }
@@ -379,7 +490,8 @@ mod tests {
             .expect("typing 'activity' must surface the room-activity action");
         assert_eq!(action.title, "Show room activity");
         assert!(!c.borrow().overlays.room_activity, "starts closed");
-        (action.on_open)(&mut doc, &automerge::ROOT, &c);
+        (action.on_open)(&mut doc, &automerge::ROOT, &c, &ActionArgs::none())
+            .expect("a nullary chrome action must run");
         assert!(
             c.borrow().overlays.room_activity,
             "invoking the exported action opened the sheet"
@@ -411,9 +523,13 @@ mod tests {
             .expect("DND action must be present");
         assert!(!c.borrow().dnd(), "DND starts off");
         // Fire the real on_open closure — the production apply path.
-        (dnd.on_open)(&mut doc, &automerge::ROOT, &c);
+        let fire = |doc: &mut AutoCommit| {
+            (dnd.on_open)(doc, &automerge::ROOT, &c, &ActionArgs::none())
+                .expect("a nullary chrome action must run")
+        };
+        fire(&mut doc);
         assert!(c.borrow().dnd(), "opening the action turns DND on");
-        (dnd.on_open)(&mut doc, &automerge::ROOT, &c);
+        fire(&mut doc);
         assert!(!c.borrow().dnd(), "opening it again turns DND back off");
     }
 

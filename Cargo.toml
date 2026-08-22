@@ -491,6 +491,32 @@ inherits = "release"
 panic = "unwind"
 lto = false
 
+# Optimised, but still a developer build — what a screen recording of the
+# compositor needs.
+#
+# `snapshot` re-renders the scene and PNG-encodes it on the event loop, so
+# the frame rate of any recording is the speed of that code: unoptimised it
+# is ~1.4 s per frame at 1920x1080, which is not a video anybody can watch.
+#
+# `--release` is not the answer, because it is not merely optimised. The
+# `QOS_TEST_CONTROL` socket the harnesses drive the shell through is a
+# complete lock-screen bypass, so `compositor::dev_env` gates it on
+# `cfg!(debug_assertions)` and a shipped binary does not contain the code at
+# all — there is no flag to turn back on, deliberately. A `--release` shell
+# is therefore a compositor the harness cannot reach: it binds no socket and
+# says nothing about why.
+#
+# So: release's optimisation, with the developer surface still compiled in.
+# The override is scoped to `shell` alone, which is where the gate is read —
+# every dependency stays bit-identical to its release build, so this is
+# mostly a re-link rather than a rebuild. `--release` itself is untouched,
+# and the OS image and host RPM still ship the closed gate.
+[profile.demo]
+inherits = "release"
+
+[profile.demo.package.shell]
+debug-assertions = true
+
 # Vendored winit fork. Upstream winit 0.30.13 only emits
 # `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
 # `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
