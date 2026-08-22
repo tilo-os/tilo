@@ -79,10 +79,25 @@ Two separate pieces of state, and both must replicate:
 The user's rule: *the view does not follow, the state does*. bob keeps his
 own scroll, selection and focus.
 
-**Blocked on:** real-time document convergence (being built now — currently
-each session binds a scratch record keyed by its own tab id, so three
-sessions edit three lookalike documents), and workspace-contents
-replication, which is a separate question I have not yet established.
+**Blocked on:** two things, both being built now.
+
+*The document.* The shell is a relay, never a participant: shell-hosted tiles
+write into `RecordStore` but nothing calls `App::with_records`, so typing
+into one produces no network traffic at all, and an inbound record change is
+fanned out to sockets without ever being loaded into a document. The demo's
+word processor is an *external* app and already has that bridge, so this beat
+may work through the real app path without the shell tiles being fixed.
+Being tested.
+
+*The window.* A workspace is shared, so a window opened by its host must open
+for everyone in it. Today it does not: the per-room document projects only
+`room`, `name`, `owner` and `capabilities`, while strips, groups and tabs
+live in the tree-wide document, which is never exported. That export rule is
+right — the tree-wide document holds *every* workspace, so exporting it would
+leak the other rooms — but it is an argument about that document's shape, not
+a reason a room's own members should not see the room's own windows. The fix
+is to project this room's contents into this room's document, beside the four
+fields already there.
 
 ---
 
