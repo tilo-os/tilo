@@ -2147,6 +2147,51 @@ impl ShellOverlayHost {
     /// [`Self::harvest_pending_maximize_changes`] in shape; both run
     /// inside [`Widget::update`] every frame, but each is gated on a
     /// non-empty pending pile so quiescent frames cost a single map walk.
+    /// Give every live window group the same share of its strip, and
+    /// mirror it to the persisted tree the way a width drag does.
+    ///
+    /// A group takes about three quarters of its strip by default, so
+    /// two of them never fit on screen at once. Setting the state
+    /// tree alone does not move anything: the laid-out width lives on
+    /// the `RuntimeGroup` widget and the taffy node carries a baked
+    /// length, so the widget is the thing that has to be told.
+    ///
+    /// Returns the ids it touched.
+    pub fn set_group_widths(&mut self, permille: u16) -> Vec<u64> {
+        let mut touched: Vec<u64> = Vec::new();
+        for (_strip_id, &ptr) in self.group_row_ptrs.iter() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                g.set_width(ui::widget::WindowWidth::Fraction(permille));
+                touched.push(g.id);
+            }
+        }
+        if touched.is_empty() {
+            return touched;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            for ws in tree.workspaces.iter_mut() {
+                for strip in ws.strips.iter_mut() {
+                    for g in strip.window_groups.iter_mut() {
+                        if touched.contains(&g.id) {
+                            g.width = crate::shell::state::WindowWidth::Fraction(permille);
+                        }
+                    }
+                }
+            }
+            for id in &touched {
+                tree.doc_set_width(*id, permille);
+            }
+        }
+        // `RuntimeGroup::set_width` flags its own style dirty; the
+        // frame loop's structure sweep is what rebuilds the taffy node
+        // whose baked length carries the old width.
+        touched
+    }
+
     fn harvest_pending_width_changes(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -8879,7 +8924,12 @@ impl ShellOverlayHost {
             caret.close_path();
             scene.fill(Fill::NonZero, transform, peer, None, &caret);
 
-            let label = &user.0;
+            // Name the peer rather than their id when the roster knows
+            // one. `display_name` falls back to the id, so a peer whose
+            // session never said who was at it is still labelled —
+            // with the handle it actually arrived under, not a guess.
+            let label = presence.display_name(user);
+            let label = label.as_str();
             let (tw, _th) = text_renderer.measure(label, label_size, None);
             let chip_w = tw as f64 + pad_x * 2.0;
             let chip_h = label_size as f64 + pad_y * 2.0;
