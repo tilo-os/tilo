@@ -8774,7 +8774,12 @@ impl ShellOverlayHost {
             caret.close_path();
             scene.fill(Fill::NonZero, transform, peer, None, &caret);
 
-            let label = &user.0;
+            // Name the peer rather than their id when the roster knows
+            // one. `display_name` falls back to the id, so a peer whose
+            // session never said who was at it is still labelled —
+            // with the handle it actually arrived under, not a guess.
+            let label = presence.display_name(user);
+            let label = label.as_str();
             let (tw, _th) = text_renderer.measure(label, label_size, None);
             let chip_w = tw as f64 + pad_x * 2.0;
             let chip_h = label_size as f64 + pad_y * 2.0;
