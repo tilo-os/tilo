@@ -15,14 +15,27 @@ Every beat carries its status. **Only shoot a beat marked ✅.**
 
 ---
 
-## 0:00–0:08 · ada, empty desktop, opens the file explorer ⏳
+## 0:00–0:08 · ada, empty desktop, opens the file explorer ✅
 
 **On screen:** `ada` — an empty desktop. He opens the file explorer.
 
-**Blocked on:** apps do not launch. `qos-launcher` is not built in this
-worktree, so invoking `applications:dev.qos.file-explorer` reports success
-and spawns nothing. A session also sees zero apps unless `QOS_APPS_DATA_DIR`
-points at the registry. Both are fixable; neither is fixed.
+**Proven by:** `scripts/headless-examples/app-launch-proof.py`, which invokes
+the app by address through the compositor's own applications provider and
+then reads `frame_seq` back off the control socket. Both the file explorer
+and the word processor paint.
+
+**What a session has to set.** Isolating documents means repointing
+`XDG_DATA_HOME`, and two stores that are machine state live under it:
+
+- `QOS_APPS_DATA_DIR` → `~/.local/share/qos-apps` — without it the session
+  enumerates zero applications.
+- `QOS_RUNTIME_BUNDLE_DIR` → `~/.local/share/qos-runtime` — without it every
+  launch fails on the runtime bundle the manifest pins.
+
+**Still off:** the session runs with `QOS_LAUNCH_NO_SERVICES=1`, so apps
+launch without the collab service. Handed a working collab descriptor an app
+spins at ~86% CPU and never presents its first frame — see 0:34–0:44, which
+is the beat that needs it.
 
 ---
 
