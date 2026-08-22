@@ -8950,9 +8950,17 @@ impl ShellOverlayHost {
     /// `PresenceKey::Workspace { id: <room> }` — the same key every app
     /// publishes under, since the toolkit derives its broadcast scope
     /// from the room the launcher stamped in as `QOS_WORKSPACE_ID`.
-    /// Each peer gets a caret plus a name chip. Colours come from
-    /// `PresenceCtx::color_for` so palette pins ("alice" → pink,
+    /// Each peer gets a pointer plus a name pill, drawn by the toolkit's
+    /// [`ui::presence::draw_peer_cursors`] — the same call an app makes
+    /// for the peers inside its own window, so a peer over the desktop
+    /// and a peer over an app are the same thing drawn once. Colours come
+    /// from `PresenceCtx::color_for` so palette pins ("alice" → pink,
     /// "bob" → orange) survive the round-trip.
+    ///
+    /// The whole set goes in one call because the names have to be
+    /// arranged against each other: two people working side by side put
+    /// their pointers a few pixels apart, and two pills at the same
+    /// offset from those two pointers are one illegible smear.
     fn draw_real_peers(
         &mut self,
         scene: &mut Scene,
@@ -8961,8 +8969,30 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let visible = self.visible_peers(presence);
+        ui::presence::draw_peer_cursors(
+            scene,
+            transform,
+            self.rect,
+            text_renderer,
+            theme,
+            &visible,
+        );
+    }
+
+    /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
+    /// who they are, where they are, and what colour they are in.
+    ///
+    /// Separated from the paint so the selection can be asserted on
+    /// directly. "No peer arrived" and "a peer arrived and was dropped by
+    /// the filter" produce the same empty screen, and a test that
+    /// rebuilds the lookup key for itself proves only that it can
+    /// rebuild the key — which is how a mismatch between this filter and
+    /// what apps publish survived long enough to need a fabricated peer
+    /// covering for it.
+    pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
-            return;
+            return Vec::new();
         };
         // Scope by the workspace's **room**, not its local handle.
         //
@@ -8983,81 +9013,37 @@ impl ShellOverlayHost {
                 .map(|w| w.room.to_string())
         };
         let Some(room) = room else {
-            return;
+            return Vec::new();
         };
         let key = PresenceKey::Workspace { id: room };
         let Some(peers) = presence.pointers.get(&key) else {
-            return;
+            return Vec::new();
         };
-        if peers.is_empty() {
-            return;
-        }
 
-        let tokens = &theme.tokens;
-        let caret_size = 10.0_f64;
-        let chip_offset = 2.0_f64;
-        let pad_x = 6.0_f64;
-        let pad_y = 2.0_f64;
-        let label_size = tokens.typography.scale.sm;
-
-        for (user, pos) in peers {
-            let apex = Point::new(pos.0 as f64, pos.1 as f64);
-            // Guard: winit delivers scaled coordinates so the pointer
-            // can, in principle, fall outside this window's rect if
-            // the broadcast came from a peer with a different viewport.
-            // Clip the paint to our content rect so we never trail a
-            // cursor into the top-bar / sidebar chrome.
-            if !self.rect.contains(apex) {
-                continue;
-            }
-            let (pr, pg, pb) = presence.color_for(user);
-            let peer = Color::from_rgb8(pr, pg, pb);
-
-            let mut caret = vello::kurbo::BezPath::new();
-            caret.move_to(apex);
-            caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
-            caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
-            caret.close_path();
-            scene.fill(Fill::NonZero, transform, peer, None, &caret);
-
-            // Name the peer rather than their id when the roster knows
-            // one. `display_name` falls back to the id, so a peer whose
-            // session never said who was at it is still labelled —
-            // with the handle it actually arrived under, not a guess.
-            let label = presence.display_name(user);
-            let label = label.as_str();
-            let (tw, _th) = text_renderer.measure(label, label_size, None);
-            let chip_w = tw as f64 + pad_x * 2.0;
-            let chip_h = label_size as f64 + pad_y * 2.0;
-            let chip_x = apex.x + caret_size + chip_offset;
-            let chip_y = apex.y + caret_size + chip_offset;
-            let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-            let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.surfaces.raised,
-                None,
-                &chip,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &chip,
-            );
-            let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
-            scene.fill(Fill::NonZero, transform, peer, None, &underline);
-            text_renderer.draw_text(
-                scene,
-                label,
-                label_size,
-                tokens.colors.text_primary,
-                transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-                None,
-            );
-        }
+        peers
+            .iter()
+            .filter(|(_, pos)| {
+                // Guard: winit delivers scaled coordinates so the pointer
+                // can, in principle, fall outside this window's rect if
+                // the broadcast came from a peer with a different viewport.
+                // Clip the paint to our content rect so we never trail a
+                // cursor into the top-bar / sidebar chrome.
+                self.rect.contains(Point::new(pos.0 as f64, pos.1 as f64))
+            })
+            .map(|(user, pos)| {
+                let (r, g, b) = presence.color_for(user);
+                ui::presence::PeerCursor {
+                    pos: (pos.0 as f64, pos.1 as f64),
+                    // Name the peer rather than their id when the roster
+                    // knows one. `display_name` falls back to the id, so a
+                    // peer whose session never said who was at it is still
+                    // labelled — with the handle it actually arrived
+                    // under, not a guess.
+                    label: presence.display_name(user),
+                    color: Color::from_rgb8(r, g, b),
+                }
+            })
+            .collect()
     }
 
     /// The filter band inside the search card: multi-select kind chips
@@ -11355,47 +11341,135 @@ mod workspace_slide_tests {
         );
     }
 
+    /// The room a peer publishes under, put in and read back out through
+    /// the host's own selection — not through a key the test rebuilt for
+    /// itself, which would pass even if the two disagreed.
     #[test]
-    fn real_peers_filter_picks_up_pointers_on_active_workspace_only() {
+    fn real_peers_are_picked_up_by_room_and_only_the_active_one() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
-        let active = chrome.borrow().tree().active.raw();
-        let active_key = PresenceKey::Workspace {
-            id: format!("{}", active),
+        let (here, elsewhere) = {
+            let c = chrome.borrow();
+            let tree = c.tree();
+            let active = tree.active;
+            let here = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == active)
+                .expect("an active workspace")
+                .room
+                .to_string();
+            let elsewhere = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id != active)
+                .expect("a second workspace")
+                .room
+                .to_string();
+            (here, elsewhere)
         };
-        let other_key = PresenceKey::Workspace {
-            id: format!("{}", active.wrapping_add(99)),
-        };
-        let mut presence = PresenceCtx::empty();
-        presence.set_pointer(&active_key, UserId("alice".into()), (120.0, 240.0));
-        presence.set_pointer(&other_key, UserId("bob".into()), (300.0, 400.0));
+        assert_ne!(here, elsewhere, "two workspaces must be two rooms");
 
-        // Same key-format the shell uses inside `draw_real_peers`: the
-        // active workspace id stringified. Mismatches must never match.
-        let shell_key = PresenceKey::Workspace {
-            id: format!(
-                "{}",
-                h.chrome.as_ref().unwrap().borrow().tree().active.raw()
-            ),
+        let mut presence = PresenceCtx::empty();
+        presence.set_pointer(
+            &PresenceKey::Workspace { id: here },
+            UserId("alice".into()),
+            (120.0, 240.0),
+        );
+        presence.set_pointer(
+            &PresenceKey::Workspace { id: elsewhere },
+            UserId("bob".into()),
+            (300.0, 400.0),
+        );
+
+        let visible = h.visible_peers(&presence);
+        assert_eq!(
+            visible.len(),
+            1,
+            "the peer in this room is drawn and the one in another is not, got {:?}",
+            visible.iter().map(|p| &p.label).collect::<Vec<_>>(),
+        );
+        assert_eq!(visible[0].label, "alice");
+        assert_eq!(visible[0].pos, (120.0, 240.0));
+    }
+
+    /// Two peers in the same room are both drawn, each in their own
+    /// colour. A single peer had always been enough to make the overlay
+    /// look right; several at once is the case that has to work.
+    #[test]
+    fn several_peers_in_one_room_are_all_drawn_in_distinct_colours() {
+        use ui::permissions::UserId;
+        let (h, chrome) = host_with_two_workspaces();
+        let room = {
+            let c = chrome.borrow();
+            let tree = c.tree();
+            let active = tree.active;
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == active)
+                .expect("an active workspace")
+                .room
+                .to_string()
         };
-        let matches = presence
-            .pointers
-            .get(&shell_key)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        assert_eq!(
-            matches, 1,
-            "only alice's pointer lives on the active workspace key"
-        );
-        let other_matches = presence
-            .pointers
-            .get(&other_key)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        assert_eq!(
-            other_matches, 1,
-            "bob's pointer stays attributed to the other workspace (filter must drop it)"
-        );
+        let key = PresenceKey::Workspace { id: room };
+        let mut presence = PresenceCtx::empty();
+        // Two of them close enough together that a fixed-offset pill
+        // layout would have stacked their names, and two with names that
+        // differ by one letter.
+        for (who, at) in [
+            ("alice", (400.0, 300.0)),
+            ("bob", (404.0, 302.0)),
+            ("dana", (120.0, 500.0)),
+            ("danah", (700.0, 120.0)),
+        ] {
+            presence.set_pointer(&key, UserId(who.into()), at);
+        }
+
+        let visible = h.visible_peers(&presence);
+        assert_eq!(visible.len(), 4, "every peer in the room must be drawn");
+
+        for (i, a) in visible.iter().enumerate() {
+            for b in &visible[i + 1..] {
+                let (ac, bc) = (a.color.to_rgba8(), b.color.to_rgba8());
+                let d = ui::presence::color_distance((ac.r, ac.g, ac.b), (bc.r, bc.g, bc.b));
+                assert!(
+                    d >= 60.0,
+                    "{} and {} are drawn {d:.1} apart — too close to tell apart",
+                    a.label,
+                    b.label,
+                );
+            }
+        }
+
+        // And their names do not land on each other, however close their
+        // pointers are.
+        let requests: Vec<ui::presence::PillRequest> = visible
+            .iter()
+            .map(|p| ui::presence::PillRequest {
+                at: p.pos,
+                size: (60.0, 20.0),
+            })
+            .collect();
+        let placed = ui::presence::layout_peer_pills(h.rect, &requests);
+        for (i, a) in placed.iter().enumerate() {
+            for b in &placed[i + 1..] {
+                assert!(
+                    a.rect.intersect(b.rect).is_zero_area(),
+                    "two name pills overlap: {:?} and {:?}",
+                    a.rect,
+                    b.rect,
+                );
+            }
+            assert!(
+                a.rect.x0 >= h.rect.x0
+                    && a.rect.y0 >= h.rect.y0
+                    && a.rect.x1 <= h.rect.x1
+                    && a.rect.y1 <= h.rect.y1,
+                "a name pill at {:?} left the window {:?}",
+                a.rect,
+                h.rect,
+            );
+        }
     }
 
     #[test]
