@@ -232,6 +232,21 @@ class Session:
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("QUICK_COLLAB_SOCK", None)
         env.pop("QUICK_COLLAB_CAPNP_SOCK", None)
+        # One language on screen. An app reads `LC_ALL`, then `LANGUAGE`,
+        # then `LANG` (`apps/word-processor/src/i18n.rs:88`), bwrap does
+        # not clear the environment, and the machine filming this is
+        # German — so the shell chrome said "Home" and "Word Processor"
+        # in English while the toolbar under it read "Neu / Tabelle /
+        # Stile / Schriftart". Two languages in one frame reads as broken
+        # software, and every assertion in this file passed while it did:
+        # nothing here looks at a word on the screen.
+        #
+        # A real qOS install has the OS set this and cannot drift; a
+        # session nested on somebody's desktop inherits whatever they
+        # use, so the harness pins it. `LANGUAGE` is dropped rather than
+        # set, because it outranks `LANG` and is a colon-separated list
+        # that would quietly win.
+        env.pop("LANGUAGE", None)
         env.update(
             XDG_RUNTIME_DIR=self.runtime_dir,
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
@@ -246,6 +261,8 @@ class Session:
             # identities nobody at this machine can administer, into
             # somebody's live desktop. `--out` is absolutised for the
             # same reason; this is the belt to that pair of braces.
+            LC_ALL="en_US.UTF-8",
+            LANG="en_US.UTF-8",
             QOS_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
             QOS_USER_ID=self.user,
             QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
@@ -2051,10 +2068,12 @@ def beat_eight(ada: Session, shots: str) -> None:
     # tree (`apps/word-processor/src/widget.rs:4231`), which is exactly
     # the name this would use if a client's widgets were addressable from
     # the compositor. They are not, so this stays aimed at pixels.
-    for row in (0.055, 0.085, 0.035, 0.115):
-        for frac in (0.34, 0.40, 0.46, 0.28, 0.52, 0.58):
+    for row in (0.055, 0.085, 0.035):
+        for frac in (0.34, 0.40, 0.46, 0.28, 0.52):
             ada.click_at(tx + tw * frac, ty + th * row)
-            ada.settle(0.7)
+            # Short: a sweep that has to miss most of the time should
+            # cost the recording as little as possible while it does.
+            ada.settle(0.4)
             names = set(ada.target_names())
             fresh = {n for n in names if n not in before}
             if any("chooser" in n.lower() or "file_row" in n.lower()
