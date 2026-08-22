@@ -990,6 +990,20 @@ impl FileExplorerWidget {
                         paths = ?self.drag_paths,
                         "carrying the drag out of this app as a client drag"
                     );
+                    // The gesture now belongs to the compositor's
+                    // drag grab, and this window will not see the rest
+                    // of it: no more motion, and no release. Anything
+                    // kept here would be state waiting for an end that
+                    // never arrives — a ghost pinned to the last place
+                    // the pointer was, and a drop this app would try to
+                    // resolve against its own folders. So it is let go
+                    // of here, and the picture from this point on is
+                    // the compositor's to draw.
+                    self.pin_drag = None;
+                    self.drag_paths.clear();
+                    self.drag_hover = None;
+                    self.armed_drag = None;
+                    crate::external_drag::end();
                 }
                 true
             }
