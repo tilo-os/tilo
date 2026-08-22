@@ -721,11 +721,19 @@ impl TileHost {
         // `border-white/20` `shadow-2xl`).
         let shape = RoundedRect::from_rect(self.rect, radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.surfaces.window_card, None, &shape);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        // Everything the tile hosts paints inside the card's silhouette.
+        // Hosted apps fill their own background as a plain rectangle —
+        // they have to, since an app cannot know it is being framed — so
+        // without this clip the first `scene.fill` an app makes squares
+        // off the window's corners and paints over the border below.
+        // Clipping here keeps the rounded window shape a property of the
+        // frame (which the OS owns) rather than something every app has
+        // to reproduce.
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
             transform,
-            theme.tokens.colors.surfaces.window_card_border,
-            None,
             &shape,
         );
         match &mut self.content {
@@ -746,6 +754,18 @@ impl TileHost {
                 tr.draw_text(scene, &s, sm, on_card_dim, transform * Affine::translate((sx, y + text_size as f64 + 8.0)), None);
             }
         }
+        scene.pop_layer();
+        // Border last. Stroked over the hosted content so the window
+        // always keeps a visible edge against the desktop — an app that
+        // fills its own dark background can no longer erase the one line
+        // that separates the window from the wallpaper behind it.
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.surfaces.window_card_border,
+            None,
+            &shape,
+        );
     }
 }
 
@@ -1022,6 +1042,150 @@ mod tests {
         assert!(
             h.spawn_alpha().is_none(),
             "fresh host must report no spawn alpha",
+        );
+    }
+
+    /// An app that fills its whole rect — which is what every hosted app
+    /// does, since an app cannot know it is being framed — must not be
+    /// able to square off the window's rounded corners or paint over its
+    /// border. Both are properties of the frame the OS draws, and both
+    /// were being destroyed by the first `scene.fill` the app made.
+    ///
+    /// Rendered through the real `Widget::draw`, then sampled: the outer
+    /// corner has to stay the desktop behind the tile, and the card's
+    /// edge has to still be distinguishable from the app's own fill.
+    #[test]
+    fn a_hosted_app_cannot_square_off_the_window_or_erase_its_border() {
+        use crate::offscreen::OffscreenRenderer;
+
+        /// Fills its entire rect with one flat opaque colour, exactly as
+        /// `FileExplorerWidget::paint_background` and every other hosted
+        /// app's background pass does.
+        struct FloodFill {
+            rect: Rect,
+        }
+        const FLOOD: vello::peniko::Color = vello::peniko::Color::from_rgb8(0xFF, 0x00, 0x00);
+        impl Widget for FloodFill {
+            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _theme: &Theme,
+                node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                let n = taffy.new_leaf(Style::default()).unwrap();
+                node_map.insert(n, self as *mut dyn Widget);
+                n
+            }
+            fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+            fn draw(
+                &mut self,
+                scene: &mut Scene,
+                transform: Affine,
+                _tr: &mut TextRenderer,
+                _th: &Theme,
+                _p: &PresenceCtx,
+            ) {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    FLOOD,
+                    None,
+                    &self.rect,
+                );
+            }
+            fn handle_event(
+                &mut self,
+                _event: &WindowEvent,
+                _scale: f64,
+                _m: &winit::event::Modifiers,
+                _state: &mut AutoCommit,
+                _path: &ObjId,
+                _handled: &mut bool,
+                _focus: &mut Option<NodeId>,
+                _node: NodeId,
+                _taffy: &TaffyTree<()>,
+            ) {
+            }
+            fn name(&self) -> &str {
+                "FloodFill"
+            }
+            fn get_rect(&self) -> Rect {
+                self.rect
+            }
+        }
+        impl crate::widget::app_widget::AppWidget for FloodFill {
+            fn app_kind(&self) -> AppKind {
+                AppKind::Files
+            }
+            fn app_title(&self) -> &str {
+                "FloodFill"
+            }
+            fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+                crate::widget::app_widget::IconDescriptor::Glyph("F")
+            }
+            fn permission_hint(&self) -> Option<AppKind> {
+                None
+            }
+        }
+
+        // Tile inset far enough from the surface edge that the ambient
+        // shadow sprite has somewhere to land without wrapping.
+        let (w, h) = (200u32, 200u32);
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
+        host.rect = rect;
+
+        let theme = Theme::default();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+
+        let mut r = OffscreenRenderer::new(w, h);
+        // Distinct from both the flood colour and the card so a leak from
+        // any of the three is identifiable in the failure message.
+        let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+
+        let radius = theme.tokens.radii.xl as f64;
+        // A point inside the tile's bounding box but outside its rounded
+        // silhouette: one pixel in from the box corner, well inside the
+        // corner arc's cut.
+        let (cx, cy) = (rect.x0 as u32 + 2, rect.y0 as u32 + 2);
+        assert!(
+            radius > 8.0,
+            "test assumes a visibly rounded card; radii.xl is {radius}",
+        );
+        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, w, cx, cy);
+        assert!(
+            cr < 128,
+            "the hosted app's fill leaked outside the card's rounded \
+             corner at ({cx},{cy}) — got ({cr},{cg},{cb}), which is the \
+             app's flood colour. The corner belongs to the frame.",
+        );
+
+        // Dead centre is the app: the clip must not have swallowed it.
+        let (mr, mg, mb, _) = OffscreenRenderer::sample(&rgba, w, 100, 100);
+        assert!(
+            mr > 200 && mg < 80 && mb < 80,
+            "the hosted app must still paint inside the card; centre is \
+             ({mr},{mg},{mb}), expected the app's flood colour",
+        );
+
+        // Along the tile's left edge, mid-height, the border is stroked
+        // over the app. It must not be pure flood colour.
+        let edge_x = rect.x0 as u32;
+        let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
+        assert!(
+            (er, eg, eb) != (0xFF, 0x00, 0x00),
+            "the window's border was erased by the hosted app's fill at \
+             ({edge_x},100) — the edge that separates a window from the \
+             desktop is the frame's to draw, not the app's",
         );
     }
 
