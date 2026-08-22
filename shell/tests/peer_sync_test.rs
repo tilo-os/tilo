@@ -204,6 +204,7 @@ async fn presence_moved_round_trips_between_two_actors() {
 
     let presence = NeighbourMsg::PresenceMoved {
         peer: 7,
+        user: "alice".into(),
         key: "local-cursor".into(),
         point: (123.0, 456.0),
         ts: 1_700_000_000,
