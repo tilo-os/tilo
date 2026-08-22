@@ -586,23 +586,26 @@ mod tests {
         p.clip_mut(cid).unwrap().out_point = 10.0;
         let mut c = compositor();
 
+        // Sepia last tints a neutral grey warm; sepia first is flattened
+        // back to grey by the grayscale that follows it.
         p.clip_mut(cid).unwrap().effects = vec![
             ClipEffect { kind: EffectKind::Grayscale, amount: 1.0 },
-            ClipEffect { kind: EffectKind::Invert, amount: 1.0 },
+            ClipEffect { kind: EffectKind::Sepia, amount: 1.0 },
         ];
-        let gray_then_invert = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
+        let gray_then_sepia = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
         p.clip_mut(cid).unwrap().effects.swap(0, 1);
-        let invert_then_gray = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
-        // Grayscale-then-invert leaves a neutral grey; invert-then-
-        // grayscale also neutralises, but at the inverted luminance — so
-        // both are grey and they differ in level.
+        let sepia_then_gray = px(&c.frame(&p, 1.0, 32, 32, &mut NoSources), 32, 16, 20);
         assert!(
-            (gray_then_invert.r - gray_then_invert.g).abs() < 0.03,
-            "grayscale then invert stays neutral: {gray_then_invert:?}",
+            gray_then_sepia.r - gray_then_sepia.b > 0.08,
+            "sepia applied last leaves a warm cast: {gray_then_sepia:?}",
         );
         assert!(
-            (gray_then_invert.luma() - invert_then_gray.luma()).abs() > 0.02,
-            "swapping the stack changes the result: {gray_then_invert:?} vs {invert_then_gray:?}",
+            (sepia_then_gray.r - sepia_then_gray.b).abs() < 0.03,
+            "grayscale applied last flattens the sepia back out: {sepia_then_gray:?}",
+        );
+        assert_ne!(
+            gray_then_sepia, sepia_then_gray,
+            "swapping the stack changes the composited result",
         );
     }
 
