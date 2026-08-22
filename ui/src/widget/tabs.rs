@@ -1172,6 +1172,7 @@ impl TabBar {
             .unwrap_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W)
     }
 
+
     /// Width the leading app glyph and its gap take, or zero for a tab
     /// with no typed icon.
     fn leading_zone(&self, i: usize) -> f64 {
@@ -1836,7 +1837,17 @@ const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
 /// yet. Only ever used for the first frame a title is on screen — `draw`
 /// records the real advance into [`TabBar::title_advance`] and the next
 /// layout pass uses that instead.
-const APPROX_CHAR_W: f64 = 7.0;
+///
+/// Deliberately an **over**-estimate. The two ways of being wrong are not
+/// symmetric: guessing wide makes a pill briefly roomier than it needs to
+/// be, invisible by the next frame, while guessing narrow makes the pill
+/// too small and the title elides — and an elision is both visible and
+/// sticky, since a render that draws one frame never gets the corrected
+/// pass. `Document` came out as `Docum…` on a row with hundreds of spare
+/// pixels that way. This was harmless while every pill carried a fixed
+/// trailing reserve wide enough to absorb the under-guess; it stopped
+/// being harmless when the reserve was dropped to tighten the idle row.
+const APPROX_CHAR_W: f64 = 9.5;
 
 /// Size a row of pills so it fits inside `avail`, given each pill's
 /// natural width and whether it is pinned.
@@ -5151,6 +5162,42 @@ mod tests {
     /// nothing and the entire row rendered as bare ellipses, which tells
     /// the reader strictly less than the overflow it replaced.
     #[test]
+    /// A row with room to spare must not clip a name.
+    ///
+    /// The hover headroom is subtracted from the bar before the pills are
+    /// fitted, which is right when the row is tight and wrong when it is
+    /// not: the default desktop shows four tabs in a bar with hundreds of
+    /// spare pixels, and `Document` was still coming out as `Docum…`.
+    /// Eliding is for rows that genuinely cannot fit, not for rows that
+    /// merely reserved something.
+    #[test]
+    fn a_row_with_room_to_spare_clips_no_name() {
+        let mut tr = TextRenderer::new();
+        let theme = crate::theme::Theme::dark();
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+                TabDescriptor::new(3, "Terminal"),
+                TabDescriptor::new(4, "Document"),
+            ],
+            1,
+        );
+        // The width the default single-group desktop lays this bar out at.
+        lay_out_at_width(&mut b, 1300.0);
+        for i in 0..b.tabs().len() {
+            let title = b.tabs()[i].title.clone();
+            let shown = b
+                .visible_title(i, &mut tr, &theme)
+                .unwrap_or_else(|| panic!("pill {i} ({title}) renders no title"));
+            assert_eq!(
+                shown, title,
+                "pill {i} shows {shown:?} but the row has room for {title:?}",
+            );
+        }
+    }
+
     fn squeezed_pills_still_name_their_tabs() {
         let mut tr = TextRenderer::new();
         let theme = crate::theme::Theme::dark();
