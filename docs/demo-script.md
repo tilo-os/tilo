@@ -50,7 +50,13 @@ The palette offers apps this machine does not have yet in the same rows as the
 ones it does. Installing verifies an ed25519 signature and a BLAKE3 digest,
 then runs it.
 
-Do not say "fast" until an install has been timed on a clean session.
+Timed, on twelve clean sessions: a median of **6.7s** from the keystroke to
+the app's own first frame, spread 5.0–9.5s — roughly a quarter fetching, two
+quarters verifying and unpacking, one quarter starting and painting. That is
+a 446 MB debug package over a loopback registry, on a machine that was busy;
+most of it is the package's size, not the mechanism. So say "a few seconds",
+never "instant" — a viewer can time this one off the recording.
+Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
 ## 6 · Cut to bob — the window opens there too ✅
 
