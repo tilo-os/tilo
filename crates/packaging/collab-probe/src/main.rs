@@ -12,9 +12,16 @@
 //! the point.
 //!
 //! ```text
-//! qos-collab-probe write <channel> <text>     # author an edit, publish it
-//! qos-collab-probe read  <channel> <seconds>  # wait for one, print it
+//! qos-collab-probe write:<text>      # author an edit, publish it
+//! qos-collab-probe read:<seconds>    # wait for one, print it
 //! ```
+//!
+//! One argument, because that is all a launched app gets: the launcher
+//! hands the entrypoint a single opaque `argv[1]`. The room comes from
+//! `QOS_WORKSPACE_ID`, which is where every qOS app gets it — the
+//! toolkit turns that value into the cluster id its deltas are
+//! addressed to, so two apps launched into the same workspace
+//! collaborate and two launched into different ones cannot.
 //!
 //! The payload is a genuine Automerge document, not a byte marker:
 //! `write` builds one, puts `text` at the root, and hands the change
@@ -42,18 +49,37 @@ const FIELD: &str = "text";
 fn usage() -> ExitCode {
     eprintln!(
         "usage:\n  \
-         qos-collab-probe write <channel-id> <text>\n  \
-         qos-collab-probe read <channel-id> <timeout-seconds>"
+         qos-collab-probe write:<text>\n  \
+         qos-collab-probe read:<timeout-seconds>\n\
+         The room comes from QOS_WORKSPACE_ID."
     );
     ExitCode::from(2)
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mode, channel, arg) = match args.as_slice() {
-        [m, c, a] => (m.as_str(), c.clone(), a.clone()),
-        _ => return usage(),
+    let Some(instruction) = args.first() else {
+        return usage();
     };
+    let Some((mode, arg)) = instruction.split_once(':') else {
+        return usage();
+    };
+    let (mode, arg) = (mode.to_string(), arg.to_string());
+
+    // The room is the collaboration address, and an app that cannot
+    // name one is not in a room. Refuse rather than inventing a
+    // channel id that would quietly reach nobody.
+    let channel = match std::env::var("QOS_WORKSPACE_ID") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => {
+            eprintln!(
+                "probe: FAIL QOS_WORKSPACE_ID is unset, so this app has no \
+                 room to collaborate in."
+            );
+            return ExitCode::from(2);
+        }
+    };
+    println!("probe: room = {channel}");
 
     // The fd is the whole subject of the exercise, so report it before
     // trying to use it. `service_fd` returns None both when the env var
@@ -84,7 +110,7 @@ fn main() -> ExitCode {
     };
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        match mode {
+        match mode.as_str() {
             "write" => write(&channel, &arg).await,
             "read" => {
                 let secs: u64 = arg.parse().unwrap_or(30);
