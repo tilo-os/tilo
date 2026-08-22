@@ -40,12 +40,29 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// libp2p gossipsub caps one RPC at 64 KiB and
 /// [`crate::network::behaviour::NiriosBehaviour::new`] does not raise
 /// it, so a larger publish is rejected by the transport rather than
-/// truncated. The cap here sits below that ceiling with room for what
-/// rides along with the payload: the bincode `NeighbourMsg` envelope,
-/// the room uuid, a record id that may be a full path, and gossipsub's
-/// own protobuf wrapper (topic, signature, author key, sequence
-/// number). 48 KiB leaves 16 KiB for all of it, which is far more than
-/// any of them need and is deliberately not tuned to the edge.
+/// truncated.
+///
+/// The budget is far tighter than that ceiling suggests, because the
+/// actor serialises a [`NeighbourMsg`] with `serde_json`
+/// (`crate::network::actor`), and serde_json writes a `Vec<u8>` as an
+/// array of decimal numbers — up to four characters (`"255,"`) per
+/// byte. A snapshot therefore costs up to **4x its size** on the wire,
+/// and the naive "64 KiB minus a little" reading of the limit is wrong
+/// by a factor of four. `snapshot_at_the_cap_fits_a_gossipsub_rpc`
+/// pins this against worst-case bytes rather than against the
+/// arithmetic in this comment, which is how the earlier figure here was
+/// caught.
+///
+/// So: 14 KiB of document expands to at most 56 KiB of JSON, leaving
+/// ~9 KiB for the envelope — the variant tag, the room uuid, a record
+/// id that may be a full path, and gossipsub's own protobuf framing
+/// (topic, signature, author key, sequence number).
+///
+/// Moving the publish path to the `postcard` encoding that
+/// `crate::network::protocol`'s own round-trip tests already use would
+/// make the payload roughly 1:1 and raise this to ~60 KiB. That is a
+/// wire-format change every peer has to agree on, so it is a decision
+/// to take deliberately rather than a constant to edit.
 ///
 /// # Why a cap rather than a bigger pipe
 ///
@@ -63,7 +80,7 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// same reason (they are large, and they concern one peer rather than
 /// the room). Wiring a snapshot onto it is the follow-up this constant
 /// marks the boundary of.
-pub const MAX_APP_SNAPSHOT_BYTES: usize = 48 * 1024;
+pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
 
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its libp2p identity. The FUSE mount reads the same
@@ -1686,19 +1703,23 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_cap_leaves_room_under_the_gossipsub_ceiling() {
-        // The cap is only meaningful if a message built at it still
-        // fits the transport once the envelope, the routing strings and
-        // gossipsub's own framing are added. Encode a worst-ish case —
-        // a full-length record path — and check the encoded frame is
-        // comfortably under 64 KiB rather than trusting the arithmetic
-        // in the constant's doc comment.
+    fn snapshot_at_the_cap_fits_a_gossipsub_rpc() {
+        // The cap is only worth anything if a message built at it
+        // actually fits the transport, and the arithmetic is not the
+        // obvious one: the actor publishes with `serde_json`, which
+        // writes a `Vec<u8>` as decimal numbers, so every byte costs up
+        // to four characters. An earlier version of this constant was
+        // set as though the cost were 1:1 and would have been rejected
+        // by gossipsub for any document near it.
+        //
+        // Worst case on both axes: bytes that each need three digits,
+        // and a record id the length of a real path.
         let msg = NeighbourMsg::AppCrdtSnapshot {
             peer: u64::MAX,
             app_id: "dev.qos.word-processor".into(),
             cluster_id: "00000000-0000-0000-0000-000000000000".into(),
             record_id: "file:".to_string() + &"a".repeat(4096),
-            data: vec![0u8; MAX_APP_SNAPSHOT_BYTES],
+            data: vec![0xFFu8; MAX_APP_SNAPSHOT_BYTES],
         };
         let encoded = serde_json::to_vec(&msg).expect("encode");
         assert!(
