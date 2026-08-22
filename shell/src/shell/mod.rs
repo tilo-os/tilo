@@ -25,6 +25,7 @@ pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
+pub mod collab_outbound;
 pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
