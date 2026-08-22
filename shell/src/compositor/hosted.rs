@@ -11,10 +11,7 @@ use std::sync::Arc;
 use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
 use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
-use crate::shell::{
-    build_nirios_overlay_host_with_handle, persist, seed_demo_editor_presence,
-    sync_tab_presence_from_tree,
-};
+use crate::shell::{build_nirios_overlay_host_with_handle, persist, sync_tab_presence_from_tree};
 use ui::collaboration::PresencePayload;
 use ui::presence::PresenceKey;
 use ui::widget::Widget;
@@ -183,9 +180,8 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let active_at_boot = tree.active.0;
     let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
 
-    // Snapshot for the pre-app seeding helpers (`sync_tab_presence_from_tree`,
-    // `seed_demo_editor_presence`) that only read the cache once at
-    // startup. Held briefly under a read lock.
+    // Snapshot for `sync_tab_presence_from_tree`, which only reads the
+    // cache once at startup. Held briefly under a read lock.
     let tree_snapshot: WorkspaceTree = tree_handle.read().clone();
 
     // C-3: peer-sync shares the same `WorkspaceTreeHandle` as chrome +
@@ -276,11 +272,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // presence updates later rewrite the same keys via the collab
     // pump, so this does not conflict with live peer attribution.
     sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
-    // Seed a demo peer caret + selection inside the editor body so the
-    // collab chrome in `EditorApp::draw` is visible in single-process
-    // development. Network traffic replaces this with real peer state
-    // when it arrives.
-    seed_demo_editor_presence(&tree_snapshot, app.presence_ctx_mut());
     // Declare the pointer-presence scope so local cursor moves broadcast
     // to every connected peer under the active workspace id. Remote
     // peers receive `CollabEvent::RemotePresenceUpdate` on the same
