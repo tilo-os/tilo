@@ -1472,6 +1472,14 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
     if n == 0 {
         return Vec::new();
     }
+    // A non-positive width is a bar that has not been laid out yet — a
+    // `Style::default()` parent gives a leaf no cross-axis stretch, and
+    // `WindowGroup` is what supplies the real width in production. There
+    // is no constraint to fit into, so leave the natural widths alone
+    // rather than collapsing every pill to nothing.
+    if avail <= 0.0 {
+        return natural.to_vec();
+    }
     let gaps = PILL_GAP * (n - 1) as f64;
     let budget = (avail - gaps).max(0.0);
     let total: f64 = natural.iter().sum();
@@ -1575,16 +1583,20 @@ impl Widget for TabBar {
             self.rect.width(),
         );
 
+        // Hard stop at the bar's right edge. `fit_pill_widths` has
+        // already sized the row to fit, so this only ever absorbs float
+        // drift — but it is what makes "a pill never paints over the
+        // group next door" true by construction rather than by the
+        // arithmetic above happening to be exact. Disabled for a bar
+        // with no width of its own (not laid out yet — see
+        // `fit_pill_widths`), where clamping would collapse every pill
+        // onto the origin.
+        let right_limit = if self.rect.width() > 0.0 { self.rect.x1 } else { f64::INFINITY };
         let mut x = self.rect.x0;
         for (slot, &i) in visual_order.iter().enumerate() {
             let is_pinned = self.pinned_ids.contains(&self.tabs[i].id);
             let w = widths[slot];
-            // Hard stop at the bar's right edge. `fit_pill_widths` has
-            // already sized the row to fit, so this only ever absorbs
-            // float drift — but it is what makes "a pill never paints
-            // over the group next door" true by construction rather than
-            // by the arithmetic above happening to be exact.
-            let x1 = (x + w).min(self.rect.x1);
+            let x1 = (x + w).min(right_limit);
             let r = Rect::new(x, pill_y0, x1.max(x), pill_y1);
             // Pinned pills suppress the close / max / search action
             // rects entirely — the press handler skips them, and `draw`
@@ -4467,9 +4479,16 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = b.build_layout(&mut taffy, &theme, &mut node_map);
+        // Column, like `WindowGroup::build_layout`: the bar declares
+        // `width: auto`, so it only takes the group's width as the cross
+        // axis of a column. A row parent leaves it content-sized, which
+        // for a leaf with no measure func is zero — the shape no live
+        // group ever has.
         let root = taffy
             .new_with_children(
                 Style {
+                    display: taffy::Display::Flex,
+                    flex_direction: taffy::FlexDirection::Column,
                     size: taffy::Size {
                         width: Dimension::length(width as f32),
                         height: Dimension::length(TAB_BAR_HEIGHT as f32),
@@ -4548,7 +4567,7 @@ mod tests {
         lay_out_at_width(&mut b, width);
 
         let bar_rect = b.bar_rect();
-        for (i, r) in b.close_rects().iter().enumerate() {
+        for (i, r) in b.close_rects.iter().enumerate() {
             if r.area() == 0.0 {
                 continue; // pinned pills carry no close rect
             }
