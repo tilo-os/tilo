@@ -316,7 +316,13 @@ impl TopBarChrome {
                 // visibly mutates once per second.
                 chrono::Local::now().timestamp() as u64
             }
-            CenterWidget::Calendar => 0, // Static placeholder.
+            CenterWidget::Calendar => {
+                // Day granularity — the Calendar variant paints today's
+                // date, so the cache has to drop at midnight or the
+                // strip keeps showing yesterday until something else
+                // dirties the fingerprint.
+                chrono::Local::now().timestamp() as u64 / 86_400
+            }
         };
         CacheFingerprint {
             rect_px: (x0, y0, w, h),
@@ -1221,12 +1227,19 @@ impl Widget for TopBarChrome {
                 );
             }
             CenterWidget::Calendar => {
-                // "Next: Design Sync  15:30" — concept uses a hardcoded next
-                // event; we keep the same placeholder until real calendars
-                // land.
-                let prefix = "Next:";
-                let event = "Design Sync";
-                let time = "15:30";
+                // No calendar is connected to the shell yet, so there is
+                // no next event to name. Same rule the tray pill below
+                // follows: paint what is actually knowable — today's
+                // date — and say plainly that there is no source behind
+                // the event slot. A plausible-looking stand-in here
+                // ("Next: Design Sync 15:30") is read as the user's own
+                // diary by anyone looking at the screen.
+                let now = Local::now();
+                let prefix = now.format("%a").to_string();
+                let prefix = prefix.as_str();
+                let event = now.format("%-d %B").to_string();
+                let event = event.as_str();
+                let time = "No calendar connected";
                 let size = tokens.typography.scale.sm;
                 // Concept calendar-strip tiers: prefix + time as dim Medium
                 // pieces, the event name as a Semibold primary-colour anchor.
