@@ -206,10 +206,8 @@ def normalise(shots, out_dir: Path, width: int, height: int) -> list[tuple[float
 
     log(f"normalising {len(kept)} frames to {width}x{height}")
     done: list[tuple[float, Path]] = []
-    batch: list[str] = []
     for i, (t, src) in enumerate(kept):
         dst = out_dir / f"n{i:06d}.png"
-        batch.append(f"{src}\n{dst}")
         done.append((t, dst))
 
     # One process per frame is the bulk of the wall time here; feed them in
