@@ -433,6 +433,16 @@ impl SidebarWheelDisc {
         self.summon_at.is_some()
     }
 
+    /// Send a summoned disc back to its dock, clearing the shared
+    /// chrome flag so the overlay host re-anchors it to the strip's pan
+    /// on the next layout pass.
+    pub fn dismiss_summon(&mut self) {
+        self.summon_at = None;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_wheel_summon(None);
+        }
+    }
+
     /// Attach a shared chrome handle. After a snap commits a new
     /// `active_idx`, the disc writes the new active workspace back to
     /// `chrome.tree` via `set_active` (mirrors `SidebarWheelChrome`).
@@ -642,6 +652,13 @@ impl Widget for SidebarWheelDisc {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        // Pick up a summon raised elsewhere in the chrome (the keyboard
+        // chord lives on the overlay host, which has the pointer). The
+        // widget keeps its own copy so unit tests and any non-chrome
+        // host can drive it directly through `set_summon`.
+        if let Some(chrome) = self.chrome.as_ref() {
+            self.summon_at = chrome.borrow().wheel_summon();
+        }
         let l = taffy.layout(node).unwrap();
         // `rect` is the visible footprint inside the sidebar column.
         // The disc's logical centre lives off-screen-left of `rect.x0`
@@ -1326,6 +1343,12 @@ impl Widget for SidebarWheelDisc {
                         }
                         if hit.area() > 0.0 && hit.contains(p) {
                             self.click_to_spoke(i);
+                            // Picking a workspace is the end of a
+                            // summon: the wheel was called out to answer
+                            // a question, and it has been answered. It
+                            // stays up through a scroll or a drag, which
+                            // are still browsing.
+                            self.dismiss_summon();
                             *handled = true;
                             return;
                         }
