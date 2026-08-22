@@ -1649,16 +1649,22 @@ fn load_session_tree(
     use crate::shell::persist;
 
     let path = persist::state_json_path();
-    // Carried out to `run`, which has the chrome to put it on the screen with.
-    // A session that quietly hands someone a bootstrapped demo tree is
-    // indistinguishable from one that lost their work.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
 
-    // Two peers minting ids from the same counter produce colliding
-    // ids, and CRDT sync then folds two distinct workspaces into one
-    // row. The salt is derived from the libp2p keypair, so it has to be
-    // set before the id counter is seeded off what is already in the
-    // tree — hence the re-seed.
+    // The id salt is set **before** the tree is loaded, and that ordering
+    // is load-bearing.
+    //
+    // Two peers minting ids from the same counter produce colliding ids,
+    // and CRDT sync then folds two distinct things into one row. The salt
+    // (derived from the libp2p keypair) puts each peer in a disjoint id
+    // range, which is what makes an id safe to use as a replication key.
+    //
+    // Setting it after the load left the ids `bootstrap_default` mints on
+    // a **first boot** unsalted — a fresh workspace, its strip, its group
+    // and its tabs all in the shared 0-salt range, identical on every
+    // machine that ever first-booted. Two such peers joining one room
+    // would each project a window group under the same key. Re-seeding
+    // the counter afterwards did not help: it fixes ids minted *next*,
+    // not the ones already in the tree.
     let mut peer_sync_possible = enable_peer_sync;
     if enable_peer_sync {
         match crate::network::behaviour::load_or_create_keypair(
@@ -1666,8 +1672,7 @@ fn load_session_tree(
         ) {
             Ok(kp) => {
                 let salt = crate::network::behaviour::peer_salt_from_keypair(&kp);
-                tree.set_peer_salt(salt);
-                tree.seed_next_id_from_self();
+                crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
             }
             Err(e) => {
@@ -1679,6 +1684,14 @@ fn load_session_tree(
             }
         }
     }
+
+    // Carried out to `run`, which has the chrome to put it on the screen with.
+    // A session that quietly hands someone a bootstrapped demo tree is
+    // indistinguishable from one that lost their work.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
+    // Past every id already in the tree, so a restart does not re-mint one
+    // that is in use. Idempotent, and a no-op on a first boot.
+    tree.seed_next_id_from_self();
 
     // Nothing writes back over a file this session refused to read. Declining
     // to open a state file and then saving a bootstrapped tree onto it is worse
