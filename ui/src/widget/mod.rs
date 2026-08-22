@@ -693,7 +693,9 @@ pub use window_group::{
 mod resize_handle;
 pub use resize_handle::{ResizeHandle, HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX};
 mod group_row;
-pub use group_row::{CrossStripDetach, GroupRow, OutputSpan};
+pub use group_row::{
+    CrossStripDetach, GroupRow, JUMP_PX_PER_DETENT, OutputSpan, WheelJumpAccum, wheel_jump_detents,
+};
 mod strip_view;
 pub use strip_view::{StripView, STRIP_COOLDOWN_MS};
 mod workspace_view;
