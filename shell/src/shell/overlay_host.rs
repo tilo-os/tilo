@@ -7974,12 +7974,18 @@ fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(S
         .map(|(s, g, _)| (*s, *g))
 }
 
-fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
-    // `neutral[1]` is slate-900 in the dark ramp (see
-    // `ui::tokens::colors::ColorRamp`). Using the theme token rather
-    // than hard-coding #0f172a keeps the light-theme variant falling back
-    // to its own near-darkest slot automatically.
-    theme.tokens.colors.neutral[1].with_alpha_factor(alpha)
+/// The surface every floating chrome panel is painted on — quick
+/// settings, the collaborators popover, the workspace-settings sheet, the
+/// peer-sync card.
+///
+/// This reached into `neutral[1]` — the ramp slot that happens to be
+/// slate-900 on the dark palette. A ramp slot is a colour; the surface
+/// tokens are a promise about contrast that each theme keeps in its own
+/// way, and only the latter survives a theme its author never saw.
+/// Panels now take the theme's own popover tier, which is what makes
+/// them the same material as the bar they hang off (HIG §9.2).
+fn panel_surface(theme: &Theme, alpha: f32) -> Color {
+    ui::chrome::shell::panel_ground(theme).with_alpha_factor(alpha)
 }
 
 /// Pick the [`crate::shell::search::SearchProvider`] that owns the
@@ -8009,7 +8015,7 @@ fn active_tab_provider_id(
 /// via the returned clone — only the fill token gets the tint.
 fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     let mut themed = theme.clone();
-    themed.tokens.colors.surfaces.raised = slate_900_tint(theme, alpha);
+    themed.tokens.colors.surfaces.raised = panel_surface(theme, alpha);
     themed
 }
 
@@ -8793,14 +8799,14 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            panel_surface(theme, MODAL_SURFACE_ALPHA),
             None,
             &card,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            ui::chrome::shell::panel_border(theme),
             None,
             &card,
         );
@@ -9413,7 +9419,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            panel_surface(theme, MODAL_SURFACE_ALPHA),
             None,
             &card,
         );
@@ -9709,13 +9715,29 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
         // Concept ref: `QuickSettings.tsx:169` — `rounded-3xl` (24 px).
         // Maps to `tokens.radii.xl` per the token table.
-        let card = RoundedRect::from_rect(rect, tokens.radii.xl as f64);
+        let card = RoundedRect::from_rect(
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+        );
+        // Panels are elevated (HIG §9.1). Without this the popover was a
+        // flat tint, which reads as deliberate only on a palette whose
+        // overlay tier is much darker than its ground — i.e. only on
+        // dark. Light and high-contrast had nothing lifting the panel off
+        // the desktop at all.
+        ui::chrome::shell::panel_shadow(
+            scene,
+            transform,
+            rect,
+            ui::chrome::ChromeRole::Panel.radius(theme, rect.height()),
+            theme,
+            1.0,
+        );
         // QuickSettings popover surface — concept §3.1: `bg-slate-900/80
         // backdrop-blur-md`. See visual-gap #3 / [`POPOVER_SURFACE_ALPHA`].
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            panel_surface(theme, POPOVER_SURFACE_ALPHA),
             None,
             &card,
         );
@@ -9751,7 +9773,13 @@ impl ShellOverlayHost {
         let white_10 = colors.text_primary.with_alpha_factor(0.10);
         for i in 0..3 {
             let tile = self.quick_settings_action_geometry(i);
-            let tile_rr = RoundedRect::from_rect(tile, 16.0);
+            // Control role: 12 px. This was a literal 16, which is
+            // the one step the radius scale deliberately omits — so
+            // these tiles matched nothing else on screen.
+            let tile_rr = RoundedRect::from_rect(
+                tile,
+                ui::chrome::ChromeRole::Control.radius(theme, tile.height()),
+            );
             // Power tile (i == 2) gets the red-500/20 wash. The fill must
             // expose its r/g/b signature in the encoded scene so the
             // concept-parity spec test detects the red Power glyph.
@@ -10753,7 +10781,7 @@ impl ShellOverlayHost {
         scene.fill(
             Fill::NonZero,
             transform,
-            slate_900_tint(theme, POPOVER_SURFACE_ALPHA),
+            panel_surface(theme, POPOVER_SURFACE_ALPHA),
             None,
             &card,
         );
