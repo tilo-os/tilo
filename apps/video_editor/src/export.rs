@@ -167,6 +167,36 @@ pub fn encode_chain(container: Container) -> (&'static str, Option<&'static str>
     }
 }
 
+/// The audio encoder each container takes, or `None` for one that carries
+/// no audio.
+///
+/// MP4 and MOV take AAC (`avenc_aac`); WebM takes Opus, which is its
+/// companion codec the way VP8 is its video one. Both are present in the
+/// runtime the export already depends on, so this adds no new requirement.
+pub fn audio_encoder(container: Container) -> Option<&'static str> {
+    match container {
+        Container::Mp4 | Container::Mov => Some("avenc_aac"),
+        Container::WebM => Some("opusenc"),
+    }
+}
+
+/// The audio half of the graph: a raw-PCM `appsrc` fed the mixed timeline,
+/// converted and encoded into the same muxer the video goes to.
+///
+/// Kept next to [`pipeline_desc`] and built from the same pieces so the two
+/// branches cannot drift, and so the whole graph is unit-testable without a
+/// GStreamer stack.
+pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<String> {
+    let enc = audio_encoder(container)?;
+    Some(format!(
+        "appsrc name=qos_audio is-live=false format=time \
+         caps=audio/x-raw,format=S16LE,channels={ch},rate={rate},layout=interleaved \
+         ! audioconvert ! audioresample ! {enc} ! {muxer_name}.",
+        ch = crate::audio::CHANNELS,
+        rate = crate::audio::SAMPLE_RATE,
+    ))
+}
+
 /// The encoder property that carries a target bitrate in bits per second.
 /// Both encoders default far below any of the presets — openh264enc sits at
 /// 128 kbps — so without setting this the size estimate in the dialog would
@@ -183,15 +213,37 @@ fn bitrate_property(container: Container) -> &'static str {
 /// container's encode chain, and a `filesink`. Pure, so the exact graph is
 /// unit-tested on every build even where gstreamer can't link.
 pub fn pipeline_desc(settings: &ExportSettings, w: u32, h: u32, out: &str) -> String {
+    pipeline_desc_with_audio(settings, w, h, out, false)
+}
+
+/// [`pipeline_desc`], with a second branch that muxes the timeline's audio.
+///
+/// The muxer is named so the audio branch can link to it, which is the only
+/// structural difference — a muxer with two pads instead of one. Export used
+/// to have no audio branch at all, so every audio track in a project was
+/// silently discarded.
+pub fn pipeline_desc_with_audio(
+    settings: &ExportSettings,
+    w: u32,
+    h: u32,
+    out: &str,
+    with_audio: bool,
+) -> String {
     let (enc, parse, mux) = encode_chain(settings.container);
     let fps = settings.frame_rate.fps() as u32;
     let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
     let bitrate = (settings.resolution.target_mbps() * 1_000_000.0) as u64;
     let bitrate_prop = bitrate_property(settings.container);
+    let audio = with_audio
+        .then(|| audio_branch_desc(settings.container, "qos_mux"))
+        .flatten()
+        .map(|b| format!(" {b}"))
+        .unwrap_or_default();
     format!(
         "appsrc name=qos_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
-         ! videoconvert ! {enc} {bitrate_prop}={bitrate} ! {parse}{mux} ! filesink location={out}"
+         ! videoconvert ! {enc} {bitrate_prop}={bitrate} ! {parse}{mux} name=qos_mux \
+         ! filesink location={out}{audio}"
     )
 }
 
@@ -398,6 +450,19 @@ mod gst_pipeline {
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
 
+    /// How many audio frames belong to video frame `i`.
+    ///
+    /// The sample rate is not a whole multiple of most frame rates — 48000 at
+    /// 30fps is 1600 exactly, but at 24fps it is 2000 and at 29.97 it is not
+    /// an integer at all. Deriving each frame's count from the difference
+    /// between two cumulative totals means the rounding error never
+    /// accumulates, so an hour of audio still ends where the video does
+    /// instead of drifting seconds out of sync.
+    fn audio_frames_for(i: u64, fps: f64) -> usize {
+        let at = |n: u64| (n as f64 / fps * super::super::audio::SAMPLE_RATE as f64).round() as u64;
+        (at(i + 1) - at(i)) as usize
+    }
+
     /// Build + run the real export graph: push every composited frame of the
     /// timeline into an `appsrc`, encode + mux to the container, and write the
     /// file. Blocks until the pipeline reaches EOS (or errors), then returns the
@@ -419,7 +484,10 @@ mod gst_pipeline {
         }
         let out_str = out.to_string_lossy().into_owned();
 
-        let desc = pipeline_desc(settings, w, h, &out_str);
+        // Only ask for an audio branch when there is something to put in it:
+        // a muxer left holding an empty pad never finishes the file.
+        let with_audio = crate::audio::has_audio(project);
+        let desc = pipeline_desc_with_audio(settings, w, h, &out_str, with_audio);
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
@@ -430,6 +498,21 @@ mod gst_pipeline {
             .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
             .ok_or_else(|| "export appsrc not found".to_string())?;
         appsrc.set_format(gst::Format::Time);
+
+        let audio_src = if with_audio {
+            match pipeline
+                .by_name("qos_audio")
+                .and_then(|e| e.downcast::<gst_app::AppSrc>().ok())
+            {
+                Some(a) => {
+                    a.set_format(gst::Format::Time);
+                    Some(a)
+                }
+                None => return Err("export audio appsrc not found".to_string()),
+            }
+        } else {
+            None
+        };
 
         pipeline
             .set_state(gst::State::Playing)
@@ -448,6 +531,7 @@ mod gst_pipeline {
         let mut compositor = crate::gpu::HeadlessCompositor::new()
             .map_err(|e| format!("export compositor: {e}"))?;
         let mut sources = crate::gpu::MediaFrameSource::new(project, crate::gpu::Fetch::Exact);
+        let mut pcm = crate::audio::DecodedPcm::new(project);
 
         // Total frames across the timeline duration at the target rate.
         let duration = project.duration().max(1.0 / fps);
@@ -485,11 +569,38 @@ mod gst_pipeline {
                 let _ = pipeline.set_state(gst::State::Null);
                 return Err(format!("push export frame {i}: {e:?}"));
             }
+            // One frame's worth of mixed audio, pushed alongside the picture
+            // so the two streams stay in step without a separate clock.
+            if let Some(audio) = &audio_src {
+                let frames = audio_frames_for(i, fps);
+                let block = crate::audio::mix_block(project, t, frames, &mut pcm);
+                let bytes = crate::audio::to_s16le(&block);
+                let mut buffer = gst::Buffer::with_size(bytes.len())
+                    .map_err(|_| "allocate export audio buffer".to_string())?;
+                {
+                    let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
+                    bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
+                    bref.set_duration(frame_dur);
+                    let mut map = bref
+                        .map_writable()
+                        .map_err(|_| "map export audio buffer".to_string())?;
+                    map.copy_from_slice(&bytes);
+                }
+                if let Err(e) = audio.push_buffer(buffer) {
+                    let _ = pipeline.set_state(gst::State::Null);
+                    return Err(format!("push export audio {i}: {e:?}"));
+                }
+            }
             state.done.store(i + 1, Ordering::Relaxed);
         }
         appsrc
             .end_of_stream()
             .map_err(|e| format!("end export stream: {e:?}"))?;
+        if let Some(audio) = &audio_src {
+            audio
+                .end_of_stream()
+                .map_err(|e| format!("end export audio stream: {e:?}"))?;
+        }
 
         // Wait for EOS (or an error) so the muxer flushes a complete file.
         let bus = pipeline.bus().ok_or_else(|| "export pipeline bus".to_string())?;
@@ -652,6 +763,235 @@ mod tests {
                 "a gst build must not claim export is unavailable, got {s:?}",
             ),
             (Some(_), other) => panic!("expected the unavailable status, got {other:?}"),
+        }
+    }
+
+
+    /// Write a `secs`-long tone to `path` and hand back its duration.
+    ///
+    /// The bundled demo clip carries a video track and nothing else — it is a
+    /// screen recording — so it cannot prove anything about audio. A
+    /// generated tone can: it has a known, plainly non-zero level.
+    #[cfg(feature = "gst")]
+    fn write_tone(path: &std::path::Path, secs: f64) {
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+        gst::init().expect("gstreamer init");
+        let desc = format!(
+            "audiotestsrc num-buffers={buffers} wave=sine freq=440 volume=0.8 \
+             ! audioconvert ! audioresample \
+             ! audio/x-raw,format=S16LE,channels=2,rate=48000 \
+             ! wavenc ! filesink location={}",
+            path.display(),
+            // audiotestsrc emits 1024-sample buffers by default at 48kHz.
+            buffers = (secs * 48_000.0 / 1024.0).ceil() as u64,
+        );
+        let pipeline = gst::parse::launch(&desc)
+            .expect("build tone pipeline")
+            .downcast::<gst::Pipeline>()
+            .expect("pipeline");
+        pipeline.set_state(gst::State::Playing).expect("play tone pipeline");
+        let bus = pipeline.bus().expect("bus");
+        for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(_) => break,
+                MessageView::Error(e) => panic!("tone encode error: {}", e.error()),
+                _ => {}
+            }
+        }
+        let _ = pipeline.set_state(gst::State::Null);
+        assert!(
+            std::fs::metadata(path).is_ok_and(|m| m.len() > 1024),
+            "a real tone file was written to {}",
+            path.display(),
+        );
+    }
+
+    /// `project_over` plus an audio lane carrying `tone`.
+    #[cfg(feature = "gst")]
+    fn project_with_tone(
+        clip: &std::path::Path,
+        tone: &std::path::Path,
+        secs: f64,
+        muted: bool,
+    ) -> Project {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = project_over(clip, 3.0, secs);
+        let aid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: aid,
+            name: "tone".into(),
+            kind: MediaKind::Audio,
+            duration: secs.max(1.0),
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            palette: 0,
+            path: tone.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "A1".into(),
+            kind: TrackKind::Audio,
+            index: 1,
+            muted,
+            locked: false,
+            solo: false,
+        });
+        let ac = p.add_clip(tid, aid, 0.0).unwrap();
+        {
+            let c = p.clip_mut(ac).unwrap();
+            c.in_point = 0.0;
+            c.out_point = secs;
+        }
+        p
+    }
+
+    /// The peak level of the audio inside a media file, or 0 when it has no
+    /// readable audio at all.
+    #[cfg(feature = "gst")]
+    fn audio_peak(path: &std::path::Path) -> f32 {
+        let uri = crate::media::engine_source(path).to_uri();
+        crate::audio::decode_pcm_for_test(&uri)
+            .map(|p| crate::audio::peak(&p))
+            .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn the_audio_branch_targets_the_muxer_and_names_a_real_encoder() {
+        for container in Container::ALL {
+            let s = ExportSettings { container, ..Default::default() };
+            let silent = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", false);
+            assert!(
+                !silent.contains("qos_audio"),
+                "a project with no audio gets no audio branch: {silent}",
+            );
+
+            let voiced = pipeline_desc_with_audio(&s, 64, 64, "/tmp/o", true);
+            let enc = audio_encoder(container).expect("every container carries audio");
+            assert!(voiced.contains("appsrc name=qos_audio"), "{voiced}");
+            assert!(voiced.contains(enc), "{container:?} encodes audio with {enc}: {voiced}");
+            // The branch has to end at the same muxer the video goes to, or
+            // it would be a second file's worth of graph going nowhere.
+            assert!(
+                voiced.contains("name=qos_mux") && voiced.contains(&format!("{enc} ! qos_mux.")),
+                "the audio branch links into the video's muxer: {voiced}",
+            );
+            assert!(
+                voiced.contains(&format!("rate={}", crate::audio::SAMPLE_RATE)),
+                "the caps state the rate the mixer produces: {voiced}",
+            );
+        }
+    }
+
+    /// Audio was discarded entirely: the graph had one `appsrc` and no audio
+    /// pad, so every audio track in a project went missing without a word.
+    /// Prove a real stream now reaches the file, and that what is in it is
+    /// the mixed timeline rather than silence.
+    #[cfg(feature = "gst")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn the_export_muxes_the_timelines_audio() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip");
+        };
+        let pid = std::process::id();
+        let tone = std::env::temp_dir().join(format!("qos-ve-tone-{pid}.wav"));
+        write_tone(&tone, 1.5);
+        assert!(audio_peak(&tone) > 0.5, "the tone itself is loud, so silence means a bug");
+
+        let p = project_with_tone(&clip, &tone, 1.5, false);
+        assert!(crate::audio::has_audio(&p), "the project has an audio lane");
+
+        let out = std::env::temp_dir().join(format!("qos-ve-audio-{pid}.mp4"));
+        std::fs::remove_file(&out).ok();
+        match start_export(&p, &ExportSettings::default(), out.clone()).join() {
+            ExportStatus::Done { .. } => {}
+            other => panic!("the export must write a file, got {other:?}"),
+        }
+
+        // Decode the audio back out of what was written. A container check
+        // cannot tell a real stream from a missing one.
+        let uri = crate::media::engine_source(&out).to_uri();
+        let pcm = crate::audio::decode_pcm_for_test(&uri)
+            .expect("the exported file carries a decodable audio stream");
+        assert!(
+            pcm.len() > crate::audio::SAMPLE_RATE as usize,
+            "at least half a second of audio was muxed, got {} samples",
+            pcm.len(),
+        );
+        let peak = crate::audio::peak(&pcm);
+        assert!(
+            peak > 0.05,
+            "the muxed audio is the timeline's, not silence (peak {peak})",
+        );
+        std::fs::remove_file(&out).ok();
+        std::fs::remove_file(&tone).ok();
+    }
+
+    /// Per-clip volume and track mute exist in the CRDT and the inspector but
+    /// reached no audio path at all. Prove both now change the encoded file.
+    #[cfg(feature = "gst")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn volume_and_mute_reach_the_encoded_audio() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip");
+        };
+        let pid = std::process::id();
+        let tone = std::env::temp_dir().join(format!("qos-ve-tone2-{pid}.wav"));
+        write_tone(&tone, 1.0);
+
+        let dir = std::env::temp_dir();
+        let render = |p: &Project, name: &str| {
+            let out = dir.join(format!("qos-ve-{name}-{pid}.mp4"));
+            std::fs::remove_file(&out).ok();
+            match start_export(p, &ExportSettings::default(), out.clone()).join() {
+                ExportStatus::Done { .. } => {}
+                other => panic!("export {name} failed: {other:?}"),
+            }
+            out
+        };
+
+        let full = render(&project_with_tone(&clip, &tone, 1.0, false), "full");
+
+        let mut half_project = project_with_tone(&clip, &tone, 1.0, false);
+        let audio_clip = half_project
+            .clips
+            .iter()
+            .find(|c| {
+                half_project
+                    .track(c.track)
+                    .is_some_and(|t| t.kind == crate::model::TrackKind::Audio)
+            })
+            .map(|c| c.id)
+            .expect("the audio clip");
+        half_project.clip_mut(audio_clip).unwrap().volume = 0.25;
+        let quiet = render(&half_project, "quiet");
+
+        let muted = render(&project_with_tone(&clip, &tone, 1.0, true), "muted");
+
+        let loud_peak = audio_peak(&full);
+        let quiet_peak = audio_peak(&quiet);
+        let muted_peak = audio_peak(&muted);
+        println!("encoded peaks: full={loud_peak:.3} quarter={quiet_peak:.3} muted={muted_peak:.3}");
+
+        assert!(loud_peak > 0.05, "the unmuted export carries audio ({loud_peak})");
+        assert!(
+            quiet_peak < loud_peak * 0.5,
+            "quartering clip volume is audible in the ENCODED file: {loud_peak} → {quiet_peak}",
+        );
+        assert!(
+            muted_peak < loud_peak * 0.1,
+            "muting the track silences the ENCODED audio: {loud_peak} → {muted_peak}",
+        );
+
+        for f in [&full, &quiet, &muted, &tone] {
+            std::fs::remove_file(f).ok();
         }
     }
 
