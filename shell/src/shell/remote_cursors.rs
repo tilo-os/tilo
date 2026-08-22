@@ -72,6 +72,12 @@ impl RemoteCursorOverlay {
         presence
             .remote_cursors
             .iter()
+            // A pointer the compositor overlay already paints is not
+            // painted again by a widget inside the tree. This overlay
+            // is not currently mounted, but it reads the same store the
+            // duplicate came out of, so it carries the same rule — see
+            // `ui::presence::PointerOwner`.
+            .filter(|c| c.painted_by_window())
             .filter(|c| cursor_in_bounds(c.position, self.active_tile_bounds))
             .collect()
     }

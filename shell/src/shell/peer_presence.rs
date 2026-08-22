@@ -499,6 +499,60 @@ mod tests {
         assert_eq!(peers[0].1, (120.0, 240.0));
     }
 
+    /// One person is one pointer, asserted where the desktop pointer
+    /// enters the compositor.
+    ///
+    /// A frame folded here lands in two stores at once, and both are
+    /// wanted: `pointers` is what the overlay paints, `remote_cursors`
+    /// is what "follow that peer" reads. What must not happen is both
+    /// being *painted*, because the toolkit threads this very context
+    /// into the app-level overlay as well — the shell is itself a
+    /// `ui::App` — so a single arrival came out as two identical dots
+    /// on top of each other.
+    ///
+    /// The duplicate was invisible for months because the two layers
+    /// spelled a peer's identity differently and it read as two
+    /// people. Naming them consistently is what exposed it, which is
+    /// why the rule is pinned to a test rather than to an eye.
+    #[test]
+    fn a_desktop_pointer_is_painted_by_the_overlay_and_not_again_by_the_window() {
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(
+            vec![arrived("bob", 7, room, (120.0, 240.0))],
+            &mut presence,
+            &named(&[(7, "bob")]),
+        );
+
+        // The overlay has them.
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: room.into() })
+            .expect("the overlay's store must hold the peer it is to paint");
+        assert_eq!(peers.len(), 1, "one arrival, one peer");
+
+        // And exactly one record, which the window layer declines to
+        // paint because the overlay above it already is.
+        assert_eq!(
+            presence.remote_cursors.len(),
+            1,
+            "one person must not become two cursors"
+        );
+        let cursor = &presence.remote_cursors[0];
+        assert_eq!(cursor.user_id, peers[0].0.0, "and they are the same person");
+        assert!(
+            !cursor.painted_by_window(),
+            "the compositor paints this pointer; drawing it here too is the duplicate",
+        );
+
+        // Still followable — declining to paint is not discarding.
+        assert_eq!(
+            presence.peer_pointer(&cursor.user_id),
+            Some([120.0, 240.0]),
+            "following a peer must still land where their cursor shows",
+        );
+    }
+
     #[test]
     fn a_peer_is_called_what_the_room_calls_it() {
         // Names are governance: the room's authority writes them into
