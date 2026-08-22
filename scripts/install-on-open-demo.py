@@ -20,11 +20,18 @@ non-zero the moment one of them is false:
      its own (`frame_seq > 0`), so the picture is the app's spreadsheet
      grid rather than the compositor's first-frame placeholder.
 
-Two screenshots land in `--out`: `palette.png` (the row) and `tab.png`
-(the app running). The second one is the point; the first one only
+Three screenshots land in `--out`: `palette.png` (the row), `pending.png`
+(the one moment the machine admits the app is coming from somewhere) and
+`tab.png` (the app running). The last one is the point; the first only
 proves what the operator saw before they pressed the key.
 
     scripts/install-on-open-demo.py --out target/install-on-open
+
+On the day, run it in the mode that sets the scene and gets out of the
+way — registry up, Sheets absent, a real window to point a camera at —
+and type it yourself:
+
+    scripts/install-on-open-demo.py --backend winit --stage-only
 
 Everything it needs is built by:
 
@@ -240,9 +247,10 @@ class Registry:
 # ---------------------------------------------------------------------
 
 class Compositor:
-    def __init__(self, binaries, env_extra, logpath, startup_timeout):
+    def __init__(self, binaries, env_extra, logpath, startup_timeout, backend):
         self.sock = f"/tmp/qos-install-on-open-{os.getpid()}.sock"
         self.binaries = binaries
+        self.backend = backend
         self.env_extra = env_extra
         self.logpath = logpath
         self.startup_timeout = startup_timeout
@@ -260,7 +268,7 @@ class Compositor:
         env.update(self.env_extra)
         self.log = self.logpath.open("wb")
         self.proc = subprocess.Popen(
-            [str(self.binaries["shell"]), "--backend", "headless"],
+            [str(self.binaries["shell"]), "--backend", self.backend],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
@@ -505,6 +513,16 @@ def main() -> int:
                    help="seconds to wait for the app's first frame (default: 120)")
     p.add_argument("--startup-timeout", type=float, default=60.0,
                    help="seconds to wait for the control socket (default: 60)")
+    p.add_argument("--backend", default="headless",
+                   choices=("headless", "winit", "drm"),
+                   help="compositor backend. headless checks the flow with no "
+                        "display; winit opens a real window to film "
+                        "(default: headless)")
+    p.add_argument("--stage-only", action="store_true",
+                   help="set the scene and stop: registry up, Sheets absent, "
+                        "compositor running with the right environment. Nothing "
+                        "is driven — the operator types. This is the filming "
+                        "mode; Ctrl-C tears it down")
     p.add_argument("--chord", default="super-k",
                    choices=("super-k", "super-space", "alt-space", "ctrl-k"),
                    help="palette chord to open with. The three global ones "
@@ -618,7 +636,24 @@ def main() -> int:
         print("  installed: nothing")
 
         # --- 2..4 through the live compositor -------------------------
-        with Compositor(binaries, env_extra, shell_log, args.startup_timeout) as comp:
+        with Compositor(binaries, env_extra, shell_log, args.startup_timeout,
+                        args.backend) as comp:
+            if args.stage_only:
+                print("\nthe scene is set — nothing has been driven.\n")
+                print(f"  Sheets is offered and not installed")
+                print(f"  compositor:  {args.backend} backend, "
+                      f"log {shell_log}")
+                print(f"  socket:      {comp.sock}")
+                print(f"\nOpen the palette with Super+K (or Alt+Space if a host "
+                      f"desktop\nis eating Super), type \"{QUERY}\", press Enter.\n")
+                print("Ctrl-C to tear it all down. Re-running resets the install "
+                      "root,\nso the app is absent again on the next take.")
+                try:
+                    while comp.proc.poll() is None:
+                        time.sleep(1.0)
+                except KeyboardInterrupt:
+                    print("\ntearing down.")
+                return 0
             try:
                 comp.open_palette(args.chord)
                 time.sleep(0.6)
