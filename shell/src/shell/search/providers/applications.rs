@@ -289,11 +289,76 @@ impl ApplicationsProvider {
 /// The grants are published immediately before the launch rather than
 /// cached: a grant made a moment ago in the permissions UI must reach
 /// this launch, and a revoked one must not.
+/// The package id of the file manager qOS ships as a system app.
+pub(crate) const SYSTEM_FILE_MANAGER: &str = "dev.qos.file-explorer";
+
+/// Give the system file manager the user's home before it starts.
+///
+/// Every app gets one directory of its own, with `HOME` pointed inside
+/// it, and nothing else it was not granted. That is right for an app
+/// that edits its own documents and wrong for the one whose entire
+/// subject is the user's files: it opens on a folder containing nothing
+/// but its own dotfiles and reports, accurately, zero items.
+///
+/// The grant is not a hole in that model, it is the model being used.
+/// It goes through the same [`GrantStoreHandle`](crate::portal::GrantStoreHandle)
+/// the permission prompt and the file-chooser portal write to, so it is
+/// a capability on the workspace like any other: it appears in the
+/// permissions UI, it can be revoked there, and it expires with the
+/// session rather than persisting. What it changes is who decides —
+/// the OS, for the file manager it ships, instead of a dialog asking the
+/// user to approve the file manager's access to files on first sight of
+/// an empty window.
+///
+/// It names one package id rather than a rule about categories or
+/// manifests deliberately. A rule that could be satisfied by a
+/// third-party package would be a way to ask for the user's home by
+/// declaring the right thing about yourself; qOS ships exactly one file
+/// manager, and naming it is the narrower statement.
+///
+/// Write, not read: renaming, deleting and creating folders are what a
+/// file manager is for, and a read-only grant would leave its toolbar
+/// full of affordances that fail.
+fn grant_user_home_to_file_manager(chrome: &Chrome, package_id: &str) {
+    use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
+
+    if package_id != SYSTEM_FILE_MANAGER {
+        return;
+    }
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let (ws_id, store) = {
+        let st = chrome.borrow();
+        if st.tree().active_workspace().is_none() {
+            return;
+        }
+        (
+            st.tree().active,
+            crate::portal::GrantStoreHandle::new(st.tree_handle()),
+        )
+    };
+    let caller = crate::portal::PortalCaller::new(ws_id, package_id.to_string());
+    if store.filesystem_path_granted(&caller, &home) {
+        return;
+    }
+    store.insert(
+        &caller,
+        Capability::Filesystem {
+            path: home,
+            mode: FsMode::ReadWrite,
+            scope: GRANT_SESSION,
+        },
+    );
+    chrome.borrow_mut().bump();
+}
+
 pub(crate) fn launch_installed_app(
     chrome: &Chrome,
     package_id: &str,
     display_name: &str,
 ) -> Result<(), ActionError> {
+    grant_user_home_to_file_manager(chrome, package_id);
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
