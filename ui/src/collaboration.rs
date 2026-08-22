@@ -1339,21 +1339,46 @@ async fn drive_shovel(
                             let Ok(evt) = sub.read().await else {
                                 break;
                             };
-                            // The SDK carries the postcard-encoded
-                            // SignedOp on the wire; decode into the
-                            // typed envelope callers already handle.
-                            let Ok(envelope) =
-                                postcard::from_bytes::<SignedOp>(&evt.op)
-                            else {
-                                continue;
+                            // Three kinds of frame share this stream
+                            // and only the broker knows which one it
+                            // just sent, so it says. Reading the bytes
+                            // as a signed envelope regardless is what
+                            // used to drop every unsigned frame here
+                            // without a word — presence crossed, the
+                            // document did not, and the page stayed
+                            // blank while the peer's caret moved over
+                            // it.
+                            let translated = match evt.kind {
+                                runtime_collab::OpKind::Signed => {
+                                    match postcard::from_bytes::<SignedOp>(&evt.op) {
+                                        Ok(envelope) => CollabEvent::SignedCRDTIncremental {
+                                            envelope: Box::new(envelope),
+                                            from_user_id: evt.from_user_id,
+                                        },
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "collab: op tagged signed but not a \
+                                                 postcard SignedOp ({e}); dropping"
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+                                // A delta: applied on top of the
+                                // document this app already holds.
+                                runtime_collab::OpKind::UnsignedIncremental => {
+                                    CollabEvent::CRDTIncremental { data: evt.op }
+                                }
+                                // A whole document: merged, not
+                                // applied. This is the frame a late
+                                // arrival adopts the existing text
+                                // from, and applying it as a delta
+                                // would do nothing at all.
+                                runtime_collab::OpKind::UnsignedSnapshot => {
+                                    CollabEvent::CRDTUpdate { data: evt.op }
+                                }
                             };
-                            if itx
-                                .send(CollabEvent::SignedCRDTIncremental {
-                                    envelope: Box::new(envelope),
-                                    from_user_id: evt.from_user_id,
-                                })
-                                .is_err()
-                            {
+                            if itx.send(translated).is_err() {
                                 break;
                             }
                         }
