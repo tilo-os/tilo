@@ -935,8 +935,13 @@ impl Widget for ForeignSurfaceWidget {
             Some(err) => err,
             None => "waiting for first frame".to_string(),
         };
-        let on_card = theme.tokens.colors.neutral[1];
-        let on_card_dim = theme.tokens.colors.neutral[4];
+        // This placeholder paints straight onto the window card, so its ink
+        // is derived from the card rather than from a fixed ramp slot —
+        // otherwise "waiting for first frame" is invisible on every preset
+        // whose card runs the other way (high contrast, OLED).
+        let ink = theme.on_card();
+        let on_card = ink.ink;
+        let on_card_dim = ink.ink_dim;
         let size = theme.tokens.typography.scale.xl;
         let (tw, _) = text_renderer.measure(&headline, size, None);
         let cx = self.rect.center().x;

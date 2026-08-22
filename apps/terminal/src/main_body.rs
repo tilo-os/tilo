@@ -1773,17 +1773,52 @@ impl TerminalWidget {
         choice
     }
 
+    /// Rows of the buffer that carry anything: the last row with text on it,
+    /// or the cursor's row when it sits below that (an empty line the caret
+    /// is on is a real position, and has to stay reachable).
+    ///
+    /// This is deliberately not `grid.len()`. A session allocates a full
+    /// screen of rows up front and fills them as output arrives, so the
+    /// buffer is `height` rows long from the first frame — before anything
+    /// has ever been printed to it.
+    fn content_rows(&self) -> usize {
+        let written = self
+            .grid
+            .iter()
+            .rposition(|line| !line.trim_end().is_empty())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+        written.max(cursor_abs + 1)
+    }
+
+    /// Whether the scrollbar represents anything, for a viewport of
+    /// `visible_rows` rows. The predicate [`Self::draw_scrollbar`] gates on.
+    ///
+    /// Two conditions, and the second is the one that is easy to miss: the
+    /// buffer has to be longer than the viewport **and** actually have
+    /// content past it. A buffer can satisfy the first on its own — a
+    /// session allocates a full screen of rows up front, and a window one
+    /// row shorter than that screen then makes `grid.len() > visible_rows`
+    /// true before anything has ever been printed. A bar drawn on that
+    /// advertises travel that does not exist: the thumb moves and the view
+    /// goes from blank to blank. A scrollbar is a claim about content, so
+    /// it appears only when there is content to reach.
+    pub(crate) fn scrollbar_visible(&self, visible_rows: usize) -> bool {
+        !self.alt_active
+            && visible_rows > 0
+            && self.grid.len() > visible_rows
+            && self.content_rows() > visible_rows
+    }
+
     /// A themed scrollbar in the reserved right gutter, drawn only when the
     /// buffer overflows the viewport. Brighter while the user is scrolled back
     /// into history, faint when pinned to the live bottom.
     fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme, start_y: usize, visible_rows: usize) {
-        if self.alt_active || visible_rows == 0 {
+        if !self.scrollbar_visible(visible_rows) {
             return;
         }
         let total = self.grid.len();
-        if total <= visible_rows {
-            return;
-        }
         let gr = self.grid_rect;
         let track_x1 = self.rect.x1 - self.chrome_body_pad;
         let track_w = (self.chrome_scrollbar_w - 2.0).max(3.0);
