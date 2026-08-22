@@ -114,33 +114,24 @@ pub(crate) struct PillAppearance {
 /// The active-tier fill / border / glow stay the same when hovered so
 /// an active pill never gets *more* prominent on hover — the contrast
 /// gain is solely on inactive pills brightening into the active tier.
-/// The veneer tiers a tab pill raises itself with.
-///
-/// Deliberately *not* the theme's `overlay_*` tokens. Those describe a wash
-/// over the theme's own surface, and a pill is not on one: every pill paints
-/// four rings of black drop shadow first, so its immediate ground is a
-/// shadow-darkened trough in light themes just as much as in dark ones. A
-/// veneer that correctly darkens a white card would push the pill *into* that
-/// trough instead of lifting it out, inverting the one thing the tier is for.
-/// Relative to the trough, "raised" means lighter in either polarity.
-///
-/// This is a workaround for the shadow rings, not a design intent: on a light
-/// ground those rings merge into a heavy grey band behind the whole strip
-/// (measurably `#A6A6A6` behind a `#FFFFFF` card). Giving the strip a real
-/// per-theme elevation model — a soft shadow with the pill sitting at the
-/// card colour, the way light-theme elevation actually works — would remove
-/// the need for this and let the pills read from the shared tokens.
-fn pill_tiers(_theme: &Theme) -> crate::tokens::OverlayTiers {
-    crate::tokens::dark_overlays()
-}
-
 pub(crate) fn pill_appearance(
     theme: &Theme,
     is_active: bool,
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    let (v_subtle, v_medium, _v_strong, vb_subtle, vb_strong) = pill_tiers(theme);
+    // The strip's own shadow is scaled per theme now, so a pill's ground is
+    // the card rather than a shadow-darkened trough, and the shared veneers
+    // apply with their normal meaning: lighten a dark card, darken a light
+    // one. On dark themes these resolve to exactly the values this widget
+    // used before, so the default look is unchanged.
+    let colors = &theme.tokens.colors;
+    let (v_subtle, v_medium, vb_subtle, vb_strong) = (
+        colors.overlay_subtle,
+        colors.overlay_medium,
+        colors.overlay_border_subtle,
+        colors.overlay_border_strong,
+    );
     // Pressed implies active-tier visuals (the user only ever presses
     // the tab they intend to focus next), even if the pill isn't the
     // currently-active one yet — gives instant click feedback before
@@ -499,11 +490,16 @@ impl TabBar {
         // Per-pill drop shadow, approximating the concept's
         // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
         let shadow_y_offset = 6.0_f64;
+        // Composed from four rings rather than one elevation tier, so the
+        // per-theme softening lives in `shadow_scale` — on a light ground the
+        // unscaled stack merges into a grey band heavier than the card border.
+        let s = theme.tokens.elevation.shadow_scale;
+        let ring = |a: f32| (a * s).round().clamp(0.0, 255.0) as u8;
         let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51), // ~0.20
-            (5.0, 30), // ~0.12
-            (9.0, 15), // ~0.06
-            (14.0, 5), // ~0.02
+            (2.0, ring(51.0)),  // ~0.20
+            (5.0, ring(30.0)),  // ~0.12
+            (9.0, ring(15.0)),  // ~0.06
+            (14.0, ring(5.0)),  // ~0.02
         ];
         for (spread, alpha) in shadow_rings {
             let shadow_rect = Rect::new(
@@ -766,11 +762,13 @@ impl TabBar {
         // the fade-out feels continuous with the pill chrome the user
         // was just looking at.
         let shadow_y_offset = 6.0_f64;
+        let s = theme.tokens.elevation.shadow_scale;
+        let ring = |a: f32| (a * s).round().clamp(0.0, 255.0) as u8;
         let shadow_rings: [(f64, u8); 4] = [
-            (2.0, 51),
-            (5.0, 30),
-            (9.0, 15),
-            (14.0, 5),
+            (2.0, ring(51.0)),
+            (5.0, ring(30.0)),
+            (9.0, ring(15.0)),
+            (14.0, ring(5.0)),
         ];
         for (spread, alpha) in shadow_rings {
             let shadow_rect = Rect::new(
@@ -795,7 +793,7 @@ impl TabBar {
         // user can still read the title + close glyph clearly during
         // the fade-out.
         let shape = RoundedRect::from_rect(r, radius);
-        let fill = pill_tiers(theme).0;
+        let fill = theme.tokens.colors.overlay_subtle;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
@@ -1604,14 +1602,14 @@ impl Widget for TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    pill_tiers(theme).1,
+                    colors.overlay_medium,
                     None,
                     &shape,
                 );
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
                     transform,
-                    pill_tiers(theme).4,
+                    colors.overlay_border_strong,
                     None,
                     &shape,
                 );
@@ -1619,7 +1617,7 @@ impl Widget for TabBar {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
                     transform,
-                    pill_tiers(theme).3,
+                    colors.overlay_border_subtle,
                     None,
                     &shape,
                 );
