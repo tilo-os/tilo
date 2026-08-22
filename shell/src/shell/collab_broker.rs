@@ -196,8 +196,12 @@ impl RedactionLog {
 /// Per-peer entry in the broker's fan-out table.
 struct Peer {
     /// Stable id assigned at accept time. Threaded into the synthetic
-    /// `user_id = "peer-<id>"` on presence updates.
+    /// `user_id = "peer-<id>"` on presence updates, unless the peer
+    /// announced a `handle` on its `Hello`.
     id: u64,
+    /// The name this peer asked to be shown as in presence, from its
+    /// `Hello`. Informational: never consulted for routing or authority.
+    handle: Mutex<Option<String>>,
     /// Write side of the connected stream. The read side is owned by
     /// the per-peer reader thread.
     writer: Mutex<UnixStream>,
@@ -213,6 +217,16 @@ impl Peer {
     /// Snapshot the announced route, if any.
     fn route(&self) -> Option<CrdtRoute> {
         self.route.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// The name presence from this peer is stamped with: its announced
+    /// handle, else the synthetic `peer-<id>`.
+    fn presence_user_id(&self) -> String {
+        self.handle
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| format!("peer-{}", self.id))
     }
 }
 
@@ -826,6 +840,7 @@ fn unrouted(src_id: u64, kind: &str) -> TranslatedAction {
 /// peer id rather than by route.
 fn translate(
     src_id: u64,
+    src_user_id: &str,
     src_route: Option<&CrdtRoute>,
     req: CollabRequest,
     channels: &Arc<Mutex<BrokerChannels>>,
@@ -859,7 +874,7 @@ fn translate(
             };
             TranslatedAction::Fanout {
                 event: CollabEvent::RemotePresenceUpdate {
-                    user_id: format!("peer-{src_id}"),
+                    user_id: src_user_id.to_string(),
                     key,
                     payload,
                 },
@@ -1079,12 +1094,16 @@ fn reader_loop(
             ref app_id,
             cluster_id,
             ref record,
+            ref handle,
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {
                 *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()).on_record(
                     record.clone().unwrap_or_default(),
                 ));
+            }
+            if let Ok(mut guard) = peer.handle.lock() {
+                *guard = handle.clone().filter(|h| !h.trim().is_empty());
             }
         }
         let src_route = peer.route();
@@ -1130,7 +1149,8 @@ fn reader_loop(
         } else {
             None
         };
-        match translate(peer.id, src_route.as_ref(), req, &channels) {
+        let src_user_id = peer.presence_user_id();
+        match translate(peer.id, &src_user_id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
             TranslatedAction::Fanout { event, route } => {
                 table.fanout_to_route(&event, peer.id, &route);
@@ -1457,6 +1477,7 @@ pub fn spawn_full(
                         };
                         let peer = Arc::new(Peer {
                             id,
+                            handle: Mutex::new(None),
                             writer: Mutex::new(writer),
                             route: Mutex::new(None),
                         });
