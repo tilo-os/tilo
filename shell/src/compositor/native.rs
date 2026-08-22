@@ -3311,10 +3311,17 @@ mod tests {
     /// error instead of the skip an optional service is entitled to —
     /// a test that cannot observe its subject must fail.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn compositor_binds_the_socket_the_launcher_dials() {
         let runtime = tempfile::tempdir().expect("tempdir");
-        // SAFETY: `serial` keeps this off any other test's env.
+        // SAFETY: `serial(process_env)` keeps this off any other
+        // test's env. The group name is load-bearing: serial_test only
+        // excludes tests that name the *same* group, and every other
+        // test in this crate that writes `XDG_RUNTIME_DIR` names
+        // `process_env`. Under the unnamed group this ran alongside
+        // them, read the variable after one of them had pointed it at
+        // an already-dropped tempdir, and failed to bind a socket in a
+        // directory that no longer existed.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
         // Do not let an inherited value pick the legacy socket's home.
         unsafe { std::env::remove_var("QUICK_COLLAB_SOCK") };
@@ -3365,7 +3372,7 @@ mod tests {
     /// broker nothing can reach any more. Refusing loudly is the
     /// correct outcome, and the refusal has to reach the chrome.
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(process_env)]
     fn a_second_session_refuses_to_take_a_live_collab_socket() {
         let runtime = tempfile::tempdir().expect("tempdir");
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", runtime.path()) };
