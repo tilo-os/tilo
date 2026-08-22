@@ -1630,6 +1630,14 @@ pub fn spawn_full(
                             std::mem::take(&mut *buf)
                         };
                         for entry in drained {
+                            tracing::info!(
+                                target: "qos_collab_probe",
+                                app = %entry.app_id,
+                                cluster = %entry.cluster_id,
+                                record = %entry.record_id,
+                                bytes = entry.data.len(),
+                                "PROBE drain incremental -> local fanout",
+                            );
                             let event = CollabEvent::CRDTIncremental { data: entry.data };
                             // The publishing host stamped the originating
                             // app + cluster onto the wire; deliver only to
@@ -1667,6 +1675,14 @@ pub fn spawn_full(
                             std::mem::take(&mut *buf)
                         };
                         for entry in drained_snapshots {
+                            tracing::info!(
+                                target: "qos_collab_probe",
+                                app = %entry.app_id,
+                                cluster = %entry.cluster_id,
+                                record = %entry.record_id,
+                                bytes = entry.data.len(),
+                                "PROBE drain snapshot -> local fanout",
+                            );
                             let event = CollabEvent::CRDTUpdate { data: entry.data };
                             let route = CrdtRoute::record(
                                 entry.app_id,
