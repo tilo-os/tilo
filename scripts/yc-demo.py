@@ -10,16 +10,17 @@ libp2p keypairs, separate user identities, separate control sockets:
            API: semantic invocation by `(provider, id)`, never by a
            click, a keystroke, or a pixel
 
-Three beats, about a minute:
+The storyboard, in order, about a minute:
 
-  1. one room, three sessions   — proven by reading quinten's room back
-                                  out of xaver's and the agent's own state
-  2. the agent sees the surface — the shell exports a typed, addressable
-                                  action catalogue, and enumerating it
-                                  provably changes nothing
-  3. the agent acts             — it invokes an action by address and the
-                                  effect lands, with a counter proving no
-                                  synthetic input was used
+  1. an empty desktop, and Files opened on it
+  2. quinten invites xaver
+  3. quinten invites the agent — a capability principal, not a peer
+  4. both have joined, and each session can see the others
+  5. "word processor" — a machine that does not have it, fetching it
+  6. cut to xaver: the window quinten opened is open for him too
+  7. quinten writes, and xaver's screen is asked what it holds
+  8. an image into the document, through the OS file chooser
+  9. the agent acts by address, and the other two read the result back
 
 Every claim is read back from a session that did **not** make the change.
 Where that is impossible with today's compositor the transcript prints a
@@ -72,8 +73,44 @@ AGENT_ACTION_ID = "room.activity.open"
 # Its effect, as a key under `chrome.overlays` in `state_dump`.
 AGENT_ACTION_EFFECT = "room_activity"
 
+# The provider that launches installed applications, and the two apps the
+# storyboard opens. An app is started by its own id through the same
+# registry that feeds the palette, so the demo drives the production
+# launch path rather than a test entry point.
+APPLICATIONS = "applications"
+FILES_APP = "dev.qos.file-explorer"
+WORD_PROCESSOR = "dev.qos.word-processor"
+
+# Machine state, deliberately *not* isolated per session: without these
+# two a session enumerates zero applications and every launch fails with
+# "no bundle was found". Documents and identities stay per-session; the
+# installed-app store and the runtime bundle are the machine's.
+MACHINE_APPS = os.path.expanduser("~/.local/share/qos-apps")
+RUNTIME_BUNDLES = os.path.expanduser("~/.local/share/qos-runtime")
+# A registry holding the word processor built from *this* tree. The
+# machine's installed payload is a static binary from an earlier build
+# and cannot exercise anything that has changed in `ui` since, so a run
+# against it would be filming last month's app.
+LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
+
+# The capability principal quinten grants in beat 3. An agent is not a
+# peer: it is a subject in the permission model, and the grant is scoped
+# to one app rather than to the workspace.
+AGENT_SUBJECT = "agent:scribe"
+AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
+
+# What quinten types into the document, and what xaver's session is then
+# asked whether it holds.
+TYPED_TEXT = "the same document on both machines"
+
 # How long to wait for a change to cross between sessions.
 SYNC_TIMEOUT_S = 25.0
+# A document crossing is a longer chain than a room-index entry: publish,
+# gossip, drain on the far side, apply, paint. Given its own budget so a
+# slow hop is not reported as a failure to converge.
+DOC_SYNC_TIMEOUT_S = 60.0
+# An app launch is a sandbox spawn plus a first frame.
+LAUNCH_TIMEOUT_S = 90.0
 
 
 # --------------------------------------------------------------------
@@ -109,13 +146,25 @@ class Session:
     """One running compositor, addressed by its control socket."""
 
     def __init__(self, name: str, user: str, run_dir: str, sock: str, binary: str,
-                 size: str, runtime_dir: str):
+                 size: str, runtime_dir: str, home: str, apps_dir: str,
+                 tools: dict[str, str] | None = None):
         self.name = name
         self.user = user
         self.dir = run_dir
         self.sock = sock
         self.binary = binary
         self.size = size
+        # This session's own home. The file chooser and the palette's file
+        # results read it, so pointing it at a staged directory is what
+        # keeps the demo off whoever's machine is filming it.
+        self.home = home
+        # The installed-app store this session sees. Per-session because
+        # "this machine does not have the word processor" has to be a fact
+        # about a real store rather than an assertion about one.
+        self.apps_dir = apps_dir
+        # Paths to the packaging chain, when it has been built. Absent is
+        # a supported state: the beat that needs it says so and moves on.
+        self.tools = tools or {}
         # Each session needs its own XDG_RUNTIME_DIR: the compositor
         # binds its collab broker at <runtime>/qos/services/collab.sock,
         # and two sessions sharing one runtime dir are two sessions
@@ -167,10 +216,29 @@ class Session:
             QOS_TEST_CONTROL=self.sock,
             NIRIOS_HEADLESS_SIZE=self.size,
             RUST_LOG=env.get("RUST_LOG", "info"),
+            # A home of this session's own, staged with the demo's files.
+            HOME=self.home,
+            # The two stores an app launch cannot do without. The install
+            # root is this session's; the runtime bundle is the machine's,
+            # because every packaged app pins it and none of them ship it.
+            QOS_APPS_DATA_DIR=self.apps_dir,
+            QOS_RUNTIME_BUNDLE_DIR=RUNTIME_BUNDLES,
+            # Where the catalogue looks for registries, and where it caches
+            # what it fetches. Per-session, so an install in one session is
+            # not quietly an install in another.
+            QOS_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
+            QOS_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
         )
+        # The packaging chain, when it is on disk. Passed by path rather
+        # than found on PATH so the run measures the binaries built for it.
+        for var, path in self.tools.items():
+            env[var] = path
+        os.makedirs(os.path.join(self.dir, "store-config"), exist_ok=True)
+        os.makedirs(os.path.join(self.dir, "store-cache"), exist_ok=True)
         self._log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
-            [self.binary, "--backend", "headless", "--enable-peer-sync"],
+            [self.binary, "--mode", "native", "--backend", "headless",
+             "--enable-peer-sync"],
             cwd=REPO, env=env, stdout=self._log, stderr=subprocess.STDOUT,
             # Its own session, so `--keep` actually keeps: otherwise the
             # children share this process's group and die with it the
@@ -244,6 +312,167 @@ class Session:
 
     def palette(self) -> dict:
         return self.chrome()["palette"]
+
+    def peers(self) -> dict:
+        """The peers this session would paint, off the same `PresenceCtx`
+        the overlay draws from.
+
+        Read rather than eyeballed on purpose: "no peer arrived" and "a
+        peer arrived and was not drawn" make the same picture, and a
+        harness that cannot tell those apart has not shown either.
+        """
+        return ok(call(self.sock, {"op": "state_dump"}))["state"].get("peers") or {}
+
+    def foreign_frames(self) -> list[dict]:
+        """Per-surface frame counters for every client window.
+
+        `frame_seq > 0` is the ground truth behind "the app opened": a
+        placeholder tile looks like a window and never presents.
+        """
+        r = call(self.sock, {"op": "foreign_frames"})
+        if "foreign_frames" in r:
+            return r["foreign_frames"].get("frames", [])
+        return r.get("answer", r.get("frames", [])) or []
+
+    def groups_here(self) -> dict:
+        """Every window group in this session's active workspace."""
+        out: dict[str, dict] = {}
+        for ws in self.tree()["workspaces"]:
+            if ws["id"] != self.tree()["active"]:
+                continue
+            for strip in ws.get("strips", []):
+                for group in strip.get("window_groups", []):
+                    out[str(group.get("id"))] = {
+                        "active_tab": group.get("active_tab"),
+                        "tabs": [t.get("title") for t in group.get("tabs", [])],
+                        "tab_ids": [str(t.get("id")) for t in group.get("tabs", [])],
+                        "strip": str(strip.get("id")),
+                    }
+        return out
+
+    def tabs_here(self) -> dict:
+        """Every tab in this session's active workspace, by tab id.
+
+        Keyed on the tab rather than the group because the placement rule
+        tabs a new window into the focused group when it is already
+        tabbed — so a new window does not always mean a new group.
+        """
+        out: dict[str, dict] = {}
+        for gid, g in self.groups_here().items():
+            for i, t in enumerate(g["tab_ids"]):
+                out[t] = {"group": gid, "strip": g["strip"],
+                          "title": g["tabs"][i] if i < len(g["tabs"]) else None}
+        return out
+
+    def view_state(self) -> dict:
+        """Where this person is looking. Which windows exist is the
+        workspace; which one is in front of you is you, and the second
+        must not travel with the first."""
+        tree = self.tree()
+        return {
+            "active": tree.get("active"),
+            "active_strip": tree.get("active_strip"),
+            "active_group": tree.get("active_group"),
+            "active_tab_per_group": {g: v["active_tab"]
+                                     for g, v in self.groups_here().items()},
+        }
+
+    def targets(self) -> list[dict]:
+        """The compositor's own widget registry: every addressable piece
+        of chrome with its rect. A client's insides are not in here —
+        this is the shell's tree, which is exactly what makes the OS file
+        chooser drivable and an app's toolbar not."""
+        r = call(self.sock, {"op": "list_targets"})
+        for v in (r.values() if isinstance(r, dict) else []):
+            if isinstance(v, list):
+                return v
+            if isinstance(v, dict):
+                for vv in v.values():
+                    if isinstance(vv, list):
+                        return vv
+        return []
+
+    def named_rect(self, name: str) -> list | None:
+        for t in self.targets():
+            if t.get("name") == name:
+                rect = t.get("rect")
+                if rect and (rect[2] > 0 and rect[3] > 0):
+                    return rect
+        return None
+
+    def target_names(self) -> list[str]:
+        return [t.get("name", "") for t in self.targets()]
+
+    def check_action(self, actor: str, app: str, action: str,
+                     verb: str = "write") -> dict:
+        """Ask the in-app action gate whether `actor` may invoke this.
+
+        Read-only, and the production gate: this is the same check the
+        broker runs, asked without performing anything.
+        """
+        return call(self.sock, {"op": "check_action", "actor": actor,
+                                "app": app, "action": action, "verb": verb})
+
+    def grant(self, subject: str, scope: str, verb: str) -> dict:
+        """Grant a capability, through `Workspace::grant_as`.
+
+        The authority check is the production one — it refuses a grantor
+        who neither owns the room nor holds admin over it — so a refusal
+        here is the model working, not the harness failing.
+        """
+        return call(self.sock, {"op": "grant", "subject": subject,
+                                "scope": scope, "verb": verb})
+
+    # -- synthetic input, continued (all counted) --------------------
+
+    def click_at(self, x: float, y: float) -> None:
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "click_at", "x": x, "y": y}))
+
+    def click_named(self, name: str) -> dict:
+        self.input_ops += 1
+        return call(self.sock, {"op": "click_named", "name": name})
+
+    def pointer_move(self, x: float, y: float) -> None:
+        self.input_ops += 1
+        ok(call(self.sock, {"op": "pointer_move", "x": x, "y": y}))
+
+    def place_next_window(self, app_id: str) -> dict:
+        """Note that the next window announcing `app_id` opens in its own
+        group. Two clients are only on screen at once when they are in
+        separate groups, and that is the precondition for a scene with
+        Files beside the document."""
+        return call(self.sock, {"op": "place_next_window", "app_id": app_id})
+
+    def set_group_width(self, permille: int) -> dict:
+        """Give every group in the strip the same share of it. A group
+        takes about three quarters by default, so two never fit."""
+        return call(self.sock, {"op": "set_group_width", "permille": permille})
+
+    # -- launching ---------------------------------------------------
+
+    def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S) -> dict | None:
+        """Start an app by its id and wait for it to present a frame.
+
+        The surfaces that already existed are excluded, because every app
+        announces the same wayland app-id: a launch that opened nothing
+        is otherwise indistinguishable from one that worked, the previous
+        window still being on screen and still painting.
+        """
+        before = {f.get("surface_id") for f in self.foreign_frames()}
+        resp = call(self.sock, {"op": "actions_invoke",
+                                "provider": APPLICATIONS, "id": app_id})
+        if "err" in resp:
+            note(f"{self.name}: launching {app_id} was refused — "
+                 f"{json.dumps(resp['err'])[:160]}")
+            return None
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for f in self.foreign_frames():
+                if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
+                    return f
+            time.sleep(0.75)
+        return None
 
     # -- the action API (semantic; no input, no pixels) --------------
 
@@ -422,13 +651,17 @@ class Recorder:
 
     def __init__(self, sessions: list[Session], directory: str,
                  interval: float, dwell: float = 0.0,
-                 cut_dwell: float = 0.0) -> None:
+                 cut_dwell: float = 0.0, max_hold: float = 0.0) -> None:
         self.sessions = sessions
         self.by_name = {s.name: s for s in sessions}
         self.dir = directory
         self.interval = interval
         self.dwell_s = dwell
         self.cut_dwell_s = cut_dwell
+        # The longest one unchanged frame is shown for. See `_timeline`.
+        self.max_hold = max_hold
+        # How much still picture the cap took out, filled in at compose.
+        self.trimmed = 0.0
         # (taken_at, relative path, session name) in capture order.
         self.frames: list[tuple[float, str, str]] = []
         # How long each snapshot blocked its session. The honest measure
@@ -569,51 +802,70 @@ class Recorder:
             raise RuntimeError("no frames were captured")
         return self.frames[0][0], self.frames[-1][0]
 
-    def _concat_list(self, t_start: float, t_end: float,
-                     fps: int) -> tuple[str, float]:
-        """The single track, on the demo's own clock.
+    def _timeline(self, t_start: float, t_end: float,
+                  fps: int) -> list[tuple[str, str, float]]:
+        """`(relative path, session, seconds on screen)`, in order.
 
         Each frame is shown from when it was taken until the next one
-        was — so the video runs in real time and is simply as dense as
-        the camera managed. With one track there is nothing to pad
-        against, so no frame in the file is ever repeated.
+        was, so the video runs on the demo's own clock and is simply as
+        dense as the camera managed. With one track there is nothing to
+        pad against: no frame in the file is ever repeated, and none is
+        interpolated.
+
+        `max_hold` is the one edit. A session that is waiting — for a
+        sandbox to spawn, for a package to unpack, for a change to cross
+        a network — renders the same screen for as long as it waits, and
+        filming that honestly still means minutes of a still picture.
+        Capping how long one unchanged frame stays up trims that dead
+        air. It cannot invent anything: every frame was really rendered
+        by the session named on it, in this order, and a cap only ever
+        shows one for *less* time than it was live. What it costs is that
+        the video is no longer wall-clock; `trimmed` reports how much.
         """
         frames = self.frames
         if not frames:
             raise RuntimeError("no frames to compose")
         tick = 1.0 / fps
-        spans = []
-        for i, (t, _rel, _name) in enumerate(frames):
+        cap = self.max_hold if self.max_hold > 0 else float("inf")
+        out: list[tuple[str, str, float]] = []
+        self.trimmed = 0.0
+        for i, (t, rel, name) in enumerate(frames):
             begins = t_start if i == 0 else t
-            # The last frame was the live state until the camera
-            # stopped; it is shown for one tick and the video ends.
+            # The last frame was the live state until the camera stopped;
+            # it is shown for one tick and the video ends.
             ends = frames[i + 1][0] if i + 1 < len(frames) else t_end + tick
-            spans.append(max(tick, ends - begins))
+            lived = max(tick, ends - begins)
+            shown = min(lived, max(tick, cap))
+            self.trimmed += lived - shown
+            out.append((rel, name, shown))
+        return out
+
+    def _concat_list(self, timeline: list[tuple[str, str, float]]) -> str:
         lines = ["ffconcat version 1.0"]
-        for (_t, rel, _name), seconds in zip(frames, spans):
+        for rel, _name, seconds in timeline:
             lines.append(f"file '{rel}'")
             lines.append(f"duration {seconds:.4f}")
         with open(os.path.join(self.dir, "track.txt"), "w") as f:
             f.write("\n".join(lines) + "\n")
-        return "track.txt", sum(spans)
+        return "track.txt"
 
-    def _label_spans(self, t_start: float, t_end: float,
+    def _label_spans(self, timeline: list[tuple[str, str, float]],
                      fps: int) -> list[tuple[str, float, float]]:
         """When each session's name is on screen.
 
-        Taken from the frames themselves rather than from the cut
-        timestamps, so the label always names the session whose pixels
-        are showing — not the one the camera had just been asked for.
+        Walked over the same timeline the track is built from, so the
+        label always names the session whose pixels are showing — not
+        the one the camera had just been asked for, and not a moment
+        that trimming has since moved.
         """
         spans: list[tuple[str, float, float]] = []
-        for i, (t, _rel, name) in enumerate(self.frames):
-            begins = (t_start if i == 0 else t) - t_start
-            ends = ((self.frames[i + 1][0] if i + 1 < len(self.frames)
-                     else t_end + 1.0 / fps) - t_start)
+        at = 0.0
+        for _rel, name, seconds in timeline:
             if spans and spans[-1][0] == name:
-                spans[-1] = (name, spans[-1][1], ends)
+                spans[-1] = (name, spans[-1][1], at + seconds)
             else:
-                spans.append((name, begins, ends))
+                spans.append((name, at, at + seconds))
+            at += seconds
         return [s for s in spans if s[2] - s[1] >= 1.0 / fps]
 
     def _caption(self, slug: str, text: str) -> str:
@@ -639,7 +891,8 @@ class Recorder:
                 f"only {t_end - t_start:.2f}s of capture; too little to compose")
 
         source_w, source_h = (int(v) for v in size.lower().split("x"))
-        rel_track, _seconds = self._concat_list(t_start, t_end, fps)
+        timeline = self._timeline(t_start, t_end, fps)
+        rel_track = self._concat_list(timeline)
 
         chain = [f"fps={fps}"]
         # No scale filter at all when the session already renders at the
@@ -669,7 +922,7 @@ class Recorder:
                 f"enable='{enable}'",
             ])
 
-        for i, (name, a, b) in enumerate(self._label_spans(t_start, t_end, fps)):
+        for i, (name, a, b) in enumerate(self._label_spans(timeline, fps)):
             text = f"{name} · {ROLES[name]}" if name in ROLES else name
             chain.append(label(self._caption(f"n{i:03d}", text),
                                f"between(t,{a:.3f},{b:.3f})"))
@@ -845,84 +1098,565 @@ def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
 
 
 # --------------------------------------------------------------------
+# the app stores each session sees
+# --------------------------------------------------------------------
+#
+# "This machine does not have the word processor" is the whole of beat 5,
+# so it has to be a fact about a real install root rather than a claim
+# the script makes. Each session gets its own `registry.toml`, composed
+# from the machine's: quinten's has the word processor's entry removed,
+# and the others keep it. Nothing is copied but the index — the entries
+# carry absolute payload roots, so the payloads stay where they are.
+
+
+def registry_entries(path: str) -> dict[str, str]:
+    """Split a `registry.toml` into one verbatim text block per app.
+
+    Text rather than parsed: an entry carries hashes and a publisher key,
+    and round-tripping those through a hand-rolled TOML writer is a good
+    way to install something that no longer verifies.
+    """
+    try:
+        with open(path) as fh:
+            body = fh.read()
+    except OSError:
+        return {}
+    entries: dict[str, str] = {}
+    for chunk in body.split("[[entry]]"):
+        if not chunk.strip():
+            continue
+        ident = None
+        for line in chunk.splitlines():
+            if line.startswith("id = "):
+                ident = line.split("=", 1)[1].strip().strip('"')
+                break
+        if ident:
+            entries[ident] = "[[entry]]" + chunk.rstrip() + "\n"
+    return entries
+
+
+def compose_registry(apps_dir: str, entries: dict[str, str],
+                     drop: tuple[str, ...] = ()) -> None:
+    os.makedirs(apps_dir, exist_ok=True)
+    kept = [v for k, v in sorted(entries.items()) if k not in drop]
+    with open(os.path.join(apps_dir, "registry.toml"), "w") as fh:
+        fh.write("\n".join(kept))
+
+
+def installed_ids(apps_dir: str) -> list[str]:
+    """What this session's install root actually holds, read off disk."""
+    return sorted(registry_entries(os.path.join(apps_dir, "registry.toml")))
+
+
+def a_real_png(width: int = 320, height: int = 200) -> bytes:
+    """A picture with something in it.
+
+    Written out rather than embedded so the image on screen is worth
+    looking at: a 1x1 pixel proves the plumbing and shows the camera
+    nothing.
+    """
+    import struct
+    import zlib
+
+    rows = bytearray()
+    for y in range(height):
+        rows.append(0)  # filter: none
+        for x in range(width):
+            rows += bytes((
+                40 + (x * 160) // width,
+                70 + (y * 150) // height,
+                150 + ((x + y) * 90) // (width + height),
+            ))
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(bytes(rows), 9))
+            + chunk(b"IEND", b""))
+
+
+def stage_home(path: str) -> str:
+    """A home of this session's own, with the demo's folder in it."""
+    demo = os.path.join(path, "Demo")
+    os.makedirs(demo, exist_ok=True)
+    with open(os.path.join(demo, "photo.png"), "wb") as fh:
+        fh.write(a_real_png())
+    with open(os.path.join(demo, "brief.md"), "w") as fh:
+        fh.write("# Launch plan\n\n- Venue - The Hall\n- Date - 3 Sep\n")
+    return path
+
+
+class Registry:
+    """A signed registry on loopback, serving one real `.qpkg`.
+
+    The `serve-test-registry` example packs a real binary into a real
+    package, signs it, and writes the `registries.toml` the catalogue
+    reads — so the fetch in beat 5 verifies an ed25519 signature and a
+    BLAKE3 digest for real. Absent binaries are a supported state: the
+    beat says the fetch could not be filmed and the film goes on.
+    """
+
+    def __init__(self, example_bin: str, payload: str, config_dir: str,
+                 log_path: str) -> None:
+        self.example_bin = example_bin
+        self.payload = payload
+        self.config_dir = config_dir
+        self.log_path = log_path
+        self.proc: subprocess.Popen | None = None
+        self._log = None
+        self.base_url: str | None = None
+
+    def __enter__(self) -> "Registry | None":
+        if not (self.example_bin and os.path.exists(self.example_bin)
+                and os.path.exists(self.payload)):
+            return None
+        os.makedirs(self.config_dir, exist_ok=True)
+        self._log = open(self.log_path, "w+b")
+        self.proc = subprocess.Popen(
+            [self.example_bin, "--config-dir", self.config_dir,
+             "--payload", self.payload, "--package-id", WORD_PROCESSOR,
+             "--name", "Word Processor"],
+            stdout=self._log, stderr=subprocess.STDOUT, start_new_session=True)
+        # It announces its port once it is listening. Packing a large
+        # binary happens before that line, so the wait is real work.
+        deadline = time.time() + 180.0
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                print(f"  the test registry exited early "
+                      f"({self.proc.returncode}); see {self.log_path}")
+                return None
+            with open(self.log_path, "rb") as fh:
+                text = fh.read().decode(errors="replace")
+            m = re.search(r"registry (http://\S+) serving", text)
+            if m:
+                self.base_url = m.group(1)
+                return self
+            time.sleep(0.3)
+        print(f"  the test registry never announced a port; see {self.log_path}")
+        return None
+
+    def __exit__(self, *exc) -> bool:
+        if self.proc is not None and self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGTERM)
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+        if self._log is not None:
+            self._log.close()
+        return False
+
+
+# --------------------------------------------------------------------
 # the demonstration
 # --------------------------------------------------------------------
 
+# Set by `main`, so a beat can report on all three sessions without
+# every beat function taking all three.
+SESSIONS: list[Session] = []
 
-def beat_one(quinten: Session, xaver: Session, agent: Session, shots: str) -> dict:
-    banner("1.  one room, three sessions")
-    # Open on the host. The room is his, and everything in this beat is
-    # something he hands out or something a guest reads back from him.
+
+def beat_one(quinten: Session, shots: str) -> dict:
+    banner("1.  an empty desktop, and Files opened on it")
+    # The host's screen. A first boot really is empty here — one
+    # workspace, no strips, no windows — so "empty" is read off the tree
+    # rather than asserted about a backdrop.
     cut("quinten")
 
-    ids = {s.name: peer_id_of(s) for s in (quinten, xaver, agent)}
-    for s in (quinten, xaver, agent):
+    ids = {s.name: peer_id_of(s) for s in SESSIONS}
+    for s in SESSIONS:
         note(f"{s.name:8} pid {s.proc.pid:<8} user {s.user:<8} peer {ids[s.name]}")
-    claim("three separate processes",
-          len({s.proc.pid for s in (quinten, xaver, agent)}), 3)
+    claim("three separate processes", len({s.proc.pid for s in SESSIONS}), 3)
     claim("three separate libp2p identities", len(set(ids.values())), 3)
 
     host_ws = quinten.active_workspace()
     note(f"quinten's room {host_ws['room']}  named {host_ws['name']!r}")
     claim("quinten owns his room", host_ws["owner"], quinten.user)
+    claim("his desktop starts with no windows on it",
+          len(quinten.tabs_here()), 0)
+    quinten.snapshot(os.path.join(shots, "01-empty-desktop.png"))
 
-    step("xaver joins by invite")
-    # Minting is quinten's: the palette opens on his screen and the
-    # invite card comes up there.
+    step("he opens Files")
+    # By its own id through the applications provider — the registry that
+    # feeds the palette. There is no on-screen affordance for the first
+    # window; the palette is a chord, and this is the same row it offers.
+    painted = quinten.launch(FILES_APP)
+    claim("Files opened and painted a frame", painted is not None, True)
+    if painted:
+        note(f"surface {painted.get('surface_id')} at frame "
+             f"{painted.get('frame_seq')}")
+    tabs = quinten.tabs_here()
+    claim("and it is the only window on his desktop", len(tabs), 1)
+    quinten.snapshot(os.path.join(shots, "02-files.png"))
+    return host_ws
+
+
+def beat_two(quinten: Session, xaver: Session, host_ws: dict) -> None:
+    banner("2.  quinten invites xaver")
+    cut("quinten")
+
+    step("he mints an invite")
+    # Minting is his: the palette opens on his screen and the card with
+    # the token comes up there.
     token = mint_invite(quinten)
     claim("quinten minted an invite token", bool(token), True)
     if not token:
         raise SystemExit("no invite token: the rest cannot run")
+    note("the token is a signed blob carrying the room id, the owner's "
+         "address and an expiry")
+
     # Redeeming is xaver's, and it is his screen that changes.
     cut("xaver")
+    step("xaver redeems it")
     claim("xaver joined", join_room(xaver, token, by_action_api=False), True)
+    claim("xaver's own state holds quinten's room",
+          xaver.active_workspace()["room"], host_ws["room"])
+    claim("and his own copy names quinten as owner",
+          xaver.active_workspace()["owner"], quinten.user)
 
-    step("the agent joins by invite")
+
+def beat_three(quinten: Session, agent: Session, host_ws: dict) -> None:
+    banner("3.  quinten invites the agent")
     cut("quinten")
-    token2 = mint_invite(quinten)
-    claim("quinten minted a second token", bool(token2), True)
-    if not token2:
+
+    step("a second token — but an agent is not a peer")
+    token = mint_invite(quinten)
+    claim("quinten minted a second token", bool(token), True)
+    if not token:
         raise SystemExit("no second token: the agent cannot join")
+
     cut("agent")
-    claim("the agent joined", join_room(agent, token2, by_action_api=True), True)
+    claim("the agent joined the room", join_room(agent, token, by_action_api=True),
+          True)
+    claim("the agent's own state holds quinten's room",
+          agent.active_workspace()["room"], host_ws["room"])
     # The connect *prompt* was opened by address; the token itself had to
     # be typed, because the control socket has no semantic join op.
     gap("joining has no semantic op — the invite token had to be typed "
         "(only the prompt was opened by address)")
 
-    step("read quinten's room back out of the other two sessions")
-    # The verification that matters: neither of these is quinten's own
-    # state. Each guest independently reports the room it now holds —
-    # so the camera sits on the guest doing the reporting, and the
-    # claims are grouped by whose screen you are looking at.
+    step("what the agent is allowed to do, before quinten says so")
+    # The more interesting half, and the one that makes an agent a
+    # different kind of participant: it is a subject in the permission
+    # model, `agent:<id>`, and its authority is a grant on a scope. Asked
+    # of the production gate, which answers about a verb on a scope.
+    cut("quinten")
+    probe = quinten.check_action(AGENT_SUBJECT, WORD_PROCESSOR, "SpliceText")
+    before = probe.get("answer", {})
+    note(f"check_action({AGENT_SUBJECT}, {WORD_PROCESSOR}, SpliceText) -> "
+         f"{json.dumps(before)[:120]}")
+    claim("the agent may not write to the word processor yet",
+          bool(before.get("allowed")), False)
+
+    step(f"quinten grants it write on {AGENT_SCOPE} — that app, and nothing else")
+    granted = quinten.grant(AGENT_SUBJECT, AGENT_SCOPE, "write")
+    claim("the grant was accepted", "err" not in granted, True)
+    if "err" in granted:
+        note(json.dumps(granted["err"])[:200])
+    after = wait_for(
+        lambda: (quinten.check_action(AGENT_SUBJECT, WORD_PROCESSOR, "SpliceText")
+                 .get("answer", {}) or {}).get("allowed"),
+        timeout=SYNC_TIMEOUT_S)
+    claim("now it may — the same question, the same gate", bool(after), True)
+    # And the scope is a real boundary, not a label: the grant named one
+    # app, so it must not answer for another.
+    other = quinten.check_action(AGENT_SUBJECT, "dev.qos.terminal", "SpliceText")
+    claim("and still may not write to a different app",
+          bool(other.get("answer", {}).get("allowed")), False)
+    note("a capability is a verb on a scope; the scope here is one app")
+
+
+def beat_four(quinten: Session, xaver: Session, agent: Session,
+              host_ws: dict, shots: str) -> None:
+    banner("4.  both have joined — and each session can see the others")
+
+    step("read quinten's room back out of the other two")
+    # Neither of these is quinten's own state. Each guest independently
+    # reports the room it now holds, so the camera sits on the guest
+    # doing the reporting.
     cut("xaver")
-    claim("xaver's own state holds quinten's room",
-          xaver.active_workspace()["room"], host_ws["room"])
-    claim("xaver's own copy names quinten as owner",
-          xaver.active_workspace()["owner"], quinten.user)
     claim("xaver's own copy carries quinten's name for the room",
           xaver.active_workspace()["name"], host_ws["name"])
-
     cut("agent")
-    claim("the agent's own state holds quinten's room",
-          agent.active_workspace()["room"], host_ws["room"])
-    claim("the agent's own copy names quinten as owner",
-          agent.active_workspace()["owner"], quinten.user)
     claim("the agent's own copy carries it too",
           agent.active_workspace()["name"], host_ws["name"])
-    quinten.snapshot(os.path.join(shots, "01-quinten.png"))
-    xaver.snapshot(os.path.join(shots, "02-xaver.png"))
-    return host_ws
+
+    step("and the cursors")
+    # `peers` is read from the same PresenceCtx the overlay draws from,
+    # which is the only way to tell "no peer arrived" from "a peer
+    # arrived and was not drawn" — those make the same picture.
+    cut("quinten")
+    quinten.pointer_move(880.0, 520.0)
+    quinten.settle(0.6)
+    cut("xaver")
+    xaver.pointer_move(640.0, 610.0)
+    xaver.settle(0.6)
+
+    def seen_by(watcher: Session, who: str):
+        rows = (watcher.peers() or {}).get("pointers") or []
+        return [r for r in rows if r.get("user") == who] or None
+
+    on_xaver = wait_for(lambda: seen_by(xaver, quinten.user), timeout=SYNC_TIMEOUT_S)
+    if on_xaver:
+        note(f"xaver's screen holds {json.dumps(on_xaver[0])}")
+        claim("xaver's session paints quinten's cursor, under his user id",
+              bool(on_xaver), True)
+    else:
+        gap("no cross-session pointer reached xaver's presence layer in "
+            f"{SYNC_TIMEOUT_S:.0f}s — the peer table holds the room, but "
+            "a cursor is not being painted for a peer at the desktop level")
+    xaver.snapshot(os.path.join(shots, "03-xaver-joined.png"))
+
+    cut("quinten")
+    on_quinten = wait_for(lambda: seen_by(quinten, xaver.user), timeout=10.0)
+    if on_quinten:
+        claim("and quinten's paints xaver's, the other way",
+              bool(on_quinten), True)
+    else:
+        gap("the same in the other direction: xaver's cursor did not reach "
+            "quinten's presence layer")
 
 
-def beat_two(agent: Session, shots: str) -> list[dict]:
-    banner("2.  the agent sees a typed, addressable surface")
-    # The whole beat is the agent's, and the screen deliberately does
-    # not move: what is being shown is that surveying the surface
-    # changes nothing on it.
+def beat_five(quinten: Session, registry, shots: str) -> dict | None:
+    banner("5.  \"word processor\" — a machine that does not have it")
+    cut("quinten")
+
+    installed = set(installed_ids(quinten.apps_dir))
+    claim("this machine does not have the word processor",
+          WORD_PROCESSOR in installed, False)
+    note(f"{len(installed)} applications installed; {WORD_PROCESSOR} is not "
+         f"one of them")
+    if registry is None:
+        gap("no local registry was served, so the fetch could not be filmed: "
+            "build it with `cargo build -p app-catalogue --bins --examples` "
+            "and `cargo build -p qos-install --bin qos-install`")
+        return None
+    note(f"a registry at {registry.base_url} offers it")
+
+    step("he searches for it, and the row is offered like any other")
+    quinten.modifiers(logo=True)
+    quinten.key("k")
+    quinten.modifiers()
+    quinten.settle(0.4)
+    quinten.type_text("word processor")
+    quinten.settle(1.2)
+    pal = quinten.palette()
+    rows = pal.get("rows") or []
+    offered = next((r for r in rows if WORD_PROCESSOR in json.dumps(r)), None)
+    claim("the palette offers an app this machine does not have",
+          offered is not None, True)
+    if offered:
+        note(f"row: {offered.get('title')!r} — {offered.get('subtitle')!r}")
+    quinten.snapshot(os.path.join(shots, "04-palette-offer.png"))
+
+    step("he presses Enter — fetch, verify, unpack, run")
+    before = {f.get("surface_id") for f in quinten.foreign_frames()}
+    quinten.key("Enter")
+    began = time.time()
+    painted = None
+    deadline = time.time() + LAUNCH_TIMEOUT_S * 2
+    while time.time() < deadline:
+        for f in quinten.foreign_frames():
+            if f.get("surface_id") not in before and f.get("frame_seq", 0) > 0:
+                painted = f
+                break
+        if painted:
+            break
+        time.sleep(0.75)
+    took = time.time() - began
+    claim("the word processor was fetched and opened", painted is not None, True)
+    if painted is None:
+        note(f"see {quinten.log_path}")
+        return None
+    note(f"{took:.1f}s from Enter to first frame — one machine, one LAN hop, "
+         f"an unoptimised payload; not a number to quote")
+    claim("and it is installed now, on the machine that lacked it",
+          WORD_PROCESSOR in set(installed_ids(quinten.apps_dir)), True)
+    quinten.snapshot(os.path.join(shots, "05-word-processor.png"))
+    return painted
+
+
+def beat_six(quinten: Session, xaver: Session, shots: str) -> str | None:
+    banner("6.  cut to xaver — the window is open for him too")
+
+    # Where xaver is looking, before anything arrives. Both halves of the
+    # rule get asserted, because either alone is easy to satisfy wrongly:
+    # the window must arrive, *and* he must not be moved to it.
+    cut("xaver")
+    before_view = xaver.view_state()
+    before_groups = xaver.groups_here()
+    q_tabs = set(quinten.tabs_here())
+    fresh = [t for t in q_tabs if t not in set(xaver.tabs_here())]
+    note(f"quinten holds {len(q_tabs)} tab(s); xaver holds "
+         f"{len(xaver.tabs_here())}")
+
+    step("the tab quinten's word processor opened, read out of xaver's tree")
+    if not fresh:
+        gap("quinten's session had no tab xaver lacked, so there was "
+            "nothing to watch cross")
+        return None
+    tid = sorted(fresh)[0]
+    landed = wait_for(lambda: tid in xaver.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
+    claim("the window quinten opened is open for xaver too", bool(landed), True)
+    if landed:
+        arrived = xaver.tabs_here()[tid]
+        note(f"tab {tid} in xaver's workspace, titled {arrived.get('title')!r}")
+    else:
+        note(f"tab {tid} had not replicated after {DOC_SYNC_TIMEOUT_S:.0f}s")
+
+    step("and his own view did not move")
+    after_view = xaver.view_state()
+    claim("xaver's active workspace did not move",
+          after_view["active"], before_view["active"])
+    claim("xaver's scrolled-to strip did not move",
+          after_view["active_strip"], before_view["active_strip"])
+    claim("xaver's focus did not move",
+          after_view["active_group"], before_view["active_group"])
+    for g, was in before_groups.items():
+        if g in xaver.groups_here():
+            claim(f"the tab in front of him in group {g[:6]}… did not change",
+                  xaver.groups_here()[g]["active_tab"], was["active_tab"])
+    note("which windows exist is the workspace; which one you are looking "
+         "at is you, and the second does not travel")
+    xaver.snapshot(os.path.join(shots, "06-xaver-window.png"))
+    return tid
+
+
+def beat_seven(quinten: Session, xaver: Session, shots: str) -> None:
+    banner("7.  quinten writes, and xaver's screen is asked what it holds")
+
+    step("xaver opens the word processor on his own machine")
+    cut("xaver")
+    # His machine runs its own copy and draws it locally. Nothing is
+    # streamed; the two copies share one document.
+    his = xaver.launch(WORD_PROCESSOR)
+    claim("xaver's word processor painted", his is not None, True)
+    if his is None:
+        gap("xaver has no word processor open, so there is no far screen "
+            "to read a document back off")
+        return
+    # Both apps have to have attached to their broker and announced their
+    # address before either types, or the first keystrokes go out to
+    # nobody and it reads as a transport failure.
+    xaver.settle(6.0)
+
+    step(f"quinten types {TYPED_TEXT!r}")
+    cut("quinten")
+    # Into the document body: a launch leaves focus wherever the chrome
+    # had it, and text typed at the chrome is text the document never sees.
+    quinten.click_at(960.0, 620.0)
+    quinten.settle(1.5)
+    quinten.type_text(TYPED_TEXT)
+    quinten.settle(1.0)
+    quinten.snapshot(os.path.join(shots, "07-quinten-typed.png"))
+
+    step("and xaver's session is asked what it now holds")
+    cut("xaver")
+    # What is mechanically readable from here is presence: the caret and
+    # pointer of the peer who is typing, attributed to his user id, off
+    # the same context the overlay paints from.
+    def quinten_present():
+        rows = (xaver.peers() or {}).get("pointers") or []
+        return [r for r in rows if r.get("user") == quinten.user] or None
+
+    seen = wait_for(quinten_present, timeout=DOC_SYNC_TIMEOUT_S)
+    if seen:
+        claim("xaver's screen carries quinten while he is typing",
+              bool(seen), True)
+    else:
+        gap("quinten's presence did not reach xaver's session")
+    xaver.settle(6.0)
+    shot = os.path.join(shots, "08-xaver-received.png")
+    xaver.snapshot(shot)
+    # The document's own contents are the one claim this harness cannot
+    # make for itself. There is no op that reads a client's document back,
+    # so the evidence is the two screenshots, and saying so is the only
+    # honest thing to do with a beat whose proof is pixels.
+    gap("whether the typed text is in xaver's document is not machine-"
+        f"readable from here — compare {os.path.basename(shot)} against "
+        f"07-quinten-typed.png; a client's document has no readback op")
+
+
+def beat_eight(quinten: Session, shots: str) -> None:
+    banner("8.  an image into the document, through the OS file chooser")
+    cut("quinten")
+
+    # Why this and not a drag out of Files: the drag that exists is
+    # promoted from the compositor's *own* file-manager chrome, and this
+    # session's Files is a sandboxed client — nothing in the app or in
+    # the toolkit opens a wl_data_source, so there is no drag for the
+    # compositor to promote. The chooser is the better beat anyway: it is
+    # the sandbox boundary on screen.
+    note("the app cannot read the folder; the OS hands it the bytes")
+    photo = os.path.join(quinten.home, "Demo", "photo.png")
+    claim("there is an image to insert", os.path.exists(photo), True)
+
+    step("the word processor asks the OS for a file")
+    before = set(quinten.target_names())
+    # The toolbar belongs to the client, and a client's insides are not in
+    # the compositor's widget registry, so this is the one gesture in the
+    # demo aimed at a coordinate rather than at a name.
+    tile = next((n for n in before if n.startswith("foreign-surface-")), None)
+    if tile is None:
+        gap("no client tile is laid out, so the toolbar cannot be reached")
+        return
+    rect = quinten.named_rect(tile)
+    if not rect:
+        gap(f"{tile} has no laid-out rect")
+        return
+    tx, ty, tw, th = rect
+    note(f"tile {tile} at {[round(v) for v in rect]}")
+    opened = None
+    # The image control sits in the toolbar strip under the tile's top
+    # edge. Swept rather than guessed once: a miss is a click on inert
+    # chrome, and the chooser opening is what says it was hit.
+    for frac in (0.34, 0.40, 0.46, 0.28, 0.52, 0.58, 0.22, 0.64):
+        quinten.click_at(tx + tw * frac, ty + th * 0.055)
+        quinten.settle(1.1)
+        names = set(quinten.target_names())
+        fresh = {n for n in names if n not in before}
+        if any("chooser" in n.lower() or "file_row" in n.lower()
+               or "portal" in n.lower() for n in fresh):
+            opened = sorted(fresh)[:8]
+            break
+    if opened is None:
+        gap("the word processor's image control was not found by sweeping "
+            "its toolbar — a client's widgets are not addressable by name "
+            "from the compositor, so this beat is aimed at pixels and did "
+            "not land")
+        quinten.snapshot(os.path.join(shots, "09-no-chooser.png"))
+        return
+    note(f"the chooser is compositor chrome: {opened}")
+    claim("the OS file chooser opened, not the app's own", True, True)
+    quinten.snapshot(os.path.join(shots, "09-chooser.png"))
+
+    step("he picks photo.png")
+    row = next((n for n in quinten.target_names()
+                if "photo.png" in n), None)
+    if row is None:
+        gap("photo.png was not offered by the chooser")
+        return
+    quinten.click_named(row)
+    quinten.settle(1.5)
+    quinten.key("Enter")
+    quinten.settle(3.0)
+    quinten.snapshot(os.path.join(shots, "10-image.png"))
+    note("the image is bytes inside the document, so it replicates the "
+         "way the text does")
+
+
+def beat_nine(quinten: Session, xaver: Session, agent: Session,
+              shots: str) -> None:
+    banner("9.  the agent acts, by address")
     cut("agent")
 
-    step("enumerate everything this session exports")
+    baseline = agent.input_ops
+    note(f"synthetic-input commands sent to the agent so far: {baseline}")
+
+    step("it enumerates what this session exports")
     surface = agent.enumerate_actions("")
     actions = surface["actions"]
     providers: dict[str, int] = {}
@@ -930,114 +1664,87 @@ def beat_two(agent: Session, shots: str) -> list[dict]:
         providers[a["provider"]] = providers.get(a["provider"], 0) + 1
     note(f"{surface['count']} addressable actions across "
          f"{len(providers)} providers")
-    for p, n in sorted(providers.items(), key=lambda kv: -kv[1]):
-        note(f"  {p:20} {n}")
-    claim("the catalogue is not empty", surface["count"] > 0, True)
-    claim("count matches the rows returned", surface["count"], len(actions))
-
-    step("the shell's own actions, as the agent receives them")
-    shell_actions = [a for a in actions if a["provider"] == AGENT_PROVIDER]
-    wi = max([len("ID")] + [len(a["id"]) for a in shell_actions])
-    print(f"     {'ID'.ljust(wi)}  TITLE", flush=True)
-    print(f"     {'-' * wi}  {'-' * 34}", flush=True)
-    for a in shell_actions:
-        print(f"     {a['id'].ljust(wi)}  {a['title']}", flush=True)
-
-    step("every entry is addressed by (provider, id), never by position")
     claim("every entry carries provider, id, kind and title",
           all(isinstance(a.get(k), str) and a[k]
               for a in actions for k in ("provider", "id", "kind", "title")), True)
-    addresses = [(a["provider"], a["id"]) for a in actions]
-    claim("every address is unique", len(set(addresses)), len(addresses))
     claim("no entry carries a screen position",
           any(k in a for a in actions for k in ("rect", "x", "y")), False)
 
     step("enumerating is read-only: surveying cannot fire a side-effect")
-    # `revision` is the chrome's own change counter — anything that
-    # mutates chrome bumps it. If enumerating moved it, then asking
-    # "what can I do here" would itself be doing something.
-    before = agent.chrome()
-    for query in ("", "room", "terminal"):
+    before_chrome = agent.chrome()
+    for query in ("", "room", "word"):
         agent.enumerate_actions(query)
-    after = agent.chrome()
-    claim("the chrome revision did not move", after["revision"], before["revision"])
-    claim("no overlay opened", after["overlays"], before["overlays"])
-    claim("the palette did not open", after["palette"]["visible"], False)
-    agent.snapshot(os.path.join(shots, "03-agent-before.png"))
-    return actions
+    after_chrome = agent.chrome()
+    claim("the chrome revision did not move",
+          after_chrome["revision"], before_chrome["revision"])
+    claim("the palette did not open", after_chrome["palette"]["visible"], False)
 
-
-def beat_three(quinten: Session, xaver: Session, agent: Session,
-               actions: list[dict], shots: str) -> None:
-    banner("3.  the agent acts, by address")
-    cut("agent")
-
-    baseline = agent.input_ops
-    note(f"synthetic-input commands sent to the agent before this beat: {baseline}")
-
-    step("pick one action out of the catalogue, by id")
+    step("it invokes one action by its address")
     picked = next((a for a in actions if a["provider"] == AGENT_PROVIDER
                    and a["id"] == AGENT_ACTION_ID), None)
     claim(f"the catalogue offers ({AGENT_PROVIDER}, {AGENT_ACTION_ID})",
           picked is not None, True)
     if picked is None:
         raise SystemExit("the agent's chosen action is not exported")
-    note(f"picked {picked['title']!r}  [{picked['kind']}]")
-
-    step("invoke it — no click, no keystroke, no pixel")
-    before_q, before_x = quinten.overlays(), xaver.overlays()
     claim("the effect is absent beforehand",
           agent.overlays()[AGENT_ACTION_EFFECT], False)
     resp = agent.invoke_action(AGENT_PROVIDER, AGENT_ACTION_ID)
-    note(f"actions_invoke -> {json.dumps(resp)}")
     claim("the invocation was accepted", "answer" in resp, True)
     claim("the reply names the address that ran",
           (resp.get("answer", {}).get("provider"), resp.get("answer", {}).get("id")),
           (AGENT_PROVIDER, AGENT_ACTION_ID))
-    claim("the reply names what it ran",
-          resp.get("answer", {}).get("title"), picked["title"])
-
-    step("the effect is real")
     landed = wait_for(lambda: agent.overlays()[AGENT_ACTION_EFFECT], timeout=8)
     claim("the action changed live state", bool(landed), True)
-    agent.snapshot(os.path.join(shots, "04-agent-after.png"))
+    agent.snapshot(os.path.join(shots, "11-agent.png"))
 
     step("no synthetic input was used to do it")
-    claim("no keystroke, click or modifier reached the agent",
+    claim("no keystroke, click or modifier reached the agent since",
           agent.input_ops, baseline)
     note("the address (provider, id) is the entire input to the invocation")
 
-    step("read the other two sessions back")
-    # Cross-session verification of the agent's action. What is checkable
-    # today is containment: the agent acting did not move quinten's or
-    # xaver's screen, and did not touch the room they share. The camera
-    # goes to each of them in turn, because a screen that did *not*
-    # change is only worth claiming if you are shown it.
-    room = agent.active_workspace()
+    step("and it opens a window, which the other two receive")
+    # The claim worth filming: the agent is a participant in the room, so
+    # what it does lands in everyone's copy of it. Read back from the two
+    # sessions that did not make the change.
+    before_agent = set(agent.tabs_here())
+    opened = agent.invoke_action(AGENT_PROVIDER, "window.new.terminal")
+    if "err" in opened:
+        gap(f"the agent may not open a window here — "
+            f"{json.dumps(opened['err'])[:120]}")
+        return
+    fresh = wait_for(lambda: (set(agent.tabs_here()) - before_agent) or None,
+                     timeout=SYNC_TIMEOUT_S)
+    claim("the agent's own session shows the window", bool(fresh), True)
+    if not fresh:
+        return
+    tid = sorted(fresh)[0]
+    claim("no synthetic input was used for that either",
+          agent.input_ops, baseline)
+
     cut("quinten")
-    claim("quinten's overlays are untouched", quinten.overlays(), before_q)
-    claim("quinten's copy of the room is unchanged",
-          (quinten.active_workspace()["name"], quinten.active_workspace()["owner"]),
-          (room["name"], room["owner"]))
-
+    on_q = wait_for(lambda: tid in quinten.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
+    claim("the window the agent opened is open for quinten", bool(on_q), True)
     cut("xaver")
-    claim("xaver's overlays are untouched", xaver.overlays(), before_x)
-    claim("xaver's copy of the room is unchanged",
-          (xaver.active_workspace()["name"], xaver.active_workspace()["owner"]),
-          (room["name"], room["owner"]))
-    # Say plainly what could not be shown, rather than dressing
-    # containment up as propagation.
-    note("the replicated room document carries name, owner and "
-         "capabilities; window layout and chrome are per-session")
-    gap("no enumerable action writes the replicated room document today, "
-        "so an agent invocation cannot yet be shown *landing* in "
-        "quinten's or xaver's session — only as contained to its own")
+    on_x = wait_for(lambda: tid in xaver.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
+    claim("and for xaver", bool(on_x), True)
+    if not (on_q and on_x):
+        note(f"tab {tid} had not replicated after {DOC_SYNC_TIMEOUT_S:.0f}s")
+    xaver.snapshot(os.path.join(shots, "12-xaver-agent.png"))
 
 
-def run(quinten: Session, xaver: Session, agent: Session, shots: str) -> None:
-    beat_one(quinten, xaver, agent, shots)
-    actions = beat_two(agent, shots)
-    beat_three(quinten, xaver, agent, actions, shots)
+def run(quinten: Session, xaver: Session, agent: Session, shots: str,
+        registry) -> None:
+    host_ws = beat_one(quinten, shots)
+    beat_two(quinten, xaver, host_ws)
+    beat_three(quinten, agent, host_ws)
+    beat_four(quinten, xaver, agent, host_ws, shots)
+    beat_five(quinten, registry, shots)
+    beat_six(quinten, xaver, shots)
+    beat_seven(quinten, xaver, shots)
+    beat_eight(quinten, shots)
+    beat_nine(quinten, xaver, agent, shots)
+
+
 
 
 # --------------------------------------------------------------------
@@ -1081,6 +1788,14 @@ def main() -> int:
                     help="seconds to hold after cutting to a session, so the "
                          "screen you have just been moved to registers "
                          "before the demo carries on")
+    ap.add_argument("--record-max-hold", type=float, default=1.6, metavar="S",
+                    help="longest one unchanged frame is shown for. A "
+                         "session waiting on a sandbox spawn or a network "
+                         "hop renders the same screen for as long as it "
+                         "waits; this trims that dead air. Nothing is "
+                         "duplicated or interpolated — a frame is only ever "
+                         "shown for less time than it was live. 0 keeps the "
+                         "video on wall-clock time")
     ap.add_argument("--record-fps", type=int, default=30, metavar="N",
                     help="container frame rate of the composed video; the "
                          "capture rate is whatever was achieved, and frames "
@@ -1120,20 +1835,68 @@ def main() -> int:
     # runtime dir rather than next to the rest of the run.
     runtime = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
     pid = os.getpid()
-    sessions = [
-        Session(name, name,
-                os.path.join(args.out, name),
-                os.path.join(runtime, f"qos-yc-{short}-{pid}.sock"),
-                args.shell, size,
-                # A private runtime dir per session, standing in for the
-                # per-user one logind would give each real login.
-                os.path.join(runtime, f"qyc-{short}{pid}"))
-        for short, name in zip("qxa", ("quinten", "xaver", "agent"))
-    ]
+
+    # The packaging chain, by path. Each is optional: a missing one costs
+    # the beat that needs it and nothing else, and the transcript says
+    # which. `demo` binaries first, because that is what the compositor
+    # is built as, falling back to `debug` where only one exists.
+    def tool(name: str) -> str | None:
+        for profile in ("demo", "debug"):
+            path = os.path.join(REPO, "target", profile, name)
+            if os.path.exists(path):
+                return path
+        return None
+
+    tools = {var: path for var, name in (
+        ("QOS_CATALOGUE_BIN", "qos-catalogue"),
+        ("QOS_INSTALL_BIN", "qos-install"),
+        ("QOS_LAUNCHER_BIN", "qos-launcher"),
+    ) if (path := tool(name))}
+
+    # Every session's view of what is installed, composed from the
+    # machine's index. The word processor's entry is taken from the
+    # registry built out of *this* tree where there is one: the machine's
+    # payload is an older static binary, and a run against it would be
+    # filming a build that predates everything under test.
+    entries = registry_entries(os.path.join(MACHINE_APPS, "registry.toml"))
+    live = registry_entries(os.path.join(LIVE_APPS, "registry.toml"))
+    if WORD_PROCESSOR in live:
+        entries[WORD_PROCESSOR] = live[WORD_PROCESSOR]
+        print(f"word processor: {LIVE_APPS} (built from this tree)")
+    elif WORD_PROCESSOR in entries:
+        print(f"word processor: {MACHINE_APPS} — no registry at {LIVE_APPS}, "
+              f"so this films the machine's installed payload")
+
+    sessions = []
+    for short, name in zip("qxa", ("quinten", "xaver", "agent")):
+        run_dir = os.path.join(args.out, name)
+        apps_dir = os.path.join(run_dir, "qos-apps")
+        # Quinten is the machine that does not have it yet. Everyone
+        # else does, so xaver can open his own copy in beat 7.
+        compose_registry(apps_dir, entries,
+                         drop=(WORD_PROCESSOR,) if name == "quinten" else ())
+        sessions.append(Session(
+            name, name, run_dir,
+            os.path.join(runtime, f"qos-yc-{short}-{pid}.sock"),
+            args.shell, size,
+            # A private runtime dir per session, standing in for the
+            # per-user one logind would give each real login.
+            os.path.join(runtime, f"qyc-{short}{pid}"),
+            stage_home(os.path.join(run_dir, "home")),
+            apps_dir, tools))
     quinten, xaver, agent = sessions
+    global SESSIONS
+    SESSIONS = sessions
 
     print(f"compositor:    {args.shell}")
     print(f"run directory: {args.out}")
+    print(f"apps:          {len(entries)} installed for xaver and the agent, "
+          f"{len(entries) - (1 if WORD_PROCESSOR in entries else 0)} for quinten")
+    for var, path in sorted(tools.items()):
+        print(f"  {var:20} {path}")
+    for var in ("QOS_CATALOGUE_BIN", "QOS_INSTALL_BIN", "QOS_LAUNCHER_BIN"):
+        if var not in tools:
+            print(f"  {var:20} MISSING — beat 5 cannot fetch anything")
 
     global RECORDER
     record_dir = None
@@ -1142,7 +1905,8 @@ def main() -> int:
         record_dir = os.path.abspath(record_dir)
         os.makedirs(record_dir, exist_ok=True)
         RECORDER = Recorder(sessions, record_dir, args.record_interval,
-                            args.record_dwell, args.record_cut_dwell)
+                            args.record_dwell, args.record_cut_dwell,
+                            args.record_max_hold)
         print(f"recording to:  {record_dir}")
 
     started = time.time()
@@ -1158,7 +1922,22 @@ def main() -> int:
         # which is where the first beat opens too.
         if RECORDER:
             RECORDER.start(quinten.name)
-        run(quinten, xaver, agent, shots)
+        # The registry quinten fetches from in beat 5. Its config dir is
+        # his store's, which is how the catalogue in his session finds it.
+        with Registry(
+            os.path.join(REPO, "target", "debug", "examples",
+                         "serve-test-registry"),
+            os.path.join(LIVE_APPS, "payloads", WORD_PROCESSOR, "bin",
+                         "word-processor"),
+            os.path.join(quinten.dir, "store-config"),
+            os.path.join(args.out, "registry.log"),
+        ) as registry:
+            if registry is None:
+                print("no local registry: beat 5 will report the fetch as "
+                      "unfilmed rather than skip past it")
+            else:
+                print(f"registry:      {registry.base_url}")
+            run(quinten, xaver, agent, shots, registry)
     except Exception as exc:  # noqa: BLE001 — the report is the product
         FAILURES.append(f"{type(exc).__name__}: {exc}")
         import traceback
@@ -1219,6 +1998,14 @@ def main() -> int:
         mean_ms, worst_ms = RECORDER.snapshot_ms()
         print(f"             captured at {RECORDER.rate():.2f} frames/s; "
               f"one snapshot cost {mean_ms:.0f} ms mean / {worst_ms:.0f} ms worst")
+        print(f"             every frame is a real render, in capture order; "
+              f"none repeated, none interpolated")
+        if RECORDER.trimmed > 0.5:
+            span = RECORDER.stopped_at - RECORDER.started_at
+            print(f"             {RECORDER.trimmed:.0f}s of still picture "
+                  f"trimmed from {span:.0f}s of demo — waits on sandbox "
+                  f"spawns and network hops, held at most "
+                  f"{args.record_max_hold:.1f}s each")
     return rc
 
 
