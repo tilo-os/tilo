@@ -196,6 +196,30 @@ pub struct SidebarWheelDisc {
     /// Cache-validity fingerprint. Reused iff every field matches the
     /// current frame — see [`SidebarWheelDisc::current_fingerprint`].
     cached_fp: WheelCacheFp,
+    /// Whole-pixel origin the cached hit rects (`spoke_hit_rects`,
+    /// `plus_rect`) currently sit at. Equal to `cached_fp.origin_px`
+    /// right after a full repaint, then advanced by
+    /// [`SidebarWheelDisc::retarget_hit_rects`] on each pan frame that
+    /// takes the translate fast path. Tracked separately so the shift
+    /// is applied once per move rather than re-applied cumulatively
+    /// against the recording origin.
+    hit_rects_origin_px: (i64, i64),
+    /// When `Some(p)`, the disc is *summoned*: it detaches from the
+    /// strip's canvas and places itself so its rim passes through `p`,
+    /// vertically centred on `p`. `None` is the docked state, where the
+    /// disc sits at the left edge of the strip's content and pans with
+    /// it.
+    ///
+    /// Summoning exists because docking is correct but not always
+    /// reachable: the disc belongs to the workspace, so scrolling right
+    /// through a strip carries it off-screen along with everything else
+    /// to the left. Without a way to call it back you would have to
+    /// scroll the whole strip home just to glance at the workspace list.
+    ///
+    /// The footprint is unchanged — same width, same radius, same arc.
+    /// A summon moves the same object to the pointer; it does not
+    /// reveal more of it.
+    summon_at: Option<Point>,
 }
 
 /// Inputs that change the disc's painted pixels. The visual rotation
@@ -203,7 +227,17 @@ pub struct SidebarWheelDisc {
 /// invalidate on every micro-step while still being comparable.
 #[derive(Default, Clone, PartialEq, Eq)]
 struct WheelCacheFp {
-    rect_px: (i64, i64, u64, u64),
+    /// Top-left of the disc's footprint, in whole pixels. Split out
+    /// from the size because it is the ONE input that changes on a
+    /// plain strip pan, and a pan does not change a single painted
+    /// pixel — only where they land. Keeping it separate lets `draw`
+    /// replay the cached scene under a translation instead of
+    /// re-encoding it. See [`WheelCacheFp::content_eq`].
+    origin_px: (i64, i64),
+    /// Footprint size in whole pixels. Unlike the origin this *does*
+    /// change the painted geometry (the disc's curvature is derived
+    /// from the rect width), so it stays on the content side.
+    size_px: (u64, u64),
     /// `visual_rotation_deg() * 100` rounded to i64. Bucketing to
     /// hundredths keeps the cache stable across float-precision
     /// noise while still invalidating on every visible animation tick.
@@ -216,9 +250,36 @@ struct WheelCacheFp {
     /// FNV-1a hash of every spoke's `text` field. Catches label
     /// renames without paying the clone cost of the full Vec<String>.
     spoke_signature: u64,
-    /// Diameter in integer pixels — paired with `rect_px` to cover
+    /// Diameter in integer pixels — paired with `size_px` to cover
     /// every input to `center()` / `radius`.
     diameter_px: u64,
+}
+
+impl WheelCacheFp {
+    /// True when the two fingerprints paint the *same pixels*, possibly
+    /// at a different place on screen. Every field except
+    /// [`Self::origin_px`] participates.
+    ///
+    /// This is the predicate behind the pan fast-path. Because the disc
+    /// now rides the strip's canvas, its origin changes on every frame
+    /// of a horizontal scroll — and re-encoding the full disc (fill,
+    /// rim, every marker, the label, the add-slot) once per frame for
+    /// what is a pure translation is exactly the cost that made
+    /// scrolling feel heavy.
+    fn content_eq(&self, other: &Self) -> bool {
+        self.size_px == other.size_px
+            && self.rotation_centi_deg == other.rotation_centi_deg
+            && self.active_idx == other.active_idx
+            && self.spoke_count == other.spoke_count
+            && self.spoke_signature == other.spoke_signature
+            && self.diameter_px == other.diameter_px
+    }
+
+    /// Whether a scene has ever been recorded against this fingerprint.
+    /// A zero-width footprint means the disc has not laid out yet.
+    fn is_populated(&self) -> bool {
+        self.size_px.0 > 0
+    }
 }
 
 /// Fraction of the disc's radius that protrudes into the viewport.
@@ -263,10 +324,25 @@ const SPOKE_ANGLE_STEP_DEG: f32 = 15.0;
 /// detent on snap so no visible motion occurred. Discrete detents
 /// sidestep both failure modes at once.
 ///
-/// 120 px is calibrated against ~16 px per mouse-wheel click (so
-/// ~8 clicks per workspace, deliberate but not slow) and ~40 px
-/// per trackpad pixel-delta tick (3 ticks per workspace).
-const WHEEL_DETENT_PX: f32 = 120.0;
+/// At ~16 px per mouse-wheel click this is 3 clicks per workspace,
+/// and roughly one trackpad flick.
+///
+/// This was 120 px — eight wheel clicks to move one workspace, which
+/// its own tuning note described as "deliberate but not slow". Eight
+/// clicks is not deliberate, it is a stuck control: the first several
+/// clicks produce no visible response at all, because the detent model
+/// has no mid-detent rotation to show progress with. The user reads
+/// that dead zone as the switcher ignoring them.
+///
+/// The two historical failure modes this constant is guarding against
+/// are both narrower than that note implies. The 2026-05-25 "maddening
+/// speed" came from a quadratic accumulator, not from the threshold;
+/// and the "wheel feels locked" regression came from continuous
+/// free-running rotation whose sub-degree steps rounded to the same
+/// detent on snap, so nothing moved. Neither is reachable from here:
+/// accumulation is linear, and every crossing animates through
+/// `click_to_spoke`. So the threshold is free to be responsive.
+const WHEEL_DETENT_PX: f32 = 48.0;
 
 /// Idle gap after which any sub-detent residual `wheel_accumulator`
 /// is cleared. Without this, a partial swipe (say 80 px / 120 px)
@@ -321,6 +397,8 @@ impl SidebarWheelDisc {
             spoke_hit_rects: Vec::new(),
             cached_scene: Scene::new(),
             cached_fp: WheelCacheFp::default(),
+            hit_rects_origin_px: (0, 0),
+            summon_at: None,
         }
     }
 
@@ -415,9 +493,8 @@ impl SidebarWheelDisc {
     /// Used by [`Widget::draw`] to decide whether `self.cached_scene`
     /// can be reused. See [`WheelCacheFp`] for the field semantics.
     fn current_fingerprint(&self) -> WheelCacheFp {
-        let rect_px = (
-            self.rect.x0.round() as i64,
-            self.rect.y0.round() as i64,
+        let origin_px = (self.rect.x0.round() as i64, self.rect.y0.round() as i64);
+        let size_px = (
             self.rect.width().round() as u64,
             self.rect.height().round() as u64,
         );
@@ -440,7 +517,8 @@ impl SidebarWheelDisc {
             h = h.wrapping_mul(0x100000001b3);
         }
         WheelCacheFp {
-            rect_px,
+            origin_px,
+            size_px,
             rotation_centi_deg,
             active_idx: self.active_idx,
             spoke_count: self.spokes.len(),
@@ -548,9 +626,34 @@ impl Widget for SidebarWheelDisc {
         let y0_raw = origin.y + l.location.y as f64;
         let h_raw = l.size.height as f64;
         let inset_v = h_raw * SLOT_VERTICAL_INSET_FRAC;
+        let w = l.size.width as f64;
         let y0 = y0_raw + inset_v;
         let y1 = y0_raw + h_raw - inset_v;
-        self.rect = Rect::new(x0, y0, x0 + l.size.width as f64, y1);
+        self.rect = match self.summon_at {
+            // Docked: the slot's own box, which the host has already
+            // shifted by the active strip's pan.
+            None => Rect::new(x0, y0, x0 + w, y1),
+            // Summoned: same width and height, re-placed around the
+            // pointer. The rim's rightmost point is exactly `rect.x1`
+            // (the disc centre sits `radius * (1 - VISIBLE)` to the
+            // left of `rect.x0`), and the active marker rides that
+            // point — so putting `x1` on the pointer puts the marker
+            // under it. Vertically the disc is centred on the pointer
+            // for the same reason.
+            //
+            // Both axes are then clamped back inside the slot's band so
+            // a summon near an edge slides into view instead of hanging
+            // off it. The size never changes, so the clamp can only
+            // move the disc, never grow or crop it.
+            Some(p) => {
+                let slot_top = y0_raw;
+                let slot_bottom = y0_raw + h_raw;
+                let height = y1 - y0;
+                let x1 = p.x.max(origin.x + w);
+                let top = (p.y - height / 2.0).clamp(slot_top, (slot_bottom - height).max(slot_top));
+                Rect::new(x1 - w, top, x1, top + height)
+            }
+        };
         // Keep the disc's curvature locked to the live rect width — the
         // host (overlay_host) overrides the sidebar slot to a viewport-
         // driven width, so the visible-arc width changes on resize. We
@@ -594,11 +697,33 @@ impl Widget for SidebarWheelDisc {
         // same rotation/rect, so a cache hit implies they're still
         // valid.
         let fp = self.current_fingerprint();
-        // `rect_px.2` is the rect's width — zero means we haven't
-        // drawn yet, so always go through the slow path.
-        if fp == self.cached_fp && fp.rect_px.2 > 0 {
-            out_scene.append(&self.cached_scene, Some(out_transform));
-            return;
+        // Two fast paths, both requiring a previously recorded scene.
+        //
+        // 1. Identical fingerprint — replay verbatim. The at-rest case.
+        //
+        // 2. Same content at a new origin — the disc rides the strip's
+        //    canvas, so a horizontal pan moves it without changing a
+        //    single painted pixel. Replay under a translation instead
+        //    of re-encoding. The cached geometry was recorded in
+        //    absolute coordinates, so the delta is measured from the
+        //    origin it was recorded at, NOT from the last frame's.
+        //    The cached hit rects were recorded in those same absolute
+        //    coordinates, so they are re-derived from the delta too —
+        //    otherwise a click after a pan would test against where
+        //    the markers used to be.
+        if fp.is_populated() && self.cached_fp.is_populated() {
+            if fp == self.cached_fp {
+                out_scene.append(&self.cached_scene, Some(out_transform));
+                return;
+            }
+            if fp.content_eq(&self.cached_fp) {
+                let dx = (fp.origin_px.0 - self.cached_fp.origin_px.0) as f64;
+                let dy = (fp.origin_px.1 - self.cached_fp.origin_px.1) as f64;
+                let shift = Affine::translate((dx, dy));
+                out_scene.append(&self.cached_scene, Some(out_transform * shift));
+                self.retarget_hit_rects(fp.origin_px);
+                return;
+            }
         }
 
         // Cache miss — encode at IDENTITY into `self.cached_scene`,
@@ -958,6 +1083,9 @@ impl Widget for SidebarWheelDisc {
         // the next idle frame takes the fast path.
         out_scene.append(&local, Some(out_transform));
         self.cached_scene = local;
+        // The hit rects were just re-derived at this origin, so the
+        // pan fast-path measures its next shift from here.
+        self.hit_rects_origin_px = fp.origin_px;
         self.cached_fp = fp;
     }
 
@@ -1109,13 +1237,23 @@ impl Widget for SidebarWheelDisc {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the redraw pump running while a post-release snap is
-        // easing OR while a wheel-scroll snap-back is pending.
+        // easing, while a wheel-scroll snap-back is pending, OR while
+        // a finger-drag is in flight.
+        //
+        // The drag arm is what makes the rim track the pointer. A drag
+        // is a stream of `CursorMoved`, and the host's incremental
+        // gate skips the redraw on a pointer move unless something in
+        // the tree reports work to do. Without this arm the rim's
+        // `rotation_deg` advanced on every move but no frame was ever
+        // requested, so the wheel sat still under the finger and only
+        // jumped once the button came back up — the whole gesture read
+        // as unresponsive rather than as dragging a physical wheel.
         let spring_active = self
             .rotation_spring
             .as_ref()
             .map(|s| !s.is_settled())
             .unwrap_or(false);
-        spring_active || self.wheel_last_event.is_some()
+        spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
@@ -1176,9 +1314,22 @@ impl Widget for SidebarWheelDisc {
     /// frame, defeating the App's "skip the redraw on a hover-only
     /// CursorMoved" gate.
     fn needs_redraw(&self) -> bool {
-        // `WheelCacheFp::default().rect_px.2` is zero, so a fresh widget
-        // (no successful draw yet) reports dirty until the first paint.
-        self.cached_fp.rect_px.2 == 0
+        // Dirty exactly when the next paint would differ from the one
+        // already on screen: compare the live fingerprint against the
+        // cached one. A fresh widget has an unpopulated cache and so
+        // reports dirty until the first paint.
+        //
+        // The previous implementation reported clean unconditionally
+        // once anything had been drawn, on the theory that animation
+        // would be pumped through `needs_animation_frame`. That holds
+        // for the snap spring, but not for the two states driven
+        // straight off pointer input: a rim drag, and the strip pan
+        // that carries the disc along the canvas. Both mutate what the
+        // disc would paint from inside a `CursorMoved`, which is the
+        // one event class the host declines to repaint on unless the
+        // tree reports dirty — so the wheel stopped tracking the input
+        // that was moving it.
+        !self.cached_fp.is_populated() || self.current_fingerprint() != self.cached_fp
     }
 
     fn mark_drawn(&mut self) {
@@ -1194,6 +1345,33 @@ impl Widget for SidebarWheelDisc {
 }
 
 impl SidebarWheelDisc {
+    /// Slide the cached click targets to `target_origin_px`.
+    ///
+    /// Called on the pan fast-path, where the scene is replayed under a
+    /// translation rather than re-encoded. `spoke_hit_rects` and
+    /// `plus_rect` are absolute-coordinate caches populated by the last
+    /// full paint, so without this a click after a pan would resolve
+    /// against the markers' old screen positions — the wheel would look
+    /// right and click wrong.
+    fn retarget_hit_rects(&mut self, target_origin_px: (i64, i64)) {
+        let dx = (target_origin_px.0 - self.hit_rects_origin_px.0) as f64;
+        let dy = (target_origin_px.1 - self.hit_rects_origin_px.1) as f64;
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        for r in &mut self.spoke_hit_rects {
+            if r.area() > 0.0 {
+                *r = r.with_origin(Point::new(r.x0 + dx, r.y0 + dy));
+            }
+        }
+        if self.plus_rect.area() > 0.0 {
+            self.plus_rect = self
+                .plus_rect
+                .with_origin(Point::new(self.plus_rect.x0 + dx, self.plus_rect.y0 + dy));
+        }
+        self.hit_rects_origin_px = target_origin_px;
+    }
+
     /// Snap `rotation_deg` to the nearest spoke and move `active_idx`
     /// accordingly. Exposed as a helper so unit tests can exercise the
     /// snap math without synthesising a full winit event sequence.
