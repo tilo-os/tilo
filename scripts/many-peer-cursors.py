@@ -102,6 +102,10 @@ def main() -> int:
     ap.add_argument("--host-app", action="store_true",
                     help="give the watching session an app too (it does not "
                          "need one to see its peers)")
+    ap.add_argument("--vulkan-icd", default=None,
+                    help="path to a single Vulkan ICD manifest to pin every "
+                         "process at, e.g. /usr/share/vulkan/icd.d/"
+                         "radeon_icd.x86_64.json")
     ap.add_argument("--frame-timeout", type=float, default=900.0,
                     help="seconds to wait for every app's first real frame")
     ap.add_argument("--shell-bin", default=os.path.join(REPO, "target/debug/shell"))
@@ -167,6 +171,15 @@ def main() -> int:
     # HOME and the locale: the XDG dirs stay per-session, or the sessions
     # would share config and cease to be separate machines.
     keep = {k: v for k, v in staged.items() if not k.startswith("XDG_")}
+    if args.vulkan_icd:
+        # Pin the Vulkan loader at one driver, the way the launcher pins
+        # an app it starts for real. Without it an app enumerates every
+        # ICD on the box, and a machine with a second GPU whose userspace
+        # is broken can leave one stalling in adapter enumeration --
+        # which looks exactly like a slow first frame and is not one.
+        keep["VK_DRIVER_FILES"] = args.vulkan_icd
+        keep["VK_ICD_FILENAMES"] = args.vulkan_icd  # pre-1.3.207 loaders
+        note(f"pinning the Vulkan loader at {args.vulkan_icd}")
     for s in sessions:
         inner = s.base_env
         s.base_env = (lambda inner=inner: {**inner(), **keep})
