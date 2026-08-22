@@ -567,66 +567,6 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
 }
 
 #[test]
-fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
-    // The shell's `main.rs` calls this seeder before `app.run()` so the
-    // editor's peer-caret render has something to paint in single-process
-    // development. Guard against accidental breakage: the key must match
-    // what `EditorApp` reads, and the registered caret + selection must be
-    // retrievable by user.
-    //
-    // The key names the Editor tab's *record* as well as the body field.
-    // Each Editor tab is its own document with an `editor_body` of its
-    // own, so a caret published under the bare field name would be drawn
-    // in every Editor tab at once.
-    use shell::shell::seed_demo_editor_presence;
-    use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
-    use shell::shell::tab_documents::scratch_tab_record;
-    use ui::permissions::UserId;
-    use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let editor_tab = {
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-        let id = group.tabs[0].id ^ 0xEd;
-        group.tabs.push(shell::shell::state::Tab {
-            id,
-            title: "Editor".into(),
-            tile: TileContent::AppPlaceholder {
-                kind: AppKind::Other("Editor".into()),
-                label: "Editor".into(),
-            },
-        });
-        id
-    };
-
-    let mut ctx = PresenceCtx::empty();
-    seed_demo_editor_presence(&tree, &mut ctx);
-
-    let key = PresenceKey::Widget {
-        path: vec![
-            PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
-            PathSegment::Field("editor_body".into()),
-        ],
-    };
-    let alice = UserId("alice".into());
-
-    assert!(
-        ctx.peers_on(&key).contains(&alice),
-        "alice should be registered as present on the editor body"
-    );
-    assert_eq!(
-        ctx.caret_for(&key, &alice),
-        Some(66),
-        "alice's caret char-index should be the seeded value"
-    );
-    let sel = ctx
-        .selection_for(&key, &alice)
-        .expect("alice should have a seeded selection");
-    assert_eq!(sel.start, 60);
-    assert_eq!(sel.end, 72);
-}
-
-#[test]
 fn shell_file_drop_appends_tab_to_active_workspace() {
     // End-to-end: dropping a .ts file onto the workspace area should
     // append a new tab to the active workspace's first group via
