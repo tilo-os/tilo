@@ -57,6 +57,13 @@ pub mod transport;
 #[cfg(feature = "decode")]
 pub mod gst_backend;
 
+/// GStreamer itself, re-exported so a consumer can use what
+/// [`MediaEngine::audio_sink`] hands back — setting a target device, attaching
+/// a level meter, tapping a tee into a mixer — without adding its own
+/// gstreamer dependency and risking a second, incompatible copy in the graph.
+#[cfg(feature = "decode")]
+pub use gstreamer as gst;
+
 pub use audio::{
     enumerate as enumerate_audio, AudioDevice, AudioEnumerator, AudioGraph, AudioStream,
     GraphControl, GraphDelta, RealEnumerator, RealGraphControl,
