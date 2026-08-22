@@ -10,7 +10,8 @@
 //! ├── "media"   (Map keyed by MediaId)  → { name,kind,duration,w,h,fps,palette }
 //! ├── "tracks"  (Map keyed by TrackId)  → { name,kind,index,muted,locked,solo }
 //! └── "clips"   (Map keyed by ClipId)   → { track,media,start,in,out,opacity,
-//!                                            volume,transition,palette }
+//!                                            volume,transition,transition_duration,
+//!                                            palette,filters,fades,effects }
 //! ```
 //!
 //! Every helper takes the borrowed `&mut AutoCommit` (the app's shared
@@ -157,6 +158,7 @@ impl VideoDoc {
         let _ = doc.put(&obj, "saturation", c.filters.saturation);
         let _ = doc.put(&obj, "fade_in", c.fade_in);
         let _ = doc.put(&obj, "fade_out", c.fade_out);
+        let _ = doc.put(&obj, "transition_duration", c.transition_duration);
         // The effects stack is an ordered list; store it as a compact JSON
         // string (the whole clip is written atomically by the action model, so
         // a scalar string is the simplest faithful representation).
@@ -300,6 +302,10 @@ impl VideoDoc {
                     },
                     fade_in: Self::get_f64(doc, &obj, "fade_in").unwrap_or(0.0),
                     fade_out: Self::get_f64(doc, &obj, "fade_out").unwrap_or(0.0),
+                    // Absent before the field existed; 0.0 means "default"
+                    // (see Clip::transition_len), not "instant cut".
+                    transition_duration: Self::get_f64(doc, &obj, "transition_duration")
+                        .unwrap_or(0.0),
                     effects: Self::get_str(doc, &obj, "effects")
                         .and_then(|s| serde_json::from_str(&s).ok())
                         .unwrap_or_default(),
@@ -401,6 +407,7 @@ pub fn sample_project() -> Project {
             filters,
             fade_in,
             fade_out,
+            transition_duration: 0.0,
             effects: Vec::new(),
         });
     };

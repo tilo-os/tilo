@@ -329,13 +329,36 @@ pub struct Clip {
     /// Fade-out length in seconds at the tail. 0 = no fade.
     #[serde(default)]
     pub fade_out: f64,
+    /// Length of this clip's incoming transition, seconds. `0.0` means "use
+    /// the default" — read it through [`Clip::transition_len`], never raw, so
+    /// a clip written before the field existed still gets a sensible ramp
+    /// instead of an instant cut.
+    #[serde(default)]
+    pub transition_duration: f64,
     /// Ordered stack of image effects applied after the base grade. Empty by
     /// default; the user adds / removes / reorders them.
     #[serde(default)]
     pub effects: Vec<ClipEffect>,
 }
 
+/// Default incoming-transition length, seconds, for a clip that has not been
+/// given one. Matches the constant the compositor used to hardcode.
+pub const DEFAULT_TRANSITION_SECS: f64 = 0.6;
+
 impl Clip {
+    /// The effective length of this clip's incoming transition: its own
+    /// `transition_duration` when set, else [`DEFAULT_TRANSITION_SECS`], and
+    /// never longer than the clip itself — a ramp cannot outlast the footage
+    /// it ramps into.
+    pub fn transition_len(&self) -> f64 {
+        let want = if self.transition_duration > 0.0 {
+            self.transition_duration
+        } else {
+            DEFAULT_TRANSITION_SECS
+        };
+        want.min(self.duration()).max(0.0)
+    }
+
     /// On-timeline length, seconds.
     pub fn duration(&self) -> f64 {
         (self.out_point - self.in_point).max(0.0)
@@ -505,6 +528,7 @@ impl Project {
             filters: Filters::default(),
             fade_in: 0.0,
             fade_out: 0.0,
+            transition_duration: 0.0,
             effects: Vec::new(),
         });
         Some(id)
