@@ -13890,3 +13890,121 @@ mod resync_strips_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod peer_cursor_tests {
+    //! A peer caret on screen must mean a peer is connected.
+    //!
+    //! The desktop used to paint an unconditional stand-in peer beside
+    //! the real roster, so a solo session — and every screenshot and
+    //! recording taken of one — showed a collaborator who did not
+    //! exist. These tests pin both halves of the invariant on the
+    //! production paint path: nothing is drawn for an empty roster, and
+    //! a real peer is still drawn.
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use ui::presence::{PresenceCtx, PresenceKey, UserId};
+
+    fn one_group_seed() -> WorkspaceTree {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 100;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                width: StateWidth::Half,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: 1,
+                    title: "Terminal".into(),
+                    app: AppKind::Terminal,
+                    content: TileContent::default(),
+                    ..Default::default()
+                }],
+                active_tab: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ws = Workspace {
+            id: ws_id,
+            name: "Work".into(),
+            strips: vec![strip],
+            ..Default::default()
+        };
+        WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip: strip_id,
+            active_group: group_id,
+            collaborators: vec![],
+            ..Default::default()
+        }
+    }
+
+    /// Draw the peer layer for `presence` and report how many draw
+    /// commands it emitted. Zero means nothing was painted.
+    fn peer_draw_ops(presence: &PresenceCtx) -> usize {
+        let tree = one_group_seed();
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let theme = Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw_real_peers(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
+        scene.encoding().draw_tags.len()
+    }
+
+    /// The one that matters. A session with nobody else in it paints
+    /// no caret, no name chip, no peer of any kind — so a screenshot
+    /// of a solo desktop cannot show a collaborator.
+    #[test]
+    fn a_solo_session_paints_no_peer() {
+        assert_eq!(
+            peer_draw_ops(&PresenceCtx::default()),
+            0,
+            "an empty roster must paint nothing"
+        );
+    }
+
+    /// An empty pointer list for the active workspace is still an
+    /// empty roster — the key existing must not conjure a peer.
+    #[test]
+    fn an_empty_pointer_list_paints_no_peer() {
+        let tree = one_group_seed();
+        let mut presence = PresenceCtx::default();
+        presence.pointers.insert(
+            PresenceKey::Workspace {
+                id: format!("{}", tree.active.raw()),
+            },
+            vec![],
+        );
+        assert_eq!(peer_draw_ops(&presence), 0, "an empty list is not a peer");
+    }
+
+    /// The other half: removing the stand-in must not have disturbed
+    /// the real path. A peer published into `PresenceCtx::pointers`
+    /// under the active workspace key — the key the collaboration
+    /// layer writes — still gets painted.
+    #[test]
+    fn a_real_peer_is_still_painted() {
+        let tree = one_group_seed();
+        let mut presence = PresenceCtx::default();
+        presence.pointers.insert(
+            PresenceKey::Workspace {
+                id: format!("{}", tree.active.raw()),
+            },
+            vec![(UserId("alice".into()), (400.0, 300.0))],
+        );
+        assert!(
+            peer_draw_ops(&presence) > 0,
+            "a connected peer must still draw a cursor"
+        );
+    }
+}
