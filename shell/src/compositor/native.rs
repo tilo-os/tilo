@@ -3790,6 +3790,44 @@ mod tests {
         );
     }
 
+    /// The state dump has to carry the roster, because that is how a
+    /// harness observes who the shell believes is present.
+    ///
+    /// `Workspace::collaborators` is `#[serde(skip_deserializing)]` —
+    /// presence must not be read back off disk, or a restarted shell
+    /// paints people whose sessions are gone. The write direction is
+    /// deliberately left open: the same derived `Serialize` produces
+    /// this dump, so closing it with a plain `skip` would silently
+    /// remove the roster from the control socket and every observation
+    /// of it would come back empty and look like agreement.
+    #[test]
+    fn state_dump_carries_the_roster_it_is_asked_about() {
+        let fb = FrameBuilder::new((1600, 900));
+        {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let room = tree.active_workspace().expect("active workspace").room;
+            assert!(tree.note_peer_present(room, 0x51, "alice"));
+        }
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
+        let tree = state.workspace_tree_json();
+        let found = tree
+            .get("workspaces")
+            .and_then(|v| v.as_array())
+            .expect("workspaces array")
+            .iter()
+            .filter_map(|w| w.get("collaborators")?.as_array())
+            .flatten()
+            .filter_map(|c| c.get("id")?.as_str())
+            .any(|id| id == "alice");
+        assert!(
+            found,
+            "a peer the shell has admitted must appear in the control \
+             socket's state dump; without it a harness cannot tell an \
+             empty roster from an unreported one. Got: {tree}"
+        );
+    }
+
     /// Dispatching `Command::StateDump` against a `FrameBuilderControlState`
     /// returns `Response::State` and produces no actions. The
     /// integration round-trip lives in `tests/control_socket_test.rs`;
