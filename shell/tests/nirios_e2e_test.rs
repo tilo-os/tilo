@@ -37,15 +37,35 @@ fn bootstrap_default_seeds_four_demo_tabs_in_order() {
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
     let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
-    assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Browser"]);
-    // The first (Notes) tab should be upgradeable to a live AppWidget —
-    // enforced by bootstrap using `AppPlaceholder`, not `Stub`.
-    let notes_tab = &group.tabs[0];
-    match &notes_tab.tile {
-        TileContent::AppPlaceholder { kind, .. } => {
-            assert_eq!(kind.as_str(), "Notes");
+    assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
+    // Every tab the desktop opens itself must resolve to a real app.
+    // `Stub` renders a card that says the app is coming soon, and a
+    // window the user never opened, showing an app that does not exist,
+    // is worse than not offering it — so nothing seeded here may be one.
+    for tab in &group.tabs {
+        match &tab.tile {
+            TileContent::AppPlaceholder { .. } => {}
+            other => panic!(
+                "the default workspace seeded a non-hydratable tile for the \
+                 {:?} tab: {:?}. Seed only apps the shell can actually host.",
+                tab.title, other
+            ),
         }
-        other => panic!("expected AppPlaceholder for Notes, got {:?}", other),
+    }
+    // And each one must come online as a live widget rather than falling
+    // through the hydration match into a placeholder card.
+    for tab in &group.tabs {
+        // The terminal is the one tab whose hydration can legitimately
+        // fail (no /dev/ptmx in a sandbox), and it says so in its label.
+        if tab.title == "Terminal" {
+            continue;
+        }
+        assert_eq!(
+            shell::shell::resolve_tile_shape_for_test(&tab.tile),
+            "App",
+            "the {:?} tab hydrated into a stub card instead of a real app",
+            tab.title,
+        );
     }
 }
 
