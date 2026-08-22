@@ -287,6 +287,36 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// frame tick. The chrome's `tree` field is the authoritative
     /// copy (the compositor's `State.workspace_tree` is the same
     /// type and stays in sync via the shared `Chrome` cell).
+    /// The peers the overlay would paint this frame, read from the
+    /// same presence context `draw_real_peers` draws from and keyed
+    /// the same way — by room.
+    ///
+    /// A peer cursor is otherwise only assertable by looking at a
+    /// picture, and "nobody arrived" looks exactly like "somebody
+    /// arrived and was not drawn".
+    fn peers_json(&self) -> serde_json::Value {
+        let presence = self.fb.presence();
+        let rows: Vec<serde_json::Value> = presence
+            .pointers
+            .iter()
+            .flat_map(|(key, peers)| {
+                let scope = match key {
+                    ui::presence::PresenceKey::Workspace { id } => id.clone(),
+                    other => format!("{other:?}"),
+                };
+                peers.iter().map(move |(user, (x, y))| {
+                    serde_json::json!({
+                        "room": scope,
+                        "user": user.0,
+                        "x": x,
+                        "y": y,
+                    })
+                })
+            })
+            .collect();
+        serde_json::json!({ "pointers": rows })
+    }
+
     fn workspace_tree_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         // `unwrap_or(Null)` — `WorkspaceTree`'s `Serialize` impl is
@@ -3588,6 +3618,7 @@ mod tests {
         let test_control::Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State; got something else");
