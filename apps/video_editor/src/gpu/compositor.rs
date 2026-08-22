@@ -459,7 +459,7 @@ impl Params {
     fn to_bytes(self) -> [u8; PARAMS_BYTES] {
         let mut out = [0u8; PARAMS_BYTES];
         let mut at = 0;
-        let mut put = |v: [f32; 4], out: &mut [u8; PARAMS_BYTES], at: &mut usize| {
+        let put = |v: [f32; 4], out: &mut [u8; PARAMS_BYTES], at: &mut usize| {
             for c in v {
                 out[*at..*at + 4].copy_from_slice(&c.to_ne_bytes());
                 *at += 4;

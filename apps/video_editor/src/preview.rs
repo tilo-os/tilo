@@ -870,4 +870,243 @@ mod tests {
         assert_eq!(frame.rgba.len(), 192 * 108 * 4);
         std::fs::remove_file(&f).ok();
     }
+    // --- layer plan -------------------------------------------------------
+
+    /// Two abutting clips on one video track, plus an optional second
+    /// track above. Returns (project, track ids).
+    fn stacked_project() -> (Project, crate::model::TrackId, crate::model::TrackId) {
+        use crate::model::{MediaKind, Project, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("t");
+        let push_media = |p: &mut Project, palette: u8| {
+            let id = Uuid::new_v4();
+            p.media.push(crate::model::MediaItem {
+                id,
+                name: format!("m{palette}"),
+                kind: MediaKind::Video,
+                duration: 30.0,
+                width: 16,
+                height: 9,
+                fps: 30.0,
+                palette,
+                path: crate::media::workspace_path("m.mp4"),
+                hydration: crate::media::Hydration::Projected,
+            });
+            id
+        };
+        let m1 = push_media(&mut p, 1);
+        let m2 = push_media(&mut p, 2);
+        let m3 = push_media(&mut p, 3);
+        let v1 = Uuid::new_v4();
+        let v2 = Uuid::new_v4();
+        p.tracks.push(Track { id: v1, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track { id: v2, name: "V2".into(), kind: TrackKind::Video, index: 2, muted: false, locked: false });
+        // V1: two abutting clips, cut at 5s.
+        let a = p.add_clip(v1, m1, 0.0).unwrap();
+        p.clip_mut(a).unwrap().out_point = 5.0;
+        let b = p.add_clip(v1, m2, 5.0).unwrap();
+        p.clip_mut(b).unwrap().out_point = 5.0;
+        // V2: an insert over the second half.
+        let c = p.add_clip(v2, m3, 6.0).unwrap();
+        p.clip_mut(c).unwrap().out_point = 4.0;
+        (p, v1, v2)
+    }
+
+    #[test]
+    fn the_plan_stacks_every_video_track_bottom_first() {
+        let (p, v1, v2) = stacked_project();
+        // At t=7 both tracks are covered: V1's second clip and V2's insert.
+        let layers = plan_layers(&p, 7.0);
+        assert_eq!(layers.len(), 2, "both tracks contribute a layer: {layers:?}");
+        let lower = p.clip(layers[0].clip).unwrap();
+        let upper = p.clip(layers[1].clip).unwrap();
+        assert_eq!(lower.track, v1, "V1 is composited first (underneath)");
+        assert_eq!(upper.track, v2, "V2 is composited last (on top)");
+    }
+
+    #[test]
+    fn a_muted_video_track_drops_out_of_the_plan() {
+        let (mut p, _v1, v2) = stacked_project();
+        let idx = p.tracks.iter().position(|t| t.id == v2).unwrap();
+        p.tracks[idx].muted = true;
+        let layers = plan_layers(&p, 7.0);
+        assert_eq!(layers.len(), 1, "the muted track contributes nothing");
+        assert_eq!(p.clip(layers[0].clip).unwrap().track, p.tracks[0].id);
+        // Locking is an edit lock, not a visibility one.
+        p.tracks[idx].muted = false;
+        p.tracks[idx].locked = true;
+        assert_eq!(plan_layers(&p, 7.0).len(), 2, "a locked track still renders");
+    }
+
+    #[test]
+    fn a_layer_samples_its_clips_own_source_time() {
+        let (mut p, v1, _) = stacked_project();
+        let cid = p.clips_on(v1)[1].id;
+        p.clip_mut(cid).unwrap().in_point = 2.0;
+        p.clip_mut(cid).unwrap().out_point = 7.0;
+        // Playhead 1s into a clip cut at 2s → 3s of source.
+        let layers = plan_layers(&p, 6.0);
+        let l = layers.iter().find(|l| l.clip == cid).unwrap();
+        assert!((l.source_time - 3.0).abs() < 1e-9, "source time follows the in-point: {l:?}");
+    }
+
+    #[test]
+    fn a_dissolve_puts_the_outgoing_clip_underneath_the_incoming_one() {
+        // The heart of the fix: a transition is two layers, so both clips
+        // are sampled. The old flash sampled neither.
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        let outgoing = p.clips_on(v1)[0].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
+        let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
+        assert_eq!(layers.len(), 2, "the outgoing clip is a real layer: {layers:?}");
+        assert_eq!(layers[0].clip, outgoing);
+        assert_eq!(layers[1].clip, incoming);
+        assert!((layers[0].alpha - 1.0).abs() < 1e-9, "the outgoing clip is fully present");
+        assert!(
+            (layers[1].alpha - 0.5).abs() < 0.02,
+            "the incoming clip is half-mixed at the midpoint: {}",
+            layers[1].alpha,
+        );
+        // The outgoing clip has run out, so it holds on its last frame.
+        let a = p.clip(outgoing).unwrap();
+        assert!(
+            (layers[0].source_time - a.out_point).abs() < 1e-9,
+            "an abutting cut freezes the outgoing clip on its tail",
+        );
+    }
+
+    #[test]
+    fn a_fade_in_has_no_outgoing_layer_so_it_mixes_with_black() {
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::FadeIn;
+        let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
+        assert_eq!(layers.len(), 1, "a fade rises out of black, not out of the previous clip");
+        assert_eq!(layers[0].clip, incoming);
+        assert!((layers[0].alpha - 0.5).abs() < 0.02);
+    }
+
+    #[test]
+    fn a_dip_hands_the_frame_from_one_clip_to_the_other_through_black() {
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        let outgoing = p.clips_on(v1)[0].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::DipToBlack;
+
+        let early = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.25);
+        assert_eq!(early.len(), 1);
+        assert_eq!(early[0].clip, outgoing, "the first half belongs to the outgoing clip");
+        assert!((early[0].alpha - 0.5).abs() < 0.02, "dimming toward black: {}", early[0].alpha);
+
+        let late = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.75);
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].clip, incoming, "the second half belongs to the incoming clip");
+        assert!((late[0].alpha - 0.5).abs() < 0.02, "rising out of black: {}", late[0].alpha);
+
+        let bottom = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
+        let lit: f64 = bottom.iter().map(|l| l.alpha).sum();
+        assert!(lit < 0.02, "the midpoint of a dip is black: {bottom:?}");
+    }
+
+    #[test]
+    fn a_wipe_carries_geometry_not_a_flash() {
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::Wipe;
+        let layers = plan_layers(&p, 5.0 + TRANSITION_SECS * 0.5);
+        assert_eq!(layers.len(), 2, "a wipe reveals the incoming clip over the outgoing one");
+        assert!(layers[0].wipe.is_none(), "the outgoing clip is unmasked");
+        let w = layers[1].wipe.expect("the incoming clip carries a wipe mask");
+        assert!((w.progress - 0.5).abs() < 0.02, "halfway across: {w:?}");
+        assert!(w.softness > 0.0, "the edge is feathered: {w:?}");
+        // The incoming clip is fully opaque *within* the revealed region —
+        // a wipe is geometry, not a cross-fade.
+        assert!((layers[1].alpha - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn each_transition_plans_a_distinct_stack() {
+        let (base, v1, _) = stacked_project();
+        let at = 5.0 + TRANSITION_SECS * 0.5;
+        let mut seen: Vec<(Transition, Vec<Layer>)> = Vec::new();
+        for kind in [
+            Transition::CrossDissolve,
+            Transition::FadeIn,
+            Transition::DipToBlack,
+            Transition::Wipe,
+        ] {
+            let mut p = base.clone();
+            let incoming = p.clips_on(v1)[1].id;
+            p.clip_mut(incoming).unwrap().transition = kind;
+            seen.push((kind, plan_layers(&p, at)));
+        }
+        for i in 0..seen.len() {
+            for j in (i + 1)..seen.len() {
+                assert_ne!(
+                    seen[i].1, seen[j].1,
+                    "{:?} and {:?} must not plan the same stack",
+                    seen[i].0, seen[j].0,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_transition_expires_and_leaves_a_single_layer() {
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
+        let after = plan_layers(&p, 5.0 + TRANSITION_SECS + 0.05);
+        assert_eq!(after.len(), 1, "past the transition only the incoming clip remains");
+        assert!((after[0].alpha - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_transition_never_outruns_a_very_short_clip() {
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        {
+            let c = p.clip_mut(incoming).unwrap();
+            c.transition = Transition::CrossDissolve;
+            c.out_point = c.in_point + 0.2; // shorter than TRANSITION_SECS
+        }
+        let clip = p.clip(incoming).unwrap().clone();
+        assert!(active_transition(&clip, 5.1).is_some(), "still transitioning early on");
+        assert!(
+            active_transition(&clip, 5.19).is_some_and(|(_, t)| t > 0.9),
+            "the transition is compressed into the clip's own length",
+        );
+        assert!(active_transition(&clip, 5.25).is_none(), "and is over by the clip's end");
+    }
+
+    #[test]
+    fn the_plan_carries_the_grade_effects_and_envelope() {
+        let (mut p, v1, _) = stacked_project();
+        let cid = p.clips_on(v1)[0].id;
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.filters = Filters { brightness: 0.7, contrast: 0.4, saturation: 0.9 };
+            c.effects = vec![ClipEffect { kind: EffectKind::Sepia, amount: 0.5 }];
+            c.fade_in = 2.0;
+            c.opacity = 0.5;
+        }
+        let layers = plan_layers(&p, 1.0);
+        assert_eq!(layers.len(), 1);
+        let l = &layers[0];
+        assert_eq!(l.filters.brightness, 0.7);
+        assert_eq!(l.effects.len(), 1);
+        assert_eq!(l.effects[0].kind, EffectKind::Sepia);
+        // 1s into a 2s fade at half opacity.
+        assert!((l.alpha - 0.25).abs() < 1e-9, "envelope × opacity: {}", l.alpha);
+    }
+
+    #[test]
+    fn an_empty_timeline_plans_nothing() {
+        let p = Project::new("t");
+        assert!(plan_layers(&p, 0.0).is_empty());
+        let (full, _, _) = stacked_project();
+        assert!(plan_layers(&full, 10_000.0).is_empty(), "past every clip the plan is empty");
+    }
+
 }

@@ -252,6 +252,9 @@ mod gst_decode {
         sink: gst_app::AppSink,
         current: Option<CpuFrame>,
         drained: bool,
+        /// The source position this decoder was last asked for, which is
+        /// how the pool decides who is nearest to the next request.
+        served: Option<u64>,
     }
 
     impl ClipDecoder {
@@ -303,7 +306,7 @@ mod gst_decode {
             pipeline
                 .set_state(gst::State::Playing)
                 .map_err(|e| format!("start decode pipeline: {e}"))?;
-            Ok(Self { pipeline, sink, current: None, drained: false })
+            Ok(Self { pipeline, sink, current: None, drained: false, served: None })
         }
 
         fn pull_one(&mut self) -> bool {
@@ -372,10 +375,25 @@ mod gst_decode {
         }
     }
 
+    /// How far apart two requests may be before they are treated as
+    /// separate reads of the source and get their own decoder.
+    const REGION_MS: u64 = 2_000;
+    /// Decoders held open per media. Enough for a handful of clips cut
+    /// from one source; beyond that the nearest one seeks.
+    const MAX_PER_MEDIA: usize = 4;
+
     /// Every decodable media in the project, opened lazily.
+    ///
+    /// A media can be read from several places at once — two clips cut
+    /// from opposite ends of the same file, dissolving into each other —
+    /// so each one keeps a small pool of decoders, and a request goes to
+    /// whichever is already nearest. One decoder per media would seek
+    /// back and forth across the file on every single exported frame.
     pub struct MediaDecoders {
         uris: HashMap<MediaId, String>,
-        open: HashMap<MediaId, Option<ClipDecoder>>,
+        pools: HashMap<MediaId, Vec<ClipDecoder>>,
+        /// Media whose decoder failed to open; not retried per frame.
+        broken: HashMap<MediaId, ()>,
     }
 
     impl MediaDecoders {
@@ -398,7 +416,7 @@ mod gst_decode {
                     crate::media::engine_source(&source.abs_path).to_uri(),
                 );
             }
-            Self { uris, open: HashMap::new() }
+            Self { uris, pools: HashMap::new(), broken: HashMap::new() }
         }
 
         /// How many of the project's media this export can actually decode.
@@ -408,14 +426,40 @@ mod gst_decode {
 
         /// The decoded picture for `media` at `source_time` seconds.
         pub fn frame(&mut self, media: MediaId, source_time: f64) -> Option<CpuFrame> {
+            if self.broken.contains_key(&media) {
+                return None;
+            }
             let uri = self.uris.get(&media)?.clone();
-            let slot = self.open.entry(media).or_insert_with(|| {
-                ClipDecoder::open(&uri)
-                    .map_err(|e| tracing::warn!("export decode {uri}: {e}"))
-                    .ok()
-            });
-            let decoder = slot.as_mut()?;
             let target_ms = (source_time.max(0.0) * 1000.0) as u64;
+            let pool = self.pools.entry(media).or_default();
+
+            // Prefer the decoder already reading near this point.
+            let nearest = pool
+                .iter()
+                .enumerate()
+                .filter_map(|(i, d)| d.served.map(|s| (i, s.abs_diff(target_ms))))
+                .min_by_key(|(_, dist)| *dist);
+            let idx = match nearest {
+                Some((i, dist)) if dist <= REGION_MS => i,
+                _ if pool.len() < MAX_PER_MEDIA => {
+                    match ClipDecoder::open(&uri) {
+                        Ok(d) => {
+                            pool.push(d);
+                            pool.len() - 1
+                        }
+                        Err(e) => {
+                            tracing::warn!("export decode {uri}: {e}");
+                            self.broken.insert(media, ());
+                            return None;
+                        }
+                    }
+                }
+                Some((i, _)) => i,
+                None => return None,
+            };
+
+            let decoder = &mut pool[idx];
+            decoder.served = Some(target_ms);
             decoder.frame_at(target_ms).map(|f| CpuFrame {
                 width: f.width,
                 height: f.height,
@@ -655,4 +699,342 @@ mod tests {
         }
         std::fs::remove_file(&out).ok();
     }
+    // --- real footage, end to end ----------------------------------------
+
+    /// The bundled demo clip, if this checkout has it. Its absence is
+    /// reported by the caller rather than silently skipping — a test that
+    /// cannot look is not a test that passed.
+    #[cfg(feature = "gst")]
+    fn demo_clip() -> Option<std::path::PathBuf> {
+        // Set by the harness; otherwise walk up to the repository root.
+        if let Some(p) = std::env::var_os("QOS_VE_TEST_CLIP") {
+            let p = std::path::PathBuf::from(p);
+            return p.exists().then_some(p);
+        }
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        for _ in 0..5 {
+            let candidate = dir.join(".claude/demo-artifacts/qos-demo-57s.mp4");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+        None
+    }
+
+    /// A one-clip project sourcing `path` from `in_point` for `len` seconds.
+    #[cfg(feature = "gst")]
+    fn project_over(path: &std::path::Path, in_point: f64, len: f64) -> Project {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("Footage");
+        p.width = 1920;
+        p.height = 1080;
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "demo".into(),
+            kind: MediaKind::Video,
+            duration: 57.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            palette: 3,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+        });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        {
+            let c = p.clip_mut(cid).unwrap();
+            c.in_point = in_point;
+            c.out_point = in_point + len;
+        }
+        p
+    }
+
+    /// Decode `path` and return the picture at `at_secs`, downscaled to a
+    /// `n × n` luminance grid — small enough that encoder noise and scaling
+    /// wash out, detailed enough that two different pictures never agree.
+    #[cfg(feature = "gst")]
+    fn luma_grid(path: &std::path::Path, at_secs: f64, n: usize) -> Vec<f64> {
+        let probe = project_over(path, 0.0, 1.0);
+        let mut decoders = super::gst_decode::MediaDecoders::new(&probe);
+        let frame = decoders
+            .frame(probe.media[0].id, at_secs)
+            .unwrap_or_else(|| panic!("decode {} at {at_secs}s", path.display()));
+        let (w, h) = (frame.width as usize, frame.height as usize);
+        let mut grid = vec![0.0; n * n];
+        for gy in 0..n {
+            for gx in 0..n {
+                let (x0, x1) = (gx * w / n, ((gx + 1) * w / n).max(gx * w / n + 1));
+                let (y0, y1) = (gy * h / n, ((gy + 1) * h / n).max(gy * h / n + 1));
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for y in y0..y1.min(h) {
+                    for x in x0..x1.min(w) {
+                        let i = (y * w + x) * 4;
+                        sum += 0.2126 * frame.rgba[i] as f64
+                            + 0.7152 * frame.rgba[i + 1] as f64
+                            + 0.0722 * frame.rgba[i + 2] as f64;
+                        count += 1.0;
+                    }
+                }
+                grid[gy * n + gx] = if count > 0.0 { sum / count / 255.0 } else { 0.0 };
+            }
+        }
+        grid
+    }
+
+    /// Pearson correlation between two luminance grids. Correlation, not
+    /// absolute difference, because the export is scaled and re-encoded —
+    /// what must survive is the *structure* of the picture.
+    #[cfg(feature = "gst")]
+    fn correlation(a: &[f64], b: &[f64]) -> f64 {
+        assert_eq!(a.len(), b.len());
+        let n = a.len() as f64;
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let mut num = 0.0;
+        let (mut da, mut db) = (0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            num += (x - ma) * (y - mb);
+            da += (x - ma) * (x - ma);
+            db += (y - mb) * (y - mb);
+        }
+        if da <= 1e-12 || db <= 1e-12 {
+            return 0.0;
+        }
+        num / (da * db).sqrt()
+    }
+
+    #[cfg(feature = "gst")]
+    fn export_to(project: &Project, out: &std::path::Path) -> ExportStatus {
+        // Safety: these gst tests run serially in one process and the env
+        // is restored immediately after the call.
+        unsafe { std::env::set_var("QOS_VE_EXPORT_OUT", out) };
+        let settings = ExportSettings {
+            resolution: Resolution::P720,
+            container: Container::Mp4,
+            frame_rate: FrameRate::F30,
+        };
+        let status = begin_export(project, &settings);
+        unsafe { std::env::remove_var("QOS_VE_EXPORT_OUT") };
+        status
+    }
+
+    /// The bug this whole path exists to kill: the export used to encode a
+    /// synthesized gradient built from a palette table, under *every*
+    /// feature combination. Prove the encoded pictures are the source
+    /// footage — structurally, frame by frame — and that they are nothing
+    /// like the representative fill the palette would have produced.
+    #[cfg(feature = "gst")]
+    #[test]
+    fn the_export_encodes_the_source_footage() {
+        let Some(clip) = demo_clip() else {
+            panic!(
+                "this test needs the bundled demo clip at \
+                 .claude/demo-artifacts/qos-demo-57s.mp4 (or $QOS_VE_TEST_CLIP); \
+                 it cannot verify the export without real footage",
+            );
+        };
+        // A second and a half of real video, from a second in — far enough
+        // past the head that the picture has content.
+        let project = project_over(&clip, 8.0, 1.5);
+        let out = std::env::temp_dir().join(format!("qos-ve-footage-{}.mp4", std::process::id()));
+        match export_to(&project, &out) {
+            ExportStatus::Done { .. } => {}
+            other => panic!("the export must write a file, got {other:?}"),
+        }
+
+        // Three instants across the exported clip, each compared with the
+        // source picture it was cut from.
+        let mut matched = 0;
+        for (timeline_t, source_t) in [(0.2, 8.2), (0.7, 8.7), (1.2, 9.2)] {
+            let exported = luma_grid(&out, timeline_t, 12);
+            let source = luma_grid(&clip, source_t, 12);
+            let same = correlation(&exported, &source);
+
+            // The picture the *old* code would have encoded: the clip's
+            // palette colour through the representative fill. It has no
+            // horizontal structure at all, so it cannot correlate with real
+            // footage the way the real frame does.
+            let against_gradient = {
+                let gradient = crate::preview::render_rgba(&project, timeline_t, 12, 12);
+                let grid: Vec<f64> = gradient
+                    .chunks(4)
+                    .map(|p| {
+                        (0.2126 * p[0] as f64 + 0.7152 * p[1] as f64 + 0.0722 * p[2] as f64) / 255.0
+                    })
+                    .collect();
+                correlation(&exported, &grid)
+            };
+
+            assert!(
+                same > 0.9,
+                "the exported frame at {timeline_t}s must be the source picture at \
+                 {source_t}s (correlation {same:.3})",
+            );
+            assert!(
+                same > against_gradient + 0.3,
+                "the exported frame at {timeline_t}s is the footage ({same:.3}), not the \
+                 synthesized gradient ({against_gradient:.3})",
+            );
+            matched += 1;
+        }
+        assert_eq!(matched, 3);
+
+        // Distinct instants of the timeline must be distinct pictures —
+        // an export stuck on one frame would still correlate above.
+        let early = luma_grid(&out, 0.2, 12);
+        let late = luma_grid(&out, 1.2, 12);
+        assert!(
+            correlation(&early, &late) < 0.995,
+            "the export advances through the footage rather than holding one frame",
+        );
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// The grade used to be computed on the palette colour, so it never
+    /// touched a decoded pixel. Prove it reaches the encoded footage.
+    #[cfg(feature = "gst")]
+    #[test]
+    fn the_grade_changes_the_encoded_footage() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
+        };
+        let neutral = project_over(&clip, 8.0, 0.6);
+        let mut bright = neutral.clone();
+        let cid = bright.clips[0].id;
+        bright.clip_mut(cid).unwrap().filters =
+            crate::model::Filters { brightness: 0.85, contrast: 0.5, saturation: 0.5 };
+        let mut grey = neutral.clone();
+        grey.clip_mut(cid).unwrap().effects =
+            vec![crate::model::ClipEffect { kind: crate::model::EffectKind::Grayscale, amount: 1.0 }];
+
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let a = dir.join(format!("qos-ve-grade-neutral-{pid}.mp4"));
+        let b = dir.join(format!("qos-ve-grade-bright-{pid}.mp4"));
+        let c = dir.join(format!("qos-ve-grade-grey-{pid}.mp4"));
+        for (p, out) in [(&neutral, &a), (&bright, &b), (&grey, &c)] {
+            match export_to(p, out) {
+                ExportStatus::Done { .. } => {}
+                other => panic!("export failed: {other:?}"),
+            }
+        }
+
+        let mean = |g: &[f64]| g.iter().sum::<f64>() / g.len() as f64;
+        let neutral_luma = mean(&luma_grid(&a, 0.3, 8));
+        let bright_luma = mean(&luma_grid(&b, 0.3, 8));
+        assert!(
+            bright_luma > neutral_luma + 0.05,
+            "raising brightness must brighten the ENCODED footage: \
+             {neutral_luma:.3} → {bright_luma:.3}",
+        );
+
+        // ...and the structure survives, so it is the same footage graded,
+        // not a different picture entirely.
+        assert!(
+            correlation(&luma_grid(&a, 0.3, 12), &luma_grid(&b, 0.3, 12)) > 0.9,
+            "the brightened export is the same footage, graded",
+        );
+
+        // Grayscale must actually desaturate the real pixels.
+        let colourfulness = |path: &std::path::Path| {
+            let probe = project_over(path, 0.0, 1.0);
+            let mut d = super::gst_decode::MediaDecoders::new(&probe);
+            let f = d.frame(probe.media[0].id, 0.3).expect("decode graded export");
+            let mut spread = 0.0;
+            let mut n = 0.0;
+            for px in f.rgba.chunks(4) {
+                let (r, g, bl) = (px[0] as f64, px[1] as f64, px[2] as f64);
+                spread += (r - g).abs() + (g - bl).abs();
+                n += 1.0;
+            }
+            spread / n.max(1.0)
+        };
+        let colour_before = colourfulness(&a);
+        let colour_after = colourfulness(&c);
+        assert!(
+            colour_after < colour_before * 0.5,
+            "a grayscale effect must desaturate the ENCODED footage: \
+             {colour_before:.2} → {colour_after:.2}",
+        );
+
+        for f in [&a, &b, &c] {
+            std::fs::remove_file(f).ok();
+        }
+    }
+
+    /// Every transition must reach the encoded file as its own picture.
+    #[cfg(feature = "gst")]
+    #[test]
+    fn transitions_reach_the_encoded_file_as_distinct_pictures() {
+        use crate::model::Transition;
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
+        };
+        // Two clips cut from far-apart parts of the source, so the outgoing
+        // and incoming pictures are plainly different.
+        let build = |kind: Transition| {
+            let mut p = project_over(&clip, 2.0, 1.0);
+            let track = p.tracks[0].id;
+            let media = p.media[0].id;
+            let second = p.add_clip(track, media, 1.0).unwrap();
+            {
+                let c = p.clip_mut(second).unwrap();
+                c.in_point = 40.0;
+                c.out_point = 41.0;
+                c.transition = kind;
+            }
+            p
+        };
+
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let mut grids = Vec::new();
+        for kind in [
+            Transition::CrossDissolve,
+            Transition::FadeIn,
+            Transition::DipToBlack,
+            Transition::Wipe,
+        ] {
+            let out = dir.join(format!("qos-ve-tr-{}-{pid}.mp4", kind.as_str()));
+            match export_to(&build(kind), &out) {
+                ExportStatus::Done { .. } => {}
+                other => panic!("{kind:?} export failed: {other:?}"),
+            }
+            // Mid-transition: the incoming clip starts at 1.0s and the
+            // transition runs for TRANSITION_SECS.
+            let at = 1.0 + crate::preview::TRANSITION_SECS * 0.5;
+            grids.push((kind, luma_grid(&out, at, 12)));
+            std::fs::remove_file(&out).ok();
+        }
+
+        for i in 0..grids.len() {
+            for j in (i + 1)..grids.len() {
+                let r = correlation(&grids[i].1, &grids[j].1);
+                let mean_i = grids[i].1.iter().sum::<f64>() / grids[i].1.len() as f64;
+                let mean_j = grids[j].1.iter().sum::<f64>() / grids[j].1.len() as f64;
+                assert!(
+                    r < 0.98 || (mean_i - mean_j).abs() > 0.05,
+                    "{:?} and {:?} encoded the same picture (correlation {r:.3}, \
+                     mean {mean_i:.3} vs {mean_j:.3}) — transitions must differ",
+                    grids[i].0,
+                    grids[j].0,
+                );
+            }
+        }
+    }
+
 }
