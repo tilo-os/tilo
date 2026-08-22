@@ -697,13 +697,20 @@ fn start_egress_gate(
 /// Put every opened service socket on the fd number the app was told
 /// to look at, in the child, before `exec`.
 ///
-/// This is how a descriptor actually crosses into the sandbox. bwrap
-/// forwards fds it was not asked about untouched, so an fd placed here
-/// survives the namespace setup and arrives in the app as a live
-/// connection. What does *not* work — and used to be what this did —
-/// is bwrap's `--file FD DEST`: that is a byte copy, so it blocks
-/// reading a socket the broker will never write to and the launch
-/// never reaches `exec` at all.
+/// This is the whole of the service handoff, and it is how a
+/// descriptor actually crosses into the sandbox: left open, at a known
+/// number, inherited through bwrap's exec and the `__sandbox-exec`
+/// re-exec. bwrap forwards fds it was not asked about untouched, so an
+/// fd placed here survives the namespace setup and arrives in the app
+/// as a live connection. `child_fd`s start above the fixed seccomp
+/// descriptor, so this cannot land on top of it.
+///
+/// What does *not* work — and used to be what this did — is bwrap's
+/// `--file FD DEST`. That is the flag that looks right and is not: it
+/// copies the descriptor's *contents* into a regular file at DEST, so
+/// pointed at a connected socket it blocks reading for an EOF the
+/// broker will never send. The launch hangs before it ever reaches
+/// `exec` and the only symptom is an app that never appears.
 ///
 /// The two passes matter. Target numbers start at 17 and sources are
 /// whatever `connect` handed out, so a source *can* already be sitting
@@ -738,7 +745,17 @@ unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()>
             return Err(std::io::Error::last_os_error());
         }
         // dup2 leaves the target without FD_CLOEXEC, which is what we
-        // want: it has to survive bwrap's exec and the app's.
+        // want: it has to survive bwrap's exec and the app's. Cleared
+        // again explicitly because `dup2` onto a number that is
+        // already correct is a no-op, and the relocation above is only
+        // best-effort — a source that could not be moved may still be
+        // sitting on its own target.
+        unsafe {
+            let flags = libc::fcntl(*dst, libc::F_GETFD);
+            if flags != -1 {
+                let _ = libc::fcntl(*dst, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+            }
+        }
     }
     Ok(())
 }
@@ -1121,11 +1138,14 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(p.to_string());
         }
-        // Service sockets need no Landlock rule: the app is handed an
-        // already-connected descriptor rather than a path to
-        // `connect(2)`, so there is no filesystem access to grant. A
-        // rule for a path that does not exist inside the sandbox would
+        // Service sockets need no Landlock rule, deliberately. They
+        // reach the app as already-connected descriptors dup2'd into
+        // place by `place_service_fds`, so nothing under
+        // `/run/qos/services` is ever mounted and no `open()` is ever
+        // performed on one. A rule for a path that does not exist
+        // inside the sandbox would be skipped every launch, and would
         // only make the shim report itself partially enforced.
+        //
         // The gate socket is reached with connect(2), which is a
         // write-flavoured access on a pathname socket — a read-only
         // rule surfaces as EACCES at connect time, exactly like the
@@ -1171,7 +1191,7 @@ pub fn run_with(
     // each service socket on the fd number the app was told to read.
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
     let mut service_fds: Vec<(RawFd, RawFd)> =
-        resolved.iter().map(|r| (r.host_fd, r.child_fd)).collect();
+        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
     for r in &resolved {
         tracing::info!(
             service = %r.name,
@@ -1365,7 +1385,7 @@ pub fn run_with_captured(
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
     let mut service_fds: Vec<(RawFd, RawFd)> =
-        resolved.iter().map(|r| (r.host_fd, r.child_fd)).collect();
+        resolved.iter().map(|r| (r.host_fd, r.child_fd as RawFd)).collect();
     unsafe {
         cmd.pre_exec(move || {
             if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {

@@ -12225,6 +12225,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "serial_test",
  "tempfile",
  "thiserror 2.0.18",
  "toml 0.8.23",

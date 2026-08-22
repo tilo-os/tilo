@@ -57,6 +57,10 @@ use crate::shell::overlay_host::OutputGeometry;
 pub struct FrameBuilder {
     host: ShellOverlayHost,
     chrome: Chrome,
+    /// The [`WorkspaceTree::room_epoch`] this builder has already
+    /// reacted to. Compared each frame by
+    /// [`Self::pump_room_contents`].
+    last_room_epoch: u64,
     taffy: TaffyTree<()>,
     /// Widget-pointer map captured during `build_layout` — kept alive
     /// so the measure closure inside `compute_layout_with_measure` can
@@ -97,7 +101,7 @@ impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
     pub fn new(viewport: (u32, u32)) -> Self {
-        Self::with_tree(WorkspaceTree::bootstrap_default(), viewport)
+        Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
     /// Build a frame builder around an explicit `WorkspaceTree` —
@@ -192,6 +196,7 @@ impl FrameBuilder {
             host_node: None,
             root_node: None,
             text_renderer: TextRenderer::new(),
+            last_room_epoch: 0,
             theme,
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
@@ -315,8 +320,93 @@ impl FrameBuilder {
     /// the file listing) looked fine, which is why only the terminal appeared
     /// "not real".
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        self.replicate_room_records();
+        self.pump_room_contents();
         self.host.sync(doc, root);
         self.host.update(doc, root)
+    }
+
+    /// Turn "a peer's changes landed in the tree" into "the widget tree
+    /// is rebuilt". Returns whether it had to.
+    ///
+    /// The shell splices groups and tabs into its widget tree in
+    /// `ShellOverlayHost::resync_strips_from_tree`, which is gated on
+    /// the chrome revision and returns immediately when it has not
+    /// moved. Peer-sync writes the tree from the network thread, which
+    /// cannot touch the chrome, so a window that arrived from a peer
+    /// was in the tree — readable, assertable, provably replicated —
+    /// with no widget ever built for it, and the receiving desktop
+    /// stayed empty. Any later click that happened to bump the revision
+    /// for its own reasons made the window appear, which is what made
+    /// this look intermittent rather than broken.
+    ///
+    /// Cheap on a quiet frame: one `u64` read under the tree's read
+    /// lock, compared against the last one seen.
+    fn pump_room_contents(&mut self) -> bool {
+        let epoch = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            tree.room_epoch()
+        };
+        if epoch == self.last_room_epoch {
+            return false;
+        }
+        self.last_room_epoch = epoch;
+        self.chrome.borrow_mut().bump();
+        true
+    }
+
+    /// Hand the rooms' record indexes to the peer-replication path, and
+    /// fold in whatever peers have brought into the rooms this session
+    /// is in.
+    ///
+    /// Here rather than in the frame-tick closure because this is the
+    /// only per-frame place that holds **both** sides: the index lives on
+    /// the overlay host behind an `Rc<RefCell<_>>`, the tree behind an
+    /// `Arc<RwLock<_>>`, and `ui::App::set_frame_tick` requires a `Send +
+    /// Sync` closure that an `Rc` cannot enter.
+    ///
+    /// Cheap on a frame where nothing moved:
+    /// [`RoomRecords::replicate_with`] compares a generation counter
+    /// before it reads any document, and the inbound queue is an empty
+    /// `Vec` in the common case. The chrome is only bumped when something
+    /// actually arrived, so a quiet session does not repaint on account
+    /// of this.
+    fn replicate_room_records(&mut self) {
+        let index = self.host.room_records();
+
+        // Anything an exported action asked to bring here, first — so a
+        // reference made this frame is published in the same pass rather
+        // than waiting for the next one.
+        let requested = self.chrome.borrow_mut().take_record_requests();
+        if !requested.is_empty() {
+            // Bound in a block: `tree()` hands back a guard borrowed from
+            // the chrome `Ref`, so both have to outlive the read.
+            let here = {
+                let chrome = self.chrome.borrow();
+                let tree = chrome.tree();
+                tree.active_workspace().map(|w| w.room)
+            };
+            if let Some(here) = here {
+                let mut index = index.borrow_mut();
+                for (id, kind) in requested {
+                    let Some(record) = ui::record::RecordId::parse(&id) else {
+                        continue;
+                    };
+                    index.reference(here, &record, &ui::record::RecordKind::new(kind));
+                }
+            }
+        }
+
+        let arrived = {
+            let chrome = self.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            let mut index = index.borrow_mut();
+            index.replicate_with(&mut tree)
+        };
+        if arrived {
+            self.chrome.borrow_mut().bump();
+        }
     }
 
     /// Render the current frame into a fresh Vello scene. Caller is
@@ -758,6 +848,98 @@ mod tests {
         assert!(!fb.chrome().overlays.overview);
         fb.with_chrome(|st| st.overlays.overview = true);
         assert!(fb.chrome().overlays.overview);
+    }
+
+    /// A window that arrived from a peer has to reach the widget tree,
+    /// not just the workspace tree.
+    ///
+    /// The shell splices groups and tabs in
+    /// `ShellOverlayHost::resync_strips_from_tree`, which returns
+    /// immediately unless the chrome revision moved. Peer-sync writes
+    /// the tree from the network thread and cannot move it, so a
+    /// replicated window was in the tree — readable, and provably
+    /// replicated by every assertion we had — with no widget ever built
+    /// for it. The receiving desktop stayed empty until some unrelated
+    /// click happened to bump the revision, which is what made it look
+    /// intermittent instead of broken.
+    ///
+    /// Drives the real ingest (`apply_room_changes`) and the real
+    /// per-frame pump, so it fails if either end of that signal is
+    /// dropped again.
+    #[test]
+    fn a_peers_changes_landing_make_the_frame_rebuild() {
+        use crate::shell::state::PeerOrigin;
+        use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+
+        // A room owned by somebody else, with something in it.
+        let owner = "ada".to_string();
+        let mut host = WorkspaceTree::default();
+        let host_ws = host.append_empty_workspace("Shared");
+        host.adopt_ownerless_workspaces(&owner);
+        let room = host.room_of(host_ws).expect("the host's workspace has a room");
+        host.grant_in_workspace(
+            host_ws,
+            &owner,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/shared".to_string()),
+                Verb::Read,
+            ),
+        )
+        .expect("the owner may grant in their own room");
+        host.sync_room_doc(room);
+        let changes = host
+            .export_room_changes_since(room, &[])
+            .expect("the host is in the room");
+        assert!(!changes.is_empty(), "the host must have something to send");
+
+        // This session joins it.
+        let mut fb = FrameBuilder::new((1600, 900));
+        let joined = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            let active = tree.active;
+            tree.set_room(active, room)
+        };
+        assert!(joined, "this session joins the peer's room");
+
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        // Settle: pump once so the builder is past its first frame and
+        // any revision movement below is attributable to the arrival.
+        fb.pump_apps(&mut doc, &root);
+        let before = fb.chrome_revision();
+
+        let landed = {
+            let chrome = fb.chrome();
+            let mut tree = chrome.tree_mut();
+            tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
+                .expect("well-formed changes parse")
+        };
+        assert!(landed, "the peer's changes must merge into this session's tree");
+
+        fb.pump_apps(&mut doc, &root);
+        assert!(
+            fb.chrome_revision() > before,
+            "a peer's change landed in the tree and nothing told the shell to              rebuild, so it would never be drawn"
+        );
+    }
+
+    /// …and a frame where nothing arrived must not bump, or the shell
+    /// rebuilds its widget tree on every idle pass.
+    #[test]
+    fn a_quiet_frame_does_not_rebuild() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        fb.pump_apps(&mut doc, &root);
+        let settled = fb.chrome_revision();
+        fb.pump_apps(&mut doc, &root);
+        assert_eq!(
+            fb.chrome_revision(),
+            settled,
+            "nothing arrived; the chrome revision must stand still"
+        );
     }
 
     /// `set_viewport` rebuilds the layout tree without panicking and

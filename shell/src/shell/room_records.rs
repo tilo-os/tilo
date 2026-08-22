@@ -197,6 +197,14 @@ pub struct RoomRecords {
     /// a wrong search result is worse than a slow one because nothing
     /// tells the user it is wrong.
     generation: u64,
+    /// The [`Self::generation`] this index was last mirrored into the
+    /// workspace tree at, so [`Self::replicate_with`] can do nothing on
+    /// the frames where nothing moved.
+    ///
+    /// `None` until the first exchange, which is what makes a session
+    /// publish what it already held rather than only what it adds after
+    /// start-up.
+    replicated_generation: Option<u64>,
     known: std::cell::RefCell<Option<KnownCache>>,
 }
 
@@ -214,6 +222,7 @@ impl RoomRecords {
             persistent: false,
             labelled: BTreeMap::new(),
             generation: 0,
+            replicated_generation: None,
             known: std::cell::RefCell::new(None),
         }
     }
@@ -436,6 +445,78 @@ impl RoomRecords {
                 saver.flush();
             }
         }
+    }
+
+    /// Exchange this machine's room indexes with the peer-replication
+    /// path: publish what each room holds, and fold in what peers have
+    /// brought.
+    ///
+    /// # Why the shell does this rather than the tree
+    ///
+    /// A room's index is an Automerge document behind an `Rc<RefCell<_>>`
+    /// on the overlay host; the replication path holds the workspace tree
+    /// across an `Arc<RwLock<_>>` on a `Send` boundary. Neither can hold
+    /// the other. So the tree carries a plain-data *mirror* of the index
+    /// ([`crate::shell::state::WorkspaceTree::room_records_held`]) and
+    /// this is the one place the two are reconciled — called from the
+    /// compositor's frame pump, which already holds both.
+    ///
+    /// # What crosses, and what does not
+    ///
+    /// References. A room learns which records it holds; it learns
+    /// nothing about who has one open or where. Which window a document
+    /// was opened into, which tab is in front, where anyone has scrolled
+    /// — none of that is here, because none of it is a fact about the
+    /// room. That is the whole reason the room's *index* is the unit
+    /// rather than the host's window layout: two people in one room see
+    /// the same records and keep their own desks.
+    ///
+    /// Returns whether anything arrived from a peer, so the caller can
+    /// tell a frame that changed the corpus from one that did not.
+    pub fn replicate_with(&mut self, tree: &mut crate::shell::state::WorkspaceTree) -> bool {
+        // Publish. Reading a room's index walks an Automerge map, which
+        // is far too expensive to do every frame (see `known`), so it is
+        // done only when a mutation has actually moved the answer.
+        if self.replicated_generation != Some(self.generation) {
+            self.replicated_generation = Some(self.generation);
+            let rooms: Vec<RoomId> = self.held.keys().copied().collect();
+            for room in rooms {
+                let held: BTreeMap<String, String> = self
+                    .records_in(room)
+                    .into_iter()
+                    .map(|c| (c.id.as_str().to_string(), c.kind.as_str().to_string()))
+                    .collect();
+                tree.set_room_records(room, held);
+            }
+        }
+
+        // Fold in arrivals. `reference` is idempotent, so a record a peer
+        // re-announces is not an edit here; what it does do is refresh the
+        // record's type, which is what re-referencing means.
+        let inbound = tree.take_inbound_room_records();
+        if inbound.is_empty() {
+            return false;
+        }
+        for (room, id, kind) in inbound {
+            let Some(record) = RecordId::parse(&id) else {
+                tracing::debug!(
+                    target: "shell::room_records",
+                    room = %room,
+                    record = %id,
+                    "a peer referenced a record id this build cannot parse; ignored",
+                );
+                continue;
+            };
+            self.reference(room, &record, &RecordKind::new(kind));
+        }
+        // The publish above ran against the pre-merge generation, so what
+        // just arrived would not be re-published until the next local
+        // change. Re-arm it instead: a guest that learned of a record is
+        // a legitimate source of that reference for the next peer, which
+        // is what lets a room converge when its members are not all
+        // connected to each other at once.
+        self.replicated_generation = None;
+        true
     }
 
     /// The room's index, opening (and creating) its store on first write.

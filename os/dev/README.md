@@ -47,6 +47,13 @@ If your host has qemu + tools natively, set `QOS_DISTROBOX=""` to skip the box.
 # untouched, so this is the build to use when the question is "does it boot?".
 QOS_WITH_BROWSER=0 ./os/dev/build-image.sh
 
+# …or don't build at all. The image builds in CI here, so the local half of
+# the pipeline is often just the disk step: pull what CI published and image
+# that. Needs `podman login code.sandbox.example` once.
+podman pull code.sandbox.example/qos/qos:<tag>
+podman tag  code.sandbox.example/qos/qos:<tag> localhost/qos:latest
+QOS_SKIP_BUILD=1 ./os/dev/build-image.sh
+
 # 2. Boot + greeter + login + desktop, screenshots into a dir:
 ./os/dev/vm.sh capture-boot ./vm-artifacts
 
@@ -74,6 +81,26 @@ compositor**, so pick per task:
 
 So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
+
+## Recording a boot as video
+
+`vm.sh shot` gives stills, so a boot could only ever be shown as a
+before-and-after pair. `record-boot.py` films it:
+
+```bash
+./os/dev/record-boot.py --login --after-login 8 --out boot.mp4
+```
+
+It dumps the framebuffer on a timer, keeps each frame's wall-clock timestamp,
+and encodes at the rate the frames were really captured — so the clip runs at
+the speed the machine actually booted. `--login` types the credentials when
+greetd reports itself up rather than at a guessed offset.
+
+The table above is the constraint here too, and the script does not pretend
+otherwise: it reports how many frames came back empty, and warns with the
+window they span, because under `--mode gl` every dump before the compositor
+starts answers "no surface". A gap in that report is the honest shape of the
+capture.
 
 ## Testing the boot chain (TPM, encryption, Secure Boot)
 

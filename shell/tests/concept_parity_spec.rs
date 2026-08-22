@@ -274,7 +274,7 @@ fn open_quick_settings(chrome: &Chrome) {
 ///   carry.
 #[test]
 fn workspace_settings_renders_general_tab_with_invite_link() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // First: render with the modal closed so we know the baseline number
     // of indigo-500 fills the rest of the chrome emits (topbar dots,
@@ -512,7 +512,7 @@ fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
 /// produce the same fill count.
 #[test]
 fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // Render Members-tab + clean buffer. This is the canonical state.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
@@ -581,7 +581,7 @@ fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
 /// buffer because the General body never runs.
 #[test]
 fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // Render Permissions-tab + clean Name-input buffer.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
@@ -675,13 +675,13 @@ fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
 /// as owner plus two invited people, written through the
 /// authority-checked `grant_as` path rather than poked into a field.
 ///
-/// `bootstrap_default` leaves a workspace ownerless, and an ownerless
+/// `bootstrap_demo` leaves a workspace ownerless, and an ownerless
 /// workspace has no members and no administrators — which is the correct
 /// fail-closed default, and useless as a fixture for a panel about
 /// membership.
 fn tree_with_seeded_roster() -> WorkspaceTree {
     use shell::shell::state::{CapOverride, Subject, Verb};
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     let owner = shell::shell::state::local_user_id();
     tree.adopt_ownerless_workspaces(&owner);
     if let Some(ws) = tree.active_workspace_mut() {
@@ -1019,7 +1019,7 @@ fn global_search_selected_row_is_indigo_500_not_grey() {
 /// With the action row we expect ≥ 12 fills.
 #[test]
 fn quick_settings_renders_action_row_with_settings_camera_power() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     open_quick_settings(&chrome);
     let theme = Theme::dark();
@@ -1098,7 +1098,7 @@ fn quick_settings_renders_action_row_with_settings_camera_power() {
 /// only fills emitted while the popover is open vs closed.
 #[test]
 fn quick_settings_slider_fill_is_white_not_indigo() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // Closed-popover render — establishes the per-frame "white pixel"
     // baseline (window-card surfaces, knobs, etc.).
@@ -1209,7 +1209,7 @@ fn quick_settings_supports_wifi_drill_in_render() {
     // truth that the overlay host's `draw_quick_settings` dispatches on;
     // pushing a level on a `QuickSettings` instance and propagating it
     // into the chrome lights the WiFi branch in the renderer.
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     // Render with the popover open and "root level" (brightness 0.5).
     qs_root.set_brightness(50.0);
@@ -1306,7 +1306,7 @@ fn render_quick_settings_open(
 /// run, so this is detectable in the encoding.
 #[test]
 fn topbar_system_monitor_cpu_label_is_emerald_400() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
@@ -1373,7 +1373,7 @@ fn topbar_system_monitor_cpu_label_is_emerald_400() {
 /// asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
 #[test]
 fn topbar_system_monitor_ram_label_is_blue_400() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
@@ -1589,7 +1589,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 /// metric" cue per the audit's row-5 fix-hint.
 #[test]
 fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
 
@@ -1666,11 +1666,12 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
 /// to reach painted, peer-coloured avatars through
 /// `TopBarChrome::sync_from_tree` and `draw`. The fixture is this test's
 /// own — two people admitted to the active workspace the way a real
-/// arrival admits them — rather than `bootstrap_default`'s, which used
-/// to seed demo collaborators and no longer seeds anyone. Borrowing
+/// arrival admits them — rather than a bootstrap tree's. Borrowing
 /// production's seeded fakes made this test depend on the shell shipping
-/// fabricated participants; stating the roster here proves the same
-/// wiring without that.
+/// fabricated participants, and it used to run against
+/// `bootstrap_default` and read as "first boot shows an avatar stack",
+/// which it only ever did because the boot tree invented the people it
+/// was drawing.
 ///
 /// Render `TopBarChrome`, scan the encoded scene for the canonical peer
 /// hex (`#ec4899` / Tailwind pink-500 = (236, 72, 153) for alice,
@@ -1678,6 +1679,12 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
 /// and assert the colour shows up. If a future regression flips the
 /// roster source back to the empty tree-level field, this fails loudly
 /// with the captured fills in the diagnostic.
+///
+/// The precondition is a roster, **not** a boot: a first boot has no
+/// collaborators and must paint no avatars, which
+/// `topbar_right_cluster_paints_no_avatar_on_a_first_boot` pins directly
+/// below. Together they say the stack tracks the real roster in both
+/// directions.
 ///
 /// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx` —
 /// collaborator avatar stack on the right cluster.
@@ -1703,7 +1710,7 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
 
     let active_ws = tree
         .active_workspace()
-        .expect("bootstrap_default leaves an active workspace");
+        .expect("the tree leaves an active workspace");
     let active_collabs = active_ws.collaborators.len();
     let tree_collabs = tree.collaborators.len();
     assert_eq!(
@@ -1777,6 +1784,98 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
          `TopBarChrome::sync_from_tree` reads from the active workspace's \
          own collaborator list (with a tree-level fallback) and that \
          `roster_colors` still honours an explicit `cursor_color`."
+    );
+}
+
+/// The other direction, and the one that matters on a machine nobody has
+/// used yet: a first boot has **no** collaborators, so the top-bar right
+/// cluster must paint **no** avatar.
+///
+/// An avatar in that cluster is a claim that a specific person is in this
+/// workspace. `bootstrap_default` used to seed a `Collaborator` named
+/// "Alice" onto Home, so a fresh install painted a pink "A" for someone who
+/// does not exist — and, because the tree is the user's workspace document,
+/// wrote her into it. The invented roster is gone; this test is what keeps
+/// it gone.
+///
+/// Asserted on the production path: `persist::load_or_default` returns
+/// `bootstrap_default` for a machine with no `state.json`, and this renders
+/// the real `TopBarChrome::draw` over exactly that tree.
+#[test]
+fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let active_ws = tree
+        .active_workspace()
+        .expect("bootstrap_default leaves an active workspace");
+    assert!(
+        active_ws.collaborators.is_empty() && tree.collaborators.is_empty(),
+        "a first-boot tree must have an empty roster — a name here is a \
+         person who does not exist, persisted into the user's workspace \
+         document. Active ws has {}, tree-level has {}.",
+        active_ws.collaborators.len(),
+        tree.collaborators.len()
+    );
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    assert!(
+        chrome.collaborator_initials().is_empty(),
+        "TopBarChrome synthesised initials {:?} from an empty first-boot \
+         roster — an initial in the avatar stack names a person.",
+        chrome.collaborator_initials()
+    );
+
+    // The two canonical invented-peer hues must not appear anywhere in the
+    // painted scene. Checking the drawn fills (not just the widget's cached
+    // roster) is what catches a hard-coded placeholder avatar in `draw`.
+    let fills = collect_solid_colors(&scene);
+    assert!(
+        !contains_color_close(&fills, (236, 72, 153), 8),
+        "first-boot top bar painted Alice's cursor hue #ec4899. Observed \
+         solid fills: {fills:?}"
+    );
+    assert!(
+        !contains_color_close(&fills, (249, 115, 22), 8),
+        "first-boot top bar painted Bob's cursor hue #f97316. Observed \
+         solid fills: {fills:?}"
     );
 }
 
@@ -2162,7 +2261,7 @@ mod overview_add_workspace {
     /// populated. Returns an [`OverviewHarness`] so individual tests can
     /// inspect or pump further events through it.
     fn build_settled_overview() -> OverviewHarness {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
         chrome.borrow_mut().overlays.overview = true;
         host.force_overview_settled(true);
@@ -2267,7 +2366,7 @@ mod overview_add_workspace {
         let initial_count = h.chrome.borrow().tree().workspaces.len();
         assert!(
             initial_count >= 1,
-            "bootstrap_default seeds at least one workspace"
+            "bootstrap_demo carries at least one workspace"
         );
         let initial_active = h.chrome.borrow().tree().active;
 
@@ -2424,7 +2523,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
 
     // Listed but powerless: collaborator records on every workspace, and
     // no capability anywhere, so every roster is empty.
-    let mut listed_only = WorkspaceTree::bootstrap_default();
+    let mut listed_only = WorkspaceTree::bootstrap_demo();
     for ws in &mut listed_only.workspaces {
         ws.owner = None;
         ws.capabilities.clear();
@@ -2500,7 +2599,7 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
 /// clear message — instead of quietly weakening every parity assertion.
 #[test]
 fn draw_data_word_table_accounts_for_the_whole_stream() {
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (scene, _chrome) = render_overlay_host(&tree);
     let enc = scene.encoding();
     let mut walked = 0usize;

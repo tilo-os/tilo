@@ -22,7 +22,6 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -369,17 +368,17 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
     };
     let path = entry.path.clone();
     let is_dir = entry.is_dir;
-    SearchResult {
+    SearchResult::nullary(
         kind,
-        provider_id: "files".to_string(),
-        id: entry.path.display().to_string(),
-        title: file_title(&entry.path),
-        subtitle: subtitle.or_else(|| Some(entry.display.clone())),
+        "files",
+        entry.path.display().to_string(),
+        file_title(&entry.path),
+        subtitle.or_else(|| Some(entry.display.clone())),
         score,
-        on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+        move |_doc, _root, chrome: &Chrome| {
             open_search_hit(&path, is_dir, chrome);
-        }),
-    }
+        },
+    )
 }
 
 fn file_title(path: &Path) -> String {
