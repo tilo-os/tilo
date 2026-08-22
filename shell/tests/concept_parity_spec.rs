@@ -1658,40 +1658,58 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
 // are present in the active workspace
 // ===========================================================================
 
-/// Wave-3 / T6 follow-up: the top-bar right cluster on first boot must
-/// show the per-peer avatar stack (and a recognizable 3-dot tray pill)
-/// rather than just a small wifi/cast icon. The `bootstrap_default` tree
-/// seeds Home (active on first run) with one demo collaborator and the
-/// Research workspace with two — so as long as the topbar reads its
-/// roster from the *active* workspace (with a tree-level fallback) the
-/// avatar circles paint with peer-coloured fills.
+/// The top-bar right cluster must show the per-peer avatar stack (and a
+/// recognizable 3-dot tray pill) rather than just a small wifi/cast icon
+/// when the active workspace has peers in it.
 ///
-/// This test pins the behaviour: render `TopBarChrome` against the
-/// default tree, scan the encoded scene for the canonical peer hex
-/// (`#ec4899` / Tailwind pink-500 = (236, 72, 153) for Alice; matches
-/// `nirios-concept/src/data.ts`), and assert the colour shows up. If a
-/// future regression flips the roster source back to the empty
-/// tree-level field — or removes Home's seeded collaborator — this test
-/// fails loudly with the captured fills in the diagnostic.
+/// The subject is the **wiring**: a roster on the active workspace has
+/// to reach painted, peer-coloured avatars through
+/// `TopBarChrome::sync_from_tree` and `draw`. The fixture is this test's
+/// own — two people admitted to the active workspace the way a real
+/// arrival admits them — rather than `bootstrap_default`'s, which used
+/// to seed demo collaborators and no longer seeds anyone. Borrowing
+/// production's seeded fakes made this test depend on the shell shipping
+/// fabricated participants; stating the roster here proves the same
+/// wiring without that.
+///
+/// Render `TopBarChrome`, scan the encoded scene for the canonical peer
+/// hex (`#ec4899` / Tailwind pink-500 = (236, 72, 153) for alice,
+/// `#f97316` / orange-500 for bob; matches `nirios-concept/src/data.ts`),
+/// and assert the colour shows up. If a future regression flips the
+/// roster source back to the empty tree-level field, this fails loudly
+/// with the captured fills in the diagnostic.
 ///
 /// Concept ref: `nirios-concept/src/components/TopBarWidgets.tsx` —
 /// collaborator avatar stack on the right cluster.
 #[test]
 fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
-    let tree = WorkspaceTree::bootstrap_default();
-    // Sanity: the bootstrap fixture must keep at least one collaborator
-    // somewhere in the active workspace (otherwise the test below is
-    // vacuously trivial).
+    use shell::shell::state::Collaborator;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let active_id = tree.active;
+    // Two people arrive, through the same entry point an accepted
+    // invite and an inbound presence frame use. Their colours are
+    // stated rather than left to the palette so the hex the assertions
+    // below look for is a property of this fixture and not of whatever
+    // the local user id happens to hash to on the machine running it.
+    assert!(tree.admit_collaborator(
+        active_id,
+        Collaborator::new("alice", "Alice").with_cursor_color("#ec4899"),
+    ));
+    assert!(tree.admit_collaborator(
+        active_id,
+        Collaborator::new("bob", "Bob").with_cursor_color("#f97316"),
+    ));
+
     let active_ws = tree
         .active_workspace()
         .expect("bootstrap_default leaves an active workspace");
     let active_collabs = active_ws.collaborators.len();
     let tree_collabs = tree.collaborators.len();
-    assert!(
-        active_collabs > 0 || tree_collabs > 0,
-        "bootstrap_default should seed collaborators reachable from the \
-         active workspace (per-ws or tree-level fallback) so the top-bar \
-         avatar stack has something to paint on first boot"
+    assert_eq!(
+        active_collabs, 2,
+        "the fixture must put exactly the two admitted peers on the \
+         active workspace, else the paint assertions below prove nothing"
     );
 
     let mut chrome = TopBarChrome::from_tree(&tree);
@@ -1735,11 +1753,11 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     // The widget must have synced at least one initial out of the
-    // bootstrap fixture's roster.
+    // roster the active workspace carries.
     assert!(
         !chrome.collaborator_initials().is_empty(),
         "TopBarChrome failed to pick up any collaborator initials from the \
-         bootstrap_default tree (active ws has {active_collabs}, \
+         tree (active ws has {active_collabs}, \
          tree-level has {tree_collabs}). Likely cause: \
          `sync_from_tree` reads from the wrong roster source."
     );
@@ -1751,16 +1769,242 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     let has_alice = contains_color_close(&fills, (236, 72, 153), 8);
     let has_bob = contains_color_close(&fills, (249, 115, 22), 8);
     assert!(
-        has_alice || has_bob,
-        "TopBar right cluster must paint at least one peer-coloured \
-         avatar from the bootstrap roster (Alice #ec4899 or Bob #f97316; \
-         concept `nirios-concept/src/data.ts`). Observed solid fills: \
-         {fills:?}. If this fails, check that \
+        has_alice && has_bob,
+        "TopBar right cluster must paint both peers in their own colour \
+         (Alice #ec4899 present: {has_alice}; Bob #f97316 present: \
+         {has_bob}; concept `nirios-concept/src/data.ts`). Observed solid \
+         fills: {fills:?}. If this fails, check that \
          `TopBarChrome::sync_from_tree` reads from the active workspace's \
          own collaborator list (with a tree-level fallback) and that \
-         `WorkspaceTree::bootstrap_default` still seeds Home with at \
-         least one collaborator."
+         `roster_colors` still honours an explicit `cursor_color`."
     );
+}
+
+/// The same wiring, run the other way: a workspace nobody has joined
+/// paints no avatars at all.
+///
+/// This is the half a "does the stack paint?" test cannot cover on its
+/// own. A chrome that fabricates an avatar and a chrome that renders a
+/// real one both satisfy "something painted"; only the empty case
+/// distinguishes them. It is also the state a machine boots into, and
+/// the state it returns to when everyone leaves — so an avatar surviving
+/// here is the shell claiming somebody is present who is not.
+#[test]
+fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let mut chrome = TopBarChrome::from_tree(&tree);
+
+    assert!(
+        chrome.collaborator_initials().is_empty(),
+        "a freshly booted workspace nobody has joined must show no \
+         avatars; got {:?}",
+        chrome.collaborator_initials()
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        0,
+        "and no \"+N\" chip standing in for peers that do not exist"
+    );
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    // Nothing on that bar may be painted in a peer's colour. The two
+    // canonical demo hues are the ones the shell used to seed, so they
+    // are the exact fills a regression would bring back.
+    let fills = collect_solid_colors(&scene);
+    assert!(
+        !contains_color_close(&fills, (236, 72, 153), 8),
+        "the top bar paints pink-500 (#ec4899) with nobody in the \
+         workspace — a fabricated peer is back. Observed: {fills:?}"
+    );
+    assert!(
+        !contains_color_close(&fills, (249, 115, 22), 8),
+        "the top bar paints orange-500 (#f97316) with nobody in the \
+         workspace — a fabricated peer is back. Observed: {fills:?}"
+    );
+}
+
+/// Two real peers, from the wire to painted avatars, through the
+/// production path and nothing else.
+///
+/// The two halves of the roster bug met here. `bootstrap_default` used
+/// to seed people nobody invited, and the presence fold used a frame's
+/// name to label a cursor and then dropped it — so the bar painted
+/// fabricated participants and had no way to learn about real ones. This
+/// starts from an empty first-boot tree, feeds it the exact
+/// `InboundPresence` records the network hands the compositor, and
+/// asserts the bar paints those two people and only those two.
+///
+/// Forbidden modifications (re: the file header covenant):
+/// - Don't seed `ws.collaborators` directly; the point is that the
+///   presence path is what fills it.
+/// - Don't drop the empty-before assertion. "Two avatars painted" is
+///   satisfied by a bar that fabricates two, and the before/after pair
+///   is what separates those.
+#[test]
+fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
+    use shell::shell::network::InboundPresence;
+    use shell::shell::peer_presence::fold_inbound;
+    use ui::presence::PresenceKey;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let room = tree.active_workspace().expect("active workspace").room;
+
+    // Nobody has arrived yet.
+    let before = TopBarChrome::from_tree(&tree);
+    assert!(
+        before.collaborator_initials().is_empty(),
+        "the bar must start empty, or the assertions below prove nothing"
+    );
+
+    // Exactly what the network layer buffers for the compositor: a room-
+    // scoped pointer frame per publishing session, each naming who is at
+    // it.
+    let key = serde_json::to_string(&PresenceKey::Workspace {
+        id: room.to_string(),
+    })
+    .expect("a workspace key serialises");
+    let frames = vec![
+        InboundPresence {
+            peer: 0x11,
+            user: "bob".into(),
+            key: key.clone(),
+            point: (100.0, 100.0),
+            ts: 0,
+        },
+        InboundPresence {
+            peer: 0x22,
+            user: "dana".into(),
+            key,
+            point: (400.0, 300.0),
+            ts: 0,
+        },
+    ];
+
+    // The compositor's frame loop: fold the frames, then put whoever
+    // they came from on that room's roster.
+    let mut presence = PresenceCtx::default();
+    let seen = fold_inbound(frames, &mut presence);
+    assert_eq!(seen.len(), 2, "both frames must be reported as sightings");
+    for s in &seen {
+        assert!(
+            tree.note_peer_present(
+                shell::shell::state::RoomId::parse(&s.room).expect("a room id"),
+                s.peer,
+                &s.user,
+            ),
+            "{} arriving must change the roster",
+            s.user
+        );
+    }
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    let mut initials: Vec<char> = chrome.collaborator_initials().to_vec();
+    initials.sort_unstable();
+    assert_eq!(
+        initials,
+        vec!['B', 'D'],
+        "the bar must name the two people who published, not their \
+         session handles"
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        0,
+        "two peers is two chips and no overflow"
+    );
+
+    // And they are painted, in two colours the room settled apart.
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let fills = collect_solid_colors(&scene);
+
+    let colors = chrome.collaborator_colors();
+    assert_eq!(colors.len(), 2, "one colour per painted chip");
+    assert_ne!(
+        colors[0], colors[1],
+        "two people in one room must not be painted the same colour"
+    );
+    for c in colors {
+        let rgba = c.to_rgba8();
+        assert!(
+            contains_color_close(&fills, (rgba.r, rgba.g, rgba.b), 8),
+            "a peer's resolved colour {:?} never reached the scene; \
+             observed fills: {fills:?}",
+            (rgba.r, rgba.g, rgba.b)
+        );
+    }
 }
 
 /// The top-bar collaborator cluster is painted through the shared
