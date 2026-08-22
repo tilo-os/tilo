@@ -65,7 +65,31 @@ declare -A NAME=(
 [typst_editor]="Typst Editor" [video_editor]="Video Editor" [video-player]="Video Player"
 [vpn]="VPN" [weather]="Weather" [word-processor]="Word Processor")
 
+# Apps with no window to shoot, and why. Listing them explicitly is what lets
+# the drift check below treat anything *else* that is missing as a mistake.
+declare -A NO_WINDOW=(
+[agent]="a participant without a window"
+[browser]="iced 0.13 has no headless surface, so no --shots mode yet")
+
 APPS=$(printf '%s\n' "${!NAME[@]}" | sort)
+
+# A hardcoded list silently stops covering the fleet the moment an app is
+# added — the same drift that once dropped 37 crates out of the build. Name
+# anything on disk that this grid would neither shoot nor deliberately skip.
+if [ -d apps ]; then
+  unlabelled=""
+  for d in apps/*/; do
+    a=$(basename "$d")
+    [ -f "$d/Cargo.toml" ] || continue
+    [ -n "${NAME[$a]+x}" ] && continue
+    [ -n "${NO_WINDOW[$a]+x}" ] && continue
+    unlabelled="$unlabelled $a"
+  done
+  [ -n "$unlabelled" ] && {
+    echo "note: not in the grid and not a known windowless app:$unlabelled" >&2
+    echo "      add a display name to NAME (or a reason to NO_WINDOW)." >&2
+  }
+fi
 
 if [ "$BUILD" -eq 1 ]; then
   echo "=== building $(printf '%s\n' "$APPS" | wc -l) apps at $(git rev-parse --short HEAD) ==="
