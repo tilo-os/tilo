@@ -1,0 +1,36 @@
+[package]
+name = "agent"
+version = "0.1.0"
+edition = "2021"
+description = "qos-agent: a headless participant that joins a word-processor document through the compositor's collaboration broker and edits it with the app's own actions."
+
+[lib]
+name = "qos_agent"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-agent"
+path = "src/main.rs"
+
+[dependencies]
+# The wire types every participant speaks (`CollabRequest` / `CollabEvent`,
+# presence keys and payloads) — the same definitions the word processor
+# serialises, so a frame the agent writes is a frame the app reads.
+ui = { path = "../../ui" }
+# The word processor's exported actions: the agent edits with exactly the
+# ops the toolbar produces, never with its own idea of the document.
+word-processor = { path = "../word-processor" }
+qos-actions = { path = "../../crates/collab/actions" }
+qdoc = { path = "../../crates/doc/qdoc" }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+hex.workspace = true
