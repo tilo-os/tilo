@@ -12,6 +12,13 @@ pub const ACCENT_PRIMARY_IDX: usize = 5;
 /// ramp swaps stay coherent with [`ACCENT_PRIMARY_IDX`].
 pub const ACCENT_HOVER_IDX: usize = 4;
 
+/// How far [`Colors::legible_fill`] may deepen a chip's fill toward black
+/// before it gives up and re-picks the label instead. At 35 % a mid-tone
+/// accent still reads as itself; past it the pale accents (Nord's frost,
+/// Gruvbox's yellow, Rosé Pine's rose) go muddy, and those are exactly the
+/// ones a dark label suits anyway.
+pub const MAX_CHIP_DEEPEN: f32 = 0.35;
+
 /// Translucent black scrim painted over an interactive widget whose
 /// [`PermissionScope`](crate::permissions::PermissionScope) is denied, to
 /// signal it is not actionable. Single source of truth so the dim is
@@ -329,6 +336,44 @@ impl Colors {
         } else {
             black
         }
+    }
+
+    /// Resolve a **filled chip** — an accent button, a danger button, the
+    /// selected segment of a control — into a `(fill, label)` pair whose
+    /// label clears WCAG AA (4.5:1) against the fill.
+    ///
+    /// A light label on a saturated fill is the fleet's design language, so
+    /// this preserves it wherever it can: if `preferred_label` already clears
+    /// AA the pair is returned untouched, and otherwise the **fill is deepened
+    /// toward black** until the label clears, rather than the label being
+    /// swapped. A slightly deeper accent still reads as the same component; a
+    /// black label on an accent chip reads as a different one.
+    ///
+    /// Deepening stops at [`MAX_CHIP_DEEPEN`]. Past that the fill has lost the
+    /// identity that made it the accent — Gruvbox's yellow needs 41 % to host
+    /// white and lands on mustard, Rosé Pine's rose lands on a muddy mauve —
+    /// and for those pale accents a dark label is both legible and the more
+    /// idiomatic look, so the fill is kept and the label re-picked via
+    /// [`Self::readable_on`].
+    ///
+    /// `fill` must be opaque: it is what the label will actually sit on.
+    pub fn legible_fill(&self, fill: Color, preferred_label: Color) -> (Color, Color) {
+        const AA_BODY: f64 = 4.5;
+        if crate::a11y::contrast_ratio(preferred_label, fill) >= AA_BODY {
+            return (fill, preferred_label);
+        }
+        let black = Color::BLACK;
+        // Walk in 1 % steps: the smallest deepening that clears the bar keeps
+        // the chip as close to the theme's own accent as legibility allows.
+        let mut step = 1u32;
+        while (step as f32) / 100.0 <= MAX_CHIP_DEEPEN {
+            let deepened = mix8(fill, black, (step as f32) / 100.0);
+            if crate::a11y::contrast_ratio(preferred_label, deepened) >= AA_BODY {
+                return (deepened, preferred_label);
+            }
+            step += 1;
+        }
+        (fill, self.readable_on(fill, preferred_label))
     }
 
     /// The default dark palette — a calm, neutral **graphite** ground with a
@@ -838,4 +883,156 @@ mod tests {
             assert!(r >= 4.5, "readable_on returned a {r:.2}:1 pairing on {:?}", rgb(bg));
         }
     }
+
+
+    // --- legible_fill -----------------------------------------------------
+
+    /// A filled chip must host its label at AA in every theme. White on the
+    /// raw accent fails in 11 of the 14 — 1.69:1 on Rosé Pine, 1.70:1 on
+    /// Gruvbox, 2.00:1 on Nord, and 3.17:1 on the shipped dark default.
+    #[test]
+    fn legible_fill_clears_aa_on_every_accent_and_danger() {
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let c = &t.tokens.colors;
+            for (kind, raw) in [
+                ("accent", t.accent_primary),
+                ("accent_hover", t.accent_hover),
+                ("danger", c.semantic.danger),
+            ] {
+                let (fill, label) = c.legible_fill(raw, Color::WHITE);
+                let r = contrast_ratio(label, fill);
+                assert!(r >= 4.5, "{name}/{kind}: chip label is {r:.2}:1, below AA");
+            }
+        }
+    }
+
+    /// Deepening is the preferred repair because it keeps the chip reading as
+    /// the same component. Assert it is actually what happens for a mid-tone
+    /// accent, and that the deepened fill stays recognisably the theme's hue.
+    #[test]
+    fn legible_fill_deepens_rather_than_repainting_the_label() {
+        let t = crate::theme::Theme::dark();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+
+        assert_eq!(rgba(label), rgba(Color::WHITE), "the white label is kept");
+        assert_ne!(rgba(fill), rgba(raw), "the fill is deepened to earn it");
+        assert!(
+            crate::a11y::relative_luminance(fill) < crate::a11y::relative_luminance(raw),
+            "deepening means darker",
+        );
+        assert!(fill.b() > fill.g() && fill.g() > fill.r(), "still the theme's blue");
+    }
+
+    /// A pale accent cannot be deepened into a white-label chip without going
+    /// muddy, so those keep their fill and take a dark label instead. Gruvbox's
+    /// yellow is the canonical case: 41 % deepening would be needed, past the
+    /// cap, and a black-on-yellow chip is the idiomatic look anyway.
+    #[test]
+    fn legible_fill_keeps_pale_accents_and_repaints_their_label() {
+        let t = crate::theme::Theme::named("Gruvbox").unwrap();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+
+        assert_eq!(rgba(fill), rgba(raw), "the yellow is left alone");
+        assert_ne!(rgba(label), rgba(Color::WHITE), "the label is what moves");
+        assert!(contrast_ratio(label, fill) >= 4.5);
+    }
+
+    /// Where white already clears AA the pair is returned untouched, so a
+    /// theme designed correctly is not repainted.
+    #[test]
+    fn legible_fill_is_inert_where_the_pairing_already_passes() {
+        let t = crate::theme::Theme::light();
+        let c = &t.tokens.colors;
+        let raw = t.accent_primary;
+        assert!(contrast_ratio(Color::WHITE, raw) >= 4.5, "precondition");
+        let (fill, label) = c.legible_fill(raw, Color::WHITE);
+        assert_eq!(rgba(fill), rgba(raw));
+        assert_eq!(rgba(label), rgba(Color::WHITE));
+    }
+
+    // --- the permission-denied scrim --------------------------------------
+
+    /// The scrim is one const shared by every theme, which looks like the
+    /// defect the overlay tiers had — and measured against a widget's
+    /// *background* it reads that way: black over the High Contrast preset's
+    /// pure-black card is a literal 1.00:1.
+    ///
+    /// That is the wrong surface. The scrim is painted over the widget after
+    /// it has drawn itself, so it lands on the border, label and knob too, and
+    /// those are what carry "you cannot act on this". Measured there it is
+    /// strongest exactly where the background reading said it was absent: High
+    /// Contrast drops white content from 21.00:1 to 9.90:1.
+    ///
+    /// So this pins the property that actually matters — a denied control's
+    /// content loses contrast against its own body in every theme — rather
+    /// than a polarity the scrim does not need. Making it directional would
+    /// invert the meaning on dark themes, where a lightening scrim would leave
+    /// a disabled control brighter than an enabled one.
+    #[test]
+    fn the_denied_scrim_mutes_a_control_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let c = &t.tokens.colors;
+            // The two bodies a control realistically has: a neutral card under
+            // primary text, and an accent fill under a white label.
+            // The accent case must be measured on the pair a widget actually
+            // paints — `legible_fill` may have deepened the fill and/or
+            // re-picked the label — not on the raw accent.
+            let (accent_fill, accent_label) = c.legible_fill(t.accent_primary, Color::WHITE);
+            for (kind, body, content) in [
+                ("neutral", c.surfaces.raised, c.text_primary),
+                ("accent", accent_fill, accent_label),
+            ] {
+                let before = contrast_ratio(content, body);
+                let after = contrast_ratio(
+                    composite(PERMISSION_DENIED_SCRIM, content),
+                    composite(PERMISSION_DENIED_SCRIM, body),
+                );
+                assert!(
+                    after < before / 1.08,
+                    "{name}/{kind}: the scrim must cost the content contrast \
+                     ({before:.2} -> {after:.2})",
+                );
+                // …and the control must visibly move, not merely lose ratio.
+                // Either half can carry that: a light label darkens under the
+                // scrim, while a chip that took a dark label instead keeps its
+                // label put and shifts its fill. Requiring the content
+                // specifically would be asserting one repair strategy.
+                let moved = |x: Color| {
+                    (lstar(x) - lstar(composite(PERMISSION_DENIED_SCRIM, x))).abs()
+                };
+                let shift = moved(content).max(moved(body));
+                assert!(
+                    shift >= 3.0,
+                    "{name}/{kind}: the denied control must visibly shift (got {shift:.1} L*)",
+                );
+            }
+        }
+    }
+
+    /// Accent-filled controls are the weakest case by construction: the scrim
+    /// darkens fill and label together, so their ratio is largely preserved.
+    /// Pinned so that if it ever degrades to "no signal at all" a test says so
+    /// — the shots show it still reads today, but only just.
+    #[test]
+    fn the_denied_scrim_is_weakest_on_accent_fills() {
+        let mut worst = f64::INFINITY;
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            let (fill, label) = t.tokens.colors.legible_fill(t.accent_primary, Color::WHITE);
+            let before = contrast_ratio(label, fill);
+            let after = contrast_ratio(
+                composite(PERMISSION_DENIED_SCRIM, label),
+                composite(PERMISSION_DENIED_SCRIM, fill),
+            );
+            worst = worst.min(before / after);
+        }
+        assert!(worst > 1.08, "an accent chip must still mute (worst drop x{worst:.2})");
+    }
 }
+
