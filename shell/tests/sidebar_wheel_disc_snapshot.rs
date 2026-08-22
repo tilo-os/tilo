@@ -232,3 +232,53 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
          black disc on a black ground"
     );
 }
+
+/// Summoning lifts the disc off the strip and puts it wherever the pointer
+/// is — which is usually on top of an app, and apps are frequently bright.
+/// The rail sits at the disc's inner end, exactly where the body has faded
+/// to nothing, so a row cannot borrow contrast from the wheel behind it:
+/// it has to bring its own surface, or the shell's near-white label text
+/// lands on a near-white document.
+///
+/// Rendered on a white ground, a row's interior must therefore come back
+/// dark. The paired sample from the rail *between* rows must come back
+/// bright — otherwise this would pass just as happily against a disc that
+/// blacked out the whole footprint, which is the other way to fail.
+#[test]
+fn summoned_rows_carry_their_own_surface_over_a_bright_app() {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
+        eprintln!("skip: no wgpu adapter available for offscreen render");
+        return;
+    };
+    let mut tr = TextRenderer::new();
+    let scene = render_three_spoke_disc(&Theme::dark(), &mut tr);
+    let rgba = renderer.render(&scene, Color::WHITE);
+
+    let path = screenshots_dir().join("wheel-disc-02-over-light.png");
+    renderer.render_png(&scene, Color::WHITE, &path);
+
+    let luma = |x: u32, y: u32| {
+        let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y);
+        (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
+    };
+
+    // The active row runs along the vertical middle, starting a little in
+    // from the footprint's left edge.
+    let row_y = CANVAS_H / 2;
+    let inside_row = luma(60, row_y);
+    assert!(
+        inside_row < 110,
+        "the active row let the bright app through (luma {inside_row}/255 at (60,{row_y})) \
+         — its near-white label has nothing to read against; see {path:?}"
+    );
+
+    // A quarter of the way down the rail sits between rows: open ground,
+    // where the app should still be plainly visible.
+    let gap_y = CANVAS_H * 3 / 8;
+    let between_rows = luma(60, gap_y);
+    assert!(
+        between_rows > 170,
+        "the rail blacked out the app between rows (luma {between_rows}/255 at (60,{gap_y})) \
+         — the disc is meant to be a sliver, not a panel; see {path:?}"
+    );
+}
