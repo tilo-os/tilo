@@ -912,6 +912,19 @@ impl WindowGroup {
     /// fade elapses.
     #[cfg(test)]
     pub fn host_count(&self) -> usize { self.hosts.len() }
+    /// The tile hosting tab `tab_id`, for a caller that needs to change
+    /// what is *in* a tab without disturbing the tab.
+    ///
+    /// Detaching and re-inserting would do the same job and three other
+    /// things nobody asked for: it makes the tab active, plays the
+    /// arrival fade, and moves it to the caller's index. A window filling
+    /// in behind a card should do none of those to the person watching.
+    pub fn host_for_tab_mut(&mut self, tab_id: u64) -> Option<&mut TileHost> {
+        self.hosts
+            .iter_mut()
+            .find(|(id, _)| *id == tab_id)
+            .map(|(_, h)| h)
+    }
 
     /// Test-only: whether a host with `id` is still present. Paired
     /// with `host_count` for the "closing host stays until fade

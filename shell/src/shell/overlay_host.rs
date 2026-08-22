@@ -337,6 +337,15 @@ pub struct ShellOverlayHost {
     /// so the first poll always rebuilds, even when chrome boots
     /// with `revision: 0`.
     last_chrome_revision: u64,
+    /// What each live tab was last built to show, keyed by tab id.
+    ///
+    /// The revision counter says *something* in the tree moved; this says
+    /// which tabs it moved. Without it the resync can only add and remove
+    /// tabs, so a tab whose content changed while its id did not keeps the
+    /// widget it was built with — the tree and the screen then disagree
+    /// permanently, and every assertion made against the tree passes while
+    /// the person is still looking at the old thing.
+    tab_tiles: std::collections::HashMap<u64, String>,
     /// Side-effect dispatcher for quick-settings actions. Production
     /// builds use [`crate::shell::qs_actions::RealQsActions`]; tests
     /// can swap in a recording impl via [`Self::with_qs_actions`] to
@@ -857,6 +866,18 @@ pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 /// Pinned by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
 pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
+/// A cheap value that changes exactly when what a tab should be showing
+/// changes.
+///
+/// The serialised tile, because that is the whole of what
+/// [`crate::shell::to_ui_tile`] reads — so two tiles with the same
+/// serialisation build the same widget, and building one to compare
+/// against would be both expensive and, for a tile that spawns a process,
+/// destructive.
+fn tile_signature(tile: &crate::shell::state::TileContent) -> String {
+    serde_json::to_string(tile).unwrap_or_default()
+}
+
 impl ShellOverlayHost {
     /// Display name painted in the General tab's collaborator tile when
     /// no `me` collaborator is seeded in the active workspace. Pinned
@@ -964,6 +985,7 @@ impl ShellOverlayHost {
             peer_sync_prompt_rects: Vec::new(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
+            tab_tiles: std::collections::HashMap::new(),
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
             status_bridge: None,
             room_activity: crate::shell::room_activity::RoomActivityPane::new(),
@@ -1949,6 +1971,10 @@ impl ShellOverlayHost {
             return false;
         }
         let mut any_change = false;
+        // Moved out for the walk below: the rows are reached through raw
+        // pointers taken from `&mut self`, so a field borrowed across them
+        // would alias. Put back before returning.
+        let mut tab_tiles = std::mem::take(&mut self.tab_tiles);
         let st = chrome.borrow();
         let records = st.records().clone();
         let tree = st.tree();
@@ -2005,7 +2031,24 @@ impl ShellOverlayHost {
                     let tree_tab_ids: std::collections::HashSet<u64> =
                         g.tabs.iter().map(|t| t.id).collect();
                     for (idx, tab) in g.tabs.iter().enumerate() {
+                        let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
+                            // The tab is already on screen. What is *in*
+                            // it can still have changed under it — a tab
+                            // that announced a window before the window
+                            // existed becomes the window, in place — and
+                            // the splice above only ever fires for a tab
+                            // id it has not seen. Without this the tree
+                            // and the screen disagree permanently, and
+                            // every assertion made against the tree
+                            // passes while the person sees the old thing.
+                            if tab_tiles.get(&tab.id) != Some(&signature)
+                                && let Some(host) = live.host_for_tab_mut(tab.id)
+                            {
+                                host.replace_content(crate::shell::to_ui_tile(&tab.tile));
+                                tab_tiles.insert(tab.id, signature);
+                                any_change = true;
+                            }
                             continue;
                         }
                         let desc = ui::widget::TabDescriptor {
@@ -2024,10 +2067,12 @@ impl ShellOverlayHost {
                             crate::shell::tab_documents::scratch_tab_record(tab.id),
                         );
                         live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
+                        tab_tiles.insert(tab.id, signature);
                         any_change = true;
                     }
                     for stale in live_tab_ids.difference(&tree_tab_ids) {
                         if live.detach_tab(*stale).is_some() {
+                            tab_tiles.remove(stale);
                             any_change = true;
                         }
                     }
@@ -2036,6 +2081,7 @@ impl ShellOverlayHost {
         }
         drop(tree);
         drop(st);
+        self.tab_tiles = tab_tiles;
         self.last_chrome_revision = current_rev;
         any_change
     }
