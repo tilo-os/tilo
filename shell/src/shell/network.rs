@@ -128,6 +128,9 @@ pub struct ShellNetwork {
     /// to locally-connected apps. See
     /// [`Self::inbound_app_crdt_signed_handle`].
     inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    /// Received app-presence frames awaiting fan-out to local apps.
+    /// See [`Self::inbound_app_presence_handle`].
+    inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -165,6 +168,27 @@ pub struct InboundAppCrdt {
     /// the receiving app's `CollaborationManager` as a
     /// `CollabEvent::CRDTIncremental`.
     pub data: Vec<u8>,
+}
+
+/// One received app-presence frame, queued by [`ShellNetwork::tick`]
+/// for the `collab_broker` drainer to fan out to local apps.
+///
+/// Carries no record id: presence is fanned at cluster scope, so the
+/// room and the app are the whole delivery filter. See
+/// [`crate::network::protocol::NeighbourMsg::AppPresence`].
+#[derive(Debug, Clone)]
+pub struct InboundAppPresence {
+    /// Hashed libp2p peer id of the publisher. Unlike the CRDT queues
+    /// this one is load-bearing rather than advisory: it becomes the
+    /// `user_id` the receiving app attributes the caret to, and so the
+    /// colour it is drawn in.
+    pub peer: u64,
+    /// Originating app id; first half of the delivery filter.
+    pub app_id: String,
+    /// Originating cluster id (the room); second half.
+    pub cluster_id: String,
+    /// The serialised `CollabRequest::Presence`, opaque here.
+    pub frame: Vec<u8>,
 }
 
 /// One received *signed* app-CRDT envelope, queued by
@@ -334,6 +358,7 @@ impl ShellNetwork {
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -560,6 +585,57 @@ impl ShellNetwork {
                 cluster_id,
                 record_id,
                 envelope: Box::new(envelope),
+            });
+        }
+    }
+
+    /// Publish an app's presence frame to the peers in its room.
+    ///
+    /// The counterpart to [`Self::publish_app_crdt_incremental`], and
+    /// the reason a peer's caret is visible on another machine at all:
+    /// the broker's local fan-out reaches apps on *this* host, and
+    /// without this the frame stopped there.
+    ///
+    /// `frame` is the serialised `CollabRequest::Presence`, passed
+    /// through untouched. Presence is best-effort — a dropped caret
+    /// update is corrected by the next one — so a full command channel
+    /// is swallowed rather than surfaced, exactly as the pointer path
+    /// upstream does.
+    pub fn publish_app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
+        let msg = NeighbourMsg::AppPresence {
+            peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
+            frame,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Shared handle to the inbound app-presence buffer, drained by the
+    /// broker and fanned to local apps as `RemotePresenceUpdate`.
+    pub fn inbound_app_presence_handle(&self) -> Arc<Mutex<Vec<InboundAppPresence>>> {
+        Arc::clone(&self.inbound_app_presence)
+    }
+
+    /// Adapter: queue a received `AppPresence`. Public so integration
+    /// tests can inject one without standing up gossipsub. Mirrors
+    /// [`Self::handle_app_crdt_message`].
+    pub fn handle_app_presence_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        frame: Vec<u8>,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_presence.lock() {
+            buf.push(InboundAppPresence {
+                peer,
+                app_id,
+                cluster_id,
+                frame,
             });
         }
     }
@@ -904,6 +980,28 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // App presence — a peer's caret, selection or authorship
+                // inside a shared document. Same two gates the CRDT
+                // variants get, and for the same reasons: our own
+                // gossipsub echo is not a peer, and a room we are not in
+                // does not get to put a cursor on our screen.
+                if let NeighbourMsg::AppPresence {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref frame,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_app_presence_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            frame.clone(),
+                        );
+                    }
+                    continue;
+                }
                 // Phase 6 cooperative scrollback. Skip self-echoes
                 // (we already have the answer) and route requests +
                 // responses to their dedicated buffers.
@@ -995,6 +1093,7 @@ pub(crate) fn shell_network_for_test(
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
