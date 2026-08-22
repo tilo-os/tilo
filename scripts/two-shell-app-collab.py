@@ -282,6 +282,11 @@ class Session:
         """Peers this session would paint, off the overlay's own presence."""
         return (self.state().get("peers") or {}).get("pointers") or []
 
+    def set_group_width(self, permille: int) -> None:
+        """Give every group in the active strip the same share of it."""
+        ok(call(self.sock, {"op": "set_group_width", "permille": permille}))
+        self.settle(0.5)
+
     def place_next_in_new_group(self, app_id: str) -> None:
         """Put the next window from `app_id` beside the current one."""
         ok(call(self.sock, {"op": "place_next_window", "app_id": app_id}))
@@ -405,6 +410,10 @@ def main() -> int:
                     help="launch two apps per session and walk one peer's "
                          "cursor from one to the other, photographing the "
                          "session that is watching")
+    ap.add_argument("--group-width", type=int, default=460,
+                    help="share of the strip each window group takes, in "
+                         "permille (--cross-cursor); the default leaves two "
+                         "windows on screen at once")
     ap.add_argument("--steps", type=int, default=14,
                     help="pointer samples taken while crossing (--cross-cursor)")
     ap.add_argument("--size", default="1280x800")
@@ -528,6 +537,13 @@ def main() -> int:
             for s, _ in targets:
                 claim(f"{s.name} has two windows painting",
                       s.wait_for_painted(2, 180.0), True)
+            # A group takes about three quarters of its strip, so two of
+            # them never fit and the second is scrolled off screen — and
+            # a cursor the overlay clips away is a cursor nobody can see
+            # cross. Give each group a share that leaves both on screen.
+            for s, _ in targets:
+                s.set_group_width(args.group_width)
+            time.sleep(1.0)
 
         step("4", "type into one window")
         writer, writer_id = targets[0]
