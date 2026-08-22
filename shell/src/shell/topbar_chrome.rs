@@ -361,13 +361,14 @@ impl TopBarChrome {
         let rev = chrome.borrow().revision;
         // Take the status here, not only on the next revision bump.
         //
-        // Attaching the chrome also *declares this widget synced to it*,
-        // and the shell rebuilds its widget tree whenever the revision
-        // moves — so a bar built after a bump starts life already
-        // up to date by that rule and `update`'s sync branch never runs
-        // for it. Everything else the bar reads comes in through
-        // `from_tree`, which is why only the tray was affected: it read
-        // a field nothing seeded, and drew a permanently empty status.
+        // Attaching the chrome also *declares this widget synced to it*
+        // at the current revision, so `update`'s sync branch does not
+        // run until the revision moves again. Everything else the bar
+        // reads was seeded by `from_tree`; the status was not, which is
+        // why the tray drew empty until the first bump. After this the
+        // bar stays current through [`Widget::update`], which the host
+        // reaches via the `Stack`/`Column` the bar sits in — a container
+        // that swallowed `update` would freeze every field below.
         self.status = chrome.borrow().status.clone();
         self.chrome = Some(chrome);
         self.synced_revision = rev;
@@ -427,6 +428,20 @@ impl TopBarChrome {
     /// Initials painted as avatars (up to 3). Exposed for integration tests.
     pub fn collaborator_initials(&self) -> &[char] {
         &self.collaborator_initials
+    }
+
+    /// Whether a workspace precedes the active one. The up-chevron is
+    /// painted live exactly when this holds — the same condition under
+    /// which `ChromeState::switch_workspace(-1)` actually moves — so the
+    /// affordance and the action cannot disagree.
+    pub fn can_switch_up(&self) -> bool {
+        self.workspace_index > 0
+    }
+
+    /// Whether a workspace follows the active one. Mirror of
+    /// [`Self::can_switch_up`] for the down-chevron.
+    pub fn can_switch_down(&self) -> bool {
+        self.workspace_index + 1 < self.workspace_total
     }
 
     /// Resolved avatar fill colours (one per entry in
@@ -926,10 +941,10 @@ impl Widget for TopBarChrome {
             transform,
             up_icon_rect,
             ui::icons::Icon::ChevronUp,
-            if self.workspace_index == 0 {
-                colors.border_standard
-            } else {
+            if self.can_switch_up() {
                 colors.text_dim
+            } else {
+                colors.border_standard
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -949,10 +964,10 @@ impl Widget for TopBarChrome {
             transform,
             dn_icon_rect,
             ui::icons::Icon::ChevronDown,
-            if self.workspace_index + 1 >= self.workspace_total {
-                colors.border_standard
-            } else {
+            if self.can_switch_down() {
                 colors.text_dim
+            } else {
+                colors.border_standard
             },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
@@ -1713,6 +1728,20 @@ impl Widget for TopBarChrome {
             ("topbar_overview_button".to_string(), self.overview_btn_rect),
             ("topbar_workspace_up".to_string(), self.up_btn_rect),
             ("topbar_workspace_down".to_string(), self.down_btn_rect),
+            // State as well as geometry. The chevron rects above are
+            // always published (they are the click targets); these two
+            // carry the same rect only while the switch would actually
+            // move. `walk_widget` drops zero-area entries, so a scenario
+            // asks "is the up chevron live?" by asking whether the name
+            // resolves at all.
+            (
+                "topbar_workspace_up_enabled".to_string(),
+                if self.can_switch_up() { self.up_btn_rect } else { Rect::ZERO },
+            ),
+            (
+                "topbar_workspace_down_enabled".to_string(),
+                if self.can_switch_down() { self.down_btn_rect } else { Rect::ZERO },
+            ),
             ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
             ("topbar_tray_pill".to_string(), self.tray_pill_rect),
             ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),

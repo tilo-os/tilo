@@ -52,6 +52,17 @@ impl Widget for Stack {
         }
     }
 
+    /// Forward the per-frame update pass; every child runs, and a
+    /// change in any of them is a change here. Not short-circuited —
+    /// a child that skipped its pass would miss a frame of state.
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let mut changed = false;
+        for child in &mut self.children {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let child_nodes: Vec<NodeId> = self.children
             .iter_mut()
