@@ -73,6 +73,17 @@ pub mod render_thread;
 pub mod warmup;
 pub mod window_icon;
 pub mod webview;
+
+/// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
+/// Shared by the WebView's page buffers and the video decoder's hardware
+/// frames.
+#[cfg(feature = "dmabuf-import")]
+pub mod dmabuf_import;
+
+/// Painting decoded video on the GPU: uploading a hardware decoder's planar
+/// output and converting YUV to RGB in a shader.
+#[cfg(feature = "gpu-video")]
+pub mod gpu_video;
 pub mod fullscreen;
 pub mod scale;
 pub mod mpris;
