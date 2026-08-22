@@ -324,17 +324,23 @@ impl Widget for EditorApp {
         presence: &PresenceCtx,
     ) {
         let tokens = &theme.tokens;
-        // Foreground on the white window-card: slate-900 for body, slate-500
-        // for gutter, slate-400 for comments.
-        let body_color = tokens.colors.neutral[1];
-        let gutter_color = tokens.colors.neutral[5];
-        let gutter_bg = tokens.colors.neutral[9]; // slate-100: a whisper tint
+        // The editor paints no background of its own, so every neutral here
+        // is ink *on the window card*. Which way round that card runs is a
+        // property of the theme — light on the preserved concept palette,
+        // black under high contrast — so the tiers come from
+        // `Theme::on_card` rather than from ramp slots picked for one of
+        // them. Syntax colours stay on the accent / semantic ramps: those
+        // are chosen to read against either ground.
+        let ink = theme.on_card();
+        let body_color = ink.ink;
+        let gutter_color = ink.ink_dim;
+        let gutter_bg = ink.tint; // a whisper tint of the card, either way round
         let keyword_color = tokens.colors.accent[5]; // indigo-500
         let string_color = tokens.colors.semantic.success; // emerald
         let number_color = tokens.colors.semantic.warning; // amber
-        let comment_color = tokens.colors.neutral[6];
-        let punct_color = tokens.colors.neutral[4];
-        let ident_color = tokens.colors.neutral[2];
+        let comment_color = ink.ink_tertiary;
+        let punct_color = ink.ink_dim;
+        let ident_color = ink.ink;
         let caret_color = tokens.colors.accent[5];
 
         // Header row: "Editor" title + hint on the right.

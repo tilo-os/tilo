@@ -75,13 +75,65 @@ pub struct Surfaces {
     pub scrim: Color,
     pub glass: Color,
     pub glass_blur_px: f32,
-    /// The card that frames each window tile. Sits on top of the shell
-    /// backdrop; for dark themes a light card (dark app content reads on it),
-    /// for light themes plain white.
+    /// The card that frames each window tile — the ground a window shows
+    /// where the app it hosts has painted nothing.
+    ///
+    /// It belongs to the theme's own surface family, so an empty window
+    /// reads as *this desktop's* window rather than as a sheet of paper
+    /// dropped onto it. That matters because it is the only window ground
+    /// the user ever compares side by side: apps that fill their own
+    /// background (the terminal, the file explorer, the word processor's
+    /// desk) cover the card entirely, so if the card came from a different
+    /// colour family than they do, switching tabs would flip the window
+    /// between two grounds.
+    ///
+    /// A *document* surface that wants to read as paper — a page in the
+    /// word processor, a page in the PDF viewer — draws that page itself,
+    /// inset on its own canvas with an edge and a shadow. Paper is content
+    /// there, and looks deliberate; a whole window bleached to paper-white
+    /// just looks like the app failed to paint.
+    ///
+    /// Ink for text painted straight onto this surface comes from
+    /// [`Colors::on_card`], never from an assumption about which way round
+    /// the card is.
     pub window_card: Color,
     /// Subtle border around the window card.
     pub window_card_border: Color,
 }
+
+/// The ink tiers for content painted **directly onto the window card**
+/// ([`Surfaces::window_card`]) — a hosted app that fills no background of
+/// its own, a stub tile, the placeholder a foreign surface shows before its
+/// first frame.
+///
+/// This exists because "what colour is text on the card" is not answerable
+/// from the chrome's palette alone: the card is a surface in its own right,
+/// and across the preset set it lands on both sides of the light/dark line
+/// (`#F4F5F7` on the graphite default, black under high contrast, near-black
+/// on OLED, white on the preserved concept palette). Every call site used to
+/// answer it by hard-coding one ramp end, which is correct for exactly the
+/// themes whose card matches that guess and renders the text invisible on
+/// the rest. Derive it here, once, from the card's actual luminance.
+#[derive(Clone, Copy, Debug)]
+pub struct OnCard {
+    /// Body / title ink. Clears WCAG AA (4.5:1) against the card.
+    pub ink: Color,
+    /// Secondary ink — sub-labels, captions, a gutter's line numbers.
+    pub ink_dim: Color,
+    /// Tertiary ink — the quietest legible tier (hints, comments).
+    pub ink_tertiary: Color,
+    /// A whisper-tinted surface *on* the card: a gutter strip, a zebra row.
+    /// Always a small step from the card toward its own ink, so it reads as
+    /// a tint in either direction instead of a light-theme assumption.
+    pub tint: Color,
+}
+
+/// Minimum contrast the chrome's own ink must clear against the card before
+/// it is reused there. WCAG 2.1 AA for body text.
+const ON_CARD_MIN_CONTRAST: f64 = 4.5;
+
+/// How far a [`OnCard::tint`] surface is pulled from the card toward its ink.
+const ON_CARD_TINT_T: f32 = 0.07;
 
 #[derive(Clone, Debug)]
 pub struct SemanticColors { pub success: Color, pub warning: Color, pub danger: Color, pub info: Color }
@@ -178,9 +230,13 @@ impl Colors {
         accent.stops[ACCENT_HOVER_IDX] = p.accent_hover;
         accent.stops[ACCENT_PRIMARY_IDX] = p.accent;
 
-        let window_card = p.window_card.unwrap_or_else(|| {
-            if p.dark { Color::from_rgb8(0xF4, 0xF5, 0xF7) } else { Color::WHITE }
-        });
+        // The window ground is the theme's ground. A window whose app has
+        // painted nothing then matches the window beside it whose app filled
+        // `surfaces.base`, so moving between tabs does not flip the frame
+        // between a light and a dark surface. (The OLED preset reached the
+        // same conclusion by hand before this was derived — see its
+        // `window_card` override.)
+        let window_card = p.window_card.unwrap_or(if p.dark { p.base } else { Color::WHITE });
         let window_card_border = if p.dark {
             Color::from_rgba8(255, 255, 255, 51)
         } else {
@@ -222,6 +278,53 @@ impl Colors {
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
             border_white_10:  Color::from_rgba8(255, 255, 255, 26),
             border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+        }
+    }
+
+    /// Ink for content painted directly on [`Surfaces::window_card`].
+    ///
+    /// Two cases, decided by measurement rather than by a `dark` flag:
+    ///
+    /// * The card is in the **same family as the chrome** (a dark card on a
+    ///   dark theme, a white card on a light one). The chrome's own three
+    ///   text tiers already read on it, so they are what a widget gets —
+    ///   which keeps a hosted app's typography identical to the rest of the
+    ///   UI instead of quietly forking into a second scale.
+    /// * The card is in the **opposite family** (the preserved concept
+    ///   palette's white card under a dark chrome). The chrome's near-white
+    ///   ink would vanish, so ink comes from whichever end of the neutral
+    ///   ramp actually contrasts with the card.
+    ///
+    /// Either way the result clears AA against the card, which is the
+    /// property the three former copies of this logic did not have: each
+    /// assumed a light card and derived dark ink from it, so under the
+    /// high-contrast preset (black card) and OLED (`#0A0A0A` card) they
+    /// painted dark-on-dark and the text disappeared.
+    pub fn on_card(&self) -> OnCard {
+        use crate::a11y::contrast_ratio;
+        let card = self.surfaces.window_card;
+
+        let (ink, ink_dim, ink_tertiary) =
+            if contrast_ratio(self.text_primary, card) >= ON_CARD_MIN_CONTRAST {
+                (self.text_primary, self.text_dim, self.text_tertiary)
+            } else {
+                // One step in from the ramp end, not the end itself: pure
+                // black on white (or pure white on black) is harsher than
+                // the typography the rest of the UI uses.
+                let from_low = contrast_ratio(self.neutral[0], card)
+                    >= contrast_ratio(self.neutral[10], card);
+                if from_low {
+                    (self.neutral[1], self.neutral[4], self.neutral[4])
+                } else {
+                    (self.neutral[9], self.neutral[6], self.neutral[6])
+                }
+            };
+
+        OnCard {
+            ink,
+            ink_dim,
+            ink_tertiary,
+            tint: mix8(card, ink, ON_CARD_TINT_T),
         }
     }
 

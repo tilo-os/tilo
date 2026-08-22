@@ -38,8 +38,17 @@ pub fn ink_soft() -> Color {
 pub fn ink_faint() -> Color {
     Color::from_rgb8(148, 163, 184)
 }
-pub fn paper(theme: &Theme) -> Color {
-    theme.tokens.colors.surfaces.window_card
+/// The page's own stock.
+///
+/// A PDF page is *document content*, not chrome: the ink above is the
+/// document's ink, fixed at near-black regardless of theme, so the stock it
+/// sits on has to be paper for the same reason — a themed page would leave
+/// black type on a dark ground the moment the desktop went dark. It used to
+/// borrow `surfaces.window_card`, which happened to be light on the default
+/// theme; that made the page's legibility depend on the colour of the
+/// *window frame*, which is not something a document has an opinion about.
+pub fn paper(_theme: &Theme) -> Color {
+    Color::WHITE
 }
 
 /// Resolve an annotation swatch into a concrete colour. Pulls from the
