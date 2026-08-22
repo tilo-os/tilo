@@ -2057,13 +2057,22 @@ def beat_seven(quinten: Session, xaver: Session, host_ws: dict,
     body = None
     surface = (quinten_wp or {}).get("surface_id")
     if surface is not None:
-        rect = quinten.named_rect(f"foreign-surface-{surface}")
+        # A client tile is registered as `foreign-surface-<id>`, and when
+        # the compositor knows which tab it belongs to it appends that in
+        # brackets. Both forms occur in one run, so the surface id is a
+        # prefix to match rather than a whole name to look up — asking
+        # for the bare name found nothing while the window was on screen
+        # the entire time.
+        stem = f"foreign-surface-{surface}"
+        named = next((n for n in quinten.target_names()
+                      if n == stem or n.startswith(stem + "[")), None)
+        rect = quinten.named_rect(named) if named else None
         if rect:
             bx, by, bw, bh = rect
             # Below the toolbar strip, inside the page.
             body = (bx + bw * 0.4, by + bh * 0.55)
-            note(f"his document is at {[round(v) for v in rect]}; putting "
-                 f"the caret at {[round(v) for v in body]}")
+            note(f"his document is {named} at {[round(v) for v in rect]}; "
+                 f"putting the caret at {[round(v) for v in body]}")
     if body is None:
         # Which client tiles the compositor *does* have laid out. Tabs in
         # one group share a tile and only the front one is drawn, so a
