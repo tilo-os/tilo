@@ -25,6 +25,12 @@ const SPAWN_FADE_MS: f32 = 180.0;
 /// back to 1.0 at the end of `SPAWN_FADE_MS`.
 const SPAWN_SCALE_START: f64 = 0.95;
 
+/// Width of the hairline the frame draws around a window. One logical
+/// pixel: the edge is structure, not decoration, and anything heavier
+/// reads as a drawn outline around the app rather than as the boundary
+/// of a surface.
+const EDGE_STROKE_WIDTH: f64 = 1.0;
+
 /// Side length of the pre-baked radial shadow sprite. 256 px keeps the
 /// one-shot RGBA8 allocation tiny (256 KiB) while being large enough
 /// that stretching the sprite under a full-height content card doesn't
@@ -759,16 +765,37 @@ impl TileHost {
             }
         }
         scene.pop_layer();
-        // Border last. Stroked over the hosted content so the window
-        // always keeps a visible edge against the desktop — an app that
-        // fills its own dark background can no longer erase the one line
-        // that separates the window from the wallpaper behind it.
+        // The window's edge, painted *outside* the card's silhouette.
+        //
+        // The app can no longer erase it — everything the tile hosts is
+        // clipped to `shape` by the layer above, so the edge is safe by
+        // construction rather than by winning a paint-order race. That
+        // matters more than the ordering it replaces, because stroking
+        // the edge over the app's content made the shell tint pixels it
+        // does not own and cannot sample: one constant landed on
+        // whatever the app happened to paint, reading as a soft rim
+        // light over a dark app and as a glaring near-white line over
+        // one painting light chrome. No alpha satisfies both.
+        //
+        // Outside the card the ground is the desktop, which the shell
+        // *does* know, so `Theme::window_edge` can derive an edge that
+        // registers against it in every theme. Inflating by half the
+        // stroke width puts the whole 1 px band in `[0, 1]` outward from
+        // the card boundary: flush against the card, zero overlap with
+        // its interior. The corner radius grows by the same half-width
+        // so the offset band stays concentric with the card's arc
+        // instead of pinching at the corners.
+        let half = EDGE_STROKE_WIDTH / 2.0;
+        let edge = RoundedRect::from_rect(
+            self.rect.inflate(half, half),
+            radius + half,
+        );
         scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+            &vello::kurbo::Stroke::new(EDGE_STROKE_WIDTH),
             transform,
-            theme.tokens.colors.surfaces.window_card_border,
+            theme.window_edge(),
             None,
-            &shape,
+            &edge,
         );
     }
 }
@@ -1181,16 +1208,174 @@ mod tests {
              ({mr},{mg},{mb}), expected the app's flood colour",
         );
 
-        // Along the tile's left edge, mid-height, the border is stroked
-        // over the app. It must not be pure flood colour.
-        let edge_x = rect.x0 as u32;
+        // Along the tile's left edge, mid-height. The edge that separates a
+        // window from the desktop is the frame's to draw — and it is drawn
+        // *outside* the card, so it survives the app's flood without the
+        // frame having to tint a pixel the app owns.
+        //
+        // One pixel out from the boundary is the frame's: it must be neither
+        // the app (which would mean the flood escaped its clip) nor the bare
+        // desktop (which would mean there is no edge there at all).
+        let edge_x = rect.x0 as u32 - 1;
         let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
         assert!(
             (er, eg, eb) != (0xFF, 0x00, 0x00),
-            "the window's border was erased by the hosted app's fill at \
-             ({edge_x},100) — the edge that separates a window from the \
-             desktop is the frame's to draw, not the app's",
+            "the hosted app's fill leaked onto the window's edge at \
+             ({edge_x},100) — got ({er},{eg},{eb}), the app's flood colour",
         );
+        assert!(
+            (er, eg, eb) != (0x00, 0x00, 0xFF),
+            "the window has no edge at ({edge_x},100) — the pixel is bare \
+             desktop, so nothing separates the window from it",
+        );
+
+        // ...and the first pixel *inside* the boundary is the app's, whole.
+        // The frame stops at the silhouette.
+        let inside_x = rect.x0 as u32;
+        let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
+        assert_eq!(
+            (nr, ng, nb),
+            (0xFF, 0x00, 0x00),
+            "the frame tinted a pixel the app owns at ({inside_x},100) — got \
+             ({nr},{ng},{nb}), expected the app's flood colour",
+        );
+    }
+
+    /// The window's edge must never tint a pixel the hosted app owns.
+    ///
+    /// The shell does not sample app content, so an edge stroked *over* it is
+    /// a constant landing on an unknown ground. The same `white/20` reads as a
+    /// soft rim light where the app painted dark and as a glaring near-white
+    /// line where it painted light chrome, and no alpha satisfies both: the
+    /// two grounds sit at opposite ends of the ramp, so raising the alpha
+    /// fixes one case exactly as fast as it breaks the other. The only way out
+    /// is for the edge not to be there at all — it belongs on the desktop,
+    /// which the shell does know.
+    ///
+    /// Rendered across four app grounds spanning the ramp. Each must come back
+    /// exactly as the app painted it, with no lightening from the frame.
+    #[test]
+    fn the_window_edge_never_tints_a_pixel_the_app_owns() {
+        use crate::offscreen::OffscreenRenderer;
+
+        struct Flood {
+            rect: Rect,
+            color: vello::peniko::Color,
+        }
+        impl Widget for Flood {
+            fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _theme: &Theme,
+                node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                let n = taffy.new_leaf(Style::default()).unwrap();
+                node_map.insert(n, self as *mut dyn Widget);
+                n
+            }
+            fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+            fn draw(
+                &mut self,
+                scene: &mut Scene,
+                transform: Affine,
+                _tr: &mut TextRenderer,
+                _th: &Theme,
+                _p: &PresenceCtx,
+            ) {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    self.color,
+                    None,
+                    &self.rect,
+                );
+            }
+            fn handle_event(
+                &mut self,
+                _event: &WindowEvent,
+                _scale: f64,
+                _m: &winit::event::Modifiers,
+                _state: &mut AutoCommit,
+                _path: &ObjId,
+                _handled: &mut bool,
+                _focus: &mut Option<NodeId>,
+                _node: NodeId,
+                _taffy: &TaffyTree<()>,
+            ) {
+            }
+            fn name(&self) -> &str {
+                "Flood"
+            }
+            fn get_rect(&self) -> Rect {
+                self.rect
+            }
+        }
+        impl crate::widget::app_widget::AppWidget for Flood {
+            fn app_kind(&self) -> AppKind {
+                AppKind::Editor
+            }
+            fn app_title(&self) -> &str {
+                "Flood"
+            }
+            fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+                crate::widget::app_widget::IconDescriptor::Glyph("F")
+            }
+            fn permission_hint(&self) -> Option<AppKind> {
+                None
+            }
+        }
+
+        // Spanning the ramp: a dark app, two mid grounds, and the light
+        // chrome a word processor paints. The last is the case the constant
+        // edge turned into a near-white line.
+        let grounds: [(u8, u8, u8); 4] = [
+            (0x10, 0x10, 0x12),
+            (0x40, 0x40, 0x44),
+            (0x80, 0x80, 0x84),
+            (0xC0, 0xC0, 0xC4),
+        ];
+        let (w, h) = (200u32, 200u32);
+        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+        let theme = Theme::default();
+
+        for (r8, g8, b8) in grounds {
+            let color = vello::peniko::Color::from_rgb8(r8, g8, b8);
+            let mut host = TileHost::new(TileContent::App(Box::new(Flood { rect, color })));
+            host.rect = rect;
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            host.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let mut renderer = OffscreenRenderer::new(w, h);
+            let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+
+            // Both vertical edges at mid-height, and the horizontal edges at
+            // mid-width: the first pixel inside the silhouette on every side.
+            let probes = [
+                ("left", rect.x0 as u32, 100u32),
+                ("right", rect.x1 as u32 - 1, 100u32),
+                ("top", 100u32, rect.y0 as u32),
+                ("bottom", 100u32, rect.y1 as u32 - 1),
+            ];
+            for (side, px, py) in probes {
+                let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
+                assert_eq!(
+                    (sr, sg, sb),
+                    (r8, g8, b8),
+                    "the frame tinted the app's own pixel on the {side} edge \
+                     at ({px},{py}): app painted ({r8},{g8},{b8}), the render \
+                     shows ({sr},{sg},{sb}). The window's edge belongs outside \
+                     the card, on ground the shell knows — over app content it \
+                     is a constant on an unknown surface",
+                );
+            }
+        }
     }
 
     #[test]
