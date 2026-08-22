@@ -249,7 +249,7 @@ impl Default for QuickSettingsState {
             wifi: true,
             bluetooth: false,
             nav_stack: vec![QsLevel::Root],
-            // Empty until `refresh_quick_settings_from_os` runs — nmcli /
+            // Empty until the Wi-Fi / Bluetooth drill-in asks for it — nmcli /
             // bluetoothctl populate live lists on the popover's rising
             // edge. Starting empty keeps the "no fake content" contract:
             // a fresh boot never shows a network it isn't actually seeing.

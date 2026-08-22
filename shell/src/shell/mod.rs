@@ -52,6 +52,7 @@ pub mod peer_view;
 pub mod persist;
 pub mod placement;
 pub mod qs_actions;
+pub mod qs_refresh;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod room_activity;

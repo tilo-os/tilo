@@ -407,8 +407,8 @@ fn wifi_drill_in_row_click_routes_to_connect_wifi() {
     // Drill into the Wi-Fi list, holding the result of a scan.
     //
     // The panel does not invent networks: `wifi_networks` is empty until
-    // `refresh_quick_settings_from_os` fills it from `nmcli` on the
-    // popover's rising edge, and there is no `nmcli` in a test process.
+    // a scan dispatched by this very drill-in reports back from `nmcli`,
+    // and there is no `nmcli` in a test process.
     // So the fixture writes what a completed scan writes — two rows, the
     // second one the currently-connected network — and the assertion
     // below names the SSID of the row it clicked, which is the part of
