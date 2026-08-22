@@ -32,6 +32,39 @@ use crate::shell::state::WorkspaceTreeHandle;
 /// without per-workspace negotiation.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
+/// Largest app-document snapshot this shell will put on the gossip
+/// topic, in bytes.
+///
+/// # Where the number comes from
+///
+/// libp2p gossipsub caps one RPC at 64 KiB and
+/// [`crate::network::behaviour::NiriosBehaviour::new`] does not raise
+/// it, so a larger publish is rejected by the transport rather than
+/// truncated. The cap here sits below that ceiling with room for what
+/// rides along with the payload: the bincode `NeighbourMsg` envelope,
+/// the room uuid, a record id that may be a full path, and gossipsub's
+/// own protobuf wrapper (topic, signature, author key, sequence
+/// number). 48 KiB leaves 16 KiB for all of it, which is far more than
+/// any of them need and is deliberately not tuned to the edge.
+///
+/// # Why a cap rather than a bigger pipe
+///
+/// A document has no upper bound, so no ceiling makes this correct in
+/// general — raising the gossipsub limit would move the failure, not
+/// remove it, and would do so on a **broadcast** medium where every
+/// peer in the room pays for every byte. The bounded case is worth
+/// having anyway because it is the common one: a document that fits is
+/// a document that converges, immediately, over transport that already
+/// exists.
+///
+/// Past this size the right carrier is a direct peer-to-peer stream
+/// rather than gossip — the substrate for one is already in
+/// [`crate::network::surface_stream`], which video frames use for the
+/// same reason (they are large, and they concern one peer rather than
+/// the room). Wiring a snapshot onto it is the follow-up this constant
+/// marks the boundary of.
+pub const MAX_APP_SNAPSHOT_BYTES: usize = 48 * 1024;
+
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its libp2p identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
@@ -131,6 +164,13 @@ pub struct ShellNetwork {
     /// Received app-presence frames awaiting fan-out to local apps.
     /// See [`Self::inbound_app_presence_handle`].
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
+    /// Received app-CRDT *snapshots* awaiting fan-out to local apps.
+    /// Separate from [`Self::inbound_app_crdt`] because the two are
+    /// not interchangeable on delivery: an increment is applied to a
+    /// document that already holds its history, a snapshot *is* that
+    /// history, and the receiving app folds them in by different calls.
+    /// See [`Self::inbound_app_crdt_snapshot_handle`].
+    inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -359,6 +399,7 @@ impl ShellNetwork {
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -636,6 +677,79 @@ impl ShellNetwork {
                 app_id,
                 cluster_id,
                 frame,
+            });
+        }
+    }
+
+    /// Publish a `NeighbourMsg::AppCrdtSnapshot` — one document's whole
+    /// state — to the workspace topic, so a peer that has just joined
+    /// can adopt a document it holds no history for.
+    ///
+    /// Refuses above [`MAX_APP_SNAPSHOT_BYTES`] instead of handing
+    /// gossipsub a message it would reject. Both transports (the JSON
+    /// reader loop and the capnp bridge) reach the wire through this
+    /// one function, so the cap is enforced once rather than at each
+    /// caller.
+    ///
+    /// A refusal is logged at `warn` with the size and the room,
+    /// because the user-visible consequence — this document does not
+    /// converge — has no other symptom. Silence here would look
+    /// exactly like a document that simply had nothing to send.
+    pub fn publish_app_crdt_snapshot(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        if data.len() > MAX_APP_SNAPSHOT_BYTES {
+            tracing::warn!(
+                bytes = data.len(),
+                cap = MAX_APP_SNAPSHOT_BYTES,
+                app = %app_id,
+                room = %cluster_id,
+                record = %record_id,
+                "shell_network: refusing to publish an app snapshot over the gossip cap; this document will not converge for peers that lack its history",
+            );
+            return;
+        }
+        let msg = NeighbourMsg::AppCrdtSnapshot {
+            peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
+            record_id,
+            data,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Shared handle to the inbound app-snapshot buffer, drained by the
+    /// broker and fanned to local apps as `CollabEvent::CRDTUpdate`.
+    pub fn inbound_app_crdt_snapshot_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
+        Arc::clone(&self.inbound_app_crdt_snapshot)
+    }
+
+    /// Adapter: queue a received `AppCrdtSnapshot`. Public so tests can
+    /// inject one without standing up gossipsub. Mirrors
+    /// [`Self::handle_app_crdt_message`].
+    pub fn handle_app_crdt_snapshot_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_crdt_snapshot.lock() {
+            buf.push(InboundAppCrdt {
+                peer,
+                app_id,
+                cluster_id,
+                record_id,
+                data,
             });
         }
     }
@@ -957,6 +1071,32 @@ impl ShellNetwork {
                     }
                     continue;
                 }
+                // A whole document, sent because a peer joined and
+                // has no history to apply deltas against. Same two
+                // gates the increment gets, and they matter more here
+                // rather than less: an increment landing in the wrong
+                // document is noise the widgets ignore, a whole
+                // document merged into the wrong one cannot be taken
+                // back out.
+                if let NeighbourMsg::AppCrdtSnapshot {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref record_id,
+                    ref data,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_app_crdt_snapshot_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            record_id.clone(),
+                            data.clone(),
+                        );
+                    }
+                    continue;
+                }
                 // Phase 3 signed path. Mirrors the legacy
                 // `AppCrdtIncremental` routing: skip self-publishes,
                 // then push onto the signed-inbound queue for the
@@ -1094,6 +1234,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1342,6 +1483,131 @@ mod tests {
             }
             other => panic!("expected NetCmd::Publish, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn publish_app_crdt_snapshot_wraps_the_whole_document() {
+        // The frame that makes a peer's freshly-created document adopt
+        // somebody else's. The record has to survive the wrap for the
+        // same reason it does on an increment, and more so: a whole
+        // document merged into the wrong record cannot be un-merged.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0xAA, 0xBB, 0xCC],
+        );
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::AppCrdtSnapshot {
+                        peer,
+                        app_id,
+                        cluster_id,
+                        record_id,
+                        data,
+                    } => {
+                        assert_eq!(peer, 0xCAFEu64);
+                        assert_eq!(app_id, "dev.qos.word-processor");
+                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        assert_eq!(record_id, "file:/work/report.odt");
+                        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
+                    }
+                    other => panic!("expected AppCrdtSnapshot, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossipsub() {
+        // gossipsub caps an RPC at 64 KiB and rejects anything larger,
+        // so publishing a document past the cap would fail inside the
+        // transport with nothing at this layer knowing it had. Refusing
+        // here is what turns "this document silently never converges"
+        // into a log line naming the size.
+        //
+        // Asserted on the queue rather than on the log: the observable
+        // consequence is that nothing goes out.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            String::new(),
+            vec![0u8; MAX_APP_SNAPSHOT_BYTES + 1],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a snapshot past the cap must not be queued for publish",
+        );
+
+        // Exactly at the cap still goes out — the boundary belongs to
+        // the documents that fit, not to the ones that don't.
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            String::new(),
+            vec![0u8; MAX_APP_SNAPSHOT_BYTES],
+        );
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "a snapshot exactly at the cap must still publish",
+        );
+    }
+
+    #[test]
+    fn the_snapshot_cap_leaves_room_under_the_gossipsub_ceiling() {
+        // The cap is only meaningful if a message built at it still
+        // fits the transport once the envelope, the routing strings and
+        // gossipsub's own framing are added. Encode a worst-ish case —
+        // a full-length record path — and check the encoded frame is
+        // comfortably under 64 KiB rather than trusting the arithmetic
+        // in the constant's doc comment.
+        let msg = NeighbourMsg::AppCrdtSnapshot {
+            peer: u64::MAX,
+            app_id: "dev.qos.word-processor".into(),
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            record_id: "file:".to_string() + &"a".repeat(4096),
+            data: vec![0u8; MAX_APP_SNAPSHOT_BYTES],
+        };
+        let encoded = serde_json::to_vec(&msg).expect("encode");
+        assert!(
+            encoded.len() < 65536,
+            "a snapshot at the cap must still fit a gossipsub RPC; got {} bytes",
+            encoded.len(),
+        );
+    }
+
+    #[test]
+    fn handle_app_crdt_snapshot_message_buffers_for_drain() {
+        // The receive-side adapter the broker's drainer reads. Every
+        // component of the routing triple has to round-trip, because
+        // the drainer rebuilds the route from exactly these fields.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let buf_handle = net.inbound_app_crdt_snapshot_handle();
+        net.handle_app_crdt_snapshot_message(
+            7u64,
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0x01, 0x02],
+        );
+        let buf = buf_handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].peer, 7u64);
+        assert_eq!(buf[0].app_id, "dev.qos.word-processor");
+        assert_eq!(buf[0].cluster_id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(buf[0].record_id, "file:/work/report.odt");
+        assert_eq!(buf[0].data, vec![0x01, 0x02]);
     }
 
     #[test]
