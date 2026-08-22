@@ -96,7 +96,16 @@ pub struct PeerPresence {
     /// Where this session's pointer is, in the compositor's own scene
     /// space. Written by the input path on every motion, read by the
     /// broker sink on the reader thread that decoded a frame.
-    cursor: Arc<Mutex<(f64, f64)>>,
+    ///
+    /// `None` until the pointer has actually been somewhere. That is
+    /// not the same as `(0, 0)`, and the difference is the whole
+    /// reason this is an `Option`: publishing is level-triggered, so a
+    /// session whose pointer has never moved would otherwise announce
+    /// the origin as a real position and every peer would paint a
+    /// cursor in their top-left corner for somebody who is not there.
+    /// An agent session never moves a mouse at all, so for it the
+    /// origin pill was permanent.
+    cursor: Arc<Mutex<Option<(f64, f64)>>>,
     /// Inbound presence from other hosts, filled by
     /// [`ShellNetwork::tick`].
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
@@ -154,11 +163,36 @@ pub fn should_publish_cursor(
     elapsed >= min_gap
 }
 
+/// What this session should put on the wire for a room right now, if
+/// anything.
+///
+/// `at` is `None` until the pointer has actually been somewhere, and
+/// that is the case this exists to separate. Publishing is
+/// level-triggered and the first pass is deliberately ungated (so a
+/// peer already in the room sees this session arrive), which together
+/// meant a pointer that had never moved announced the *origin* as a
+/// real position — a cursor on every peer's screen for somebody who
+/// was not there, and permanently so for a session that never moves a
+/// mouse.
+///
+/// The origin itself is a perfectly good place to point, so it is
+/// `None` that is silent here, not `Some((0.0, 0.0))`.
+fn cursor_to_publish(
+    at: Option<(f64, f64)>,
+    last: Option<((f64, f64), Instant)>,
+    now: Instant,
+    min_gap: Duration,
+    keepalive: Duration,
+) -> Option<(f64, f64)> {
+    let at = at?;
+    should_publish_cursor(last, at, now, min_gap, keepalive).then_some(at)
+}
+
 impl PeerPresence {
     /// Subscribe to `rooms` on `broker` and republish what the local
     /// apps publish in them to `net`.
     pub fn attach(broker: &BrokerHandle, net: Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
-        let cursor = Arc::new(Mutex::new((0.0_f64, 0.0_f64)));
+        let cursor: Arc<Mutex<Option<(f64, f64)>>> = Arc::new(Mutex::new(None));
         let inbound = net.inbound_presence_handle();
         let rooms_mirror = rooms.clone();
         let net_for_desktop = Arc::clone(&net);
@@ -192,9 +226,17 @@ impl PeerPresence {
                 let Ok(key_str) = serde_json::to_string(&key) else {
                     return;
                 };
-                let point = *sink_cursor
+                // The app said somebody is pointing inside a shared
+                // app in this room; this session says where. If this
+                // session's own pointer has never been anywhere there
+                // is no where to supply, and the origin is not a
+                // substitute for one.
+                let Some(point) = *sink_cursor
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                else {
+                    return;
+                };
                 net.publish_presence(key_str, point);
             }),
         );
@@ -258,15 +300,15 @@ impl PeerPresence {
             .last_published
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !should_publish_cursor(
-            last.get(room).copied(),
+        let Some(at) = cursor_to_publish(
             at,
+            last.get(room).copied(),
             now,
             MIN_PUBLISH_GAP,
             CURSOR_KEEPALIVE,
-        ) {
+        ) else {
             return false;
-        }
+        };
         let key = PresenceKey::Workspace { id: room.to_string() };
         let Ok(key_str) = serde_json::to_string(&key) else {
             return false;
@@ -279,7 +321,7 @@ impl PeerPresence {
     /// Record where this session's pointer is, in scene space.
     pub fn set_cursor(&self, x: f64, y: f64) {
         if let Ok(mut g) = self.cursor.lock() {
-            *g = (x, y);
+            *g = Some((x, y));
         }
     }
 
@@ -294,7 +336,20 @@ impl PeerPresence {
             std::mem::take(&mut *buf)
         };
         let net = Arc::clone(&self.net);
-        fold_inbound(drained, presence, &|room| net.peer_labels(room))
+        // The rooms this session is actually in. A frame naming any
+        // other room is not this session's to hold — see
+        // `fold_inbound`.
+        let mine: Vec<String> = self
+            .rooms
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        fold_inbound(
+            drained,
+            presence,
+            &|room| net.peer_labels(room),
+            &|room| mine.iter().any(|r| r == room),
+        )
     }
 }
 
@@ -315,6 +370,7 @@ pub fn fold_inbound(
     entries: Vec<crate::shell::network::InboundPresence>,
     presence: &mut PresenceCtx,
     labels: &dyn Fn(&str) -> PeerLabels,
+    member_of: &dyn Fn(&str) -> bool,
 ) -> bool {
     let mut any = false;
     // Entries in one drain are nearly always the same room; resolving
@@ -324,6 +380,33 @@ pub fn fold_inbound(
         let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
             continue;
         };
+        // Only rooms this session is in.
+        //
+        // A session publishes its pointer under whichever room is on
+        // its own screen, and that is frequently not this one: a peer
+        // is in its own room before it joins yours, and stays in it
+        // afterwards. Folding those in anyway filed a pointer under a
+        // room this session is not a member of, where nothing ever
+        // replaced it and nothing ever cleaned it up — so one person
+        // accumulated an entry per room they had ever pointed in, and
+        // any reader that spans keys (the state dump, and therefore
+        // the recorder) saw one peer as several.
+        //
+        // The overlay never painted them, because it looks peers up by
+        // the active room. That is exactly what made this survive: the
+        // ghosts were only visible to something reading the store
+        // rather than the screen.
+        //
+        // It is also the access rule. Presence arrives from whoever is
+        // on the wire, so without this a remote host could write
+        // entries into this session's presence store under any room id
+        // it liked, including rooms it is not in and this session has
+        // never heard of.
+        if let PresenceKey::Workspace { id: room } = &key {
+            if !member_of(room) {
+                continue;
+            }
+        }
         // The id is the sending *session*, spelled from the handle its
         // frames carry — the same spelling the broker gives a peer
         // seen inside an app. One person is therefore one id on both
@@ -392,6 +475,46 @@ mod tests {
             MIN_PUBLISH_GAP,
             CURSOR_KEEPALIVE,
         ));
+    }
+
+    /// A session whose pointer has never been anywhere says nothing.
+    ///
+    /// Publishing is level-triggered, and the first pass is deliberately
+    /// ungated so somebody already in the room sees this session arrive.
+    /// That combination used to announce the *origin* as a real
+    /// position, because a pointer that had never moved still had
+    /// coordinates. Every peer then painted a cursor in their top-left
+    /// corner for a person who was not there — permanently, for an
+    /// agent session that never moves a mouse at all.
+    ///
+    /// The distinction the fix rests on is between "at (0, 0)" and
+    /// "nowhere yet", so both halves are asserted: silence before the
+    /// pointer has moved, and the origin published like any other
+    /// position once somebody actually puts it there.
+    #[test]
+    fn a_pointer_that_has_never_moved_is_not_announced_at_the_origin() {
+        let now = Instant::now();
+
+        assert_eq!(
+            cursor_to_publish(None, None, now, MIN_PUBLISH_GAP, CURSOR_KEEPALIVE),
+            None,
+            "a session whose pointer has never moved must not announce one"
+        );
+
+        // And the origin is not banned — it is a real place. A pointer
+        // somebody actually moved there is published like any other, or
+        // a peer parked in the corner would vanish.
+        assert_eq!(
+            cursor_to_publish(
+                Some((0.0, 0.0)),
+                None,
+                now,
+                MIN_PUBLISH_GAP,
+                CURSOR_KEEPALIVE
+            ),
+            Some((0.0, 0.0)),
+            "a pointer somebody actually moved to the origin is still a pointer"
+        );
     }
 
     #[test]
@@ -470,6 +593,13 @@ mod tests {
         PeerLabels::new()
     }
 
+    /// This session is in every room a frame might name. The default
+    /// for tests about naming and placement, which are not about
+    /// membership; the membership tests state their own.
+    fn any_room(_room: &str) -> bool {
+        true
+    }
+
     /// The room's names, as its authority wrote them.
     fn named(pairs: &[(u64, &str)]) -> impl Fn(&str) -> PeerLabels + use<> {
         let map: PeerLabels = pairs.iter().map(|(h, n)| (*h, (*n).to_string())).collect();
@@ -487,6 +617,7 @@ mod tests {
             vec![arrived("bob", 7, room, (120.0, 240.0))],
             &mut presence,
             &unnamed,
+            &any_room,
         ));
 
         let key = PresenceKey::Workspace { id: room.into() };
@@ -522,6 +653,7 @@ mod tests {
             vec![arrived("bob", 7, room, (120.0, 240.0))],
             &mut presence,
             &named(&[(7, "bob")]),
+            &any_room,
         );
 
         // The overlay has them.
@@ -553,6 +685,81 @@ mod tests {
         );
     }
 
+    /// One person is one row, however many rooms they have pointed in.
+    ///
+    /// A peer publishes under whichever room is on its own screen, so a
+    /// session that was in its own room before joining this one puts
+    /// frames on the wire for both. Folding the foreign one in filed a
+    /// second entry for the same person under a room this session is
+    /// not in — where nothing replaced it and nothing expired it — and
+    /// any reader that spans keys saw one peer as two.
+    ///
+    /// The overlay never painted the ghost, because it looks peers up
+    /// by the active room. That is precisely why this is asserted over
+    /// the whole store and not over one room: the failure was only ever
+    /// visible to something reading the store rather than the screen.
+    #[test]
+    fn one_person_is_one_entry_across_every_room_in_the_store() {
+        let mine = "3f2b1c00-0000-4000-8000-000000000001";
+        let theirs = "3f2b1c00-0000-4000-8000-0000000000ff";
+        let mut presence = PresenceCtx::default();
+
+        // The same peer, pointing in this room and in one of its own.
+        fold_inbound(
+            vec![
+                arrived("bob", 7, mine, (10.0, 20.0)),
+                arrived("bob", 7, theirs, (30.0, 40.0)),
+            ],
+            &mut presence,
+            &unnamed,
+            &|room| room == mine,
+        );
+
+        let rows: Vec<_> = presence
+            .pointers
+            .iter()
+            .flat_map(|(k, v)| v.iter().map(move |(u, p)| (k.clone(), u.clone(), *p)))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "one person must be one entry in the whole store, got {rows:?}"
+        );
+        assert_eq!(rows[0].1, UserId("peer@7".into()));
+        assert_eq!(
+            rows[0].2,
+            (10.0, 20.0),
+            "and it is the room this session is in"
+        );
+    }
+
+    /// A room this session is not in cannot be written into its
+    /// presence store at all. Presence arrives from whoever is on the
+    /// wire, so without this a remote host chooses which rooms show up
+    /// in somebody else's state.
+    #[test]
+    fn a_room_this_session_is_not_in_is_refused() {
+        let elsewhere = "3f2b1c00-0000-4000-8000-0000000000ff";
+        let mut presence = PresenceCtx::default();
+
+        let any = fold_inbound(
+            vec![arrived("bob", 7, elsewhere, (10.0, 10.0))],
+            &mut presence,
+            &unnamed,
+            &|_room| false,
+        );
+
+        assert!(
+            !any,
+            "a frame for a room this session is not in changes nothing"
+        );
+        assert!(
+            presence.pointers.is_empty(),
+            "and leaves no entry behind: {:?}",
+            presence.pointers
+        );
+    }
+
     #[test]
     fn a_peer_is_called_what_the_room_calls_it() {
         // Names are governance: the room's authority writes them into
@@ -565,6 +772,7 @@ mod tests {
             vec![arrived("bob", 7, room, (10.0, 10.0))],
             &mut presence,
             &named(&[(7, "bob")]),
+            &any_room,
         );
         let peers = presence
             .pointers
@@ -587,6 +795,7 @@ mod tests {
             vec![arrived("ada", 7, room, (10.0, 10.0))],
             &mut presence,
             &unnamed,
+            &any_room,
         );
         let peers = presence
             .pointers
@@ -610,12 +819,14 @@ mod tests {
             vec![arrived("", 7, room, (10.0, 10.0))],
             &mut before,
             &unnamed,
+            &any_room,
         );
         let mut after = PresenceCtx::default();
         fold_inbound(
             vec![arrived("", 7, room, (10.0, 10.0))],
             &mut after,
             &named(&[(7, "bob")]),
+            &any_room,
         );
         let key = PresenceKey::Workspace { id: room.into() };
         let a = &before.pointers.get(&key).expect("a pointer")[0].0;
@@ -638,6 +849,7 @@ mod tests {
             Vec::new(),
             &mut presence,
             &named(&[(7, "bob"), (8, "ada")]),
+            &any_room,
         ));
         assert!(
             presence.pointers.is_empty(),
@@ -661,6 +873,7 @@ mod tests {
             ],
             &mut presence,
             &unnamed,
+            &any_room,
         );
 
         let key = PresenceKey::Workspace { id: room.into() };
@@ -689,6 +902,7 @@ mod tests {
             ],
             &mut presence,
             &unnamed,
+            &any_room,
         );
         let peers = presence
             .pointers
@@ -708,6 +922,7 @@ mod tests {
             vec![arrived("", 0x2a, room, (5.0, 5.0))],
             &mut presence,
             &unnamed,
+            &any_room,
         );
         let peers = presence
             .pointers
