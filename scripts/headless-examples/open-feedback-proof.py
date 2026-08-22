@@ -448,27 +448,43 @@ def main() -> int:
             s.snapshot(args.out / "02-immediately-after-enter.png")
 
             step("sampling every moment of the wait")
+
+            def painted() -> bool:
+                for f in s.foreign_frames():
+                    if f.get("surface_id") in before:
+                        continue
+                    if (f.get("frame_seq") or 0) > 0:
+                        return True
+                return False
+
             gaps: list[float] = []
             samples = 0
             mid_shot_done = False
             t_frame = None
             deadline = time.time() + args.timeout
             while time.time() < deadline:
+                # Frames first. The two reads are separate round trips, so
+                # asking about notifications first and frames second would
+                # report the handover itself as a gap: the compositor
+                # retires the indication on the frame that presents the
+                # window, which lands between the two questions.
+                if painted():
+                    t_frame = time.monotonic()
+                    break
                 notes = s.notifications()
                 samples += 1
                 if not notes:
+                    # Empty — but the window may have arrived in the
+                    # microseconds since the frame check. Only a stretch
+                    # with nothing on screen *and* nothing painted is a
+                    # gap the user would have sat through.
+                    if painted():
+                        t_frame = time.monotonic()
+                        break
                     gaps.append(time.monotonic() - t0)
                 elif not mid_shot_done and time.monotonic() - t0 > 2.0:
                     s.snapshot(args.out / "03-still-loading.png")
                     mid_shot_done = True
-                for f in s.foreign_frames():
-                    if f.get("surface_id") in before:
-                        continue
-                    if (f.get("frame_seq") or 0) > 0:
-                        t_frame = time.monotonic()
-                        break
-                if t_frame is not None:
-                    break
                 time.sleep(SAMPLE_S)
 
             if t_frame is None:
