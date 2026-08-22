@@ -153,12 +153,6 @@ pub struct ShellOverlayHost {
     /// Last known cursor position in logical coords, for hit-testing
     /// overlay clicks (shared with the rest of the chrome).
     last_cursor: Option<Point>,
-    /// Simulated remote peer cursor. The shell is collaborative-by-default,
-    /// so we paint a deterministic fake peer ("Ada") over the desktop
-    /// until the network layer feeds real `PresenceCtx::remote_cursors`
-    /// into the widget tree — this keeps the collab chrome visible in
-    /// single-process development. Lissajous-ish path seeded from `started`.
-    started: Instant,
     /// Overview crossfade state: `overview_t` ∈ [0, 1] where 0 = desktop
     /// fully visible and 1 = overview fully visible. `overview_target` is
     /// the value `overview_t` is animating toward (latched on toggle).
@@ -906,7 +900,6 @@ impl ShellOverlayHost {
             sidebar_node: None,
             chrome: None,
             last_cursor: None,
-            started: Instant::now(),
             overview_t: 0.0,
             overview_target: 0.0,
             overview_scroll_y: 0.0,
@@ -4757,7 +4750,6 @@ impl Widget for ShellOverlayHost {
         if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
-            self.draw_demo_peer(scene, transform, text_renderer, theme);
             self.draw_real_peers(scene, transform, text_renderer, theme, presence);
         } else if content_alpha > 0.0 {
             scene.push_layer(
@@ -4769,15 +4761,13 @@ impl Widget for ShellOverlayHost {
             );
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
-            // Demo + real peers scale with the desktop so they appear to
-            // live inside the scaling viewport rather than glued to the
-            // screen.
+            // Peers scale with the desktop so they appear to live inside
+            // the scaling viewport rather than glued to the screen.
             let peer_xform = if (content_scale - 1.0).abs() > f64::EPSILON {
                 scaled(content_scale) * transform
             } else {
                 transform
             };
-            self.draw_demo_peer(scene, peer_xform, text_renderer, theme);
             self.draw_real_peers(scene, peer_xform, text_renderer, theme, presence);
             scene.pop_layer();
         }
@@ -8701,89 +8691,13 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Paint a single deterministic simulated remote cursor — a "caret +
-    /// name chip" pair — over the desktop content. Lissajous-ish motion
-    /// from a seconds-since-started clock; path stays inside the host's
-    /// rect with a 80 px margin so the peer remains visible regardless
-    /// of window size.
-    fn draw_demo_peer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let t = self.started.elapsed().as_secs_f64();
-
-        // Keep the peer inside the visible viewport minus an 80 px margin
-        // so its label chip never clips against the edge.
-        let margin = 80.0_f64;
-        let avail_w = (self.rect.width() - margin * 2.0).max(0.0);
-        let avail_h = (self.rect.height() - margin * 2.0).max(0.0);
-        let cx = self.rect.x0 + margin + avail_w / 2.0;
-        let cy = self.rect.y0 + margin + avail_h / 2.0;
-        let px = cx + (avail_w / 2.0) * (t * 0.4).sin();
-        let py = cy + (avail_h / 2.0) * (t * 0.31).cos();
-        let apex = Point::new(px, py);
-
-        // Indigo "Ada" peer — matches the concept's pinned-color convention.
-        let peer = tokens.colors.accent[5];
-        let caret_size = 10.0_f64;
-        let chip_offset = 2.0_f64;
-        let pad_x = 6.0_f64;
-        let pad_y = 2.0_f64;
-        let label_size = tokens.typography.scale.sm;
-
-        let mut caret = vello::kurbo::BezPath::new();
-        caret.move_to(apex);
-        caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
-        caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
-        caret.close_path();
-        scene.fill(Fill::NonZero, transform, peer, None, &caret);
-
-        let label = "Ada";
-        let (tw, _th) = text_renderer.measure(label, label_size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = label_size as f64 + pad_y * 2.0;
-        let chip_x = apex.x + caret_size + chip_offset;
-        let chip_y = apex.y + caret_size + chip_offset;
-        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-        let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &chip,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &chip,
-        );
-        let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
-        scene.fill(Fill::NonZero, transform, peer, None, &underline);
-        text_renderer.draw_text(
-            scene,
-            label,
-            label_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-            None,
-        );
-    }
-
     /// Paint every real peer's live pointer for the active workspace
     /// scope. Reads [`PresenceCtx::pointers`] filtered to
     /// `PresenceKey::Workspace { id: <active> }`, which is the same key
     /// `App::set_presence_broadcast_scope` writes when the shell runs.
-    /// Each peer gets a caret+name chip identical in shape to
-    /// `draw_demo_peer` so remote and simulated peers read the same on
-    /// screen. Colours come from `PresenceCtx::color_for` so palette
-    /// pins ("alice" → pink, "bob" → orange) survive the round-trip.
+    /// Each peer gets a caret+name chip. Colours come from
+    /// `PresenceCtx::color_for` so palette pins ("alice" → pink,
+    /// "bob" → orange) survive the round-trip.
     fn draw_real_peers(
         &mut self,
         scene: &mut Scene,
@@ -8795,8 +8709,28 @@ impl ShellOverlayHost {
         let Some(chrome_rc) = self.chrome.as_ref() else {
             return;
         };
-        let active_id_str = format!("{}", chrome_rc.borrow().tree().active.raw());
-        let key = PresenceKey::Workspace { id: active_id_str };
+        // Scope by the workspace's **room**, not its local handle.
+        //
+        // The room is the durable identity: it is what the launcher stamps
+        // into an app as `QOS_WORKSPACE_ID`, what the toolkit addresses its
+        // collaboration to, and therefore what an app publishes presence
+        // under. The local `WorkspaceId` is a per-machine handle and
+        // differs on every peer, so looking peers up by it matched nothing
+        // an app had ever published — which is why this overlay had never
+        // drawn a real peer, and why a fabricated one was standing in for
+        // it.
+        let room = {
+            let chrome = chrome_rc.borrow();
+            let tree = chrome.tree();
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == tree.active)
+                .map(|w| w.room.to_string())
+        };
+        let Some(room) = room else {
+            return;
+        };
+        let key = PresenceKey::Workspace { id: room };
         let Some(peers) = presence.pointers.get(&key) else {
             return;
         };
