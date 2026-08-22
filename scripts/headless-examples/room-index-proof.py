@@ -14,9 +14,11 @@ a query against the corpus each session knows about and labels each row
 with the room it lives in, so a session returning "In this room" for a
 record it never referenced is a session whose index genuinely holds it.
 
-What must NOT travel is asserted too, and asserted the hard way — one
-session is made to change its layout and focus while the other's is
-compared byte for byte.
+Both halves of the user's rule are asserted, because either alone is
+easy to satisfy wrongly: a window one person opens must appear for the
+other, **and** the other must stay on the tab, the strip and the focus
+they were on. Which windows exist is the workspace; which one you are
+looking at is you.
 
 Usage:
   ./room-index-proof.py [--keep]
@@ -174,6 +176,28 @@ class Session:
             if entry.get("provider") == RECORDS and entry.get("id") == record_id:
                 return entry.get("subtitle") or ""
         return None
+
+    def groups_here(self) -> dict:
+        """Every window group in the workspace this session is in.
+
+        Keyed by group id — which is salted per peer, so a group that
+        appears under the *same* id on two machines is the same window,
+        not a lookalike.
+        """
+        tree = self.tree()
+        active = tree.get("active")
+        out = {}
+        for ws in tree.get("workspaces", []):
+            if ws.get("id") != active:
+                continue
+            for strip in ws.get("strips", []):
+                for group in strip.get("window_groups", []):
+                    out[str(group.get("id"))] = {
+                        "active_tab": group.get("active_tab"),
+                        "tabs": [t.get("title") for t in group.get("tabs", [])],
+                        "strip": str(strip.get("id")),
+                    }
+        return out
 
     def view_state(self) -> dict:
         """Everything about this session that is a fact about *the person*.
@@ -386,34 +410,67 @@ def main() -> int:
             check(f"{who}'s room holds both simultaneous documents", bool(both),
                   "" if both else "one of the two is missing")
 
-        print("\n[7] the view does not follow")
-        # Move bob's desk: a new window takes focus and changes which
-        # tab is in front. None of that is a fact about the room.
-        moved = bob.invoke(ACTIONS, "window.new.terminal")
-        check("bob opened a window on his own desk", "err" not in moved,
-              json.dumps(moved.get("err", {}))[:120])
-        time.sleep(6)  # two sync intervals, so anything that would travel has
-        after_q = ada.view_state()
-        check("ada's active workspace did not move",
-              after_q["active"] == before["ada"]["active"],
-              f'{before["ada"]["active"]} -> {after_q["active"]}')
-        check("ada's scrolled-to strip did not move",
-              after_q["active_strip"] == before["ada"]["active_strip"])
-        check("ada's focused group did not move",
-              after_q["active_group"] == before["ada"]["active_group"])
-        check("the tab in front of ada did not change",
-              after_q["active_tab_per_group"]
-              == before["ada"]["active_tab_per_group"])
-        after_x = bob.view_state()
-        check("and bob's own view did change, so the check can fail",
-              after_x != before["bob"],
-              "his layout moved, as it should")
-        # The layout itself is his alone: ada must not have grown a
-        # window because bob opened one.
-        q_groups = len(after_q["active_tab_per_group"])
-        check("ada did not gain bob's window",
-              q_groups == len(before["ada"]["active_tab_per_group"]),
-              f"{len(before['ada']['active_tab_per_group'])} -> {q_groups}")
+        print("\n[7] ada opens a window — it opens for bob, and does "
+              "not move him")
+        # Put bob somewhere specific first, so "he did not move" is a
+        # claim about a place he chose rather than about a default.
+        bob.invoke(ACTIONS, "tab.new.terminal.here")
+        time.sleep(1.5)
+        before_groups = bob.groups_here()
+        before_view = bob.view_state()
+        check("bob is on a tab he opened himself",
+              bool(before_view["active_group"]),
+              f"focused group {before_view['active_group']}")
+
+        q_before = set(ada.groups_here())
+        opened = ada.invoke(ACTIONS, "window.new.terminal")
+        check("ada opened a window", "err" not in opened,
+              json.dumps(opened.get("err", {}))[:120])
+        new_group = wait_for(
+            lambda: (set(ada.groups_here()) - q_before) or None, timeout=20)
+        if not check("ada's own session shows the new window", bool(new_group)):
+            return 1
+        gid = sorted(new_group)[0]
+
+        # The claim. Read back from bob, by the id ada minted.
+        landed = wait_for(lambda: gid in bob.groups_here(), timeout=60)
+        check("the window ada opened is open for bob too", bool(landed),
+              f"group {gid}" if landed else "NOT REPLICATED after 60s")
+        if landed:
+            check("and it arrived with what is in it",
+                  bool(bob.groups_here()[gid]["tabs"]),
+                  json.dumps(bob.groups_here()[gid]["tabs"]))
+
+        # …and the view did not follow.
+        after_view = bob.view_state()
+        after_groups = bob.groups_here()
+        check("bob's active workspace did not move",
+              after_view["active"] == before_view["active"],
+              f'{before_view["active"]} -> {after_view["active"]}')
+        check("bob's scrolled-to strip did not move",
+              after_view["active_strip"] == before_view["active_strip"])
+        check("bob's focus did not move",
+              after_view["active_group"] == before_view["active_group"])
+        for g, was in before_groups.items():
+            if g in after_groups:
+                check(f"the tab in front of bob in group {g[:8]}… did not change",
+                      after_groups[g]["active_tab"] == was["active_tab"],
+                      f'{was["active_tab"]} -> {after_groups[g]["active_tab"]}')
+        focused = {str(v) for v in (after_view["active_group"] or {}).values()}
+        check("and bob is still focused on his own window, not the new one",
+              gid not in focused,
+              f"focused {sorted(focused)}, arrived {gid}")
+
+        print("\n[7b] and the other direction")
+        x_before = set(bob.groups_here())
+        bob.invoke(ACTIONS, "window.new.terminal")
+        x_new = wait_for(lambda: (set(bob.groups_here()) - x_before) or None,
+                         timeout=20)
+        if check("bob opened a window", bool(x_new)):
+            xgid = sorted(x_new)[0]
+            check("the window bob opened is open for ada too",
+                  bool(wait_for(lambda: xgid in ada.groups_here(), timeout=60)),
+                  f"group {xgid}")
 
         print("\n[8] a picture of bob's session with ada's document in it")
         shot = os.path.join(root, "bob-room.png")
