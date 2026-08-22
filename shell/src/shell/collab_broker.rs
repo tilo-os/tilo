@@ -331,29 +331,38 @@ impl CrdtRoute {
     /// The channel this route names, as one string.
     ///
     /// The capnp transport subscribes by channel id rather than by
-    /// route fields, so a record-scoped connection has to be able to
-    /// name its channel in the same vocabulary — see
-    /// [`crate::shell::collab_broker_capnp`]. `#` cannot appear in a
-    /// uuid, so the join is unambiguous.
+    /// route fields, so a connection has to be able to name its
+    /// address in the same vocabulary — see
+    /// [`crate::shell::collab_broker_capnp`]. The encoding lives in
+    /// [`ui::collaboration::channel_key`] because the SDK writes these
+    /// keys and the shell reads them; one definition is what keeps the
+    /// two ends from drifting.
     pub fn channel_key(&self) -> String {
-        if self.record_id.is_empty() {
-            self.cluster_id.clone()
-        } else {
-            format!("{}#record:{}", self.cluster_id, self.record_id)
+        ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
+    }
+
+    /// Split a capnp `channelId` back into its route. The inverse of
+    /// [`Self::channel_key`], and total: a key naming no app and no
+    /// record decodes to a cluster-scoped route, which is what a
+    /// connection announcing neither should address.
+    pub fn from_channel_key(key: &str) -> Self {
+        let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
+        Self {
+            app_id,
+            cluster_id,
+            record_id,
         }
     }
 
-    /// Split a capnp `channelId` back into its cluster and record.
-    /// The inverse of [`Self::channel_key`].
-    pub fn from_channel_key(key: &str) -> Self {
-        match key.split_once("#record:") {
-            Some((cluster, record)) => Self {
-                app_id: String::new(),
-                cluster_id: cluster.to_string(),
-                record_id: record.to_string(),
-            },
-            None => Self::cluster(key),
-        }
+    /// Whether this route may be published to the peer network.
+    ///
+    /// The outbound bridges ask this before handing anything to
+    /// libp2p. A route with no addressable cluster names no room, so
+    /// there is no room to publish it to — the same fail-closed test
+    /// [`Self::delivers_to`] applies locally, asked before the frame
+    /// leaves the machine rather than after.
+    pub(crate) fn addresses_a_room(&self) -> bool {
+        Self::is_addressable(&self.cluster_id)
     }
 
     /// Whether a cluster id names a real room.
@@ -374,9 +383,12 @@ impl CrdtRoute {
     /// subscriber that announced `subscriber`.
     ///
     /// Fails closed on either side lacking an addressable cluster. App
-    /// granularity applies only when both ends announced an app id — a
-    /// capnp subscriber (which cannot announce one) stays cluster-scoped
-    /// rather than silently receiving nothing.
+    /// granularity applies only when both ends announced an app id; an
+    /// end that announced none stays cluster-scoped rather than
+    /// silently receiving nothing. Both transports do announce one —
+    /// capnp carries it in the channel id
+    /// ([`Self::from_channel_key`]) — so that fallback now covers a
+    /// connection that predates the app segment, not a whole transport.
     ///
     /// **Record granularity is the innermost test and it fails closed
     /// both ways.** Two app-scoped ends agree only when they name the
@@ -1837,6 +1849,7 @@ pub fn spawn_full(
             path.clone(),
             Arc::clone(&table),
             Arc::clone(&channels),
+            peer_sync.clone(),
             Arc::clone(&capnp_quit),
         ) {
             Ok(handle) => (Some(handle), true),
