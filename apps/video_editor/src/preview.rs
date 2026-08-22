@@ -210,6 +210,10 @@ pub struct PreviewDecoder {
     open_path: Option<std::path::PathBuf>,
     last_seek_ms: Option<u64>,
     last_seek_at: std::time::Instant,
+    /// Re-seeks issued for the current target without a frame arriving.
+    /// Each one backs the next retry off, because a flush-seek restarts
+    /// whatever the pipeline was doing.
+    seek_attempts: u32,
     /// True once a frame for the current seek target has landed and the engine
     /// has been paused to hold it (so the preview is a static frame at the
     /// playhead, not free-running playback).
@@ -239,6 +243,7 @@ impl PreviewDecoder {
             open_path: None,
             last_seek_ms: None,
             last_seek_at: std::time::Instant::now(),
+            seek_attempts: 0,
             settled: false,
             frame: None,
             frame_media: None,
@@ -290,6 +295,7 @@ impl PreviewDecoder {
             self.engine.open(crate::media::engine_source(&abs));
             self.open_path = Some(abs);
             self.last_seek_ms = None;
+            self.seek_attempts = 0;
             self.settled = false;
             self.frame = None;
         }
@@ -301,11 +307,19 @@ impl PreviewDecoder {
         // a rate-limited retry because a freshly-opened pipeline reaches its
         // ready state asynchronously and an early seek can be dropped.
         let target_changed = self.last_seek_ms != Some(target_ms);
-        let stale_retry = !self.settled
-            && self.last_seek_at.elapsed() > std::time::Duration::from_millis(150);
+        // Back the retry off as attempts pile up. A retry issues a *flush*
+        // seek, which throws away whatever the pipeline had in flight — so
+        // retrying at a fixed short interval on a machine where the seek
+        // takes longer than that interval restarts it forever and no frame
+        // ever arrives. Widening the gap lets a slow seek finish.
+        let backoff = std::time::Duration::from_millis(
+            150u64 << self.seek_attempts.min(4),
+        );
+        let stale_retry = !self.settled && self.last_seek_at.elapsed() > backoff;
         if target_changed || stale_retry {
             self.engine.seek_ms(target_ms);
             self.engine.play();
+            self.seek_attempts = if target_changed { 0 } else { self.seek_attempts + 1 };
             self.last_seek_ms = Some(target_ms);
             self.last_seek_at = std::time::Instant::now();
             self.settled = false;
@@ -318,6 +332,7 @@ impl PreviewDecoder {
                 // Hold the frame: stop the pipeline advancing past the playhead.
                 self.engine.pause();
                 self.settled = true;
+                self.seek_attempts = 0;
             }
         }
         self.frame_media == Some(clip.media) && self.frame.is_some()
