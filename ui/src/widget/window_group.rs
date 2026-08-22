@@ -853,7 +853,7 @@ impl WindowGroup {
     /// the group has no live tab to close.
     pub fn request_close_active_tab(&mut self) -> bool {
         let id = self.bar.active_id();
-        self.bar.start_closing(id)
+        self.request_close_tab(id)
     }
 
     /// Drain a right-click on one of this group's tab pills: the tab it
@@ -866,8 +866,21 @@ impl WindowGroup {
     /// Close `tab_id` in this group, whether or not it is the active tab
     /// — the route a context menu raised over a specific pill takes.
     /// Same production path as [`Self::request_close_active_tab`].
+    ///
+    /// Drains the bar's `pending_close` here rather than leaving it for
+    /// the next `handle_event`. A `✕` press publishes it mid-dispatch, so
+    /// this group's own `handle_event` picks it up microseconds later; a
+    /// chord or a menu pick arrives from outside the pointer dispatch and
+    /// would otherwise leave the host un-faded until some unrelated event
+    /// happened to reach this group.
     pub fn request_close_tab(&mut self, tab_id: u64) -> bool {
-        self.bar.start_closing(tab_id)
+        if !self.bar.start_closing(tab_id) {
+            return false;
+        }
+        if let Some(close_id) = self.bar.take_close() {
+            self.closing_hosts.entry(close_id).or_insert_with(Instant::now);
+        }
+        true
     }
 
     /// True while this group's `TabBar` has a drag in flight. Exposed so
