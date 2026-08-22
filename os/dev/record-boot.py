@@ -75,17 +75,27 @@ class Monitor:
         time.sleep(0.3)
         self._drain()
 
-    def _drain(self) -> str:
+    # HMP prints "(qemu)" when it is ready for the next command, so a reply is
+    # read up to that rather than by waiting out a timeout. Waiting instead put
+    # a hard floor under the frame interval -- a 0.25s drain is 4 fps however
+    # fast the screendump itself was.
+    def _drain(self, deadline: float = 3.0) -> str:
         out = b""
-        self.sock.settimeout(0.25)
+        end = time.monotonic() + deadline
+        self.sock.settimeout(0.05)
         try:
-            while True:
-                chunk = self.sock.recv(65536)
+            while time.monotonic() < end:
+                try:
+                    chunk = self.sock.recv(65536)
+                except (socket.timeout, TimeoutError):
+                    if out.rstrip().endswith(b"(qemu)"):
+                        break
+                    continue
                 if not chunk:
                     break
                 out += chunk
-        except (socket.timeout, TimeoutError):
-            pass
+                if out.rstrip().endswith(b"(qemu)"):
+                    break
         finally:
             self.sock.settimeout(10.0)
         return out.decode("utf-8", "replace")
@@ -219,7 +229,7 @@ def encode(frames: list[tuple[float, Path]], out: Path, tail: float) -> float:
     subprocess.run(
         [ffmpeg, "-y", "-loglevel", "error",
          "-f", "concat", "-safe", "0", "-i", str(listing),
-         "-vsync", "vfr", "-r", "30",
+         "-fps_mode", "cfr", "-r", "30",
          "-c:v", "libx264", "-preset", "medium", "-crf", "20",
          "-pix_fmt", "yuv420p", str(out)],
         check=True)
@@ -293,6 +303,7 @@ def main() -> int:
 
     if not args.keep_frames:
         shutil.rmtree(work, ignore_errors=True)
+        (out.parent / "frames.ffconcat").unlink(missing_ok=True)
 
     size = out.stat().st_size
     log(f"wrote {out} ({size/1e6:.1f} MB, {span:.1f}s of real boot time)")
