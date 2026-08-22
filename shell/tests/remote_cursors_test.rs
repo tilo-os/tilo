@@ -3,7 +3,7 @@
 //! against the active tile.
 
 use shell::shell::remote_cursors::{RemoteCursorOverlay, cursor_in_bounds};
-use ui::presence::{PresenceCtx, RemoteCursor};
+use ui::presence::{PointerOwner, PresenceCtx, RemoteCursor};
 
 #[test]
 fn remote_cursor_is_clipped_to_active_tile_bounds() {
@@ -13,12 +13,14 @@ fn remote_cursor_is_clipped_to_active_tile_bounds() {
         color: [0.0; 4],
         position: [50.0, 50.0],
         label: "Ada".into(),
+        owner: PointerOwner::Window,
     });
     ctx.remote_cursors.push(RemoteCursor {
         user_id: "v".into(),
         color: [0.0; 4],
         position: [999.0, 999.0],
         label: "Bo".into(),
+        owner: PointerOwner::Window,
     });
     let bounds = [0.0_f32, 0.0, 400.0, 300.0];
     let visible: Vec<_> = ctx
@@ -41,7 +43,7 @@ fn remote_cursor_overlay_exposes_active_tile_bounds() {
 #[test]
 fn remote_cursor_overlay_filters_to_active_tile() {
     use shell::shell::remote_cursors::RemoteCursorOverlay;
-    use ui::presence::{PresenceCtx, RemoteCursor};
+    use ui::presence::{PointerOwner, PresenceCtx, RemoteCursor};
     let mut ctx = PresenceCtx::default();
     ctx.remote_cursors = vec![
         RemoteCursor {
@@ -49,12 +51,14 @@ fn remote_cursor_overlay_filters_to_active_tile() {
             color: [0.0; 4],
             position: [50.0, 50.0],
             label: "I".into(),
+            owner: PointerOwner::Window,
         },
         RemoteCursor {
             user_id: "out".into(),
             color: [0.0; 4],
             position: [500.0, 500.0],
             label: "O".into(),
+            owner: PointerOwner::Window,
         },
     ];
     let mut ov = RemoteCursorOverlay::new();
@@ -62,4 +66,42 @@ fn remote_cursor_overlay_filters_to_active_tile() {
     let drawn = ov.cursors_to_draw(&ctx);
     assert_eq!(drawn.len(), 1);
     assert_eq!(drawn[0].user_id, "in");
+}
+
+/// A pointer the compositor overlay paints is not painted a second time
+/// by a widget inside the tree, however well it fits the tile.
+///
+/// This overlay is not currently mounted, which is exactly why the rule
+/// is asserted: mounting it is a one-line change, and the store it
+/// reads is the one a peer used to come out of twice.
+#[test]
+fn a_desktop_pointer_is_not_redrawn_inside_the_tile() {
+    let mut ctx = PresenceCtx::default();
+    ctx.remote_cursors = vec![
+        RemoteCursor {
+            user_id: "desktop".into(),
+            color: [0.0; 4],
+            position: [50.0, 50.0],
+            label: "D".into(),
+            owner: PointerOwner::Desktop,
+        },
+        RemoteCursor {
+            user_id: "window".into(),
+            color: [0.0; 4],
+            position: [60.0, 60.0],
+            label: "W".into(),
+            owner: PointerOwner::Window,
+        },
+    ];
+    let mut ov = RemoteCursorOverlay::new();
+    ov.set_active_tile_bounds([0.0, 0.0, 200.0, 200.0]);
+
+    let drawn = ov.cursors_to_draw(&ctx);
+
+    // Both are well inside the tile, so bounds are not what decides it.
+    assert_eq!(drawn.len(), 1, "the compositor's pointer must not be redrawn here");
+    assert_eq!(
+        drawn[0].user_id, "window",
+        "and the one nothing else paints must still be drawn",
+    );
 }
