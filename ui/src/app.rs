@@ -2003,10 +2003,28 @@ impl App {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
 
-        // Broadcast CRDT state — only when the commit produced a real change.
+        // Ship the commit as an incremental delta, not the whole document.
+        //
+        // Serialising the entire document per committed edit is a cost
+        // proportional to its size on every keystroke, which is what a long
+        // document feels as typing lag. The skip above spared the events that
+        // change nothing; the edits that *do* change something are the ones a
+        // person is making while they watch.
+        //
+        // It also silently disabled the incremental path: `AutoCommit::save`
+        // advances the save cursor to the current heads, so the
+        // `broadcast_doc_delta` later in the same idle tick found
+        // `save_incremental` empty and sent nothing. Every app that marks its
+        // edits with `needs_commit` — which is every editor — was therefore
+        // syncing by whole-document snapshot and never by delta.
+        //
+        // Undo and redo are safe on this path: `UndoLog::apply_inverse` writes
+        // the inverse into the document as new changes, so a delta carries
+        // them like any other edit. A peer that has *not* seen the document
+        // still gets a full snapshot — that is the `Arrived` handshake, and it
+        // is unaffected.
         if changed {
-            let data = self.state.save();
-            self.collab_manager.send(CollabRequest::SyncCRDT { data });
+            self.broadcast_doc_delta();
         }
     }
 
@@ -4812,6 +4830,38 @@ mod pointer_broadcast_tests {
         assert_eq!(
             app.presence_broadcast_scope(),
             Some(&PresenceKey::Workspace { id: "home".into() })
+        );
+    }
+
+    /// A committed edit must still be on the wire as a delta afterwards.
+    ///
+    /// `commit_action` used to serialise the whole document here, and
+    /// `AutoCommit::save` advances the save cursor — so the
+    /// `broadcast_doc_delta` that runs later in the same idle tick found
+    /// nothing to send. Every editor marks its edits with `needs_commit`,
+    /// so for every editor the incremental path was dead and each keystroke
+    /// shipped a whole-document snapshot instead.
+    #[test]
+    fn a_commit_leaves_the_edit_for_the_incremental_broadcast() {
+        use automerge::transaction::Transactable;
+
+        let state = State::new();
+        let root = Box::new(crate::widget::Text::new("t"));
+        let mut app = App::new(state, root);
+        // Drain the baseline so what the assertion sees is this edit alone.
+        let _ = app.state.save_incremental();
+
+        app.state
+            .doc
+            .put(&automerge::ROOT, "body", "the quarterly report")
+            .expect("put on the root object");
+        app.commit_action();
+
+        assert!(
+            !app.state.save_incremental().is_empty(),
+            "the committed edit must survive as an incremental delta; an \
+             intervening full save() would have advanced the save cursor and \
+             left broadcast_doc_delta with nothing to send"
         );
     }
 
