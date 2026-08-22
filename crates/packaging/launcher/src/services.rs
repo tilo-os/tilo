@@ -8,20 +8,26 @@
 //!    descriptive error.
 //! 3. For `optional@<v>` whose socket is absent → log a warning,
 //!    continue.
-//! 4. For sockets that exist → open the socket as a `UnixStream`, take
-//!    its raw fd, and hand it to bwrap via the `--file <host_fd>
-//!    /<in-sandbox-path>` argv triple (see [`sandbox::build_bwrap_argv`]).
-//!    `bwrap` copies the descriptor into the child via the kernel's
-//!    fd-passing mechanism — the same mechanism Linux exposes as
-//!    `SCM_RIGHTS` over a Unix socket. We don't need a per-launcher
-//!    SCM_RIGHTS dance: bwrap already plumbs the fd across the
-//!    namespace/exec boundary.
+//! 4. For sockets that exist → open the socket as a `UnixStream` and
+//!    take its raw fd. The descriptor reaches the app the way
+//!    descriptors normally do: `run::place_service_fds` dup2s it onto
+//!    the agreed `child_fd` and clears CLOEXEC, so it survives bwrap's
+//!    exec and the `__sandbox-exec` re-exec at that number. The app
+//!    reads the number from `QOS_SVC_<NAME>_FD`.
+//!
+//! bwrap is deliberately not told about the socket. It has no flag
+//! that hands a live socket to the sandboxed process, and the one that
+//! looks like it does is a trap: `--file FD DEST` copies the
+//! descriptor's *contents* into a regular file, so pointing it at a
+//! connected socket makes bwrap read until an EOF that never arrives.
+//! The launch then hangs before it ever execs the app, and the only
+//! symptom is an app that never appears.
 //!
 //! ### Open design question — where to mediate the handoff?
 //!
 //! There are three plausible mediation points:
 //!
-//! - bwrap `--file <fd>` (this module's choice): simplest, no extra
+//! - Inherited descriptors (this module's choice): simplest, no extra
 //!   broker process, fd ends up at a known child-side number.
 //! - A dedicated broker that listens on a per-cluster socket and
 //!   accepts a connection per launch, sending fds via SCM_RIGHTS:
