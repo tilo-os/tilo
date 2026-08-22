@@ -14,10 +14,15 @@
 #
 # Usage:
 #   scripts/app-grid.sh [--out PATH] [--theme dark|light] [--no-build]
+#                       [--shot-timeout SECONDS]
 #
 #   --no-build   Reuse the binaries already in target/debug and any shots
 #                already captured, recomposing the grid only. Use it to iterate
 #                on the montage itself without paying for a rebuild.
+#   --shot-timeout
+#                Seconds to allow each app's first frame (default 60). Raise it
+#                on a loaded machine: a starved app looks exactly like a broken
+#                one here, and the grid cannot tell them apart.
 set -u
 
 cd "$(git rev-parse --show-toplevel)"
@@ -25,11 +30,13 @@ cd "$(git rev-parse --show-toplevel)"
 OUT=target/app-grid.png
 THEME=dark
 BUILD=1
+SHOT_TIMEOUT=60
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
     --theme) THEME="$2"; shift 2 ;;
     --no-build) BUILD=0; shift ;;
+    --shot-timeout) SHOT_TIMEOUT="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -83,7 +90,7 @@ for a in $APPS; do
     continue
   fi
   # Offscreen: no Wayland socket, so the app takes its own headless path.
-  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout 60 "$bin" --shots "$raw" >/dev/null 2>&1
+  WAYLAND_DISPLAY= QOS_SHOTS_THEME="$THEME" timeout "$SHOT_TIMEOUT" "$bin" --shots "$raw" >/dev/null 2>&1
   if [ ! -s "$raw" ]; then
     missing="$missing $a(noshot)"
     continue
@@ -102,6 +109,22 @@ for a in $APPS; do
 done
 
 echo "tiles: $ok ok${missing:+ — missing:$missing}"
+
+# A starved app and a broken app both time out, and the tile grid cannot tell
+# them apart. Say so when the machine is loaded enough for that to be the
+# likely story, rather than reporting a confident "noshot".
+case "$missing" in
+  *noshot*)
+    cpus=$(nproc 2>/dev/null || echo 1)
+    load=$(awk '{print int($1)}' /proc/loadavg 2>/dev/null || echo 0)
+    if [ "$load" -gt "$cpus" ]; then
+      echo "  note: load is ${load} on ${cpus} cpus — apps that timed out may" >&2
+      echo "        have been starved rather than broken. Re-run when the box" >&2
+      echo "        is quiet, or raise --shot-timeout." >&2
+    fi
+    ;;
+esac
+
 [ "$ok" -gt 0 ] || { echo "no tiles rendered; nothing to compose" >&2; exit 1; }
 
 # Order by display name so the grid reads alphabetically as labelled.
