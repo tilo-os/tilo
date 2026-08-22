@@ -304,6 +304,7 @@ impl VideoCompositor {
         // Resolve every layer's picture up front: `sources` may want the
         // device, and holding the borrow across the pass loop would clash
         // with the &mut self the pipelines live behind.
+        sources.begin_frame();
         let resolved: Vec<Option<SourceTexture>> = layers
             .iter()
             .map(|l| sources.resolve(device, queue, l.media, l.source_time))

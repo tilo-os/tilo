@@ -25,6 +25,9 @@
 //!     dmabuf texture, with nothing else in this module changing.
 
 pub mod compositor;
+/// Decoded pictures from the real media engine — the source the editor uses.
+#[cfg(feature = "decode")]
+pub mod media_source;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,6 +37,8 @@ use vello::wgpu;
 use crate::model::MediaId;
 
 pub use compositor::{MAX_SHADER_EFFECTS, VideoCompositor, Viewport, upload_rgba};
+#[cfg(feature = "decode")]
+pub use media_source::{Fetch, MediaFrameSource};
 
 /// A picture the compositor can sample, plus the size it was decoded at
 /// (which drives the aspect fit into the project frame).
@@ -50,6 +55,13 @@ pub struct SourceTexture {
 /// the compositor then draws the layer's representative fill, so an
 /// un-hydrated reference or a build with no decoder still renders.
 pub trait FrameSource {
+    /// Called once before the layers of a composite are resolved.
+    ///
+    /// A source that hands out textures it reuses across frames needs to know
+    /// where a composite begins, so two layers in the same frame never get
+    /// handed the same reusable texture.
+    fn begin_frame(&mut self) {}
+
     fn resolve(
         &mut self,
         device: &wgpu::Device,
@@ -770,6 +782,197 @@ mod tests {
         assert!(
             live_detail > 2.0,
             "the canvas is showing a flat fill ({live_detail:.3}), not decoded footage",
+        );
+    }
+
+
+    /// The compositor painting a real hardware-decoded frame.
+    ///
+    /// This is the whole point of the media seam: a decoder emits NV12, the
+    /// planes go to the GPU untouched, and the YUV arithmetic happens in a
+    /// shader. If the planar branch ever broke — or quietly fell back to a
+    /// CPU RGBA convert — the picture would still appear and nothing else
+    /// would complain, so assert on what reaches the canvas *and* on which
+    /// payload carried it.
+    #[cfg(feature = "decode")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn the_media_source_paints_a_decoded_frame_through_the_gpu() {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+        use media::{FramePayload, SessionPool};
+
+        let path = demo_clip();
+        let mut p = Project::new("hw");
+        p.width = 1920;
+        p.height = 1080;
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "demo".into(),
+            kind: MediaKind::Video,
+            duration: 57.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            palette: 0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track {
+            id: tid,
+            name: "V1".into(),
+            kind: TrackKind::Video,
+            index: 1,
+            muted: false,
+            locked: false,
+            solo: false,
+        });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 57.0;
+
+        // A generous deadline: this box shares its CPU with other builds,
+        // and a cold pipeline plus an accurate seek can outrun the 2s the
+        // engine defaults to. The assertions below are unchanged — only how
+        // long the decoder is given to answer.
+        let mut src = MediaFrameSource::new(&p, Fetch::Exact)
+            .with_timeout(std::time::Duration::from_secs(20));
+        assert_eq!(src.decodable(), 1, "the hydrated local file is decodable");
+
+        let mut c = compositor();
+        let (w, h) = (192u32, 108u32);
+        let live = c.frame(&p, 22.0, w, h, &mut src);
+        let fallback = c.frame(&p, 22.0, w, h, &mut NoSources);
+
+        assert_ne!(live, fallback, "the decoded frame must reach the canvas");
+        let live_detail = horizontal_detail(&live, w, h);
+        let report = src.hw_report(mid).expect("the session reports what it plugged");
+        println!("decoder={report:?}  canvas detail={live_detail:.3}");
+        assert!(
+            live_detail > 2.0,
+            "the canvas is showing a flat fill ({live_detail:.3}), not decoded footage",
+        );
+
+        // Which payload actually carried it. On a hardware decoder that is
+        // NV12 planes; software decode lands as RGBA. A Dmabuf would mean the
+        // source should have been demoted to a software session instead.
+        let source = crate::media::engine_source(&p.media[0].source().abs_path);
+        let mut pool = SessionPool::for_editor();
+        let session = pool.session(&source);
+        let mut s = session.lock().unwrap();
+        s.set_fps(30.0);
+        let frame = s
+            .frame_at(22_000, std::time::Duration::from_secs(10))
+            .expect("a frame at 22s");
+        match &frame.payload {
+            FramePayload::Planar(img) => {
+                assert_eq!(img.planes.len(), 2, "NV12 is luma plus interleaved chroma");
+                // The planes really are subsampled — a CPU-converted RGBA
+                // frame masquerading as planar would not be.
+                let luma = &img.planes[0];
+                let chroma = &img.planes[1];
+                assert!(
+                    chroma.width <= luma.width.div_ceil(2)
+                        && chroma.height <= luma.height.div_ceil(2),
+                    "chroma is half resolution in both axes: {luma:?} {chroma:?}",
+                );
+            }
+            FramePayload::Rgba(bytes) => {
+                assert_eq!(
+                    bytes.len(),
+                    frame.width as usize * frame.height as usize * 4,
+                    "the software fallback delivers a full RGBA frame",
+                );
+            }
+            FramePayload::Dmabuf(_) => panic!(
+                "a GPU-resident frame reached the paint path; it should have been \
+                 demoted to a software session (this stack cannot import one)",
+            ),
+        }
+    }
+
+    /// Two clips of the same source at different instants must paint two
+    /// different pictures in one composite.
+    ///
+    /// The converter reuses its output texture across frames, so a single
+    /// shared converter would have the second layer overwrite the first and
+    /// both would show the same picture — invisible in a still, and exactly
+    /// the kind of thing a dissolve depends on.
+    #[cfg(feature = "decode")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn two_layers_of_one_source_get_their_own_textures() {
+        use crate::model::{MediaItem, MediaKind, Track, TrackKind};
+
+        let path = demo_clip();
+        let mut p = Project::new("two");
+        let mid = Uuid::new_v4();
+        p.media.push(MediaItem {
+            id: mid,
+            name: "demo".into(),
+            kind: MediaKind::Video,
+            duration: 57.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            palette: 0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let mut track = |index: u32| {
+            let id = Uuid::new_v4();
+            p.tracks.push(Track {
+                id,
+                name: format!("V{index}"),
+                kind: TrackKind::Video,
+                index,
+                muted: false,
+                locked: false,
+                solo: false,
+            });
+            id
+        };
+        let v1 = track(1);
+        let v2 = track(2);
+        // Two instants far enough apart to be different pictures, and the
+        // upper layer inverted so a shared texture is unmistakable.
+        let lower = p.add_clip(v1, mid, 0.0).unwrap();
+        {
+            let c = p.clip_mut(lower).unwrap();
+            c.in_point = 2.0;
+            c.out_point = 12.0;
+        }
+        let upper = p.add_clip(v2, mid, 0.0).unwrap();
+        {
+            let c = p.clip_mut(upper).unwrap();
+            c.in_point = 40.0;
+            c.out_point = 50.0;
+            c.opacity = 0.5;
+            c.effects = vec![ClipEffect { kind: EffectKind::Invert, amount: 1.0 }];
+        }
+
+        let mut src = MediaFrameSource::new(&p, Fetch::Exact)
+            .with_timeout(std::time::Duration::from_secs(20));
+        let mut c = compositor();
+        let both = c.frame(&p, 1.0, 96, 54, &mut src);
+
+        // With the upper layer half-transparent over the lower one, the
+        // result must be neither layer alone.
+        let mut only_lower = p.clone();
+        only_lower.tracks.iter_mut().find(|t| t.id == v2).unwrap().muted = true;
+        let lower_only = c.frame(&only_lower, 1.0, 96, 54, &mut src);
+
+        let mut only_upper = p.clone();
+        only_upper.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+        only_upper.clip_mut(upper).unwrap().opacity = 1.0;
+        let upper_only = c.frame(&only_upper, 1.0, 96, 54, &mut src);
+
+        assert_ne!(both, lower_only, "the upper layer contributes to the composite");
+        assert_ne!(both, upper_only, "so does the lower one");
+        assert_ne!(
+            lower_only, upper_only,
+            "the two layers are drawn from different instants of the source — a shared \
+             converter texture would make them identical",
         );
     }
 
