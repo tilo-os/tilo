@@ -412,14 +412,14 @@ fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
 // Layer plan — what the GPU compositor actually draws.
 // ---------------------------------------------------------------------------
 
-/// How long an edit-point transition runs, in seconds.
+/// The transition length a clip falls back to when it has not been given
+/// one of its own.
 ///
-/// A constant because [`Clip`] carries no per-transition length yet; a
-/// `transition_duration: f64` field on `Clip` would make this a real
-/// per-clip property and this constant its default. Clamped per clip to
-/// the clip's own length so a very short clip cannot transition for
-/// longer than it exists.
-pub const TRANSITION_SECS: f64 = 0.6;
+/// Re-exported from the model so callers that only speak to the preview —
+/// tests, the export's frame maths — have one name for it. The effective
+/// length for a particular clip is [`Clip::transition_len`], which honours
+/// its `transition_duration` and never lets a ramp outlast the footage.
+pub use crate::model::DEFAULT_TRANSITION_SECS as TRANSITION_SECS;
 
 /// Which way a [`Transition::Wipe`] travels across the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -484,7 +484,7 @@ pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)
     if clip.transition == Transition::None {
         return None;
     }
-    let dur = TRANSITION_SECS.min(clip.duration());
+    let dur = clip.transition_len();
     if dur <= 1e-9 {
         return None;
     }
@@ -1113,7 +1113,7 @@ mod tests {
         {
             let c = p.clip_mut(incoming).unwrap();
             c.transition = Transition::CrossDissolve;
-            c.out_point = c.in_point + 0.2; // shorter than TRANSITION_SECS
+            c.out_point = c.in_point + 0.2; // shorter than the default ramp
         }
         let clip = p.clip(incoming).unwrap().clone();
         assert!(active_transition(&clip, 5.1).is_some(), "still transitioning early on");
@@ -1122,6 +1122,38 @@ mod tests {
             "the transition is compressed into the clip's own length",
         );
         assert!(active_transition(&clip, 5.25).is_none(), "and is over by the clip's end");
+    }
+
+    #[test]
+    fn a_clips_own_transition_length_drives_the_plan() {
+        // The ramp used to be a constant for every clip in every project.
+        let (mut p, v1, _) = stacked_project();
+        let incoming = p.clips_on(v1)[1].id;
+        p.clip_mut(incoming).unwrap().transition = Transition::CrossDissolve;
+
+        // Unset: the default ramp, half-mixed at half of it.
+        let at_default_mid = 5.0 + TRANSITION_SECS * 0.5;
+        let default_mid = plan_layers(&p, at_default_mid);
+        assert!((default_mid[1].alpha - 0.5).abs() < 0.02, "{:?}", default_mid[1].alpha);
+
+        // A longer ramp: the same instant is now only a quarter of the way in.
+        p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 2.0;
+        let slower = plan_layers(&p, at_default_mid);
+        assert!(
+            (slower[1].alpha - 0.25).abs() < 0.02,
+            "a longer transition is less far along at the same instant: {}",
+            slower[1].alpha,
+        );
+        // ...and it is still running where the default one had finished.
+        assert!(
+            plan_layers(&p, 5.0 + TRANSITION_SECS * 1.5).len() == 2,
+            "the outgoing clip is still underneath past the default length",
+        );
+
+        // A shorter ramp is already over there.
+        p.clip_mut(incoming).unwrap().transition_duration = TRANSITION_SECS * 0.25;
+        let quick = plan_layers(&p, at_default_mid);
+        assert_eq!(quick.len(), 1, "a short transition has finished by the default midpoint");
     }
 
     #[test]
