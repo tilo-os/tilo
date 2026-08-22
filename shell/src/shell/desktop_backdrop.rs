@@ -2,8 +2,9 @@
 //! all shell content.
 //!
 //! Matches `nirios-concept/src/components/DesktopView.tsx:210-217`:
-//!   1. Linear gradient top-left → bottom-right, slate-900 (#0f172a) to
-//!      slate-950 (#020617).
+//!   1. Linear gradient top-left → bottom-right across the theme's ground
+//!      surface, settled toward neutral and falling away toward the far
+//!      corner (see [`ground_stops`]).
 //!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
 //!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
 //!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
@@ -37,6 +38,17 @@ use winit::event::{Modifiers, WindowEvent};
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
+
+/// How far the desktop ground is drained toward neutral. High enough
+/// that the desktop reads as dark rather than as blue, short of 1.0 so
+/// the theme still tints its own ground rather than every theme
+/// grounding on the same grey.
+const GROUND_NEUTRALITY: f32 = 0.72;
+
+/// How far the far corner of the desktop falls away from the near one.
+/// Enough to read as depth across a whole screen, gentle enough that a
+/// light theme's ground stays light rather than ramping into grey.
+const GROUND_FALLOFF: f32 = 0.82;
 
 /// Edge length (in pixels) of the tileable noise texture.
 const NOISE_SIZE: u32 = 64;
@@ -122,10 +134,55 @@ pub struct DesktopBackdrop {
     /// `Rect::ZERO` sentinel means "no cache yet"; any width/height
     /// mismatch against `self.rect` triggers a rebuild.
     cache_rect: Rect,
-    /// The ground colours the cached scene was baked with. `None` means
-    /// "no cache yet". Compared as bytes rather than as `Color`, which is
-    /// float-valued and has no equality worth relying on here.
-    cached_ground: Option<([u8; 4], [u8; 4])>,
+    /// The ground stops the cache was baked with. The backdrop is no
+    /// longer a pure function of size once its colours come from the
+    /// theme, so a theme switch has to invalidate the cache the same way
+    /// a resize does — otherwise the desktop keeps the old palette until
+    /// the next window resize.
+    cache_stops: Option<(Color, Color)>,
+}
+
+/// The desktop's two ground stops, taken from the theme and settled
+/// toward neutral.
+///
+/// The ground is the largest and quietest surface in the system: it is
+/// most of what the eye sees, and everything meaningful is painted on
+/// top of it. The theme's surface family is tuned for panels and cards
+/// that sit *against* content, and at desktop scale its tint stops being
+/// a hue and becomes the colour of the machine — qOS read as "a blue
+/// desktop" rather than as a dark one. Pulling the theme's own grounds
+/// and easing them toward their luminance keeps every theme's identity
+/// (a light theme still grounds light, high contrast still grounds
+/// black) while letting content, not the wallpaper, carry the colour.
+fn ground_stops(theme: &Theme) -> (Color, Color) {
+    let base = settle_toward_neutral(theme.tokens.colors.surfaces.base, GROUND_NEUTRALITY);
+    (base, shade(base, GROUND_FALLOFF))
+}
+
+/// Scale a colour's channels toward black by `factor`, keeping its hue.
+///
+/// Both ends of the desktop gradient are the *same* ground, one lit and
+/// one fallen away, which is what makes the ramp read as a surface
+/// catching light rather than as two different materials. Deriving the
+/// far end from the near one keeps that true in every theme: a light
+/// theme grounds light at both ends, a dark theme dark at both.
+fn shade(color: Color, factor: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let f = factor.clamp(0.0, 1.0);
+    let m = |v: u8| (v as f32 * f).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(m(r), m(g), m(b), a)
+}
+
+/// Mix `color` toward its own perceived luminance by `amount` in
+/// `0.0..=1.0`. At 0 the colour is untouched; at 1 it is fully grey at
+/// the same brightness, so the result never lightens or darkens the
+/// surface it replaces — it only drains the tint.
+fn settle_toward_neutral(color: Color, amount: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    let k = amount.clamp(0.0, 1.0);
+    let mix = |v: u8| (v as f32 + (luma - v as f32) * k).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(mix(r), mix(g), mix(b), a)
 }
 
 impl DesktopBackdrop {
@@ -136,7 +193,7 @@ impl DesktopBackdrop {
             noise: build_noise_image(),
             cached: Scene::new(),
             cache_rect: Rect::ZERO,
-            cached_ground: None,
+            cache_stops: None,
         }
     }
 
@@ -174,14 +231,10 @@ impl DesktopBackdrop {
     ///      `paint_backdrop` detects the width/height mismatch against
     ///      `self.cache_rect` and rebuilds.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
+        let stops = ground_stops(theme);
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        // The backdrop takes its colours from the theme, so a theme swap
-        // has to invalidate the cache as surely as a resize does -
-        // otherwise the desktop keeps painting the previous palette's
-        // ground until something else happens to resize it.
-        let ground = Self::ground_stops(theme);
-        let theme_changed = self.cached_ground != Some(ground);
+        let theme_changed = self.cache_stops != Some(stops);
         let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed || theme_changed;
 
         if !needs_rebuild {
@@ -202,45 +255,17 @@ impl DesktopBackdrop {
         // on `&self`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        self.encode_backdrop(&mut local, Affine::IDENTITY, theme);
+        self.encode_backdrop(&mut local, Affine::IDENTITY, stops);
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_rect = self.rect;
-        self.cached_ground = Some(ground);
-    }
-
-
-    /// The desktop's two gradient stops, taken from the theme rather than
-    /// pinned to one palette.
-    ///
-    /// Derived from `surfaces.base` — the theme's own ground — pulled down
-    /// toward black. Two things follow from that. The desktop lands in
-    /// whatever colour family the active theme uses, so a theme set to dark
-    /// grey produces a dark grey desktop instead of the slate blue this used
-    /// to hard-code. And the ground stays *darker than the window card*,
-    /// which is what lets a window read as sitting on the desktop rather
-    /// than dissolving into it: the card is `base` itself, so a ground of
-    /// plain `base` would leave the two identical.
-    fn ground_stops(theme: &Theme) -> ([u8; 4], [u8; 4]) {
-        let base = theme.tokens.colors.surfaces.base.to_rgba8().to_u8_array();
-        let toward_black = |f: f32| -> [u8; 4] {
-            [
-                (base[0] as f32 * f).round() as u8,
-                (base[1] as f32 * f).round() as u8,
-                (base[2] as f32 * f).round() as u8,
-                255,
-            ]
-        };
-        (toward_black(0.62), toward_black(0.30))
+        self.cache_stops = Some(stops);
     }
 
     /// Pure encoder — writes the backdrop into `scene` with `transform`
     /// applied. Used by the cache-miss branch of `paint_backdrop`.
-    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        // 1. Diagonal gradient across the theme's own ground.
-        let (near, far) = Self::ground_stops(theme);
-        let near = Color::from_rgba8(near[0], near[1], near[2], near[3]);
-        let far = Color::from_rgba8(far[0], far[1], far[2], far[3]);
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, stops: (Color, Color)) {
+        // 1. Diagonal gradient across the theme's two ground surfaces.
         let gradient = Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x1, self.rect.y1),
@@ -250,11 +275,11 @@ impl DesktopBackdrop {
             &[
                 ColorStop {
                     offset: 0.0,
-                    color: near.into(),
+                    color: stops.0.into(),
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: far.into(),
+                    color: stops.1.into(),
                 },
             ][..],
         );
