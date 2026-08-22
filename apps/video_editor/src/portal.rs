@@ -19,9 +19,12 @@
 use ui::portal::{FileFilter, PickRequest};
 
 pub use ui::portal::{MultiChannel as ImportChannel, MultiOutcome as ImportOutcome};
+pub use ui::portal::{PortalChannel as ExportDestChannel, PortalOutcome as ExportDestOutcome};
 
 #[cfg(test)]
 pub use ui::portal::inject_multi_for_test as inject_for_test;
+#[cfg(test)]
+pub use ui::portal::inject_for_test as inject_dest_for_test;
 
 /// The container / still formats the editor can bring into the bin. Both globs
 /// and MIME types are supplied because portal backends differ in which they
@@ -59,9 +62,78 @@ pub fn request_import() -> ImportChannel {
         .send_multiple()
 }
 
+/// The chooser filter for one export container, so the Save dialog offers the
+/// extension the encode will actually produce.
+fn container_filter(ext: &str) -> FileFilter {
+    let label = match ext {
+        "mp4" => "MP4 video",
+        "mov" => "QuickTime video",
+        "webm" => "WebM video",
+        other => return FileFilter::new(other).glob(&format!("*.{other}")),
+    };
+    let f = FileFilter::new(label).glob(&format!("*.{ext}"));
+    match ext {
+        "mp4" => f.mimetype("video/mp4"),
+        "mov" => f.mimetype("video/quicktime"),
+        "webm" => f.mimetype("video/webm"),
+        _ => f,
+    }
+}
+
+/// Ask the host where to write an export, on a worker thread.
+///
+/// Export previously had no destination UI at all: the output path came from
+/// `QOS_VE_EXPORT_OUT` / `QOS_VE_EXPORT_DIR` or fell back to the temp
+/// directory, so a user could not choose where their render landed and, under
+/// `landlock = "strict"`, the app has no standing grant to write into
+/// `~/Videos` anyway. Routing the destination through the Save portal is what
+/// *earns* the write: the grant follows the file the user picked, which is the
+/// same boundary [`request_import`] relies on for reads.
+///
+/// `suggested_name` seeds the filename field (the project name plus the
+/// container's extension); `ext` also selects the type filter so the dialog
+/// does not offer to save an H.264 file as `.webm`.
+pub fn request_export_destination(suggested_name: &str, ext: &str) -> ExportDestChannel {
+    PickRequest::save("Export video", "Export", suggested_name)
+        .thread_name("video-editor-export-dest")
+        .filter(container_filter(ext))
+        .all_files()
+        .send()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_destination_is_a_save_dialog_seeded_with_the_project_name() {
+        let r = PickRequest::save("Export video", "Export", "Coastline_Doc_v3.mp4")
+            .filter(container_filter("mp4"))
+            .all_files();
+        assert_eq!(r.title(), "Export video");
+        assert!(!r.is_multiple(), "an export writes exactly one file");
+        assert_eq!(
+            r.suggested_name(),
+            Some("Coastline_Doc_v3.mp4"),
+            "the filename field is seeded so the user is not made to invent a name",
+        );
+        assert_eq!(r.filter_names(), vec!["MP4 video", "All files"]);
+    }
+
+    #[test]
+    fn each_container_offers_its_own_extension() {
+        // The dialog must not invite saving an H.264 stream as .webm — the
+        // filter follows the container the encode chain will actually mux.
+        assert_eq!(container_filter("mp4").name(), "MP4 video");
+        assert_eq!(container_filter("mov").name(), "QuickTime video");
+        assert_eq!(container_filter("webm").name(), "WebM video");
+    }
+
+    #[test]
+    fn a_cancelled_export_dialog_drains_like_an_import_does() {
+        let rx = inject_dest_for_test(ExportDestOutcome::Cancelled);
+        assert_eq!(rx.try_recv(), Ok(ExportDestOutcome::Cancelled));
+    }
 
     #[test]
     fn import_is_multi_select_with_media_then_an_escape_hatch() {
