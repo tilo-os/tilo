@@ -23,7 +23,7 @@ pub const PERMISSION_DENIED_SCRIM: Color = Color::from_rgba8(0, 0, 0, 77);
 /// Mix two colours in straight (non-premultiplied) 8-bit sRGB space.
 /// `t = 0` → `a`, `t = 1` → `b`. This is the same space the Themes app and
 /// most widget draw paths blend in, so tints stay consistent.
-fn mix8(a: Color, b: Color, t: f32) -> Color {
+pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let l = |x: u8, y: u8| ((x as f32) * (1.0 - t) + (y as f32) * t).round() as u8;
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
@@ -33,6 +33,37 @@ fn mix8(a: Color, b: Color, t: f32) -> Color {
 fn with_a(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
 }
+
+/// Composite a (possibly translucent) `over` onto an opaque `ground` in
+/// straight sRGB and return the opaque result — the colour the eye actually
+/// receives where the two meet.
+///
+/// Needed because a token's own RGBA says nothing about how it will read:
+/// `white/20` is the same token over a black desktop and over a white page,
+/// and only the composite distinguishes "a quiet rim light" from "a glaring
+/// line". Every derivation below measures the composite, never the token.
+fn composite(over: Color, ground: Color) -> Color {
+    let a = over.a() as f32 / 255.0;
+    let ch = |o: u8, g: u8| ((o as f32) * a + (g as f32) * (1.0 - a)).round() as u8;
+    Color::from_rgb8(
+        ch(over.r(), ground.r()),
+        ch(over.g(), ground.g()),
+        ch(over.b(), ground.b()),
+    )
+}
+
+/// How much a hairline must move the ground it is painted on before a person
+/// can see it, in WCAG relative-luminance units.
+///
+/// A hairline is meant to be quiet, so this sits far below any text threshold.
+/// It only has to catch the failure that makes an edge *not an edge*: a wash
+/// that composites to within rounding distance of the surface under it.
+const HAIRLINE_MIN_DELTA: f64 = 0.02;
+
+/// Alpha of the wash [`Colors::lift`] falls back to when a preset's surface
+/// family gives it no raised tier to aim at. 15 % — enough to read as a
+/// distinct body, quiet enough that ink painted on it keeps its contrast.
+const LIFT_FALLBACK_ALPHA: u8 = 38;
 
 #[derive(Clone, Debug)]
 pub struct ColorRamp { pub stops: [Color; 11] }
@@ -325,6 +356,87 @@ impl Colors {
             ink_dim,
             ink_tertiary,
             tint: mix8(card, ink, ON_CARD_TINT_T),
+        }
+    }
+
+    /// A hairline that stays visible on `ground`, whichever side of the
+    /// light/dark line `ground` happens to fall on.
+    ///
+    /// White at a low alpha is the usual way to draw a quiet edge, and it is
+    /// what every `*_white_*` token in this file assumes. That assumption
+    /// holds only over a dark ground; over a light one the same wash
+    /// composites to within a shade of the surface and the edge disappears.
+    /// Branching on the palette's `dark` flag would not fix it either — a
+    /// preset can be dark overall while an individual surface sits the other
+    /// way round, which is exactly how the concept palette ends up with a
+    /// white card under dark chrome. So try both polarities at `alpha` and
+    /// keep whichever moves `ground` further.
+    pub fn hairline_on(ground: Color, alpha: u8) -> Color {
+        use crate::a11y::relative_luminance;
+        let g = relative_luminance(ground);
+        let light = Color::from_rgba8(255, 255, 255, alpha);
+        let dark = Color::from_rgba8(0, 0, 0, alpha);
+        let moved = |c: Color| (relative_luminance(composite(c, ground)) - g).abs();
+        if moved(light) >= moved(dark) { light } else { dark }
+    }
+
+    /// The hairline that separates a window from the desktop behind it.
+    ///
+    /// This is deliberately **not** a property of the window card. The edge is
+    /// painted on the desktop, outside the card's silhouette, because the
+    /// pixels inside the card belong to the hosted app and the shell never
+    /// samples them: a constant stroked over app content lands on whatever the
+    /// app happened to paint, so one token reads as a soft rim light over a
+    /// dark app and as a glaring near-white line over one painting light
+    /// chrome. No alpha satisfies both — the two grounds are at opposite ends
+    /// of the ramp. Deriving the edge from the one ground the shell *does*
+    /// know, and keeping it off the app's pixels entirely, makes the edge
+    /// legible without the shell having to guess what is underneath it.
+    /// [`crate::widget::tile_host::TileHost`] owns the matching geometry.
+    ///
+    /// A preset's declared [`Surfaces::window_card_border`] is honoured
+    /// wherever it actually registers against that ground; only a declaration
+    /// the ground would swallow gets its polarity flipped.
+    /// The body a control takes when it is **lifted** off the chrome's own
+    /// ground — a hovered or active tab pill, a selected row. `t` runs from
+    /// `0.0` (flat on the ground) to `1.0` (the full lift).
+    ///
+    /// The concept expressed this as `bg-white/5` / `bg-white/10`, which only
+    /// performs the lift over a dark ground: composited over a light one the
+    /// same wash lands within a shade of the surface, so "active" stops
+    /// looking active. `surfaces.base` and `surfaces.raised` already name both
+    /// ends of the move — the ground, and the tier of cards and panels above
+    /// it — and every preset defines them on its own side of the light/dark
+    /// line, so interpolating between them keeps the lift pointing the right
+    /// way with no `dark` flag to get wrong.
+    ///
+    /// Some presets have no tier to aim at: high contrast paints every surface
+    /// pure black on purpose, so `raised` *is* `base`. Those fall back to a
+    /// wash whose polarity is chosen against the ground the same way
+    /// [`Colors::hairline_on`] chooses an edge, which keeps a lift available
+    /// even where the surface family is deliberately flat.
+    pub fn lift(&self, t: f32) -> Color {
+        use crate::a11y::relative_luminance;
+        let base = self.surfaces.base;
+        let g = relative_luminance(base);
+        let raised = self.surfaces.raised;
+        let target = if (relative_luminance(raised) - g).abs() >= HAIRLINE_MIN_DELTA {
+            raised
+        } else {
+            composite(Self::hairline_on(base, LIFT_FALLBACK_ALPHA), base)
+        };
+        mix8(base, target, t)
+    }
+
+    pub fn window_edge(&self) -> Color {
+        use crate::a11y::relative_luminance;
+        let ground = self.surfaces.base;
+        let declared = self.surfaces.window_card_border;
+        let g = relative_luminance(ground);
+        if (relative_luminance(composite(declared, ground)) - g).abs() >= HAIRLINE_MIN_DELTA {
+            declared
+        } else {
+            Self::hairline_on(ground, declared.a())
         }
     }
 
