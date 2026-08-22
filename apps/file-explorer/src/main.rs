@@ -88,8 +88,26 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.file-explorer"));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.file-explorer");
-    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
+    // Two windows of the file manager are two authors of the same document
+    // — an inline rename is native collaborative `Text` (see
+    // `actions.rs`), so concurrent edits have to be attributable to tell
+    // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
+    // so two un-configured instances still get distinct actors.
+    let app_id = std::env::var("QUICK_APP_ID")
+        .unwrap_or_else(|_| format!("files-{}", std::process::id()));
+    state
+        .doc
+        .set_actor(automerge::ActorId::from(app_id.as_bytes()));
+    let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    // Announce ourselves under the workspace we were launched into. This
+    // does two things the file manager had been going without: it drives
+    // the late-join handshake (peers already in the room reply with their
+    // full state), and it is the scope this window's pointer is broadcast
+    // under — so a collaborator's cursor follows them out of the editor
+    // and into the file manager instead of disappearing at the window
+    // boundary.
+    app.set_presence_broadcast_scope(Some(ui::PresenceKey::workspace_scope("file-explorer")));
     app.run();
     Ok(())
 }

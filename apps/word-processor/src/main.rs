@@ -125,13 +125,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Register the word processor's action decoder so the Ctrl+K palette and
         // remote replay can reconstruct every document-mutating operation.
         word_processor::actions::register(app.action_registry_mut());
-        // Announce ourselves under a stable document scope: this drives the
-        // late-join handshake (peers already in the room reply with full state)
-        // and is the scope under which our pointer presence is broadcast. The
-        // per-block caret/selection presence the widget reports rides on top.
-        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-            id: "word-processor".to_string(),
-        }));
+        // Announce ourselves under the workspace we were launched into: this
+        // drives the late-join handshake (peers already in the room reply with
+        // full state) and is the scope under which our pointer presence is
+        // broadcast. The per-block caret/selection presence the widget reports
+        // rides on top. The workspace — not this app's name — is the scope, so
+        // a collaborator's cursor stays theirs as they move between the
+        // documents and the file manager in one room.
+        app.set_presence_broadcast_scope(Some(PresenceKey::workspace_scope("word-processor")));
         app.run();
     }
     Ok(())
