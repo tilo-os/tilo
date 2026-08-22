@@ -2486,25 +2486,26 @@ mod helper_tests {
 }
 
 // ===========================================================================
-// Overview card: the faces on a workspace card are the people who can reach it
+// Overview: the faces on a room are the people who can reach it
 // ===========================================================================
 
-/// The faces on a workspace card are the people who can reach it.
+/// The faces the overview puts on a room are the people who can reach it.
 ///
-/// The card paints a "Members" badge counted from [`Workspace::roster`]
-/// and, beneath it, a stack of avatars. Those two used to read different
-/// sources: the badge counted the roster while the avatars came from
+/// The panel paints an access line ("Shared with Ada") and a stack of
+/// avatars, and both read [`Workspace::roster`] — the people who hold a
+/// live membership capability here. They used to read different sources:
+/// the count came from the roster while the avatars came from
 /// `ws.collaborators`, falling back to the *tree-wide* collaborator list
-/// when the workspace's own was empty. A card could therefore read
-/// "0 Members" directly above two faces, and the fallback put those same
-/// faces on every card in the overview.
+/// when the workspace's own was empty. A room could therefore read
+/// "Private to you" directly above two faces, and the fallback put those
+/// same faces on every room in the list.
 ///
 /// On a permissions surface that is not a cosmetic mismatch: showing
-/// someone on a workspace card states that they can reach it.
+/// someone on a room states that they can reach it.
 ///
-/// Asserted against `overview_card_faces`, the function the draw pass
-/// itself calls. An earlier version of this test counted avatar-coloured
-/// fills in the rendered scene, which stopped meaning anything the moment
+/// Asserted against `room_people`, the function the draw pass itself
+/// calls. An earlier version of this test counted avatar-coloured fills
+/// in the rendered scene, which stopped meaning anything the moment
 /// avatars moved to the shared `ui::Avatar` widget with a per-identity
 /// fill — the product was still correct and the proxy had gone stale.
 /// Assert on the production path, not on something that correlates with
@@ -2518,7 +2519,7 @@ mod helper_tests {
 ///   claim: a person with no capability in the workspace gets no face.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
-    use shell::shell::overlay_host::overview_card_faces;
+    use shell::shell::overview::room_people;
     use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
 
     // Listed but powerless: collaborator records on every workspace, and
@@ -2542,13 +2543,13 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
     }
     for ws in &listed_only.workspaces {
         assert!(
-            overview_card_faces(ws, &listed_only).is_empty(),
+            room_people(ws, &listed_only).is_empty(),
             "a person who holds no capability in the workspace gets no face on \
-             its card; workspace {:?} showed {:?}",
+             its room; workspace {:?} showed {:?}",
             ws.name,
-            overview_card_faces(ws, &listed_only)
+            room_people(ws, &listed_only)
                 .iter()
-                .map(|(u, _)| u.clone())
+                .map(|p| p.id.clone())
                 .collect::<Vec<_>>()
         );
     }
@@ -2563,23 +2564,23 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
         Verb::Write,
     ));
 
-    let faces = overview_card_faces(&with_member.workspaces[0], &with_member);
+    let faces = room_people(&with_member.workspaces[0], &with_member);
     assert_eq!(
-        faces.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(),
+        faces.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
         vec!["ada"],
-        "the member who holds a capability is exactly who the card shows"
+        "the member who holds a capability is exactly who the room shows"
     );
     assert_eq!(
-        faces[0].1.map(|c| c.name.as_str()),
-        Some("Ada"),
+        faces[0].name.as_str(),
+        "Ada",
         "the collaborator record still supplies the display name"
     );
 
-    // And only that workspace's card changed.
+    // And only that workspace's row changed.
     for ws in with_member.workspaces.iter().skip(1) {
         assert!(
-            overview_card_faces(ws, &with_member).is_empty(),
-            "granting in one workspace must not put a face on another's card"
+            room_people(ws, &with_member).is_empty(),
+            "granting in one workspace must not put a face on another's row"
         );
     }
 }
