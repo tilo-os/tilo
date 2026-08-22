@@ -56,6 +56,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use vello::kurbo::Rect;
 
+use crate::shell::search::action_api::ArgValue;
+
 /// Top-level command envelope. Tag is `op`; remaining fields are
 /// per-variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,7 +258,21 @@ pub enum Command {
     /// anything runs, so an id that is unknown *or* hidden by the
     /// visibility gate is refused rather than silently ignored — you
     /// cannot invoke what you were never shown.
-    ActionsInvoke { provider: String, id: String },
+    ///
+    /// `args` carries the action's parameters, as enumeration advertised
+    /// them. It is checked against those parameters before anything
+    /// runs: a missing, unknown or wrong-typed argument is an
+    /// `invalid_arguments` refusal with the document untouched, which is
+    /// deliberately a *different* code from `unknown_action` — "I
+    /// addressed something that isn't there" and "I addressed the right
+    /// thing wrongly" are different mistakes and a caller fixes them
+    /// differently. Omitting `args` is the nullary call, unchanged.
+    ActionsInvoke {
+        provider: String,
+        id: String,
+        #[serde(default)]
+        args: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -433,12 +449,103 @@ pub trait ControlState {
     /// report what it addresses, without invoking it.
     ///
     /// This is the validation half of `actions_invoke`: it answers
-    /// "is this address real, and may this caller see it?" so the
-    /// transport can refuse a bad address with a structured error
-    /// instead of planning an invocation that silently does nothing.
-    fn resolve_action(&self, _provider: &str, _id: &str) -> Result<serde_json::Value, String> {
-        Err("no live action registry on this control state".to_string())
+    /// "is this address real, may this caller see it, and do these
+    /// arguments fit it?" so the transport can refuse with a structured
+    /// error instead of planning an invocation that silently does
+    /// nothing — or, worse, one that runs with an argument the caller
+    /// asked for and this side quietly dropped.
+    fn resolve_action(
+        &self,
+        _provider: &str,
+        _id: &str,
+        _args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, ActionRefusal> {
+        Err(ActionRefusal::unknown(
+            "no live action registry on this control state",
+        ))
     }
+}
+
+/// A refused invocation, carrying the code the wire should report.
+///
+/// A plain string would collapse "that address does not exist for you"
+/// into "you passed the wrong arguments", and those are corrected
+/// differently: the first means look again at what you may see, the
+/// second means look again at what this action declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionRefusal {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl ActionRefusal {
+    /// The address names nothing this caller can see. Deliberately the
+    /// same answer for "no such action" and "hidden from you", so
+    /// probing cannot map what it may not see.
+    pub fn unknown(message: impl Into<String>) -> Self {
+        Self {
+            code: "unknown_action",
+            message: message.into(),
+        }
+    }
+
+    /// The address is good; the arguments are not.
+    pub fn invalid_arguments(message: impl Into<String>) -> Self {
+        Self {
+            code: "invalid_arguments",
+            message: message.into(),
+        }
+    }
+
+    /// The address and arguments are both good, and the action could
+    /// still not do its job.
+    pub fn failed(message: impl Into<String>) -> Self {
+        Self {
+            code: "action_failed",
+            message: message.into(),
+        }
+    }
+}
+
+/// Translate one JSON argument object into the action vocabulary's
+/// values.
+///
+/// Kept at the transport rather than inside the action API so the
+/// catalogue never learns a wire format. JSON shapes with no parameter
+/// type — null, arrays, objects, non-integer numbers — are refused here
+/// by name rather than coerced: a caller that sent `{"at": 1.5}` asked
+/// for something this surface cannot mean, and rounding it silently
+/// would be inventing intent.
+pub fn arg_values_from_json(
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<Vec<(String, ArgValue)>, ActionRefusal> {
+    let mut out = Vec::with_capacity(args.len());
+    for (name, value) in args {
+        let bound = match value {
+            serde_json::Value::String(s) => ArgValue::Text(s.clone()),
+            serde_json::Value::Bool(b) => ArgValue::Boolean(*b),
+            serde_json::Value::Number(n) => match n.as_i64() {
+                Some(i) => ArgValue::Integer(i),
+                None => {
+                    return Err(ActionRefusal::invalid_arguments(format!(
+                        "argument `{name}` must be a whole number, got {n}"
+                    )));
+                }
+            },
+            other => {
+                return Err(ActionRefusal::invalid_arguments(format!(
+                    "argument `{name}` has no parameter type: {}",
+                    match other {
+                        serde_json::Value::Null => "null",
+                        serde_json::Value::Array(_) => "array",
+                        _ => "object",
+                    }
+                )));
+            }
+        };
+        out.push((name.clone(), bound));
+    }
+    Ok(out)
 }
 
 /// Side-effect actions the transport layer must execute after a
@@ -492,7 +599,17 @@ pub enum PlannedAction {
     /// resolved and permission-checked before this value was produced;
     /// the executor re-resolves against a fresh catalogue because the
     /// document may have moved on between planning and execution.
-    InvokeAction { provider: String, id: String },
+    ///
+    /// `args` travels with it, still as the JSON the caller sent. It was
+    /// checked against the action's parameters during dispatch, and is
+    /// checked again on the freshly-resolved action before it runs —
+    /// the re-resolution can land on a different action, and arguments
+    /// validated against the old one would say nothing about the new.
+    InvokeAction {
+        provider: String,
+        id: String,
+        args: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Wire-friendly key identifier. Mirrors the subset of
@@ -868,24 +985,27 @@ pub fn dispatch_command<S: ControlState>(
             answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
             Vec::new(),
         ),
-        Command::ActionsInvoke { provider, id } => {
-            // Resolve before planning. An unknown or hidden address is a
-            // structured refusal here, not an invocation that quietly
-            // does nothing — "I ran it and nothing happened" and "that
-            // action does not exist for you" must not look alike to a
-            // caller that cannot see the screen.
-            match state.resolve_action(provider, id) {
+        Command::ActionsInvoke { provider, id, args } => {
+            // Resolve before planning. An unknown or hidden address, and
+            // an argument set that does not fit the action, are both
+            // structured refusals here rather than an invocation that
+            // quietly does nothing — "I ran it and nothing happened",
+            // "that action does not exist for you" and "you passed the
+            // wrong thing" must not look alike to a caller that cannot
+            // see the screen.
+            match state.resolve_action(provider, id, args) {
                 Ok(resolved) => (
                     Response::Answer(resolved),
                     vec![PlannedAction::InvokeAction {
                         provider: provider.clone(),
                         id: id.clone(),
+                        args: args.clone(),
                     }],
                 ),
-                Err(message) => (
+                Err(refusal) => (
                     Response::Err {
-                        code: "unknown_action".to_string(),
-                        message,
+                        code: refusal.code.to_string(),
+                        message: refusal.message,
                     },
                     Vec::new(),
                 ),
@@ -1666,17 +1786,55 @@ mod tests {
             }))
         }
 
-        fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
-            if (provider, id) == ("shell.actions", "settings.open") {
-                Ok(serde_json::json!({
-                    "provider": provider,
-                    "id": id,
-                    "kind": "Actions",
-                    "title": "Open settings",
-                }))
-            } else {
-                Err(format!("no visible action addressed by ({provider}, {id})"))
-            }
+        fn resolve_action(
+            &self,
+            provider: &str,
+            id: &str,
+            args: &serde_json::Map<String, serde_json::Value>,
+        ) -> Result<serde_json::Value, ActionRefusal> {
+            // Two addresses: one nullary, one parameterised. The second
+            // is what makes the argument paths below testable at the
+            // dispatch layer, without a live registry.
+            let params: &[crate::shell::search::action_api::ActionParam] = match (provider, id) {
+                ("shell.actions", "settings.open") => &[],
+                ("shell.actions", "text.insert") => MOCK_INSERT_PARAMS,
+                _ => {
+                    return Err(ActionRefusal::unknown(format!(
+                        "no visible action addressed by ({provider}, {id})"
+                    )));
+                }
+            };
+            let values = arg_values_from_json(args)?;
+            crate::shell::search::action_api::ActionArgs::bind(params, values)
+                .map_err(|e| ActionRefusal::invalid_arguments(e.to_string()))?;
+            Ok(serde_json::json!({
+                "provider": provider,
+                "id": id,
+                "kind": "Actions",
+                "title": "Open settings",
+            }))
+        }
+    }
+
+    const MOCK_INSERT_PARAMS: &[crate::shell::search::action_api::ActionParam] = &[
+        crate::shell::search::action_api::ActionParam::required(
+            "text",
+            crate::shell::search::action_api::ParamType::Text,
+            "what to write",
+        ),
+        crate::shell::search::action_api::ActionParam::optional(
+            "at",
+            crate::shell::search::action_api::ParamType::Integer,
+            "character offset",
+        ),
+    ];
+
+    /// Build an `actions_invoke` command with the given arguments.
+    fn invoke_with(id: &str, args: serde_json::Value) -> Command {
+        Command::ActionsInvoke {
+            provider: "shell.actions".to_string(),
+            id: id.to_string(),
+            args: args.as_object().cloned().unwrap_or_default(),
         }
     }
 
@@ -1710,10 +1868,7 @@ mod tests {
     #[test]
     fn invoke_resolves_the_address_then_plans_one_invocation() {
         let (resp, actions) = dispatch_command(
-            &Command::ActionsInvoke {
-                provider: "shell.actions".to_string(),
-                id: "settings.open".to_string(),
-            },
+            &invoke_with("settings.open", serde_json::json!({})),
             &ActionState,
         );
 
@@ -1726,8 +1881,139 @@ mod tests {
             vec![PlannedAction::InvokeAction {
                 provider: "shell.actions".to_string(),
                 id: "settings.open".to_string(),
+                args: serde_json::Map::new(),
             }]
         );
+    }
+
+    /// A nullary invocation still parses and still plans when the
+    /// caller sends no `args` key at all — the shape every existing
+    /// client uses.
+    #[test]
+    fn a_nullary_invocation_needs_no_args_key() {
+        let cmd = parse_command(r#"{"op":"actions_invoke","provider":"shell.actions","id":"settings.open"}"#)
+            .expect("an invocation without `args` must still parse");
+        let (resp, actions) = dispatch_command(&cmd, &ActionState);
+        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+        assert_eq!(actions.len(), 1, "the nullary path still plans one invocation");
+    }
+
+    /// The happy path for a parameterised action: the arguments bind,
+    /// and they travel to the executor verbatim.
+    #[test]
+    fn arguments_bind_and_reach_the_planned_invocation() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with(
+                "text.insert",
+                serde_json::json!({"text": "hello", "at": 3}),
+            ),
+            &ActionState,
+        );
+        assert!(matches!(resp, Response::Answer(_)), "got {resp:?}");
+        let [PlannedAction::InvokeAction { args, .. }] = actions.as_slice() else {
+            panic!("expected exactly one planned invocation, got {actions:?}");
+        };
+        assert_eq!(args["text"], "hello");
+        assert_eq!(args["at"], 3);
+    }
+
+    /// A missing required argument is refused **before** anything is
+    /// planned, and under its own code.
+    ///
+    /// The code is the point. `unknown_action` would send the caller
+    /// looking for an address that is in fact perfectly good; the two
+    /// mistakes are corrected in different places, so they must not
+    /// share a name.
+    #[test]
+    fn a_missing_required_argument_is_refused_under_its_own_code() {
+        let (resp, actions) =
+            dispatch_command(&invoke_with("text.insert", serde_json::json!({})), &ActionState);
+        assert!(
+            actions.is_empty(),
+            "a refused invocation must plan nothing; got {actions:?}"
+        );
+        let Response::Err { code, message } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "invalid_arguments");
+        assert!(
+            message.contains("text"),
+            "the refusal must name the parameter at fault, got {message:?}"
+        );
+    }
+
+    /// A wrong-typed argument is refused rather than coerced. An agent
+    /// that sent a number where text was declared asked for something
+    /// this action cannot mean, and guessing at the intent is how a
+    /// caller ends up believing an edit happened that did not.
+    #[test]
+    fn a_wrong_typed_argument_is_refused_not_coerced() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with("text.insert", serde_json::json!({"text": 7})),
+            &ActionState,
+        );
+        assert!(actions.is_empty(), "got {actions:?}");
+        let Response::Err { code, message } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "invalid_arguments");
+        assert!(message.contains("text") && message.contains("integer"), "{message}");
+    }
+
+    /// An argument the action never declared is refused, not dropped.
+    ///
+    /// Silently ignoring it is the worst available behaviour: the caller
+    /// believes it asked for something, the reply says `ok`, and the
+    /// difference is invisible to anything that cannot see the screen.
+    #[test]
+    fn an_unknown_argument_is_refused_not_silently_ignored() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with(
+                "text.insert",
+                serde_json::json!({"text": "hi", "colour": "red"}),
+            ),
+            &ActionState,
+        );
+        assert!(actions.is_empty(), "got {actions:?}");
+        let Response::Err { code, message } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "invalid_arguments");
+        assert!(message.contains("colour"), "{message}");
+    }
+
+    /// A JSON shape no parameter type can hold is refused by name
+    /// rather than coerced into one that nearly fits.
+    #[test]
+    fn a_json_shape_with_no_parameter_type_is_refused() {
+        for bad in [
+            serde_json::json!({"text": null}),
+            serde_json::json!({"text": ["a"]}),
+            serde_json::json!({"text": "ok", "at": 1.5}),
+        ] {
+            let (resp, actions) = dispatch_command(&invoke_with("text.insert", bad), &ActionState);
+            assert!(actions.is_empty(), "got {actions:?}");
+            let Response::Err { code, .. } = resp else {
+                panic!("expected Response::Err, got {resp:?}");
+            };
+            assert_eq!(code, "invalid_arguments");
+        }
+    }
+
+    /// Arguments are checked against the action the *address* resolves
+    /// to. Passing a parameterised action's arguments to a nullary one
+    /// is an unknown-argument refusal, not a silent success.
+    #[test]
+    fn arguments_meant_for_another_action_are_refused() {
+        let (resp, actions) = dispatch_command(
+            &invoke_with("settings.open", serde_json::json!({"text": "hi"})),
+            &ActionState,
+        );
+        assert!(actions.is_empty(), "got {actions:?}");
+        let Response::Err { code, .. } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "invalid_arguments");
     }
 
     /// You cannot invoke what you were never shown. An address the
@@ -1741,10 +2027,7 @@ mod tests {
     #[test]
     fn unknown_address_is_refused_and_plans_nothing() {
         let (resp, actions) = dispatch_command(
-            &Command::ActionsInvoke {
-                provider: "shell.actions".to_string(),
-                id: "definitely.not.a.real.action".to_string(),
-            },
+            &invoke_with("definitely.not.a.real.action", serde_json::json!({})),
             &ActionState,
         );
 
@@ -1808,8 +2091,19 @@ mod tests {
             invoke,
             Command::ActionsInvoke {
                 provider: "p".to_string(),
-                id: "i".to_string()
+                id: "i".to_string(),
+                args: serde_json::Map::new(),
             }
         );
+
+        let with_args = parse_command(
+            r#"{"op":"actions_invoke","provider":"p","id":"i","args":{"text":"hi","at":2}}"#,
+        )
+        .expect("actions_invoke should parse with args");
+        let Command::ActionsInvoke { args, .. } = with_args else {
+            panic!("expected ActionsInvoke");
+        };
+        assert_eq!(args["text"], "hi");
+        assert_eq!(args["at"], 2);
     }
 }
