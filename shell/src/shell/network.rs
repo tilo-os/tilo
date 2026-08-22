@@ -752,21 +752,26 @@ impl ShellNetwork {
     ///
     /// # Why the pairing is reconstructed here
     ///
-    /// The toolkit sends `CollabRequest::SyncCRDT` from two places that
-    /// are identical by the time they reach this layer — once in reply
-    /// to a peer arriving, and once on **every commit that changes the
-    /// document**, where it feeds same-host fan-out and the undo
-    /// snapshot. Publishing both would put a whole document on the room
-    /// topic per commit: unbounded, growing with the session, and
-    /// redundant with the delta that already carries the same edit.
+    /// `CollabRequest::SyncCRDT` is not reliably a join reply. It is one
+    /// when the toolkit answers an `Arrived`, and it is also what an app
+    /// sends to feed same-host fan-out and the undo snapshot — whether a
+    /// commit produces one is a property of the toolkit build, not
+    /// something visible in the frame. Republishing whatever arrives
+    /// therefore risks a whole document on the room topic per commit:
+    /// unbounded, growing with the session, and redundant with the delta
+    /// that already carries the same edit to anyone who shares the
+    /// history.
     ///
-    /// The broker cannot tell the two apart from the frame, but it does
-    /// see the request — a peer's `Arrived` passes through its own drain
-    /// on the way to local apps. So the arrival arms the room and the
-    /// next snapshot for it goes out. Which snapshot that turns out to
-    /// be does not matter: any full state of the document serves a peer
-    /// that has none, so consuming the arming on a commit's snapshot
-    /// answers the join just as well as replying to it directly.
+    /// The broker cannot tell those apart by looking, but it does see
+    /// the *request* — a peer's `Arrived` passes through its own drain on
+    /// the way to local apps. So the arrival arms the room and the next
+    /// whole document for it goes out. Which one that turns out to be
+    /// does not matter: any full state serves a peer that has none, so
+    /// consuming the arming on a commit's snapshot answers the join just
+    /// as well as replying to it directly.
+    ///
+    /// Gating here rather than trusting the sender is what keeps the
+    /// rate bounded no matter which way the toolkit sends.
     pub fn note_snapshot_request(&self, cluster_id: &str) {
         if cluster_id.is_empty() {
             return;
