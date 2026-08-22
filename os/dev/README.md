@@ -76,11 +76,30 @@ compositor**, so pick per task:
 
 | Mode | qemu flags | `screendump` captures | Compositor (`shell`) |
 |------|-----------|----------------------|----------------------|
-| `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, **tuigreet greeter** | software GL only (may not run) |
+| `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, greeter, **and the desktop** | llvmpipe — slow, but it runs |
 | `--gl` | `-device virtio-vga-gl -display egl-headless,rendernode=<iGPU>` | **GL compositor scanout** (2D content → "no surface") | hardware GL via virgl |
 
-So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
+
+Two corrections to what this table used to say, both established by booting the
+image rather than by reading the flags:
+
+* **`--2d` does reach the desktop.** The compositor was described as possibly
+  not starting under software GL. It starts: `/usr/bin/shell --backend drm`
+  paints the full desktop through llvmpipe, just slowly. So `--2d` is the mode
+  that can capture a whole boot — firmware, bootloader, console, greeter, login
+  and desktop — in one continuous take, which no GL mode can, and it is what
+  `record-boot.py` defaults to.
+* **The greeter is not tuigreet.** greetd runs `cage -s -- qos-greeter` on vt1
+  (`/etc/greetd/config.toml`), a graphical Wayland session with a two-field
+  form. Return on the username submits, so anything driving it wants Tab
+  between the fields.
+
+`--gl` additionally needs `qemu-ui-egl-headless` installed in the VM
+environment; without it qemu exits with `Display 'egl-headless' is not
+available`. On the reference machine qemu 10.1.5 then **segfaults** in
+`hw-display-virtio-vga-gl.so` at startup, so GL headless is currently
+unavailable there — which costs nothing for boot capture, given the row above.
 
 ## Recording a boot as video
 
