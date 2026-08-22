@@ -64,6 +64,7 @@ use collab_types::{
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 use crate::shell::collab_broker_capnp::CapnpBrokerState;
+use crate::shell::collab_outbound::{PeerPublisher, Transport};
 use crate::shell::network::ShellNetwork;
 
 /// Maximum number of audit-log entries retained per channel before
@@ -368,6 +369,21 @@ impl CrdtRoute {
     /// the cluster from a local counter used to cause.
     fn is_addressable(cluster_id: &str) -> bool {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
+    }
+
+    /// Whether this route may be stamped onto a frame leaving the
+    /// machine.
+    ///
+    /// The same test [`Self::delivers_to`] applies to the sender side,
+    /// exposed because the outbound half
+    /// ([`crate::shell::collab_outbound`]) has to make the identical
+    /// call before a publish. A route that cannot deliver locally
+    /// cannot deliver remotely either: the receiving broker rebuilds
+    /// this route from the wire fields and runs it through
+    /// `delivers_to`, so publishing an unaddressable one puts a frame
+    /// in the room that every receiver silently drops.
+    pub fn is_publishable(&self) -> bool {
+        Self::is_addressable(&self.cluster_id)
     }
 
     /// Whether an event addressed to `self` should be delivered to a
@@ -1066,15 +1082,15 @@ fn translate(
 /// pipe, then evicts the peer from the table so concurrent writers
 /// stop targeting a dead stream.
 ///
-/// When `peer_sync` is `Some`, every `SyncIncremental` is also
-/// republished over libp2p as a `NeighbourMsg::AppCrdtIncremental`
-/// so remote hosts running the same broker can fan it out to their
-/// own local apps.
+/// Reaching other machines is [`PeerPublisher`]'s job — the same
+/// instance the capnp transport holds, so an edit typed in a
+/// sandboxed app and one typed in a JSON-dialect app take the identical
+/// route out of this host.
 fn reader_loop(
     peer: Arc<Peer>,
     mut stream: UnixStream,
     table: Arc<PeerTable>,
-    peer_sync: Option<Arc<ShellNetwork>>,
+    publisher: Arc<PeerPublisher>,
     channels: Arc<Mutex<BrokerChannels>>,
     pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
 ) {
@@ -1107,29 +1123,36 @@ fn reader_loop(
             }
         }
         let src_route = peer.route();
-        // Phase 2 outbound bridge: send the raw incremental over
-        // libp2p before we fan it to local peers. Cloning the data
-        // here is unavoidable because we still need the original
-        // payload for the local `translate` path. A peer that never
-        // said hello has no route to stamp, so its frame is not
-        // republished either — the same fail-closed rule the local
-        // fan-out applies.
-        if let (Some(net), CollabRequest::SyncIncremental { data }) = (peer_sync.as_ref(), &req) {
-            match &src_route {
-                Some(route) => net.publish_app_crdt_incremental(
-                    route.app_id.clone(),
-                    route.cluster_id.clone(),
-                    route.record_id.clone(),
-                    data.clone(),
-                ),
-                None => {
-                    tracing::debug!(
-                        "collab_broker: not republishing SyncIncremental from \
-                         peer-{}: no Hello, so the frame has no route",
-                        peer.id,
-                    );
-                }
+        // Outbound bridge: send the payload to the room before we fan
+        // it to local peers. Cloning the data here is unavoidable
+        // because we still need the original payload for the local
+        // `translate` path. A peer that never said hello has no route
+        // to stamp, so its frame is not republished either — the same
+        // fail-closed rule the local fan-out applies.
+        match (&src_route, &req) {
+            (Some(route), CollabRequest::SyncIncremental { data }) => {
+                publisher.document_incremental(route, Transport::Json, data.clone());
             }
+            (Some(route), CollabRequest::SignedSyncIncremental { envelope }) => {
+                // Validation happens on the receiving side, against
+                // that host's own channel state — publishing an
+                // envelope is not vouching for it, and a peer that
+                // has not been told the artifact's role table will
+                // reject it exactly as this host would.
+                publisher.signed_document(route, Transport::Json, (**envelope).clone());
+            }
+            (
+                None,
+                CollabRequest::SyncIncremental { .. } | CollabRequest::SignedSyncIncremental { .. },
+            ) => {
+                tracing::warn!(
+                    "collab_broker: peer-{} sent a CRDT payload before saying \
+                     Hello — it has no route, so nothing it types reaches \
+                     another machine",
+                    peer.id,
+                );
+            }
+            _ => {}
         }
         // Phase 6 cooperative-fetch outbound bridge: a local
         // `FetchScrollback` always replies first from the local op
@@ -1167,9 +1190,7 @@ fn reader_loop(
                 // via `ScrollbackResponse`, which the broker drain
                 // thread then fans into a follow-up `ScrollbackBatch`
                 // for the locally-connected app.
-                if let (Some(net), Some((art, before_seq, max))) =
-                    (peer_sync.as_ref(), cooperative_fetch)
-                {
+                if let Some((art, before_seq, max)) = cooperative_fetch {
                     let is_empty = matches!(
                         &event,
                         CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
@@ -1187,9 +1208,15 @@ fn reader_loop(
                                     waiting.push(route.clone());
                                 }
                             }
-                            net.publish_scrollback_request(art, before_seq, max);
+                            publisher.scrollback_request(
+                                route,
+                                Transport::Json,
+                                art,
+                                before_seq,
+                                max,
+                            );
                         } else {
-                            tracing::debug!(
+                            tracing::warn!(
                                 "collab_broker: not publishing a cooperative \
                                  scrollback request for peer-{}: no Hello, so \
                                  the answer would have nowhere to go",
@@ -1433,6 +1460,37 @@ pub fn spawn_full(
     capnp_socket_path: Option<PathBuf>,
     peer_sync: Option<Arc<ShellNetwork>>,
 ) -> std::io::Result<BrokerHandle> {
+    // The outbound half, built once and shared by both transports.
+    // One instance is the whole point: when the capnp server held no
+    // network handle and the JSON reader loop held one, "does a local
+    // edit leave this machine" had two answers, and the one sandboxed
+    // apps got was "no".
+    let publisher = PeerPublisher::from_network(peer_sync.clone());
+    spawn_inner(socket_path, capnp_socket_path, peer_sync, publisher)
+}
+
+/// Same broker, with the outbound half supplied by the caller.
+///
+/// The seam exists so a test can watch what actually reaches the wire
+/// from the real server methods — the alternative is standing up
+/// libp2p, which would prove the transport works and say nothing about
+/// whether the broker handed it anything. `peer_sync` stays `None`
+/// here: the inbound drain is a separate concern and has its own
+/// coverage.
+pub fn spawn_with_publisher(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
+    spawn_inner(socket_path, capnp_socket_path, None, publisher)
+}
+
+fn spawn_inner(
+    socket_path: PathBuf,
+    capnp_socket_path: Option<PathBuf>,
+    peer_sync: Option<Arc<ShellNetwork>>,
+    publisher: Arc<PeerPublisher>,
+) -> std::io::Result<BrokerHandle> {
     // Best-effort unlink: a previous shell instance may have left a
     // stale inode behind. Ignore the result — if the file doesn't
     // exist (the common case) the `unlink` errors and we continue;
@@ -1456,7 +1514,7 @@ pub fn spawn_full(
         Arc::new(Mutex::new(HashMap::new()));
 
     let listener_table = Arc::clone(&table);
-    let listener_peer_sync = peer_sync.clone();
+    let listener_publisher = Arc::clone(&publisher);
     let listener_channels = Arc::clone(&channels);
     let listener_pending = Arc::clone(&pending_scrollback);
     let listener_thread = std::thread::Builder::new()
@@ -1488,7 +1546,7 @@ pub fn spawn_full(
                         );
                         let reader_table = Arc::clone(&listener_table);
                         let reader_peer = Arc::clone(&peer);
-                        let reader_peer_sync = listener_peer_sync.clone();
+                        let reader_publisher = Arc::clone(&listener_publisher);
                         let reader_channels = Arc::clone(&listener_channels);
                         let reader_pending = Arc::clone(&listener_pending);
                         if let Err(e) = std::thread::Builder::new()
@@ -1498,7 +1556,7 @@ pub fn spawn_full(
                                     reader_peer,
                                     stream,
                                     reader_table,
-                                    reader_peer_sync,
+                                    reader_publisher,
                                     reader_channels,
                                     reader_pending,
                                 );
@@ -1772,6 +1830,7 @@ pub fn spawn_full(
             path.clone(),
             Arc::clone(&table),
             Arc::clone(&channels),
+            Arc::clone(&publisher),
             Arc::clone(&capnp_quit),
         ) {
             Ok(handle) => (Some(handle), true),
@@ -2034,6 +2093,65 @@ mod tests {
     /// and the receiving host has to rebuild it. This drives the real inbound
     /// path: a frame queued as if it had just arrived off gossipsub, picked up
     /// by the broker's drain thread, routed by what the sender stamped.
+    /// The two transports must publish through the same thing.
+    ///
+    /// They did not. The JSON reader loop republished every
+    /// `SyncIncremental` over libp2p; the capnp server, which is the
+    /// one a sandboxed app dials, held no network handle at all — so
+    /// "does a local edit leave this machine" had two answers and the
+    /// sandboxed one was no. Asserting a shared publisher here is what
+    /// stops that from being re-derived independently a third time.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_json_edit_reaches_the_same_publisher_the_capnp_transport_uses() {
+        use crate::shell::collab_outbound::recording::{RecordingSink, Sent};
+        use crate::shell::collab_outbound::{PeerPublishSink, PeerPublisher};
+
+        let socket_path = temp_sock("json-shared-publisher");
+        let sink = std::sync::Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(sink.clone() as Arc<dyn PeerPublishSink>);
+        let handle = spawn_with_publisher(socket_path.clone(), None, publisher)
+            .expect("broker should bind");
+
+        let record = ui::record::RecordId::for_file("/work/shared.odt");
+        let mut app = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &record,
+        );
+        wait_for_peers(&handle, 1, Duration::from_millis(500));
+        wait_for_announced(&handle, 1, Duration::from_millis(500));
+        let _ = app.poll();
+
+        let (_, delta) = edited("body", "typed on this machine");
+        app.send(CollabRequest::SyncIncremental {
+            data: delta.clone(),
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let seen = loop {
+            let seen = sink.snapshot();
+            if !seen.is_empty() || std::time::Instant::now() > deadline {
+                break seen;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(
+            seen,
+            vec![Sent::Incremental {
+                app_id: "dev.qos.word-processor".to_string(),
+                cluster_id: TEST_CLUSTER.to_string(),
+                record_id: record.as_str().to_string(),
+                data: delta,
+            }],
+            "the JSON transport must publish through the shared outbound \
+             path, carrying the same route it fanned out on",
+        );
+        drop(app);
+        drop(handle);
+    }
+
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {

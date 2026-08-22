@@ -2300,6 +2300,16 @@ name = "collab-link"
 version = "0.1.0"
 
 [[package]]
+name = "collab-probe"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "runtime-collab",
+ "runtime-portal",
+ "tokio",
+]
+
+[[package]]
 name = "collab-types"
 version = "0.1.0"
 dependencies = [
