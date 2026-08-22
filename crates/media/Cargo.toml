@@ -36,3 +36,8 @@ serde_json.workspace = true
 gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
+
+[dev-dependencies]
+# The decode probe example prints pipeline diagnostics; the same subscriber the
+# rest of the workspace uses, so log filtering behaves identically.
+tracing-subscriber.workspace = true
