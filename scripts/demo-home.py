@@ -73,10 +73,6 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
 
-    # An empty applications dir, and an XDG_DATA_DIRS that points only at
-    # it, is what keeps the palette's Host Apps group from enumerating the
-    # operator's installed software. Empty is correct here: the demo
-    # installs its app through the palette, which is the thing being shown.
     data_home = root / ".local" / "share"
     (data_home / "applications").mkdir(parents=True, exist_ok=True)
     (root / ".config").mkdir(parents=True, exist_ok=True)
@@ -87,11 +83,25 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
         "XDG_DATA_HOME": str(data_home),
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),
-        # Not $XDG_DATA_HOME: listing it twice makes the scanner walk the
-        # same tree twice. Point at the staged share root instead, so the
-        # only .desktop files discoverable are ones the demo put there.
-        "XDG_DATA_DIRS": str(data_home),
     }
+    # Deliberately NOT overriding XDG_DATA_DIRS, for two reasons.
+    #
+    # It does not achieve the isolation it looks like it would: the
+    # desktop-entry scanner always appends
+    # /var/lib/flatpak/exports/share/applications regardless of the
+    # environment (crates/system/desktop-entry/src/scan.rs, with a test
+    # pinning that behaviour), so system Flatpaks appear in the palette's
+    # Host Apps group whatever this variable says.
+    #
+    # And pointing it at the staged tree actively breaks rendering: the
+    # Vulkan loader finds its ICD manifests through XDG_DATA_DIRS too, so
+    # a staged-only value makes wgpu report "no adapter available" and the
+    # compositor cannot draw at all. Measured, not theorised.
+    #
+    # Net: staging fixes the file leak completely - a "~" search drops from
+    # the operator's whole home directory to this corpus - and does not
+    # hide installed host applications. Choose demo queries that do not
+    # match host app names, or film on a machine without them.
 
 
 def main() -> int:
