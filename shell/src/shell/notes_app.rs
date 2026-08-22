@@ -108,28 +108,6 @@ impl NotesApp {
         }
     }
 
-    /// The ambient theme, re-pointed at the ink the **window card** takes.
-    ///
-    /// A tile's contents are painted onto the card `TileHost` draws, which
-    /// is a light surface sitting on the dark shell backdrop, so text on it
-    /// comes from the neutral ramp's dark end rather than from
-    /// `Theme::text_primary` (which is the ink for the *chrome*, and would
-    /// be near-white here). `TileHost` and the foreign-surface placeholder
-    /// pick the same two ramp slots for exactly this reason; matching them
-    /// keeps every string on the card one family, and means a future fix to
-    /// the on-card convention moves all of these together.
-    ///
-    /// Shared widgets read their colours off the theme they are handed, so
-    /// this is what gets handed to them — the alternative is each widget
-    /// growing an on-card colour parameter for one caller.
-    fn card_theme(&self, theme: &Theme) -> Theme {
-        let mut card = theme.clone();
-        card.text_primary = theme.tokens.colors.neutral[1];
-        card.text_dim = theme.tokens.colors.neutral[4];
-        card.text_tertiary = theme.tokens.colors.neutral[4];
-        card
-    }
-
     /// Create a Notes tile pre-seeded with welcome text so first-boot users
     /// see something concrete. The seed is written to the CRDT lazily on
     /// first sync so repeated boots don't keep appending.
@@ -233,8 +211,13 @@ impl Widget for NotesApp {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        let tokens = &theme.tokens;
-        let text_color = tokens.colors.neutral[1];
+        // Notes paints no background: the body sits straight on the window
+        // card the frame draws, so its ink comes from the card rather than
+        // from a ramp slot chosen for one theme's card. `Theme::on_card`
+        // answers that for the whole fleet — the stub tile and the
+        // foreign-surface placeholder ask it the same question.
+        let card_theme = theme.on_window_card();
+        let text_color = theme.on_card().ink;
         // Caret is a *fill* state (focused-but-not-hovered), so use the
         // semantic `accent_primary` (indigo-500) accessor — the concept's
         // dominant accent — rather than the raw `accent[4]` (indigo-600)
@@ -276,7 +259,7 @@ impl Widget for NotesApp {
                 scene,
                 transform,
                 tr,
-                &self.card_theme(theme),
+                &card_theme,
                 self.rect,
                 Some(Icon::PenTool),
                 "This note is empty",
