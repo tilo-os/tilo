@@ -202,6 +202,9 @@ pub struct ShellOverlayHost {
     /// only on Released so a fast drag doesn't spawn a subprocess per
     /// pixel of motion.
     qs_slider_drag: Option<usize>,
+    /// Off-thread reader for the OS state quick settings displays.
+    /// See [`crate::shell::qs_refresh`] for why the reads left the frame.
+    qs_refresh: crate::shell::qs_refresh::QsRefresh,
     ws_settings_was_open: bool,
     /// Interruptible open/close driver for the workspace-settings modal
     /// — like `qs_transition` but for the modal, so it fades + scales
@@ -928,6 +931,7 @@ impl ShellOverlayHost {
             qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
+            qs_refresh: crate::shell::qs_refresh::QsRefresh::new(),
             ws_settings_was_open: false,
             ws_settings_transition: ui::Transition::closed(),
             palette_was_visible: false,
@@ -3964,24 +3968,34 @@ impl ShellOverlayHost {
         self.qs_transition = ui::Transition::open();
     }
 
-    /// Refresh every quick-settings field from the OS by calling the
-    /// matching getter in [`crate::shell::qs_actions`]. Called once on
-    /// the popover's rising-edge open so the user sees live values
-    /// instead of the stale snapshot from last time. Each call is
-    /// best-effort: a missing daemon logs a warning and leaves the
-    /// previous value in place.
-    fn refresh_quick_settings_from_os(&mut self) {
-        use crate::shell::qs_actions as qs;
-        let brightness = qs::log_qs_get("get_brightness", qs::get_brightness());
-        let volume = qs::log_qs_get("get_volume", qs::get_volume());
-        let wifi = qs::log_qs_get("get_wifi", qs::get_wifi());
-        let bluetooth = qs::log_qs_get("get_bluetooth", qs::get_bluetooth());
-        let power = qs::log_qs_get("get_power_profile", qs::get_power_profile());
-        let wifi_nets = qs::log_qs_get("list_wifi_networks", qs::list_wifi_networks());
-        let bt_devices = qs::log_qs_get("list_bt_devices", qs::list_bt_devices());
-
-        if let Some(chrome) = self.chrome.clone() {
+    /// Fold every reading the quick-settings workers have delivered
+    /// into chrome state. Runs once per frame and never blocks: the
+    /// reads themselves happen on a worker (see
+    /// [`crate::shell::qs_refresh`]), because a shell-out on the paint
+    /// path froze the whole desktop for as long as the OS tool took.
+    ///
+    /// Each field is applied only if it was actually read, so a missing
+    /// daemon leaves the previous value on screen rather than blanking
+    /// the panel.
+    fn apply_quick_settings_readings(&mut self) {
+        use crate::shell::qs_refresh::QsReading;
+        let readings = self.qs_refresh.drain();
+        if readings.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        for reading in readings {
             let mut st = chrome.borrow_mut();
+            let (brightness, volume, wifi, bluetooth, power, wifi_nets, bt_devices) = match reading
+            {
+                QsReading::Fast { brightness, volume, wifi, bluetooth, power } => {
+                    (brightness, volume, wifi, bluetooth, power, None, None)
+                }
+                QsReading::WifiNetworks(nets) => (None, None, None, None, None, nets, None),
+                QsReading::BtDevices(devs) => (None, None, None, None, None, None, devs),
+            };
             if let Some(v) = brightness {
                 st.quick_settings.brightness = v;
             }
@@ -5323,15 +5337,16 @@ impl Widget for ShellOverlayHost {
         // as "slipping out of the top-right". Detect the open rising edge
         // and play the same motion for `QS_OPEN_ANIM_MS`.
         if flags.quick_settings && !self.qs_was_open {
-            // Rising edge: refresh QS state from the OS. Reads are
-            // inline because each shell-out completes in <50 ms on
-            // typical hardware; if any take longer, the worst case is
-            // a single frame stutter the first time the panel opens.
-            // Failed reads are logged and leave the stale value in
-            // place so a missing daemon doesn't blank the UI.
-            self.refresh_quick_settings_from_os();
+            // Rising edge: ask for fresh OS state, but do not wait for
+            // it. The panel opens on this frame with the last known
+            // values and updates as readings land. The lists behind the
+            // Wi-Fi and Bluetooth drill-ins are deliberately not
+            // requested here — see `qs_refresh`.
+            self.qs_refresh.kick_fast();
         }
         self.qs_was_open = flags.quick_settings;
+        // Apply anything the workers have delivered since the last frame.
+        self.apply_quick_settings_readings();
         // Drive the interruptible transition from the flag. `is_visible`
         // keeps the popover drawn through its close curve so it fades +
         // slides OUT instead of popping.
@@ -6592,6 +6607,20 @@ impl Widget for ShellOverlayHost {
                             }
                         }
                         if let Some(level) = pushed_level {
+                            // The list this level shows is fetched here,
+                            // not on panel-open: enumerating networks
+                            // means a Wi-Fi scan, which is by far the
+                            // slowest read in the set and is invisible
+                            // until this drill-in.
+                            match level {
+                                crate::shell::quick_settings::QsLevel::Wifi => {
+                                    self.qs_refresh.kick_wifi_networks()
+                                }
+                                crate::shell::quick_settings::QsLevel::Bluetooth => {
+                                    self.qs_refresh.kick_bt_devices()
+                                }
+                                _ => {}
+                            }
                             let mut st = chrome.borrow_mut();
                             st.quick_settings.push_level(level);
                             st.bump();
@@ -7305,6 +7334,10 @@ impl Widget for ShellOverlayHost {
             || room_activity_in_flight
             || self.content.needs_animation_frame()
             || sidebar_frame
+            // A reading that lands after the open animation has settled
+            // still has to reach the screen, and the loop idles unless
+            // something says otherwise.
+            || self.qs_refresh.is_in_flight()
     }
 }
 
@@ -9837,7 +9870,7 @@ impl ShellOverlayHost {
         // the concept-parity spec test pins to a closed→open delta of 0.
         //
         // Sub-line label = SSID/device name of whichever entry
-        // `refresh_quick_settings_from_os` marked `connected` (via
+        // the Wi-Fi reading marked `connected` (via
         // `nmcli`/`bluetoothctl`). Falls back to "Not connected" when
         // the radio is on but nothing paired, or the radio is off.
         const NOT_CONNECTED: &str = "Not connected";
