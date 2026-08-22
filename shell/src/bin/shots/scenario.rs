@@ -61,6 +61,11 @@ pub enum Action {
         dx: f32,
         dy: f32,
     },
+    /// Move the cursor onto a named target's centre without pressing.
+    /// Sibling of [`Action::ClickNamed`], for the affordances that are
+    /// hover-driven — a tab pill opening its control cluster — where a
+    /// literal coordinate would go stale the moment the row re-sizes.
+    MoveCursorNamed(&'static str),
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
@@ -307,6 +312,12 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
         Action::MoveCursor(p) => driver.move_cursor(*p),
+        Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
+            Some(p) => driver.move_cursor(p),
+            None => eprintln!(
+                "scenario: could not resolve named target '{name}' (rect not populated yet — paint first?)"
+            ),
+        },
         Action::MousePress => driver.press(),
         Action::MouseRelease => driver.release(),
         Action::SnapshotSequence {
@@ -946,6 +957,8 @@ pub fn catalogue() -> Vec<Scenario> {
         window_open_at_next_seam_rightwards(),
         strip_scroll_across_apps(),
         narrow_groups_side_by_side(),
+        tab_pill_reveal(),
+        tab_pill_reveal_narrow(),
         new_tab_from_the_plus_chip(),
         status_tray_states(),
         media_key_osd(),
@@ -1277,6 +1290,104 @@ fn strip_scroll_across_apps() -> Scenario {
 /// demo takes when it wants several apps visible together, and it is the
 /// shape a group's tab strip has the least room in.
 const THIRD_WIDTH_PERMILLE: u16 = 333;
+
+/// Frames between samples of the pill's reveal curve. The curve runs on
+/// wall time inside the host and an offscreen frame costs more than one
+/// tick, so a single tick between captures is what actually walks it.
+const REVEAL_SAMPLE_TICK: u32 = 1;
+
+/// Hovering a tab pill: it opens to make room for its control cluster
+/// rather than revealing the chips inside width it was already holding.
+///
+/// The interesting part is what the *neighbours* do. Growth is anchored
+/// at the hovered pill's leading edge, so nothing at or left of it
+/// moves and the pills to its right translate without being re-sized —
+/// which is the property that keeps the pointer's target under the
+/// pointer. Sampling the curve rather than only its endpoints is the
+/// only way to see that in a capture.
+fn tab_pill_reveal() -> Scenario {
+    Scenario {
+        name: "tab_pill_reveal",
+        description: "A four-tab group at rest, then one pill opening its \
+                      control cluster and closing again.",
+        actions: vec![
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::Snapshot("01-idle"),
+            Action::MoveCursorNamed("tab:Files"),
+            Action::Snapshot("02-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("03-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("04-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("05-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("06-opening"),
+            Action::Wait(12),
+            Action::Snapshot("07-open"),
+            // Off the bar entirely: the pill closes again, and its body
+            // has to stay under the chips for the whole shrink.
+            Action::MoveCursor(Point::new(20.0, 600.0)),
+            Action::Snapshot("08-closing"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("09-closing"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("10-closing"),
+            Action::Wait(12),
+            Action::Snapshot("11-idle-again"),
+        ],
+    }
+}
+
+/// The same reveal in the configuration the demo actually renders:
+/// three groups at a third of the strip each, the first crowded past
+/// what its row can show at resting width. This is where tab chrome has
+/// broken before — a pill that opens here has to find its room without
+/// pushing anything over the group standing beside it, and the pills it
+/// squeezes past still have to name their tabs.
+fn tab_pill_reveal_narrow() -> Scenario {
+    Scenario {
+        name: "tab_pill_reveal_narrow",
+        description: "Three third-width groups, the first crowded; one of its \
+                      pills opens its control cluster.",
+        actions: vec![
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow { app: "Files", title: "Files" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(1)),
+            Action::Wait(4),
+            Action::OpenHostedWindow { app: "Terminal", title: "Terminal" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(2),
+            Action::AddHostedTab { app: "Editor", title: "Editor" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::AddHostedTab { app: "Settings", title: "Settings" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(4),
+            Action::Snapshot("01-idle"),
+            Action::MoveCursorNamed("tab:Editor"),
+            Action::Snapshot("02-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("03-opening"),
+            Action::Wait(REVEAL_SAMPLE_TICK),
+            Action::Snapshot("04-opening"),
+            Action::Wait(12),
+            Action::Snapshot("05-open"),
+            Action::MoveCursor(Point::new(20.0, 600.0)),
+            Action::Wait(12),
+            Action::Snapshot("06-idle-again"),
+        ],
+    }
+}
 
 /// Several narrow windows side by side, one of them carrying more tabs
 /// than it has room for.
