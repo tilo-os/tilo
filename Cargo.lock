@@ -436,6 +436,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-catalogue"
+version = "0.1.0"
+dependencies = [
+ "app-registry",
+ "clap",
+ "dirs 6.0.0",
+ "ed25519-dalek 2.2.0",
+ "hex",
+ "launcher",
+ "pkg",
+ "registry-types",
+ "reqwest 0.12.28",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "app-fs"
 version = "0.1.0"
 dependencies = [
@@ -13239,6 +13260,7 @@ dependencies = [
  "wayland-protocols",
  "wgpu",
  "winit",
+ "word-processor",
  "zbus 4.4.0",
 ]
 
@@ -13784,6 +13806,7 @@ name = "store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-catalogue",
  "automerge",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",

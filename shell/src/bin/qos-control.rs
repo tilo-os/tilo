@@ -85,6 +85,17 @@ enum Command {
     StateDump {
         pretty: bool,
     },
+    /// List the actions the shell exports right now. Read-only.
+    ActionsList {
+        query: String,
+        json: bool,
+    },
+    /// Invoke one enumerated action by its stable `(provider, id)`
+    /// address — no synthetic input, no window, no scene.
+    ActionsInvoke {
+        provider: String,
+        id: String,
+    },
     Raw {
         json: String,
     },
@@ -216,6 +227,50 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             }
             Command::StateDump { pretty }
         }
+        "actions" => {
+            let verb = iter.next().map(String::as_str).ok_or_else(|| {
+                ParseError::Usage("actions requires `list` or `invoke` (try --help)".to_string())
+            })?;
+            match verb {
+                "list" => {
+                    // Everything after `list` that isn't a flag joins the
+                    // query, so `actions list open settings` works without
+                    // the caller having to quote it.
+                    let mut json = false;
+                    let mut words: Vec<String> = Vec::new();
+                    for rest in iter.by_ref() {
+                        if rest == "--json" {
+                            json = true;
+                        } else {
+                            words.push(rest.clone());
+                        }
+                    }
+                    Command::ActionsList {
+                        query: words.join(" "),
+                        json,
+                    }
+                }
+                "invoke" => {
+                    let provider = iter.next().ok_or_else(|| {
+                        ParseError::Usage(
+                            "actions invoke PROVIDER ID requires a provider".to_string(),
+                        )
+                    })?;
+                    let id = iter.next().ok_or_else(|| {
+                        ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
+                    })?;
+                    Command::ActionsInvoke {
+                        provider: provider.clone(),
+                        id: id.clone(),
+                    }
+                }
+                other => {
+                    return Err(ParseError::Usage(format!(
+                        "actions: unknown verb `{other}` (expected `list` or `invoke`)"
+                    )));
+                }
+            }
+        }
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -317,6 +372,12 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
         Command::StateDump { .. } => json!({ "op": "state_dump" }),
+        Command::ActionsList { query, .. } => {
+            json!({ "op": "actions_enumerate", "query": query })
+        }
+        Command::ActionsInvoke { provider, id } => {
+            json!({ "op": "actions_invoke", "provider": provider, "id": id })
+        }
         Command::Raw { json } => {
             // Validate the JSON parses — sending garbage to the
             // compositor would surface as a `parse_error` response,
@@ -421,6 +482,60 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // `snapshot /tmp/x.png | xclip` works.
             println!("{path}");
         }
+        Command::ActionsList { json, .. } => {
+            // `Response::Answer(v)` serialises as `{"answer": v}`.
+            let answer = response
+                .get("answer")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if *json {
+                println!("{answer}");
+                return 0;
+            }
+            let actions = answer
+                .get("actions")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if actions.is_empty() {
+                // An empty surface is a real answer, not a failure — say
+                // so plainly rather than printing nothing and leaving the
+                // caller unsure whether the command ran.
+                println!("no actions exported for this query");
+                return 0;
+            }
+            // Address first: the `(provider, id)` pair is the thing a
+            // caller passes back to `actions invoke`, so it leads.
+            let width = actions
+                .iter()
+                .filter_map(|a| {
+                    let p = a.get("provider").and_then(|v| v.as_str())?;
+                    let i = a.get("id").and_then(|v| v.as_str())?;
+                    Some(p.len() + i.len() + 1)
+                })
+                .max()
+                .unwrap_or(0);
+            for entry in &actions {
+                let provider = entry.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                let kind = entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let address = format!("{provider}:{id}");
+                println!("{address:<width$}  {kind:<12}  {title}");
+            }
+        }
+        Command::ActionsInvoke { .. } => {
+            // Echo what the address resolved to, so an operator can see
+            // *which* action ran rather than a bare "ok".
+            let answer = response
+                .get("answer")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let title = answer.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let provider = answer.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+            let id = answer.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            println!("invoked {provider}:{id}  {title}");
+        }
         Command::Click { .. }
         | Command::ClickAt { .. }
         | Command::Drag { .. }
@@ -463,6 +578,9 @@ fn print_usage() {
          \x20                               (empty string clears all)\n\
          \x20 snapshot PATH                 snapshot — write PNG to PATH\n\
          \x20 state-dump [--pretty]         dump workspace_tree + chrome as JSON\n\
+         \x20 actions list [QUERY] [--json] list exported actions as `PROVIDER:ID  KIND  TITLE`\n\
+         \x20                               (read-only; empty QUERY lists everything)\n\
+         \x20 actions invoke PROVIDER ID    run one action by address, with no synthetic input\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
     );
 }
