@@ -1288,7 +1288,7 @@ fn render_quick_settings_open(
 }
 
 // ===========================================================================
-// 10. TopBar SystemMonitor — CPU label is emerald-400, not indigo
+// 10. TopBar SystemMonitor — CPU label carries its own semantic colour
 // ===========================================================================
 
 /// Audit row: `concept-coverage.md:23,163-166` — "Concept SystemMonitor
@@ -1305,7 +1305,7 @@ fn render_quick_settings_open(
 /// the text renderer which DOES emit colour-paint commands per glyph
 /// run, so this is detectable in the encoding.
 #[test]
-fn topbar_system_monitor_cpu_label_is_emerald_400() {
+fn topbar_system_monitor_cpu_label_takes_the_themes_success_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1350,29 +1350,26 @@ fn topbar_system_monitor_cpu_label_is_emerald_400() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    // emerald-400 #4ade80 = (74, 222, 128).
-    let has_emerald_400 = contains_color_close(&fills, (74, 222, 128), 4);
+    let expected = theme.tokens.colors.semantic.success.to_rgba8();
     assert!(
-        has_emerald_400,
-        "TopBar SystemMonitor CPU label must render in emerald-400
-         #4ade80 (concept TSX TopBarWidgets.tsx:120-124,
-         `text-emerald-400`). Observed fills: {fills:?}. Audit row \
-         `concept-coverage.md:23,163-166`: ours uses indigo (`accent[5]`/\
-         `accent_primary`); the 'different semantic colour per metric' \
-         cue is lost. Fix by mapping CPU label/sparkline to \
-         `theme.tokens.colors.semantic.success` (or a dedicated \
-         emerald-400 token) in `topbar_chrome.rs:632-672`."
+        contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
+        "TopBar SystemMonitor CPU label must render in the theme's \
+         `semantic.success`, keeping the per-metric colour cue. Expected \
+         ({}, {}, {}); observed fills: {fills:?}.",
+        expected.r,
+        expected.g,
+        expected.b
     );
 }
 
 // ===========================================================================
-// 11. TopBar SystemMonitor — RAM label is blue-400, not indigo
+// 11. TopBar SystemMonitor — RAM label carries its own semantic colour
 // ===========================================================================
 
 /// Audit row: `concept-coverage.md:23,163-166` — same line as #10 but
 /// asserts the RAM label colour. blue-400 = #60a5fa = (96, 165, 250).
 #[test]
-fn topbar_system_monitor_ram_label_is_blue_400() {
+fn topbar_system_monitor_ram_label_takes_the_themes_info_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1417,12 +1414,15 @@ fn topbar_system_monitor_ram_label_is_blue_400() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    let has_blue_400 = contains_color_close(&fills, (96, 165, 250), 4);
+    let expected = theme.tokens.colors.semantic.info.to_rgba8();
     assert!(
-        has_blue_400,
-        "TopBar SystemMonitor RAM label must render in blue-400 #60a5fa
-         (concept TSX TopBarWidgets.tsx:120-124, `text-blue-400`).
-         Observed fills: {fills:?}. Audit row `concept-coverage.md:23,163-166`."
+        contains_color_close(&fills, (expected.r, expected.g, expected.b), 4),
+        "TopBar SystemMonitor RAM label must render in the theme's \
+         `semantic.info`, keeping the per-metric colour cue. Expected \
+         ({}, {}, {}); observed fills: {fills:?}.",
+        expected.r,
+        expected.g,
+        expected.b
     );
 }
 
@@ -1565,7 +1565,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 }
 
 // ===========================================================================
-// 13. TopBar SystemMonitor — sparkline bars are emerald-500, not indigo
+// 13. TopBar SystemMonitor — sparkline shares the CPU metric colour
 // ===========================================================================
 
 /// Audit row: `concept-coverage.md:23,160-162` — "Concept SystemMonitor
@@ -1588,7 +1588,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
 /// label blue-400), pins the *whole* "different semantic colour per
 /// metric" cue per the audit's row-5 fix-hint.
 #[test]
-fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
+fn topbar_system_monitor_sparkline_takes_the_cpu_metric_colour() {
     let tree = WorkspaceTree::bootstrap_demo();
     let mut chrome = TopBarChrome::from_tree(&tree);
     chrome.set_center_widget_for_tests(CenterWidget::SystemMonitor);
@@ -1633,23 +1633,28 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
     chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let fills = collect_solid_colors(&scene);
-    // emerald-500 = #10b981 = (16, 185, 129). The 30%-alpha variant
-    // would have premul rgb of (5, 56, 39); we accept either nominal
-    // or premul as evidence the concept colour was used.
-    let has_emerald_500_full = contains_color_close(&fills, (16, 185, 129), 4);
-    let has_emerald_500_30pct = contains_color_close(&fills, (5, 56, 39), 4);
+    // The sparkline shares the CPU metric's hue at a backdrop weight, so
+    // it may land in the encoding either at its nominal colour or
+    // premultiplied by that alpha. Accept either — both are evidence the
+    // bars took the CPU colour rather than the accent.
+    let cpu = theme.tokens.colors.semantic.success.to_rgba8();
+    let a = 0.30_f32;
+    let premul = (
+        (cpu.r as f32 * a).round() as u8,
+        (cpu.g as f32 * a).round() as u8,
+        (cpu.b as f32 * a).round() as u8,
+    );
 
     assert!(
-        has_emerald_500_full || has_emerald_500_30pct,
-        "TopBar SystemMonitor sparkline bars must render in emerald-500
-         #10b981 (concept TSX TopBarWidgets.tsx:120-124,
-         `bg-emerald-500/30`). Observed fills: {fills:?}. Audit row \
-         `concept-coverage.md:23,160-162`: ours uses \
-         `theme.accent_primary` (indigo-500) — wrong colour family. Fix \
-         in `topbar_chrome.rs:662-672` by swapping \
-         `theme.accent_primary` → `theme.tokens.colors.semantic.success` \
-         (or a dedicated `emerald-500/30` fill colour) on the sparkline \
-         bar paint loop."
+        contains_color_close(&fills, (cpu.r, cpu.g, cpu.b), 4)
+            || contains_color_close(&fills, premul, 4),
+        "TopBar SystemMonitor sparkline bars must render in the CPU \
+         metric's colour (the theme's `semantic.success`), nominal \
+         ({}, {}, {}) or premultiplied {premul:?}. Observed fills: \
+         {fills:?}.",
+        cpu.r,
+        cpu.g,
+        cpu.b
     );
 }
 

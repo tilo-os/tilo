@@ -24,7 +24,9 @@
 //! incompatible answers instead. Promoting them is most of what this module
 //! is: one selection model, reachable from both crates.
 
-use vello::peniko::Color;
+use vello::Scene;
+use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Shape};
+use vello::peniko::{BlendMode, Color, Fill};
 
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
@@ -40,6 +42,20 @@ pub const CHROME_SURFACE_ALPHA: f32 = 0.80;
 
 /// Alpha of the hairline that gives a lifted control a defined edge.
 pub const HAIRLINE_ALPHA: u8 = 26;
+
+/// Alpha of the edge around a floating [`ChromeRole::Panel`].
+///
+/// Heavier than a control's hairline because it is doing a different
+/// job: a control's edge defines it against a surface the user is
+/// already looking at, while a panel's edge has to separate it from
+/// whatever content it floats over. On the high-contrast palette it is
+/// the *only* thing that separates them — see [`panel_ground`].
+pub const PANEL_BORDER_ALPHA: u8 = 92;
+
+/// Smallest relative-luminance gap at which a panel is legible as a
+/// distinct surface rather than as a slightly different patch of the
+/// desktop. Matches the toolkit's hairline threshold.
+const PANEL_MIN_DELTA: f64 = 0.02;
 
 /// Alpha of the inset stroke that gives an active control its inner glow.
 pub const GLOW_ALPHA: u8 = 51;
@@ -104,7 +120,7 @@ impl ChromeRole {
         let colors = &theme.tokens.colors;
         match self {
             ChromeRole::Bar | ChromeRole::Panel => {
-                colors.surfaces.overlay.with_alpha_factor(CHROME_SURFACE_ALPHA)
+                panel_ground(theme).with_alpha_factor(CHROME_SURFACE_ALPHA)
             }
             ChromeRole::Object => colors.surfaces.window_card,
             // Control and Selector bodies come from the selection tiers
@@ -191,6 +207,96 @@ pub fn selection_tier(theme: &Theme, state: SelectionState) -> SelectionTier {
         inner_glow: lifted.then(|| Colors::hairline_on(ground, GLOW_ALPHA)),
         scale: if state.pressed { PRESS_SCALE } else { 1.0 },
     }
+}
+
+/// The opaque colour a floating chrome surface is built from, guaranteed
+/// to register against the desktop behind it.
+///
+/// `surfaces.overlay` is the theme's declared popover tier and is used
+/// verbatim wherever it actually separates from `surfaces.base`. It does
+/// not always: on the default light palette `overlay` is `#ffffff` against
+/// a `#f3f3f1` ground — a contrast ratio of about 1.06:1 — and on the
+/// high-contrast palette the two are *the same colour*. Painting the
+/// declared token there gives a panel that is, literally, the desktop
+/// with a faint line around it. Rendered side by side, the light and
+/// high-contrast quick-settings panels were all but invisible while the
+/// dark one looked deliberate, which is what surfaced this.
+///
+/// Where the declared tier would be swallowed, the ground is moved away
+/// from the desktop by the same luminance reasoning
+/// [`Colors::hairline_on`] uses, so the panel keeps a body on every
+/// theme. This is the fill half; [`PANEL_BORDER_ALPHA`] is the edge half,
+/// and a panel needs both — on high-contrast the edge does nearly all the
+/// work, because a stark ground with a bright edge *is* that palette's
+/// idiom, and lifting its fill would fight it.
+pub fn panel_ground(theme: &Theme) -> Color {
+    use crate::a11y::relative_luminance;
+    let colors = &theme.tokens.colors;
+    let base = colors.surfaces.base;
+    let declared = colors.surfaces.overlay;
+    if (relative_luminance(declared) - relative_luminance(base)).abs() >= PANEL_MIN_DELTA {
+        return declared;
+    }
+    // Composite a derived step over the declared tier so the result stays
+    // in the theme's own colour family rather than jumping to a grey.
+    let step = Colors::hairline_on(base, 40);
+    let a = step.components[3];
+    let d = declared.components;
+    Color::new([
+        step.components[0] * a + d[0] * (1.0 - a),
+        step.components[1] * a + d[1] * (1.0 - a),
+        step.components[2] * a + d[2] * (1.0 - a),
+        1.0,
+    ])
+}
+
+/// The edge around a floating [`ChromeRole::Panel`]. See
+/// [`PANEL_BORDER_ALPHA`].
+pub fn panel_border(theme: &Theme) -> Color {
+    Colors::hairline_on(theme.tokens.colors.surfaces.base, PANEL_BORDER_ALPHA)
+}
+
+/// Lay down a floating panel's elevation, clipped to the ring *outside*
+/// its own silhouette.
+///
+/// The clip is the point. Chrome panels are translucent
+/// ([`CHROME_SURFACE_ALPHA`]), and the shared soft-shadow painter ramps
+/// its bands inward from the rect's edges as well as outward — which is
+/// invisible under an opaque modal, and shows straight through a panel
+/// you can see through. Painted unclipped, the quick-settings panel grew
+/// pale horizontal bands across its own interior where the shadow's
+/// inner ramp met the gaps between its sections.
+///
+/// Panels are elevated rather than merely tinted because on some
+/// palettes the tint alone cannot separate them: see [`panel_ground`].
+pub fn panel_shadow(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radius: f64,
+    theme: &Theme,
+    intensity: f32,
+) {
+    if intensity <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let e = &theme.tokens.elevation.e4;
+    let spread = e.blur as f64;
+    let offset_y = e.offset_y as f64;
+    let outer = Rect::new(
+        rect.x0 - spread * 2.0,
+        rect.y0 - spread * 2.0,
+        rect.x1 + spread * 2.0,
+        rect.y1 + spread * 2.0 + offset_y,
+    );
+    // Even-odd across [outer, card]: a point inside both winds twice and
+    // is excluded, so only the ring around the card paints.
+    let mut ring = BezPath::new();
+    ring.extend(outer.path_elements(0.1));
+    ring.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
+    scene.push_layer(Fill::EvenOdd, BlendMode::default(), 1.0, transform, &ring);
+    crate::surface::soft_shadow(scene, transform, rect, e.color, spread, offset_y, intensity);
+    scene.pop_layer();
 }
 
 /// A separator or edge drawn on a chrome surface.
@@ -344,6 +450,42 @@ mod tests {
                 bar.to_rgba8().to_u32(),
                 panel.to_rgba8().to_u32(),
                 "{name}: the bar and a panel are painted in different materials"
+            );
+        }
+    }
+
+    /// A panel is always legible as its own surface, on every theme.
+    ///
+    /// The declared `surfaces.overlay` token does not guarantee this: on
+    /// the light palette it is #ffffff against a #f3f3f1 ground, and on
+    /// high-contrast it is the same colour as the ground. A panel that
+    /// paints the declared token there is the desktop with a line round
+    /// it. Fill *or* edge must carry the separation, and this asserts at
+    /// least one of them does.
+    #[test]
+    fn a_panel_separates_from_the_desktop_on_every_theme() {
+        for (name, theme) in themes() {
+            let base = theme.tokens.colors.surfaces.base;
+            let ground = panel_ground(&theme);
+            let border = panel_border(&theme);
+            let fill_delta =
+                (relative_luminance(ground) - relative_luminance(base)).abs();
+            // The border is translucent; composite it over the panel
+            // ground to judge what the eye actually receives.
+            let a = border.components[3];
+            let g = ground.components;
+            let edge = Color::new([
+                border.components[0] * a + g[0] * (1.0 - a),
+                border.components[1] * a + g[1] * (1.0 - a),
+                border.components[2] * a + g[2] * (1.0 - a),
+                1.0,
+            ]);
+            let edge_delta =
+                (relative_luminance(edge) - relative_luminance(ground)).abs();
+            assert!(
+                fill_delta >= PANEL_MIN_DELTA || edge_delta >= PANEL_MIN_DELTA,
+                "{name}: a panel is indistinguishable from the desktop \
+                 (fill delta {fill_delta:.4}, edge delta {edge_delta:.4})"
             );
         }
     }
