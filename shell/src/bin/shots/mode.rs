@@ -237,11 +237,15 @@ pub mod recording {
 
     impl<'a> SnapshotSink for RecordingSink<'a> {
         fn capture(&mut self, driver: &mut ShellDriver, _name: &str) {
-            // Snapshot in recording mode is an explicit "flush the
-            // current frame as a marker step". The step-driven outer
-            // loop already encodes every step, so a Snapshot is a no-op
-            // here to avoid double-encoding the same frame.
-            let _ = driver;
+            // Encode the frame as offered. The step-driven outer loop
+            // encodes every step too, so a plain `Snapshot` contributes
+            // its frame twice — harmless in a video, and the price of
+            // the case that matters: an action that samples an
+            // animation curve emits its whole curve *through this sink*
+            // and is a single step to the outer loop. Skipping here left
+            // those videos jumping from the curve's first state to its
+            // last with nothing in between.
+            self.encode_current(driver);
         }
     }
 
@@ -254,11 +258,14 @@ pub mod recording {
         action: &scenario::Action,
         sink: &mut RecordingSink<'_>,
     ) {
-        // Use a side NullSink to consume the action's own Snapshot path
-        // (we encode unconditionally, not just on Snapshot markers).
-        let mut null = NullSink;
-        // SAFETY: re-borrow the action — `Action` is Clone but we want
-        // the apply path to see the same value. Just pass through.
+        // Run the step through the recording sink itself rather than a
+        // side NullSink. An action that samples an animation curve emits
+        // its whole curve through the sink and is one step to this loop,
+        // so discarding the sink's frames left those videos cutting from
+        // the curve's first state straight to its last. A plain
+        // `Snapshot` now contributes its frame twice — through the sink
+        // and again from the unconditional encode below — which is a
+        // repeated frame in a video and no worse than that.
         // (`scenario::apply` is private to the module; use `run` with
         // a one-action scenario instead.)
         let one_off = Scenario {
@@ -266,7 +273,7 @@ pub mod recording {
             description: "",
             actions: vec![action.clone()],
         };
-        scenario::run(driver, &one_off, &mut null);
+        scenario::run(driver, &one_off, sink);
         // Always settle layout between steps so the encoded frame
         // matches what the user would see at this point in the
         // scenario, not a half-rebuilt tree.
