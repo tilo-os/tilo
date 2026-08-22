@@ -811,53 +811,53 @@ impl TabBar {
             let icon_active = text_primary;
 
             if self.max_rects[i].area() > 0.0 {
-            let alpha = chip_alpha(CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W);
-            let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-            let max_hover = Some(i) == self.hover_max_idx;
-            if max_hover {
-                let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                let alpha = chip_alpha(CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W);
+                let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+                let max_hover = Some(i) == self.hover_max_idx;
+                if max_hover {
+                    let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        chip_tint.with_alpha_factor(alpha),
+                        None,
+                        &chip,
+                    );
+                }
+                let outline_color = if max_hover { icon_active } else { icon_idle };
+                icons::draw_icon(
+                    scene,
                     transform,
-                    chip_tint.with_alpha_factor(alpha),
-                    None,
-                    &chip,
+                    max_r,
+                    icons::Icon::Maximize2,
+                    outline_color.with_alpha_factor(alpha),
+                    1.5,
                 );
-            }
-            let outline_color = if max_hover { icon_active } else { icon_idle };
-            icons::draw_icon(
-                scene,
-                transform,
-                max_r,
-                icons::Icon::Maximize2,
-                outline_color.with_alpha_factor(alpha),
-                1.5,
-            );
             }
 
             if self.search_rects[i].area() > 0.0 {
-            let alpha = chip_alpha(CHIP_CLUSTER_W);
-            let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-            let search_hover = Some(i) == self.hover_search_idx;
-            if search_hover {
-                let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                let alpha = chip_alpha(CHIP_CLUSTER_W);
+                let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+                let search_hover = Some(i) == self.hover_search_idx;
+                if search_hover {
+                    let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        chip_tint.with_alpha_factor(alpha),
+                        None,
+                        &chip,
+                    );
+                }
+                let icon_color = if search_hover { icon_active } else { icon_idle };
+                icons::draw_icon(
+                    scene,
                     transform,
-                    chip_tint.with_alpha_factor(alpha),
-                    None,
-                    &chip,
+                    search_r,
+                    icons::Icon::Search,
+                    icon_color.with_alpha_factor(alpha),
+                    1.5,
                 );
-            }
-            let icon_color = if search_hover { icon_active } else { icon_idle };
-            icons::draw_icon(
-                scene,
-                transform,
-                search_r,
-                icons::Icon::Search,
-                icon_color.with_alpha_factor(alpha),
-                1.5,
-            );
             }
         }
     }
