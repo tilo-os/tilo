@@ -83,6 +83,22 @@ def stage(root: Path | None = None, *, fresh: bool = True) -> dict[str, str]:
         "XDG_DATA_HOME": str(data_home),
         "XDG_CONFIG_HOME": str(root / ".config"),
         "XDG_CACHE_HOME": str(root / ".cache"),
+        # Pin the demo's language.
+        #
+        # The word processor is currently the only component with real
+        # i18n - its own catalogue, its own LC_ALL/LANGUAGE/LANG detection.
+        # The shell chrome is English string literals with no translation
+        # call sites at all. So on a machine whose LANG is German, exactly
+        # one tab renders in German and everything around it does not,
+        # which reads as a bug rather than as localisation.
+        #
+        # Pinning the locale for the demo's processes is not the fix for
+        # that - the fix is a session locale the whole desktop honours -
+        # but it is the honest way to record a demo in one language today,
+        # and it changes nothing about the app's German support.
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "en_US.UTF-8",
+        "LANGUAGE": "en",
     }
     # Deliberately NOT overriding XDG_DATA_DIRS, for two reasons.
     #
