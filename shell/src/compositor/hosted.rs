@@ -177,7 +177,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // peer-sync. The shell chrome, the portal's `GrantStoreHandle`, and
     // the peer-sync `WorkspaceTreeReplica` each hold a clone of this
     // handle — every mutation lands on the same underlying tree.
-    let active_at_boot = tree.active.0;
     let tree_handle: crate::shell::state::WorkspaceTreeHandle = tree.shared();
 
     // Snapshot for `sync_tab_presence_from_tree`, which only reads the
@@ -273,12 +272,28 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // pump, so this does not conflict with live peer attribution.
     sync_tab_presence_from_tree(&tree_snapshot, app.presence_ctx_mut());
     // Declare the pointer-presence scope so local cursor moves broadcast
-    // to every connected peer under the active workspace id. Remote
-    // peers receive `CollabEvent::RemotePresenceUpdate` on the same
-    // key and render this user's pointer on the correct workspace.
-    app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-        id: format!("{}", active_at_boot),
-    }));
+    // to every connected peer under the workspace's **room**.
+    //
+    // The room, not the local `WorkspaceId`. The id is a per-machine
+    // handle: two peers in one room hold different ones, so a pointer
+    // published under it arrives addressed to a scope the receiver has
+    // never heard of and is filed away unread. The room is what the
+    // launcher stamps into an app, what the overlay looks peers up by,
+    // and what the native backend already republishes under — this was
+    // the odd one out.
+    let active_room = tree_snapshot
+        .workspaces
+        .iter()
+        .find(|w| w.id == tree_snapshot.active)
+        .map(|w| w.room.to_string());
+    if let Some(room) = active_room {
+        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
+    } else {
+        tracing::warn!(
+            "presence: the active workspace has no room; this session's cursor \
+             will not reach its peers"
+        );
+    }
 
     // Phase 3.2 cursor-presence pump: when peer-sync is enabled,
     // pipe every local `broadcast_presence` Pointer event into a
