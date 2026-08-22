@@ -980,6 +980,8 @@ pub fn presence_handle_env() -> Option<String> {
     ["QOS_PRESENCE_HANDLE", "QOS_USER_ID"]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+}
+
 /// The routing key one connection names on the capnp transport.
 ///
 /// An app's traffic is addressed by the triple `(app_id, cluster_id,
