@@ -1,12 +1,15 @@
 //! `$XDG_CONFIG_HOME/qos-store/` on-disk state.
 //!
-//! Two files:
+//! Two files, and only one of them is defined here:
 //!
 //!   * `registries.toml` — the list of qOS registries the user pulls
-//!     entries from. Ships one default entry pointing at the hosted
-//!     "qOS main" registry, with a placeholder owner pubkey the user
-//!     replaces on bootstrap (a signed registry index — the first
-//!     entry.updated_at_unix > 0 index sig — pins the owner key).
+//!     entries from. **Owned by [`app_catalogue::config`]**, not by
+//!     this app. The desktop's search box reads the same file to decide
+//!     what software the machine could open, so a second definition of
+//!     its shape would eventually mean the store and the palette
+//!     disagreed about which registries exist. One reader had to become
+//!     the owner; the shared crate is it, because it is the one both
+//!     the app and the compositor can depend on.
 //!   * `config.toml` — a UI-settings file that nothing in the app reads
 //!     or writes. It was never wired up, and the UI state it describes
 //!     now lives in the app's Automerge document, which `ui::persist`
@@ -17,65 +20,18 @@
 //! never fatal — the UI falls back to defaults and keeps rendering.
 
 use std::fs;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::SourceFilter;
 
-/// Default hosted registry base URL. Overridable per-entry in the
-/// config file; this is only used to seed the default `registries.toml`.
-pub const DEFAULT_REGISTRY_BASE_URL: &str = "https://registry.qos.dev";
-
-/// A single configured registry the store pulls entries from.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistryConfig {
-    /// Human-readable short name shown on cards and in the detail
-    /// sheet.
-    pub name: String,
-    /// Base URL — `GET {base_url}/entries` returns the catalogue.
-    pub base_url: String,
-    /// Registry owner's ed25519 identity, hex-encoded. Optional so a
-    /// fresh install can boot without pinning a key first; when
-    /// unset the registry's signed entries are still visible but
-    /// the store surfaces a "trust-on-first-use" state on the
-    /// detail sheet.
-    #[serde(default)]
-    pub owner_pubkey_hex: String,
-    /// Users can silence a registry without removing it.
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-fn default_enabled() -> bool {
-    true
-}
-
-/// Top-level shape of `registries.toml`. TOML's array-of-tables
-/// serde form is `[[registry]] { … }` per entry.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RegistriesFile {
-    #[serde(default, rename = "registry")]
-    pub registries: Vec<RegistryConfig>,
-}
-
-impl RegistriesFile {
-    /// The default file: one hosted-registry entry with a placeholder
-    /// owner pubkey the user replaces via `qos-store registry pin
-    /// <hex>` (a follow-up CLI, not shipped here). The placeholder
-    /// is 64 zeros so the "not yet bootstrapped" state is
-    /// unambiguous.
-    pub fn seeded() -> Self {
-        Self {
-            registries: vec![RegistryConfig {
-                name: "qOS main".into(),
-                base_url: DEFAULT_REGISTRY_BASE_URL.into(),
-                owner_pubkey_hex: "00".repeat(32),
-                enabled: true,
-            }],
-        }
-    }
-}
+// The registry list, its file format and the two directories it lives
+// under, re-exported so existing `store::config::…` paths keep working
+// and there is still exactly one definition of each.
+pub use app_catalogue::config::{
+    DEFAULT_REGISTRY_BASE_URL, RegistriesFile, RegistryConfig, cache_dir, config_dir,
+    load_registries, placeholder_owner_pubkey, registries_path,
+};
 
 /// Persistent UI state — the filter and search bar are the two things
 /// worth restoring across restarts. Everything else lives in-memory.
@@ -85,47 +41,6 @@ pub struct StoreConfig {
     pub last_filter: Option<SourceFilter>,
     #[serde(default)]
     pub last_query: Option<String>,
-}
-
-/// Root config dir. `QOS_STORE_CONFIG_DIR` overrides for tests.
-pub fn config_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("QOS_STORE_CONFIG_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    dirs::config_dir().map(|d| d.join("qos-store"))
-}
-
-/// Cache dir (`$XDG_CACHE_HOME/qos-store`). Registry responses are
-/// serialized here for offline use.
-pub fn cache_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("QOS_STORE_CACHE_DIR") {
-        return Some(PathBuf::from(dir));
-    }
-    dirs::cache_dir().map(|d| d.join("qos-store"))
-}
-
-/// Read `registries.toml`, seeding a default file if none exists.
-///
-/// The seed is written to disk on first read so users can hand-edit
-/// it. If the write fails (e.g. read-only home in a sandbox mode)
-/// we still return the seeded shape from memory so the store
-/// remains usable.
-pub fn load_registries() -> RegistriesFile {
-    let Some(dir) = config_dir() else {
-        return RegistriesFile::seeded();
-    };
-    let path = dir.join("registries.toml");
-    if let Ok(text) = fs::read_to_string(&path) {
-        if let Ok(parsed) = toml::from_str::<RegistriesFile>(&text) {
-            return parsed;
-        }
-    }
-    let seeded = RegistriesFile::seeded();
-    if let Ok(text) = toml::to_string_pretty(&seeded) {
-        let _ = fs::create_dir_all(&dir);
-        let _ = fs::write(&path, text);
-    }
-    seeded
 }
 
 /// Read `config.toml` — never fails, missing / malformed → default.
@@ -168,7 +83,7 @@ mod tests {
         _lock: MutexGuard<'a, ()>,
         prev: Option<std::ffi::OsString>,
     }
-    impl<'a> Drop for Guard<'a> {
+    impl Drop for Guard<'_> {
         fn drop(&mut self) {
             match &self.prev {
                 Some(v) => unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", v) },
@@ -182,6 +97,24 @@ mod tests {
         let prev = std::env::var_os("QOS_STORE_CONFIG_DIR");
         unsafe { std::env::set_var("QOS_STORE_CONFIG_DIR", td.path()) };
         Guard { _lock: lock, prev }
+    }
+
+    /// The store and the desktop have to resolve `registries.toml` to
+    /// the same path, or "what this machine can install" and "what this
+    /// machine can open" become two different answers. Asserted here
+    /// rather than left to the re-export being obviously correct: the
+    /// re-export is what someone would undo first when adding a
+    /// store-only setting.
+    #[test]
+    fn the_store_reads_the_same_registry_file_the_desktop_does() {
+        let td = TempDir::new().unwrap();
+        let _g = scoped_dir(&td);
+        assert_eq!(
+            registries_path(),
+            app_catalogue::config::registries_path(),
+            "one registry list, two readers"
+        );
+        assert_eq!(config_dir().as_deref(), Some(td.path()));
     }
 
     #[test]

@@ -20,6 +20,14 @@ use store::{StoreApp, StoreItem};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
+    // rustls needs an explicit provider: the tree carries both ring and
+    // aws-lc-rs, and 0.23 will not pick one on its own. The dependency
+    // was already declared for this — the call was not there, so every
+    // https registry and every Flathub request failed at the TLS
+    // handshake rather than anywhere a reader would look. Same line the
+    // maps app and `qos-catalogue` run.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_flag(&args, "--shots") {
         let viewport = parse_flag(&args, "--viewport")

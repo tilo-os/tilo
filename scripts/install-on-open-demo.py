@@ -72,6 +72,9 @@ def _load_demo_home():
     The filename has a hyphen in it, so it is not importable as a
     module name however the sys.path is arranged.
     """
+    # Loading it by path otherwise drops a `scripts/__pycache__/` in the
+    # working tree on every run.
+    sys.dont_write_bytecode = True
     path = pathlib.Path(__file__).resolve().parent / "demo-home.py"
     spec = importlib.util.spec_from_file_location("demo_home", path)
     module = importlib.util.module_from_spec(spec)
