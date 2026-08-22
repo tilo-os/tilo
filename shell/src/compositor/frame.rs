@@ -348,7 +348,24 @@ impl FrameBuilder {
             let tree = chrome.tree();
             tree.room_epoch()
         };
-        if epoch == self.last_room_epoch {
+        // Peer windows are examined on the rounds after an arrival as
+        // well as on the arrival itself: `peer_windows::examine` starts at
+        // most one launch per app per pass, so a room that gained several
+        // windows of one app at once needs more than one look. Checked
+        // before the epoch gate for that reason.
+        let owed = {
+            let chrome = self.chrome.borrow();
+            let tree = chrome.tree();
+            crate::shell::peer_windows::any_pending(&tree)
+        };
+        let decided = if owed {
+            let chrome = self.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            crate::shell::peer_windows::examine(&mut tree)
+        } else {
+            false
+        };
+        if epoch == self.last_room_epoch && !decided {
             return false;
         }
         self.last_room_epoch = epoch;
