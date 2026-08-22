@@ -259,6 +259,20 @@ pub enum ShotScenario {
     DragToTimeline,
     /// The graded drone selected with its effects stack scrolled into view.
     Effects,
+    /// Several clips selected at once, showing the anchor's full outline
+    /// against the lighter outlines of the rest and the inspector's count.
+    MultiSelect,
+    /// A locked video track: the header's lock pill lit, the lane hatched
+    /// over its clips, and the inspector naming the lock.
+    LockedTrack,
+    /// Zoomed in and scrolled into the middle of the timeline, so the
+    /// horizontal scrollbar is showing part-way along its track.
+    Scrolled,
+    /// A timeline clip's context menu open (cut / copy / duplicate / split /
+    /// delete).
+    ClipMenu,
+    /// A rubber-band selection mid-sweep across a lane.
+    Marquee,
 }
 
 impl ShotScenario {
@@ -272,7 +286,32 @@ impl ShotScenario {
                 | ShotScenario::BinRename
                 | ShotScenario::DragToTimeline
                 | ShotScenario::Effects
+                | ShotScenario::MultiSelect
+                | ShotScenario::LockedTrack
+                | ShotScenario::Scrolled
+                | ShotScenario::ClipMenu
+                | ShotScenario::Marquee
         )
+    }
+
+    /// Parse a `--scenario <name>` selector. Returns `None` for an unknown
+    /// name so the caller can fall back to the plain editor rather than
+    /// silently capturing the wrong thing.
+    pub fn from_arg(name: &str) -> Option<Self> {
+        Some(match name {
+            "filters" => ShotScenario::SelectedFilters,
+            "split" => ShotScenario::JustSplit,
+            "menu" => ShotScenario::BinMenu,
+            "rename" => ShotScenario::BinRename,
+            "drag" => ShotScenario::DragToTimeline,
+            "effects" => ShotScenario::Effects,
+            "multiselect" => ShotScenario::MultiSelect,
+            "locked" => ShotScenario::LockedTrack,
+            "scrolled" => ShotScenario::Scrolled,
+            "clipmenu" => ShotScenario::ClipMenu,
+            "marquee" => ShotScenario::Marquee,
+            _ => return None,
+        })
     }
 }
 
@@ -686,6 +725,47 @@ impl VideoEditorApp {
             self.scroll = t - visible * 0.25;
         }
         self.clamp_scroll(r);
+    }
+
+    /// Ask the thumbnail cache for the frames every **visible** video clip's
+    /// filmstrip will draw this frame, at the source times its cells sit on.
+    ///
+    /// Lives here rather than in `draw_clip` because requesting needs `&mut
+    /// self` and drawing does not. `ensure_strip` is idempotent, so calling it
+    /// every frame costs a lookup once the frames are in; off-screen clips are
+    /// skipped so a long scrolled timeline does not queue decodes nobody can
+    /// see.
+    fn request_filmstrips(&mut self, r: &Regions) {
+        let mut want: Vec<(MediaId, u8, crate::media::MediaSource, f64, f64, usize)> = Vec::new();
+        for (tid, kind, lane) in self.lane_rects(r) {
+            if kind != TrackKind::Video {
+                continue;
+            }
+            for clip in self.project.clips_on(tid) {
+                let cr = self.clip_rect(clip, &lane, r);
+                if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
+                    continue;
+                }
+                let inner = clip_inner_rect(cr);
+                if inner.height() <= 4.0 || inner.width() <= 4.0 {
+                    continue;
+                }
+                let (_, n) = filmstrip_cells(inner);
+                let Some(m) = self.project.media(clip.media) else { continue };
+                want.push((
+                    clip.media,
+                    m.palette,
+                    m.source(),
+                    clip.in_point,
+                    clip.out_point,
+                    n as usize,
+                ));
+            }
+        }
+        for (id, palette, src, in_point, out_point, cells) in want {
+            self.thumbnails
+                .ensure_strip(id, palette, &src, in_point, out_point, cells);
+        }
     }
 
     /// The horizontal scrollbar's track rect, or `None` when the timeline
@@ -1674,7 +1754,9 @@ impl VideoEditorApp {
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
             let n = self.import_files(doc, &paths);
-            self.import_notice = Some(import_summary(n, paths.len()));
+            if n > 0 || !self.has_import_reason() {
+                self.import_notice = Some(import_summary(n, paths.len()));
+            }
             if self.auto_place_imports {
                 if let Some(mid) = self.selected_media {
                     self.ensure_track_and_place(doc, mid);
@@ -1699,7 +1781,9 @@ impl VideoEditorApp {
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
                 let n = self.import_files(doc, &paths);
-                self.import_notice = Some(import_summary(n, paths.len()));
+                if n > 0 || !self.has_import_reason() {
+                    self.import_notice = Some(import_summary(n, paths.len()));
+                }
             }
             Some(ImportOutcome::Cancelled) => self.import_notice = None,
             Some(ImportOutcome::Failed(reason)) => self.import_notice = Some(reason),
@@ -1707,9 +1791,19 @@ impl VideoEditorApp {
         }
     }
 
-    /// Import a batch of files, returning how many became real clips.
+    /// Import a batch of files, returning how many became real clips. Each
+    /// refusal leaves the probe's own reason in `import_notice`; a batch that
+    /// imported nothing keeps the last one, because "No media could be
+    /// imported" on its own tells the user nothing they can act on.
     fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> usize {
+        self.import_notice = None;
         paths.iter().filter(|p| self.import_one(doc, p)).count()
+    }
+
+    /// Whether the last import batch left a specific per-file reason worth
+    /// keeping instead of overwriting with a batch summary.
+    fn has_import_reason(&self) -> bool {
+        self.import_notice.is_some()
     }
 
     /// Import one file: probe **real** metadata from the container and add it to
@@ -1719,7 +1813,13 @@ impl VideoEditorApp {
     fn import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> bool {
         let probed = match probe::probe_file(path) {
             Ok(p) => p,
-            Err(_) => return false,
+            Err(e) => {
+                // Say *why* it was refused. The probe knows ("is not a media
+                // file - it is an HTML page"); a bare "couldn't be imported"
+                // throws that away and leaves the user guessing.
+                self.import_notice = Some(format!("{}: {e}", display_name(path)));
+                return false;
+            }
         };
         let resolved = crate::media::resolve(&path.to_string_lossy());
         let stored = crate::media::stored_path_for_import(&resolved.abs_path);
@@ -1735,7 +1835,9 @@ impl VideoEditorApp {
             duration: probed.duration,
             width: probed.width,
             height: probed.height,
-            fps: if probed.fps > 0.0 { probed.fps } else { 30.0 },
+            // 0.0 means the container did not say. Carry that through rather
+            // than inventing 30 — the bin renders unknown as unknown.
+            fps: probed.fps,
             palette,
             path: stored,
             hydration: resolved.hydration,
@@ -1963,10 +2065,8 @@ impl VideoEditorApp {
             }
             // Rect-dependent interactions are arranged in `draw` (the layout
             // rect is still zero here in `sync`).
-            ShotScenario::BinMenu
-            | ShotScenario::BinRename
-            | ShotScenario::DragToTimeline
-            | ShotScenario::Effects => {}
+            s if s.is_interaction() => {}
+            _ => {}
         }
     }
 
@@ -2014,6 +2114,71 @@ impl VideoEditorApp {
                 self.playhead = 6.0;
                 // Scroll the inspector so the effects stack + actions are in view.
                 self.inspector_scroll = self.inspector_max_scroll(r);
+            }
+            ShotScenario::MultiSelect => {
+                // Everything on the top video lane, plus an audio clip, so the
+                // capture shows a selection spanning tracks.
+                let mut ids: Vec<ClipId> = self
+                    .lane_rects(r)
+                    .into_iter()
+                    .take(2)
+                    .flat_map(|(tid, _, _)| self.project.clips_on(tid))
+                    .map(|c| c.id)
+                    .collect();
+                ids.truncate(3);
+                self.selection.set(ids);
+                self.playhead = 8.0;
+            }
+            ShotScenario::LockedTrack => {
+                // Lock the first video track and select a clip on it, so both
+                // the lane hatch and the inspector's note are visible.
+                if let Some((tid, _, _)) = self.lane_rects(r).into_iter().next() {
+                    if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                        t.locked = true;
+                    }
+                    if let Some(c) = self.project.clips_on(tid).first() {
+                        let (id, media) = (c.id, c.media);
+                        self.selection.select_only(id);
+                        self.selected_media = Some(media);
+                    }
+                }
+                self.playhead = 8.0;
+            }
+            ShotScenario::Scrolled => {
+                // Zoom well in, then park the view in the middle of the
+                // timeline so the scrollbar thumb sits part-way along.
+                self.zoom = 120.0;
+                self.playhead = self.project.duration() * 0.5;
+                self.scroll_to_time(self.playhead, r);
+            }
+            ShotScenario::ClipMenu => {
+                if let Some((tid, _, lane)) = self.lane_rects(r).into_iter().next() {
+                    if let Some(clip) = self.project.clips_on(tid).first().cloned() {
+                        let cr = self.clip_rect(&clip, &lane, r);
+                        self.last_mouse = cr.center();
+                        self.open_clip_menu(clip.id, Point::new(cr.center().x, cr.y0 + 10.0));
+                    }
+                }
+            }
+            ShotScenario::Marquee => {
+                if let Some((_, _, lane)) = self.lane_rects(r).into_iter().next() {
+                    let band = Rect::new(
+                        r.lanes.x0 + 60.0,
+                        lane.y0 - 6.0,
+                        r.lanes.x0 + 430.0,
+                        lane.y1 + 34.0,
+                    );
+                    self.drag = Some(Drag::Marquee {
+                        origin: Point::new(band.x0, band.y0),
+                        additive: false,
+                    });
+                    self.marquee = Some(band);
+                    self.last_mouse = Point::new(band.x1, band.y1);
+                    self.release_marquee(Point::new(band.x0, band.y0), false, r);
+                    // Keep the band drawn: release_marquee only computes the
+                    // selection, and the capture wants both on screen.
+                    self.marquee = Some(band);
+                }
             }
             _ => {}
         }
@@ -2261,6 +2426,9 @@ impl Widget for VideoEditorApp {
             self.scroll_to_time(self.playhead, &r);
         }
         self.clamp_scroll(&r);
+        // Request the filmstrip frames the timeline is about to draw, now that
+        // the scroll is settled and we know which clips are on screen.
+        self.request_filmstrips(&r);
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
@@ -2413,7 +2581,9 @@ impl Widget for VideoEditorApp {
                 self.file_hovering = false;
                 if self.import_one(state, path) {
                     self.import_notice = Some(import_summary(1, 1));
-                } else {
+                } else if self.import_notice.is_none() {
+                    // `import_one` normally leaves the probe's own reason here;
+                    // only fall back when it somehow did not.
                     self.import_notice = Some("That file couldn't be imported".to_string());
                 }
                 *handled = true;
@@ -3446,16 +3616,12 @@ impl VideoEditorApp {
                 }
             } else {
                 let color = lighten(base, 0.25);
-                if let Some(peaks) = self.waveforms.peaks(m.id) {
-                    let inner = Rect::new(thumb.x0 + 4.0, thumb.y0 + 6.0, thumb.x1 - 4.0, thumb.y1 - 6.0);
-                    draw_waveform(scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color);
-                } else {
-                    let midy = thumb.center().y;
-                    for i in 0..9 {
-                        let bx = thumb.x0 + 6.0 + i as f64 * 6.4;
-                        let amp = waveform_amp(i as f64) * (thumb.height() / 2.0 - 6.0);
-                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 3.0, midy + amp));
+                let inner = Rect::new(thumb.x0 + 4.0, thumb.y0 + 6.0, thumb.x1 - 4.0, thumb.y1 - 6.0);
+                match (self.waveforms.state(m.id), self.waveforms.peaks(m.id)) {
+                    (crate::waveform::WaveformState::Ready, Some(peaks)) => {
+                        draw_waveform(scene, tf, inner, peaks, 0.0, m.duration, m.duration, 1.0, color)
                     }
+                    _ => draw_flat_signal(scene, tf, inner, color),
                 }
             }
             // kind dot.
@@ -3720,6 +3886,21 @@ impl VideoEditorApp {
         // the timeline if the selected clip's control stack runs tall.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &r.inspector);
         self.draw_inspector_body(scene, tf, tr, theme, r);
+        // A clip on a locked track has inert controls — every edit path checks
+        // the lock — so they are veiled rather than left looking live. The
+        // header above stays crisp, because that is where the reason is
+        // written ("on V2 · locked").
+        let locked = self.selected().map(|id| !self.project.clip_editable(id)).unwrap_or(false);
+        if locked {
+            let l = self.inspector_layout(r);
+            let top = l
+                .opacity
+                .or(l.volume)
+                .map(|t| t.y0 - 24.0)
+                .unwrap_or(r.inspector.y0 + 170.0);
+            let veil = Rect::new(r.inspector.x0, top.max(r.inspector.y0), r.inspector.x1, r.inspector.y1);
+            fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
+        }
         scene.pop_layer();
         // Scroll indicator on the right edge when the content overflows the pane.
         let max_scroll = self.inspector_max_scroll(r);
@@ -3976,8 +4157,8 @@ impl VideoEditorApp {
         }
         // Live rubber band, over the clips it is sweeping.
         if let Some(band) = self.marquee {
-            fill_rect(scene, tf, with_alpha(c.accent[5], 0.16), band);
-            stroke_rrect(scene, tf, c.accent[5], band, 2.0, 1.0);
+            fill_rect(scene, tf, with_alpha(c.accent[5], 0.24), band);
+            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.85), band, 2.0, 1.5);
         }
         scene.pop_layer();
 
@@ -4050,35 +4231,55 @@ impl VideoEditorApp {
         let inner = Rect::new(cr.x0 + 2.0, strip.y1, cr.x1 - 2.0, cr.y1 - 2.0);
         if inner.height() > 4.0 && inner.width() > 4.0 {
             if kind == TrackKind::Video {
-                // A filmstrip of the clip's thumbnail cells (representative frame,
-                // or the real decoded frame under the decode feature).
-                let cell_w = (inner.height() * 16.0 / 9.0).clamp(24.0, 56.0);
-                let thumb = self.thumbnails.get(clip.media);
-                let n = (inner.width() / (cell_w + 2.0)).floor().max(1.0) as i64;
+                // A filmstrip: one frame **per cell**, walking the clip's
+                // trimmed source window, so the strip shows the shot changing.
+                // Tiling one thumbnail across every cell is not a filmstrip;
+                // it is one picture repeated. The frames themselves are
+                // requested in `request_filmstrips` (which needs `&mut self`).
+                let (cell_w, n) = filmstrip_cells(inner);
+                let span = clip.out_point - clip.in_point;
                 for i in 0..n {
                     let bx = inner.x0 + 4.0 + i as f64 * (cell_w + 2.0);
                     if bx + cell_w > inner.x1 { break; }
                     let cell = Rect::new(bx, inner.y0 + 3.0, bx + cell_w, inner.y1 - 3.0);
-                    match thumb {
-                        Some(t) => blit_thumb(scene, tf, t, cell, 2.0),
+                    let t = clip.in_point + ((i as f64 + 0.5) / n as f64) * span;
+                    // `frame_at` already degrades exact → nearby-decoded →
+                    // the generated representative, so a cell only comes back
+                    // empty when the source has no picture at all.
+                    match self.thumbnails.frame_at(clip.media, t) {
+                        Some(th) => blit_thumb(scene, tf, th, cell, 2.0),
                         None => fill_rrect(scene, tf, lighten(base, 0.16), cell, 2.0),
                     }
+                }
+                // A source that could not be decoded says so once, over the
+                // strip, rather than leaving a row of blanks to be read as
+                // "this clip has no picture".
+                if self.thumbnails.is_undecodable(clip.media) && cr.width() > 90.0 {
+                    let msg = "No preview";
+                    let (mw, _) = tr.measure(msg, 10.0, None);
+                    text(
+                        scene,
+                        tr,
+                        tf,
+                        msg,
+                        10.0,
+                        with_alpha(Color::WHITE, 0.7),
+                        inner.center().x - mw as f64 / 2.0,
+                        inner.center().y - 6.0,
+                    );
                 }
             } else {
                 let color = lighten(base, 0.3);
                 let media_dur = self.project.media(clip.media).map(|m| m.duration).unwrap_or(0.0);
-                if let Some(peaks) = self.waveforms.peaks(clip.media) {
-                    // Real waveform: map the clip's source window into the peaks.
-                    draw_waveform(scene, tf, inner, peaks, clip.in_point, clip.out_point, media_dur, clip.volume, color);
-                } else {
-                    // No real signal yet — a neutral representative envelope.
-                    let midy = inner.center().y;
-                    let n = (inner.width() / 4.0).floor() as i64;
-                    for i in 0..n {
-                        let bx = inner.x0 + 2.0 + i as f64 * 4.0;
-                        let amp = waveform_amp(i as f64 + clip.start) * (inner.height() / 2.0 - 2.0) * (0.35 + clip.volume * 0.65);
-                        fill_rect(scene, tf, color, Rect::new(bx, midy - amp, bx + 2.0, midy + amp));
-                    }
+                // Only real peaks are drawn as a waveform. Every other state —
+                // still computing, never asked, or unreadable — draws the flat
+                // line, because none of them know what the audio looks like.
+                match (self.waveforms.state(clip.media), self.waveforms.peaks(clip.media)) {
+                    (crate::waveform::WaveformState::Ready, Some(peaks)) => draw_waveform(
+                        scene, tf, inner, peaks, clip.in_point, clip.out_point, media_dur,
+                        clip.volume, color,
+                    ),
+                    _ => draw_flat_signal(scene, tf, inner, color),
                 }
             }
         }
@@ -4174,6 +4375,31 @@ impl VideoEditorApp {
 // ==========================================================================
 // Free drawing utilities
 // ==========================================================================
+/// Cell width and count for a filmstrip drawn across `inner`. Shared by the
+/// request pass and the draw pass so the two never disagree about how many
+/// frames a strip needs — a mismatch would request frames at times the strip
+/// never asks for, and leave the cells it does ask for undecoded.
+fn filmstrip_cells(inner: Rect) -> (f64, i64) {
+    let cell_w = (inner.height() * 16.0 / 9.0).clamp(24.0, 56.0);
+    let n = (inner.width() / (cell_w + 2.0)).floor().max(1.0) as i64;
+    (cell_w, n)
+}
+
+/// The content rect inside a clip body, below its header strip. Shared for the
+/// same reason as [`filmstrip_cells`].
+fn clip_inner_rect(cr: Rect) -> Rect {
+    let strip_y1 = (cr.y0 + 18.0).min(cr.y1);
+    Rect::new(cr.x0 + 2.0, strip_y1, cr.x1 - 2.0, cr.y1 - 2.0)
+}
+
+/// The file's own name, for a message about it — never the whole path, which
+/// would run off the notice line.
+fn display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
 /// Honest, human-readable summary of an import batch. Never claims a success
 /// that did not happen.
 fn import_summary(added: usize, total: usize) -> String {
@@ -4288,14 +4514,6 @@ fn hit_slider(track: Rect, p: Point) -> bool {
     p.x >= track.x0 - 8.0 && p.x <= track.x1 + 8.0 && (p.y - track.center().y).abs() < 14.0
 }
 
-fn triangle(x: f64, y: f64, s: f64) -> BezPath {
-    let mut p = BezPath::new();
-    p.move_to((x, y));
-    p.line_to((x + s, y + s / 2.0));
-    p.line_to((x, y + s));
-    p.close_path();
-    p
-}
 fn triangle_down(cx: f64, top: f64, s: f64) -> BezPath {
     let mut p = BezPath::new();
     p.move_to((cx - s / 2.0, top));
@@ -4383,10 +4601,25 @@ fn draw_waveform(
     }
 }
 
-/// Deterministic pseudo-waveform amplitude in 0..1 for column `i`.
-fn waveform_amp(i: f64) -> f64 {
-    let v = (i * 0.7).sin() * 0.5 + (i * 0.31 + 1.3).sin() * 0.3 + (i * 1.93).sin() * 0.2;
-    (v.abs() * 0.85 + 0.12).clamp(0.05, 1.0)
+/// The placeholder an audio body shows when there is no real signal to draw:
+/// a flat line down the middle.
+///
+/// It is deliberately flat. What stood here before was a sum of three sines
+/// dressed up as an envelope — invented data drawn in the same ink as measured
+/// data, which is the one thing a waveform must never do. A flat line says
+/// "nothing measured yet"; a wiggle says "this is your audio", and would be a
+/// lie whether the peaks were still computing or could never be read at all.
+fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color: Color) {
+    if area.width() <= 2.0 || area.height() <= 2.0 {
+        return;
+    }
+    let midy = area.center().y;
+    fill_rect(
+        scene,
+        tf,
+        with_alpha(color, 0.55),
+        Rect::new(area.x0 + 2.0, midy - 0.75, area.x1 - 2.0, midy + 0.75),
+    );
 }
 
 /// Fit a w:h aspect rect centered inside `area`.
@@ -5602,6 +5835,107 @@ mod tests {
             VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
             "the menu entry locked the track in the CRDT",
         );
+    }
+
+    // ---- filmstrip / import honesty --------------------------------------
+
+    #[test]
+    fn every_filmstrip_cell_of_a_visible_clip_has_a_frame_to_draw() {
+        // Regression: the clip body fetched ONE thumbnail and tiled it, and
+        // when that lookup missed, every cell drew an empty box — a row of
+        // pale rectangles that reads as "this clip has no picture". The draw
+        // pass now requests a frame per cell, and every cell resolves to
+        // something real to blit.
+        let (mut app, _doc) = app_and_doc();
+        render(&mut app); // the pass that requests the strips
+        let r = app.regions();
+        let mut checked = 0;
+        for (tid, kind, lane) in app.lane_rects(&r) {
+            if kind != TrackKind::Video {
+                continue;
+            }
+            for clip in app.project.clips_on(tid) {
+                let cr = app.clip_rect(clip, &lane, &r);
+                if cr.x1 < r.lanes.x0 || cr.x0 > r.lanes.x1 {
+                    continue;
+                }
+                let inner = clip_inner_rect(cr);
+                if inner.height() <= 4.0 || inner.width() <= 4.0 {
+                    continue;
+                }
+                let (_, n) = filmstrip_cells(inner);
+                assert!(n >= 1);
+                let span = clip.out_point - clip.in_point;
+                for i in 0..n {
+                    let t = clip.in_point + ((i as f64 + 0.5) / n as f64) * span;
+                    assert!(
+                        app.thumbnails.frame_at(clip.media, t).is_some(),
+                        "cell {i} of the clip at {} has no frame to draw",
+                        clip.start,
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 0, "the fixture actually has visible video cells to check");
+    }
+
+    #[test]
+    fn the_strip_request_and_the_strip_draw_agree_on_cell_count() {
+        // The two passes derive the cell layout from the same helpers; if they
+        // ever diverge, frames get decoded at times no cell asks for and every
+        // cell falls back to the representative.
+        for (w, h) in [(60.0, 20.0), (300.0, 44.0), (1200.0, 60.0)] {
+            let inner = Rect::new(0.0, 0.0, w, h);
+            let (cell_w, n) = filmstrip_cells(inner);
+            assert!(cell_w >= 24.0 && cell_w <= 56.0, "cell width stays in range");
+            assert!(n >= 1, "there is always at least one cell");
+            assert!(
+                (n as f64) * (cell_w + 2.0) <= w + cell_w + 2.0,
+                "the cells fit the body they were computed for",
+            );
+        }
+    }
+
+    #[test]
+    fn a_refused_import_tells_the_user_what_the_file_actually_is() {
+        let (mut app, mut doc) = app_and_doc();
+        let dir = std::env::temp_dir().join(format!("qos-ve-import-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("not-a-video.mp4");
+        std::fs::write(&path, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
+        let before = app.project.media.len();
+        assert!(!app.import_one(&mut doc, &path), "an HTML page is refused");
+        let notice = app.import_notice.clone().expect("a refusal explains itself");
+        assert!(
+            notice.contains("not-a-video.mp4"),
+            "the notice names the file: {notice}",
+        );
+        assert!(
+            notice.contains("not a media file"),
+            "and carries the probe's own reason: {notice}",
+        );
+        assert_eq!(app.project.media.len(), before, "nothing was added to the bin");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_import_carries_an_unknown_frame_rate_as_unknown() {
+        // A still image has no frame rate. Substituting 30 would put a number
+        // in the bin that the file never stated.
+        let (mut app, mut doc) = app_and_doc();
+        let png = write_real_png(24, 16);
+        let want = png.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(app.import_one(&mut doc, &png), "a real PNG imports");
+        let added = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.name == want)
+            .expect("the imported still is in the bin");
+        assert_eq!(added.fps, 0.0, "an unknown frame rate stays 0, not an invented 30");
+        assert_eq!(added.width, 24, "and the real dimensions came from the file");
+        std::fs::remove_file(&png).ok();
     }
 
     #[test]
