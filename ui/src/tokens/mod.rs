@@ -6,7 +6,10 @@ pub mod elevation;
 pub mod motion;
 pub mod terminal_palette;
 
-pub use colors::{Colors, ColorRamp, PaletteSpec, SemanticColors, Surfaces};
+pub use colors::{
+    Colors, ColorRamp, OverlayTiers, PaletteSpec, SemanticColors, Surfaces,
+    dark_overlays, light_overlays,
+};
 pub use typography::{Typography, TypeScale, WeightScale, FontFamily};
 pub use spacing::Spacing;
 pub use radii::Radii;

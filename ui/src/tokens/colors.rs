@@ -103,17 +103,66 @@ pub struct Colors {
     pub text_tertiary: Color,
     pub border_standard: Color,
     pub border_focus: Color,
-    /// Translucent surface ≈ `white/5` (alpha 13 ≈ 0.05·255). Use for
-    /// "barely there" hover veneers and faint dividers.
+
+    // --- state veneers ----------------------------------------------------
+    //
+    // The translucent washes widgets paint over whatever surface they sit on
+    // to signal hover / press / selection. They are **directional**: a veneer
+    // has to *lighten* a dark ground and *darken* a light one, otherwise it
+    // vanishes. Painting white over a light theme's `#FFFFFF` card is a
+    // no-op, which is how hover feedback silently disappeared in every light
+    // theme. [`Colors::themed`] therefore picks the polarity per theme; the
+    // three alpha tiers are chosen so the perceptual step (ΔL*) of each tier
+    // matches across light and dark, rather than the raw alpha matching.
+    /// The quietest veneer — a "barely there" hover wash or faint divider.
+    /// ≈ 5 % on a dark ground, ≈ 6 % on a light one.
+    pub overlay_subtle: Color,
+    /// The middle veneer — a settled hover, a selected row, a resting chip.
+    pub overlay_medium: Color,
+    /// The strongest veneer — pressed states and emphatic fills.
+    pub overlay_strong: Color,
+    /// Hairline structure that has to read against the local surface rather
+    /// than against the theme ground (a divider inside a tinted panel).
+    pub overlay_border_subtle: Color,
+    /// The more assertive hairline — an active tab's outline, a focused chip.
+    pub overlay_border_strong: Color,
+
+    /// Alias of [`Self::overlay_subtle`], kept because the whole app fleet
+    /// references it by this name. The value is no longer literally white —
+    /// it is whichever polarity the theme needs. Prefer the semantic name in
+    /// new code.
     pub surface_white_5: Color,
-    /// Translucent surface ≈ `white/10` (alpha 26 ≈ 0.10·255).
+    /// Alias of [`Self::overlay_medium`]. See [`Self::surface_white_5`].
     pub surface_white_10: Color,
-    /// Translucent surface ≈ `white/20` (alpha 51 ≈ 0.20·255).
+    /// Alias of [`Self::overlay_strong`]. See [`Self::surface_white_5`].
     pub surface_white_20: Color,
-    /// Translucent border ≈ `border-white/10` (alpha 26).
+    /// Alias of [`Self::overlay_border_subtle`]. See [`Self::surface_white_5`].
     pub border_white_10: Color,
-    /// Translucent border ≈ `border-white/20` (alpha 51).
+    /// Alias of [`Self::overlay_border_strong`]. See [`Self::surface_white_5`].
     pub border_white_20: Color,
+}
+
+/// The five state-veneer values for one theme, in tier order:
+/// `(subtle, medium, strong, border_subtle, border_strong)`.
+pub type OverlayTiers = (Color, Color, Color, Color, Color);
+
+/// The veneer tiers for a **dark** ground: white at 5 % / 10 % / 20 %.
+pub fn dark_overlays() -> OverlayTiers {
+    let w = |a: u8| Color::from_rgba8(255, 255, 255, a);
+    (w(13), w(26), w(51), w(26), w(51))
+}
+
+/// The veneer tiers for a **light** ground: black at ≈ 6 % / 12 % / 24 %.
+///
+/// The alphas are not the dark ones mirrored. Equal alpha does not buy equal
+/// visibility, because a veneer's perceptual step depends on where the ground
+/// sits on the lightness curve. These were solved for: black at 15 / 31 / 60
+/// reproduces the dark tiers' ΔL* (≈ 5 / 10.5 / 21) to within half a unit on
+/// the ground *and* card colour of every light theme qOS ships — see
+/// `light_overlays_match_the_dark_perceptual_step`.
+pub fn light_overlays() -> OverlayTiers {
+    let k = |a: u8| Color::from_rgba8(0, 0, 0, a);
+    (k(15), k(31), k(60), k(31), k(60))
 }
 
 /// A compact description of a full palette. Every qOS theme is expressed as
@@ -189,6 +238,11 @@ impl Colors {
 
         let scrim = if p.dark { mix8(p.base, black, 0.55) } else { Color::from_rgb8(12, 12, 14) };
 
+        // A state veneer must move the ground it lands on, so its polarity
+        // follows the theme rather than being fixed white.
+        let (o_subtle, o_medium, o_strong, ob_subtle, ob_strong) =
+            if p.dark { dark_overlays() } else { light_overlays() };
+
         Self {
             neutral,
             accent,
@@ -217,11 +271,63 @@ impl Colors {
             text_tertiary: p.text_tertiary,
             border_standard: p.border,
             border_focus: p.focus,
-            surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
-            surface_white_10: Color::from_rgba8(255, 255, 255, 26),
-            surface_white_20: Color::from_rgba8(255, 255, 255, 51),
-            border_white_10:  Color::from_rgba8(255, 255, 255, 26),
-            border_white_20:  Color::from_rgba8(255, 255, 255, 51),
+            overlay_subtle: o_subtle,
+            overlay_medium: o_medium,
+            overlay_strong: o_strong,
+            overlay_border_subtle: ob_subtle,
+            overlay_border_strong: ob_strong,
+            surface_white_5:  o_subtle,
+            surface_white_10: o_medium,
+            surface_white_20: o_strong,
+            border_white_10:  ob_subtle,
+            border_white_20:  ob_strong,
+        }
+    }
+
+    /// Replace the state-veneer tiers wholesale. Themes assembled outside
+    /// [`Self::themed`] — the high-contrast preset, which starts from the dark
+    /// tokens and overrides surfaces to pure black — use this so the veneers
+    /// stay coherent with the surfaces they will be painted onto, instead of
+    /// inheriting a polarity that was right for a different ground.
+    pub fn set_overlays(&mut self, tiers: OverlayTiers) {
+        let (subtle, medium, strong, border_subtle, border_strong) = tiers;
+        self.overlay_subtle = subtle;
+        self.overlay_medium = medium;
+        self.overlay_strong = strong;
+        self.overlay_border_subtle = border_subtle;
+        self.overlay_border_strong = border_strong;
+        self.surface_white_5 = subtle;
+        self.surface_white_10 = medium;
+        self.surface_white_20 = strong;
+        self.border_white_10 = border_subtle;
+        self.border_white_20 = border_strong;
+    }
+
+    /// Pick a foreground colour that stays legible on `bg`.
+    ///
+    /// Returns `preferred` whenever it already clears WCAG AA for body text
+    /// (4.5:1) against `bg`, so a design's intended quiet tier survives
+    /// wherever it is actually readable. Where it does not — a dim label on a
+    /// mid-tone fill, a white label on a pale accent — this falls back to the
+    /// theme's primary text, and finally to plain white or black, whichever
+    /// wins. The last step cannot fail: one of the two always clears 4.5:1
+    /// against any colour, because their ratio to each other is 21:1.
+    ///
+    /// `bg` must be the colour that will actually be *seen*: composite any
+    /// translucent fill over its ground before passing it in.
+    pub fn readable_on(&self, bg: Color, preferred: Color) -> Color {
+        const AA_BODY: f64 = 4.5;
+        for candidate in [preferred, self.text_primary] {
+            if crate::a11y::contrast_ratio(candidate, bg) >= AA_BODY {
+                return candidate;
+            }
+        }
+        let white = Color::WHITE;
+        let black = Color::BLACK;
+        if crate::a11y::contrast_ratio(white, bg) >= crate::a11y::contrast_ratio(black, bg) {
+            white
+        } else {
+            black
         }
     }
 
@@ -331,6 +437,12 @@ impl Colors {
             text_tertiary: Color::from_rgb8(100, 116, 139), // slate-500
             border_standard: Color::from_rgb8(51, 65, 85), // slate-700
             border_focus: Color::from_rgb8(99, 102, 241),  // indigo-500
+            // A dark palette, so the veneers lighten.
+            overlay_subtle:        Color::from_rgba8(255, 255, 255, 13),
+            overlay_medium:        Color::from_rgba8(255, 255, 255, 26),
+            overlay_strong:        Color::from_rgba8(255, 255, 255, 51),
+            overlay_border_subtle: Color::from_rgba8(255, 255, 255, 26),
+            overlay_border_strong: Color::from_rgba8(255, 255, 255, 51),
             surface_white_5:  Color::from_rgba8(255, 255, 255, 13),
             surface_white_10: Color::from_rgba8(255, 255, 255, 26),
             surface_white_20: Color::from_rgba8(255, 255, 255, 51),
@@ -518,5 +630,212 @@ mod tests {
         assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
         assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
         assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
+    }
+
+    // --- state veneers ----------------------------------------------------
+
+    /// Straight-alpha composite of `fg` over an opaque `bg` — what the eye
+    /// actually receives when a translucent veneer is painted on a surface.
+    fn composite(fg: Color, bg: Color) -> Color {
+        let a = fg.a() as f32 / 255.0;
+        let ch = |f: u8, b: u8| ((f as f32) * a + (b as f32) * (1.0 - a)).round() as u8;
+        Color::from_rgb8(ch(fg.r(), bg.r()), ch(fg.g(), bg.g()), ch(fg.b(), bg.b()))
+    }
+
+    /// CIE L* (0..=100) — perceptual lightness, so veneer strength can be
+    /// compared across grounds of very different luminance.
+    fn lstar(c: Color) -> f64 {
+        let y = crate::a11y::relative_luminance(c);
+        if y > 0.008856 { 116.0 * y.cbrt() - 16.0 } else { 903.3 * y }
+    }
+
+    /// The alias fields must never drift from the semantic ones they name —
+    /// the fleet reads both, and a widget picking the stale pair would paint a
+    /// veneer of the wrong polarity.
+    #[test]
+    fn overlay_aliases_track_the_semantic_tokens_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            assert_eq!(rgba(c.surface_white_5), rgba(c.overlay_subtle), "{name} subtle");
+            assert_eq!(rgba(c.surface_white_10), rgba(c.overlay_medium), "{name} medium");
+            assert_eq!(rgba(c.surface_white_20), rgba(c.overlay_strong), "{name} strong");
+            assert_eq!(rgba(c.border_white_10), rgba(c.overlay_border_subtle), "{name} border subtle");
+            assert_eq!(rgba(c.border_white_20), rgba(c.overlay_border_strong), "{name} border strong");
+        }
+    }
+
+    /// The defect this token model exists to prevent: a veneer that does not
+    /// move the surface it is painted on. Light themes used to inherit white
+    /// veneers, so `surface_white_5` over the Light theme's `#FFFFFF` card was
+    /// a literal no-op (1.000:1) and hover feedback did not render at all.
+    ///
+    /// Checked on both grounds a veneer realistically lands on, in every
+    /// theme, so no polarity can regress unnoticed.
+    #[test]
+    fn state_veneers_move_every_ground_in_every_theme() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            for (ground_name, ground) in
+                [("base", c.surfaces.base), ("raised", c.surfaces.raised)]
+            {
+                for (tier_name, tier, floor) in [
+                    ("subtle", c.overlay_subtle, 1.07),
+                    ("medium", c.overlay_medium, 1.17),
+                    ("strong", c.overlay_strong, 1.45),
+                    ("border_subtle", c.overlay_border_subtle, 1.17),
+                    ("border_strong", c.overlay_border_strong, 1.45),
+                ] {
+                    let seen = composite(tier, ground);
+                    let step = contrast_ratio(seen, ground);
+                    assert!(
+                        step >= floor,
+                        "{name}: {tier_name} veneer over {ground_name} is invisible \
+                         (step {step:.3}, need {floor}) — hover/press feedback would not render",
+                    );
+                }
+            }
+        }
+    }
+
+    /// A veneer has to push the ground *away* from itself: lighten a dark
+    /// surface, darken a light one. Asserted on lightness rather than on the
+    /// literal colour so a future theme is free to tint its veneers.
+    #[test]
+    fn veneer_polarity_follows_the_ground() {
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            let ground = c.surfaces.raised;
+            let ground_is_dark = lstar(ground) < 50.0;
+            for (tier_name, tier) in [
+                ("subtle", c.overlay_subtle),
+                ("medium", c.overlay_medium),
+                ("strong", c.overlay_strong),
+            ] {
+                let delta = lstar(composite(tier, ground)) - lstar(ground);
+                if ground_is_dark {
+                    assert!(delta > 0.0, "{name}: {tier_name} must lighten a dark ground (got {delta:.2})");
+                } else {
+                    assert!(delta < 0.0, "{name}: {tier_name} must darken a light ground (got {delta:.2})");
+                }
+            }
+        }
+    }
+
+    /// Equal alpha does not buy equal visibility on grounds at opposite ends
+    /// of the lightness curve, so the light tiers are solved for the *step*
+    /// the dark tiers produce, not mirrored from their alpha. This pins that
+    /// solve: every light theme's veneer lands within 2 L* of the dark target.
+    #[test]
+    fn light_overlays_match_the_dark_perceptual_step() {
+        let targets = [("subtle", 5.0), ("medium", 10.5), ("strong", 21.0)];
+        for name in crate::theme::Theme::ALL {
+            let c = &crate::theme::Theme::named(name).unwrap().tokens.colors;
+            if lstar(c.surfaces.raised) < 50.0 {
+                continue; // dark ground — the reference, not the thing solved for
+            }
+            for (ground_name, ground) in
+                [("base", c.surfaces.base), ("raised", c.surfaces.raised)]
+            {
+                let tiers = [c.overlay_subtle, c.overlay_medium, c.overlay_strong];
+                for ((tier_name, want), tier) in targets.iter().zip(tiers) {
+                    let got = lstar(ground) - lstar(composite(tier, ground));
+                    assert!(
+                        (got - want).abs() <= 2.0,
+                        "{name}/{ground_name}: {tier_name} step is {got:.2} L*, \
+                         dark themes get {want:.1} — the tiers are out of step",
+                    );
+                }
+            }
+        }
+    }
+
+    /// The high-contrast preset re-solves its own tiers: it overrides its
+    /// surfaces to pure black *after* inheriting the dark tokens, and against
+    /// black the dark tiers collapse to a 1.08:1 step — invisible to exactly
+    /// the users this preset exists for. It must be markedly stronger than the
+    /// default dark theme's, while still hosting the theme's white text at AA.
+    #[test]
+    fn high_contrast_veneers_are_stronger_and_still_host_white_text() {
+        let hc = crate::theme::Theme::high_contrast();
+        let c = &hc.tokens.colors;
+        let dark = Colors::dark();
+        let ground = c.surfaces.raised;
+
+        for (tier_name, tier, dark_tier) in [
+            ("subtle", c.overlay_subtle, dark.overlay_subtle),
+            ("medium", c.overlay_medium, dark.overlay_medium),
+            ("strong", c.overlay_strong, dark.overlay_strong),
+        ] {
+            let seen = composite(tier, ground);
+            let step = contrast_ratio(seen, ground);
+            let inherited = contrast_ratio(composite(dark_tier, ground), ground);
+            assert!(
+                step > inherited * 1.4,
+                "{tier_name}: high contrast must not inherit the dark tier's step \
+                 ({step:.2} vs {inherited:.2})",
+            );
+            let on_top = contrast_ratio(c.text_primary, seen);
+            assert!(
+                on_top >= 4.5,
+                "{tier_name}: primary text must stay AA on the veneer (got {on_top:.2})",
+            );
+        }
+    }
+
+    // --- readable_on ------------------------------------------------------
+
+    #[test]
+    fn readable_on_keeps_a_preferred_colour_that_already_passes() {
+        let c = Colors::dark();
+        // Primary text on the card is 13.89:1 — nothing to correct.
+        let got = c.readable_on(c.surfaces.raised, c.text_primary);
+        assert_eq!(rgba(got), rgba(c.text_primary));
+    }
+
+    #[test]
+    fn readable_on_lifts_a_preferred_colour_that_fails() {
+        // The exact pairing the audit measured: the `neutral[3]` fill tier
+        // under a `text_dim` label. It clears AA in the dark default (4.69:1)
+        // and fails in light (4.26:1) — one theme's pass is what kept it in.
+        let light = Colors::light();
+        let fill = light.neutral[3];
+        let before = contrast_ratio(light.text_dim, fill);
+        assert!(before < 4.5, "precondition: the light pairing fails AA (got {before:.2})");
+
+        let after = contrast_ratio(light.readable_on(fill, light.text_dim), fill);
+        assert!(after >= 4.5, "the lifted label must clear AA (got {after:.2})");
+        assert!(after > before, "and must actually be an improvement");
+
+        // Dark already passed, so it is left exactly as designed — the fix
+        // must not repaint a theme that was already correct.
+        let dark = Colors::dark();
+        assert_eq!(
+            rgba(dark.readable_on(dark.neutral[3], dark.text_dim)),
+            rgba(dark.text_dim),
+            "dark's 4.69:1 pairing is untouched",
+        );
+    }
+
+    /// The fallback arm cannot fail: white and black are 21:1 apart, so at
+    /// least one of them clears AA against any colour whatsoever.
+    #[test]
+    fn readable_on_always_returns_an_aa_pairing() {
+        let c = Colors::light();
+        // A mid grey defeats text_dim *and* text_primary in some themes; walk
+        // the whole grey axis plus every theme's accent to be sure.
+        let mut probes: Vec<Color> = (0..=255)
+            .step_by(5)
+            .map(|v| Color::from_rgb8(v, v, v))
+            .collect();
+        for name in crate::theme::Theme::ALL {
+            let t = crate::theme::Theme::named(name).unwrap();
+            probes.push(t.accent_primary);
+            probes.push(t.tokens.colors.surfaces.raised);
+        }
+        for bg in probes {
+            let fg = c.readable_on(bg, c.text_dim);
+            let r = contrast_ratio(fg, bg);
+            assert!(r >= 4.5, "readable_on returned a {r:.2}:1 pairing on {:?}", rgb(bg));
+        }
     }
 }
