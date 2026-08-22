@@ -577,28 +577,12 @@ pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
 /// the only signal we have. Separators become spaces and each word is
 /// title-cased; an id that is already a display-ish word (`Notes`) comes
 /// back unchanged.
+/// The derivation itself lives in the `launcher` crate, because the
+/// app catalogue needs the same one: a package must not be called
+/// `Hex Editor` once it is installed and something else while it is
+/// still only offered.
 pub fn display_name_for_package_id(package_id: &str) -> String {
-    let last = package_id
-        .rsplit('.')
-        .next()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(package_id);
-    let words: Vec<String> = last
-        .split(['-', '_'])
-        .filter(|w| !w.is_empty())
-        .map(|w| {
-            let mut chars = w.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect();
-    if words.is_empty() {
-        package_id.to_string()
-    } else {
-        words.join(" ")
-    }
+    launcher::registry::display_name_for_package_id(package_id)
 }
 
 // ---------------------------------------------------------------------
@@ -981,7 +965,7 @@ pub fn spawn_launch(package_id: String, display_name: String, command: LaunchCom
     }
 }
 
-fn push_event(event: LaunchEvent) {
+pub(crate) fn push_event(event: LaunchEvent) {
     EVENTS.lock().expect("EVENTS poisoned").push(event);
 }
 
