@@ -48,14 +48,34 @@ REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 BIN = REPO / "target" / "debug"
 UID = os.getuid()
 
-BRIEF = """# Launch plan
+# The two endings. Each is a document and an instruction; which action
+# answers the instruction is the model's to choose, from the catalogue the
+# word processor exports. Neither instruction names an action.
+ENDINGS = {
+    # The bigger visible change at demo speed.
+    "table": """# Launch plan
 
 - Venue - The Hall
 - Date - 3 Sep
 - Budget - 1200
 
-Claude: turn the bullets into a table
-"""
+Claude: turn these into a table
+""",
+    # The one that shows judgement rather than one mechanical edit: a flat
+    # draft, no markup at all, asked to become a document.
+    "structure": """Quarterly review
+
+Revenue
+
+We closed the quarter ahead of plan, with most of the gain arriving late.
+
+Risks
+
+Two suppliers remain single-sourced and that has not moved since March.
+
+Claude: make this a proper document
+""",
+}
 
 
 def fail(msg: str, *logs: pathlib.Path) -> None:
@@ -107,6 +127,13 @@ def main() -> None:
         default="/tmp/agent-demo",
         help="where the three snapshots go (default: /tmp/agent-demo)",
     )
+    ap.add_argument(
+        "--ending",
+        choices=sorted(ENDINGS),
+        default="table",
+        help="which ending to drive: bullets becoming a table, or a flat "
+             "draft being given its structure (default: table)",
+    )
     args = ap.parse_args()
 
     for b in ("shell", "word-processor", "qos-agent"):
@@ -117,7 +144,7 @@ def main() -> None:
     home = run / "home"
     home.mkdir(parents=True)
     brief = home / "brief.md"
-    brief.write_text(BRIEF)
+    brief.write_text(ENDINGS[args.ending])
     ctl = run / "ctl"
     comp_log = run / "compositor.log"
     wp_log = run / "word-processor.log"
@@ -216,8 +243,9 @@ def main() -> None:
         if code != 0:
             fail(f"the agent exited with {code}", agent_log, wp_log, comp_log)
         log = agent_log.read_text(errors="replace")
-        if "insert table" not in log:
-            fail("the agent did not report inserting a table", agent_log, wp_log)
+        did = "insert table" if args.ending == "table" else "made the draft a document"
+        if did not in log:
+            fail(f"the agent never reported {did!r}", agent_log, wp_log)
 
         # Which path chose the action. The agent logs this per instruction;
         # requiring it here is what keeps a fallback run from being written
@@ -255,20 +283,39 @@ def main() -> None:
         control(ctl, {"op": "key", "key": "s"})
         control(ctl, {"op": "key_up", "key": "Control"})
 
+        # The instruction is gone from every ending, and the mark that
+        # says the work happened differs by ending.
+        mark = "|" if args.ending == "table" else "## "
+
         def saved():
             text = brief.read_text()
-            return text if "|" in text and "Claude:" not in text else None
+            return text if mark in text and "Claude:" not in text else None
 
-        text = wait_for(saved, 20, "the saved file to contain the table", wp_log, agent_log)
+        text = wait_for(saved, 20, f"the saved file to show the {args.ending}", wp_log, agent_log)
         print("--- brief.md after ---\n" + text.strip())
-        rows = [l for l in text.splitlines() if l.startswith("|") and "---" not in l]
-        cells = [[c.strip() for c in r.strip("|").split("|")] for r in rows]
-        expect = [["Venue", "The Hall"], ["Date", "3 Sep"], ["Budget", "1200"]]
-        if cells != expect:
-            fail(f"table rows {cells!r}, expected {expect!r}", wp_log, agent_log)
-        if any(l.startswith("- ") for l in text.splitlines()):
-            fail("the bullets are still there", wp_log, agent_log)
-        print("OK  the word processor saved the table the agent made")
+        lines = text.splitlines()
+
+        if args.ending == "table":
+            rows = [l for l in lines if l.startswith("|") and "---" not in l]
+            cells = [[c.strip() for c in r.strip("|").split("|")] for r in rows]
+            expect = [["Venue", "The Hall"], ["Date", "3 Sep"], ["Budget", "1200"]]
+            if cells != expect:
+                fail(f"table rows {cells!r}, expected {expect!r}", wp_log, agent_log)
+            if any(l.startswith("- ") for l in lines):
+                fail("the bullets are still there", wp_log, agent_log)
+            print("OK  the word processor saved the table the agent made")
+        else:
+            if "# Quarterly review" not in lines:
+                fail(f"the first line never became the title: {lines[:3]!r}", wp_log, agent_log)
+            sections = sorted(l for l in lines if l.startswith("## "))
+            if sections != ["## Revenue", "## Risks"]:
+                fail(f"section headings {sections!r}, expected Revenue and Risks", wp_log, agent_log)
+            # The prose under each heading must still be prose — promoting
+            # a sentence would be the failure that looks broken.
+            for prose in ("We closed the quarter", "Two suppliers remain"):
+                if not any(l.startswith(prose) for l in lines):
+                    fail(f"the paragraph {prose!r} did not survive as prose", wp_log, agent_log)
+            print("OK  the word processor saved the structure the agent gave the draft")
         print("PASS")
     finally:
         for p in procs:
