@@ -3212,6 +3212,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // first launch ("works on the second try"). Deferring lets the
         // event loop complete the configure + seat handshake first.
         window.request_redraw();
+        // Publish the window so a widget can start a drag out of this app
+        // without holding one — the same shape as the clipboard backend
+        // above, and for the same reason: only the toolkit has the
+        // process's Wayland connection.
+        crate::dnd::set_drag_window(&window);
         self.window = Some(window);
     }
 
