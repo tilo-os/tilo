@@ -222,12 +222,13 @@ crosses the peer wire as `NeighbourMsg::AppCrdtSnapshot`, routed by the
 same `(app_id, cluster_id, record_id)` triple as a delta and admitted by
 the same room check.
 
-**It goes out on arrival, not on every commit.** The toolkit produces a
-`SyncCRDT` on *every commit that changes the document* — it feeds
-same-host fan-out and the undo snapshot — so republishing each one would
-put a whole document on the room topic per commit: unbounded, growing
-with the session, and redundant with the delta that already carries the
-same edit to anyone who shares the history.
+**It goes out on arrival, not on every commit.** `SyncCRDT` is not
+reliably a join reply: it also feeds same-host fan-out and the undo
+snapshot, and whether a commit produces one is a property of the toolkit
+build rather than anything visible in the frame. Republishing whatever
+arrives would risk a whole document on the room topic per commit —
+unbounded, growing with the session, and redundant with the delta that
+already carries the same edit to anyone who shares the history.
 
 The publish is therefore gated on somebody needing one. A peer's
 `Arrived` passes through the local broker's own drain on its way to
