@@ -2263,6 +2263,50 @@ impl ShellOverlayHost {
         touched
     }
 
+    /// Close the active tab of the group the user is looking at, through
+    /// the same `TabBar::start_closing` a `✕` click runs.
+    ///
+    /// The live `WindowGroup` widget owns the tab list, so — like
+    /// [`Self::set_group_widths`] — setting the persisted tree alone
+    /// would not move anything; the widget is the thing that has to be
+    /// told. Returns `false` when nothing is focused or the group has no
+    /// tab left to close.
+    pub fn close_focused_tab(&mut self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let focused = crate::shell::window_actions::focused_group(&chrome.borrow());
+        let Some(gid) = focused else {
+            return false;
+        };
+        self.close_tab_in_group(gid, None)
+    }
+
+    /// Close `tab` (or the active tab, when `tab` is `None`) in the group
+    /// with id `gid`. Shared by the chord and the tab context menu.
+    pub fn close_tab_in_group(&mut self, gid: GroupId, tab: Option<u64>) -> bool {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if g.id != gid {
+                    continue;
+                }
+                let closed = match tab {
+                    Some(id) => g.request_close_tab(id),
+                    None => g.request_close_active_tab(),
+                };
+                if closed {
+                    if let Some(chrome) = self.chrome.clone() {
+                        chrome.borrow_mut().bump();
+                    }
+                }
+                return closed;
+            }
+        }
+        false
+    }
+
     fn harvest_pending_width_changes(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -5919,6 +5963,27 @@ impl Widget for ShellOverlayHost {
                                 self.refresh_search_results(state, path);
                                 *handled = true;
                                 return;
+                            }
+                            // Super+W — close the tab you are looking at,
+                            // the chord form of the pill's `✕`.
+                            //
+                            // Super, not Ctrl+W: `shell_owns_chord`
+                            // grabs every Super chord wholesale, so this
+                            // takes nothing away from a focused client,
+                            // and it sits with the other window verbs
+                            // (Super+T new tab, Super+N new window,
+                            // Super+D duplicate). Ctrl+W would have to
+                            // be added to the chord table, and would
+                            // then be swallowed ahead of every client
+                            // that binds it — which is browsers,
+                            // terminals and editors, i.e. most of them.
+                            // Same reasoning that keeps Super+S off the
+                            // `is_mod` alias a few lines down.
+                            "w" | "W" => {
+                                if self.close_focused_tab() {
+                                    *handled = true;
+                                    return;
+                                }
                             }
                             // Super+D — a second instance of what you are
                             // already looking at.
