@@ -113,6 +113,15 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         // Acts on the room's contents.
         "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
 
+        // Bringing a record into the room changes what the room holds,
+        // and what a room holds is what its members can reach — so this
+        // is `Write` for the same reason spawning a tab is, and it is
+        // classified here rather than left to the fail-closed default so
+        // the choice is a choice. Note the asymmetry the rest of this
+        // module states: *seeing* which records a room holds is showing
+        // and is never gated; putting one there is an act.
+        "record.bring" => Some(Verb::Write),
+
         // Writing into a document is the plainest case of the rule this
         // module states: reading the note is showing and is free, and
         // changing what it says is an act. It is `Write` on the shell's

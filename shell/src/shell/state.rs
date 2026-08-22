@@ -1570,6 +1570,28 @@ pub struct WorkspaceTree {
     /// whoever answered first.
     #[serde(default)]
     pub room_authority: HashMap<RoomId, RoomAuthority>,
+    /// Which records each room this machine is in holds, as record id →
+    /// record kind. The shell's mirror of the room indexes, kept here so
+    /// the replication path can project it.
+    ///
+    /// A room's index is the compositor's own document
+    /// ([`crate::shell::room_records::RoomRecords`]), and it lives behind
+    /// an `Rc<RefCell<_>>` on the overlay host — which the peer-sync path,
+    /// holding the tree across an `Arc<RwLock<_>>`, cannot reach. So the
+    /// index is not moved here; it is *mirrored* here as plain data,
+    /// pushed in by [`Self::set_room_records`] whenever it changes. The
+    /// tree stays `Send`, and the index stays where it belongs.
+    ///
+    /// Not persisted: the durable copy is the index's own store, and a
+    /// second copy of it in the state file would be a second answer to
+    /// the same question.
+    #[serde(skip, default)]
+    pub room_records_held: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
+    /// References that arrived from a peer and have not been folded into
+    /// the local index yet. Drained by the shell — see
+    /// [`Self::take_inbound_room_records`].
+    #[serde(skip, default)]
+    pub room_records_inbound: Vec<(RoomId, String, String)>,
     /// Where to write this tree when a capability changes.
     ///
     /// `None` disables the write, which is what tests and the offscreen
@@ -1600,6 +1622,8 @@ impl Default for WorkspaceTree {
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
+            room_records_held: HashMap::new(),
+            room_records_inbound: Vec::new(),
             persist_path: None,
             fs_acl_path: None,
         }
@@ -1963,6 +1987,8 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let held: std::collections::BTreeMap<String, String> =
+            self.room_records_held.get(&room).cloned().unwrap_or_default();
         let room_str = room.to_string();
         // Governance is projected only by the machine that holds it. A
         // guest has nothing to say about who owns the room it joined, and
@@ -2020,6 +2046,13 @@ impl WorkspaceTree {
             _ => {}
         }
 
+        // Which records the room holds, projected by **every** member.
+        // Governance below is one-sided on purpose; this is not. A room
+        // a guest cannot bring a record into is not a shared room, and
+        // "bringing your own must be cheap" (`plan/rooms.md`) is a
+        // requirement on the design rather than a nicety.
+        Self::project_room_records(doc, &held);
+
         if !governs {
             let _ = qdoc::history::commit_stamped(doc);
             doc.reset_diff_cursor();
@@ -2065,6 +2098,153 @@ impl WorkspaceTree {
         // in sort order. A guest merging its host's room document died
         // on that. Drop the log at every point one could accumulate.
         doc.reset_diff_cursor();
+    }
+
+    /// Key the room document stores a room's record index under.
+    ///
+    /// The entries mirror [`ui::record::room`]'s own shape — a map keyed
+    /// by record id whose value carries the record's `kind` — because it
+    /// is the same fact in the same shape, just in the document that
+    /// crosses the wire rather than the one on this machine's disk.
+    const ROOM_RECORDS_KEY: &'static str = "records";
+
+    /// Project a room's record index into that room's replication
+    /// document.
+    ///
+    /// # What actually replicates
+    ///
+    /// A reference, not a record. `plan/rooms.md`: *"A record exists
+    /// once. Rooms reference it."* So what crosses here is the record's
+    /// id and its type — the room saying which documents it holds. The
+    /// documents themselves travel per record, over the broker's
+    /// `(app_id, cluster_id, record_id)` channels, and they travel
+    /// whether or not this index ever mentioned them.
+    ///
+    /// That split is what keeps a person's own view out of the room. The
+    /// room learns *that* a document is in it; it learns nothing about
+    /// who has it open, in which tab, at which scroll offset, or which
+    /// window it was opened into. Those are facts about a person at a
+    /// desk, and there is no field here for one to arrive in.
+    ///
+    /// # Keyed, not listed
+    ///
+    /// Every entry is a map key, like the capabilities beside it. That is
+    /// what lets a room document be re-projected under a fresh actor
+    /// after a restart and still merge by last-writer-wins instead of
+    /// duplicating entries — and it is why two people bringing the *same*
+    /// record into a room at the same moment converge on one entry, and
+    /// two people bringing *different* records converge on both.
+    ///
+    /// # Additive
+    ///
+    /// A key this machine does not hold is left alone rather than swept.
+    /// The sweep would be a race this machine loses constantly: a record
+    /// a peer referenced a moment ago is legitimately not in our index
+    /// yet, and deleting it would remove it from the room before we ever
+    /// merged it. The cost is stated plainly rather than hidden — **an
+    /// un-reference does not yet propagate**. Making it propagate needs
+    /// removal to be an explicit act in the document (a tombstone the
+    /// remover writes) rather than an absence inferred from a cache, and
+    /// that is a separate change.
+    fn project_room_records(
+        doc: &mut AutoCommit,
+        held: &std::collections::BTreeMap<String, String>,
+    ) {
+        use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+
+        if held.is_empty() {
+            return;
+        }
+        let records_id = match doc.get(&ROOT, Self::ROOM_RECORDS_KEY).ok().flatten() {
+            Some((_, id)) => id,
+            None => match doc.put_object(&ROOT, Self::ROOM_RECORDS_KEY, ObjType::Map) {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::error!(?err, "room doc: records map");
+                    return;
+                }
+            },
+        };
+        for (id, kind) in held {
+            let entry = match doc.get(&records_id, id.as_str()).ok().flatten() {
+                Some((_, obj)) => obj,
+                None => match doc.put_object(&records_id, id.as_str(), ObjType::Map) {
+                    Ok(obj) => obj,
+                    Err(err) => {
+                        tracing::error!(?err, record = %id, "room doc: record entry");
+                        continue;
+                    }
+                },
+            };
+            // Compared before it is written, like every other value in
+            // this document: a re-projection of unchanged state must not
+            // manufacture a change, or two peers exporting to each other
+            // would never reach the point of having nothing to say.
+            let current = match doc.get(&entry, "kind").ok().flatten() {
+                Some((automerge::Value::Scalar(v), _)) => match v.as_ref() {
+                    automerge::ScalarValue::Str(k) => Some(k.to_string()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if current.as_deref() != Some(kind.as_str()) {
+                let _ = doc.put(&entry, "kind", kind.clone());
+            }
+        }
+    }
+
+    /// Read a room document's record index back as `(record id, kind)`
+    /// pairs, sorted by id so two peers read one document the same way.
+    fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+        let Some((_, records_id)) = doc.get(&ROOT, Self::ROOM_RECORDS_KEY).ok().flatten() else {
+            return Vec::new();
+        };
+        let mut out: Vec<(String, String)> = Vec::new();
+        for key in doc.keys(&records_id).collect::<Vec<_>>() {
+            let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
+                continue;
+            };
+            let kind = match doc.get(&entry, "kind").ok().flatten() {
+                Some((Value::Scalar(v), _)) => match v.as_ref() {
+                    ScalarValue::Str(k) => k.to_string(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            out.push((key, kind));
+        }
+        out.sort();
+        out
+    }
+
+    /// Tell the tree which records `room`'s index holds.
+    ///
+    /// Called by the shell whenever the index changes. Returns whether
+    /// this was news, so the caller can skip the work of asking again
+    /// when nothing moved.
+    pub fn set_room_records(
+        &mut self,
+        room: RoomId,
+        held: std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        match self.room_records_held.get(&room) {
+            Some(existing) if *existing == held => false,
+            _ => {
+                self.room_records_held.insert(room, held);
+                true
+            }
+        }
+    }
+
+    /// Take the references peers have added since this was last called.
+    ///
+    /// Drained rather than read so a slow frame cannot apply the same
+    /// arrival twice; [`crate::shell::room_records::RoomRecords::reference`]
+    /// is idempotent anyway, but a queue that only grows is a leak.
+    pub fn take_inbound_room_records(&mut self) -> Vec<(RoomId, String, String)> {
+        std::mem::take(&mut self.room_records_inbound)
     }
 
     /// The governance a room document records: the room's owner, and its
@@ -2332,10 +2512,34 @@ impl WorkspaceTree {
             }
         }
 
+        // Which records the room now says it holds, against what this
+        // machine had already put in it. The difference is what a peer
+        // brought here, and it is queued for the shell to fold into the
+        // room's own index — the tree cannot reach that index itself
+        // (see `room_records_held`), so the arrival is recorded as data
+        // and applied by the side that owns it.
+        //
+        // Not gated on the room's governance authority: bringing a
+        // record into a room is not an act of governance, and a room
+        // only its owner may add to is not a shared room. What gates it
+        // is membership, which was decided above — a payload for a room
+        // this machine is not in never reached here.
+        let arrived = Self::room_records_of(&candidate);
+        let already = self.room_records_held.get(&room);
+        let mut inbound: Vec<(RoomId, String, String)> = Vec::new();
+        for (id, kind) in arrived {
+            let known = already.and_then(|h| h.get(&id));
+            if known.map(|k| k.as_str()) != Some(kind.as_str()) {
+                inbound.push((room, id, kind));
+            }
+        }
+        let records_changed = !inbound.is_empty();
+        self.room_records_inbound.extend(inbound);
+
         self.room_docs.insert(room, candidate);
 
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
-            return Ok(false);
+            return Ok(records_changed);
         };
         let mut changed = false;
         if let Some(name) = name
@@ -2370,7 +2574,7 @@ impl WorkspaceTree {
             self.seed_doc_from_cache();
             self.flush_to_disk();
         }
-        Ok(changed)
+        Ok(changed || records_changed)
     }
 
     /// Seed the automerge doc from the cache. Idempotent: a second call
@@ -4632,6 +4836,174 @@ mod automerge_foundation_tests {
     /// The actors are random, so the failure depended on which of the
     /// two sorted first; the loop runs enough rounds that a regression
     /// cannot pass by being lucky.
+    /// Two trees in one room, so a record-index claim can be read back
+    /// from the side that did not make it.
+    fn two_in_a_room() -> (WorkspaceTree, WorkspaceTree, RoomId) {
+        let mut host = WorkspaceTree::bootstrap_default();
+        let host_ws = host.workspaces[0].id;
+        let room = host.room_of(host_ws).expect("bootstrap mints a room");
+        host.adopt_ownerless_workspaces(&"ada".to_string());
+
+        let mut guest = WorkspaceTree::bootstrap_default();
+        let guest_ws = guest.workspaces[0].id;
+        assert!(guest.set_room(guest_ws, room));
+        guest.adopt_ownerless_workspaces(&"bob".to_string());
+        (host, guest, room)
+    }
+
+    fn ship(from: &mut WorkspaceTree, to: &mut WorkspaceTree, room: RoomId, hub: u64) {
+        let changes = from
+            .export_room_changes_since(room, &[])
+            .expect("in the room");
+        to.apply_room_changes(room, &changes, &PeerOrigin::hub(hub))
+            .expect("merges");
+    }
+
+    fn held(one: (&str, &str)) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([(one.0.to_string(), one.1.to_string())])
+    }
+
+    /// The claim the whole room-index path exists to make: a record one
+    /// member puts in the room reaches the others.
+    #[test]
+    fn a_record_referenced_here_reaches_the_other_member() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+
+        ship(&mut host, &mut guest, room, 1);
+
+        assert_eq!(
+            guest.take_inbound_room_records(),
+            vec![(room, "file:/docs/plan.md".to_string(), "document".to_string())],
+            "the guest must be handed the reference its host made",
+        );
+    }
+
+    /// And the other way. A room only its owner may add to is not a
+    /// shared room — the projection is deliberately not gated on
+    /// governance the way the owner and capability list are.
+    #[test]
+    fn a_guest_can_put_a_record_in_the_room_too() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        guest.set_room_records(room, held(("file:/docs/from-bob.md", "document")));
+
+        ship(&mut guest, &mut host, room, 2);
+
+        assert_eq!(
+            host.take_inbound_room_records(),
+            vec![(
+                room,
+                "file:/docs/from-bob.md".to_string(),
+                "document".to_string()
+            )],
+            "a guest's reference must reach the room's owner",
+        );
+    }
+
+    /// Two people bringing something at the same moment. Keyed by record
+    /// id rather than appended to a list, so the merge is a union and
+    /// neither reference is the loser of a coin toss.
+    #[test]
+    fn two_members_referencing_at_once_both_survive() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/from-ada.md", "document")));
+        guest.set_room_records(room, held(("file:/docs/from-bob.md", "document")));
+
+        // Neither has seen the other's yet: both project, then both merge.
+        ship(&mut host, &mut guest, room, 1);
+        ship(&mut guest, &mut host, room, 2);
+
+        for (who, tree) in [("host", &mut host), ("guest", &mut guest)] {
+            let doc = tree.room_docs.get(&room).expect("a room document");
+            let ids: Vec<String> = WorkspaceTree::room_records_of(doc)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            assert_eq!(
+                ids,
+                vec![
+                    "file:/docs/from-ada.md".to_string(),
+                    "file:/docs/from-bob.md".to_string()
+                ],
+                "{who} lost one of two simultaneous references",
+            );
+        }
+    }
+
+    /// Re-projecting unchanged state must not manufacture a change, or
+    /// two peers exporting to each other would never fall quiet.
+    #[test]
+    fn re_projecting_the_same_index_says_nothing_new() {
+        let (mut host, _guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        host.sync_room_doc(room);
+        let heads = host.room_heads(room);
+
+        host.sync_room_doc(room);
+        host.sync_room_doc(room);
+
+        assert_eq!(
+            host.room_heads(room),
+            heads,
+            "an export of unchanged state must add no changes",
+        );
+    }
+
+    /// A record already known here is not re-announced as an arrival.
+    /// Without this the shell would be handed the same reference every
+    /// sync round, forever.
+    #[test]
+    fn a_reference_already_held_here_is_not_an_arrival() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut host, &mut guest, room, 1);
+        assert_eq!(guest.take_inbound_room_records().len(), 1);
+
+        // The shell folded it in, so the guest now holds it too.
+        guest.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut host, &mut guest, room, 1);
+
+        assert!(
+            guest.take_inbound_room_records().is_empty(),
+            "a reference this machine already holds must not arrive again",
+        );
+    }
+
+    /// **The view does not follow, the state does.**
+    ///
+    /// The room document is the thing that crosses, so the guarantee is
+    /// checkable by looking at what is in it: which records the room
+    /// holds, and nothing about where anybody is standing.
+    #[test]
+    fn the_room_document_carries_no_view_state() {
+        use automerge::{ROOT, ReadDoc};
+
+        let (mut host, _guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        // Put this session somewhere specific, so anything that leaked
+        // would have a value to leak.
+        let ws = host.workspaces[0].id;
+        let strip = host.workspaces[0].strips[0].id;
+        let group = host.workspaces[0].strips[0].window_groups[0].id;
+        host.active_strip.insert(ws, strip);
+        host.set_active_group(strip, group);
+        host.sync_room_doc(room);
+
+        let doc = host.room_docs.get(&room).expect("a room document");
+        let keys: Vec<String> = doc.keys(&ROOT).collect();
+        assert!(
+            keys.contains(&"records".to_string()),
+            "the room's records must be in its document; got {keys:?}",
+        );
+        for forbidden in ["active", "active_strip", "active_group", "strips", "workspaces"] {
+            assert!(
+                !keys.contains(&forbidden.to_string()),
+                "{forbidden:?} is a fact about a person at a desk, not about the \
+                 room, and must not be in the document that crosses; got {keys:?}",
+            );
+        }
+    }
+
     #[test]
     fn a_guest_merges_its_hosts_room_after_projecting_its_own() {
         for _ in 0..24 {

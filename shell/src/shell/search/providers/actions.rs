@@ -16,7 +16,7 @@
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam};
+use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
 mod text_insert;
@@ -190,6 +190,48 @@ impl Action {
             subtitle: "Write into the focused Notes or Editor tab at a character offset",
             params: text_insert::PARAMS,
             apply: text_insert::apply,
+        },
+        // Bringing a record into the room you are in. The palette does
+        // this on Enter over a record row, which is the gesture the
+        // design picks (`plan/rooms.md`: "bringing your own is a search
+        // result") — but that row only exists once something already
+        // knows the record, so it is not an address a caller can reach
+        // for a record it names itself. This is that address.
+        Action {
+            id: "record.bring",
+            label: "Bring a record into this room",
+            subtitle: "Add a reference to this room's index. Moves no bytes.",
+            params: &[
+                ActionParam::required(
+                    "id",
+                    ParamType::Text,
+                    "The record's id — `file:<absolute path>`, `tab:<id>`, or a \
+                     minted id.",
+                ),
+                ActionParam::optional(
+                    "kind",
+                    ParamType::Text,
+                    "The record's type, in the owning app's vocabulary. Defaults \
+                     to `document`.",
+                ),
+            ],
+            apply: |st, args| {
+                let id = args.text("id").unwrap_or_default();
+                if id.trim().is_empty() {
+                    return Err(ActionError::Refused(
+                        "a record id is required; nothing was brought here".into(),
+                    ));
+                }
+                if ui::record::RecordId::parse(id).is_none() {
+                    return Err(ActionError::Refused(format!(
+                        "{id:?} is not a record id this build can read"
+                    )));
+                }
+                let kind = args.text("kind").unwrap_or("document");
+                let kind = if kind.trim().is_empty() { "document" } else { kind };
+                st.push_record_request(id, kind);
+                Ok(())
+            },
         },
     ];
 }
