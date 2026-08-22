@@ -1993,7 +1993,13 @@ impl Widget for TabBar {
     /// renderer actually painted rather than a guessed coordinate. The
     /// zero-area case (chip suppressed) is filtered out by the registry.
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        vec![("tabbar_new_tab".to_string(), self.new_tab_rect)]
+        let mut out = vec![("tabbar_new_tab".to_string(), self.new_tab_rect)];
+        // Each pill by title, so a scenario can select "Files" by name
+        // instead of a coordinate that moves with every layout change.
+        for (tab, rect) in self.tabs.iter().zip(self.tab_rects.iter()) {
+            out.push((format!("tab:{}", tab.title), *rect));
+        }
+        out
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
