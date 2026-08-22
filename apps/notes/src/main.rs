@@ -12,7 +12,6 @@
 
 use notes::NotesApp;
 use notes::shots::{self, DEFAULT_SHOTS_VIEWPORT};
-use ui::presence::PresenceKey;
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
@@ -59,12 +58,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register Notes' action decoders so the Ctrl+K palette and remote replay
     // can decode every page-tree mutation this app dispatches.
     notes::actions::register(app.action_registry_mut());
-    // Announce ourselves under the workspace we were launched into: this
-    // drives the late-join handshake (peers reply with full state) and is
-    // the scope under which our pointer presence is broadcast. The
-    // workspace — not this app's name — is the scope, so a collaborator's
-    // cursor stays theirs as they move between apps in one room.
-    app.set_presence_broadcast_scope(Some(PresenceKey::workspace_scope("notes")));
     app.run();
     Ok(())
 }
