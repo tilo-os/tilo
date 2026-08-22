@@ -2296,11 +2296,13 @@ impl ShellOverlayHost {
                     Some(id) => g.request_close_tab(id),
                     None => g.request_close_active_tab(),
                 };
-                if closed {
-                    if let Some(chrome) = self.chrome.clone() {
-                        chrome.borrow_mut().bump();
-                    }
-                }
+                // Deliberately no `bump()`. A revision bump makes the
+                // strip resync rebuild this row from the persisted tree,
+                // and the tree still lists the tab: closing a tab is a
+                // live-widget operation with no tree-side counterpart
+                // (there is no `doc_remove_tab`), exactly as a `✕` click
+                // is. Bumping here re-spliced the tab straight back and
+                // the chord looked like a no-op.
                 return closed;
             }
         }
