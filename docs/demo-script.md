@@ -1,197 +1,108 @@
-# The demo, by time
+# The demo — shot list
 
-60s screen recording with voice over.
+The technical grounding for every claim is in **`plan/yc-demo.md`**, which
+reads each beat against the code. This file is the shot list: what is filmed,
+in order, and whether it can be filmed today.
 
-One continuous story, cut between three sessions. Agent edits are only ever
-shown from someone else's desktop.
-
-Every beat carries its status. **Only shoot a beat marked ✅.**
+One continuous story. Agent work is only ever shown from someone else's
+desktop — the point is that the other participants see it happen, not that a
+process ran.
 
 | Mark | Meaning |
 |---|---|
-| ✅ | proven live, read back from a session that did not make the change |
-| ⏳ | being built now; not shootable until its proof is green |
-| ❌ | does not work today |
+| ✅ | built and proven live, read back from a session that did not make the change |
+| ⏳ | built, proof in flight |
+| ❌ | not shootable |
 
 ---
 
-## 0:00–0:08 · Quinten, empty desktop, opens the file explorer ✅
+## 1 · Empty desktop, Quinten opens Files ✅
 
-**On screen:** `quinten` — an empty desktop. He opens the file explorer.
+A first boot is genuinely empty — one workspace, no windows, no collaborators,
+no invented documents. Files opens from the palette.
 
-**Proven by:** `scripts/headless-examples/app-launch-proof.py`, which invokes
-the app by address through the compositor's own applications provider and
-then reads `frame_seq` back off the control socket. Both the file explorer
-and the word processor paint.
+There is no on-screen affordance for opening the first window; the palette is
+a chord. Accepted for the demo.
 
-**What a session has to set.** Isolating documents means repointing
-`XDG_DATA_HOME`, and two stores that are machine state live under it:
+## 2 · Quinten invites Xaver ✅
 
-- `QOS_APPS_DATA_DIR` → `~/.local/share/qos-apps` — without it the session
-  enumerates zero applications.
-- `QOS_RUNTIME_BUNDLE_DIR` → `~/.local/share/qos-runtime` — without it every
-  launch fails on the runtime bundle the manifest pins.
+Palette, "Invite peer to workspace". The token is a signed ed25519 blob
+carrying the room id, the owner's address and an expiry.
 
-**Still off:** the session runs with `QOS_LAUNCH_NO_SERVICES=1`, so apps
-launch without the collab service. Handed a working collab descriptor an app
-spins at ~86% CPU and never presents its first frame — see 0:34–0:44, which
-is the beat that needs it.
+The token has to be typed — there is no Copy button and no paste in the
+connect prompt. Fine on camera; only a problem if we claim otherwise.
 
----
+## 3 · Quinten invites the agent ✅
 
-## 0:08–0:16 · He invites agent and xaver; both join ⏳
+A different mechanism, and the more interesting one: an agent is not a peer.
+It is a capability principal (`agent:<id>`) granted through the permission
+model, and it reaches the document as a broker client.
 
-**On screen:** quinten mints an invite. Cut to `xaver` and `agent` joining.
+## 4 · Both join — you see their cursors ✅
 
-**Working:** the invite/join flow itself, verified from the far side.
+Real presence across machines: caret, pointer, selection and the run a peer
+just typed, each in that peer's colour with their name. Proven by a screenshot
+taken from the *receiving* machine, the peer labelled by its own id.
 
-**Blocked on:** the token still has to be typed — there is no semantic join
-action. For the recording that is a keystroke, which is fine; it is only a
-problem if we claim otherwise.
+## 5 · Search "word processor" → not installed → installs → opens ✅
 
----
+The palette offers apps this machine does not have yet in the same rows as the
+ones it does. Installing verifies an ed25519 signature and a BLAKE3 digest,
+then runs it.
 
-## 0:16–0:22 · You see their cursors ⏳
+Do not say "fast" until an install has been timed on a clean session.
 
-**On screen:** back on quinten — xaver's and the agent's pointers and carets,
-each in its own colour, with names.
+## 6 · Cut to Xaver — the window opens there too ✅
 
-**Have:** the rendering exists and is good — `ui/src/presence/render.rs`:
-`draw_peer_caret_labeled`, `draw_peer_authorship`, `draw_peer_pointer`,
-`draw_peer_selection`, `draw_peer_mist`, `user_color`.
+A workspace is shared, so its windows are shared. The room document carries
+that room's strips, groups and tabs, each entry written only by the peer that
+owns it.
 
-**Blocked on:** the publish side reaching peers, and something shared for the
-presence to be *about*.
+What does **not** travel is view state — focus, scroll, active tab. Xaver sees
+the window arrive without his own view moving, asserted on the same object in
+the same run.
 
----
+## 7 · Quinten's writing appears on Xaver's screen ⏳
 
-## 0:22–0:34 · He searches for a word processor — it isn't installed — it installs as a qpkg, fast ❌
+The last piece. Deltas and presence cross, but two independently created
+documents had no way to learn of each other: the only full-state frame was
+fanned out locally and never republished. A snapshot path to the room closes
+it. Proof in flight.
 
-**On screen:** quinten searches. The word processor appears as something the
-machine does not have yet. He picks it; it installs in about a second and
-opens. He starts writing.
+## 8 · Drag an image from Files into the document ✅
 
-This is the beat that carries "apps arrive without ceremony".
+The compositor promotes a Files drag to a server-side Wayland drag and the
+word processor inserts at the drop point. The image is stored as bytes in the
+document, so it replicates exactly like text — which is what makes it arrive
+on the other screen.
 
-**Blocked on:** two things. Offering not-yet-installed apps in the same rows
-lives on the `install-by-search` branch (another session owns it, not landed
-here). And install speed has never been measured — we cannot say "fast"
-until there is a number from a clean session.
+## 9 · The agent does something ✅
 
----
+`qos-agent` joins the document the way a second copy of the app would: same
+`(app, room, record)` route, asks the room for state, holds a live replica. No
+window, no pointer. Addressed inside the document — "Scribe: turn the bullets
+into a table" — it edits through the word processor's **own exported actions**,
+under its own actor. Its changes are attributed to it in the history strip and
+its caret appears in the others' windows while it works.
 
-## 0:34–0:44 · Cut to xaver: the window opened there too, and quinten's writing is appearing ⏳
-
-**On screen:** `xaver` — the same word processor window is open, and
-quinten's text lands live as he types, in his colour, with his caret.
-
-Two separate pieces of state, and both must replicate:
-- **which app is open** — the workspace's contents
-- **the document** — the text
-
-The user's rule: *the view does not follow, the state does*. xaver keeps his
-own scroll, selection and focus.
-
-**Blocked on:** two things, both being built now.
-
-*The document.* The shell is a relay, never a participant: shell-hosted tiles
-write into `RecordStore` but nothing calls `App::with_records`, so typing
-into one produces no network traffic at all, and an inbound record change is
-fanned out to sockets without ever being loaded into a document. The demo's
-word processor is an *external* app and already has that bridge, so this beat
-may work through the real app path without the shell tiles being fixed.
-Being tested.
-
-*The window.* A workspace is shared, so a window opened by its host must open
-for everyone in it. Today it does not: the per-room document projects only
-`room`, `name`, `owner` and `capabilities`, while strips, groups and tabs
-live in the tree-wide document, which is never exported. That export rule is
-right — the tree-wide document holds *every* workspace, so exporting it would
-leak the other rooms — but it is an argument about that document's shape, not
-a reason a room's own members should not see the room's own windows. The fix
-is to project this room's contents into this room's document, beside the four
-fields already there.
-
----
-
-## 0:44–0:52 · Xaver drags an image from the file explorer into the document ⏳
-
-**On screen:** xaver drags an image out of the file explorer and drops it
-into the document.
-
-**Blocked on:** everything above, plus drag-and-drop between two sandboxed
-apps, and an image landing in the shared document as content rather than a
-local path — a path would resolve on his machine and nowhere else.
-
----
-
-## 0:52–1:00 · Cut back to quinten: the image is there ⏳
-
-**On screen:** `quinten` — the image xaver dropped has arrived.
-
-Closes the loop: both directions, both kinds of content.
-
----
-
-## The agent's beat · placement TBD
-
-Unresolved: what the agent should *do*. It should be something a person
-would plausibly want done and would not want to do by hand — not a toy.
-
-Candidates, cheapest first:
-- it is invited like a person and its cursor appears alongside the others
-  (fits 0:16, needs nothing beyond presence)
-- it edits the shared document by address while both humans watch it happen
-  in their own sessions (fits 0:34, needs the same machinery as quinten's
-  typing)
-- it acts on the dropped image — describing or filing it
-
-Whatever it is, it must be shown **from quinten's or xaver's desktop**, never
-from the agent's own. The point is that the other participants see it happen,
-not that a script ran.
-
----
-
-# What has to land, in order
-
-1. **`qos-launcher` built, and apps actually launching.** Nothing above works
-   without it — no file explorer, no word processor.
-2. **Real-time document collaboration + presence.** Beats at 0:16, 0:34, 0:52.
-3. **Workspace-contents replication** — "the window opened on xaver too".
-4. **Install-by-search + a measured install time.** Beat at 0:22.
-5. **Drag-and-drop into a shared document, as content.** Beat at 0:44.
-
----
-
-# Already proven, currently unused by this cut
-
-These were verified live and are available if a beat needs them:
-
-- **The action surface.** 126 typed addresses on the owner session, nothing
-  positional. `action-api-demo.py`.
-- **Enumeration is side-effect free.** Six enumerations leave state
-  byte-identical.
-- **A model driving the OS over MCP** — enumerate, invoke, refuse, with the
-  effect read back over the control socket. `mcp-live-proof.py`.
-- **The capability gate.** Owner 126, guests 6 — showing never gated, acting
-  gated. `visibility.rs` plus the live three-session split.
+Its vocabulary is scripted, and the honest framing is the stronger one:
+anything that can speak an app's actions can drive that app without competing
+for the screen. That is the resource and action model paying out, not a model
+call.
 
 ---
 
 # Things not to say
 
-- **The "Ada" cursor in any footage shot before this was written is not a
-  person.** `shell/src/shell/overlay_host.rs` painted a deterministic fake
-  peer unconditionally — "this keeps the collab chrome visible in
-  single-process development" — and nothing gated it. It is in the 57s cut at
-  `.claude/demo-artifacts/qos-demo-57s.mp4` and in every screenshot taken
-  before it was removed. Do not show that footage, and do not point at a peer
-  cursor as evidence of anything until it has been re-shot.
-
-- Not "it boots as a real OS" — no image is built.
-- Not "install is fast" — never measured.
-- Nothing about an agent being denied by policy in the same breath as an
-  address that simply does not resolve. Both are real; they are different.
+- **The "Ada" cursor in footage shot before 2026-08-22 is not a person.** The
+  compositor painted a fake peer unconditionally so the collaboration chrome
+  stayed visible in single-process development. It is in
+  `.claude/demo-artifacts/qos-demo.mp4` and in every screenshot from before it
+  was removed. That cut needs re-shooting regardless — it also predates apps
+  launching.
+- Not "install is fast" — not measured yet.
+- Not "it boots as a real OS" in this cut. The image builds in CI; no boot
+  footage is part of this.
 
 ---
 
@@ -201,11 +112,13 @@ These were verified live and are available if a beat needs them:
 cargo build --release -p shell --bin shell --bin qos-control
 cargo build --release -p launcher --bin qos-launcher
 
-scripts/headless-examples/action-api-demo.py     # the action surface
-scripts/headless-examples/mcp-live-proof.py      # a model driving it
-scripts/headless-examples/agent-collab-proof.py  # three sessions collaborating
-scripts/yc-demo.py --record                      # the recorded cut
+scripts/headless-examples/app-launch-proof.py                 # apps launch and paint
+scripts/headless-examples/app-collab-proof.py                 # what crosses between sessions
+scripts/headless-examples/room-index-proof.py                 # room contents replicate
+scripts/headless-examples/word-processor-convergence-proof.py # two apps converge
+scripts/headless-examples/mcp-live-proof.py                   # a model driving the surface
 ```
 
-Each exits non-zero if a claim fails. `target/yc-demo/` is wiped on every
-run; finished video is copied to `.claude/demo-artifacts/`.
+Each exits non-zero if a claim fails. A session needs `QOS_APPS_DATA_DIR`,
+`QOS_RUNTIME_BUNDLE_DIR`, its own `XDG_RUNTIME_DIR` and `QOS_PEER_KEY_PATH`,
+and a short session root — an AF_UNIX path over ~108 bytes fails to bind.
