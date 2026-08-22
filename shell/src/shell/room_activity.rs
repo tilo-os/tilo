@@ -1378,7 +1378,7 @@ mod tests {
     /// A room with an owner, one grant, one revoke, one renamed workspace and
     /// one window opened — a plausible half-hour in a workspace.
     fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
@@ -1642,7 +1642,7 @@ mod tests {
         // `commit_stamped_at` the FS layer uses when it replays a durable
         // chain, the rest at now. "Today" must keep the recent ones and drop
         // the old one; "30 days" must keep everything.
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.active;
@@ -1986,7 +1986,7 @@ mod tests {
         // the same mirror the drop handler calls when a file is dropped into
         // a workspace. The pane must show the recent end of the history
         // rather than growing without limit.
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         for i in 0..240u64 {
             assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
                 50_000 + i,
