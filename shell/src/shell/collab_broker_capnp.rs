@@ -230,6 +230,36 @@ impl CapnpBrokerState {
         );
     }
 
+    /// Publish one document's whole state to the peers in `route`'s
+    /// room.
+    ///
+    /// The capnp sibling of the JSON bridge's `SyncCRDT` republish. A
+    /// packaged app reaches the broker over this transport and nothing
+    /// else, so without this the app that qOS actually ships could
+    /// receive a peer's document and never send its own — the
+    /// asymmetry that let presence cross while the page stayed blank.
+    ///
+    /// The size cap lives on `publish_app_crdt_snapshot`, so both
+    /// transports are bounded by one rule rather than two.
+    fn publish_snapshot(&self, route: &CrdtRoute, data: &[u8]) {
+        let Some(net) = self.peer_sync.as_ref() else {
+            return;
+        };
+        if !route.addresses_a_room() {
+            tracing::debug!(
+                channel = %route.channel_key(),
+                "capnp broker: not republishing a document snapshot whose channel names no room",
+            );
+            return;
+        }
+        net.publish_app_crdt_snapshot(
+            route.app_id.clone(),
+            route.cluster_id.clone(),
+            route.record_id.clone(),
+            data.to_vec(),
+        );
+    }
+
     /// Publish a presence frame to the peers in `route`'s room.
     ///
     /// `route` is the channel's **un-widened** address: the room is
@@ -653,6 +683,12 @@ impl channel_handle::Server for CapnpChannelHandle {
         let route = self.route();
         Promise::from_future(async move {
             let data = params.get()?.get_data()?.to_vec();
+            // Out to the room first, then to this host's own apps —
+            // the same order, and for the same reason, as an
+            // incremental: the publish is what a peer on another
+            // machine sees, the fan-out is what a second window here
+            // sees, and neither implies the other.
+            state.publish_snapshot(&route, &data);
             // Route through the same fanout the legacy `SyncCRDT`
             // request would trigger. Preserves the "unsigned frames
             // reach every peer with empty attribution" behaviour the
@@ -1981,6 +2017,86 @@ mod tests {
         }
 
         drop(legacy);
+        drop(handle);
+    }
+
+    /// A capnp app's whole document reaches the peer network.
+    ///
+    /// The snapshot is what makes a peer that started its own document
+    /// adopt this one, and every packaged qOS app speaks capnp — so
+    /// without this path two word processors in one room exchange
+    /// deltas that refer to objects neither side's document contains,
+    /// and each shows the other's caret over a blank page.
+    ///
+    /// Asserted on the `NetCmd` handed to the network actor, the last
+    /// thing that happens here before the frame is gossipsub's problem.
+    #[test]
+    fn a_capnp_apps_whole_document_is_published_to_the_room() {
+        let (json_path, capnp_path) = unique_paths("capnp-snapshot-outbound");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
+        let handle = spawn_full(
+            json_path.clone(),
+            Some(capnp_path.clone()),
+            Some(Arc::new(net)),
+        )
+        .expect("spawn broker");
+
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md")
+            .channel_key();
+
+        let capnp_path_clone = capnp_path.clone();
+        let joined = channel_id.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                let (client, _driver) = dial_capnp_for_test(capnp_path_clone)
+                    .await
+                    .expect("dial capnp");
+                let sdk = runtime_collab::CollabClient::from_raw(client);
+                let channel = sdk.join_channel(&joined, b"identity").await.expect("join");
+                channel
+                    .send_unsigned_snapshot(b"a-whole-document")
+                    .await
+                    .expect("send unsigned snapshot");
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            });
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let published = loop {
+            match cmd_rx.try_recv() {
+                Ok(crate::network::actor::NetCmd::Publish { msg, .. }) => break Some(msg),
+                Ok(_) => continue,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Err(_) => break None,
+            }
+        };
+
+        match published {
+            Some(crate::network::protocol::NeighbourMsg::AppCrdtSnapshot {
+                app_id,
+                cluster_id,
+                record_id,
+                data,
+                ..
+            }) => {
+                assert_eq!(app_id, "dev.qos.words");
+                assert_eq!(cluster_id, cluster.to_string());
+                assert_eq!(record_id, "/notes/a.md");
+                assert_eq!(data, b"a-whole-document");
+            }
+            Some(other) => panic!("expected AppCrdtSnapshot, got {other:?}"),
+            None => panic!("a capnp snapshot must be published to the room"),
+        }
+
         drop(handle);
     }
 
