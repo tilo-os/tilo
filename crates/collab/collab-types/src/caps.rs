@@ -408,6 +408,33 @@ impl Scope {
             }
             (Scope::Action { .. }, _) => false,
 
+            // KNOWN HOLE — a room-scoped capability authorises nothing a
+            // person *does* in the room, and does not survive
+            // replication. Two separate defects, both live:
+            //
+            // 1. `Scope::Room` pairs only with `ResourceRef::Room`. Every
+            //    chrome action is a `ResourceRef::Action`, so granting
+            //    someone `Write` "on the room" leaves them unable to open
+            //    a window, edit a note or bring a record into it. The
+            //    grant succeeds, replicates, and permits nothing. The
+            //    only scope that actually confers ability across a room
+            //    is `Scope::Workspace`, which is what a caller wanting
+            //    "make this person an editor here" has to use.
+            //
+            // 2. The key is the **local workspace id** — `grant_capability`
+            //    writes `ws_id.raw().to_string()` and `Workspace::role_of`
+            //    compares against `self.id.raw().to_string()`. Two peers
+            //    in one room have different local ids for their own
+            //    workspace, so a replicated room-scoped capability names
+            //    an id that means nothing on the receiving machine and
+            //    matches nobody. Keying by `RoomId` is what would fix it,
+            //    and that is a migration of persisted state rather than a
+            //    one-line change.
+            //
+            // Until both are addressed, room membership is a display
+            // concept (it drives `role_of`'s roster label) rather than an
+            // enforcement one. Found while proving room replication; not
+            // fixed there because it is a change to the permission model.
             (Scope::Room(r), ResourceRef::Room(s)) => r == s,
             (Scope::Room(_), _) => false,
         }

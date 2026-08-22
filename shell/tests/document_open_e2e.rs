@@ -266,7 +266,7 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     shell::shell::doc_open::clear_open_documents();
     launcher::set_wayland_socket(OsStr::new("wayland-test"));
 
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
     let mut session = Session::new();
@@ -407,7 +407,7 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     shell::shell::doc_open::clear_open_documents();
     launcher::set_wayland_socket(OsStr::new("wayland-test"));
 
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let strip_id = tree.workspaces[0].strips[0].id;
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);

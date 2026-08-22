@@ -31,12 +31,260 @@
 //! only select — what it is allowed to see. The gate is applied at build
 //! time so a hidden resource is invisible to *both* `enumerate` and
 //! `select`: you cannot invoke what you were never shown.
+//!
+//! ## Parameters
+//!
+//! An action may declare typed [`ActionParam`]s, and an invocation
+//! carries [`ActionArgs`] satisfying them. This is the same shape
+//! `docs/action-model-recipe.md` gives an app's own actions — a typed
+//! payload that carries everything the mutation needs — rather than a
+//! second mechanism beside it. Every action has parameters; most
+//! declare none, and for those the vocabulary collapses back to the
+//! nullary call it always was.
+//!
+//! Declaring them is what makes the surface drivable by a caller that
+//! cannot see the screen: enumeration says *what to pass*, so an
+//! argument is never guessed from a label. Binding is strict —
+//! [`ActionArgs::bind`] refuses a missing, unknown or wrong-typed
+//! argument **before** the action runs, so a bad call is a refusal and
+//! never a partial mutation.
+
+use std::collections::BTreeMap;
 
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 
 use super::{ResourceKind, SearchRegistry, SearchResult};
+
+/// The type of one action parameter. Deliberately small: these are
+/// values a caller with no screen can produce from a descriptor alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamType {
+    Text,
+    Integer,
+    Boolean,
+}
+
+impl ParamType {
+    /// Wire spelling, and what an enumeration descriptor carries.
+    pub fn label(self) -> &'static str {
+        match self {
+            ParamType::Text => "text",
+            ParamType::Integer => "integer",
+            ParamType::Boolean => "boolean",
+        }
+    }
+}
+
+/// One typed parameter an action declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionParam {
+    pub name: &'static str,
+    pub ty: ParamType,
+    /// Whether an invocation must supply it. An optional parameter's
+    /// default belongs to the action, and is stated in `description` —
+    /// the catalogue does not invent one.
+    pub required: bool,
+    pub description: &'static str,
+}
+
+impl ActionParam {
+    pub const fn required(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            required: true,
+            description,
+        }
+    }
+
+    pub const fn optional(name: &'static str, ty: ParamType, description: &'static str) -> Self {
+        Self {
+            name,
+            ty,
+            required: false,
+            description,
+        }
+    }
+}
+
+/// One bound argument value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ArgValue {
+    Text(String),
+    Integer(i64),
+    Boolean(bool),
+}
+
+impl ArgValue {
+    fn ty(&self) -> ParamType {
+        match self {
+            ArgValue::Text(_) => ParamType::Text,
+            ArgValue::Integer(_) => ParamType::Integer,
+            ArgValue::Boolean(_) => ParamType::Boolean,
+        }
+    }
+}
+
+/// Why a set of arguments does not satisfy an action's parameters.
+///
+/// Each variant names the parameter, because a caller that cannot see
+/// the screen has nothing else to correct against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ArgError {
+    Missing {
+        name: String,
+    },
+    Unknown {
+        name: String,
+    },
+    WrongType {
+        name: String,
+        expected: ParamType,
+        got: ParamType,
+    },
+}
+
+impl std::fmt::Display for ArgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArgError::Missing { name } => {
+                write!(f, "required argument `{name}` was not supplied")
+            }
+            ArgError::Unknown { name } => {
+                write!(f, "`{name}` is not a parameter of this action")
+            }
+            ArgError::WrongType {
+                name,
+                expected,
+                got,
+            } => write!(
+                f,
+                "argument `{name}` must be {}, got {}",
+                expected.label(),
+                got.label()
+            ),
+        }
+    }
+}
+
+/// Why an invocation did not happen, or did not complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ActionError {
+    /// The arguments did not satisfy the declared parameters. Nothing
+    /// ran; the document is untouched.
+    Arguments(ArgError),
+    /// The address and the arguments were both good, but the action
+    /// could not do its job — there was nothing to act on.
+    Refused(String),
+}
+
+impl ActionError {
+    /// Stable machine-readable code, so a caller can tell "I addressed
+    /// this wrongly" from "there was nothing here to do".
+    pub fn code(&self) -> &'static str {
+        match self {
+            ActionError::Arguments(_) => "invalid_arguments",
+            ActionError::Refused(_) => "action_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for ActionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActionError::Arguments(e) => write!(f, "{e}"),
+            ActionError::Refused(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+/// Arguments for one invocation, already checked against the action's
+/// declared parameters.
+///
+/// There is no way to build one except through [`ActionArgs::bind`] or
+/// [`ActionArgs::none`], so an action's body never has to re-validate:
+/// if it holds an `ActionArgs`, every required parameter is present and
+/// every value has the declared type. That is what keeps a bad call
+/// from becoming a half-applied edit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ActionArgs {
+    values: BTreeMap<String, ArgValue>,
+}
+
+impl ActionArgs {
+    /// The empty argument set — what a nullary action is invoked with.
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Check `supplied` against `params` and bind it.
+    ///
+    /// Fails on the first problem rather than accumulating: the caller
+    /// has to fix them one at a time anyway, and a partial bind must
+    /// never reach an action.
+    pub fn bind(
+        params: &[ActionParam],
+        supplied: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<Self, ArgError> {
+        let mut values: BTreeMap<String, ArgValue> = BTreeMap::new();
+        for (name, value) in supplied {
+            let Some(param) = params.iter().find(|p| p.name == name) else {
+                // An unknown argument is refused rather than dropped. A
+                // silently ignored argument is the failure mode this
+                // whole surface exists to remove: the caller believes it
+                // asked for something it did not get.
+                return Err(ArgError::Unknown { name });
+            };
+            if value.ty() != param.ty {
+                return Err(ArgError::WrongType {
+                    name,
+                    expected: param.ty,
+                    got: value.ty(),
+                });
+            }
+            values.insert(name, value);
+        }
+        for param in params.iter().filter(|p| p.required) {
+            if !values.contains_key(param.name) {
+                return Err(ArgError::Missing {
+                    name: param.name.to_string(),
+                });
+            }
+        }
+        Ok(Self { values })
+    }
+
+    /// The text bound to `name`, if any.
+    pub fn text(&self, name: &str) -> Option<&str> {
+        match self.values.get(name) {
+            Some(ArgValue::Text(s)) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The integer bound to `name`, if any.
+    pub fn integer(&self, name: &str) -> Option<i64> {
+        match self.values.get(name) {
+            Some(ArgValue::Integer(i)) => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// The boolean bound to `name`, if any.
+    pub fn boolean(&self, name: &str) -> Option<bool> {
+        match self.values.get(name) {
+            Some(ArgValue::Boolean(b)) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Whether anything is bound.
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+}
 
 /// Stable, typed address of one exported action or resource: the
 /// `(provider, id)` pair every [`SearchResult`] already carries.
@@ -82,6 +330,16 @@ pub struct ExportedAction {
     /// catalog preserves the registry's merge order so a caller that
     /// just wants "the best match" can take the first entry of a kind.
     pub score: i32,
+    /// What an invocation of this action must carry. Empty for the
+    /// nullary majority.
+    ///
+    /// Part of the descriptor rather than something a caller discovers
+    /// by trying: enumeration is the only thing a caller that cannot see
+    /// the screen has to work from, so an action whose parameters were
+    /// not advertised would be un-invokable except by guesswork. It
+    /// stays inert data — a parameter list is not a handle, so this adds
+    /// nothing fireable to an enumeration result.
+    pub params: Vec<ActionParam>,
 }
 
 /// Permission hook: decides whether a caller may *see* a given resource.
@@ -183,6 +441,7 @@ impl ActionCatalog {
                     title: r.title.clone(),
                     subtitle: r.subtitle.clone(),
                     score: r.score,
+                    params: r.params.clone(),
                 }
             })
             .collect()
@@ -241,6 +500,11 @@ impl SelectedAction<'_> {
         &self.result.title
     }
 
+    /// What this action's invocation must carry.
+    pub fn params(&self) -> &[ActionParam] {
+        &self.result.params
+    }
+
     /// Invoke the action headlessly: run the provider's side-effect
     /// against the live CRDT (`doc`) and `chrome`.
     ///
@@ -249,8 +513,36 @@ impl SelectedAction<'_> {
     /// **without** ever constructing a scene, a window, or a widget
     /// tree. Whatever the provider mutates (a chrome overlay flag, a
     /// CRDT splice, a tab activation) is observable immediately.
-    pub fn invoke(&self, doc: &mut AutoCommit, root: &ObjId, chrome: &Chrome) {
-        (self.result.on_open)(doc, root, chrome);
+    ///
+    /// `args` is bound against the declared parameters **before**
+    /// anything runs, so a call that does not satisfy them is refused
+    /// with the document untouched rather than half-applied.
+    pub fn invoke(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+        args: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<(), ActionError> {
+        let bound =
+            ActionArgs::bind(&self.result.params, args).map_err(ActionError::Arguments)?;
+        (self.result.on_open)(doc, root, chrome, &bound)
+    }
+
+    /// Invoke an action that declares no parameters.
+    ///
+    /// Sugar over [`Self::invoke`] with an empty argument set, kept
+    /// because most of the surface is nullary and spelling that out at
+    /// every call site would bury the one case that is not. An action
+    /// that *does* require a parameter still refuses here — this is a
+    /// shorter way to pass nothing, not a way to skip the check.
+    pub fn invoke_nullary(
+        &self,
+        doc: &mut AutoCommit,
+        root: &ObjId,
+        chrome: &Chrome,
+    ) -> Result<(), ActionError> {
+        self.invoke(doc, root, chrome, Vec::new())
     }
 }
 
@@ -322,7 +614,9 @@ mod tests {
         );
 
         // 3. INVOKE — run the side-effect. No scene is ever constructed.
-        selected.invoke(&mut doc, &root, &chrome);
+        selected
+            .invoke_nullary(&mut doc, &root, &chrome)
+            .expect("a nullary action invoked with no arguments must run");
 
         // The production provider's callback flipped real chrome state.
         assert!(
@@ -396,6 +690,215 @@ mod tests {
                 .all(|a| a.resource.provider == "actions"),
             "ActiveApp scope enumerates only the focused provider's exports"
         );
+    }
+
+    // ---- parameters -------------------------------------------------
+
+    const PARAMS: &[ActionParam] = &[
+        ActionParam::required("text", ParamType::Text, "what to write"),
+        ActionParam::optional("at", ParamType::Integer, "where"),
+    ];
+
+    fn text(s: &str) -> ArgValue {
+        ArgValue::Text(s.to_string())
+    }
+
+    /// The happy path, and the shape a caller reads back out.
+    #[test]
+    fn binding_accepts_the_declared_parameters() {
+        let args = ActionArgs::bind(
+            PARAMS,
+            [
+                ("text".to_string(), text("hello")),
+                ("at".to_string(), ArgValue::Integer(4)),
+            ],
+        )
+        .expect("well-formed arguments must bind");
+        assert_eq!(args.text("text"), Some("hello"));
+        assert_eq!(args.integer("at"), Some(4));
+    }
+
+    /// An optional parameter may be left out; a required one may not.
+    #[test]
+    fn an_optional_parameter_may_be_omitted_and_a_required_one_may_not() {
+        let args = ActionArgs::bind(PARAMS, [("text".to_string(), text("hi"))])
+            .expect("omitting an optional parameter must bind");
+        assert_eq!(args.integer("at"), None, "no default is invented");
+
+        assert_eq!(
+            ActionArgs::bind(PARAMS, []),
+            Err(ArgError::Missing {
+                name: "text".to_string()
+            }),
+            "a required parameter must be supplied"
+        );
+    }
+
+    /// An argument the action never declared is refused rather than
+    /// dropped. A dropped argument answers `ok` to a caller that asked
+    /// for something it did not get — which, for a caller that cannot
+    /// see the screen, is indistinguishable from success.
+    #[test]
+    fn an_undeclared_argument_is_refused() {
+        assert_eq!(
+            ActionArgs::bind(
+                PARAMS,
+                [
+                    ("text".to_string(), text("hi")),
+                    ("colour".to_string(), text("red")),
+                ]
+            ),
+            Err(ArgError::Unknown {
+                name: "colour".to_string()
+            })
+        );
+    }
+
+    /// Types are checked, not coerced.
+    #[test]
+    fn a_wrong_typed_argument_is_refused() {
+        assert_eq!(
+            ActionArgs::bind(PARAMS, [("text".to_string(), ArgValue::Integer(7))]),
+            Err(ArgError::WrongType {
+                name: "text".to_string(),
+                expected: ParamType::Text,
+                got: ParamType::Integer,
+            })
+        );
+    }
+
+    /// A parameterised action refuses an empty invocation *before*
+    /// running, so a bad call cannot leave a half-applied edit behind.
+    /// Asserted through `SelectedAction::invoke`, which is the path the
+    /// socket takes, rather than against `bind` alone.
+    #[test]
+    fn invoking_without_required_arguments_never_reaches_the_action() {
+        use std::cell::Cell;
+        use std::rc::Rc as StdRc;
+
+        let ran = StdRc::new(Cell::new(false));
+        let flag = StdRc::clone(&ran);
+        let mut reg = SearchRegistry::new();
+        reg.register(StdRc::new(ParamProvider {
+            ran: StdRc::clone(&flag),
+        }));
+
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &reg,
+            "",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+
+        // Enumeration advertises the parameter, which is the only way a
+        // caller that cannot see the screen learns to pass it.
+        let listed = catalog.enumerate();
+        let entry = listed
+            .iter()
+            .find(|a| a.resource.id == "needs.text")
+            .expect("the parameterised action is enumerable");
+        assert_eq!(entry.params.len(), 1);
+        assert_eq!(entry.params[0].name, "text");
+        assert!(entry.params[0].required);
+
+        let selected = catalog
+            .select(&ResourceRef::new("params", "needs.text"))
+            .expect("addressable");
+
+        let err = selected
+            .invoke_nullary(&mut doc, &root, &chrome)
+            .expect_err("a required parameter must not be skippable");
+        assert!(matches!(
+            err,
+            ActionError::Arguments(ArgError::Missing { .. })
+        ));
+        assert!(
+            !ran.get(),
+            "the action's body must not run when its arguments are refused"
+        );
+
+        // …and with the argument it declared, it runs.
+        selected
+            .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
+            .expect("the declared argument must be accepted");
+        assert!(ran.get(), "a satisfied invocation reaches the action");
+    }
+
+    /// A provider whose one row takes a required text argument.
+    struct ParamProvider {
+        ran: std::rc::Rc<std::cell::Cell<bool>>,
+    }
+
+    impl super::super::SearchProvider for ParamProvider {
+        fn id(&self) -> &str {
+            "params"
+        }
+        fn name(&self) -> &str {
+            "Params"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::Action]
+        }
+        fn query(&self, _ctx: super::super::SearchContext<'_>) -> Vec<SearchResult> {
+            let ran = std::rc::Rc::clone(&self.ran);
+            vec![SearchResult {
+                kind: ResourceKind::Action,
+                provider_id: "params".to_string(),
+                id: "needs.text".to_string(),
+                title: "Needs text".to_string(),
+                subtitle: None,
+                score: 0,
+                params: vec![ActionParam::required(
+                    "text",
+                    ParamType::Text,
+                    "what to write",
+                )],
+                on_open: std::rc::Rc::new(move |_doc, _root, _chrome, args: &ActionArgs| {
+                    assert_eq!(args.text("text"), Some("ok"));
+                    ran.set(true);
+                    Ok(())
+                }),
+            }]
+        }
+    }
+
+    /// Every existing action declares no parameters, so the nullary call
+    /// stays exactly what it was. This is the compatibility claim: the
+    /// parameter machinery must not make a caller pass anything new.
+    #[test]
+    fn a_nullary_action_still_invokes_with_no_arguments() {
+        let reg = registry_with_actions();
+        let chrome = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let catalog = ActionCatalog::build(
+            &reg,
+            "settings",
+            SearchScope::All,
+            None,
+            &chrome.borrow(),
+            &doc,
+            &root,
+            &AllVisible,
+        );
+        let selected = catalog
+            .select(&ResourceRef::new("actions", "settings.open"))
+            .expect("addressable");
+        assert!(
+            selected.params().is_empty(),
+            "a chrome toggle declares no parameters"
+        );
+        selected
+            .invoke_nullary(&mut doc, &root, &chrome)
+            .expect("a nullary action takes no arguments");
+        assert!(chrome.borrow().overlays.ws_settings);
     }
 
     /// Empty stays empty — no fabricated rows when nothing matches.

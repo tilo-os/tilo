@@ -3679,7 +3679,20 @@ impl ShellOverlayHost {
             if let Ok(idx) = idx.parse::<usize>() {
                 if let Some(result) = self.search_results.get(idx).cloned() {
                     if let Some(chrome) = self.chrome.clone() {
-                        (result.on_open)(doc, root, &chrome);
+                        // The palette has no step that collects an
+                        // argument yet, so it can only offer the nullary
+                        // half of the surface. A parameterised row
+                        // reached from here refuses, and the refusal is
+                        // shown rather than swallowed: a row that does
+                        // nothing when activated, silently, is the worst
+                        // of the three possible behaviours.
+                        let args = crate::shell::search::action_api::ActionArgs::none();
+                        if let Err(err) = (result.on_open)(doc, root, &chrome, &args) {
+                            chrome.borrow_mut().push_warning_notification(
+                                format!("Can't run “{}”", result.title),
+                                err.to_string(),
+                            );
+                        }
                     }
                     self.palette_visible = false;
                     return;
@@ -11402,7 +11415,7 @@ mod wifi_password_tests {
         crate::shell::chrome_state::Chrome,
         std::rc::Rc<JoinRecorder>,
     ) {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         let rec = std::rc::Rc::new(JoinRecorder {
             attempts: RefCell::new(Vec::new()),
             reject,
@@ -11615,7 +11628,7 @@ mod palette_dispatch_tests {
     use ui::widget::Container;
 
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         (host, chrome)
@@ -11694,7 +11707,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn peer_sync_invite_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
             .with_chrome(chrome.clone())
@@ -11711,7 +11724,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn peer_sync_connect_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
             .with_chrome(chrome.clone())
@@ -11734,7 +11747,7 @@ mod palette_dispatch_tests {
         // a peer-sync id twice must still dispatch (no panic, no
         // duplicate-row regression). Indirectly proven by checking
         // each dispatch enqueues exactly one action.
-        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_default()));
+        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         assert!(h.dispatch_palette_command("peer.invite"));
         assert_eq!(h.take_peer_sync_actions().len(), 1);
     }
@@ -11748,9 +11761,9 @@ mod workspace_slide_tests {
     use ui::widget::Container;
 
     fn host_with_two_workspaces() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // Add a second workspace so we actually have something to
-        // switch *to*. `bootstrap_default` only seeds one, and
+        // switch *to*. `bootstrap_demo` only seeds one, and
         // `switch_down` is a no-op when there's nothing below.
         tree.append_empty_workspace("Second");
         let chrome = ChromeState::new(tree);
@@ -12134,7 +12147,7 @@ mod modal_curve_tests {
         use crate::shell::state::WorkspaceTree;
         use ui::widget::Container;
 
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         tree.append_empty_workspace("Second");
         tree.append_empty_workspace("Third");
         let chrome = ChromeState::new(tree);
@@ -12343,7 +12356,7 @@ mod overlay_event_absorb_tests {
     /// fraction of the viewport, so its filter band is only as tight as
     /// the screen is narrow.
     fn build_harness_sized(vw: f64, vh: f64) -> AbsorbHarness {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let log = Rc::new(RefCell::new(Vec::<String>::new()));
         let content = Box::new(RecordingContent::new(log.clone()));
@@ -12916,7 +12929,7 @@ mod tests {
     }
 
     fn build_harness() -> Harness {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
         let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
@@ -13344,7 +13357,7 @@ mod tests {
     /// is deliberately *not* among its answers. `Super+K` is the global
     /// surface, and it must offer that app.
     ///
-    /// The precondition matters: `bootstrap_default`'s active tab is
+    /// The precondition matters: `bootstrap_demo`'s active tab is
     /// Notes, which `NotesProvider` claims via `owns_tab`. Without a
     /// claiming provider `ActiveApp` allows everything and the narrow
     /// half of this test would pass vacuously. Drives the whole
@@ -14324,6 +14337,136 @@ mod resync_strips_tests {
         assert!(
             host.group_at_for_tests(strip_id, 1).is_none(),
             "no phantom group inserted by repeated no-op ticks"
+        );
+    }
+}
+
+#[cfg(test)]
+mod peer_cursor_tests {
+    //! A peer caret on screen must mean a peer is connected.
+    //!
+    //! The desktop used to paint an unconditional stand-in peer beside
+    //! the real roster, so a solo session — and every screenshot and
+    //! recording taken of one — showed a collaborator who did not
+    //! exist. These tests pin both halves of the invariant on the
+    //! production paint path: nothing is drawn for an empty roster, and
+    //! a real peer is still drawn.
+    use super::*;
+    use crate::shell::build_nirios_overlay_host_with_chrome;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use ui::permissions::UserId;
+    use ui::presence::{PresenceCtx, PresenceKey};
+
+    fn one_group_seed() -> WorkspaceTree {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 100;
+        let tab_id = 1;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                width: StateWidth::Normal,
+                maximized: false,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Terminal".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::Terminal,
+                        label: "Terminal".into(),
+                    },
+                }],
+                // A group's active tab has to name a tab it has; `0`
+                // names nothing, and the resolvers read this.
+                active_tab: tab_id,
+            }],
+        };
+        // Through the constructor rather than a struct literal: a field
+        // added to `Workspace` should not break this fixture.
+        let mut ws = Workspace::test_default(ws_id, "Work");
+        ws.strips = vec![strip];
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces = vec![ws];
+        tree.active = ws_id;
+        // Both are per-parent maps, not single pointers: one active strip
+        // per workspace, one active group per strip.
+        tree.active_strip.insert(ws_id, strip_id);
+        tree.active_group.insert(strip_id, group_id);
+        tree
+    }
+
+    /// The key the collaboration layer publishes a workspace's pointers
+    /// under, and the one `draw_real_peers` looks them up by.
+    fn active_key(tree: &WorkspaceTree) -> PresenceKey {
+        PresenceKey::Workspace {
+            id: format!("{}", tree.active.raw()),
+        }
+    }
+
+    /// Draw the peer layer for `presence` and report how many draw
+    /// commands it emitted. Zero means nothing was painted.
+    ///
+    /// Takes the tree the caller built its `presence` keys against —
+    /// `one_group_seed` mints a fresh `WorkspaceId` per call, so a
+    /// helper that seeded its own would look up a key nobody wrote and
+    /// report zero for every input, real peer included.
+    fn peer_draw_ops(tree: &WorkspaceTree, presence: &PresenceCtx) -> usize {
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(tree);
+        host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let theme = Theme::dark();
+        let mut tr = ui::text_render::TextRenderer::new();
+        let mut scene = Scene::new();
+        host.draw_real_peers(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence);
+        scene.encoding().draw_tags.len()
+    }
+
+    /// The one that matters. A session with nobody else in it paints
+    /// no caret, no name chip, no peer of any kind — so a screenshot
+    /// of a solo desktop cannot show a collaborator.
+    #[test]
+    fn a_solo_session_paints_no_peer() {
+        let tree = one_group_seed();
+        assert_eq!(
+            peer_draw_ops(&tree, &PresenceCtx::default()),
+            0,
+            "an empty roster must paint nothing"
+        );
+    }
+
+    /// An empty pointer list for the active workspace is still an
+    /// empty roster — the key existing must not conjure a peer.
+    #[test]
+    fn an_empty_pointer_list_paints_no_peer() {
+        let tree = one_group_seed();
+        let mut presence = PresenceCtx::default();
+        presence.pointers.insert(active_key(&tree), vec![]);
+        assert_eq!(
+            peer_draw_ops(&tree, &presence),
+            0,
+            "an empty list is not a peer"
+        );
+    }
+
+    /// The other half, and the one that keeps the first two honest: if
+    /// this fails the helper is reporting zero for everything and the
+    /// no-peer assertions above prove nothing. A peer published into
+    /// `PresenceCtx::pointers` under the active workspace key — the key
+    /// the collaboration layer writes — still gets painted.
+    #[test]
+    fn a_real_peer_is_still_painted() {
+        let tree = one_group_seed();
+        let mut presence = PresenceCtx::default();
+        presence.pointers.insert(
+            active_key(&tree),
+            vec![(UserId("alice".into()), (400.0, 300.0))],
+        );
+        assert!(
+            peer_draw_ops(&tree, &presence) > 0,
+            "a connected peer must still draw a cursor"
         );
     }
 }

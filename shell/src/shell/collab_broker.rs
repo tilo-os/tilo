@@ -332,28 +332,26 @@ impl CrdtRoute {
     /// The channel this route names, as one string.
     ///
     /// The capnp transport subscribes by channel id rather than by
-    /// route fields, so a record-scoped connection has to be able to
-    /// name its channel in the same vocabulary — see
-    /// [`crate::shell::collab_broker_capnp`]. `#` cannot appear in a
-    /// uuid, so the join is unambiguous.
+    /// route fields, so a connection has to be able to name its
+    /// address in the same vocabulary — see
+    /// [`crate::shell::collab_broker_capnp`]. The encoding lives in
+    /// [`ui::collaboration::channel_key`] because the SDK writes these
+    /// keys and the shell reads them; one definition is what keeps the
+    /// two ends from drifting.
     pub fn channel_key(&self) -> String {
-        if self.record_id.is_empty() {
-            self.cluster_id.clone()
-        } else {
-            format!("{}#record:{}", self.cluster_id, self.record_id)
-        }
+        ui::collaboration::channel_key::format(&self.app_id, &self.cluster_id, &self.record_id)
     }
 
-    /// Split a capnp `channelId` back into its cluster and record.
-    /// The inverse of [`Self::channel_key`].
+    /// Split a capnp `channelId` back into its route. The inverse of
+    /// [`Self::channel_key`], and total: a key naming no app and no
+    /// record decodes to a cluster-scoped route, which is what a
+    /// connection announcing neither should address.
     pub fn from_channel_key(key: &str) -> Self {
-        match key.split_once("#record:") {
-            Some((cluster, record)) => Self {
-                app_id: String::new(),
-                cluster_id: cluster.to_string(),
-                record_id: record.to_string(),
-            },
-            None => Self::cluster(key),
+        let (app_id, cluster_id, record_id) = ui::collaboration::channel_key::parse(key);
+        Self {
+            app_id,
+            cluster_id,
+            record_id,
         }
     }
 
@@ -390,9 +388,12 @@ impl CrdtRoute {
     /// subscriber that announced `subscriber`.
     ///
     /// Fails closed on either side lacking an addressable cluster. App
-    /// granularity applies only when both ends announced an app id — a
-    /// capnp subscriber (which cannot announce one) stays cluster-scoped
-    /// rather than silently receiving nothing.
+    /// granularity applies only when both ends announced an app id; an
+    /// end that announced none stays cluster-scoped rather than
+    /// silently receiving nothing. Both transports do announce one —
+    /// capnp carries it in the channel id
+    /// ([`Self::from_channel_key`]) — so that fallback now covers a
+    /// connection that predates the app segment, not a whole transport.
     ///
     /// **Record granularity is the innermost test and it fails closed
     /// both ways.** Two app-scoped ends agree only when they name the
@@ -1152,6 +1153,47 @@ fn reader_loop(
                     peer.id,
                 );
             }
+            (Some(route), CollabRequest::SyncCRDT { data }) => {
+                // A whole document is the frame that makes two
+                // *separately created* documents one document. The
+                // toolkit sends it in reply to a peer's `Arrived`,
+                // never on a commit, so publishing it answers a
+                // question rather than announcing into the room —
+                // `ShellNetwork` holds that gate and the gossip size
+                // cap. Without it the deltas above cross correctly and
+                // refer to objects the receiving document has never
+                // seen, and the peer's caret moves over a blank page.
+                publisher.document_snapshot(route, Transport::Json, data.clone());
+            }
+            (Some(route), CollabRequest::Presence { .. }) => {
+                // Presence has to take the bridge too: the local
+                // fan-out below reaches apps on this host, so without
+                // this a peer's caret stopped at the machine that
+                // produced it and every collaborator looked like they
+                // were doing nothing.
+                //
+                // The frame crosses exactly as it arrived — the shell
+                // interprets a caret no more than it interprets a
+                // change blob — and the receiving broker re-addresses
+                // it to the peer it came from before handing it to
+                // local apps.
+                publisher.presence(route, Transport::Json, frame.clone());
+            }
+            (
+                None,
+                CollabRequest::SyncCRDT { .. } | CollabRequest::Presence { .. },
+            ) => {
+                tracing::debug!(
+                    "collab_broker: not republishing a {} from peer-{}: no \
+                     Hello, so the frame has no route",
+                    if matches!(&req, CollabRequest::SyncCRDT { .. }) {
+                        "document snapshot"
+                    } else {
+                        "presence frame"
+                    },
+                    peer.id,
+                );
+            }
             _ => {}
         }
         // Phase 6 cooperative-fetch outbound bridge: a local
@@ -1602,6 +1644,8 @@ fn spawn_inner(
         .as_ref()
         .map(|net| {
             let inbound = net.inbound_app_crdt_handle();
+            let presence_inbound = net.inbound_app_presence_handle();
+            let snapshot_inbound = net.inbound_app_crdt_snapshot_handle();
             let signed_inbound = net.inbound_app_crdt_signed_handle();
             let sb_req_inbound = net.inbound_scrollback_request_handle();
             let sb_resp_inbound = net.inbound_scrollback_response_handle();
@@ -1623,6 +1667,14 @@ fn spawn_inner(
                             std::mem::take(&mut *buf)
                         };
                         for entry in drained {
+                            tracing::info!(
+                                target: "qos_collab_probe",
+                                app = %entry.app_id,
+                                cluster = %entry.cluster_id,
+                                record = %entry.record_id,
+                                bytes = entry.data.len(),
+                                "PROBE drain incremental -> local fanout",
+                            );
                             let event = CollabEvent::CRDTIncremental { data: entry.data };
                             // The publishing host stamped the originating
                             // app + cluster onto the wire; deliver only to
@@ -1634,6 +1686,96 @@ fn spawn_inner(
                                 entry.cluster_id,
                                 entry.record_id,
                             );
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain inbound whole-document snapshots. A
+                        // peer sent one because this host's app told
+                        // it that it had just arrived, so the app on
+                        // this side is the one with no history and
+                        // this is the frame it has been waiting for.
+                        //
+                        // Delivered as `CRDTUpdate`, which the toolkit
+                        // *merges* rather than assigns — a snapshot
+                        // arriving after the local user has already
+                        // typed must not discard what they typed.
+                        //
+                        // Routed by the full record triple, like an
+                        // increment: a document is the state of one
+                        // record, and handing it to a different one
+                        // would be unrecoverable rather than noisy.
+                        let drained_snapshots: Vec<_> = {
+                            let mut buf = match snapshot_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_snapshots {
+                            tracing::info!(
+                                target: "qos_collab_probe",
+                                app = %entry.app_id,
+                                cluster = %entry.cluster_id,
+                                record = %entry.record_id,
+                                bytes = entry.data.len(),
+                                "PROBE drain snapshot -> local fanout",
+                            );
+                            let event = CollabEvent::CRDTUpdate { data: entry.data };
+                            let route = CrdtRoute::record(
+                                entry.app_id,
+                                entry.cluster_id,
+                                entry.record_id,
+                            );
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
+
+                        // Drain inbound presence and fan it to local
+                        // apps, attributed to the peer that sent it.
+                        //
+                        // Cluster scope, matching what a local presence
+                        // frame gets (`CrdtRoute::to_cluster_scope`).
+                        // Narrowing remote presence to a record would
+                        // make a peer visible to people on their own
+                        // machine and invisible to everyone else, which
+                        // is the asymmetry this bridge exists to remove.
+                        let drained_presence: Vec<_> = {
+                            let mut buf = match presence_inbound.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            std::mem::take(&mut *buf)
+                        };
+                        for entry in drained_presence {
+                            // The frame is the sender's own
+                            // `CollabRequest::Presence`. Anything else
+                            // is a peer speaking a protocol we do not
+                            // have, and is dropped rather than guessed at.
+                            let Ok(CollabRequest::Presence { key, payload }) =
+                                serde_json::from_slice::<CollabRequest>(&entry.frame)
+                            else {
+                                continue;
+                            };
+                            // A peer saying it has arrived is a peer
+                            // asking for a document it has none of.
+                            // Note it, so the next whole document this
+                            // host's apps produce is published instead
+                            // of stopping at the local fan-out — and so
+                            // the ones produced when nobody is waiting
+                            // are not. See
+                            // `ShellNetwork::note_snapshot_request`.
+                            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
+                                drain_net.note_snapshot_request(&entry.cluster_id);
+                            }
+                            // Attributed to the publishing host, not to
+                            // a local peer slot: `user_id` is what the
+                            // receiving app colours the caret by, so two
+                            // peers must never collapse onto one id.
+                            let event = CollabEvent::RemotePresenceUpdate {
+                                user_id: format!("peer@{}", entry.peer),
+                                key,
+                                payload,
+                            };
+                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -2085,6 +2227,116 @@ mod tests {
         drop(handle);
     }
 
+    /// Fold inbound **full-state** frames into `doc` the way the toolkit
+    /// does: load the snapshot as its own document and merge it, rather
+    /// than assigning over the top. A snapshot that arrives after the
+    /// local user has typed must not discard what they typed.
+    fn absorb_snapshots_within(
+        mgr: &mut CollaborationManager,
+        doc: &mut automerge::AutoCommit,
+        window: Duration,
+    ) -> usize {
+        let mut applied = 0;
+        for event in poll_until(mgr, 1, window) {
+            if let CollabEvent::CRDTUpdate { data } = event {
+                let mut incoming = automerge::AutoCommit::load(&data).expect("snapshot loads");
+                doc.merge(&mut incoming).expect("snapshot merges");
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// A document created here adopts the state of the one it meets.
+    ///
+    /// This is the shape two people get when they each *start* the same
+    /// app rather than opening a document someone shared: two automerge
+    /// documents with no history in common. Deltas between them name
+    /// changes the receiver has never seen, so the receiving widgets
+    /// read nothing — the app looks alive, a peer's caret moves, and the
+    /// page stays blank.
+    ///
+    /// The frame that resolves it is the whole-document snapshot the
+    /// toolkit sends when a peer announces it has arrived. This drives
+    /// the real inbound path for it: queued exactly as
+    /// `ShellNetwork::tick` queues one off gossipsub, picked up by the
+    /// broker's drain thread, delivered as `CRDTUpdate`, and routed by
+    /// the record the sender stamped.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_document_created_here_adopts_the_state_of_the_one_it_meets() {
+        let socket_path = temp_sock("snapshot-adoption");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
+        let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
+        let net = std::sync::Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
+
+        let record = ui::record::RecordId::for_file("/work/report.odt");
+        let other = ui::record::RecordId::for_file("/work/elsewhere.odt");
+        let mut on_record = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &record,
+        );
+        let mut on_other = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &other,
+        );
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = on_record.poll();
+        let _ = on_other.poll();
+
+        // The peer's document: created on the other machine, with
+        // content, sharing no history with anything here.
+        let (peer_doc, _) = edited("body", "written on another machine");
+        let snapshot = {
+            let mut d = peer_doc;
+            d.save()
+        };
+
+        net.handle_app_crdt_snapshot_message(
+            0xFACEu64,
+            "dev.qos.word-processor".to_string(),
+            TEST_CLUSTER.to_string(),
+            record.as_str().to_string(),
+            snapshot,
+        );
+
+        // A document that started empty here now reads what was typed
+        // there. This is the assertion the whole path exists for.
+        let mut here = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_snapshots_within(&mut on_record, &mut here, Duration::from_millis(2000)),
+            1,
+            "the app on that record receives the snapshot"
+        );
+        assert_eq!(
+            field(&here, "body").as_deref(),
+            Some("written on another machine"),
+            "the document created here adopted the peer's state"
+        );
+
+        // And the record boundary holds for a whole document exactly as
+        // it does for a delta — more so, since a document merged into
+        // the wrong record cannot be taken back out.
+        let mut elsewhere = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_snapshots_within(&mut on_other, &mut elsewhere, Duration::from_millis(1000)),
+            0,
+            "the app on a different record receives nothing"
+        );
+        assert_eq!(field(&elsewhere, "body"), None);
+
+        drop(on_record);
+        drop(on_other);
+        drop(handle);
+    }
+
     /// The record boundary holds across hosts, not just within one.
     ///
     /// Gossipsub is a broadcast: a frame reaches every host on the topic, and
@@ -2156,7 +2408,7 @@ mod tests {
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
         let socket_path = temp_sock("record-over-the-wire");
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
         let net = std::sync::Arc::new(net);
         let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))

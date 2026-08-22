@@ -311,9 +311,9 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn e2e_open_close_overview() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    // Seed: `bootstrap_default` already provides Home + Research + Design,
+    // Seed: `bootstrap_demo` already provides Home + Research + Design,
     // so the Overview grid has 3 cards to paint without further appends.
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
 
     let theme = Theme::dark();
     let mut renderer_opt = try_new_renderer(W as u32, H as u32);
@@ -952,7 +952,7 @@ fn expected_post_drop_descriptor_order() -> Vec<&'static str> {
 #[test]
 fn e2e_open_quick_settings() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let theme = Theme::dark();
 
     let mut renderer_opt = try_new_renderer(W as u32, H as u32);
@@ -1413,7 +1413,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     // concrete-type sibling of `build_nirios_root_with_chrome` used by
     // the live binary) so we exercise the real widget tree, not a
     // hand-rolled stub.
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
 
@@ -1429,7 +1429,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
 #[test]
 fn e2e_escape_closes_search_palette() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
     // Open via Ctrl+K first so we're not bypassing the host's own state
@@ -1457,7 +1457,7 @@ fn e2e_escape_closes_search_palette() {
 #[test]
 fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let tree = WorkspaceTree::bootstrap_default();
+    let tree = WorkspaceTree::bootstrap_demo();
     let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 

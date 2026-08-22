@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
-use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
 /// Run `f` against the live chrome with a capability gate built from the
@@ -42,6 +42,27 @@ use crate::shell::search::visibility::CapabilityVisibility;
 /// Failing to resolve a workspace is an error rather than a fallback to
 /// "show everything". A gate that opens when it cannot find its policy
 /// is not a gate.
+/// One action's declared parameters, as the wire carries them.
+///
+/// The descriptor is what a caller that cannot see the screen builds an
+/// invocation from, so it says the type and whether the value is
+/// required, not just the name.
+fn params_json(
+    params: &[crate::shell::search::action_api::ActionParam],
+) -> Vec<serde_json::Value> {
+    params
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "type": p.ty.label(),
+                "required": p.required,
+                "description": p.description,
+            })
+        })
+        .collect()
+}
+
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
@@ -547,6 +568,11 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     "title": a.title,
                     "subtitle": a.subtitle,
                     "score": a.score,
+                    // What to pass. Empty for the nullary majority, and
+                    // still inert either way: a parameter list describes
+                    // an invocation, it is not one, so enumeration stays
+                    // something a caller can do freely.
+                    "params": params_json(&a.params),
                 })
             })
             .collect();
@@ -565,23 +591,39 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// to the side-effect, and an address that is unknown — or hidden by
     /// the visibility gate — fails here, loudly, instead of becoming an
     /// invocation that does nothing.
-    fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
+    fn resolve_action(
+        &self,
+        provider: &str,
+        id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
         let (doc, root) = self
             .doc
-            .ok_or_else(|| "control state has no live document".to_string())?;
+            .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
         let chrome_handle = self.fb.chrome_handle();
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
             self.fb.host().action_catalog("", chrome, doc, root, gate)
-        })?;
+        })
+        .map_err(test_control::ActionRefusal::unknown)?;
         let resource = ResourceRef::new(provider, id);
         let selected = catalog.select(&resource).ok_or_else(|| {
-            format!("no visible action addressed by ({provider}, {id}) in the current catalogue")
+            test_control::ActionRefusal::unknown(format!(
+                "no visible action addressed by ({provider}, {id}) in the current catalogue"
+            ))
         })?;
+        // Bind here, before anything is planned. An argument set that
+        // does not fit is refused with the document untouched, and the
+        // refusal names the parameter — which is the only thing a caller
+        // with no screen has to correct against.
+        let values = test_control::arg_values_from_json(args)?;
+        ActionArgs::bind(selected.params(), values)
+            .map_err(|e| test_control::ActionRefusal::invalid_arguments(e.to_string()))?;
         Ok(serde_json::json!({
             "provider": provider,
             "id": id,
             "kind": selected.kind().label(),
             "title": selected.title(),
+            "params": params_json(selected.params()),
         }))
     }
 
@@ -838,7 +880,7 @@ fn execute_planned_action(
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
     state: Option<&mut State>,
-) {
+) -> Option<InvokeFailure> {
     /// Offer `event` to the focused Wayland client; returns `true` when it
     /// was consumed and must not also reach the chrome.
     fn to_client(
@@ -862,7 +904,7 @@ fn execute_planned_action(
                 position: ctx.cursor,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -888,7 +930,7 @@ fn execute_planned_action(
                 button: MouseButton::Left,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -909,7 +951,7 @@ fn execute_planned_action(
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -926,7 +968,7 @@ fn execute_planned_action(
                 phase: winit::event::TouchPhase::Moved,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -963,7 +1005,7 @@ fn execute_planned_action(
             // these into structured wire responses.
             write_snapshot_png(fb, path);
         }
-        PlannedAction::InvokeAction { provider, id } => {
+        PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
             // dispatch: the document is mutable between planning and
             // execution, so the catalogue the caller was shown may no
@@ -982,21 +1024,72 @@ fn execute_planned_action(
                 Ok(catalog) => catalog,
                 Err(why) => {
                     eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
-                    return;
+                    return None;
                 }
             };
             match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
                 // The `Ref` above is dropped with the block, so the
                 // provider's callback is free to borrow the chrome cell
                 // mutably — which most of them do.
-                Some(selected) => selected.invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle),
-                None => eprintln!(
-                    "nirios compositor: action ({provider}, {id}) vanished between \
-                     resolve and invoke; nothing was run"
-                ),
+                Some(selected) => {
+                    // Re-bound against *this* resolution's parameters.
+                    // The catalogue was rebuilt a moment ago and can have
+                    // landed on a different action under the same
+                    // address; arguments checked against the previous one
+                    // would be an assurance about something else.
+                    let bound = test_control::arg_values_from_json(args)
+                        .map_err(|r| InvokeFailure {
+                            code: r.code.to_string(),
+                            message: r.message,
+                        })
+                        .and_then(|values| {
+                            selected
+                                .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
+                                .map_err(|e| InvokeFailure {
+                                    code: e.code().to_string(),
+                                    message: e.to_string(),
+                                })
+                        });
+                    if let Err(failure) = bound {
+                        // Logged for whoever reads the journal, and
+                        // returned so the socket's reply can carry it.
+                        // Planned actions run before the response is
+                        // written, which is what makes an honest answer
+                        // possible here: "it ran" and "it could not run"
+                        // must not look alike to a caller that cannot see
+                        // the screen.
+                        eprintln!(
+                            "nirios compositor: ({provider}, {id}) did not run: {}",
+                            failure.message
+                        );
+                        return Some(failure);
+                    }
+                }
+                None => {
+                    let message = format!(
+                        "action ({provider}, {id}) vanished between resolve and invoke; \
+                         nothing was run"
+                    );
+                    eprintln!("nirios compositor: {message}");
+                    return Some(InvokeFailure {
+                        code: "action_failed".to_string(),
+                        message,
+                    });
+                }
             }
         }
     }
+    None
+}
+
+/// Why an invocation that was planned did not happen.
+///
+/// Carries the action layer's own code so the socket's reply says the
+/// same thing the palette would: `invalid_arguments` when the arguments
+/// did not fit, `action_failed` when the action ran and refused.
+struct InvokeFailure {
+    code: String,
+    message: String,
 }
 
 /// Route a test-control [`PlannedAction`] to the lock screen while the session
@@ -1034,7 +1127,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
     }
 }
 
-/// Re-paint the current scene into a fresh `OffscreenRenderer` and
+/// Re-paint the current scene into a cached `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
 /// a bad viewport, a missing GPU adapter, and every I/O and encoder
 /// failure log to stderr and return, so an executor invocation does not
@@ -1054,18 +1147,60 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
         return;
     }
     let scene = fb.paint();
+    // The renderer is kept between snapshots and rebuilt only when the
+    // viewport changes size.
+    //
+    // `OffscreenRenderer::try_new` constructs a fresh vello `Renderer`,
+    // which initialises every one of vello's shader pipelines — so
+    // building one per call put a full pipeline build inside every
+    // snapshot. Measured at 1920x1080 that was ~450 ms a frame against
+    // ~70 ms of actual render and encode, i.e. the overwhelming
+    // majority of a capture. `OffscreenRenderer`'s own documentation
+    // says to reuse an instance to amortise exactly this; this is the
+    // snapshot path finally doing so, and it is what makes a recording
+    // driven over this socket watchable rather than a slideshow.
+    //
+    // Thread-local because the compositor's event loop is the only
+    // thread that reaches here and an `OffscreenRenderer` is not `Send`.
+    // In a shipped build nothing reaches here at all — the socket that
+    // leads here is compiled out (`compositor::dev_env`) — so the cached
+    // texture and buffer are never allocated in production.
+    thread_local! {
+        static SNAPSHOT_RENDERER: std::cell::RefCell<
+            Option<ui::offscreen::OffscreenRenderer>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+
     // `try_new` rather than `new` inside a `catch_unwind`: the shipping
     // release profile sets `panic = "abort"`, so a caught panic is not
     // a thing that happens — the compositor would die at the panic site
     // instead of logging and carrying on. Asking the renderer for a
     // `Result` is what actually keeps it alive on a machine with no
-    // wgpu adapter (e.g. CI without llvmpipe).
-    let rgba = match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-        Ok(mut renderer) => renderer.render_rgba(&scene),
-        Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
-            return;
+    // wgpu adapter (e.g. CI without llvmpipe). A failure is not cached:
+    // the slot is left empty so a later snapshot retries rather than
+    // inheriting one bad moment forever.
+    let rgba = SNAPSHOT_RENDERER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale = match slot.as_ref() {
+            Some(renderer) => renderer.width != w || renderer.height != h,
+            None => true,
+        };
+        if stale {
+            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+                Ok(renderer) => *slot = Some(renderer),
+                Err(e) => {
+                    eprintln!(
+                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
+                    );
+                    *slot = None;
+                    return None;
+                }
+            }
         }
+        slot.as_mut().map(|renderer| renderer.render_rgba(&scene))
+    });
+    let Some(rgba) = rgba else {
+        return;
     };
     let file = match std::fs::File::create(path) {
         Ok(f) => f,
@@ -1232,6 +1367,13 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                // A planned action that could not run replaces this
+                // command's answer. Actions execute before the reply is
+                // written, so the reply can tell the truth about them —
+                // and an invocation the compositor refused must not come
+                // back looking like one that happened. First failure
+                // wins; the rest still run, exactly as before.
+                let mut failed: Option<InvokeFailure> = None;
                 for action in &actions {
                     if session.is_locked() {
                         // While locked the test-control socket is captured by
@@ -1240,8 +1382,10 @@ fn pump_test_control_conn(
                         // submit starts an async verify; the run loop's
                         // per-tick `poll_verification` delivers the unlock.
                         execute_locked_action(action, lock);
-                    } else {
-                        execute_planned_action(action, frame_builder, ctx, Some(state));
+                    } else if let Some(failure) =
+                        execute_planned_action(action, frame_builder, ctx, Some(state))
+                    {
+                        failed.get_or_insert(failure);
                     }
                 }
                 // Re-run layout so the next `list_targets` (or paint
@@ -1254,6 +1398,13 @@ fn pump_test_control_conn(
                     injected_input = true;
                     frame_builder.relayout();
                 }
+                let resp = match failed {
+                    Some(failure) => test_control::Response::Err {
+                        code: failure.code,
+                        message: failure.message,
+                    },
+                    None => resp,
+                };
                 let mut out = serialise_response(&resp);
                 out.push('\n');
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
@@ -1498,16 +1649,22 @@ fn load_session_tree(
     use crate::shell::persist;
 
     let path = persist::state_json_path();
-    // Carried out to `run`, which has the chrome to put it on the screen with.
-    // A session that quietly hands someone a bootstrapped demo tree is
-    // indistinguishable from one that lost their work.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
 
-    // Two peers minting ids from the same counter produce colliding
-    // ids, and CRDT sync then folds two distinct workspaces into one
-    // row. The salt is derived from the libp2p keypair, so it has to be
-    // set before the id counter is seeded off what is already in the
-    // tree — hence the re-seed.
+    // The id salt is set **before** the tree is loaded, and that ordering
+    // is load-bearing.
+    //
+    // Two peers minting ids from the same counter produce colliding ids,
+    // and CRDT sync then folds two distinct things into one row. The salt
+    // (derived from the libp2p keypair) puts each peer in a disjoint id
+    // range, which is what makes an id safe to use as a replication key.
+    //
+    // Setting it after the load left the ids `bootstrap_default` mints on
+    // a **first boot** unsalted — a fresh workspace, its strip, its group
+    // and its tabs all in the shared 0-salt range, identical on every
+    // machine that ever first-booted. Two such peers joining one room
+    // would each project a window group under the same key. Re-seeding
+    // the counter afterwards did not help: it fixes ids minted *next*,
+    // not the ones already in the tree.
     let mut peer_sync_possible = enable_peer_sync;
     if enable_peer_sync {
         match crate::network::behaviour::load_or_create_keypair(
@@ -1515,8 +1672,7 @@ fn load_session_tree(
         ) {
             Ok(kp) => {
                 let salt = crate::network::behaviour::peer_salt_from_keypair(&kp);
-                tree.set_peer_salt(salt);
-                tree.seed_next_id_from_self();
+                crate::shell::state::WorkspaceTree::set_process_peer_salt(salt);
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
             }
             Err(e) => {
@@ -1528,6 +1684,14 @@ fn load_session_tree(
             }
         }
     }
+
+    // Carried out to `run`, which has the chrome to put it on the screen with.
+    // A session that quietly hands someone a bootstrapped demo tree is
+    // indistinguishable from one that lost their work.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
+    // Past every id already in the tree, so a restart does not re-mint one
+    // that is in use. Idempotent, and a no-op on a first boot.
+    tree.seed_next_id_from_self();
 
     // Nothing writes back over a file this session refused to read. Declining
     // to open a state file and then saving a bootstrapped tree onto it is worse
@@ -1899,7 +2063,7 @@ pub fn run() -> ! {
     // room identity, its owner, its capability list — is a fact about
     // *this* machine that has to survive a restart, and until now this
     // entry point had none of it: `FrameBuilder::new` handed the
-    // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
+    // compositor `WorkspaceTree::bootstrap_demo()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
     let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
     let mut frame_builder = FrameBuilder::with_handle_and_records(
@@ -3788,8 +3952,8 @@ mod tests {
             .get("workspaces")
             .and_then(|v| v.as_array())
             .expect("workspace_tree_json should carry `workspaces` array");
-        // The bootstrap tree seeds at least one demo workspace —
-        // matches the assertions in `bootstrap_default` tests in
+        // `FrameBuilder::new` uses the demo tree, which carries
+        // workspaces — matches the `bootstrap_demo` assertions in
         // `shell/state.rs`.
         assert!(
             !workspaces.is_empty(),
