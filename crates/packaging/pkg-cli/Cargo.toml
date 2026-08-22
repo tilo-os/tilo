@@ -28,6 +28,9 @@ path = "src/main.rs"
 [dependencies]
 pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
+# Signed `/entries` rows for `qos-pkg entry`; `rand` for `keygen`.
+registry-types = { path = "../registry-types" }
+rand.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

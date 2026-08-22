@@ -191,6 +191,10 @@ pub struct FileExplorerWidget {
     /// All paths carried by the live drag — the pressed row, or the whole
     /// multi-selection when the drag started on a row that was part of it.
     drag_paths: Vec<PathBuf>,
+    /// A press on a row waiting to become a drag: `(press point, path,
+    /// is_dir)`. Cleared by the release, or by the first move past the
+    /// threshold, which starts the drag.
+    armed_drag: Option<(Point, PathBuf, bool)>,
     /// The multi-selection captured at the moment of a press, before the press's
     /// click collapses the selection to the single row. If a drag then starts
     /// from a row that was in this set, the drag carries the whole set (so a
@@ -334,6 +338,7 @@ impl FileExplorerWidget {
             workspace_roots: crate::model::workspace_roots(),
             pin_drag: None,
             drag_paths: Vec::new(),
+            armed_drag: None,
             drag_seed: Vec::new(),
             drag_origin_is_dir: false,
             drag_hover: None,
@@ -944,7 +949,19 @@ impl FileExplorerWidget {
                 }
                 true
             }
+            FileCommand::ArmDrag { path, is_dir, at } => {
+                tracing::debug!(target: "file_explorer::drag", ?path, ?at, "drag armed");
+                self.armed_drag = Some((at, path, is_dir));
+                true
+            }
             FileCommand::BeginDrag { path, is_dir } => {
+                if self.pin_drag.is_some() {
+                    // Already carrying — the view and the app both arm the
+                    // same press, and whichever fires second is redundant.
+                    return true;
+                }
+                self.armed_drag = None;
+                tracing::debug!(target: "file_explorer::drag", ?path, "drag begins");
                 // Start carrying the row(s); the ghost + the drop are owned by
                 // `handle_event`. Drag the whole multi-selection when the press
                 // landed inside it (captured in `drag_seed` before the click
@@ -954,6 +971,10 @@ impl FileExplorerWidget {
                 self.drag_origin_is_dir = is_dir;
                 self.pin_drag = Some(path);
                 self.drag_hover = None;
+                // Tell the host what is being carried: if the pointer
+                // reaches another application's window, the host turns
+                // this into a real drag-and-drop for that client.
+                crate::external_drag::begin(self.drag_paths.clone());
                 true
             }
             FileCommand::AddFavorite(path) => {
@@ -1131,6 +1152,7 @@ impl FileExplorerWidget {
         self.drag_paths = vec![path];
         self.drag_origin_is_dir = true;
         self.last_cursor = at;
+        crate::external_drag::begin(self.drag_paths.clone());
     }
 
     /// Start a drag carrying `srcs` hovering the folder `over` — for a shot of a
@@ -1232,6 +1254,7 @@ impl FileExplorerWidget {
     /// (a row, or the parent via the Up target), else pin a single folder to
     /// Favourites when released over the sidebar. Clears the drag state.
     fn finish_drag(&mut self) {
+        crate::external_drag::end();
         let target = self.folder_target_at(self.last_cursor);
         let over_sidebar =
             self.nav.is_sidebar_open() && self.nav.sidebar_rect().contains(self.last_cursor);
@@ -1250,6 +1273,17 @@ impl FileExplorerWidget {
                 }
             }
         }
+        self.drag_origin_is_dir = false;
+    }
+
+    /// Drop the drag without acting on it: the release belonged to someone
+    /// else (the host delivered it to another application), or the gesture
+    /// was abandoned.
+    fn cancel_drag(&mut self) {
+        crate::external_drag::end();
+        self.drag_paths.clear();
+        self.pin_drag = None;
+        self.drag_hover = None;
         self.drag_origin_is_dir = false;
     }
 
@@ -2441,6 +2475,25 @@ impl Widget for FileExplorerWidget {
         // Track the cursor for menu placement + hit-testing.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            // An armed press that has travelled far enough becomes a drag.
+            if let Some((start, path, is_dir)) = self.armed_drag.clone() {
+                if self.pin_drag.is_none()
+                    && self.last_cursor.distance(start) > crate::views::file_view::DRAG_THRESHOLD
+                {
+                    self.armed_drag = None;
+                    self.apply_command(FileCommand::BeginDrag { path, is_dir });
+                    self.structure_dirty = true;
+                }
+            }
+        }
+        if let WindowEvent::MouseInput {
+            state: ElementState::Released,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            // A release without travel was a click, not a drag.
+            self.armed_drag = None;
         }
 
         // A live drag owns the pointer: the ghost follows the cursor, the
@@ -2450,7 +2503,13 @@ impl Widget for FileExplorerWidget {
         if self.pin_drag.is_some() {
             match event {
                 WindowEvent::CursorMoved { .. } => {
-                    self.drag_hover = self.folder_target_at(self.last_cursor);
+                    // Once the host has carried the drag to another
+                    // application, no folder here is a target any more.
+                    self.drag_hover = if crate::external_drag::is_handed_off() {
+                        None
+                    } else {
+                        self.folder_target_at(self.last_cursor)
+                    };
                     *handled = true;
                     self.structure_dirty = true;
                     return;
@@ -2460,7 +2519,13 @@ impl Widget for FileExplorerWidget {
                     button: MouseButton::Left,
                     ..
                 } => {
-                    self.finish_drag();
+                    if crate::external_drag::is_handed_off() {
+                        // The drop landed in another application; the host
+                        // delivered it. Nothing moves here.
+                        self.cancel_drag();
+                    } else {
+                        self.finish_drag();
+                    }
                     *handled = true;
                     self.structure_dirty = true;
                     return;
@@ -3569,6 +3634,14 @@ mod responsive_body_tests {
             });
         }
 
+        fn left_press(&mut self) {
+            self.dispatch(&winit::event::WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            });
+        }
+
         /// The labels of the currently-open context/favourite menu, if any.
         fn open_menu_labels(&self) -> Vec<String> {
             if !self.w.context_menu.is_open() {
@@ -3870,6 +3943,36 @@ mod responsive_body_tests {
         h.left_release();
         assert!(!h.w.debug_pin_dragging());
         assert_eq!(h.w.favorites().len(), before, "a drop off the sidebar pins nothing");
+    }
+
+    /// A press on a row, a frame (the click changed the selection, so the
+    /// content pane — and the view that saw the press — is rebuilt), then
+    /// a move past the threshold: the drag must start anyway. This is the
+    /// real mouse sequence; state parked only in the view was lost between
+    /// press and move, and no drag ever began from a fresh click.
+    #[test]
+    fn a_row_press_still_becomes_a_drag_after_the_view_is_rebuilt() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("photo.png"), b"png").unwrap();
+        let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
+        let view = h.rect_of("FileView").expect("the file view is laid out");
+        // First list row: below the header band.
+        let row = (view.x0 + 60.0, view.y0 + 30.0 + 17.0);
+        h.cursor(row.0, row.1);
+        h.left_press();
+        assert!(!h.w.debug_pin_dragging(), "a press alone is not a drag");
+        // The frame after the click rebuilds the content pane.
+        h.lay_out(1200.0, 720.0);
+        h.cursor(row.0 + 40.0, row.1 + 20.0);
+        assert!(h.w.debug_pin_dragging(), "the armed press must start the drag after the rebuild");
+        assert_eq!(
+            crate::external_drag::unclaimed().map(|d| d.paths),
+            Some(vec![dir.path().join("photo.png")]),
+            "the host is told what is being carried"
+        );
+        h.left_release();
+        assert!(!h.w.debug_pin_dragging());
+        assert_eq!(crate::external_drag::unclaimed(), None);
     }
 
     /// A right-click on a sidebar favourite opens *its* menu (Open + Remove from

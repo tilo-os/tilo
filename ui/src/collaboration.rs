@@ -91,6 +91,14 @@ pub enum CollabRequest {
         /// as malformed.
         #[serde(default)]
         record: Option<String>,
+        /// How this connection wants to be named in presence — the
+        /// text on the caret pill other participants see. `None` lets
+        /// the broker stamp a synthetic `peer-<n>`. A person's app sets
+        /// it from the session (`QOS_USER_ID`); an agent sets its own
+        /// name. Informational only: it grants nothing and is never
+        /// used for routing.
+        #[serde(default)]
+        handle: Option<String>,
     },
     /// Legacy: unsigned full-document state. Still accepted by the
     /// broker. Apps using this path do not get role enforcement and
@@ -577,6 +585,7 @@ impl CollaborationManager {
                     app_id,
                     cluster_id,
                     record: record.clone(),
+                    handle: presence_handle_env(),
                 });
                 return manager;
             }
@@ -593,6 +602,7 @@ impl CollaborationManager {
                     app_id,
                     cluster_id,
                     record,
+                    handle: presence_handle_env(),
                 });
                 manager
             }
@@ -674,6 +684,7 @@ impl CollaborationManager {
             app_id: app_id.to_owned(),
             cluster_id,
             record: None,
+            handle: presence_handle_env(),
         });
         manager
     }
@@ -904,6 +915,15 @@ impl CollaborationManager {
     }
 }
 
+/// The presence handle this process announces on `Hello`: the name on
+/// the caret pill peers see. `QOS_PRESENCE_HANDLE` wins, then the
+/// session's `QOS_USER_ID`; absent both, the broker's synthetic name.
+pub fn presence_handle_env() -> Option<String> {
+    ["QOS_PRESENCE_HANDLE", "QOS_USER_ID"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.trim().is_empty()))
+}
+
 /// The `(app_id, cluster_id)` pair this process announces in its
 /// [`CollabRequest::Hello`] — its address on the broker's fan-out.
 ///
@@ -1099,7 +1119,7 @@ async fn drive_shovel(
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id: _, cluster_id, record } => {
+            CollabRequest::Hello { app_id: _, cluster_id, record, .. } => {
                 // Ride the identity blob captured at manager
                 // construction — the loaded runtime-identity's raw
                 // pubkey bytes when the on-disk record was reachable,
@@ -1607,10 +1627,16 @@ pub mod broker {
                     // back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
                         Some(frame) => match serde_json::from_slice::<CollabRequest>(&frame) {
-                            Ok(CollabRequest::Hello { app_id, .. }) => {
+                            Ok(CollabRequest::Hello { app_id, handle, .. }) => {
+                                // Presence is named by the announced handle
+                                // when there is one — the name on the caret
+                                // pill — else by the app id, as before.
+                                let user_id = handle
+                                    .filter(|h| !h.trim().is_empty())
+                                    .unwrap_or(app_id);
                                 peers.lock().unwrap().insert(
                                     idx,
-                                    Peer { user_id: app_id, write },
+                                    Peer { user_id, write },
                                 );
                             }
                             _ => {

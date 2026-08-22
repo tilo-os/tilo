@@ -660,10 +660,13 @@ impl Widget for Button {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let hover = self.rect.contains(logical_pos);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *handled = true;
-                }
+                // A hover change is a repaint (`needs_redraw` compares the
+                // state), not consumed input: a parent that stops at the
+                // first handled child must still deliver this move to the
+                // widget the pointer actually went to. Marking the move
+                // that *left* a button as handled starved the file list of
+                // the press position that followed it.
+                self.is_hovered = hover;
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 if self.is_hovered {
