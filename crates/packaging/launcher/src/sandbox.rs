@@ -618,13 +618,21 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(SANDBOX_IDENTITY_PATH.to_string());
     }
 
-    // Service fds: --file <host_fd> /run/qos/services/<name>.sock
-    // (matches the well-known service path inside the sandbox).
+    // Service sockets reach the app as inherited descriptors, not as
+    // bwrap arguments. The launcher dup2s each connected socket onto
+    // its `child_fd` (and clears CLOEXEC) in `pre_exec`, and a
+    // descriptor left open across `exec` keeps its number through
+    // bwrap and through the `__sandbox-exec` re-exec, so the number
+    // published here is the number the app finds.
+    //
+    // There is deliberately no bwrap flag for this. `--file FD DEST`
+    // is the one that looks right and is not: it *copies FD's contents*
+    // into a regular file at DEST, so pointing it at a connected socket
+    // makes bwrap read that socket until EOF — which never comes. The
+    // launch hangs before it ever execs the app, and the only symptom
+    // is an app that never appears. Nothing here may name a live socket
+    // to bwrap.
     for sb in service_binds {
-        let in_sandbox = sandbox_service_path(&sb.name);
-        argv.push("--file".to_string());
-        argv.push(sb.host_fd.to_string());
-        argv.push(in_sandbox.display().to_string());
         // Expose the fd number to the app via env. We use the
         // child-side fd because the entrypoint reads
         // `QOS_SVC_<NAME>_FD` and either dup2s or fdopen()s it.
@@ -1601,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn service_binds_emit_file_and_setenv() {
+    fn service_binds_publish_the_child_fd_and_name_no_socket_to_bwrap() {
         let m = mk_manifest("off");
         let binds = vec![ServiceBind {
             name: "collab".to_string(),
@@ -1609,18 +1617,26 @@ mod tests {
             child_fd: 17,
         }];
         let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None, None, &CapabilityPlan::empty());
-        // --file 7 /run/qos/services/collab.sock
-        let file_pos = argv
-            .windows(3)
-            .position(|w| w[0] == "--file" && w[1] == "7" && w[2] == "/run/qos/services/collab.sock")
-            .expect("service --file triple");
-        let _ = file_pos;
-        // --setenv QOS_SVC_COLLAB_FD 17
-        let env_pos = argv
-            .windows(3)
-            .position(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17")
-            .expect("service env var");
-        let _ = env_pos;
+        // --setenv QOS_SVC_COLLAB_FD 17 — the number the app reads. The
+        // descriptor itself is dup2'd onto it in `run::place_service_fds`.
+        assert!(
+            argv.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17"),
+            "the app must be told which descriptor its service is on: {argv:?}"
+        );
+        // The regression this guards. `--file FD DEST` copies the
+        // descriptor's contents into a regular file, so handing it a
+        // connected socket makes bwrap read until an EOF that never
+        // comes: the launch hangs before exec and the app simply never
+        // appears. No bwrap argument may name a service socket.
+        assert!(
+            !argv.iter().any(|a| a == "--file"),
+            "a service socket must never be handed to bwrap as a file: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.ends_with("/qos/services/collab.sock")),
+            "the collab socket must not appear in the bwrap argv at all: {argv:?}"
+        );
     }
 
     // -----------------------------------------------------------------
