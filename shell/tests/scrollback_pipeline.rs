@@ -456,8 +456,13 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             },
         );
     }
-    let _drained = drain_events(&mut observer, Duration::from_millis(500));
-    let _drained = drain_events(&mut owner, Duration::from_millis(150));
+    // The checkpoint below hashes the prefix ops 1..=3, and the broker
+    // validates that hash against its own log. If the log is still
+    // half-written the checkpoint is rejected and every assertion after
+    // it fails for a reason that has nothing to do with compaction, so
+    // wait for the ops rather than for the socket to go quiet.
+    let _drained = drain_until_signed(&mut observer, 5, Duration::from_secs(10));
+    let _drained = drain_until_signed(&mut owner, 5, Duration::from_secs(10));
 
     // Owner publishes a Compaction checkpoint covering ops 1..=3.
     // The prefix hash must match what the broker's local log holds.
@@ -485,8 +490,8 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
     );
     // Drain the fan-out of the compaction op itself so the next read
     // sees only the scrollback reply.
-    let _ = drain_events(&mut observer, Duration::from_millis(400));
-    let _ = drain_events(&mut editor, Duration::from_millis(150));
+    let _ = drain_until_signed(&mut observer, 1, Duration::from_secs(10));
+    let _ = drain_until_signed(&mut editor, 1, Duration::from_secs(10));
 
     // The observer asks for scrollback covering the evicted range.
     write_frame(
