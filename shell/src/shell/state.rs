@@ -2745,7 +2745,11 @@ impl WorkspaceTree {
             let sid = strip.id.raw();
             match by_strip.remove(&sid) {
                 Some(rep) => {
-                    let order = rep.order;
+                    // Ours keeps the position our cache has it in. Taking
+                    // it back from the document would undo a local
+                    // reorder until the next projection re-stated it,
+                    // which reads as the layout twitching.
+                    let order = if is_local(sid) { i as u64 } else { rep.order };
                     out.push((order, sid, Self::merge_strip(strip, rep, &is_local, &mut changed)));
                 }
                 // Ours, and simply not published (new, empty, or below
@@ -2811,7 +2815,7 @@ impl WorkspaceTree {
             let gid = group.id;
             match by_group.remove(&gid) {
                 Some(rep) => {
-                    let order = rep.order;
+                    let order = if is_local(gid) { i as u64 } else { rep.order };
                     out.push((order, gid, Self::merge_group(group, rep, is_local, changed)));
                 }
                 None if is_local(gid) => out.push((i as u64, gid, group)),
@@ -2860,7 +2864,7 @@ impl WorkspaceTree {
             let tid = tab.id;
             match by_tab.remove(&tid) {
                 Some(rep) => {
-                    let order = rep.order;
+                    let order = if is_local(tid) { i as u64 } else { rep.order };
                     let mut tab = tab;
                     if !is_local(tid) {
                         if tab.title != rep.title {
