@@ -14,6 +14,7 @@
 //!   * [`timecode`]— wall-clock ↔ frame conversions and formatting.
 //!   * [`gpu`]     — the wgpu compositor both the preview canvas and the
 //!                   export render through, so they cannot disagree.
+//!   * [`audio`]   — which clips are audible at an instant, and the mix.
 //!   * [`export`]  — export presets + the (GStreamer-gated) render pipeline.
 //!   * [`app`]     — the root [`app::VideoEditorApp`] widget: media bin,
 //!                   preview + transport, multi-track timeline, inspector,
@@ -23,6 +24,7 @@
 //! event loop and the `--shots` offscreen renderer.
 
 pub mod actions;
+pub mod audio;
 pub mod app;
 pub mod doc;
 pub mod export;
