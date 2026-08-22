@@ -1,0 +1,621 @@
+//! The wgpu compute pipeline that composites a timeline frame.
+//!
+//! One [`VideoCompositor`] owns the pipelines and a pair of accumulation
+//! textures. [`VideoCompositor::render`] walks the [`crate::preview::plan_layers`]
+//! stack bottom-to-top, dispatching one compute pass per layer that reads
+//! the accumulation, blends the layer over it, and writes the other
+//! accumulation — then presents the result into the caller's target.
+//!
+//! Both the preview canvas and the export call the *same* method, so what
+//! is encoded is what was on screen.
+
+use std::sync::Arc;
+
+use vello::wgpu;
+
+use crate::model::Project;
+use crate::preview::{self, Layer};
+
+use super::{FrameSource, SourceTexture};
+
+/// Effects beyond this per clip are ignored by the shader (its uniform
+/// carries a fixed-size array). Kept in sync with `MAX_EFFECTS` in
+/// `composite.wgsl`.
+pub const MAX_SHADER_EFFECTS: usize = 8;
+
+/// Bytes of the uniform struct in `composite.wgsl`: five `vec4<f32>`
+/// headers plus the effect array.
+const PARAMS_BYTES: usize = (5 + MAX_SHADER_EFFECTS) * 16;
+
+/// Where on the target the composited frame lands, in target pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Viewport {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Viewport {
+    /// The whole of a `width × height` target.
+    pub fn full(width: u32, height: u32) -> Self {
+        Self { x: 0, y: 0, width, height }
+    }
+}
+
+struct Gpu {
+    layer_pipeline: wgpu::ComputePipeline,
+    present_pipeline: wgpu::ComputePipeline,
+    bgl: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    /// A 1×1 texture bound wherever a pass has no real input, so one bind
+    /// group layout serves every pass.
+    dummy: wgpu::TextureView,
+    uniform_stride: u32,
+}
+
+struct Accum {
+    width: u32,
+    height: u32,
+    textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
+}
+
+/// The single compositor used by the preview and the export.
+#[derive(Default)]
+pub struct VideoCompositor {
+    gpu: Option<Gpu>,
+    accum: Option<Accum>,
+    uniform: Option<(wgpu::Buffer, u32)>,
+}
+
+impl VideoCompositor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn ensure_gpu(&mut self, device: &wgpu::Device) -> &Gpu {
+        if self.gpu.is_none() {
+            self.gpu = Some(build_gpu(device));
+        }
+        self.gpu.as_ref().expect("gpu just built")
+    }
+
+    fn ensure_accum(&mut self, device: &wgpu::Device, width: u32, height: u32) {
+        let stale = self
+            .accum
+            .as_ref()
+            .is_none_or(|a| a.width != width || a.height != height);
+        if !stale {
+            return;
+        }
+        let make = |label: &str| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::STORAGE_BINDING
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            })
+        };
+        let a = make("video-composite-accum-a");
+        let b = make("video-composite-accum-b");
+        let va = a.create_view(&wgpu::TextureViewDescriptor::default());
+        let vb = b.create_view(&wgpu::TextureViewDescriptor::default());
+        self.accum = Some(Accum { width, height, textures: [a, b], views: [va, vb] });
+    }
+
+    fn ensure_uniform(&mut self, device: &wgpu::Device, stride: u32, count: usize) {
+        let needed = stride as u64 * count.max(1) as u64;
+        let big_enough = self.uniform.as_ref().is_some_and(|(b, _)| b.size() >= needed);
+        if big_enough {
+            return;
+        }
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("video-composite-params"),
+            size: needed.max(stride as u64),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.uniform = Some((buffer, stride));
+    }
+
+    /// Composite the timeline at `playhead` into `target`, inside
+    /// `viewport`. `sources` resolves each layer's picture; a layer whose
+    /// source yields nothing falls back to its deterministic
+    /// representative fill, so this works with no decoder at all.
+    ///
+    /// `target` must be an `Rgba8Unorm` texture view with
+    /// `STORAGE_BINDING` usage — vello's intermediate render target and
+    /// the export's offscreen texture both qualify.
+    pub fn render(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: &wgpu::TextureView,
+        viewport: Viewport,
+        project: &Project,
+        playhead: f64,
+        sources: &mut dyn FrameSource,
+    ) {
+        let (w, h) = (viewport.width.max(1), viewport.height.max(1));
+        let layers = preview::plan_layers(project, playhead);
+        let last = self.accumulate(device, queue, w, h, &layers, sources);
+
+        let gpu = self.gpu.as_ref().expect("gpu built by accumulate");
+        let (buffer, stride) = self.uniform.as_ref().expect("uniform built by accumulate");
+        let accum = self.accum.as_ref().expect("accum built by accumulate");
+
+        // The present pass reads the finished accumulation and stores it
+        // at the viewport's origin on the caller's target.
+        let mut params = Params::default();
+        params.frame = [w as f32, h as f32, 1.0, 0.0];
+        params.wipe[2] = viewport.x as f32;
+        params.wipe[3] = viewport.y as f32;
+        let offset = *stride as u64 * layers.len() as u64;
+        queue.write_buffer(buffer, offset, &params.to_bytes());
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("video-composite-present"),
+            layout: &gpu.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(PARAMS_BYTES as u64),
+                    }),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&accum.views[last]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&gpu.dummy),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(target),
+                },
+            ],
+        });
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("video-composite-present"),
+        });
+        {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("video-composite-present"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&gpu.present_pipeline);
+            pass.set_bind_group(0, &bg, &[offset as u32]);
+            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+        }
+        queue.submit([enc.finish()]);
+    }
+
+    /// Composite the timeline at `playhead` and read the frame back as a
+    /// tightly-packed `width * height * 4` RGBA buffer.
+    ///
+    /// This is the export's frame source. It runs the identical layer
+    /// stack, grade, effect chain and transition math the preview shows,
+    /// so the encoded file *is* the preview.
+    pub fn render_rgba(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        project: &Project,
+        playhead: f64,
+        width: u32,
+        height: u32,
+        sources: &mut dyn FrameSource,
+    ) -> Vec<u8> {
+        let (w, h) = (width.max(1), height.max(1));
+        let layers = preview::plan_layers(project, playhead);
+        let last = self.accumulate(device, queue, w, h, &layers, sources);
+        let accum = self.accum.as_ref().expect("accum built by accumulate");
+
+        // `copy_texture_to_buffer` requires each row to start on a
+        // COPY_BYTES_PER_ROW_ALIGNMENT boundary, so the staging buffer is
+        // padded and the rows are re-packed after the map.
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded = w * 4;
+        let padded = unpadded.div_ceil(align) * align;
+        let staging = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("video-composite-readback"),
+            size: (padded * h) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("video-composite-readback"),
+        });
+        enc.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &accum.textures[last],
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        queue.submit([enc.finish()]);
+
+        let slice = staging.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            tx.send(r).ok();
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().expect("readback channel").expect("readback map");
+
+        let mapped = slice.get_mapped_range();
+        let row = unpadded as usize;
+        let mut out = Vec::with_capacity(row * h as usize);
+        for y in 0..h as usize {
+            let start = y * padded as usize;
+            out.extend_from_slice(&mapped[start..start + row]);
+        }
+        drop(mapped);
+        staging.unmap();
+        out
+    }
+
+    /// Run every layer pass. Returns which accumulation index holds the
+    /// finished frame.
+    fn accumulate(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        w: u32,
+        h: u32,
+        layers: &[Layer],
+        sources: &mut dyn FrameSource,
+    ) -> usize {
+        let stride = {
+            let gpu = self.ensure_gpu(device);
+            gpu.uniform_stride
+        };
+        self.ensure_accum(device, w, h);
+        // One slot per layer plus one for the present pass.
+        self.ensure_uniform(device, stride, layers.len() + 1);
+
+        // Resolve every layer's picture up front: `sources` may want the
+        // device, and holding the borrow across the pass loop would clash
+        // with the &mut self the pipelines live behind.
+        let resolved: Vec<Option<SourceTexture>> = layers
+            .iter()
+            .map(|l| sources.resolve(device, queue, l.media, l.source_time))
+            .collect();
+
+        let gpu = self.gpu.as_ref().expect("gpu built above");
+        let accum = self.accum.as_ref().expect("accum built above");
+        let (buffer, _) = self.uniform.as_ref().expect("uniform built above");
+
+        // With no layers at all the frame is letterbox black; a single
+        // clearing pass still has to run so the accumulation is not stale.
+        let passes = layers.len().max(1);
+        let mut bind_groups = Vec::with_capacity(passes);
+        let mut offsets = Vec::with_capacity(passes);
+
+        for i in 0..passes {
+            let dst = i % 2;
+            let src_accum = 1 - dst;
+            let layer = layers.get(i);
+            let tex = resolved.get(i).and_then(|t| t.as_ref());
+
+            let mut params = Params::default();
+            params.frame = [
+                w as f32,
+                h as f32,
+                if i == 0 { 0.0 } else { 1.0 },
+                if tex.is_some() { 1.0 } else { 0.0 },
+            ];
+            if let Some(l) = layer {
+                let f = &l.filters;
+                params.grade = [
+                    crate::model::Filters::gain(f.brightness) as f32,
+                    crate::model::Filters::gain(f.contrast) as f32,
+                    crate::model::Filters::gain(f.saturation) as f32,
+                    l.alpha as f32,
+                ];
+                let rgb = preview::palette_rgb(l.palette);
+                let n = l.effects.len().min(MAX_SHADER_EFFECTS);
+                params.palette = [rgb.r as f32, rgb.g as f32, rgb.b as f32, n as f32];
+                for (slot, e) in params.effects.iter_mut().zip(l.effects.iter()).take(n) {
+                    slot[0] = effect_index(e.kind) as f32;
+                    slot[1] = e.amount as f32;
+                }
+                if let Some(t) = tex {
+                    params.src[0] = t.width as f32;
+                    params.src[1] = t.height as f32;
+                }
+                if let Some(wp) = l.wipe {
+                    params.src[2] = 1.0;
+                    params.src[3] = wp.dir.index() as f32;
+                    params.wipe[0] = wp.progress as f32;
+                    params.wipe[1] = wp.softness as f32;
+                }
+            } else {
+                // The empty-timeline clear: fully transparent coverage
+                // leaves the frame at black.
+                params.grade = [1.0, 1.0, 1.0, 0.0];
+            }
+
+            let offset = stride as u64 * i as u64;
+            queue.write_buffer(buffer, offset, &params.to_bytes());
+            offsets.push(offset as u32);
+
+            let src_view: &wgpu::TextureView = tex.map(|t| t.view.as_ref()).unwrap_or(&gpu.dummy);
+            bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("video-composite-layer"),
+                layout: &gpu.bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer,
+                            offset: 0,
+                            size: std::num::NonZeroU64::new(PARAMS_BYTES as u64),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&accum.views[src_accum]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(src_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&accum.views[dst]),
+                    },
+                ],
+            }));
+        }
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("video-composite-layers"),
+        });
+        for (i, bg) in bind_groups.iter().enumerate() {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("video-composite-layer"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&gpu.layer_pipeline);
+            pass.set_bind_group(0, bg, &[offsets[i]]);
+            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+        }
+        queue.submit([enc.finish()]);
+
+        (passes - 1) % 2
+    }
+}
+
+fn effect_index(kind: crate::model::EffectKind) -> u32 {
+    use crate::model::EffectKind as E;
+    match kind {
+        E::Grayscale => 0,
+        E::Sepia => 1,
+        E::Invert => 2,
+        E::Warm => 3,
+        E::Cool => 4,
+        E::Vignette => 5,
+    }
+}
+
+/// Host-side mirror of the shader's `Params` uniform.
+#[derive(Clone, Copy)]
+struct Params {
+    frame: [f32; 4],
+    grade: [f32; 4],
+    palette: [f32; 4],
+    src: [f32; 4],
+    wipe: [f32; 4],
+    effects: [[f32; 4]; MAX_SHADER_EFFECTS],
+}
+
+impl Default for Params {
+    fn default() -> Self {
+        Self {
+            frame: [0.0; 4],
+            // An identity grade at full coverage.
+            grade: [1.0, 1.0, 1.0, 1.0],
+            palette: [0.0; 4],
+            src: [0.0; 4],
+            wipe: [0.0; 4],
+            effects: [[0.0; 4]; MAX_SHADER_EFFECTS],
+        }
+    }
+}
+
+impl Params {
+    fn to_bytes(self) -> [u8; PARAMS_BYTES] {
+        let mut out = [0u8; PARAMS_BYTES];
+        let mut at = 0;
+        let mut put = |v: [f32; 4], out: &mut [u8; PARAMS_BYTES], at: &mut usize| {
+            for c in v {
+                out[*at..*at + 4].copy_from_slice(&c.to_ne_bytes());
+                *at += 4;
+            }
+        };
+        put(self.frame, &mut out, &mut at);
+        put(self.grade, &mut out, &mut at);
+        put(self.palette, &mut out, &mut at);
+        put(self.src, &mut out, &mut at);
+        put(self.wipe, &mut out, &mut at);
+        for e in self.effects {
+            put(e, &mut out, &mut at);
+        }
+        debug_assert_eq!(at, PARAMS_BYTES);
+        out
+    }
+}
+
+fn build_gpu(device: &wgpu::Device) -> Gpu {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("video-composite"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("composite.wgsl").into()),
+    });
+    let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("video-composite"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: std::num::NonZeroU64::new(PARAMS_BYTES as u64),
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 4,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::StorageTexture {
+                    access: wgpu::StorageTextureAccess::WriteOnly,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+        ],
+    });
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("video-composite"),
+        bind_group_layouts: &[Some(&bgl)],
+        immediate_size: 0,
+    });
+    let make = |entry: &str, label: &str| {
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&layout),
+            module: &shader,
+            entry_point: Some(entry),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    };
+    let layer_pipeline = make("cs_layer", "video-composite-layer");
+    let present_pipeline = make("cs_present", "video-composite-present");
+
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("video-composite"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+
+    let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("video-composite-dummy"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let dummy = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let align = device.limits().min_uniform_buffer_offset_alignment.max(1);
+    let uniform_stride = (PARAMS_BYTES as u32).div_ceil(align) * align;
+
+    Gpu { layer_pipeline, present_pipeline, bgl, sampler, dummy, uniform_stride }
+}
+
+/// Upload a tightly-packed RGBA8 picture into a fresh texture.
+pub fn upload_rgba(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Option<SourceTexture> {
+    let (w, h) = (width, height);
+    if w == 0 || h == 0 || rgba.len() < (w as usize * h as usize * 4) {
+        return None;
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("video-composite-source"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &rgba[..(w as usize * h as usize * 4)],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w * 4),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    let view = Arc::new(texture.create_view(&wgpu::TextureViewDescriptor::default()));
+    Some(SourceTexture { texture: Arc::new(texture), view, width: w, height: h })
+}

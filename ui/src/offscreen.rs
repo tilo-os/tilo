@@ -74,6 +74,42 @@ fn shared_render_context() -> Arc<Mutex<RenderContext>> {
         .clone()
 }
 
+/// Handles to the process-wide shared wgpu device — the very same one
+/// every [`OffscreenRenderer`] draws through.
+///
+/// Apps that run their own GPU work headlessly (the video editor
+/// composites its timeline frames with a wgpu compute pipeline) must
+/// borrow these rather than stand up a second `wgpu::Instance`: parallel
+/// `vkCreateInstance` calls race and SIGSEGV on several Mesa drivers,
+/// which is the whole reason the shared context exists.
+///
+/// Both handles are `Arc`-backed inside wgpu, so cloning them out of the
+/// context is cheap and they stay valid once the lock is released.
+pub struct SharedGpu {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+}
+
+/// Borrow the shared device/queue, initialising the process-wide context
+/// on first call. Fails with the same [`OffscreenError`]s as
+/// [`OffscreenRenderer::try_new`] — a machine with no usable adapter
+/// gets a `NoAdapter`, never a panic.
+pub fn shared_gpu() -> Result<SharedGpu, OffscreenError> {
+    let context = shared_render_context();
+    let mut ctx = context
+        .lock()
+        .map_err(|_| OffscreenError::ContextPoisoned)?;
+    let dev_id = ctx
+        .device(None)
+        .block_on()
+        .ok_or(OffscreenError::NoAdapter)?;
+    let handle = &ctx.devices[dev_id];
+    Ok(SharedGpu {
+        device: handle.device.clone(),
+        queue: handle.queue.clone(),
+    })
+}
+
 /// Why an [`OffscreenRenderer`] could not be built.
 ///
 /// Every variant is an *environment* failure: the machine has no usable
