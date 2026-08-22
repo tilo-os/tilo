@@ -816,12 +816,24 @@ impl ForeignSurfaceWidget {
     }
 
     /// Destination rect for the client image inside `self.rect`,
-    /// preserving aspect ratio and centring the result.
+    /// preserving aspect ratio and anchoring the result at the tile's
+    /// top-left corner.
     ///
     /// A correctly-configured client renders at exactly the tab size, in
-    /// which case this is the identity fit. The letterbox only shows
+    /// which case this is the identity fit. A letterbox band only shows
     /// during the frame or two between a resize configure and the
     /// client's answering commit — better than a stretched image.
+    ///
+    /// The anchor is the load-bearing part. Pointer input reaches the
+    /// client by subtracting the tile origin from the global cursor
+    /// (`client_input::surface_local`), so the client's pixels have to be
+    /// painted from that same origin or the two disagree: a frame that is
+    /// momentarily the wrong size would otherwise be *centred*, sliding
+    /// every pixel the user is looking at by half the mismatch while
+    /// input carried on addressing the un-slid position. Anchoring costs
+    /// nothing when the sizes match (the centring term is zero) and keeps
+    /// paint and input on one origin when they don't, so a press always
+    /// lands on the row it appears to land on.
     fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
         if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return None;
@@ -831,8 +843,8 @@ impl ForeignSurfaceWidget {
         let scale = (self.rect.width() / iw).min(self.rect.height() / ih);
         let dw = iw * scale;
         let dh = ih * scale;
-        let dx = self.rect.x0 + (self.rect.width() - dw) * 0.5;
-        let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
+        let dx = self.rect.x0;
+        let dy = self.rect.y0;
         Some(Rect::new(dx, dy, dx + dw, dy + dh))
     }
 }
@@ -1399,14 +1411,43 @@ mod tests {
     fn widget_fit_rect_letterboxes_preserving_aspect() {
         let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
         w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
-        // A square image inside a 2:1 tile: height-limited, centred.
+        // A square image inside a 2:1 tile: height-limited, anchored at
+        // the tile's top-left with the spare width to the right.
         let fit = w.fit_rect(100, 100).expect("fit");
         assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
-        assert_eq!(fit.x0, 100.0);
+        assert_eq!(fit.x0, 0.0);
         assert_eq!(fit.y0, 0.0);
         // An exactly-matching client fills the tile with no letterbox.
         let exact = w.fit_rect(400, 200).expect("fit");
         assert_eq!(exact, w.rect);
+    }
+
+    /// A press has to land on what the user can see, so the origin the
+    /// client's pixels are painted from must be the origin pointer input
+    /// is translated by — including while a resize is in flight and the
+    /// client's last frame is still the old size.
+    #[test]
+    fn painted_frame_origin_matches_the_origin_input_is_mapped_with() {
+        let tile = Rect::new(288.0, 124.0, 288.0 + 856.0, 124.0 + 868.0);
+        let mut w = ForeignSurfaceWidget::new(sid(9), "x".into());
+        w.rect = tile;
+
+        // Every size a lagging client might still be presenting: exactly
+        // right, short, tall, narrow and wide.
+        for (iw, ih) in [(856, 868), (856, 834), (856, 900), (800, 868), (900, 868)] {
+            let dst = w.fit_rect(iw, ih).expect("fit");
+            let (local_x, local_y) =
+                crate::compositor::client_input::surface_local((dst.x0, dst.y0), tile);
+            assert_eq!(
+                (local_x, local_y),
+                (0.0, 0.0),
+                "a {iw}x{ih} frame in an {}x{} tile paints from {:?}, but input maps that \
+                 point to ({local_x}, {local_y}) — a press would miss by that much",
+                tile.width(),
+                tile.height(),
+                (dst.x0, dst.y0),
+            );
+        }
     }
 
     #[test]
