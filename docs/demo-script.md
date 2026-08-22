@@ -69,12 +69,33 @@ documents had no way to learn of each other: the only full-state frame was
 fanned out locally and never republished. A snapshot path to the room closes
 it. Proof in flight.
 
-## 8 · Drag an image from Files into the document ✅
+## 8 · An image into the document ✅ — but mind which Files
 
-The compositor promotes a Files drag to a server-side Wayland drag and the
-word processor inserts at the drop point. The image is stored as bytes in the
-document, so it replicates exactly like text — which is what makes it arrive
-on the other screen.
+Two different things are called Files, and only one of them can start a
+drag.
+
+The compositor's **own** file manager — a widget inside the compositor,
+in the first-boot demo group — is the one the built drag works from: the
+compositor promotes that in-process drag to a server-side
+`wl_data_device` drag the moment the pointer reaches a client, which then
+receives the offer and the drop. Proof: `shell/tests/clipboard_e2e.rs`,
+`…drops_onto_a_client` and the `QOS_LIVE_APP_DND=1` word-processor lane.
+
+The **launched** Files app — `dev.qos.file-explorer`, a sandboxed Wayland
+client, which is what a session opens from the palette and what
+`scripts/yc-demo.py` films — cannot. Neither the app nor the toolkit
+opens a `wl_data_source` anywhere (`grep -rn 'start_drag\|wl_data_source'
+apps/file-explorer/src ui/src` finds nothing but in-process tab dragging),
+so there is no client drag for the compositor to promote.
+
+So a recording whose Files is the launched app takes the toolbar
+**Insert image** route instead: the word processor asks for a file and
+the compositor's own portal chooser answers
+(`apps/word-processor/src/widget.rs:2250`, `shell/src/portal/file_chooser.rs`).
+That is the better beat anyway — the app cannot read the folder, and what
+it receives is the bytes the OS handed it. Either way the image ends up
+as `ScalarValue::Bytes` in the document, so it replicates exactly like
+text, which is what makes it arrive on the other screen.
 
 ## 9 · The agent does something ✅
 

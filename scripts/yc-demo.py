@@ -1056,7 +1056,11 @@ def note(text: str) -> None:
     print(f"     .   {text}", flush=True)
 
 
-def wait_for(fn, timeout: float = SYNC_TIMEOUT_S, interval: float = 0.25):
+def wait_for(fn, timeout: float = SYNC_TIMEOUT_S, interval: float = 0.6):
+    # Polled rather than pushed, and the interval is a real cost: every
+    # probe here is a `state_dump`, which blocks the session it is asked
+    # of — including, during a recording, the session being filmed. A
+    # tighter loop buys no accuracy and takes frames off the camera.
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
