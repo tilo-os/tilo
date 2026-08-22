@@ -227,6 +227,7 @@ fn owner_can_redact_a_recent_op() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -346,6 +347,7 @@ fn editor_redact_request_is_rejected() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -438,6 +440,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -555,6 +558,7 @@ fn redacted_op_is_filtered_from_scrollback() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -659,6 +663,7 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -770,6 +775,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -851,6 +857,7 @@ fn recursive_redaction_is_rejected() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
@@ -970,6 +977,7 @@ fn audit_entry_carries_reason_and_redactor_pk() {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
