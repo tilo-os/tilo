@@ -9,7 +9,6 @@
 
 pub mod actions;
 pub mod applications;
-pub mod catalog;
 pub mod editor;
 pub mod files;
 pub mod host_applications;
@@ -19,7 +18,6 @@ pub mod text_app;
 
 pub use actions::ActionsProvider;
 pub use applications::ApplicationsProvider;
-pub use catalog::CatalogProvider;
 pub use editor::EditorProvider;
 pub use files::FilesProvider;
 pub use host_applications::HostApplicationsProvider;
