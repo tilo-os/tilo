@@ -22,6 +22,7 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::TileContent;
 use crate::widget::{
     DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
     WindowGroup, WindowWidth,
@@ -978,7 +979,8 @@ impl GroupRow {
 
     /// Test helper: directly seed `scroll_x` so tests can probe the
     /// snap behaviour without driving a full wheel-event sequence.
-    #[cfg(test)]
+    
+#[cfg(test)]
     pub(crate) fn set_scroll_x_for_test(&mut self, x: f64) {
         self.scroll_x = x;
     }
@@ -2442,6 +2444,52 @@ impl Widget for GroupRow {
                 out.push(("tabbar_new_tab".to_string(), r));
             }
             out.push((format!("tabbar_new_tab[{}]", g.id), r));
+        }
+        // Every tab pill by title — `tab:Files` — so a scenario selects a
+        // tab by name rather than by a coordinate that moves with the
+        // layout. The first group's pills also take the bare name.
+        let mut first = true;
+        for g in &self.groups {
+            for (tab, rect) in g.tabs().iter().zip(g.tab_rects().iter()) {
+                if rect.area() <= 0.0 {
+                    continue;
+                }
+                if first {
+                    out.push((format!("tab:{}", tab.title), *rect));
+                }
+                out.push((format!("tab:{}[{}]", tab.title, g.id), *rect));
+            }
+            first = false;
+        }
+        // The inter-group resize handles, by seam index — so a scenario can
+        // narrow a group with the real gesture instead of a layout edit.
+        for (i, h) in self.handles.iter().enumerate() {
+            let r = h.get_rect();
+            if r.area() > 0.0 {
+                out.push((format!("group_resize_handle[{i}]"), r));
+            }
+        }
+        // Named affordances *inside* the active tile of each group — a file
+        // manager's rows, a path bar — so automation can aim at what an
+        // app laid out. Hosted app widgets are not children of the row
+        // (the tile host owns them), so the walk happens here.
+        let mut first = true;
+        for g in &self.groups {
+            let Some(host) = g.active_host() else {
+                continue;
+            };
+            let TileContent::App(app) = host.content() else {
+                continue;
+            };
+            let mut named: Vec<(String, Rect)> = Vec::new();
+            collect_named_rects(app.as_ref() as &dyn Widget, &mut named);
+            for (name, rect) in named {
+                if first {
+                    out.push((name.clone(), rect));
+                }
+                out.push((format!("{name}[{}]", g.id), rect));
+            }
+            first = false;
         }
         out
     }
@@ -5013,5 +5061,25 @@ mod tests {
             row.needs_animation_frame(),
             "a strip making room must keep redrawing until it settles",
         );
+    }
+}
+
+/// Every named rect in `w`'s subtree: its `test_id`, its `test_rects`, and
+/// the same for each child. Zero-area rects are skipped — a name means "on
+/// screen now".
+fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
+    if let Some(id) = w.test_id() {
+        let r = w.get_rect();
+        if r.area() > 0.0 {
+            out.push((id.to_string(), r));
+        }
+    }
+    for (name, rect) in w.test_rects() {
+        if rect.area() > 0.0 {
+            out.push((name, rect));
+        }
+    }
+    for child in w.children() {
+        collect_named_rects(child, out);
     }
 }

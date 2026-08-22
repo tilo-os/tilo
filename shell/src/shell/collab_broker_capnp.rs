@@ -1475,6 +1475,7 @@ mod tests {
                 app_id: "legacy-editor".into(),
                 cluster_id: cluster,
                 record: None,
+                handle: None,
             },
         );
 
@@ -1590,6 +1591,7 @@ mod tests {
                 app_id: "legacy-observer".into(),
                 cluster_id: cluster,
                 record: None,
+                handle: None,
             },
         );
 
@@ -1669,6 +1671,7 @@ mod tests {
                 app_id: "legacy-cursor-observer".into(),
                 cluster_id: cluster,
                 record: None,
+                handle: None,
             },
         );
 
@@ -1791,6 +1794,7 @@ mod tests {
                 app_id: "writer".into(),
                 cluster_id: uuid::Uuid::new_v4(),
                 record: None,
+                handle: None,
             },
         );
         for seq in 1..=3 {
