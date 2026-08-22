@@ -95,6 +95,14 @@ impl Session {
             .clone()
             .unwrap_or_else(crate::wire::default_socket_path);
         let mut link = Link::connect(&path)?;
+        // The name here is self-declared, and a self-declared name is
+        // spoofable — which is why a *peer's* name is resolved through the
+        // room document, under the authority that admitted it, rather than
+        // taken from what the peer says it is called. The agent should end
+        // up resolving the same way. What keeps this honest meanwhile is
+        // that the agent is admitted by a capability its inviter granted,
+        // so nothing false is being asserted about who is in the room; the
+        // name is a label on a participant that was already let in.
         link.send(&CollabRequest::Hello {
             app_id: cfg.app_id.clone(),
             cluster_id: cfg.cluster,
