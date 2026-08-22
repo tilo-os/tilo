@@ -661,7 +661,7 @@ fn cooperative_scrollback_round_trip() {
     let socket = unique_socket("coop");
     let tmp = tempfile::tempdir().expect("tempdir");
     let key_path = tmp.path().join("peer-key");
-    let tree = WorkspaceTree::bootstrap_default().shared();
+    let tree = WorkspaceTree::bootstrap_demo().shared();
     let net = Arc::new(ShellNetwork::spawn(tree, &key_path).expect("spawn net"));
     let handle = collab_broker::spawn_with_peer_sync(socket.clone(), Some(Arc::clone(&net)))
         .expect("broker bind");
@@ -791,7 +791,7 @@ fn cooperative_request_published_when_local_empty() {
     let socket = unique_socket("coop-empty");
     let tmp = tempfile::tempdir().expect("tempdir");
     let key_path = tmp.path().join("peer-key");
-    let tree = WorkspaceTree::bootstrap_default().shared();
+    let tree = WorkspaceTree::bootstrap_demo().shared();
     let net = Arc::new(ShellNetwork::spawn(tree, &key_path).expect("spawn net"));
     let handle = collab_broker::spawn_with_peer_sync(socket.clone(), Some(Arc::clone(&net)))
         .expect("broker bind");
@@ -855,7 +855,7 @@ fn cooperative_responder_answers_when_log_has_match() {
     let socket = unique_socket("coop-responder");
     let tmp = tempfile::tempdir().expect("tempdir");
     let key_path = tmp.path().join("peer-key");
-    let tree = WorkspaceTree::bootstrap_default().shared();
+    let tree = WorkspaceTree::bootstrap_demo().shared();
     let net = Arc::new(ShellNetwork::spawn(tree, &key_path).expect("spawn net"));
     let handle = collab_broker::spawn_with_peer_sync(socket.clone(), Some(Arc::clone(&net)))
         .expect("broker bind");

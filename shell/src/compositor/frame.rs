@@ -97,7 +97,7 @@ impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
     pub fn new(viewport: (u32, u32)) -> Self {
-        Self::with_tree(WorkspaceTree::bootstrap_default(), viewport)
+        Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
     /// Build a frame builder around an explicit `WorkspaceTree` —
@@ -315,8 +315,62 @@ impl FrameBuilder {
     /// the file listing) looked fine, which is why only the terminal appeared
     /// "not real".
     pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        self.replicate_room_records();
         self.host.sync(doc, root);
         self.host.update(doc, root)
+    }
+
+    /// Hand the rooms' record indexes to the peer-replication path, and
+    /// fold in whatever peers have brought into the rooms this session
+    /// is in.
+    ///
+    /// Here rather than in the frame-tick closure because this is the
+    /// only per-frame place that holds **both** sides: the index lives on
+    /// the overlay host behind an `Rc<RefCell<_>>`, the tree behind an
+    /// `Arc<RwLock<_>>`, and `ui::App::set_frame_tick` requires a `Send +
+    /// Sync` closure that an `Rc` cannot enter.
+    ///
+    /// Cheap on a frame where nothing moved:
+    /// [`RoomRecords::replicate_with`] compares a generation counter
+    /// before it reads any document, and the inbound queue is an empty
+    /// `Vec` in the common case. The chrome is only bumped when something
+    /// actually arrived, so a quiet session does not repaint on account
+    /// of this.
+    fn replicate_room_records(&mut self) {
+        let index = self.host.room_records();
+
+        // Anything an exported action asked to bring here, first — so a
+        // reference made this frame is published in the same pass rather
+        // than waiting for the next one.
+        let requested = self.chrome.borrow_mut().take_record_requests();
+        if !requested.is_empty() {
+            // Bound in a block: `tree()` hands back a guard borrowed from
+            // the chrome `Ref`, so both have to outlive the read.
+            let here = {
+                let chrome = self.chrome.borrow();
+                let tree = chrome.tree();
+                tree.active_workspace().map(|w| w.room)
+            };
+            if let Some(here) = here {
+                let mut index = index.borrow_mut();
+                for (id, kind) in requested {
+                    let Some(record) = ui::record::RecordId::parse(&id) else {
+                        continue;
+                    };
+                    index.reference(here, &record, &ui::record::RecordKind::new(kind));
+                }
+            }
+        }
+
+        let arrived = {
+            let chrome = self.chrome.borrow();
+            let mut tree = chrome.tree_mut();
+            let mut index = index.borrow_mut();
+            index.replicate_with(&mut tree)
+        };
+        if arrived {
+            self.chrome.borrow_mut().bump();
+        }
     }
 
     /// Render the current frame into a fresh Vello scene. Caller is

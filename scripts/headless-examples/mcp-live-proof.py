@@ -106,11 +106,19 @@ def main() -> int:
     except FileNotFoundError:
         pass
 
+    # Isolate the whole home, not just the workspace tree: record
+    # documents live under `XDG_DATA_HOME`, so `QOS_STATE_PATH` alone
+    # leaves runs sharing documents with each other and with whatever is
+    # already on this machine.
     state_dir = tempfile.mkdtemp(prefix="qos-mcp-proof-")
     env = {
         **os.environ,
         "QOS_TEST_CONTROL": SOCKET,
         "QOS_STATE_PATH": os.path.join(state_dir, "state.json"),
+        "XDG_DATA_HOME": os.path.join(state_dir, "data"),
+        "XDG_CACHE_HOME": os.path.join(state_dir, "cache"),
+        "XDG_STATE_HOME": os.path.join(state_dir, "state"),
+        "XDG_CONFIG_HOME": os.path.join(state_dir, "config"),
     }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)

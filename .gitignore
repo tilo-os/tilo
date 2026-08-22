@@ -52,3 +52,6 @@ keys/*.private.pem
 # freshly built qos-rollback binary into the composefs build context
 os/dev/composefs/01-hardening.toml
 os/dev/composefs/stage/
+
+# Recorded demo output. Large binaries; regenerate with scripts/yc-demo.py --record.
+.claude/demo-artifacts/

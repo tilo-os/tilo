@@ -15,8 +15,6 @@
 //! [`ApplicationsProvider`]: super::applications::ApplicationsProvider
 //! [`ResourceKind`]: crate::shell::search::ResourceKind
 
-use std::rc::Rc;
-
 use crate::shell::chrome_state::Chrome;
 use crate::shell::host_apps::{self, HostApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
@@ -79,21 +77,21 @@ impl HostApplicationsProvider {
             let desktop_id = app.desktop_id.clone();
             let display_name = app.name.clone();
             let notify_name = display_name.clone();
-            out.push(SearchResult {
-                kind: ResourceKind::HostApplication,
-                provider_id: self.id().to_string(),
-                id: app.desktop_id.clone(),
-                title: format!("Open {}", app.name),
+            out.push(SearchResult::nullary(
+                ResourceKind::HostApplication,
+                self.id(),
+                app.desktop_id.clone(),
+                format!("Open {}", app.name),
                 // The subtitle says the thing the user needs before
                 // they press Enter, not the thing that is easiest to
                 // print. "Unconfined" is not decoration: this app is
                 // about to get the user's real home directory.
-                subtitle: Some(format!(
+                Some(format!(
                     "{} · unconfined host app · {}",
                     app.source_label, app.desktop_id
                 )),
                 score,
-                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                move |_doc, _root, chrome: &Chrome| {
                     // Where the window goes is decided now, while the
                     // layout the user was looking at is still true —
                     // the window itself maps seconds later, from a
@@ -125,8 +123,8 @@ impl HostApplicationsProvider {
                         );
                         st.bump();
                     }
-                }),
-            });
+                },
+            ));
         }
         out
     }
@@ -423,7 +421,13 @@ mod tests {
         );
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
-        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        (row.on_open)(
+            &mut doc,
+            &automerge::ROOT,
+            &c,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        )
+        .expect("launching takes no arguments");
         let st = c.borrow();
         let n = st
             .notifications()
