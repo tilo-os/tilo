@@ -581,6 +581,32 @@ impl App {
         app.text_scale = Self::text_scale_env().unwrap_or(1.0);
         app.ui_scale = Self::ui_scale_env().unwrap_or(1.0);
         app.rebuild_theme();
+
+        // Publish presence by default, scoped to the room this process
+        // collaborates in.
+        //
+        // This used to be the app's job, and the setter's own documentation
+        // says the shell calls it — but the shell cannot reach into another
+        // process's `App`, so for every sandboxed app the responsibility
+        // fell to its author, and almost none of them took it. An app that
+        // never set a scope did not merely hide its cursor: the scope is
+        // also what sends `Arrived`, the request that makes peers already
+        // holding the document reply with it. So those apps never announced
+        // themselves and never caught up on anything written before they
+        // opened, silently and with nothing logged.
+        //
+        // The room comes from `local_cluster_id`, the same value the
+        // collaboration address is built from, so presence and documents
+        // cannot end up in different rooms. With no room in the
+        // environment there is no scope and nothing is published — the
+        // nil cluster addresses nobody.
+        //
+        // `set_presence_broadcast_scope(None)` remains the opt-out for the
+        // cases that genuinely should not publish: teardown, and a surface
+        // that is not a participant.
+        if let Some(scope) = PresenceKey::for_local_workspace() {
+            app.set_presence_broadcast_scope(Some(scope));
+        }
         app
     }
 
@@ -4865,13 +4891,41 @@ mod pointer_broadcast_tests {
         );
     }
 
+    /// An app launched into a workspace publishes presence with no
+    /// app-side code.
+    ///
+    /// This replaces an earlier test that pinned the opposite contract
+    /// ("default None so broadcast is opt-in"). Opt-in was the defect: the
+    /// scope is what sends `Arrived`, so an app that never set one never
+    /// announced itself and never received the state written before it
+    /// opened — and 44 of 46 apps never set one.
     #[test]
-    fn default_scope_is_none_so_broadcast_is_opt_in() {
-        // A fresh App must not broadcast pointer presence by default —
-        // the headless tests and `quick-ui` examples rely on that.
-        let state = State::new();
-        let root = Box::new(crate::widget::Text::new("t"));
-        let app = App::new(state, root);
+    #[serial_test::serial]
+    fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
+        let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+        // SAFETY: serialised against the sibling env test below.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ID", room) };
+        let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
+        assert_eq!(
+            app.presence_broadcast_scope(),
+            Some(&PresenceKey::Workspace { id: room.to_string() }),
+            "a workspace in the environment is a scope, with no app-side call"
+        );
+        unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
+    }
+
+    /// Outside a session there is no room to publish into, so nothing is
+    /// published. The nil cluster addresses nobody; announcing under it
+    /// would be announcing into a room no one can be in.
+    #[test]
+    #[serial_test::serial]
+    fn an_app_with_no_workspace_publishes_nothing() {
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("QOS_WORKSPACE_ID");
+            std::env::remove_var("QUICK_CLUSTER_ID");
+        }
+        let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert!(app.presence_broadcast_scope().is_none());
     }
 
