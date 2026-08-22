@@ -1638,6 +1638,14 @@ impl App {
                     }
                 }
                 CollabEvent::CRDTIncremental { data } => {
+                    // The live-edit path: every keystroke a peer makes arrives
+                    // here. It is the one inbound variant that used to log
+                    // nothing, which made "did the edit cross?" unanswerable
+                    // from a debug run — the two ends looked identical whether
+                    // the delta was dropped in transit or applied silently.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv CRDTIncremental {}B", data.len());
+                    }
                     let _ = self.state.load_incremental(&data);
                     self.needs_sync = true;
                     self.layout_dirty = true;
@@ -2707,10 +2715,32 @@ impl App {
         match switched {
             Some(id) => {
                 self.collab_manager = CollaborationManager::for_record(&id);
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!(
+                        "[app] checked out record {}; collab connected={}",
+                        id.as_str(),
+                        self.collab_manager.is_connected()
+                    );
+                }
                 // The freshly-adopted document has not been through `sync`,
                 // and the widget's caches still describe the outgoing one.
                 self.needs_sync = true;
                 self.layout_dirty = true;
+                // Re-announce arrival on the channel we just moved to.
+                //
+                // `Arrived` is what asks the peers already holding this
+                // document to reply with a full snapshot, and the scope was
+                // announced once, before the loop started, on the connection
+                // this checkout has just replaced. Without re-announcing, a
+                // window that opens a file someone else is already editing
+                // hears only the edits made from then on and never the text
+                // that was already there.
+                if let Some(scope) = self.presence_broadcast_scope.clone() {
+                    self.broadcast_presence(
+                        scope,
+                        crate::collaboration::PresencePayload::Arrived,
+                    );
+                }
                 true
             }
             None => false,
@@ -4475,6 +4505,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // `sync` can move it (e.g. the initial auto-select), so re-broadcast
         // the diffed subset here too.
         app.broadcast_view_presence();
+
+        // Check out the record the root widget names, on the idle tick as
+        // well as on paint.
+        //
+        // The record is the collaboration address: until the checkout runs,
+        // this app is still announcing the pre-record channel, and a peer
+        // that has checked out is announcing the file's. Two windows on one
+        // document then sit on two channels and no edit crosses.
+        //
+        // Doing it only in `RedrawRequested` tied the address to painting,
+        // which is the one thing a collaborating window cannot be relied on
+        // to do: a background tab is not painted, and neither is a window
+        // whose first frame is still behind a shader compile. Both keep
+        // running this tick, so both settle on the right channel.
+        if app.record_tick() {
+            window.request_redraw();
+        }
 
         // Keep syncing on idle frames while a collab app is still seeding
         // or adopting the shared document. Without this a first peer with
