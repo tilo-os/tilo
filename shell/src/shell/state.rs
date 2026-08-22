@@ -486,6 +486,54 @@ pub enum TileContent {
         app_id: String,
         surface_id: u64,
     },
+    /// A window a peer has open in this room, named by the app that
+    /// draws it, before this machine has an instance of that app bound
+    /// to the tab.
+    ///
+    /// This is what a [`TileContent::Foreign`] becomes when it arrives
+    /// from someone else: a peer's `surface_id` is a handle on *their*
+    /// compositor's client and resolves here to nothing at best and to
+    /// somebody else's window at worst, so the surface is dropped and
+    /// the app id — the one part of the tile that means the same thing
+    /// on both machines — is kept.
+    ///
+    /// It is a waypoint, not a destination. `shell::peer_windows` reads
+    /// these, and where the room permits it and the app is installed,
+    /// starts a local instance in the same room and binds it into this
+    /// tab ([`crate::compositor::tab_binding::Placement::IntoTab`]) —
+    /// after which the tile is a `Foreign` like any other and this
+    /// variant is gone. It survives only where that cannot happen, and
+    /// then it is what the user is shown, so `label` and the reason are
+    /// what they read.
+    ///
+    /// Never projected into a room document: the projection writes only
+    /// tabs this machine owns, and a `PeerWindow` is by construction
+    /// somebody else's.
+    PeerWindow {
+        /// The wayland app-id the peer's window announces — for a qOS
+        /// package, its package id.
+        app_id: String,
+        /// What to call it on screen. The peer's own tab title, which
+        /// they resolved through their installed-app names, so it reads
+        /// "Word Processor" rather than "dev.qos.word-processor"
+        /// wherever they had the app installed.
+        label: String,
+        /// What this machine is doing about it, in the words the user
+        /// reads on the card — "Opening here…", or the reason there will
+        /// be no window.
+        ///
+        /// Empty means nobody has looked yet, and that is also how
+        /// `shell::peer_windows` knows which tabs it still owes an
+        /// answer: writing the note *is* the record of the decision, so a
+        /// refusal is stated once and a launch is started once.
+        ///
+        /// A sentence rather than a code because there is exactly one
+        /// place it is produced (`shell::peer_windows::examine`) and
+        /// exactly one place it is read (the card), and a code would only
+        /// add a second table to keep in step with the first.
+        #[serde(default)]
+        note: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -3191,7 +3239,7 @@ impl WorkspaceTree {
                             *changed = true;
                         }
                         if let Some(tile) = rep.tile.clone() {
-                            let tile = Self::localise_tile(tile);
+                            let tile = Self::localise_tile(tile, Some(&tab.tile), &rep.title);
                             if serde_json::to_vec(&tab.tile).ok()
                                 != serde_json::to_vec(&tile).ok()
                             {
@@ -3253,16 +3301,17 @@ impl WorkspaceTree {
 
     /// A tab that arrived from a peer.
     fn hydrate_tab(rep: ReplicatedTab) -> Tab {
+        let title = rep.title;
         Tab {
-            id: rep.id,
-            title: rep.title,
             tile: rep
                 .tile
-                .map(Self::localise_tile)
+                .map(|tile| Self::localise_tile(tile, None, &title))
                 .unwrap_or(TileContent::Stub {
                     kind: AppKind::Other(String::new()),
                     label: String::new(),
                 }),
+            id: rep.id,
+            title,
         }
     }
 
@@ -3271,16 +3320,49 @@ impl WorkspaceTree {
     /// [`TileContent::Foreign`] names a `wl_surface` protocol id, which is
     /// this compositor's handle on a client *it* is hosting. A peer's
     /// number resolves here to nothing at best and to somebody else's
-    /// window at worst, so it is degraded to a stub carrying the app id:
-    /// honest about what is open in the room, and not pretending to be a
-    /// live surface. The pixels of a remote window are what
-    /// foreign-surface streaming is for; this is the window's *existence*.
-    fn localise_tile(tile: TileContent) -> TileContent {
+    /// window at worst, so the surface is dropped and what survives is the
+    /// app id, as a [`TileContent::PeerWindow`] — which is what
+    /// `shell::peer_windows` then starts a local instance of, so the tab
+    /// ends up hosting a real window of the same app on the same room.
+    ///
+    /// `current` is what this tab holds here *now*, and it is why this
+    /// takes an argument at all. Once a local instance has been bound into
+    /// the tab the tile is a `Foreign` naming this machine's own surface,
+    /// and the peer keeps re-projecting their `Foreign` naming theirs. A
+    /// merge that overwrote ours with theirs on every round would take the
+    /// window away again a fraction of a second after it appeared, forever.
+    /// So a local binding for the same app wins over the remote tile: the
+    /// remote one carries no information we do not already have.
+    fn localise_tile(
+        tile: TileContent,
+        current: Option<&TileContent>,
+        title: &str,
+    ) -> TileContent {
         match tile {
-            TileContent::Foreign { app_id, .. } => TileContent::Stub {
-                kind: AppKind::Other(app_id.clone()),
-                label: app_id,
-            },
+            TileContent::Foreign { app_id, .. } => {
+                // Already resolved here — either to our own instance of
+                // the same app, or to the same waypoint. Either way the
+                // remote tile has nothing to add.
+                match current {
+                    Some(TileContent::Foreign { app_id: local, .. })
+                    | Some(TileContent::PeerWindow { app_id: local, .. })
+                        if local.eq_ignore_ascii_case(&app_id) =>
+                    {
+                        return current.cloned().expect("matched a Some");
+                    }
+                    _ => {}
+                }
+                let label = if title.trim().is_empty() {
+                    app_id.clone()
+                } else {
+                    title.to_string()
+                };
+                TileContent::PeerWindow {
+                    app_id,
+                    label,
+                    note: String::new(),
+                }
+            }
             other => other,
         }
     }
@@ -8808,5 +8890,154 @@ mod agent_membership {
         )
         .expect("owner grants");
         assert!(ws.agent_members().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod peer_window_merge_tests {
+    //! What a peer's window becomes here, and what keeps it that way.
+    //!
+    //! Asserted against `WorkspaceTree::merge_group`, the function the
+    //! room-sync path actually runs, rather than against a helper written
+    //! to agree with it.
+
+    use super::*;
+
+    const APP: &str = "dev.qos.word-processor";
+
+    /// Somebody else's tab, as the room document delivers it.
+    fn remote_tab(id: u64, surface: u64) -> ReplicatedTab {
+        ReplicatedTab {
+            id,
+            order: 0,
+            title: "Word Processor".into(),
+            tile: Some(TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: surface,
+            }),
+        }
+    }
+
+    fn group_with(tab: Tab) -> WindowGroup {
+        let active_tab = tab.id;
+        WindowGroup {
+            id: next_id(),
+            tabs: vec![tab],
+            active_tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }
+    }
+
+    /// A peer's `Foreign` names a surface on *their* compositor. Kept
+    /// verbatim it would resolve here to nothing, or to an unrelated
+    /// window of ours; what survives instead is the app id, which means
+    /// the same thing on both machines and is what a local instance can be
+    /// started from.
+    #[test]
+    fn a_peers_window_arrives_as_the_app_it_names() {
+        let local = group_with(Tab {
+            id: 7,
+            title: String::new(),
+            tile: TileContent::Stub {
+                kind: AppKind::Other(String::new()),
+                label: String::new(),
+            },
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            tabs: vec![remote_tab(7, 4242)],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::PeerWindow { app_id, label, note } => {
+                assert_eq!(app_id, APP);
+                assert_eq!(label, "Word Processor", "the peer's own name for it");
+                assert!(note.is_empty(), "nobody has answered for it yet");
+            }
+            other => panic!("expected a peer window, got {other:?}"),
+        }
+    }
+
+    /// The binding survives the peer's next projection.
+    ///
+    /// Once this machine has started its own instance and bound it into
+    /// the tab, the tile names *our* surface while the peer keeps
+    /// re-projecting theirs. A merge that took theirs each round would
+    /// take the window away again a fraction of a second after it
+    /// appeared, on every sync interval, forever — which is the shape a
+    /// naive "the document wins" merge produces.
+    #[test]
+    fn a_local_instance_is_not_clobbered_by_the_peers_own_surface() {
+        let local = group_with(Tab {
+            id: 7,
+            title: "Word Processor".into(),
+            // What `bind_into_tab` left here after our instance mapped.
+            tile: TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: 99,
+            },
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            // The peer's surface id, which is not ours.
+            tabs: vec![remote_tab(7, 4242)],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::Foreign { app_id, surface_id } => {
+                assert_eq!(app_id, APP);
+                assert_eq!(
+                    *surface_id, 99,
+                    "the tab must keep hosting this machine's own window"
+                );
+            }
+            other => panic!("expected our own surface, got {other:?}"),
+        }
+        assert!(!changed, "a merge that changed nothing must not say it did");
+    }
+
+    /// A different app taking the tab over *is* news, and is taken.
+    /// The rule is "a local binding for the same app wins", not "whatever
+    /// is here wins" — the second would strand the tab on a window whose
+    /// tab now holds something else.
+    #[test]
+    fn a_different_app_in_the_tab_still_replaces_what_is_here() {
+        let local = group_with(Tab {
+            id: 7,
+            title: "Word Processor".into(),
+            tile: TileContent::Foreign {
+                app_id: APP.into(),
+                surface_id: 99,
+            },
+        });
+        let mut rep_tab = remote_tab(7, 4242);
+        rep_tab.title = "Terminal".into();
+        rep_tab.tile = Some(TileContent::Foreign {
+            app_id: "dev.qos.terminal".into(),
+            surface_id: 4242,
+        });
+        let rep = ReplicatedGroup {
+            id: local.id,
+            order: 0,
+            width: None,
+            maximized: None,
+            tabs: vec![rep_tab],
+        };
+        let mut changed = false;
+        let merged = WorkspaceTree::merge_group(local, rep, &|_| false, &mut changed);
+        match &merged.tabs[0].tile {
+            TileContent::PeerWindow { app_id, .. } => assert_eq!(app_id, "dev.qos.terminal"),
+            other => panic!("expected the new app, got {other:?}"),
+        }
+        assert!(changed);
     }
 }
