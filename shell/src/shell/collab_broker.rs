@@ -2116,7 +2116,7 @@ mod tests {
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
         let socket_path = temp_sock("record-over-the-wire");
-        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
         let net = std::sync::Arc::new(net);
         let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))

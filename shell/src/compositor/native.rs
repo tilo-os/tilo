@@ -2063,7 +2063,7 @@ pub fn run() -> ! {
     // room identity, its owner, its capability list — is a fact about
     // *this* machine that has to survive a restart, and until now this
     // entry point had none of it: `FrameBuilder::new` handed the
-    // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
+    // compositor `WorkspaceTree::bootstrap_demo()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
     let (tree_handle, enable_peer_sync, state_notice) = load_session_tree(enable_peer_sync);
     let mut frame_builder = FrameBuilder::with_handle_and_records(

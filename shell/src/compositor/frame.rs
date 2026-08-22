@@ -97,7 +97,7 @@ impl FrameBuilder {
     /// Build a frame builder around the canonical bootstrap workspace
     /// tree at `viewport` size.
     pub fn new(viewport: (u32, u32)) -> Self {
-        Self::with_tree(WorkspaceTree::bootstrap_default(), viewport)
+        Self::with_tree(WorkspaceTree::bootstrap_demo(), viewport)
     }
 
     /// Build a frame builder around an explicit `WorkspaceTree` —

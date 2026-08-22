@@ -849,10 +849,10 @@ mod tests {
 
     #[test]
     fn switch_workspace_pushes_a_notification() {
-        // Use `bootstrap_default` so we have ≥2 workspaces and a switch
+        // Use `bootstrap_demo` so we have ≥2 workspaces and a switch
         // is meaningful. `WorkspaceTree::default()` constructs an empty
         // tree which cannot exercise the down-switch.
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         // Bootstrap leaves the first workspace active; clear any
         // notifications synthesised by setup helpers.
         chrome.borrow_mut().notifications.clear();

@@ -416,8 +416,8 @@ impl TopBarChrome {
             .unwrap_or((0, String::from("Workspace")));
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Roster source: prefer the active workspace's own collaborators
-        // (per-workspace seed in `WorkspaceTree::bootstrap_default`), and
+        // Roster source: prefer the active workspace's own collaborators —
+        // people actually admitted to *this* workspace — and
         // fall back to the tree-level roster only when the active workspace
         // carries no peers — mirrors the precedence applied by
         // `sidebar_wheel_chrome::sync_from_tree`. The local user (`id ==
