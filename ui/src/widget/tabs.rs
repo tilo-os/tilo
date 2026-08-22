@@ -114,27 +114,47 @@ pub(crate) struct PillAppearance {
 /// The active-tier fill / border / glow stay the same when hovered so
 /// an active pill never gets *more* prominent on hover — the contrast
 /// gain is solely on inactive pills brightening into the active tier.
+/// The veneer tiers a tab pill raises itself with.
+///
+/// Deliberately *not* the theme's `overlay_*` tokens. Those describe a wash
+/// over the theme's own surface, and a pill is not on one: every pill paints
+/// four rings of black drop shadow first, so its immediate ground is a
+/// shadow-darkened trough in light themes just as much as in dark ones. A
+/// veneer that correctly darkens a white card would push the pill *into* that
+/// trough instead of lifting it out, inverting the one thing the tier is for.
+/// Relative to the trough, "raised" means lighter in either polarity.
+///
+/// This is a workaround for the shadow rings, not a design intent: on a light
+/// ground those rings merge into a heavy grey band behind the whole strip
+/// (measurably `#A6A6A6` behind a `#FFFFFF` card). Giving the strip a real
+/// per-theme elevation model — a soft shadow with the pill sitting at the
+/// card colour, the way light-theme elevation actually works — would remove
+/// the need for this and let the pills read from the shared tokens.
+fn pill_tiers(_theme: &Theme) -> crate::tokens::OverlayTiers {
+    crate::tokens::dark_overlays()
+}
+
 pub(crate) fn pill_appearance(
     theme: &Theme,
     is_active: bool,
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    let colors = &theme.tokens.colors;
+    let (v_subtle, v_medium, _v_strong, vb_subtle, vb_strong) = pill_tiers(theme);
     // Pressed implies active-tier visuals (the user only ever presses
     // the tab they intend to focus next), even if the pill isn't the
     // currently-active one yet — gives instant click feedback before
     // the activation propagates through the parent.
     let raised = is_active || is_pressed;
     let fill = if raised {
-        colors.surface_white_10
+        v_medium
     } else if is_hover {
-        colors.surface_white_5
+        v_subtle
     } else {
         vello::peniko::Color::TRANSPARENT
     };
-    let border = if raised { Some(colors.border_white_10) } else { None };
-    let inner_glow = if raised { Some(colors.border_white_20) } else { None };
+    let border = if raised { Some(vb_subtle) } else { None };
+    let inner_glow = if raised { Some(vb_strong) } else { None };
     let scale = if is_pressed { PRESS_SCALE } else { 1.0 };
     PillAppearance { fill, border, inner_glow, scale }
 }
@@ -775,7 +795,7 @@ impl TabBar {
         // user can still read the title + close glyph clearly during
         // the fade-out.
         let shape = RoundedRect::from_rect(r, radius);
-        let fill = theme.tokens.colors.surface_white_5;
+        let fill = pill_tiers(theme).0;
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
@@ -1584,14 +1604,14 @@ impl Widget for TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.surface_white_10,
+                    pill_tiers(theme).1,
                     None,
                     &shape,
                 );
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
                     transform,
-                    colors.border_white_20,
+                    pill_tiers(theme).4,
                     None,
                     &shape,
                 );
@@ -1599,7 +1619,7 @@ impl Widget for TabBar {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
                     transform,
-                    colors.border_white_10,
+                    pill_tiers(theme).3,
                     None,
                     &shape,
                 );
