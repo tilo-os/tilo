@@ -2035,16 +2035,18 @@ mod tests {
         let (json_path, capnp_path) = unique_paths("capnp-snapshot-outbound");
         let tree = crate::shell::state::WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0u64);
-        let handle = spawn_full(
-            json_path.clone(),
-            Some(capnp_path.clone()),
-            Some(Arc::new(net)),
-        )
-        .expect("spawn broker");
+        let net = Arc::new(net);
+        let net_for_arrival = Arc::clone(&net);
+        let handle = spawn_full(json_path.clone(), Some(capnp_path.clone()), Some(net))
+            .expect("spawn broker");
 
         let cluster = uuid::Uuid::new_v4();
         let channel_id = CrdtRoute::record("dev.qos.words", cluster.to_string(), "/notes/a.md")
             .channel_key();
+
+        // A peer in this room has announced it has arrived, which is
+        // what makes a whole document worth its size on the topic.
+        net_for_arrival.note_snapshot_request(&cluster.to_string());
 
         let capnp_path_clone = capnp_path.clone();
         let joined = channel_id.clone();

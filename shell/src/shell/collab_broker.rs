@@ -1702,6 +1702,17 @@ pub fn spawn_full(
                             else {
                                 continue;
                             };
+                            // A peer saying it has arrived is a peer
+                            // asking for a document it has none of.
+                            // Note it, so the next whole document this
+                            // host's apps produce is published instead
+                            // of stopping at the local fan-out — and so
+                            // the ones produced when nobody is waiting
+                            // are not. See
+                            // `ShellNetwork::note_snapshot_request`.
+                            if matches!(&payload, ui::collaboration::PresencePayload::Arrived) {
+                                drain_net.note_snapshot_request(&entry.cluster_id);
+                            }
                             // Attributed to the publishing host, not to
                             // a local peer slot: `user_id` is what the
                             // receiving app colours the caret by, so two
