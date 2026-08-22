@@ -1,6 +1,13 @@
 # qOS
 
-A spatial, collaborative Linux desktop built as a vertically-integrated stack:
+A collaborative Linux desktop, shipped as an image-based OS: Niri-like strips of
+non-overlapping windows, inside workspaces that carry their own collaborators, permissions
+and host. Collaboration lives below applications rather than inside them — apps expose
+resources and actions over CRDT state the system owns, which is what makes search,
+undo/history, device sync, accessibility and theming system services instead of per-app
+features.
+
+Built as a vertically-integrated stack:
 
 - **`shell/`** — Wayland compositor. Niri-inspired scrollable strips of tiled window-groups; wheel-disc workspace switcher; no overlapping windows. Per-workspace bubblewrap sandbox with seccomp deny-by-default. Built on `smithay` + `vello` + `wgpu`. Collaboration over `libp2p` (gossipsub + mDNS) + `automerge` incremental sync.
 - **`ui/`** — Retained-mode CRDT-native UI toolkit. Every widget reads/writes a shared automerge document, so undo, redo, persistence, and remote collaboration all share one mechanism. Stack: `wgpu` + `vello` + `taffy` + `cosmic-text` + `winit` + `fluent`.
@@ -92,6 +99,6 @@ Full reference: [`docs/headless-testing.md`](docs/headless-testing.md).
 
 ## Status
 
-Single-monitor single-user is feature-complete: spatial tiling, drag-to-detach tabs, undo/redo everywhere, collaborative cursors, peer-shared tabs (H.264), per-workspace sandbox with portal-mediated grants, FUSE-projected workspaces, headless test infrastructure with the same output pixels as the live binary.
+Single-monitor single-user is feature-complete: strip tiling, drag-to-detach tabs, undo/redo everywhere, collaborative cursors, peer-shared tabs (H.264), per-workspace sandbox with portal-mediated grants, FUSE-projected workspaces, headless test infrastructure with the same output pixels as the live binary.
 
 Deferred for daily-driver: multi-monitor, AT-SPI tree (accessibility), audio routing, notifications, session-lock + power management, full DRM hardware paint on bare metal.
