@@ -345,11 +345,6 @@ pub trait ControlState {
     fn peers_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// Give every window group in the active strip the same share of
-    /// it. Default impl refuses, so mock fixtures need not implement it.
-    fn set_group_widths(&self, _permille: u16) -> Result<serde_json::Value, String> {
-        Err("this control state cannot resize groups".into())
-    }
     /// Per-surface frame ground truth: what the compositor itself knows
     /// about whether each foreign toplevel has ever presented.
     ///
@@ -439,6 +434,10 @@ pub enum PlannedAction {
     /// invocation. Failures are logged via `eprintln!` — they don't
     /// propagate to the wire response (Phase 5 will).
     Snapshot { path: PathBuf },
+    /// Give every live window group the same share of its strip, in
+    /// permille. Applied against the widget tree because that is where
+    /// the laid-out width lives.
+    SetGroupWidth { permille: u16 },
 }
 
 /// Wire-friendly key identifier. Mirrors the subset of
@@ -780,8 +779,10 @@ pub fn dispatch_command<S: ControlState>(
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],
         ),
         Command::SetGroupWidth { permille } => (
-            answer_or_err(state.set_group_widths(*permille), "set_width_refused"),
-            Vec::new(),
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::SetGroupWidth {
+                permille: *permille,
+            }],
         ),
         Command::PointerButton { pressed } => (
             Response::Ok { frame: 0 },
