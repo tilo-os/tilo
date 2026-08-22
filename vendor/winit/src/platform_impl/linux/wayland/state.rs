@@ -112,6 +112,10 @@ pub struct WinitState {
     /// KWin blur manager.
     pub kwin_blur_manager: Option<KWinBlurManager>,
 
+    /// Drag-and-drop receive state; `None` when the compositor offers no
+    /// `wl_data_device_manager`.
+    pub dnd: Option<crate::platform_impl::wayland::seat::DndState>,
+
     /// Loop handle to re-register event sources, such as keyboard repeat.
     pub loop_handle: LoopHandle<'static, Self>,
 
@@ -161,6 +165,26 @@ impl WinitState {
         let shm = Shm::bind(globals, queue_handle).map_err(WaylandError::Bind)?;
         let custom_cursor_pool = Arc::new(Mutex::new(SlotPool::new(2, &shm).unwrap()));
 
+        // Drag-and-drop: the bytes of a drop are read on a thread and come
+        // back through this channel, on the event-loop thread, as events.
+        let dnd = match crate::platform_impl::wayland::seat::DndState::new(globals, queue_handle) {
+            Some((dnd, channel)) => {
+                let inserted = loop_handle.insert_source(channel, |event, _, winit_state: &mut WinitState| {
+                    if let calloop::channel::Event::Msg(payload) = event {
+                        winit_state.deliver_dnd(payload);
+                    }
+                });
+                match inserted {
+                    Ok(_) => Some(dnd),
+                    Err(e) => {
+                        tracing::warn!("could not register the drag-and-drop channel, drops are disabled: {e:?}");
+                        None
+                    },
+                }
+            },
+            None => None,
+        };
+
         Ok(Self {
             registry_state,
             compositor_state: Arc::new(compositor_state),
@@ -193,6 +217,7 @@ impl WinitState {
 
             monitors: Arc::new(Mutex::new(monitors)),
             events_sink: EventSink::new(),
+            dnd,
             loop_handle,
             // Make it true by default.
             dispatched_events: true,
