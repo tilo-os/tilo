@@ -1861,6 +1861,152 @@ fn topbar_right_cluster_paints_nobody_when_the_workspace_is_empty() {
     );
 }
 
+/// Two real peers, from the wire to painted avatars, through the
+/// production path and nothing else.
+///
+/// The two halves of the roster bug met here. `bootstrap_default` used
+/// to seed people nobody invited, and the presence fold used a frame's
+/// name to label a cursor and then dropped it — so the bar painted
+/// fabricated participants and had no way to learn about real ones. This
+/// starts from an empty first-boot tree, feeds it the exact
+/// `InboundPresence` records the network hands the compositor, and
+/// asserts the bar paints those two people and only those two.
+///
+/// Forbidden modifications (re: the file header covenant):
+/// - Don't seed `ws.collaborators` directly; the point is that the
+///   presence path is what fills it.
+/// - Don't drop the empty-before assertion. "Two avatars painted" is
+///   satisfied by a bar that fabricates two, and the before/after pair
+///   is what separates those.
+#[test]
+fn two_peers_arriving_off_the_wire_paint_two_avatars_on_the_bar() {
+    use shell::shell::network::InboundPresence;
+    use shell::shell::peer_presence::fold_inbound;
+    use ui::presence::PresenceKey;
+
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let room = tree.active_workspace().expect("active workspace").room;
+
+    // Nobody has arrived yet.
+    let before = TopBarChrome::from_tree(&tree);
+    assert!(
+        before.collaborator_initials().is_empty(),
+        "the bar must start empty, or the assertions below prove nothing"
+    );
+
+    // Exactly what the network layer buffers for the compositor: a room-
+    // scoped pointer frame per publishing session, each naming who is at
+    // it.
+    let key = serde_json::to_string(&PresenceKey::Workspace {
+        id: room.to_string(),
+    })
+    .expect("a workspace key serialises");
+    let frames = vec![
+        InboundPresence {
+            peer: 0x11,
+            user: "bob".into(),
+            key: key.clone(),
+            point: (100.0, 100.0),
+            ts: 0,
+        },
+        InboundPresence {
+            peer: 0x22,
+            user: "dana".into(),
+            key,
+            point: (400.0, 300.0),
+            ts: 0,
+        },
+    ];
+
+    // The compositor's frame loop: fold the frames, then put whoever
+    // they came from on that room's roster.
+    let mut presence = PresenceCtx::default();
+    let seen = fold_inbound(frames, &mut presence);
+    assert_eq!(seen.len(), 2, "both frames must be reported as sightings");
+    for s in &seen {
+        assert!(
+            tree.note_peer_present(
+                shell::shell::state::RoomId::parse(&s.room).expect("a room id"),
+                s.peer,
+                &s.user,
+            ),
+            "{} arriving must change the roster",
+            s.user
+        );
+    }
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    let mut initials: Vec<char> = chrome.collaborator_initials().to_vec();
+    initials.sort_unstable();
+    assert_eq!(
+        initials,
+        vec!['B', 'D'],
+        "the bar must name the two people who published, not their \
+         session handles"
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        0,
+        "two peers is two chips and no overflow"
+    );
+
+    // And they are painted, in two colours the room settled apart.
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    let fills = collect_solid_colors(&scene);
+
+    let colors = chrome.collaborator_colors();
+    assert_eq!(colors.len(), 2, "one colour per painted chip");
+    assert_ne!(
+        colors[0], colors[1],
+        "two people in one room must not be painted the same colour"
+    );
+    for c in colors {
+        let rgba = c.to_rgba8();
+        assert!(
+            contains_color_close(&fills, (rgba.r, rgba.g, rgba.b), 8),
+            "a peer's resolved colour {:?} never reached the scene; \
+             observed fills: {fills:?}",
+            (rgba.r, rgba.g, rgba.b)
+        );
+    }
+}
+
 /// The top-bar collaborator cluster is painted through the shared
 /// `ui::Avatar` (`draw_ringed_at` per chip, `draw_overflow_at` for the tail),
 /// so it must render the *expected count* — three peer chips plus a "+N"
