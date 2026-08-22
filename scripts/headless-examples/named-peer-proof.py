@@ -531,14 +531,18 @@ def main() -> int:
         time.sleep(8.0)
 
         step("ada writes, so there is a document for bob to stand in")
-        ada.click_at(800.0, 560.0)
+        # Inside the page, not under it. The layout bar sits below the
+        # canvas, and a click that lands there focuses chrome — so the
+        # text goes somewhere that is not the document and the run reads
+        # afterwards exactly like a document that failed to sync.
+        ada.click_at(600.0, 380.0)
         time.sleep(1.5)
         ada.type_text("The room knows who is in it.")
         time.sleep(3.0)
         ada.snapshot(os.path.join(shots, "01-ada-typed.png"))
 
         step("and bob puts his caret in it")
-        bob.click_at(800.0, 560.0)
+        bob.click_at(600.0, 380.0)
         time.sleep(1.5)
         bob.type_text(" bob was here.")
         time.sleep(4.0)
