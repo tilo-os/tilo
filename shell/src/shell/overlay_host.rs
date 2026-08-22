@@ -2938,17 +2938,24 @@ impl ShellOverlayHost {
         posted
     }
 
-    /// Retire the "Opening …" notice of any app whose window has now
-    /// appeared.
+    /// Retire the "Opening …" notice of any app that is now on screen.
     ///
-    /// This is the success half of an open's settlement, and it is
-    /// deliberately keyed on the thing the user is actually waiting for.
-    /// A launch reports `Started` when the launcher forks, which on a
-    /// cold open is seconds before there is anything on screen; settling
-    /// on that put the desktop back to silence while the user was still
-    /// waiting. A tab holding the app's surface is the first moment the
-    /// answer is visible, so that is the moment the standing indication
-    /// has done its job.
+    /// This is the success half of an open's settlement, and what counts
+    /// as "on screen" is the point of it.
+    ///
+    /// A launch reports `Started` when the launcher process forks, which
+    /// on a cold open is seconds before there is anything to look at.
+    /// Settling on that put the desktop back to silence while the user
+    /// was still waiting, which is the whole defect.
+    ///
+    /// A tab existing is not the answer either, and that is the subtler
+    /// half: the compositor adopts a tab when the client creates its
+    /// toplevel, and the client then takes seconds more to present its
+    /// first buffer. Between those two moments the tab is the
+    /// compositor's own placeholder, which by eye is indistinguishable
+    /// from an app that has not started — measured at 2.3 s on a cold
+    /// open here. So the settlement is the app's **first frame**: the
+    /// first moment the person is looking at the thing they asked for.
     ///
     /// Returns whether anything was retired, so the caller can mark the
     /// frame dirty.
@@ -2960,7 +2967,7 @@ impl ShellOverlayHost {
         let Some(chrome_handle) = self.chrome.clone() else {
             return false;
         };
-        let open_app_ids: Vec<String> = {
+        let painted: Vec<String> = {
             let st = chrome_handle.borrow();
             st.tree()
                 .workspaces
@@ -2969,19 +2976,22 @@ impl ShellOverlayHost {
                 .flat_map(|s| s.window_groups.iter())
                 .flat_map(|g| g.tabs.iter())
                 .filter_map(|t| match &t.tile {
-                    crate::shell::state::TileContent::Foreign { app_id, .. } => {
+                    crate::shell::state::TileContent::Foreign {
+                        app_id,
+                        surface_id,
+                    } if crate::compositor::foreign::store().frame_seq(*surface_id) > 0 => {
                         Some(app_id.clone())
                     }
                     _ => None,
                 })
                 .collect()
         };
-        if open_app_ids.is_empty() {
+        if painted.is_empty() {
             return false;
         }
         let mut retired = false;
         for (package_id, notice) in pending {
-            let showing = open_app_ids
+            let showing = painted
                 .iter()
                 .any(|id| crate::shell::launcher::app_id_matches_package(id, &package_id));
             if !showing {
@@ -11817,25 +11827,42 @@ mod palette_dispatch_tests {
             "the user is still waiting; the acknowledgement must still be up"
         );
 
-        // The app's window arrives.
+        // The client creates its toplevel, and the compositor adopts a
+        // tab for it. This is *not* the end of the wait: the tab is the
+        // compositor's placeholder and the client has not presented
+        // anything yet.
+        const SURFACE: u64 = 918_273;
+        crate::compositor::foreign::store().forget(SURFACE);
         {
             let st = chrome.borrow();
             let mut tree = st.tree_mut();
             crate::compositor::tab_binding::adopt_toplevel(
                 &mut tree,
-                918_273,
+                SURFACE,
                 Some("dev.qos.retirefixture".to_string()),
             );
         }
+        assert!(
+            !h.retire_notices_for_opened_windows(),
+            "a tab holding a surface that has never painted is a placeholder; \
+             retiring on it hands the user back an empty desktop"
+        );
+        assert!(
+            chrome.borrow().notifications().iter().any(|n| n.id == notice),
+            "still waiting — the client has not presented"
+        );
 
+        // And now it paints.
+        crate::compositor::foreign::store().publish_rgba(SURFACE, &[9, 9, 9, 255], 1, 1);
         assert!(
             h.retire_notices_for_opened_windows(),
-            "the window appearing is what settles the open"
+            "the first frame is what settles the open"
         );
         assert!(
             !chrome.borrow().notifications().iter().any(|n| n.id == notice),
             "once the app is on screen the indication has done its job"
         );
+        crate::compositor::foreign::store().forget(SURFACE);
     }
 
     /// Escape still dismisses. The card gained chords; it must not have

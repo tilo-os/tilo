@@ -117,7 +117,7 @@ class Session:
             "QOS_PEER_KEY_PATH": str(self.dir / "keys" / "peer-key"),
             "QOS_APPS_DATA_DIR": str(apps_dir),
             "QOS_RUNTIME_BUNDLE_DIR": str(runtime_bundles),
-            "NIRIOS_HEADLESS_SIZE": "1600x1000",
+            "NIRIOS_HEADLESS_SIZE": "2000x1000",
             # de_DE host, and bwrap does not clear the environment.
             "LC_ALL": "en_US.UTF-8",
             "LANG": "en_US.UTF-8",
@@ -309,6 +309,18 @@ def main() -> int:
             time.sleep(1.5)
 
         time.sleep(2.0)
+        # Two apps at their natural widths scroll the first group's tab
+        # bar off the left of the strip, and a shot that cannot show
+        # both labels does not settle a claim about both labels. Give
+        # each group a share that fits.
+        s.ok({"op": "set_group_width", "permille": 420})
+        time.sleep(1.0)
+        # The strip scrolls to follow focus, and opening the second app
+        # left the first one's tab bar off the left edge. Focus the first
+        # group again so the strip scrolls back to it; at this width the
+        # second stays beside it.
+        s.ok({"op": "click_at", "x": 200.0, "y": 600.0})
+        time.sleep(1.5)
         s.snapshot(args.out / "tabs.png")
         tabs = s.foreign_tabs()
         print(f"\n  tabs on screen: {tabs}")
