@@ -841,6 +841,35 @@ impl WindowGroup {
         true
     }
 
+    /// Close the tab the user is looking at, exactly as clicking its `✕`
+    /// does: `TabBar::start_closing` snapshots the pill, shifts active-id
+    /// to a neighbour and publishes `pending_close`, which this group's
+    /// `handle_event` drains into the host fade on the next dispatch.
+    ///
+    /// Exists because close was pointer-only. The `✕` is painted only
+    /// while a pill is active, hovered or pressed, so on an inactive tab
+    /// it takes a hover to discover and a second gesture to hit — no
+    /// route at all for someone driving by keyboard. Returns `false` when
+    /// the group has no live tab to close.
+    pub fn request_close_active_tab(&mut self) -> bool {
+        let id = self.bar.active_id();
+        self.bar.start_closing(id)
+    }
+
+    /// Drain a right-click on one of this group's tab pills: the tab it
+    /// landed on, and where to anchor the menu. The shell raises the menu
+    /// — the toolkit only reports the intent.
+    pub fn take_tab_context_menu(&mut self) -> Option<(u64, Point)> {
+        self.bar.take_context_menu()
+    }
+
+    /// Close `tab_id` in this group, whether or not it is the active tab
+    /// — the route a context menu raised over a specific pill takes.
+    /// Same production path as [`Self::request_close_active_tab`].
+    pub fn request_close_tab(&mut self, tab_id: u64) -> bool {
+        self.bar.start_closing(tab_id)
+    }
+
     /// True while this group's `TabBar` has a drag in flight. Exposed so
     /// the parent `GroupRow` can paint inter-group drop-zone indicators
     /// while any child is dragging.
