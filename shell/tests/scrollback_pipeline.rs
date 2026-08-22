@@ -55,19 +55,6 @@ fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent>
     serde_json::from_slice(&body).ok()
 }
 
-fn drain_events(stream: &mut UnixStream, timeout: Duration) -> Vec<CollabEvent> {
-    let deadline = Instant::now() + timeout;
-    let mut out = Vec::new();
-    while Instant::now() < deadline {
-        let remain = deadline.saturating_duration_since(Instant::now());
-        match read_event(stream, remain) {
-            Some(ev) => out.push(ev),
-            None => break,
-        }
-    }
-    out
-}
-
 /// Read fan-out events until `want` signed increments have arrived, or
 /// `timeout` elapses. Returns everything read.
 ///
@@ -93,19 +80,38 @@ fn drain_until_signed(
     let deadline = Instant::now() + timeout;
     let mut out = Vec::new();
     let mut signed = 0usize;
+    // A `None` that came back without spending its budget is a closed
+    // or desynchronised stream, not a slow broker: `read_event` cannot
+    // tell the two apart, but a timeout by definition consumes the
+    // whole `remain` it was given. Retrying that in a tight loop would
+    // burn a core until the backstop expires — on the loaded machine
+    // this helper exists to survive, that is the worst possible way to
+    // fail. Give up after a few and let the caller's assertion report
+    // what it actually saw.
+    let mut fruitless = 0usize;
     while signed < want {
         let remain = deadline.saturating_duration_since(Instant::now());
         if remain.is_zero() {
             break;
         }
+        let before = Instant::now();
         match read_event(stream, remain) {
             Some(ev) => {
+                fruitless = 0;
                 if matches!(ev, CollabEvent::SignedCRDTIncremental { .. }) {
                     signed += 1;
                 }
                 out.push(ev);
             }
-            None => continue,
+            None => {
+                if before.elapsed() >= remain {
+                    break;
+                }
+                fruitless += 1;
+                if fruitless >= 8 {
+                    break;
+                }
+            }
         }
     }
     out
