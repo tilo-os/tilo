@@ -1,10 +1,16 @@
 //! Creating windows and tabs from the chrome.
 //!
 //! Until this module existed, a tab could only come into being two ways:
-//! `WorkspaceTree::bootstrap_default` at boot, or a foreign Wayland
+//! a bootstrapped one already sitting in the tree, or a foreign Wayland
 //! client mapping a toplevel. There was no affordance — no button, no
 //! chord, no palette row — that made one. Closing your last terminal left
 //! searching for the app again as the only way back to a shell.
+//!
+//! `WorkspaceTree::bootstrap_default` no longer supplies the first kind:
+//! a first boot has no windows, because a window nobody opened is a
+//! window nobody opened. So these primitives are not a convenience on top
+//! of a pre-populated desktop — on a fresh machine they are the only way
+//! a first window exists at all, and they have to work from empty.
 //!
 //! These are the primitives behind the three surfaces that now can: the
 //! "+" chip on a group's tab strip, the `Super`-chords, and the palette's
@@ -165,7 +171,7 @@ mod tests {
     use std::cell::RefMut;
 
     fn chrome_with_default_tree() -> crate::shell::chrome_state::Chrome {
-        ChromeState::new(WorkspaceTree::bootstrap_default())
+        ChromeState::new(WorkspaceTree::bootstrap_demo())
     }
 
     /// The group the user is looking at, and the number of tabs in it.
