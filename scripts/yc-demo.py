@@ -6,9 +6,9 @@ libp2p keypairs, separate user identities, separate control sockets:
 
   quinten  hosts the room and owns it
   xaver    joins it by invite
-  agent    joins it too, and from then on is driven *only* by the action
-           API: semantic invocation by `(provider, id)`, never by a
-           click, a keystroke, or a pixel
+  Claude   is admitted to it too, and from then on is driven *only* by
+           the action API: semantic invocation by `(provider, id)`,
+           never by a click, a keystroke, or a pixel
 
 The storyboard, in order, about a minute:
 
@@ -109,7 +109,7 @@ LIVE_APPS = os.path.join(REPO, "target", "qos-apps-live")
 # The capability principal quinten grants in beat 3. An agent is not a
 # peer: it is a subject in the permission model, and the grant is scoped
 # to one app rather than to the workspace.
-AGENT_SUBJECT = "agent:scribe"
+AGENT_SUBJECT = "agent:claude"
 AGENT_SCOPE = f"app:{WORD_PROCESSOR}"
 
 # What quinten types into the document, and what xaver's session is then
@@ -709,14 +709,19 @@ BAND_PAD_X = 52
 BG = "0x0B0D12"       # the shell's own backdrop, for any letterboxing
 FG = "0xE9ECF2"
 
-# What each session is, in the video. Roles, not decoration: with one
-# screen on at a time the label is the only thing telling you whose
-# screen you are on, and the third one's whole point is that it is
-# driven differently from the other two.
+# Who each session is, in the video. With one screen on at a time the
+# band is the only thing telling you whose screen you are looking at, so
+# it carries a name and a standing in the room, and nothing else.
+#
+# The third one used to read "driven only by (provider, id)", which is
+# true and is the wrong thing to put on a screen: it is the name of a
+# mechanism, shown to people who have never seen this system. How it is
+# driven is what the beat demonstrates and what the transcript proves.
+# On the band it is simply another participant.
 ROLES = {
     "quinten": "hosts the room",
     "xaver": "joined by invite",
-    "agent": "driven only by (provider, id)",
+    "Claude": "admitted to the room",
 }
 
 FONTS_REGULAR = (
@@ -1723,7 +1728,7 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict) -> None:
     if not token:
         raise SystemExit("no second token: the agent cannot join")
 
-    cut("agent")
+    cut("Claude")
     claim("the agent joined the room", join_room(agent, token, by_action_api=True),
           True)
     claim("the agent's own state holds quinten's room",
@@ -1788,7 +1793,7 @@ def beat_four(quinten: Session, xaver: Session, agent: Session,
     cut("xaver")
     claim("xaver's own copy carries quinten's name for the room",
           xaver.active_workspace()["name"], host_ws["name"])
-    cut("agent")
+    cut("Claude")
     claim("the agent's own copy carries it too",
           agent.active_workspace()["name"], host_ws["name"])
 
@@ -2161,7 +2166,7 @@ def beat_eight(quinten: Session, shots: str) -> None:
 def beat_nine(quinten: Session, xaver: Session, agent: Session,
               shots: str) -> None:
     banner("9.  the agent acts, by address")
-    cut("agent")
+    cut("Claude")
 
     baseline = agent.input_ops
     note(f"synthetic-input commands sent to the agent so far: {baseline}")
@@ -2394,7 +2399,7 @@ def main() -> int:
               f"so this films the machine's installed payload")
 
     sessions = []
-    for short, name in zip("qxa", ("quinten", "xaver", "agent")):
+    for short, name in zip("qxa", ("quinten", "xaver", "Claude")):
         run_dir = os.path.join(args.out, name)
         apps_dir = os.path.join(run_dir, "qos-apps")
         # Quinten is the machine that does not have it yet. Everyone
