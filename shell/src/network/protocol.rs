@@ -341,6 +341,7 @@ mod tests {
     fn presence_moved_round_trips() {
         round_trip(NeighbourMsg::PresenceMoved {
             peer: 42,
+            user: "bob".to_string(),
             key: "cursor".to_string(),
             point: (12.5, -3.25),
             ts: 1_700_000_000,
