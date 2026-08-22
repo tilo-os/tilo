@@ -77,18 +77,41 @@ pub fn run_with_full_options(opts: HostedOptions) {
     } = opts;
 
     let path = persist::state_json_path();
-    // The id salt is set before the tree is loaded — see
-    // `WorkspaceTree::set_process_peer_salt` for why that ordering is
-    // load-bearing rather than tidy.
+    // The notice is carried all the way to the chrome rather than logged here:
+    // "your workspaces are gone" and "your workspaces are on the disk and this
+    // build declined to open them" look identical from the desk, and the journal
+    // is not where the person is looking.
+    let (mut tree, state_notice) = persist::load_or_default(&path);
+
+    // C-1: under `--enable-peer-sync`, derive a deterministic 16-bit
+    // peer salt from the libp2p keypair and stamp it into every id
+    // minted by `next_id` for the rest of the process lifetime. Two
+    // peers running in parallel mint ids with disjoint high bits, so
+    // CRDT sync no longer folds two distinct workspaces into a single
+    // row when their counters happen to overlap.
     //
+    // The salt has to be set BEFORE `load_or_default`'s
+    // `seed_next_id_from_self` runs — otherwise the counter is seeded
+    // off ids from the *previous* (salt-0) run and the very next
+    // `WorkspaceId::new()` call mints a salted id whose counter
+    // overlaps an unsalted one already in the tree. The fix is to
+    // re-seed after setting the salt; `seed_next_id_from_self` is
+    // idempotent.
+    //
+    // No salt is set under the legacy (peer-sync-off) path so existing
+    // tests + restart cases keep producing the familiar `0x0001,
+    // 0x0002, …` id sequence. The salt-0 default is the explicit
+    // back-compat contract.
     // Refused rather than downgraded when the device key will not load:
-    // the salt comes from that key, and syncing an unsalted id space lets
-    // two peers mint colliding ids, which CRDT sync then folds into one.
+    // the salt comes from that key, and syncing an unsalted id space
+    // lets two peers mint colliding ids, which CRDT sync then folds into
+    // one row.
     let enable_peer_sync = enable_peer_sync
         && match load_or_create_keypair(&peer_key_path()) {
             Ok(kp) => {
                 let salt = peer_salt_from_keypair(&kp);
-                WorkspaceTree::set_process_peer_salt(salt);
+                tree.set_peer_salt(salt);
+                tree.seed_next_id_from_self();
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
                 true
             }
@@ -100,16 +123,6 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 false
             }
         };
-
-    // The notice is carried all the way to the chrome rather than logged here:
-    // "your workspaces are gone" and "your workspaces are on the disk and this
-    // build declined to open them" look identical from the desk, and the journal
-    // is not where the person is looking.
-    let (mut tree, state_notice) = persist::load_or_default(&path);
-    // Past every id already in the tree, so a restart does not re-mint one
-    // that is in use. Idempotent, and a no-op on a first boot.
-    tree.seed_next_id_from_self();
-
 
     // Permissions must outlive the process. Recording where to write
     // the tree is what turns an `Always` grant into a durable one:
