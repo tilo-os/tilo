@@ -148,6 +148,15 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
     None
 }
 
+/// `QOS_SHOTS_SIZE=WxH` as a viewport, if it parses to a sane size.
+fn parse_size_env() -> Option<(u32, u32)> {
+    let raw = std::env::var("QOS_SHOTS_SIZE").ok()?;
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    let w: u32 = w.trim().parse().ok()?;
+    let h: u32 = h.trim().parse().ok()?;
+    (w >= 160 && h >= 160 && w <= 8192 && h <= 8192).then_some((w, h))
+}
+
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
 ///
@@ -161,7 +170,11 @@ fn render_shot_to_png(
     out: &std::path::Path,
     mut state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
+    // `QOS_SHOTS_SIZE=WxH` overrides the scenario's viewport, so any width can
+    // be captured and looked at. Without it the app could only ever be
+    // photographed at two sizes, and a layout that collapsed at a third had
+    // nothing watching it.
+    let (w, h) = parse_size_env().unwrap_or(viewport);
     let theme = match std::env::var("QOS_SHOTS_THEME").ok().as_deref() {
         Some("light") => Theme::light(),
         Some("high-contrast") => Theme::high_contrast(),
