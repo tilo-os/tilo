@@ -37,7 +37,12 @@ pub const TOPBAR_HEIGHT_PX: f32 = 40.0;
 /// `ui::tokens::colors` is defined as `rgba8(0, 0, 0, 204)` —
 /// `204 / 255 ≈ 0.8` — so this constant is the single source of truth the
 /// `shell_chrome_test` suite pins the token against.
-pub const TOP_BAR_SURFACE_ALPHA: f32 = 0.80;
+pub const TOP_BAR_SURFACE_ALPHA: f32 = ui::chrome::shell::CHROME_SURFACE_ALPHA;
+
+/// Weight of the SystemMonitor sparkline fill. Low enough that the bars
+/// read as a backdrop behind the numbers rather than as a fourth element
+/// competing with the three metric labels.
+const SPARKLINE_FILL_ALPHA: f32 = 0.30;
 
 /// Which center-widget variant is active in the top-bar carousel.
 /// Scroll-wheel over the center band cycles between these; a three-dot
@@ -578,38 +583,38 @@ impl TopBarChrome {
     }
 
     /// Per-metric label colour used by the SystemMonitor center widget.
-    /// Concept reference (`nirios-concept/src/components/\
-    /// TopBarWidgets.tsx:60-110`): CPU is `text-emerald-400` (#4ade80),
-    /// RAM is `text-blue-400` (#60a5fa), TMP is `text-orange-400`
-    /// (#fb923c). Pinned through this helper so the draw branch never
-    /// hard-codes `theme.accent_primary` for these labels — that monotone
-    /// indigo collapsed the "different semantic colour per metric" cue
-    /// the concept relies on (audit row `concept-coverage.md:23,163-166`,
-    /// visual-gap #11/#12).
-    pub fn metric_label_color(&self, k: MetricKind) -> Color {
+    ///
+    /// The three metrics do need to be told apart at a glance, and a
+    /// single accent for all three collapses that cue. But they were
+    /// distinguished with literal Tailwind hexes — emerald-400,
+    /// blue-400, orange-400 — which are the same three pixels on every
+    /// theme the user might pick, including high-contrast, where they are
+    /// the only part of the bar that does not respond.
+    ///
+    /// The theme already defines a set of mutually distinguishable
+    /// meanings and redefines them per palette, so the metrics take
+    /// those: healthy/steady, informational, and thermal-warm. Same cue,
+    /// and it tracks the desktop it is drawn on.
+    pub fn metric_label_color(&self, theme: &Theme, k: MetricKind) -> Color {
+        let semantic = &theme.tokens.colors.semantic;
         match k {
-            // concept: text-emerald-400 (#4ade80)
-            MetricKind::Cpu => Color::from_rgba8(0x4a, 0xde, 0x80, 0xff),
-            // concept: text-blue-400 (#60a5fa)
-            MetricKind::Ram => Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff),
-            // concept: text-orange-400 (#fb923c)
-            MetricKind::Tmp => Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff),
+            MetricKind::Cpu => semantic.success,
+            MetricKind::Ram => semantic.info,
+            MetricKind::Tmp => semantic.warning,
         }
     }
 
-    /// Fill colour for the SystemMonitor sparkline bars. Concept paints
-    /// every bar at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
-    /// at 30% alpha, `0x4d` ≈ 0.30 × 255) regardless of the active
-    /// metric — the sparkline reads as the CPU history strip and stays
-    /// emerald even when the chip cluster on either side advertises
-    /// RAM/TMP. Audit row: `concept-coverage.md:23,160-162` — replaces
-    /// the previous `theme.accent_primary` (indigo-500) which was the
-    /// wrong colour family entirely. The `_k` parameter is reserved so
-    /// the per-metric switching variant from `TopBarWidgets.tsx` can be
-    /// wired in later without changing the helper signature.
-    pub fn sparkline_fill(&self, _k: MetricKind) -> Color {
-        // concept: bg-emerald-500/30 (#10b981 at 0x4d ≈ 30% alpha)
-        Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d)
+    /// Fill colour for the SystemMonitor sparkline bars.
+    ///
+    /// The sparkline reads as the CPU history strip and keeps that one
+    /// colour even while the chips either side advertise RAM or TMP, so
+    /// it takes the CPU metric's colour at a low weight — a backdrop to
+    /// the numbers rather than a fourth thing competing with them. The
+    /// `_k` parameter is kept so a per-metric variant can be wired in
+    /// without changing the signature.
+    pub fn sparkline_fill(&self, theme: &Theme, _k: MetricKind) -> Color {
+        self.metric_label_color(theme, MetricKind::Cpu)
+            .with_alpha_factor(SPARKLINE_FILL_ALPHA)
     }
 
     /// Bounding rect of the overview button. Populated during `draw`;
@@ -1033,7 +1038,15 @@ impl Widget for TopBarChrome {
             center_y + 12.0,
         );
         self.ws_pill_rect = ws_pill_outer;
-        let pill = RoundedRect::from_rect(ws_pill_outer, tokens.radii.sm as f64);
+        // A thing you choose between is a capsule (HIG §9.1, Selector).
+        // These were 4 px rectangles sitting a few pixels from the
+        // fully-round tray pill and the fully-round tab pills, which is
+        // most of why the bar read as a different design system from the
+        // window chrome beneath it.
+        let pill = RoundedRect::from_rect(
+            ws_pill_outer,
+            ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1076,7 +1089,10 @@ impl Widget for TopBarChrome {
         );
         self.center_rect = band;
         // Subtle pill backdrop so the band reads as a scroll surface.
-        let band_rr = RoundedRect::from_rect(band, tokens.radii.sm as f64);
+        let band_rr = RoundedRect::from_rect(
+            band,
+            ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
+        );
         scene.fill(
             Fill::NonZero,
             transform,
@@ -1167,7 +1183,7 @@ impl Widget for TopBarChrome {
                     // the concept relies on (audit `concept-coverage.md:\
                     // 23,163-166`, visual-gap #11/#12) and prevents a
                     // future drift back to monotone indigo.
-                    self.metric_label_color(MetricKind::Cpu),
+                    self.metric_label_color(theme, MetricKind::Cpu),
                     transform * Affine::translate((content_x0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1204,7 +1220,7 @@ impl Widget for TopBarChrome {
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        self.sparkline_fill(MetricKind::Cpu),
+                        self.sparkline_fill(theme, MetricKind::Cpu),
                         None,
                         &b,
                     );
@@ -1220,7 +1236,7 @@ impl Widget for TopBarChrome {
                     // TopBarWidgets.tsx:60-110`. Previously `colors\
                     // .accent[5]` (indigo-500), which collapsed the
                     // per-metric semantic colour cue.
-                    self.metric_label_color(MetricKind::Ram),
+                    self.metric_label_color(theme, MetricKind::Ram),
                     transform * Affine::translate((content_x1 - 96.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1243,7 +1259,7 @@ impl Widget for TopBarChrome {
                     // TopBarWidgets.tsx:60-110`. Previously `colors\
                     // .text_dim`, which dropped the temperature-warning
                     // hue the concept relies on.
-                    self.metric_label_color(MetricKind::Tmp),
+                    self.metric_label_color(theme, MetricKind::Tmp),
                     transform * Affine::translate((content_x1 - 40.0, center_y - 6.0)),
                     None,
                     TextWeight::Semibold,
@@ -1572,7 +1588,12 @@ impl Widget for TopBarChrome {
                 rect,
                 &initial.to_string(),
                 fill,
-                Color::from_rgb8(0, 0, 0),
+                // The ring separates overlapping avatars from each
+                // other, so it has to read against the bar it is drawn
+                // on. A literal black did that on a dark bar and became
+                // a hard black outline on a light one; the bar's own
+                // surface is the correct separator on every theme.
+                colors.surfaces.overlay,
                 1.5,
                 theme,
                 text_renderer,
@@ -1900,46 +1921,98 @@ mod tests {
         );
     }
 
-    /// Gap #11/#12: the SystemMonitor strip must use a different semantic
-    /// colour for each metric — emerald-400 for CPU, blue-400 for RAM,
-    /// orange-400 for TMP — matching `nirios-concept/src/components/\
-    /// TopBarWidgets.tsx:60-110`. The previous implementation rendered
-    /// every label in `theme.accent_primary` (indigo-500), collapsing the
-    /// per-metric colour cue. Pin the helper that the draw branch consults
-    /// so a future regression that reroutes any of the three back to a
-    /// monotone token fails this test loudly.
+    /// The SystemMonitor strip must tell its three metrics apart by
+    /// colour, and must do it with colours that belong to the user's
+    /// theme.
+    ///
+    /// This previously pinned three literal Tailwind hexes
+    /// (emerald-400 / blue-400 / orange-400). That caught the original
+    /// regression — all three labels collapsing to one accent — but it
+    /// also froze the strip to three fixed pixels that were identical on
+    /// every theme, including high-contrast, making the metric labels the
+    /// one part of the bar that ignored the desktop around it. The
+    /// property worth defending is the *cue*, not the hex, so this now
+    /// asserts the cue directly and additionally asserts what the hex
+    /// version could never catch: that the colours move when the theme
+    /// does.
     #[test]
-    fn system_monitor_metric_label_colors_are_semantic() {
+    fn system_monitor_metric_labels_are_distinct_and_theme_driven() {
         let chrome = sample_chrome();
-        let cpu = chrome.metric_label_color(MetricKind::Cpu);
-        let ram = chrome.metric_label_color(MetricKind::Ram);
-        let tmp = chrome.metric_label_color(MetricKind::Tmp);
-        // emerald-400
-        assert_eq!(cpu, Color::from_rgba8(0x4a, 0xde, 0x80, 0xff));
-        // blue-400
-        assert_eq!(ram, Color::from_rgba8(0x60, 0xa5, 0xfa, 0xff));
-        // orange-400
-        assert_eq!(tmp, Color::from_rgba8(0xfb, 0x92, 0x3c, 0xff));
-        // Guard rail: none of the three may be indigo-500 again.
-        let indigo = Color::from_rgba8(0x63, 0x66, 0xf1, 0xff);
-        assert_ne!(cpu, indigo);
-        assert_ne!(ram, indigo);
-        assert_ne!(tmp, indigo);
+        let kinds = [MetricKind::Cpu, MetricKind::Ram, MetricKind::Tmp];
+
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let c: Vec<Color> = kinds.iter().map(|k| chrome.metric_label_color(&theme, *k)).collect();
+            // The cue: three metrics, three different colours.
+            for i in 0..c.len() {
+                for j in (i + 1)..c.len() {
+                    assert_ne!(
+                        c[i].to_rgba8().to_u32(),
+                        c[j].to_rgba8().to_u32(),
+                        "{name}: {:?} and {:?} render in the same colour, collapsing the cue",
+                        kinds[i],
+                        kinds[j]
+                    );
+                }
+            }
+            // None of them may be the accent: the accent means live
+            // state, not "this is a CPU reading".
+            let accent = theme.tokens.colors.accent[5];
+            for (k, col) in kinds.iter().zip(&c) {
+                assert_ne!(
+                    col.to_rgba8().to_u32(),
+                    accent.to_rgba8().to_u32(),
+                    "{name}: {k:?} label reuses the accent"
+                );
+            }
+            // And each is the theme's own semantic token, not a literal.
+            let sem = &theme.tokens.colors.semantic;
+            assert_eq!(c[0].to_rgba8().to_u32(), sem.success.to_rgba8().to_u32(), "{name}: CPU");
+            assert_eq!(c[1].to_rgba8().to_u32(), sem.info.to_rgba8().to_u32(), "{name}: RAM");
+            assert_eq!(c[2].to_rgba8().to_u32(), sem.warning.to_rgba8().to_u32(), "{name}: TMP");
+        }
+
+        // The strip is not painted in fixed pixels: switching the theme
+        // must actually move it. A hard-coded palette passes every
+        // assertion above and fails this one.
+        let dark = chrome.metric_label_color(&Theme::dark(), MetricKind::Cpu);
+        let hc = chrome.metric_label_color(&Theme::high_contrast(), MetricKind::Cpu);
+        assert_ne!(
+            dark.to_rgba8().to_u32(),
+            hc.to_rgba8().to_u32(),
+            "the CPU label paints the same pixel on dark and high-contrast"
+        );
     }
 
-    /// Gap #11/#12 — sparkline pair test. Concept paints the sparkline
-    /// bars at `bg-emerald-500/30` (Tailwind emerald-500 = `#10b981`
-    /// at 30% alpha = `0x4d`). Pin the helper so the bar paint loop in
-    /// `draw` cannot drift back to indigo-500 without flipping this test.
+    /// The sparkline reads as the CPU history strip, so it takes the CPU
+    /// metric's colour at a low weight — one colour relationship rather
+    /// than a fourth independent hue, and it tracks the theme with the
+    /// label above it.
     #[test]
-    fn sparkline_fill_is_emerald_500_at_30_percent_alpha() {
+    fn sparkline_shares_the_cpu_colour_at_a_backdrop_weight() {
         let chrome = sample_chrome();
-        let fill = chrome.sparkline_fill(MetricKind::Cpu);
-        // Tailwind emerald-500 (#10b981) at 30% alpha (0x4d ≈ 0.30 × 255).
-        // The integration spec test pairs with this — see
-        // `concept_parity_spec::topbar_system_monitor_sparkline_is_\
-        // emerald_500_not_indigo`.
-        assert_eq!(fill, Color::from_rgba8(0x10, 0xb9, 0x81, 0x4d));
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let cpu = chrome.metric_label_color(&theme, MetricKind::Cpu);
+            let fill = chrome.sparkline_fill(&theme, MetricKind::Cpu);
+            let rgb = |c: Color| { let p = c.to_rgba8(); (p.r, p.g, p.b) };
+            assert_eq!(rgb(fill), rgb(cpu), "{name}: sparkline hue drifted off the CPU label");
+            assert!(
+                fill.components[3] < cpu.components[3],
+                "{name}: the sparkline must sit behind the numbers, not compete with them"
+            );
+            assert_ne!(
+                fill.to_rgba8().to_u32(),
+                theme.tokens.colors.accent[5].to_rgba8().to_u32(),
+                "{name}: sparkline reuses the accent"
+            );
+        }
     }
 
     /// Audit #3 / Wave 3 unit 3-D: the rightmost avatar must sit ≥ 8 px
