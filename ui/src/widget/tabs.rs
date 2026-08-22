@@ -10,6 +10,7 @@ use crate::icons;
 use crate::widget::Widget;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
+use crate::tokens::colors::Colors;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::dnd::{DragPayload, DRAG_START_THRESHOLD_PX};
 use crate::widget::AppKind;
@@ -76,6 +77,19 @@ const CLOSE_Y_OFFSET_END: f64 = -20.0;
 /// without making the title appear to jump.
 const PRESS_SCALE: f64 = 0.97;
 
+/// How far a hovered-but-inactive pill travels from the chrome's ground
+/// toward the raised tier. Half a step: hover is a promise of the active
+/// state, not the state itself, so it has to be clearly less than a full
+/// lift while still being unmistakably more than nothing.
+const HOVER_LIFT_T: f32 = 0.5;
+
+/// Alpha of a raised pill's outer hairline (the concept's `border-white/10`,
+/// kept as a weight now that the colour is derived from the ground).
+const PILL_BORDER_ALPHA: u8 = 26;
+
+/// Alpha of a raised pill's inset inner glow (the concept's `border-white/20`).
+const PILL_GLOW_ALPHA: u8 = 51;
+
 /// Resolved per-pill appearance for a single draw frame. Computed once
 /// in `pill_appearance` and consumed by `draw_pill_inner` so the
 /// active / hover / pressed visual contract lives in one place — and is
@@ -83,15 +97,18 @@ const PRESS_SCALE: f64 = 0.97;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PillAppearance {
     /// Rounded-rect body fill. `Color::TRANSPARENT` (alpha 0) for idle
-    /// inactive pills; `surface_white_5` on hover; `surface_white_10`
-    /// when active. Callers must skip the fill call when alpha is 0 so
-    /// we don't emit a no-op draw command per pill per frame.
+    /// inactive pills; a half lift off the chrome's ground on hover; the
+    /// full lift when active (see [`crate::tokens::Colors::lift`]).
+    /// Callers must skip the fill call when alpha is 0 so we don't emit a
+    /// no-op draw command per pill per frame.
     pub fill: vello::peniko::Color,
     /// Optional 1-px outer border. `None` for idle / hover (concept's
-    /// `border border-transparent`); `border_white_10` when active.
+    /// `border border-transparent`); a ground-derived hairline at
+    /// [`PILL_BORDER_ALPHA`] when active.
     pub border: Option<vello::peniko::Color>,
     /// Optional 1-px-inset stroke that gives the active pill a subtle
-    /// inner glow. `None` unless active. Painted at `border_white_20`.
+    /// inner glow. `None` unless active. Painted as a ground-derived
+    /// hairline at [`PILL_GLOW_ALPHA`].
     pub inner_glow: Option<vello::peniko::Color>,
     /// Uniform scale applied around the pill centre. `1.0` for normal;
     /// `PRESS_SCALE` while pressed (composes with drag-source-dim so a
@@ -106,8 +123,8 @@ pub(crate) struct PillAppearance {
 /// | State                        | Fill              | Border         | Inner glow      |
 /// |------------------------------|-------------------|----------------|-----------------|
 /// | idle (inactive, !hover)      | transparent       | none           | none            |
-/// | hover (inactive, hover)      | `surface_white_5` | none           | none            |
-/// | active                       | `surface_white_10`| `border_white_10` | `border_white_20` |
+/// | hover (inactive, hover)      | `lift(0.5)`       | none           | none            |
+/// | active                       | `lift(1.0)`       | hairline @ /10 | hairline @ /20  |
 /// | active + hover               | same as active    | same           | same            |
 /// | pressed                      | same as active    | same           | same, scale 0.97|
 ///
@@ -126,15 +143,29 @@ pub(crate) fn pill_appearance(
     // currently-active one yet — gives instant click feedback before
     // the activation propagates through the parent.
     let raised = is_active || is_pressed;
+    // Body tiers come from `Colors::lift`, which measures the move against
+    // the chrome's own ground, rather than from a fixed white wash that only
+    // lifts over a dark one. See that method for why.
     let fill = if raised {
-        colors.surface_white_10
+        colors.lift(1.0)
     } else if is_hover {
-        colors.surface_white_5
+        colors.lift(HOVER_LIFT_T)
     } else {
         vello::peniko::Color::TRANSPARENT
     };
-    let border = if raised { Some(colors.border_white_10) } else { None };
-    let inner_glow = if raised { Some(colors.border_white_20) } else { None };
+    // Same reasoning for the pill's two hairlines: derived against the ground
+    // they are drawn on rather than fixed at white, so an active pill keeps a
+    // defined edge on a light theme instead of dissolving into its own fill.
+    let border = if raised {
+        Some(Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA))
+    } else {
+        None
+    };
+    let inner_glow = if raised {
+        Some(Colors::hairline_on(colors.surfaces.base, PILL_GLOW_ALPHA))
+    } else {
+        None
+    };
     let scale = if is_pressed { PRESS_SCALE } else { 1.0 };
     PillAppearance { fill, border, inner_glow, scale }
 }
@@ -162,6 +193,25 @@ pub(crate) fn pill_appearance(
 /// always hit-testable (see `press_on_inactive_tab_search_icon_fires_on_first_click`).
 pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -> bool {
     !is_pinned && look.fill.a() > 0
+}
+
+/// Whether a pill casts a drop shadow this frame.
+///
+/// A shadow is cast *by* something: it is how a surface reports that it stands
+/// off the one behind it. An idle inactive pill has no body — the tier table
+/// above gives it a transparent fill and no border — so a shadow under it is a
+/// shadow of nothing, and it is gated on the same [`PillAppearance::fill`]
+/// alpha its `×` already is.
+///
+/// Left ungated, the four stacked rings composite to roughly a third of black
+/// under *every* pill in the row. Over a dark desktop that is nearly
+/// invisible, which is why it survived; over a light one it painted a solid
+/// mid-grey slab beneath each inactive pill, dropping the ground under the
+/// label from the bar's own value to a shade that left `text_dim` at under
+/// 2:1 — well beneath the 4.5:1 floor for body text, and unreadable in
+/// practice.
+pub(crate) fn shadow_visible(look: &PillAppearance) -> bool {
+    look.fill.a() > 0
 }
 
 /// A tab whose close button was clicked and is now fading out. Kept
@@ -505,7 +555,8 @@ impl TabBar {
             transform
         };
         // Per-pill drop shadow, approximating the concept's
-        // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
+        // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]` — but only under a pill that
+        // has a body to cast it. See [`shadow_visible`].
         let shadow_y_offset = 6.0_f64;
         let shadow_rings: [(f64, u8); 4] = [
             (2.0, 51), // ~0.20
@@ -513,7 +564,7 @@ impl TabBar {
             (9.0, 15), // ~0.06
             (14.0, 5), // ~0.02
         ];
-        for (spread, alpha) in shadow_rings {
+        for (spread, alpha) in shadow_rings.into_iter().filter(|_| shadow_visible(&look)) {
             let shadow_rect = Rect::new(
                 r.x0 - spread,
                 r.y0 - spread + shadow_y_offset,
@@ -531,10 +582,11 @@ impl TabBar {
         }
         // Pill body. Concept's Tailwind tiers (WindowFrame.tsx):
         //   idle   → transparent (no fill, no border)
-        //   hover  → bg-white/5 + text brighten
-        //   active → bg-white/10 + border-white/10 + inner glow at /20
-        // Mapped to the `surface_white_*` / `border_white_*` tokens added
-        // in commit f7d5a70 so the contrast is consistent across widgets.
+        //   hover  → a half lift + text brighten
+        //   active → a full lift + hairline border + inner glow
+        // The washes are derived per theme by `Colors::lift` /
+        // `Colors::hairline_on` rather than fixed at white, so the tiers
+        // read the same way on either side of the light/dark line.
         let shape = RoundedRect::from_rect(r, radius);
         if look.fill.a() > 0 {
             scene.fill(vello::peniko::Fill::NonZero, pill_transform, look.fill, None, &shape);
@@ -808,11 +860,12 @@ impl TabBar {
         // Pill body: use the "inactive" tier — the closing pill is no
         // longer the active tab (active-id shifted at close-start). With
         // the new contrast pass an inactive pill is fully transparent;
-        // the closing pill keeps a faint surface_white_5 fill so the
-        // user can still read the title + close glyph clearly during
-        // the fade-out.
+        // the closing pill keeps a faint half-lift fill so the user can
+        // still read the title + close glyph clearly during the
+        // fade-out. Same derivation as a hovered pill, so it stays
+        // visible on a light theme too.
         let shape = RoundedRect::from_rect(r, radius);
-        let fill = theme.tokens.colors.surface_white_5;
+        let fill = theme.tokens.colors.lift(HOVER_LIFT_T);
         scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         let text_size = theme.tokens.typography.scale.sm;
         let title_weight = TextWeight::Semibold;
@@ -1835,20 +1888,21 @@ impl Widget for TabBar {
             // Idle reads as a dotted-outline "slot" rather than a filled
             // button: it has to sit next to real tabs without competing
             // with the active pill for attention. Hover fills it with the
-            // same `surface_white_5` wash a hovered tab uses, so the row
-            // has one hover language.
+            // same lift a hovered tab takes, and both hairlines are
+            // derived against the ground the way a pill's are, so the row
+            // keeps one hover language in every theme.
             if self.hover_new_tab {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    colors.surface_white_10,
+                    colors.lift(1.0),
                     None,
                     &shape,
                 );
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0),
                     transform,
-                    colors.border_white_20,
+                    Colors::hairline_on(colors.surfaces.base, PILL_GLOW_ALPHA),
                     None,
                     &shape,
                 );
@@ -1856,7 +1910,7 @@ impl Widget for TabBar {
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [3.0, 3.0]),
                     transform,
-                    colors.border_white_10,
+                    Colors::hairline_on(colors.surfaces.base, PILL_BORDER_ALPHA),
                     None,
                     &shape,
                 );
@@ -3560,45 +3614,110 @@ mod tests {
     /// tell which tab is active at a glance.
     ///
     /// Re-derived from `pill_appearance` so the test moves with the
-    /// implementation. Inactive idle is now fully transparent (concept
-    /// parity with `border border-transparent` + no fill); hover lifts
-    /// to surface_white_5 and active to surface_white_10 + border + glow.
+    /// implementation, and run over **every** preset rather than the dark
+    /// default alone — the tier order is exactly what a light theme used to
+    /// lose.
+    ///
+    /// The ordering used to be asserted on the fills' *alpha*, which worked
+    /// only while the tiers were white washes over a dark ground: alpha was
+    /// standing in for "how far off the ground is this". It is not that
+    /// quantity, and on a light theme a heavier alpha of white moved the pill
+    /// *less*. The tier a person actually sees is how far the composited body
+    /// sits from the ground it is painted on, so that is what is measured
+    /// here.
     #[test]
-    fn active_pill_fill_has_stronger_alpha_than_inactive() {
-        let theme = Theme::dark();
-        let idle = pill_appearance(&theme, false, false, false);
-        let hover = pill_appearance(&theme, false, true, false);
-        let active = pill_appearance(&theme, true, false, false);
-        let active_hover = pill_appearance(&theme, true, true, false);
+    fn pill_tiers_lift_off_the_ground_in_order_on_every_preset() {
+        use crate::a11y::relative_luminance;
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let ground = theme.tokens.colors.surfaces.base;
+            let g = relative_luminance(ground);
+            // How far a body sits from the ground, in relative luminance.
+            // Fills are opaque, so this is the body's own luminance; the
+            // `abs` keeps the measure honest whichever way the lift points.
+            let lift_of = |c: vello::peniko::Color| (relative_luminance(c) - g).abs();
 
-        assert_eq!(
-            idle.fill.a(), 0,
-            "idle inactive pill must paint zero fill so the bar reads as transparent",
-        );
-        assert!(
-            idle.border.is_none() && idle.inner_glow.is_none(),
-            "idle inactive pill must paint no border or glow",
-        );
+            let idle = pill_appearance(&theme, false, false, false);
+            let hover = pill_appearance(&theme, false, true, false);
+            let active = pill_appearance(&theme, true, false, false);
+            let active_hover = pill_appearance(&theme, true, true, false);
 
-        let hover_alpha = hover.fill.a();
-        let active_alpha = active.fill.a();
-        assert!(
-            hover_alpha > 0 && hover_alpha < active_alpha,
-            "hover fill sits between idle and active (idle 0 < hover {hover_alpha} \
-             < active {active_alpha}) so hover feels like a lift toward the \
-             active tier without matching it",
-        );
-        assert!(
-            active.border.is_some() && active.inner_glow.is_some(),
-            "active pill must paint a border + inner glow so it reads as raised",
-        );
-        // Active-on-hover is identical to active — concept parity with
-        // `WindowFrame.tsx` where the active tab doesn't escalate further
-        // on hover.
-        assert_eq!(
-            active.fill.a(), active_hover.fill.a(),
-            "active pill should not change on hover",
-        );
+            assert_eq!(
+                idle.fill.a(), 0,
+                "{}: idle inactive pill must paint zero fill so the bar reads \
+                 as transparent",
+                theme.name,
+            );
+            assert!(
+                idle.border.is_none() && idle.inner_glow.is_none(),
+                "{}: idle inactive pill must paint no border or glow",
+                theme.name,
+            );
+
+            let hover_lift = lift_of(hover.fill);
+            let active_lift = lift_of(active.fill);
+            assert!(
+                hover_lift > 0.0,
+                "{}: a hovered pill is indistinguishable from the ground \
+                 (lift {hover_lift:.5}) — hover has to be visible feedback, \
+                 not a no-op",
+                theme.name,
+            );
+            assert!(
+                active_lift > hover_lift,
+                "{}: the active pill does not sit above the hovered one \
+                 (active {active_lift:.5} <= hover {hover_lift:.5}), so the \
+                 bar reads as uniform and the user cannot tell which tab is \
+                 active at a glance",
+                theme.name,
+            );
+            assert!(
+                active.border.is_some() && active.inner_glow.is_some(),
+                "{}: active pill must paint a border + inner glow so it reads \
+                 as raised",
+                theme.name,
+            );
+            // Active-on-hover is identical to active — concept parity with
+            // `WindowFrame.tsx` where the active tab doesn't escalate further
+            // on hover.
+            assert_eq!(
+                active.fill, active_hover.fill,
+                "{}: active pill should not change on hover",
+                theme.name,
+            );
+        }
+    }
+
+    /// A pill with no body casts no shadow.
+    ///
+    /// The four stacked shadow rings composite to roughly a third of black.
+    /// Painted under an idle inactive pill — which has no body at all — that
+    /// is a shadow of nothing, invisible over a dark desktop and a solid grey
+    /// slab over a light one. The slab is what dropped the ground under an
+    /// inactive tab's label far enough to make it unreadable, so the gate is
+    /// asserted directly rather than left to the render.
+    #[test]
+    fn only_a_pill_with_a_body_casts_a_shadow() {
+        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let idle = pill_appearance(&theme, false, false, false);
+            assert!(
+                !shadow_visible(&idle),
+                "{}: an idle inactive pill has no body, so it must cast no \
+                 shadow — the rings darken the bar under its label instead",
+                theme.name,
+            );
+            for (name, look) in [
+                ("hovered", pill_appearance(&theme, false, true, false)),
+                ("active", pill_appearance(&theme, true, false, false)),
+                ("pressed", pill_appearance(&theme, false, false, true)),
+            ] {
+                assert!(
+                    shadow_visible(&look),
+                    "{}: a {name} pill has a body and must keep its shadow — \
+                     that is what makes it read as standing off the bar",
+                    theme.name,
+                );
+            }
+        }
     }
 
     /// Pressed (mouse down on a pill) must visibly compress the pill
@@ -4372,7 +4491,7 @@ mod tests {
         b.hover_idx = Some(1);
         assert!(
             b.close_affordance_visible_for_tests(1, &theme),
-            "a hovered pill has a surface_white_5 body to host the ×",
+            "a hovered pill has a lifted body to host the ×",
         );
         assert!(
             !b.close_affordance_visible_for_tests(2, &theme),
