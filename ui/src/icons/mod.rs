@@ -62,6 +62,10 @@ pub enum Icon {
     Search,
     PenTool,
     Code,
+    /// A shell prompt — lucide `terminal`: a `>` chevron over a rule.
+    /// The tab bar hand-traced this shape before it existed here; the
+    /// overview's window chips read it from the shared table instead.
+    Terminal,
     FileText,
     BarChart,
     Layers,
@@ -289,6 +293,12 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::Code => vec![
             path_from_d("m16 18 6-6-6-6"),
             path_from_d("m8 6-6 6 6 6"),
+        ],
+        // Terminal: the `>` prompt chevron plus the command rule beside
+        // it. Transcribed from lucide's `terminal.js`.
+        Icon::Terminal => vec![
+            path_from_d("M12 19h8"),
+            path_from_d("m4 17 6-6-6-6"),
         ],
         // File-text: page outline + folded corner + three text lines.
         // Transcribed from lucide's `file-text.js` (v0.546.0).
@@ -1067,6 +1077,7 @@ mod tests {
             Icon::Search,
             Icon::PenTool,
             Icon::Code,
+            Icon::Terminal,
             Icon::FileText,
             Icon::BarChart,
             Icon::Layers,
