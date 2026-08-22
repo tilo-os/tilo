@@ -11,6 +11,7 @@ use uuid::Uuid;
 use word_processor::actions::{self as wp, RegionKind, WordProcessorAction};
 
 use crate::apply::Editor;
+use crate::model::{Chooser, Decision, Route};
 use crate::plan::{self, Block, Instruction};
 use crate::wire::Link;
 
@@ -33,6 +34,12 @@ pub struct Config {
     pub pace: Duration,
     /// Stop after the first instruction has been carried out.
     pub once: bool,
+    /// Let a model choose which exported action answers an instruction.
+    /// False pins the run to the keyword vocabulary.
+    pub model: bool,
+    /// How long that call may take before the keyword vocabulary decides
+    /// instead. Short on purpose: the work must not wait on the network.
+    pub model_timeout: Duration,
 }
 
 pub struct Session {
@@ -42,6 +49,11 @@ pub struct Session {
     /// Instruction blocks already acted on, so a slow peer re-sending the
     /// same state does not make the agent do the work twice.
     handled: HashSet<String>,
+    /// Decides which exported action answers an instruction.
+    chooser: Chooser,
+    /// How the last instruction was decided. The record that keeps a run on
+    /// the fallback from being indistinguishable from a live one afterwards.
+    last_route: Option<Route>,
 }
 
 /// How the word processor keys a caret: the block's own presence key.
@@ -84,12 +96,34 @@ impl Session {
             name = %cfg.name,
             "joined the room; waiting for the document"
         );
+        let chooser = Chooser::new(cfg.model, cfg.model_timeout);
+        // Said once, at the top of the run: an operator should know which
+        // path a recording is going to take before the beat, not after.
+        tracing::info!(
+            live = chooser.is_live(),
+            model = crate::model::MODEL,
+            timeout_ms = cfg.model_timeout.as_millis() as u64,
+            "action choice: {}",
+            if chooser.is_live() {
+                "a model chooses from the app's exported actions"
+            } else {
+                "no model available; the keyword vocabulary chooses"
+            }
+        );
         Ok(Self {
             cfg,
             link,
             editor: None,
             handled: HashSet::new(),
+            chooser,
+            last_route: None,
         })
+    }
+
+    /// How the last instruction was decided, for a test or an operator
+    /// checking after the fact whether a run was live.
+    pub fn last_route(&self) -> Option<&Route> {
+        self.last_route.as_ref()
     }
 
     /// Run until the broker goes away — or, with `once`, until the first
@@ -162,7 +196,9 @@ impl Session {
             return Ok(false);
         };
         let blocks = plan::blocks(&ed.snapshot()?);
-        let Some((at, instruction)) = plan::find_instruction(&blocks, &self.cfg.name) else {
+        // Who was addressed is decided here, from the document. What to do
+        // about it is the only thing a model gets a say in.
+        let Some((at, asked)) = plan::find_addressed(&blocks, &self.cfg.name) else {
             return Ok(false);
         };
         let ins_id = blocks[at].id.clone();
@@ -170,7 +206,19 @@ impl Session {
             return Ok(false);
         }
         self.handled.insert(ins_id.clone());
-        tracing::info!(?instruction, block = %ins_id, "instruction found");
+
+        let Decision { instruction, route } = self.chooser.choose(&asked, &blocks);
+        tracing::info!(
+            block = %ins_id,
+            asked = %asked,
+            decided_by = route.label(),
+            live = route.is_live(),
+            ?instruction,
+            "{}",
+            route.detail()
+        );
+        self.last_route = Some(route);
+
         match instruction {
             Instruction::Table => self.make_table(&blocks, at)?,
             Instruction::Caption => self.caption_image(&blocks, at)?,
