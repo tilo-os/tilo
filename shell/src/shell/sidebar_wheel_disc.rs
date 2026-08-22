@@ -866,27 +866,49 @@ impl Widget for SidebarWheelDisc {
             transform,
             &self.rect,
         );
-        let body = Circle::new((cx, cy), radius);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            &fade(colors.surfaces.overlay, 168),
-            None,
-            &body,
-        );
-        // Inward falloff from the rim: concentric bands stepping in
-        // from the edge, each dimmer than the last. Gives the body a
-        // sense of curvature — a surface turning away from the light —
-        // without needing a radial shader.
-        for i in 0..4 {
-            let t = i as f64;
-            let band_r = radius - 4.0 - t * 14.0;
+        // The body is a band hugging the rim that fades inward, not a
+        // solid disc. A solid fill has to stop somewhere, and inside
+        // the clip that "somewhere" is the footprint's straight left
+        // edge — invisible while the wheel is docked against the screen
+        // edge, but an obvious dark rectangle the moment it is summoned
+        // out over the desktop.
+        //
+        // Concentric strokes stepping inward give the falloff. Each is
+        // painted with the vertical fade as its brush, so the two
+        // directions of softness compose: radial from the band's own
+        // alpha, vertical from the gradient. The result has no hard
+        // edge on any side.
+        let body_fill = colors.surfaces.overlay;
+        let bands = 18;
+        let depth = (self.rect.width() * 1.25).min(radius - 2.0);
+        let band_w = (depth / bands as f64) * 1.9;
+        for i in 0..bands {
+            let t = i as f64 / bands as f64;
+            let band_r = radius - t * depth;
             if band_r <= 1.0 {
                 break;
             }
-            let peak = (24.0 * (1.0 - t / 4.0)) as u8;
+            // Falls off faster than linear so the surface reads as
+            // curving away rather than as a flat ramp.
+            let peak = (168.0 * (1.0 - t).powf(1.7)) as u8;
             scene.stroke(
-                &Stroke::new(14.0),
+                &Stroke::new(band_w),
+                transform,
+                &fade(body_fill, peak),
+                None,
+                &Circle::new((cx, cy), band_r),
+            );
+        }
+        // A brighter lip just inside the rim — light catching the edge.
+        for i in 0..3 {
+            let t = i as f64;
+            let band_r = radius - 4.0 - t * 13.0;
+            if band_r <= 1.0 {
+                break;
+            }
+            let peak = (22.0 * (1.0 - t / 3.0)) as u8;
+            scene.stroke(
+                &Stroke::new(13.0),
                 transform,
                 &fade(Color::from_rgb8(255, 255, 255), peak),
                 None,
