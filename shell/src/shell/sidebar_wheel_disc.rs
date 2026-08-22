@@ -22,19 +22,26 @@
 //! kinds of object rather than one set in two states.
 //!
 //! The current design is a **segmented disc** — the thing you spin:
-//! - The **body** is a flat annular band: one uniform fill of the
-//!   theme's glass surface between a crisp inner arc and the rim.
-//!   No radial ramp, no concentric strokes, no shading. The previous
-//!   form graded the body from transparent at its inner end to a peak
-//!   alpha at the rim, which spread a grey smear across half the slot
-//!   and never resolved into an object.
-//! - Because the band has a real **inner arc** rather than fading out,
-//!   the disc has a silhouette: two concentric edges, parallel, running
-//!   off the top and bottom of the slot. That is what reads as a slice
-//!   of something very large. The inner radius is placed so the inner
-//!   arc is tangent to the footprint's left edge at the steepest angle
-//!   still on screen, which is the deepest band that never gets cut by
-//!   a straight vertical line.
+//! - The **body** is a flat, *solid* segment: one uniform fill of the
+//!   theme's glass surface running from the rim all the way in to the
+//!   disc's centre. No radial ramp, no concentric strokes, no shading.
+//!   An earlier form graded the body from transparent at its inner end
+//!   to a peak alpha at the rim, which spread a grey smear across half
+//!   the slot and never resolved into an object.
+//! - It is solid rather than a ring. A ring was tried, on the theory
+//!   that a second concentric edge gives the object a silhouette, and
+//!   it does — but a disc segment with a hole punched out of it is not
+//!   a disc segment, and the hole is what you notice. Because the
+//!   centre sits far off-screen to the left, "solid" in practice means
+//!   the fill runs off the left edge of the footprint without ever
+//!   ending, which is exactly the read wanted: a piece of something
+//!   much larger, continuing past what you can see.
+//! - The silhouette therefore comes from the rim and the sector
+//!   dividers alone. Both had to carry more for that: the rim keeps
+//!   its soft-wide + crisp-hairline pair and its outward shadow, and
+//!   the dividers now run the full depth of the segment instead of
+//!   stopping at an inner arc, so the surface is legibly *divided*
+//!   rather than merely tinted.
 //! - The band is divided into **sectors**, one per 15° display slot,
 //!   by radial hairlines. The sectors are what turn: spinning sweeps
 //!   the dividers, the tints and the labels through the slot together,
@@ -568,6 +575,24 @@ const SECTOR_CHIP_H_ACTIVE: f64 = 44.0;
 /// in the sector.
 const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
 
+/// The same fill where the body beneath it is fully opaque.
+///
+/// The wedge is a wash *over* the body, so how much of it reaches the
+/// eye depends on what the body is made of. Most themes give the disc a
+/// translucent glass fill, and 17% of a colour over that reads clearly.
+/// The high-contrast track makes every surface fully opaque black,
+/// where the identical 17% is barely a colour at all — and that is the
+/// one track where a state indicator failing to indicate is least
+/// acceptable.
+///
+/// So the strength is interpolated on the body's own opacity rather
+/// than switched on which theme is loaded: the widget never has to be
+/// told, and any future theme with a solid surface gets the right
+/// answer for the same reason. The label on top is the theme's primary
+/// text — near-white on the opaque track — and holds its own against
+/// the stronger wash easily.
+const ACTIVE_WEDGE_ALPHA_ON_OPAQUE: f32 = 0.55;
+
 
 /// Diameter of the add-workspace button, and how far down the band it
 /// sits as a fraction of half the footprint's height. Sector labels that
@@ -586,15 +611,6 @@ const SWEEP_SLOP_DEG: f64 = 8.0;
 /// `emerald-500`, `purple-500`, `zinc-400` — see
 /// `radial-workspace-switcher/src/App.tsx:10-17`). Wraps modulo for
 /// trees with more than six workspaces.
-const SPOKE_PALETTE: &[Color] = &[
-    Color::from_rgb8(0xec, 0x48, 0x99), // pink-500
-    Color::from_rgb8(0x3b, 0x82, 0xf6), // blue-500
-    Color::from_rgb8(0xf5, 0x9e, 0x0b), // amber-500
-    Color::from_rgb8(0x10, 0xb9, 0x81), // emerald-500
-    Color::from_rgb8(0xa8, 0x55, 0xf7), // purple-500
-    Color::from_rgb8(0xa1, 0xa1, 0xaa), // zinc-400
-];
-
 impl SidebarWheelDisc {
     /// Visible width — `radius * VISIBLE_RADIUS_FRACTION`. For the
     /// default 1200 px diameter (radius 600), this is 96 px,
@@ -863,9 +879,21 @@ impl SidebarWheelDisc {
         Point::new(cx, cy)
     }
 
-    /// Pick the per-spoke colour from `SPOKE_PALETTE` by workspace index.
-    fn spoke_color(&self, idx: usize) -> Color {
-        SPOKE_PALETTE[idx % SPOKE_PALETTE.len()]
+    /// The workspace's identifying colour, derived from the theme.
+    ///
+    /// The disc used to index six literal Tailwind hexes here, which
+    /// meant the first workspace arrived as `pink-500` under every
+    /// theme — at the active wedge's 17% alpha over a dark glass fill,
+    /// a muddy maroon that no theme could reach and nobody chose.
+    /// Theming in qOS belongs to the user, and a constant in a widget
+    /// is the one place they cannot reach.
+    ///
+    /// [`ui::tokens::Colors::categorical`] grows the series from the
+    /// theme's own accent instead, so each theme gets workspace colours
+    /// in its own register while adjacent ones stay a plain 60° of hue
+    /// apart.
+    fn spoke_color(&self, idx: usize, colors: &ui::tokens::Colors) -> Color {
+        colors.categorical(idx)
     }
 
     /// Pick a lucide icon for the spoke at `idx`, matching the
@@ -1006,6 +1034,24 @@ fn polar(c: Point, r: f64, angle: f64) -> Point {
 /// far below a pixel at the radii this widget uses: the sweep is at most
 /// a few tens of degrees, so 96 steps put the sagitta under 0.05 px even
 /// on a 2000-px disc.
+/// A **solid** segment of the disc: the pie from the centre out to
+/// `r_out` between `a0` and `a1`.
+///
+/// Distinct from [`annular_segment`] rather than that function called
+/// with `r_in = 0`, which would emit 97 coincident points at the centre
+/// for every sector of every frame.
+fn disc_segment(c: Point, r_out: f64, a0: f64, a1: f64) -> BezPath {
+    const STEPS: usize = 96;
+    let mut path = BezPath::new();
+    let span = a1 - a0;
+    path.move_to(c);
+    for i in 0..=STEPS {
+        path.line_to(polar(c, r_out, a0 + span * (i as f64 / STEPS as f64)));
+    }
+    path.close_path();
+    path
+}
+
 fn annular_segment(c: Point, r_in: f64, r_out: f64, a0: f64, a1: f64) -> BezPath {
     const STEPS: usize = 96;
     let mut path = BezPath::new();
@@ -1261,15 +1307,28 @@ impl Widget for SidebarWheelDisc {
         // through the footprint's two left-hand corners, so the band is
         // as deep as it can be while ending on a curve everywhere.
         let d_left = (self.rect.x0 - cx + BAND_LEFT_INSET).max(1.0);
+        // The body reaches the centre, so there is no inner radius to
+        // derive it from any more. `r_ref` is the same radius the inner
+        // arc used to sit at, kept as a pure *layout* reference: it is
+        // where the labels and the add-workspace button live, and
+        // holding it fixed is what keeps the solid fill from moving
+        // anything else on the disc.
         let tangent_dy = half_h * BAND_TANGENT_FRACTION;
-        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
+        let r_ref = (d_left * d_left + tangent_dy * tangent_dy)
             .sqrt()
             .clamp(4.0, r_out - 12.0);
-        // Sectors are built a little past the last on-screen degree so a
-        // divider never stops short of the footprint's corner. The band's
-        // reach is set by its INNER arc, which is still climbing where the
-        // rim has already left through the top and bottom edges.
-        let sweep = (half_h / r_in).clamp(0.0, 1.0).asin() + SWEEP_SLOP_DEG.to_radians();
+        // How far round the disc has to be built for the footprint to be
+        // covered. A radial at angle θ crosses the footprint's left edge
+        // `d_left` from the centre at a height of `d_left·tan θ`, so
+        // `atan(half_h / d_left)` is the angle whose radial passes
+        // exactly through the footprint's corner and nothing beyond it
+        // can show. Plus the usual slop so a divider entering the slot
+        // is already drawn when its leading edge appears.
+        //
+        // Derived from the footprint rather than from a radius, now that
+        // the fill has no inner one — and numerically the same sweep the
+        // inner arc used to give, so no sector count changes.
+        let sweep = (half_h / d_left).atan() + SWEEP_SLOP_DEG.to_radians();
 
         // ---- Pass 1: the band -------------------------------------------
         // Body, edges and the shadow that lifts the wheel off whatever is
@@ -1340,18 +1399,24 @@ impl Widget for SidebarWheelDisc {
         // Shadow just OUTSIDE the rim, so it follows the arc — the same
         // soft multi-ring falloff the window-decoration pills use, bent
         // around a circle. Painted first so the band sits on top of it.
+        // Tinted from the theme's own elevation token rather than from a
+        // literal black, so a theme that lifts surfaces differently — or
+        // suppresses shadows entirely, as high contrast does by putting
+        // everything on pure black behind a white rim — gets its own
+        // answer here instead of this one.
+        let shadow_hue = tokens.elevation.glass_outer.color;
         for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
             scene.stroke(
                 &Stroke::new(width),
                 transform,
-                Color::from_rgba8(0, 0, 0, alpha),
+                Color::from_rgba8(shadow_hue.r(), shadow_hue.g(), shadow_hue.b(), alpha),
                 None,
                 &Circle::new((cx, cy), radius + offset),
             );
         }
 
-        // The band itself: one flat fill.
-        let band = annular_segment(c, r_in, r_out, -sweep, sweep);
+        // The body itself: one flat fill, solid to the centre.
+        let band = disc_segment(c, r_out, -sweep, sweep);
         scene.fill(Fill::NonZero, transform, body_hue, None, &band);
 
         // ---- Pass 2: the sectors ----------------------------------------
@@ -1389,7 +1454,7 @@ impl Widget for SidebarWheelDisc {
         // one sweeps over it, and the sector that loses its name is the
         // one thing a switcher cannot afford to drop. At the inner edge
         // the two rarely meet at all.
-        let add_span_in = (r_in * r_in - add_dy * add_dy).max(0.0).sqrt();
+        let add_span_in = (r_ref * r_ref - add_dy * add_dy).max(0.0).sqrt();
         let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
         self.plus_rect = Rect::from_center_size(
             Point::new(add_cx, add_cy),
@@ -1420,6 +1485,9 @@ impl Widget for SidebarWheelDisc {
             let gap = self.spoke_gap_deg() as f64;
             let rot = self.visual_residual_deg() as f64;
             let slots = slot_reach(sweep, gap);
+            let body_opacity = body_hue.components[3].clamp(0.0, 1.0);
+            let wedge_alpha = ACTIVE_WEDGE_ALPHA
+                + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
 
             for k in -slots..=slots {
                 let mid_deg = rot + k as f64 * gap;
@@ -1433,18 +1501,18 @@ impl Widget for SidebarWheelDisc {
                 }
                 let idx = ((self.active_idx as i32 + k).rem_euclid(n_i)) as usize;
                 let is_active = k == 0;
-                let base = self.spoke_color(idx);
+                let base = self.spoke_color(idx, colors);
 
                 // Active sector: the wedge itself is lit in the
                 // workspace's colour. This is what replaces the old
                 // name-plate — the *sector* is the selection, so the
                 // thing that turns is also the thing that shows state.
                 if is_active {
-                    let wedge = annular_segment(c, r_in, r_out, a0, a1);
+                    let wedge = disc_segment(c, r_out, a0, a1);
                     scene.fill(
                         Fill::NonZero,
                         transform,
-                        base.with_alpha_factor(ACTIVE_WEDGE_ALPHA),
+                        base.with_alpha_factor(wedge_alpha),
                         None,
                         &wedge,
                     );
@@ -1459,7 +1527,12 @@ impl Widget for SidebarWheelDisc {
                     transform,
                     edge(div_a),
                     None,
-                    &Line::new(polar(c, r_in, a0), polar(c, r_out, a0)),
+                    // From the centre, not from an inner arc: with the
+                    // body solid, a divider that stopped part-way would
+                    // leave the surface tinted but undivided over the
+                    // rest of its depth. Everything left of the
+                    // footprint is clipped away regardless.
+                    &Line::new(c, polar(c, r_out, a0)),
                 );
                 // The active sector also owns its upper bound, so the lit
                 // wedge is bracketed by two bright lines instead of one.
@@ -1469,16 +1542,17 @@ impl Widget for SidebarWheelDisc {
                         transform,
                         edge(96),
                         None,
-                        &Line::new(polar(c, r_in, a1), polar(c, r_out, a1)),
+                        &Line::new(c, polar(c, r_out, a1)),
                     );
                 }
             }
         }
 
-        // Inner arc and rim — the band's two lit edges. Same translucent
-        // fill + hairline-edge language as the window-decoration pills:
-        // a soft wide stroke reading as light on a bevel, then a crisp
-        // hairline that gives the edge a definite position.
+        // The rim — the body's one lit edge, and with the inner arc gone
+        // it is carrying the silhouette on its own, so it keeps the full
+        // window-decoration language: a soft wide stroke reading as
+        // light on a bevel, then a crisp hairline that gives the edge a
+        // definite position, then an inset glow.
         let rim = Circle::new((cx, cy), r_out);
         scene.stroke(&Stroke::new(5.0), transform, edge(26), None, &rim);
         scene.stroke(&Stroke::new(1.5), transform, edge(140), None, &rim);
@@ -1490,13 +1564,6 @@ impl Widget for SidebarWheelDisc {
             edge(46),
             None,
             &Circle::new((cx, cy), r_out - 2.5),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            edge(74),
-            None,
-            &Circle::new((cx, cy), r_in),
         );
 
         // Fade the whole surface out, top and bottom, in one pass.
@@ -1522,7 +1589,7 @@ impl Widget for SidebarWheelDisc {
         // label beside a turning disc reads as a list that happens to sit
         // near a curve; a label that tips reads as paint on the surface.
         let chip_x1 = cx + r_out - LABEL_RIM_GAP;
-        let chip_x0 = cx + r_in + LABEL_INNER_INSET;
+        let chip_x0 = cx + r_ref + LABEL_INNER_INSET;
         let chip_w = chip_x1 - chip_x0;
         if !self.spokes.is_empty() && chip_w >= LABEL_MIN_W {
             let n = self.spokes.len();
@@ -1941,7 +2008,6 @@ impl Widget for SidebarWheelDisc {
                     let home = self.rotation_for_idx(self.active_idx);
                     self.rotation_deg = home;
                     self.aim_settle_spring(from, home);
-                    keep = true;
                 }
             }
             // Always keep pumping while a wheel gesture is in flight —
@@ -2253,15 +2319,17 @@ impl SidebarWheelDisc {
         true
     }
 
-    /// The band the disc paints, as `(inner_radius, outer_radius)` about
-    /// [`SidebarWheelDisc::disc_centre`].
+    /// The annulus the disc's **labels and add-button** occupy, as
+    /// `(inner, outer)` about [`SidebarWheelDisc::disc_centre`].
     ///
-    /// The visible object is a constant-depth ring, not a whole disc, and
-    /// the inner radius is derived rather than configured — see
-    /// [`BAND_TANGENT_FRACTION`]. Exposed so callers that need to know
-    /// where the surface actually is (the snapshot tests sample it) do not
-    /// have to re-derive the expression and drift out of step with it.
-    pub fn band_radii(&self) -> (f64, f64) {
+    /// This is *not* the extent of the painted surface. The body is a
+    /// solid segment reaching the centre; what this bounds is the
+    /// readable ring near the rim where a workspace name fits, which is
+    /// derived rather than configured — see [`BAND_TANGENT_FRACTION`].
+    /// Exposed so callers that need to know where the labels actually
+    /// land (the snapshot tests sample it, the add button is placed
+    /// against it) do not re-derive the expression and drift out of step.
+    pub fn label_band_radii(&self) -> (f64, f64) {
         let radius = self.diameter_px / 2.0;
         let c = self.center();
         let half_h = self.rect.height() / 2.0;
@@ -2549,7 +2617,7 @@ mod tests {
         for step in 0..24 {
             d.rotation_deg = step as f32 * 15.0;
             paint(&mut d);
-            let (r_in, r_out) = d.band_radii();
+            let (r_in, r_out) = d.label_band_radii();
             let c = d.disc_centre();
             let p = d.plus_rect.center();
             let dist = ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt();
