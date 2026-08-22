@@ -111,6 +111,12 @@ SYNC_TIMEOUT_S = 25.0
 DOC_SYNC_TIMEOUT_S = 60.0
 # An app launch is a sandbox spawn plus a first frame.
 LAUNCH_TIMEOUT_S = 90.0
+# What one `snapshot` is allowed to block its session for. Deliberately
+# far above what it costs: the op re-renders and encodes on the
+# compositor's own loop, and on a machine that is busy compiling
+# something else an unoptimised build can sit there for a minute. A tight
+# timeout here reports a contended box as a broken compositor.
+SNAPSHOT_TIMEOUT_S = 240.0
 
 
 # --------------------------------------------------------------------
@@ -334,11 +340,18 @@ class Session:
             return r["foreign_frames"].get("frames", [])
         return r.get("answer", r.get("frames", [])) or []
 
-    def groups_here(self) -> dict:
-        """Every window group in this session's active workspace."""
+    def groups_here(self, tree: dict | None = None) -> dict:
+        """Every window group in this session's active workspace.
+
+        Takes an already-read tree when the caller has one. These run
+        inside polling loops, and a `state_dump` blocks the compositor
+        it is asked of — re-reading the tree per workspace would have
+        the demo competing with its own camera for every reply.
+        """
+        tree = tree if tree is not None else self.tree()
         out: dict[str, dict] = {}
-        for ws in self.tree()["workspaces"]:
-            if ws["id"] != self.tree()["active"]:
+        for ws in tree["workspaces"]:
+            if ws["id"] != tree["active"]:
                 continue
             for strip in ws.get("strips", []):
                 for group in strip.get("window_groups", []):
@@ -350,7 +363,7 @@ class Session:
                     }
         return out
 
-    def tabs_here(self) -> dict:
+    def tabs_here(self, tree: dict | None = None) -> dict:
         """Every tab in this session's active workspace, by tab id.
 
         Keyed on the tab rather than the group because the placement rule
@@ -358,7 +371,7 @@ class Session:
         tabbed — so a new window does not always mean a new group.
         """
         out: dict[str, dict] = {}
-        for gid, g in self.groups_here().items():
+        for gid, g in self.groups_here(tree).items():
             for i, t in enumerate(g["tab_ids"]):
                 out[t] = {"group": gid, "strip": g["strip"],
                           "title": g["tabs"][i] if i < len(g["tabs"]) else None}
@@ -374,7 +387,7 @@ class Session:
             "active_strip": tree.get("active_strip"),
             "active_group": tree.get("active_group"),
             "active_tab_per_group": {g: v["active_tab"]
-                                     for g, v in self.groups_here().items()},
+                                     for g, v in self.groups_here(tree).items()},
         }
 
     def targets(self) -> list[dict]:
@@ -508,7 +521,14 @@ class Session:
 
     def snapshot(self, path: str) -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        ok(call(self.sock, {"op": "snapshot", "path": path}))
+        # Its own timeout, and a generous one. `snapshot` re-renders the
+        # scene and PNG-encodes it on the compositor's event loop, so the
+        # session is blocked for every millisecond of it — an unoptimised
+        # build on a machine that is busy compiling something else can sit
+        # here for a minute. Timing out would report a contended box as a
+        # broken compositor.
+        ok(call(self.sock, {"op": "snapshot", "path": path},
+                timeout=SNAPSHOT_TIMEOUT_S))
         return path
 
     def settle(self, seconds: float = 0.5) -> None:
@@ -1344,29 +1364,42 @@ def beat_three(quinten: Session, agent: Session, host_ws: dict) -> None:
     # model, `agent:<id>`, and its authority is a grant on a scope. Asked
     # of the production gate, which answers about a verb on a scope.
     cut("quinten")
+
+    def may_write(app: str) -> bool:
+        answer = quinten.check_action(AGENT_SUBJECT, app, "SpliceText") \
+            .get("answer", {}) or {}
+        return bool(answer.get("permitted"))
+
     probe = quinten.check_action(AGENT_SUBJECT, WORD_PROCESSOR, "SpliceText")
-    before = probe.get("answer", {})
     note(f"check_action({AGENT_SUBJECT}, {WORD_PROCESSOR}, SpliceText) -> "
-         f"{json.dumps(before)[:120]}")
+         f"{json.dumps(probe.get('answer', probe))[:140]}")
     claim("the agent may not write to the word processor yet",
-          bool(before.get("allowed")), False)
+          may_write(WORD_PROCESSOR), False)
 
     step(f"quinten grants it write on {AGENT_SCOPE} — that app, and nothing else")
     granted = quinten.grant(AGENT_SUBJECT, AGENT_SCOPE, "write")
     claim("the grant was accepted", "err" not in granted, True)
     if "err" in granted:
         note(json.dumps(granted["err"])[:200])
-    after = wait_for(
-        lambda: (quinten.check_action(AGENT_SUBJECT, WORD_PROCESSOR, "SpliceText")
-                 .get("answer", {}) or {}).get("allowed"),
-        timeout=SYNC_TIMEOUT_S)
-    claim("now it may — the same question, the same gate", bool(after), True)
-    # And the scope is a real boundary, not a label: the grant named one
-    # app, so it must not answer for another.
-    other = quinten.check_action(AGENT_SUBJECT, "dev.qos.terminal", "SpliceText")
+    claim("now it may — the same question, the same gate",
+          bool(wait_for(lambda: may_write(WORD_PROCESSOR), timeout=SYNC_TIMEOUT_S)),
+          True)
+    # And the scope is a real boundary rather than a label: the grant
+    # named one app, so it must not answer for another.
     claim("and still may not write to a different app",
-          bool(other.get("answer", {}).get("allowed")), False)
+          may_write("dev.qos.terminal"), False)
     note("a capability is a verb on a scope; the scope here is one app")
+
+    step("and the session it drives is admitted to the room as itself")
+    # The grant above is about the principal inside an app. The session
+    # is a separate subject, and a guest who has only been let in is not
+    # yet allowed to act — so it is admitted explicitly, the same way
+    # xaver would be.
+    admitted = quinten.grant(f"person:{agent.user}", "workspace", "write")
+    claim("quinten admits the agent's session as an editor",
+          "err" not in admitted, True)
+    if "err" in admitted:
+        note(json.dumps(admitted["err"])[:200])
 
 
 def beat_four(quinten: Session, xaver: Session, agent: Session,
@@ -1779,23 +1812,25 @@ def main() -> int:
     ap.add_argument("--record-interval", type=float, default=0.0, metavar="S",
                     help="target seconds between snapshots; 0 means as fast "
                          "as the compositor sustains")
-    ap.add_argument("--record-dwell", type=float, default=1.9, metavar="S",
+    ap.add_argument("--record-dwell", type=float, default=1.1, metavar="S",
                     help="seconds to hold on each beat and step while "
                          "recording, so the video runs long enough to read. "
                          "Real elapsed time, really sampled — never a held "
                          "frame standing in for one")
-    ap.add_argument("--record-cut-dwell", type=float, default=3.0, metavar="S",
+    ap.add_argument("--record-cut-dwell", type=float, default=1.5, metavar="S",
                     help="seconds to hold after cutting to a session, so the "
                          "screen you have just been moved to registers "
                          "before the demo carries on")
-    ap.add_argument("--record-max-hold", type=float, default=1.6, metavar="S",
+    ap.add_argument("--record-max-hold", type=float, default=1.8, metavar="S",
                     help="longest one unchanged frame is shown for. A "
                          "session waiting on a sandbox spawn or a network "
                          "hop renders the same screen for as long as it "
                          "waits; this trims that dead air. Nothing is "
                          "duplicated or interpolated — a frame is only ever "
-                         "shown for less time than it was live. 0 keeps the "
-                         "video on wall-clock time")
+                         "shown for less time than it was live. Keep it "
+                         "above --record-dwell, or the holds the demo asks "
+                         "for are trimmed along with the accidental ones. "
+                         "0 keeps the video on wall-clock time")
     ap.add_argument("--record-fps", type=int, default=30, metavar="N",
                     help="container frame rate of the composed video; the "
                          "capture rate is whatever was achieved, and frames "
