@@ -178,7 +178,7 @@ pub fn install_app(app: &CatalogueApp) -> Result<(), InstallError> {
             }
             Err(InstallError::Refused {
                 code: out.status.code().unwrap_or(1),
-                detail: last_lines(&detail, 6),
+                detail: installer_complaint(&detail),
             })
         }
     }
@@ -198,13 +198,38 @@ pub fn install(package_id: &str) -> Result<CatalogueApp, InstallError> {
     Ok(app)
 }
 
-/// The last `n` non-empty lines of `text` — enough to carry the
-/// installer's actual complaint without pasting a whole log into a
-/// notification.
-fn last_lines(text: &str, n: usize) -> String {
-    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    let start = lines.len().saturating_sub(n);
-    lines[start..].join("\n")
+/// How much of the installer's complaint survives into a
+/// notification. The toast that renders this is two lines tall; more
+/// than this is clipped mid-word, which reads worse than a short
+/// sentence.
+const DETAIL_MAX_CHARS: usize = 110;
+
+/// The installer's actual complaint, reduced to one readable line.
+///
+/// Three things happen here, all learned from looking at the rendered
+/// toast rather than at the string:
+///
+/// * only the **last** non-empty line survives — that is the error
+///   itself; the lines above it are context the card has no room for;
+/// * a leading `qos-install:` is stripped, because the caller already
+///   says who refused it and "qos-install refused it: qos-install:
+///   ..." stutters;
+/// * anything still over [`DETAIL_MAX_CHARS`] is elided rather than
+///   left to be cut off mid-word by the card.
+fn installer_complaint(text: &str) -> String {
+    let Some(line) = text.lines().map(str::trim).filter(|l| !l.is_empty()).next_back() else {
+        return String::new();
+    };
+    let line = line
+        .strip_prefix("qos-install:")
+        .unwrap_or(line)
+        .trim()
+        .to_string();
+    if line.chars().count() <= DETAIL_MAX_CHARS {
+        return line;
+    }
+    let kept: String = line.chars().take(DETAIL_MAX_CHARS).collect();
+    format!("{}…", kept.trim_end())
 }
 
 #[cfg(test)]
@@ -279,9 +304,42 @@ mod tests {
     }
 
     #[test]
-    fn last_lines_keeps_the_tail_and_drops_blanks() {
-        let text = "one\n\ntwo\nthree\n\nfour\n";
-        assert_eq!(last_lines(text, 2), "three\nfour");
-        assert_eq!(last_lines("", 3), "");
+    fn the_complaint_is_the_last_line_and_nothing_else() {
+        let text = "reading header\n\nverifying\nqpkg parse: unexpected EOF\n";
+        assert_eq!(installer_complaint(text), "qpkg parse: unexpected EOF");
+        assert_eq!(installer_complaint(""), "");
+        assert_eq!(installer_complaint("   \n\n  "), "");
+    }
+
+    /// The rendered toast already says who refused it, so the
+    /// installer's own name prefix would stutter: "qos-install refused
+    /// it: qos-install: ...". Caught by looking at the real
+    /// notification, not at the string.
+    #[test]
+    fn the_installers_own_name_prefix_is_stripped() {
+        let msg = InstallError::Refused {
+            code: 1,
+            detail: installer_complaint("qos-install: qpkg parse: unexpected EOF during skip"),
+        }
+        .user_message();
+        assert_eq!(msg, "qos-install refused it: qpkg parse: unexpected EOF during skip");
+        assert!(
+            !msg.contains("qos-install: "),
+            "the sentence must not name the installer twice: {msg:?}"
+        );
+    }
+
+    /// The notification card is two lines tall. A longer complaint is
+    /// elided here rather than being cut off mid-word by the renderer.
+    #[test]
+    fn an_overlong_complaint_is_elided_rather_than_clipped() {
+        let long = "x".repeat(400);
+        let out = installer_complaint(&long);
+        assert!(
+            out.chars().count() <= DETAIL_MAX_CHARS + 1,
+            "elided to {} chars",
+            out.chars().count()
+        );
+        assert!(out.ends_with('…'));
     }
 }
