@@ -164,6 +164,18 @@ pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -
     !is_pinned && look.fill.a() > 0
 }
 
+/// One pill's trailing-reserve animation: where its reveal started,
+/// where it is heading, and when it set off. Interpolated every
+/// `apply_layout`, so the pill's hit rects and its paint are the same
+/// geometry at every point on the curve — a chip is never clickable
+/// before it is visible, or visible after it stops being clickable.
+#[derive(Clone, Copy, Debug)]
+struct RevealAnim {
+    from: f64,
+    to: f64,
+    started: Instant,
+}
+
 /// A tab whose close button was clicked and is now fading out. Kept
 /// in `TabBar::closing_tabs` alongside the still-live `tabs` vec so the
 /// pill keeps rendering at a declining alpha + shrinking scale for
@@ -375,6 +387,24 @@ pub struct TabBar {
     /// indirection. v1 stores ephemerally; CRDT persistence will
     /// arrive when the rest of `WorkspaceTree` learns about pinning.
     pub(crate) pinned_ids: HashSet<u64>,
+    /// Per-tab reveal animation, keyed by tab id. Seeded settled at a
+    /// tab's first layout so a freshly-rendered bar has no motion in it
+    /// (screenshots stay deterministic); re-latched by `apply_layout`
+    /// whenever a pill's target [`Reveal`] changes under it.
+    reveal_anim: HashMap<u64, RevealAnim>,
+    /// The trailing reserve each pill actually got this frame, aligned
+    /// 1:1 with `tabs`. Written by `apply_layout` after the animated
+    /// value has been capped to what the pill can afford, and read by
+    /// everything downstream — the title zone, the chip rects, the
+    /// body wash — so width, hit region and paint can never disagree.
+    reveal_px: Vec<f64>,
+    /// Last-seen `Theme::reduce_motion`, cached from `build_layout`
+    /// because `apply_layout` — where the reveal is interpolated — has
+    /// no theme of its own. With it set the reveal lands on its target
+    /// immediately: the host stops pumping animation frames under
+    /// reduce-motion, so a curve started here would otherwise freeze
+    /// part-open and leave a pill too narrow for the chips it paints.
+    reduce_motion: bool,
 }
 
 impl TabBar {
@@ -431,6 +461,9 @@ impl TabBar {
             layout_anim_started: None,
             inserted_at: HashMap::new(),
             closing_tabs: Vec::new(),
+            reveal_anim: HashMap::new(),
+            reveal_px: Vec::new(),
+            reduce_motion: false,
         }
     }
 
@@ -506,6 +539,21 @@ impl TabBar {
         };
         // Per-pill drop shadow, approximating the concept's
         // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
+        //
+        // Cast in proportion to how much body there is to cast it. Every
+        // pill used to lay one down whether it painted anything or not,
+        // so each idle tab sat on a dark rounded smear with no surface
+        // on top of it — four soft black rings over the backdrop, which
+        // is a large part of why the row read as muddy rather than as
+        // chrome. Riding the reveal curve also means the shadow arrives
+        // and leaves with the surface instead of switching underneath it.
+        // The drag-ghost is a lifted pill by definition and keeps a full
+        // shadow regardless of the source's hover state.
+        let shadow_strength = if is_active || look.scale < 1.0 || suppress_hover {
+            1.0
+        } else {
+            self.reveal_fade(i)
+        };
         let shadow_y_offset = 6.0_f64;
         let shadow_rings: [(f64, u8); 4] = [
             (2.0, 51), // ~0.20
@@ -514,6 +562,10 @@ impl TabBar {
             (14.0, 5), // ~0.02
         ];
         for (spread, alpha) in shadow_rings {
+            let alpha = (alpha as f64 * shadow_strength).round() as u8;
+            if alpha == 0 {
+                continue;
+            }
             let shadow_rect = Rect::new(
                 r.x0 - spread,
                 r.y0 - spread + shadow_y_offset,
@@ -537,7 +589,26 @@ impl TabBar {
         // in commit f7d5a70 so the contrast is consistent across widgets.
         let shape = RoundedRect::from_rect(r, radius);
         if look.fill.a() > 0 {
-            scene.fill(vello::peniko::Fill::NonZero, pill_transform, look.fill, None, &shape);
+            // Light from above rather than a single flat wash: the fill
+            // is brightest along the pill's top edge and settles to the
+            // token value by its middle. One gradient is what separates
+            // "a rectangle of slightly lighter grey" from a surface that
+            // sits above the backdrop, and it is derived from the same
+            // `surface_white_*` token the tier table names rather than
+            // introducing a colour of its own.
+            let top = look.fill.with_alpha_factor(1.9);
+            let grad = vello::peniko::Gradient::new_linear(
+                Point::new(r.x0, r.y0),
+                Point::new(r.x0, r.y0 + r.height() * 0.8),
+            )
+            .with_extend(vello::peniko::Extend::Pad)
+            .with_stops(
+                &[
+                    vello::peniko::ColorStop { offset: 0.0, color: top.into() },
+                    vello::peniko::ColorStop { offset: 1.0, color: look.fill.into() },
+                ][..],
+            );
+            scene.fill(vello::peniko::Fill::NonZero, pill_transform, &grad, None, &shape);
         }
         if let Some(border) = look.border {
             scene.stroke(
@@ -604,11 +675,18 @@ impl TabBar {
             };
             let title_x = r.x0 + 12.0 + leading_shift;
             let title_y = r.center().y - th as f64 / 2.0;
-            // Clip the title relative to the close glyph's x-position on the
-            // *visual* rect (target + offset), so titles truncate at the
-            // same relative distance no matter where the pill is painted.
-            let close_x_visual = self.close_rects[i].x0 + dx;
-            let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
+            // Clip the title where this frame's reveal ends, read off the
+            // pill being painted rather than off the close chip — an
+            // idle pill has no close chip and gets its whole width for
+            // the name, and a pill mid-open hands room back as the
+            // cluster slides out.
+            let clip_x1 = r.x1
+                - self
+                    .reveal_px
+                    .get(i)
+                    .copied()
+                    .unwrap_or_else(|| Reveal::None.reserve());
+            let clip_r = Rect::new(r.x0, r.y0, clip_x1.max(r.x0), r.y1);
             // `visible_titles` carries the elided form, so the clip is
             // now a backstop rather than the truncation mechanism: the
             // string handed to the renderer already fits, and the reader
@@ -667,7 +745,17 @@ impl TabBar {
         // also filters them out) — and on idle inactive pills, which have
         // no body for the glyph to sit inside. See
         // [`close_affordance_visible`].
-        if close_affordance_visible(&look, is_pinned) {
+        // How far the trailing zone has opened this frame, and from it
+        // each chip's strength: full once the zone has cleared the chip
+        // by [`CHIP_FADE_PX`], fading in over the travel before that.
+        let zone = self
+            .reveal_px
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
+        let chip_alpha = |threshold: f64| ((zone - threshold) / CHIP_FADE_PX).clamp(0.0, 1.0) as f32;
+        if close_affordance_visible(&look, is_pinned) && self.close_rects[i].area() > 0.0 {
+            let alpha = chip_alpha(CLOSE_INSET + CLOSE_W);
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
             let (close_chip_color, close_chip_visible) = if close_hover {
@@ -687,7 +775,7 @@ impl TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    close_chip_color,
+                    close_chip_color.with_alpha_factor(alpha),
                     None,
                     &chip,
                 );
@@ -701,60 +789,76 @@ impl TabBar {
             } else {
                 text_dim
             };
-            icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
+            icons::draw_icon(
+                scene,
+                transform,
+                close_r,
+                icons::Icon::X,
+                glyph_color.with_alpha_factor(alpha),
+                1.5,
+            );
         }
 
-        // Hover-reveal action cluster (maximize + search). Suppressed on
-        // the drag-ghost so the ghost stays visually simple, and on
-        // pinned tabs (icon-only — no room for the cluster).
-        if is_hover && !is_pinned {
+        // Reveal-gated action cluster (maximize + search). Each chip is
+        // painted exactly when `apply_layout` found room to place it, so
+        // the two slide out of the pill's right edge as it opens and
+        // back under it as it closes — never drawn in width the pill
+        // was not holding. Suppressed on the drag-ghost so the ghost
+        // stays visually simple, and on pinned tabs (icon-only).
+        if !suppress_hover && !is_pinned {
             let chip_tint = vello::peniko::Color::from_rgba8(255, 255, 255, 64);
             let icon_idle = text_dim;
             let icon_active = text_primary;
 
-            let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-            let max_hover = Some(i) == self.hover_max_idx;
-            if max_hover {
-                let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+            if self.max_rects[i].area() > 0.0 {
+                let alpha = chip_alpha(CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W);
+                let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+                let max_hover = Some(i) == self.hover_max_idx;
+                if max_hover {
+                    let chip = RoundedRect::from_rect(max_r, max_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        chip_tint.with_alpha_factor(alpha),
+                        None,
+                        &chip,
+                    );
+                }
+                let outline_color = if max_hover { icon_active } else { icon_idle };
+                icons::draw_icon(
+                    scene,
                     transform,
-                    chip_tint,
-                    None,
-                    &chip,
+                    max_r,
+                    icons::Icon::Maximize2,
+                    outline_color.with_alpha_factor(alpha),
+                    1.5,
                 );
             }
-            let outline_color = if max_hover { icon_active } else { icon_idle };
-            icons::draw_icon(
-                scene,
-                transform,
-                max_r,
-                icons::Icon::Maximize2,
-                outline_color,
-                1.5,
-            );
 
-            let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
-            let search_hover = Some(i) == self.hover_search_idx;
-            if search_hover {
-                let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+            if self.search_rects[i].area() > 0.0 {
+                let alpha = chip_alpha(CHIP_CLUSTER_W);
+                let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
+                let search_hover = Some(i) == self.hover_search_idx;
+                if search_hover {
+                    let chip = RoundedRect::from_rect(search_r, search_r.height() / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        chip_tint.with_alpha_factor(alpha),
+                        None,
+                        &chip,
+                    );
+                }
+                let icon_color = if search_hover { icon_active } else { icon_idle };
+                icons::draw_icon(
+                    scene,
                     transform,
-                    chip_tint,
-                    None,
-                    &chip,
+                    search_r,
+                    icons::Icon::Search,
+                    icon_color.with_alpha_factor(alpha),
+                    1.5,
                 );
             }
-            let icon_color = if search_hover { icon_active } else { icon_idle };
-            icons::draw_icon(
-                scene,
-                transform,
-                search_r,
-                icons::Icon::Search,
-                icon_color,
-                1.5,
-            );
         }
     }
 
@@ -900,13 +1004,151 @@ impl TabBar {
             1.0
         }
     }
+    /// The [`Reveal`] a pill holds when the pointer is somewhere else.
+    /// Pointer-independent by construction, which is what lets
+    /// `apply_layout` fit the whole row from resting widths and leave
+    /// the fit alone while the pointer moves across it.
+    fn resting_reveal(&self, i: usize) -> Reveal {
+        let Some(t) = self.tabs.get(i) else {
+            return Reveal::None;
+        };
+        if self.pinned_ids.contains(&t.id) {
+            // Pinned pills are icon-only and paint no chips at all, so
+            // they have nothing to reveal and never grow.
+            return Reveal::None;
+        }
+        if t.id == self.active_id {
+            Reveal::Close
+        } else {
+            Reveal::None
+        }
+    }
+
+    /// The [`Reveal`] a pill is heading for this frame. Hover (and the
+    /// press that follows it) is the only thing that lifts a pill above
+    /// its resting tier.
+    fn target_reveal(&self, i: usize) -> Reveal {
+        let Some(t) = self.tabs.get(i) else {
+            return Reveal::None;
+        };
+        if self.pinned_ids.contains(&t.id) {
+            return Reveal::None;
+        }
+        let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
+        if Some(i) == self.hover_idx || pressed {
+            Reveal::Full
+        } else {
+            self.resting_reveal(i)
+        }
+    }
+
+    /// Where tab `id`'s reveal curve has got to, without advancing it.
+    /// Safe to call from `&self` passes (`draw`, `title_zone`).
+    fn reveal_reserve(&self, id: u64) -> f64 {
+        let Some(a) = self.reveal_anim.get(&id) else {
+            return Reveal::None.reserve();
+        };
+        let span = REVEAL_ANIM_MS as f64 / 1000.0;
+        if span <= 0.0 {
+            return a.to;
+        }
+        let t = a.started.elapsed().as_secs_f64() / span;
+        if t >= 1.0 {
+            a.to
+        } else {
+            // Cubic ease-out: the pill leaves its resting width quickly
+            // enough to feel like a response to the pointer, then lands
+            // softly instead of stopping dead against the neighbours it
+            // just pushed.
+            let u = 1.0 - t.clamp(0.0, 1.0);
+            a.from + (a.to - a.from) * (1.0 - u * u * u)
+        }
+    }
+
+    /// How far along its open/close curve an inactive pill is, 0 at
+    /// [`Reveal::None`] and 1 at [`Reveal::Full`]. The body wash rides
+    /// this so a pill's fill fades out over exactly the frames its
+    /// chips are sliding back under its right edge — without it the
+    /// body would vanish on the first un-hovered frame and leave the
+    /// chips painting against nothing for the rest of the shrink.
+    fn reveal_fade(&self, idx: usize) -> f64 {
+        let Some(t) = self.tabs.get(idx) else {
+            return 0.0;
+        };
+        // A bar that has not been laid out yet has no curve to read, so
+        // report the tier the pill is heading for. Without that, a pill
+        // whose hover state was set between layout passes would paint a
+        // chip with no body under it for one frame.
+        let reserve = if self.reveal_anim.contains_key(&t.id) {
+            self.reveal_reserve(t.id)
+        } else {
+            self.target_reveal(idx).reserve()
+        };
+        ((reserve - Reveal::None.reserve()) / HOVER_GROWTH_PX).clamp(0.0, 1.0)
+    }
+
+    /// Interpolate `id`'s reserve toward `target`, re-latching the curve
+    /// from wherever it had got to when the target changes. Returns the
+    /// value this frame should lay out with.
+    fn advance_reveal(&mut self, id: u64, target: Reveal) -> f64 {
+        let to = target.reserve();
+        let Some(existing) = self.reveal_anim.get(&id).copied() else {
+            // First layout pass that has seen this tab. Start settled
+            // rather than animating in from nothing, so a bar's first
+            // painted frame is its resting state and a static capture
+            // is not a function of how long the renderer took to boot.
+            self.reveal_anim.insert(id, RevealAnim { from: to, to, started: Instant::now() });
+            return to;
+        };
+        if self.reduce_motion {
+            self.reveal_anim.insert(id, RevealAnim { from: to, to, started: Instant::now() });
+            return to;
+        }
+        if (existing.to - to).abs() <= f64::EPSILON {
+            return self.reveal_reserve(id);
+        }
+        let from = self.reveal_reserve(id);
+        self.reveal_anim.insert(id, RevealAnim { from, to, started: Instant::now() });
+        from
+    }
+
+    /// Hold every in-flight reveal curve `at` milliseconds along it.
+    ///
+    /// The curve runs on wall time, and an offscreen frame costs more
+    /// wall time than the whole curve lasts — so a capture that only
+    /// steps frames sees the endpoints and nothing in between. This is
+    /// the same escape `GroupRow::hold_shift_at` gives the make-space
+    /// slide: what gets rendered is the production `apply_layout` at the
+    /// requested point, not a mock of it. Returns whether any curve was
+    /// running to sample.
+    pub fn hold_reveal_at(&mut self, at: Duration) -> bool {
+        let mut any = false;
+        let now = Instant::now();
+        for anim in self.reveal_anim.values_mut() {
+            if (anim.from - anim.to).abs() <= f64::EPSILON {
+                continue;
+            }
+            anim.started = now.checked_sub(at).unwrap_or(now);
+            any = true;
+        }
+        any
+    }
+
+    /// True while any pill is still opening or closing its reveal.
+    fn reveal_in_flight(&self) -> bool {
+        let span = Duration::from_millis(REVEAL_ANIM_MS);
+        self.reveal_anim
+            .values()
+            .any(|a| (a.from - a.to).abs() > f64::EPSILON && a.started.elapsed() < span)
+    }
+
     /// Width the pill at data index `i` wants, ignoring the bar it has to
     /// fit into: leading pad, the app glyph when the tab carries one, the
     /// title at its shaped width, and the trailing chip cluster.
     ///
     /// Uses the advance recorded by the last `draw` when there is one and
     /// the per-character estimate otherwise — see [`Self::title_advance`].
-    fn natural_pill_width(&self, i: usize) -> f64 {
+    fn natural_pill_width(&self, i: usize, reserve: f64) -> f64 {
         let t = &self.tabs[i];
         if self.pinned_ids.contains(&t.id) {
             // Compact icon-only pill — close / max / search glyphs are
@@ -914,36 +1156,44 @@ impl TabBar {
             // press hit-tests in `handle_event`).
             return PINNED_W;
         }
-        let title_w = self
-            .title_advance
+        let title_w = self.shaped_title_width(i);
+        let lead = self.leading_zone(i);
+        (PILL_PAD_X + lead + title_w + reserve).max(PILL_MIN_PX)
+    }
+
+    /// Shaped width of tab `i`'s title, or the per-character estimate
+    /// on the first frame it is on screen.
+    fn shaped_title_width(&self, i: usize) -> f64 {
+        let t = &self.tabs[i];
+        self.title_advance
             .get(&t.id)
             .filter(|(title, _, _)| title == &t.title)
             .map(|(_, _, w)| *w)
-            .unwrap_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W);
-        let lead = if t.app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 };
-        (PILL_PAD_X + lead + title_w + CHIP_CLUSTER_W).max(PILL_MIN_PX)
+            .unwrap_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W)
+    }
+
+    /// Width the leading app glyph and its gap take, or zero for a tab
+    /// with no typed icon.
+    fn leading_zone(&self, i: usize) -> f64 {
+        if self.tabs[i].app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 }
     }
 
     /// Horizontal span a pill's title may occupy, given the pill's rect.
     /// Runs from the leading pad (past the app glyph, when there is one)
-    /// to the left edge of the trailing chip cluster.
+    /// to wherever this frame's reveal has left the trailing zone.
+    ///
+    /// The title always ends exactly where the chrome begins: an idle
+    /// pill reveals nothing and gets its whole width for the name, and
+    /// a pill that is opening hands the name back a character at a time
+    /// as the chips slide out. Reading the same `reveal_px` the chip
+    /// rects were placed from is what keeps those two in step.
     fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
-        let lead = if self.tabs[i].app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 };
-        let x0 = r.x0 + PILL_PAD_X + lead;
-        // A pill at its natural width reserves the whole chip cluster, so
-        // hovering it never reflows the row. A *squeezed* pill has
-        // already given that up — the group is too narrow to give every
-        // tab what it wants — and there the reserve is the wrong thing to
-        // protect: holding all three chips' width back leaves nothing for
-        // the name, and a row of pills reading "…" tells the reader less
-        // than the overflow it replaced. So a squeezed pill keeps only
-        // the close chip, which is the one that has to stay hittable, and
-        // hands the rest to the title.
-        let reserve = if r.width() + 0.5 >= self.natural_pill_width(i) {
-            CHIP_CLUSTER_W
-        } else {
-            CLOSE_INSET + CLOSE_W
-        };
+        let x0 = r.x0 + PILL_PAD_X + self.leading_zone(i);
+        let reserve = self
+            .reveal_px
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
         let x1 = r.x1 - reserve;
         (x0, x1.max(x0))
     }
@@ -1347,7 +1597,29 @@ impl TabBar {
         let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
         let is_pressed =
             !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
-        pill_appearance(theme, is_active, is_hover, is_pressed)
+        let mut look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        // An inactive pill's body wash rides its reveal curve instead of
+        // switching on and off with the pointer, so the fill fades out
+        // over exactly the frames its chips are sliding back under its
+        // right edge. Without it the body would vanish on the first
+        // un-hovered frame and the chips would spend the rest of the
+        // shrink painting against nothing — the "loose × marks with no
+        // pill around them" shape [`close_affordance_visible`] exists to
+        // prevent. Fully hovered the factor is 1, so a settled pill is
+        // the same `surface_white_5` the tier table specifies.
+        if !is_active && !is_pressed {
+            let fade = if suppress_hover {
+                0.0
+            } else {
+                self.reveal_fade(idx)
+            };
+            look.fill = if fade > 0.0 {
+                theme.tokens.colors.surface_white_5.with_alpha_factor(fade as f32)
+            } else {
+                vello::peniko::Color::TRANSPARENT
+            };
+        }
+        look
     }
 
     /// Whether tab `idx`'s close `×` paints this frame, resolved through the
@@ -1444,38 +1716,121 @@ const CLOSE_INSET: f64 = 3.0;
 /// while maximize and search are secondary and also reachable from the
 /// tab's context menu.
 const ACTION_W: f64 = 14.0;
-const ACTION_GAP: f64 = 1.0;
+const ACTION_GAP: f64 = 4.0;
 /// Leading app-glyph width and its gap to the title.
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
 /// Compact width for a pinned, icon-only pill.
 const PINNED_W: f64 = 28.0;
-/// Natural-width floor for an unpinned pill.
-const PILL_MIN_PX: f64 = 96.0;
+/// Natural-width floor for an unpinned pill. Sized so the narrowest
+/// pill still fits its app glyph, a couple of characters of name and
+/// the close chip — anything wider is the title asking for room, not
+/// the floor holding space open.
+const PILL_MIN_PX: f64 = 76.0;
 /// Narrowest a pill may be squeezed to when the group cannot fit every
 /// pill at its natural width. Below this the pill can no longer host a
 /// legible fragment of its title alongside the close chip, so squeezing
 /// further would be worse than eliding harder.
 const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
 
-/// Trailing reserve on every unpinned pill: the close chip plus the two
-/// hover-reveal chips (maximize, search) that sit to its left.
+/// Narrowest title zone a pill will squeeze to before it starts giving
+/// up chips instead of characters.
 ///
-/// Reserved on every pill whether or not the chips are painted this
-/// frame, because they appear on hover and a pill that grew to make room
-/// for them would shove every pill to its right sideways under the
-/// pointer. See [`close_affordance_visible`] for the paint rule.
+/// A pill reveals into the room it has; in a group too narrow to give
+/// every tab its resting width, "the room it has" can be less than the
+/// cluster wants. Taking it out of the title anyway is the failure the
+/// old always-on reserve produced at demo widths — every pill rendering
+/// a bare ellipsis, which names nothing. So the title keeps this much
+/// and the reveal takes what is left, dropping search first, then
+/// maximize, then close.
+const MIN_TITLE_PX: f64 = 40.0;
+
+/// Span from a pill's right edge to the left edge of the leftmost chip
+/// in the revealed cluster: close, then maximize, then search.
 ///
-/// This reserve is why an idle row reads sparse: an inactive pill paints
-/// no body, so all the reader sees is a title followed by this much
-/// nothing before the next title starts. It cannot simply be dropped —
-/// a pill has to be at least `pad + title + cluster` wide for the whole
-/// title and the whole cluster to coexist, so anything narrower either
-/// reflows the row on hover or re-elides the title under the pointer.
-/// The only real lever is how many chips are in the cluster: with
-/// maximize and search on the pill it is ~50 px, with close alone it
-/// would be ~21 px.
+/// Only a pill that is *currently revealing* the cluster holds this
+/// width. See [`Reveal`] for the three widths a pill can hold and why
+/// growing into them is safe under the pointer.
 const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+
+/// Breathing room between the end of a title and whatever chip sits at
+/// the pill's right end, so a full-width title never touches a glyph.
+///
+/// Also the runway each chip fades in over: a chip is placed the moment
+/// the trailing zone reaches it and reaches full strength once the zone
+/// has cleared it by [`CHIP_FADE_PX`], so this has to be at least that
+/// wide for a settled pill to paint its cluster at full opacity.
+const TITLE_CHIP_GAP: f64 = 10.0;
+
+/// How much further the trailing zone has to open past a chip before
+/// that chip is at full strength. Without it the three chips arrive as
+/// three hard pops at the widths that first fit them; with it they
+/// resolve out of the pill's edge as it travels.
+const CHIP_FADE_PX: f64 = 10.0;
+
+/// How wide a pill's trailing zone is, which is the same question as
+/// which controls it is showing. Width and paint are read off this one
+/// value, so a pill is always exactly as wide as what it draws — the
+/// defect this replaces was chips appearing inside width that had been
+/// held open for them all along, which made the row read as a set of
+/// bare labels with gaps rather than a family of tabs.
+///
+/// # Growing under the pointer
+///
+/// The reason every pill used to hold [`Reveal::Full`]'s width whether
+/// it was showing anything or not: a pill that grows on hover pushes
+/// every pill to its right sideways, and a row that reflows under the
+/// pointer can pull the thing being aimed at out from under it.
+///
+/// Growth here is safe because it is *anchored*, in two senses:
+///
+/// 1. **Rightward only.** A pill grows at its right edge, so its own
+///    left edge — and every pill left of it — never moves. The pointer
+///    is inside the pill that is growing, and the growth moves the
+///    pill's far edge *away* from the pointer, never across it. Leaving
+///    a pill runs the same geometry backwards: the pill shrinks after
+///    the pointer has already left it, and its right-hand neighbours
+///    move *toward* a pointer that is by then inside one of them and
+///    further from its leading edge than before.
+/// 2. **Into headroom the row already held back.** `apply_layout` fits
+///    the row at its *resting* widths inside `width - HOVER_GROWTH_PX`,
+///    so the space one pill needs to open is reserved once for the row
+///    instead of once per pill. Neighbours translate; they are never
+///    re-fitted, so no title re-elides because the pointer moved.
+///
+/// The net of (2) is that an idle row is tighter by roughly one chip
+/// cluster per pill beyond the first — which is the sparseness the
+/// old always-on reserve produced.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Reveal {
+    /// Showing nothing: plain trailing padding, symmetric with the
+    /// leading pad, so the pill is exactly its contents.
+    None,
+    /// Showing the close chip only — an active pill at rest.
+    Close,
+    /// Showing close, maximize and search — a hovered pill.
+    Full,
+}
+
+impl Reveal {
+    /// Width this tier holds between the title and the pill's right edge.
+    pub(crate) const fn reserve(self) -> f64 {
+        match self {
+            Reveal::None => PILL_PAD_X,
+            Reveal::Close => CLOSE_INSET + CLOSE_W + TITLE_CHIP_GAP,
+            Reveal::Full => CHIP_CLUSTER_W + TITLE_CHIP_GAP,
+        }
+    }
+}
+
+/// Most a single pill can add to its resting width by revealing, and so
+/// the headroom the row holds back so that growth never re-fits anyone.
+const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
+
+/// Duration of the reveal grow/shrink curve. Matched to
+/// [`LAYOUT_ANIM_MS`] so a pill opening and the pills sliding aside for
+/// it read as one motion rather than two.
+const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
 
 /// Fallback per-character advance for a title that has not been shaped
 /// yet. Only ever used for the first frame a title is on screen — `draw`
@@ -1560,7 +1915,10 @@ fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
 
 impl Widget for TabBar {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+    fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        // `apply_layout` interpolates the reveal curve but has no theme
+        // of its own; cache the flag here, where a theme is in hand.
+        self.reduce_motion = theme.reduce_motion;
         // Outer bar is `TAB_BAR_HEIGHT` tall (40 px); pills sit inset
         // `TAB_PILL_INSET_Y` (6 px) top + bottom so each pill reads as
         // 28 px, matching the concept's `h-14` container / `py-2 text-sm`
@@ -1587,6 +1945,20 @@ impl Widget for TabBar {
         self.close_rects.resize(self.tabs.len(), Rect::ZERO);
         self.max_rects.resize(self.tabs.len(), Rect::ZERO);
         self.search_rects.resize(self.tabs.len(), Rect::ZERO);
+        self.reveal_px.clear();
+        self.reveal_px.resize(self.tabs.len(), Reveal::None.reserve());
+        // Advance every pill's reveal curve. This is the only place the
+        // curve moves, so the rects written below and the paint that
+        // reads them back are the same geometry at every point on it.
+        // Tabs that have left the bar take their curve with them.
+        let live: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
+        self.reveal_anim.retain(|id, _| live.contains(id));
+        let mut animated: Vec<f64> = Vec::with_capacity(self.tabs.len());
+        for i in 0..self.tabs.len() {
+            let target = self.target_reveal(i);
+            let id = self.tabs[i].id;
+            animated.push(self.advance_reveal(id, target));
+        }
         let gap = PILL_GAP;
         let close_w = CLOSE_W;
         let max_w = ACTION_W;
@@ -1608,20 +1980,51 @@ impl Widget for TabBar {
                 visual_order.push(i);
             }
         }
-        // Natural width per visual slot, then the fit pass that keeps the
-        // whole row inside this group's bar.
-        let natural: Vec<f64> = visual_order
+        let pinned_flags: Vec<bool> = visual_order
             .iter()
-            .map(|&i| self.natural_pill_width(i))
+            .map(|&i| self.pinned_ids.contains(&self.tabs[i].id))
             .collect();
-        let widths = fit_pill_widths(
-            &natural,
-            &visual_order
-                .iter()
-                .map(|&i| self.pinned_ids.contains(&self.tabs[i].id))
-                .collect::<Vec<bool>>(),
-            self.rect.width(),
-        );
+        // Fit the row at its **resting** widths — the shape it holds
+        // with the pointer anywhere else — inside the bar less two
+        // reservations: the headroom one pill needs to open, and the
+        // trailing "+" chip.
+        //
+        // Fitting from resting widths is what makes hover safe. The fit
+        // never sees the pointer, so moving along the row cannot re-fit
+        // it: pills only ever translate, and only ever the ones to the
+        // right of whatever is open. Nothing at or left of the hovered
+        // pill's leading edge moves, which is the property that keeps
+        // the pointer's target under the pointer. Reserving the
+        // headroom once for the row rather than once per pill is also
+        // what buys the idle row its tightness back.
+        let resting: Vec<f64> = visual_order
+            .iter()
+            .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
+            .collect();
+        let headroom = if pinned_flags.iter().any(|p| !p) { HOVER_GROWTH_PX } else { 0.0 };
+        let laid_out = self.rect.width() > 0.0;
+        let fit_avail = if laid_out {
+            (self.rect.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
+        } else {
+            self.rect.width()
+        };
+        let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
+        // What each pill has actually opened by, beyond resting. Scaled
+        // down together if the row is mid-handover between two pills and
+        // both are briefly part-open, so the total can never outrun the
+        // headroom reserved for exactly one.
+        let mut grow: Vec<f64> = visual_order
+            .iter()
+            .map(|&i| (animated[i] - self.resting_reveal(i).reserve()).max(0.0))
+            .collect();
+        let total_grow: f64 = grow.iter().sum();
+        if total_grow > headroom && total_grow > 0.0 {
+            let k = headroom / total_grow;
+            for g in grow.iter_mut() {
+                *g *= k;
+            }
+        }
+        let widths: Vec<f64> = base.iter().zip(grow.iter()).map(|(b, g)| b + g).collect();
 
         // Hard stop at the bar's right edge. `fit_pill_widths` has
         // already sized the row to fit, so this only ever absorbs float
@@ -1644,17 +2047,51 @@ impl Widget for TabBar {
             // `Rect::ZERO` is the no-rect convention used elsewhere
             // (e.g. `start_closing` falls back to it when there's no
             // layout to snapshot from).
+            //
+            // How much trailing zone this pill actually got: what its
+            // reveal asked for, capped by what is left once the title
+            // has kept [`MIN_TITLE_PX`]. A chip is placed only once
+            // that zone reaches it, so the cluster slides out from the
+            // pill's right edge as it opens — close first, then
+            // maximize, then search — and a pill too narrow to host one
+            // neither paints it nor makes it clickable.
+            let effective = if is_pinned {
+                0.0
+            } else {
+                // Protect the title's own width, but no more than
+                // [`MIN_TITLE_PX`] of it — a two-character name has
+                // nothing to lose, and holding a full title zone open
+                // for it would cost the pill chips for no gain.
+                let protect = self.shaped_title_width(i).min(MIN_TITLE_PX);
+                let afford = (r.width() - PILL_PAD_X - self.leading_zone(i) - protect).max(0.0);
+                (self.resting_reveal(i).reserve() + grow[slot]).min(afford)
+            };
+            let chip_y0 = r.y0 + 4.0;
+            let chip_y1 = r.y1 - 4.0;
+            let close_x0 = r.x1 - close_w - close_inset;
+            let max_x0 = close_x0 - max_w - ACTION_GAP;
+            let search_x0 = max_x0 - search_w - ACTION_GAP;
             let (close, max_rect, search_rect) = if is_pinned {
                 (Rect::ZERO, Rect::ZERO, Rect::ZERO)
             } else {
-                let close_x0 = r.x1 - close_w - close_inset;
-                let close = Rect::new(close_x0, r.y0 + 4.0, close_x0 + close_w, r.y1 - 4.0);
-                let max_x0 = close_x0 - max_w - 2.0;
-                let max_rect = Rect::new(max_x0, r.y0 + 4.0, max_x0 + max_w, r.y1 - 4.0);
-                let search_x0 = max_x0 - search_w - 2.0;
-                let search_rect = Rect::new(search_x0, r.y0 + 4.0, search_x0 + search_w, r.y1 - 4.0);
+                let close = if effective >= CLOSE_INSET + CLOSE_W {
+                    Rect::new(close_x0, chip_y0, close_x0 + close_w, chip_y1)
+                } else {
+                    Rect::ZERO
+                };
+                let max_rect = if effective >= CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W {
+                    Rect::new(max_x0, chip_y0, max_x0 + max_w, chip_y1)
+                } else {
+                    Rect::ZERO
+                };
+                let search_rect = if effective >= CHIP_CLUSTER_W {
+                    Rect::new(search_x0, chip_y0, search_x0 + search_w, chip_y1)
+                } else {
+                    Rect::ZERO
+                };
                 (close, max_rect, search_rect)
             };
+            self.reveal_px[i] = effective;
             self.tab_rects[i] = r;
             self.close_rects[i] = close;
             self.max_rects[i] = max_rect;
@@ -2411,7 +2848,12 @@ impl Widget for TabBar {
             .hover_drop_animated_at
             .map(|t| t.elapsed() < Duration::from_millis(HOVER_DROP_FADE_MS))
             .unwrap_or(false);
-        drop_zone || layout || insert_fade || close_fade || hover_drop_fade
+        // 6. Pill reveal grow/shrink (`REVEAL_ANIM_MS`). Hover changes
+        //    arrive as pointer events, which relayout on their own; this
+        //    is what keeps the curve running once the pointer stops
+        //    moving, so a pill that is still opening finishes opening.
+        let reveal = self.reveal_in_flight();
+        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal
     }
 }
 
@@ -4532,14 +4974,20 @@ mod tests {
     /// (used by the older layout tests) gives the bar unbounded width,
     /// which is precisely the case that cannot show an overflow.
     fn lay_out_at_width(b: &mut TabBar, width: f64) {
-        use crate::theme::Theme;
+        lay_out_at_width_with(b, width, &crate::theme::Theme::dark());
+    }
+
+    /// Same, against a caller-supplied theme. Reduce-motion is the
+    /// interesting one: it is the production path that lands the reveal
+    /// on its target in a single pass, so a test that wants settled
+    /// geometry can have it without sleeping through the curve.
+    fn lay_out_at_width_with(b: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Style};
 
-        let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = b.build_layout(&mut taffy, &theme, &mut node_map);
+        let node = b.build_layout(&mut taffy, theme, &mut node_map);
         // Column, like `WindowGroup::build_layout`: the bar declares
         // `width: auto`, so it only takes the group's width as the cross
         // axis of a column. A row parent leaves it content-sized, which
@@ -4748,5 +5196,426 @@ mod tests {
                 bar_rect.x1,
             );
         }
+    }
+
+    // =================================================================
+    // Reveal-on-hover: a pill is exactly as wide as what it draws
+    // =================================================================
+
+    /// Move the pointer onto the centre-left of pill `idx` through the
+    /// production `CursorMoved` handler, then re-run layout. Aims at the
+    /// pill's leading third so the cursor never lands on a chip.
+    fn hover_pill(b: &mut TabBar, idx: usize, width: f64, theme: &crate::theme::Theme) {
+        let r = b.tab_rects()[idx];
+        let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
+        let mut handled = false;
+        dispatch_cursor(b, p, &mut handled);
+        lay_out_at_width_with(b, width, theme);
+    }
+
+    /// Dispatch a real `CursorMoved` at `p`.
+    fn dispatch_cursor(b: &mut TabBar, p: Point, handled: &mut bool) {
+        use std::collections::HashMap;
+        let mut doc = automerge::AutoCommit::new();
+        let obj = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = {
+            let theme = crate::theme::Theme::dark();
+            b.build_layout(&mut taffy, &theme, &mut node_map)
+        };
+        let mut focus = None;
+        b.handle_event(
+            &WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+            1.0,
+            &mods,
+            &mut doc,
+            &obj,
+            handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+    }
+
+    fn four_tab_bar() -> TabBar {
+        TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+                TabDescriptor::new(3, "Terminal"),
+                TabDescriptor::new(4, "Browser"),
+            ],
+            1,
+        )
+    }
+
+    /// The defect this replaces: the chips appeared *inside* width the
+    /// pill had been holding open for them all along, so hovering
+    /// changed what a pill painted without changing what it was.
+    ///
+    /// Hovering must widen the pill by the cluster it is revealing.
+    #[test]
+    fn hovering_a_pill_widens_it_by_the_cluster_it_reveals() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+
+        // Pill 1 is inactive (tab 1 is active), so at rest it reveals
+        // nothing at all.
+        let idle = b.tab_rects()[1].width();
+        assert_eq!(
+            b.close_rects[1],
+            Rect::ZERO,
+            "an idle inactive pill must not offer a close target it isn't painting",
+        );
+
+        hover_pill(&mut b, 1, width, &theme);
+        let hovered = b.tab_rects()[1].width();
+
+        assert!(
+            (hovered - idle - HOVER_GROWTH_PX).abs() < 0.5,
+            "hovering pill 1 took it from {idle} to {hovered}; it must grow by \
+             the cluster it reveals ({HOVER_GROWTH_PX} px), not reveal chips \
+             into width it was already holding",
+        );
+        assert!(b.close_rects[1].area() > 0.0, "close chip must be placed once revealed");
+        assert!(b.max_rects[1].area() > 0.0, "maximize chip must be placed once revealed");
+        assert!(b.search_rects[1].area() > 0.0, "search chip must be placed once revealed");
+    }
+
+    /// The objection to growing on hover: a pill that grows shoves its
+    /// neighbours sideways, and a row that reflows under the pointer can
+    /// pull the thing being aimed at out from under it.
+    ///
+    /// Growth is anchored at the hovered pill's leading edge, so the
+    /// pointer's own target never moves — and neither does anything to
+    /// its left. Only the pills to its right translate, away from the
+    /// pointer, and they translate without being resized.
+    #[test]
+    fn an_opening_pill_moves_nothing_at_or_left_of_its_own_leading_edge() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+        let before: Vec<Rect> = b.tab_rects().to_vec();
+
+        hover_pill(&mut b, 2, width, &theme);
+        let after: Vec<Rect> = b.tab_rects().to_vec();
+
+        for i in 0..=2 {
+            assert!(
+                (after[i].x0 - before[i].x0).abs() < 0.01,
+                "pill {i}'s leading edge moved from {} to {} while pill 2 opened — \
+                 everything at or left of the hovered pill must stay put",
+                before[i].x0,
+                after[i].x0,
+            );
+        }
+        for i in 0..2 {
+            assert!(
+                (after[i].width() - before[i].width()).abs() < 0.01,
+                "pill {i} was re-sized ({} -> {}) because the pointer moved; \
+                 neighbours translate, they are never re-fitted",
+                before[i].width(),
+                after[i].width(),
+            );
+        }
+        assert!(
+            after[3].x0 > before[3].x0 + 1.0,
+            "the pill right of the open one must slide right, away from the pointer",
+        );
+        assert!(
+            (after[3].width() - before[3].width()).abs() < 0.01,
+            "the pill right of the open one translates; it must not be squeezed",
+        );
+    }
+
+    /// The row the reserve left behind: every unpinned pill held ~50 px
+    /// for chips it was not painting, so an idle row read as a set of
+    /// bare labels with gaps rather than a family of tabs.
+    ///
+    /// An idle pill's trailing zone must now be plain padding, symmetric
+    /// with its leading pad.
+    #[test]
+    fn an_idle_pill_holds_no_room_for_chips_it_is_not_painting() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+
+        // Pick the pill whose title is long enough to clear the width
+        // floor, so the assertion is about the reserve and not the floor.
+        let i = 2; // "Terminal"
+        let expected = PILL_PAD_X + b.leading_zone(i) + b.shaped_title_width(i) + Reveal::None.reserve();
+        assert!(
+            expected > PILL_MIN_PX,
+            "test picked a pill that is floored, not content-sized",
+        );
+        assert!(
+            (b.tab_rects()[i].width() - expected).abs() < 0.5,
+            "idle pill {i} is {} wide but its contents want {expected}; it is \
+             still holding room for chips it does not paint",
+            b.tab_rects()[i].width(),
+        );
+        // Same statement from the reader's side: the run of blank pill
+        // between the end of one title and the start of the next is two
+        // paddings and a gap, not two paddings, a gap and a cluster.
+        let title_end = b.tab_rects()[i].x0 + PILL_PAD_X + b.leading_zone(i) + b.shaped_title_width(i);
+        let next_title_start = b.tab_rects()[i + 1].x0 + PILL_PAD_X + b.leading_zone(i + 1);
+        assert!(
+            next_title_start - title_end < PILL_PAD_X + PILL_GAP + PILL_PAD_X + 1.0,
+            "{} px of nothing between two titles",
+            next_title_start - title_end,
+        );
+    }
+
+    /// A pill offers exactly the targets it is painting, at every tier:
+    /// nothing when idle, close alone when it is the active tab, all
+    /// three when the pointer is on it. Width, hit region and paint are
+    /// all read off one value, so they cannot drift apart.
+    #[test]
+    fn chip_hit_targets_exist_exactly_when_the_pill_is_showing_them() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+
+        // Active pill (index 0, id 1): close only.
+        assert!(b.close_rects[0].area() > 0.0, "the active tab shows its close chip");
+        assert_eq!(b.max_rects[0], Rect::ZERO, "an unhovered active tab shows no maximize chip");
+        assert_eq!(b.search_rects[0], Rect::ZERO, "an unhovered active tab shows no search chip");
+
+        // Idle inactive pill: nothing.
+        assert_eq!(b.close_rects[1], Rect::ZERO);
+        assert_eq!(b.max_rects[1], Rect::ZERO);
+        assert_eq!(b.search_rects[1], Rect::ZERO);
+
+        // Hovered: all three, and each inside its own pill.
+        hover_pill(&mut b, 1, width, &theme);
+        for (name, r) in [
+            ("close", b.close_rects[1]),
+            ("maximize", b.max_rects[1]),
+            ("search", b.search_rects[1]),
+        ] {
+            assert!(r.area() > 0.0, "{name} chip missing on the hovered pill");
+            let pill = b.tab_rects()[1];
+            assert!(
+                r.x0 >= pill.x0 - 0.5 && r.x1 <= pill.x1 + 0.5,
+                "{name} chip at {r:?} is outside its pill at {pill:?}",
+            );
+        }
+    }
+
+    /// The reveal is a curve, not a jump: one layout pass after the
+    /// pointer arrives the pill is on its way, and it has settled by the
+    /// time the curve is over. A pill that snapped would be the same
+    /// visual pop the always-on reserve produced, just with the pill
+    /// changing size too.
+    #[test]
+    fn the_reveal_eases_open_rather_than_snapping() {
+        let theme = crate::theme::Theme::dark(); // motion on
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+        let idle = b.tab_rects()[1].width();
+
+        hover_pill(&mut b, 1, width, &theme);
+        // The pass that latches the curve lays out at its starting
+        // value; the host keeps pumping frames from there
+        // (`needs_animation_frame`), so sample partway along.
+        assert!(b.reveal_in_flight(), "the pointer arriving must start a curve");
+        std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS / 3));
+        lay_out_at_width_with(&mut b, width, &theme);
+        let opening = b.tab_rects()[1].width();
+        assert!(
+            opening > idle && opening < idle + HOVER_GROWTH_PX,
+            "part way along the curve the pill is {opening} wide; it must be \
+             between its idle width {idle} and its open width {}",
+            idle + HOVER_GROWTH_PX,
+        );
+
+        std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS + 40));
+        lay_out_at_width_with(&mut b, width, &theme);
+        let settled = b.tab_rects()[1].width();
+        assert!(
+            (settled - idle - HOVER_GROWTH_PX).abs() < 0.5,
+            "the curve left the pill at {settled}; it must land on {}",
+            idle + HOVER_GROWTH_PX,
+        );
+    }
+
+    /// Under reduce-motion the host stops pumping animation frames, so a
+    /// curve started here would freeze part-open and leave the pill too
+    /// narrow for the chips it is painting. The reveal must land in one
+    /// pass instead.
+    #[test]
+    fn reduce_motion_lands_the_reveal_in_a_single_pass() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+        let idle = b.tab_rects()[1].width();
+
+        hover_pill(&mut b, 1, width, &theme);
+        assert!(
+            (b.tab_rects()[1].width() - idle - HOVER_GROWTH_PX).abs() < 0.5,
+            "reduce-motion must skip the curve, not run it slowly",
+        );
+        assert!(!b.reveal_in_flight(), "no curve may be left running under reduce-motion");
+    }
+
+    /// Growth comes out of headroom the row held back, so a pill opening
+    /// inside a narrow group still cannot paint over the group beside
+    /// it — including while the row is mid-handover between two pills
+    /// and both are briefly part-open.
+    #[test]
+    fn a_pill_opening_in_a_narrow_group_stays_inside_it() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        for width in [300.0_f64, 380.0, 460.0, 620.0] {
+            let mut b = four_tab_bar();
+            lay_out_at_width_with(&mut b, width, &theme);
+            let idle: Vec<Rect> = b.tab_rects().to_vec();
+            for idx in 0..4 {
+                hover_pill(&mut b, idx, width, &theme);
+                // The anchoring invariant has to hold at the widths the
+                // demo actually renders, not only where there is slack:
+                // a squeezed row is exactly where a re-fit under the
+                // pointer would be tempting.
+                for i in 0..=idx {
+                    assert!(
+                        (b.tab_rects()[i].x0 - idle[i].x0).abs() < 0.01,
+                        "at {width} px with pill {idx} open, pill {i}'s leading edge \
+                         moved from {} to {}",
+                        idle[i].x0,
+                        b.tab_rects()[i].x0,
+                    );
+                }
+                for i in 0..idx {
+                    assert!(
+                        (b.tab_rects()[i].width() - idle[i].width()).abs() < 0.01,
+                        "at {width} px, pill {i} was re-sized ({} -> {}) because the \
+                         pointer moved onto pill {idx}",
+                        idle[i].width(),
+                        b.tab_rects()[i].width(),
+                    );
+                }
+                let bar = b.bar_rect();
+                for (i, r) in b.tab_rects().iter().enumerate() {
+                    assert!(
+                        r.x1 <= bar.x1 + 0.5,
+                        "at {width} px with pill {idx} open, pill {i} ends at {} \
+                         past the group edge at {}",
+                        r.x1,
+                        bar.x1,
+                    );
+                }
+                for (i, r) in b.close_rects.iter().enumerate() {
+                    if r.area() == 0.0 {
+                        continue;
+                    }
+                    assert!(
+                        r.x1 <= bar.x1 + 0.5,
+                        "at {width} px with pill {idx} open, close chip {i} \
+                         escapes the group at {}",
+                        r.x1,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A pill squeezed below what the cluster wants gives up chips, not
+    /// characters. The failure this pins is a row of pills that all read
+    /// as a bare ellipsis: the reveal taking its width out of the name
+    /// until nothing of the name is left.
+    #[test]
+    fn a_squeezed_pill_gives_up_chips_before_it_gives_up_its_name() {
+        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let mut tr = TextRenderer::new();
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+                TabDescriptor::new(3, "Terminal"),
+                TabDescriptor::new(4, "Browser"),
+                TabDescriptor::new(5, "Settings"),
+                TabDescriptor::new(6, "Inspector"),
+            ],
+            1,
+        );
+        // Six tabs in a third-width group: past what the row can show at
+        // resting width, so the fit has to squeeze.
+        let width = 460.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+        assert!(
+            b.tab_rects()
+                .iter()
+                .enumerate()
+                .any(|(i, r)| r.width() + 0.5 < b.natural_pill_width(i, b.resting_reveal(i).reserve())),
+            "the fixture stopped squeezing — pick more tabs or a narrower group, \
+             otherwise this test no longer covers what it claims to",
+        );
+
+        for idx in 0..b.tabs().len() {
+            hover_pill(&mut b, idx, width, &theme);
+            for i in 0..b.tabs().len() {
+                let title = b.tabs()[i].title.clone();
+                let shown = b
+                    .visible_title(i, &mut tr, &theme)
+                    .unwrap_or_else(|| panic!("pill {i} ({title}) renders no title at all"));
+                let stem = shown.trim_end_matches('\u{2026}');
+                assert!(
+                    stem.chars().count() >= 3,
+                    "with pill {idx} open, pill {i} ({title}) renders {shown:?} — a \
+                     squeezed pill must still carry enough of its name to be recognised",
+                );
+                assert!(
+                    title.starts_with(stem),
+                    "pill {i} renders {shown:?}, which is not a prefix of {title:?}",
+                );
+            }
+        }
+    }
+
+    /// The body wash rides the same curve the chips do, so a pill that
+    /// is closing keeps a container under them for the whole shrink.
+    /// Without this the fill switches off on the first un-hovered frame
+    /// and the chips spend the rest of the curve as loose marks on the
+    /// backdrop — the exact shape `close_affordance_visible` exists to
+    /// rule out.
+    #[test]
+    fn a_closing_pill_keeps_its_body_under_the_chips_it_is_still_painting() {
+        let theme = crate::theme::Theme::dark(); // motion on
+        let mut b = four_tab_bar();
+        let width = 900.0;
+        lay_out_at_width_with(&mut b, width, &theme);
+
+        // Open pill 1, let it settle, then take the pointer off the bar.
+        hover_pill(&mut b, 1, width, &theme);
+        std::thread::sleep(Duration::from_millis(REVEAL_ANIM_MS + 40));
+        lay_out_at_width_with(&mut b, width, &theme);
+        assert!(b.close_rects[1].area() > 0.0);
+
+        let mut handled = false;
+        dispatch_cursor(&mut b, Point::new(-50.0, -50.0), &mut handled);
+        lay_out_at_width_with(&mut b, width, &theme);
+
+        assert_eq!(b.hover_idx, None, "the pointer has left the bar");
+        assert!(
+            b.close_rects[1].area() > 0.0,
+            "the pill is still mid-shrink and still wide enough for its close chip",
+        );
+        assert!(
+            b.close_affordance_visible_for_tests(1, &theme),
+            "a chip that is still painted must still have a pill body under it",
+        );
     }
 }
