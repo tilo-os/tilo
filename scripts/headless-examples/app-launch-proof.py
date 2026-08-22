@@ -40,6 +40,8 @@ import pathlib
 import shutil
 import socket
 import subprocess
+
+from reaper import die_with_parent
 import sys
 import tempfile
 import time
@@ -100,7 +102,7 @@ class Session:
         self.proc = subprocess.Popen(
             [str(SHELL), "--backend", "headless"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
-            start_new_session=True,
+            preexec_fn=die_with_parent(),
         )
 
     def wait_up(self, timeout: float = 90.0) -> bool:
