@@ -2042,13 +2042,70 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
 
     step(f"ada types {TYPED_TEXT!r}")
     cut("ada")
-    # Into the document body: a launch leaves focus wherever the chrome
-    # had it, and text typed at the chrome is text the document never sees.
-    ada.click_at(960.0, 620.0)
+    # Into the document body, and aimed at the window rather than at a
+    # remembered coordinate. A launch leaves focus wherever the chrome
+    # had it, so the caret has to be put in the page first — and a fixed
+    # point stops being the page the moment anything else is open: with
+    # Files beside it the document sat well left of (960, 620), the
+    # click landed on other chrome, and every keystroke after it went
+    # somewhere that is not a document. That reads downstream as a
+    # document which failed to cross, which is a different bug in a
+    # different layer.
+    #
+    # The tile is named after the surface beat 5 saw paint, so this
+    # aims at the window that beat actually opened.
+    body = None
+    surface = (ada_wp or {}).get("surface_id")
+    if surface is not None:
+        rect = ada.named_rect(f"foreign-surface-{surface}")
+        if rect:
+            bx, by, bw, bh = rect
+            # Below the toolbar strip, inside the page.
+            body = (bx + bw * 0.4, by + bh * 0.55)
+            note(f"his document is at {[round(v) for v in rect]}; putting "
+                 f"the caret at {[round(v) for v in body]}")
+    if body is None:
+        # Which client tiles the compositor *does* have laid out. Tabs in
+        # one group share a tile and only the front one is drawn, so a
+        # missing window is usually a window behind another rather than a
+        # window that never opened — and the two are worth telling apart.
+        others = [n for n in ada.target_names()
+                  if n.startswith("foreign-surface-")]
+        gap(f"ada's word processor (surface {surface}) has no laid-out "
+            f"tile, so there is nowhere to aim the caret and nothing this "
+            f"beat types would reach a document. Laid out right now: "
+            f"{others or 'no client tiles at all'}")
+        return
+    ada.click_at(*body)
     ada.settle(1.5)
     ada.type_text(TYPED_TEXT)
     ada.settle(1.0)
     ada.snapshot(os.path.join(shots, "07-ada-typed.png"))
+
+    step("first, that he typed into the document and not at the chrome")
+    # The control, and the reason this beat could not previously tell its
+    # two failures apart. If the text never reaches bob, that is either
+    # a document which did not cross or a document which never had the
+    # text in it — a click that landed on chrome types into nothing, and
+    # both end with an empty page on the far screen. ada's own app is
+    # asked the same question, the same way, so the two are separable
+    # before anyone goes looking at the transport.
+    control = None
+    typed_here = False
+    try:
+        control = DocumentReader(ada.collab_json_sock, room, record=None,
+                                 handle="control")
+        _doc, typed_here = control.await_document(TYPED_TEXT, 20.0)
+    except OSError as e:
+        gap(f"ada's own session could not be asked ({e})")
+    finally:
+        if control is not None:
+            control.close()
+    claim("ada's own document holds what he typed", typed_here, True)
+    if not typed_here:
+        note("the keystrokes did not reach his document at all, so nothing "
+             "downstream of this is about the network: the click that was "
+             "meant to put the caret in the page landed somewhere else")
 
     step("and bob's session is asked what it now holds")
     cut("bob")
