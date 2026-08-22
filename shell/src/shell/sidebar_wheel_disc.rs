@@ -471,11 +471,6 @@ const SECTOR_CHIP_H_ACTIVE: f64 = 44.0;
 /// in the sector.
 const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
 
-/// Strength of an inactive sector's label relative to the active one.
-/// The two states share a colour and a shape and differ in presence, so
-/// the set reads as one list with a current entry rather than as a bright
-/// thing beside some dim things.
-const INACTIVE_LABEL_ALPHA: f32 = 0.62;
 
 /// Diameter of the add-workspace button, and how far down the band it
 /// sits as a fraction of half the footprint's height. Sector labels that
@@ -1310,18 +1305,25 @@ impl Widget for SidebarWheelDisc {
                 // box inside a box, and it was the pill that made the old
                 // rail read as a list parked next to a curve.
                 //
-                // Both states paint the same white label; the active one
-                // is simply bigger and at full strength. Colouring the
-                // active label with its workspace's own hue put it on a
-                // wedge of that same hue, which is the worst place for it
-                // — the identity is already carried by the wedge, and the
-                // name's only job there is to be the most legible thing in
-                // the sector.
-                let style = ChipStyle::bare(None).with_alpha(if is_active {
-                    fade_a
+                // The active label is the theme's primary text and a
+                // size step larger; the rest take its secondary text.
+                // Colouring the active label with its workspace's own hue
+                // put it on a wedge of that same hue, which is the worst
+                // place for it — the identity is already carried by the
+                // wedge, and the name's only job there is to be the most
+                // legible thing in the sector.
+                let style = if is_active {
+                    ChipStyle::bare(None)
                 } else {
-                    fade_a * INACTIVE_LABEL_ALPHA
-                });
+                    // Quiet, but how quiet is the palette's call, not
+                    // ours. Dimming the primary text colour by a fixed
+                    // factor is exactly wrong under high contrast, where
+                    // the whole point is that nothing fades: that palette
+                    // deliberately puts `text_dim` at near-white so
+                    // secondary copy still clears AAA on black.
+                    ChipStyle::bare(Some(colors.text_dim))
+                }
+                .with_alpha(fade_a);
                 Chip::draw_at(
                     scene,
                     transform * rotate,
