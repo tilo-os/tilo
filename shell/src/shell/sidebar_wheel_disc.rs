@@ -1,40 +1,58 @@
 //! `SidebarWheelDisc` — large radial workspace switcher anchored
-//! OFF-SCREEN-LEFT, with only a ~66° arc of its right edge protruding
-//! into the visible sidebar column. Each **workspace** is a spoke; the
+//! OFF-SCREEN-LEFT, with only a narrow arc of its right edge protruding
+//! into the visible sidebar column. How many degrees that is falls out of
+//! the slot's height-to-width ratio; on the live sidebar it is around 60°,
+//! which carries the active workspace plus two neighbours each side. Each **workspace** is a spoke; the
 //! user drags vertically to rotate, and a release snaps to the nearest
 //! spoke.
 //!
-//! ## 2026-05-23 visual redesign
+//! ## The design
 //!
-//! The original concept (`radial-workspace-switcher/src/App.tsx`)
-//! painted every spoke as a 40×40 (active) or 32×32 (inactive) rounded
-//! pill card with a vertically-rotated label. On a 200 px sidebar that
-//! read as **crowded** — 4–5 pill cards overlapping inside the visible
-//! 66° arc — and the per-spoke rotation made the labels read at
-//! inconsistent angles (a regression user-spotted on the live build).
+//! The concept prototype (`radial-workspace-switcher/src/App.tsx`)
+//! painted every spoke as a rounded pill card with a vertically-rotated
+//! label. On a narrow column that read as crowded — several cards
+//! overlapping inside the visible arc — and the per-spoke rotation left
+//! the labels at inconsistent angles.
 //!
-//! The current design is a **quiet ring**:
-//! - A subtle solid-fill background panel covers the visible sidebar
-//!   footprint at low alpha — gives the wheel visual weight without
-//!   competing with the desktop.
-//! - One **thin ring stroke** along the protruding rim defines the
-//!   wheel disc. No filled tile cards, no halo'd glow band, no per-
-//!   spoke icon tiles.
-//! - Each workspace is a **dot marker** on the ring's perimeter. The
-//!   active marker is a larger filled circle in the workspace's
-//!   palette colour with a soft halo; inactive markers are 4 px low-
-//!   alpha white specks. Markers rotate WITH the ring on drag.
-//! - The active workspace's **label** renders **upright** (no rotation)
-//!   to the right of the active marker — horizontal text the user can
-//!   read at a glance regardless of any in-flight wheel rotation. As
-//!   the wheel spins, the active marker always sits at "3 o'clock"
-//!   (the rightmost visible point of the ring), and the label sits at
-//!   a fixed screen-space position next to it. The active workspace
-//!   *identity* changes when the snap completes, not when the angle
-//!   passes — same write-back semantics as before.
-//! - Inactive workspace markers omit text entirely; the active marker
-//!   is the only one with a label. Hovering an inactive marker is a
-//!   future affordance (tooltip).
+//! What replaced it went too far the other way: a quiet ring where the
+//! active workspace got a large name plate and every other workspace was
+//! an unlabelled speck. That inverts what a switcher is for. It told you
+//! where you already were, and about the places you might go it said only
+//! that they existed. The plate and the specks also read as two unrelated
+//! kinds of object rather than one set in two states.
+//!
+//! The current design is a **rail**:
+//! - The **body** is a translucent band hugging the rim that falls off
+//!   inward, painted as one radial gradient inside a group that a single
+//!   mask fades out top and bottom. Nothing has a hard edge on any side,
+//!   which is what lets the disc be a sliver: the rim enters through the
+//!   top of the footprint and leaves through the bottom without ever
+//!   meeting itself on screen.
+//! - Two **rim strokes** — a soft wide one reading as light on a bevel,
+//!   and a hairline that gives the edge a definite position — plus a
+//!   shadow following the arc just outside it.
+//! - Each workspace is a **row**: a marker where it sits on the rim, and
+//!   a chip in the rail column carrying its glyph and name. Rows share a
+//!   left edge and end just short of their own markers, so the column is
+//!   flush left and its right edge traces the rim. The active row is the
+//!   same chip one size step larger, tinted with its workspace's colour.
+//! - Rows are placed at the **nearest signed offset** from the active
+//!   workspace, so the ring wraps and the rail is balanced above and
+//!   below it.
+//! - A row narrows as its marker rides the rim inward; the chip
+//!   truncates, and below a floor the row drops its name and keeps its
+//!   marker. A name clipped by the footprint's edge would say less than
+//!   the dot does.
+//! - The **tail row** closes the rail: same column, same pill, dashed and
+//!   empty. That is the add-workspace affordance, and it takes its
+//!   meaning from the list it sits in rather than from a spot on the
+//!   disc. A position on the wheel would belong too, but it would rotate
+//!   out of reach.
+//! - Everything the disc paints is faded on the same vertical curve, so
+//!   rows dissolve exactly where the body beneath them does.
+//!
+//! The active workspace *identity* changes when the snap completes, not
+//! when the angle passes — the write-back semantics are unchanged.
 //!
 //! User-facing spec (verbatim, 2026-04-21 + 2026-04-30):
 //! *"No permanent sidebar, but workspaces appear as rotated axes of the
@@ -391,8 +409,10 @@ const RIM_SHADOW_REACH: f64 = 26.0;
 /// scattered along a curve.
 const RAIL_INSET: f64 = 14.0;
 
-/// Clear space between a row's chip and its marker on the rim, spanned by
-/// the leader hairline that ties the two together.
+/// Clear space between a row's chip and its own marker on the rim. Small
+/// enough that proximity does the tying — a row and the marker it stops
+/// short of are obviously one thing — and large enough that the chip's
+/// end never crowds the marker's halo.
 const RAIL_LEADER_GAP: f64 = 16.0;
 
 /// Narrowest a row's chip may get before the row gives up its name and
@@ -408,10 +428,11 @@ const RAIL_ROW_H: f64 = 26.0;
 /// Height of the active row's chip. See [`RAIL_ROW_H`].
 const RAIL_ROW_H_ACTIVE: f64 = 32.0;
 
-/// Vertical band at the bottom of the footprint reserved for the
-/// add-workspace row, measured from the footprint's edge. No workspace row
-/// paints a chip inside it, so the tail of the rail is always clear no
-/// matter where the wheel has been rotated to.
+/// Vertical band at the bottom of the footprint that the add-workspace row
+/// is centred in, measured from the footprint's edge. Workspace rows give
+/// that row a wide berth, so the tail of the rail is clear however far the
+/// wheel has been turned — a marker crowding the affordance is what drove
+/// it off the rim in the first place.
 const RAIL_TAIL_BAND: f64 = 74.0;
 
 /// Per-spoke palette. Maps a workspace's *index* in the tree to one of
@@ -538,8 +559,10 @@ impl SidebarWheelDisc {
 
     /// Logical centre of the disc in screen coordinates. The centre sits
     /// `radius * (1 - VISIBLE_RADIUS_FRACTION)` pixels LEFT of `rect.x0`,
-    /// so the rim crosses the viewport at `±arccos(1 - VISIBLE)` from
-    /// due-east (≈ ±33° for `VISIBLE = 0.16`).
+    /// so the rim crosses the footprint's left edge at
+    /// `±arccos(1 - VISIBLE_RADIUS_FRACTION)` from due-east — about ±49°
+    /// at the current fraction, with the slot's height deciding how much
+    /// of that is actually on screen.
     fn center(&self) -> Point {
         let radius = self.diameter_px / 2.0;
         let cx = self.rect.x0 - radius * (1.0 - VISIBLE_RADIUS_FRACTION);
