@@ -99,15 +99,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     state
         .doc
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
-    let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
-    // Announce ourselves under the workspace we were launched into. This
-    // does two things the file manager had been going without: it drives
-    // the late-join handshake (peers already in the room reply with their
-    // full state), and it is the scope this window's pointer is broadcast
-    // under — so a collaborator's cursor follows them out of the editor
-    // and into the file manager instead of disappearing at the window
-    // boundary.
-    app.set_presence_broadcast_scope(Some(ui::PresenceKey::workspace_scope("file-explorer")));
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run();
     Ok(())
 }
