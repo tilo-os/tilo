@@ -880,7 +880,7 @@ fn execute_planned_action(
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
     state: Option<&mut State>,
-) {
+) -> Option<InvokeFailure> {
     /// Offer `event` to the focused Wayland client; returns `true` when it
     /// was consumed and must not also reach the chrome.
     fn to_client(
@@ -904,7 +904,7 @@ fn execute_planned_action(
                 position: ctx.cursor,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -930,7 +930,7 @@ fn execute_planned_action(
                 button: MouseButton::Left,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -951,7 +951,7 @@ fn execute_planned_action(
                 client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
             }
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -968,7 +968,7 @@ fn execute_planned_action(
                 phase: winit::event::TouchPhase::Moved,
             };
             if to_client(&mut state, fb, &event, &ctx.modifiers) {
-                return;
+                return None;
             }
             fb.dispatch_event(
                 &event,
@@ -1024,7 +1024,7 @@ fn execute_planned_action(
                 Ok(catalog) => catalog,
                 Err(why) => {
                     eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
-                    return;
+                    return None;
                 }
             };
             match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
@@ -1038,31 +1038,58 @@ fn execute_planned_action(
                     // address; arguments checked against the previous one
                     // would be an assurance about something else.
                     let bound = test_control::arg_values_from_json(args)
-                        .map_err(|r| r.message)
+                        .map_err(|r| InvokeFailure {
+                            code: r.code.to_string(),
+                            message: r.message,
+                        })
                         .and_then(|values| {
                             selected
                                 .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| InvokeFailure {
+                                    code: e.code().to_string(),
+                                    message: e.to_string(),
+                                })
                         });
-                    if let Err(why) = bound {
-                        // The dispatcher already answered `ok` on the
-                        // wire, so this is the only place the failure can
-                        // surface. It is logged rather than swallowed:
-                        // the caller polls state to see the effect, and a
-                        // silent no-op here is indistinguishable from an
-                        // effect that has not landed yet.
+                    if let Err(failure) = bound {
+                        // Logged for whoever reads the journal, and
+                        // returned so the socket's reply can carry it.
+                        // Planned actions run before the response is
+                        // written, which is what makes an honest answer
+                        // possible here: "it ran" and "it could not run"
+                        // must not look alike to a caller that cannot see
+                        // the screen.
                         eprintln!(
-                            "nirios compositor: ({provider}, {id}) did not run: {why}"
+                            "nirios compositor: ({provider}, {id}) did not run: {}",
+                            failure.message
                         );
+                        return Some(failure);
                     }
                 }
-                None => eprintln!(
-                    "nirios compositor: action ({provider}, {id}) vanished between \
-                     resolve and invoke; nothing was run"
-                ),
+                None => {
+                    let message = format!(
+                        "action ({provider}, {id}) vanished between resolve and invoke; \
+                         nothing was run"
+                    );
+                    eprintln!("nirios compositor: {message}");
+                    return Some(InvokeFailure {
+                        code: "action_failed".to_string(),
+                        message,
+                    });
+                }
             }
         }
     }
+    None
+}
+
+/// Why an invocation that was planned did not happen.
+///
+/// Carries the action layer's own code so the socket's reply says the
+/// same thing the palette would: `invalid_arguments` when the arguments
+/// did not fit, `action_failed` when the action ran and refused.
+struct InvokeFailure {
+    code: String,
+    message: String,
 }
 
 /// Route a test-control [`PlannedAction`] to the lock screen while the session
@@ -1100,7 +1127,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
     }
 }
 
-/// Re-paint the current scene into a fresh `OffscreenRenderer` and
+/// Re-paint the current scene into a cached `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
 /// a bad viewport, a missing GPU adapter, and every I/O and encoder
 /// failure log to stderr and return, so an executor invocation does not
@@ -1120,18 +1147,60 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
         return;
     }
     let scene = fb.paint();
+    // The renderer is kept between snapshots and rebuilt only when the
+    // viewport changes size.
+    //
+    // `OffscreenRenderer::try_new` constructs a fresh vello `Renderer`,
+    // which initialises every one of vello's shader pipelines — so
+    // building one per call put a full pipeline build inside every
+    // snapshot. Measured at 1920x1080 that was ~450 ms a frame against
+    // ~70 ms of actual render and encode, i.e. the overwhelming
+    // majority of a capture. `OffscreenRenderer`'s own documentation
+    // says to reuse an instance to amortise exactly this; this is the
+    // snapshot path finally doing so, and it is what makes a recording
+    // driven over this socket watchable rather than a slideshow.
+    //
+    // Thread-local because the compositor's event loop is the only
+    // thread that reaches here and an `OffscreenRenderer` is not `Send`.
+    // In a shipped build nothing reaches here at all — the socket that
+    // leads here is compiled out (`compositor::dev_env`) — so the cached
+    // texture and buffer are never allocated in production.
+    thread_local! {
+        static SNAPSHOT_RENDERER: std::cell::RefCell<
+            Option<ui::offscreen::OffscreenRenderer>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+
     // `try_new` rather than `new` inside a `catch_unwind`: the shipping
     // release profile sets `panic = "abort"`, so a caught panic is not
     // a thing that happens — the compositor would die at the panic site
     // instead of logging and carrying on. Asking the renderer for a
     // `Result` is what actually keeps it alive on a machine with no
-    // wgpu adapter (e.g. CI without llvmpipe).
-    let rgba = match ui::offscreen::OffscreenRenderer::try_new(w, h) {
-        Ok(mut renderer) => renderer.render_rgba(&scene),
-        Err(e) => {
-            eprintln!("nirios compositor: test_control snapshot: no offscreen renderer: {e}");
-            return;
+    // wgpu adapter (e.g. CI without llvmpipe). A failure is not cached:
+    // the slot is left empty so a later snapshot retries rather than
+    // inheriting one bad moment forever.
+    let rgba = SNAPSHOT_RENDERER.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let stale = match slot.as_ref() {
+            Some(renderer) => renderer.width != w || renderer.height != h,
+            None => true,
+        };
+        if stale {
+            match ui::offscreen::OffscreenRenderer::try_new(w, h) {
+                Ok(renderer) => *slot = Some(renderer),
+                Err(e) => {
+                    eprintln!(
+                        "nirios compositor: test_control snapshot: no offscreen renderer: {e}"
+                    );
+                    *slot = None;
+                    return None;
+                }
+            }
         }
+        slot.as_mut().map(|renderer| renderer.render_rgba(&scene))
+    });
+    let Some(rgba) = rgba else {
+        return;
     };
     let file = match std::fs::File::create(path) {
         Ok(f) => f,
@@ -1298,6 +1367,13 @@ fn pump_test_control_conn(
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
+                // A planned action that could not run replaces this
+                // command's answer. Actions execute before the reply is
+                // written, so the reply can tell the truth about them —
+                // and an invocation the compositor refused must not come
+                // back looking like one that happened. First failure
+                // wins; the rest still run, exactly as before.
+                let mut failed: Option<InvokeFailure> = None;
                 for action in &actions {
                     if session.is_locked() {
                         // While locked the test-control socket is captured by
@@ -1306,8 +1382,10 @@ fn pump_test_control_conn(
                         // submit starts an async verify; the run loop's
                         // per-tick `poll_verification` delivers the unlock.
                         execute_locked_action(action, lock);
-                    } else {
-                        execute_planned_action(action, frame_builder, ctx, Some(state));
+                    } else if let Some(failure) =
+                        execute_planned_action(action, frame_builder, ctx, Some(state))
+                    {
+                        failed.get_or_insert(failure);
                     }
                 }
                 // Re-run layout so the next `list_targets` (or paint
@@ -1320,6 +1398,13 @@ fn pump_test_control_conn(
                     injected_input = true;
                     frame_builder.relayout();
                 }
+                let resp = match failed {
+                    Some(failure) => test_control::Response::Err {
+                        code: failure.code,
+                        message: failure.message,
+                    },
+                    None => resp,
+                };
                 let mut out = serialise_response(&resp);
                 out.push('\n');
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {

@@ -122,18 +122,17 @@ impl ApplicationsProvider {
                 None => format!("{} · {}", app.package_id, app.version),
             };
             let subtitle = format!("{} · {detail}", open_target.result_hint());
-            out.push(SearchResult {
-                kind: kind.clone(),
-                provider_id: self.id().to_string(),
-                id: app.package_id.clone(),
-                title: format!("Open {}", app.display_name),
-                subtitle: Some(subtitle),
+            out.push(SearchResult::nullary_fallible(
+                kind.clone(),
+                self.id(),
+                app.package_id.clone(),
+                format!("Open {}", app.display_name),
+                Some(subtitle),
                 score,
-                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
-                    launch_installed_app(chrome, &package_id, &display_name);
-                }),
-                params: Vec::new(),
-            });
+                move |_doc, _root, chrome: &Chrome| {
+                    launch_installed_app(chrome, &package_id, &display_name)
+                },
+            ));
         }
         out
     }
@@ -280,7 +279,11 @@ impl ApplicationsProvider {
 /// The grants are published immediately before the launch rather than
 /// cached: a grant made a moment ago in the permissions UI must reach
 /// this launch, and a revoked one must not.
-pub(crate) fn launch_installed_app(chrome: &Chrome, package_id: &str, display_name: &str) {
+pub(crate) fn launch_installed_app(
+    chrome: &Chrome,
+    package_id: &str,
+    display_name: &str,
+) -> Result<(), ActionError> {
     // Scoped so the borrow is released before the error branch below
     // takes a mutable one.
     let launched = {
@@ -314,14 +317,25 @@ pub(crate) fn launch_installed_app(chrome: &Chrome, package_id: &str, display_na
     // resolution failure is.
     let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
     if let Err(err) = outcome {
-        let mut st = chrome.borrow_mut();
-        st.push_notification_full(
-            Notification::new(format!("Couldn't open {display_name}"), err.user_message())
-                .with_severity(NotificationSeverity::Error)
-                .with_app_name("Applications"),
-        );
-        st.bump();
+        let message = err.user_message();
+        {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(
+                Notification::new(format!("Couldn't open {display_name}"), message.clone())
+                    .with_severity(NotificationSeverity::Error)
+                    .with_app_name("Applications"),
+            );
+            st.bump();
+        }
+        // The notification is how the person at the machine learns. This
+        // is how a caller that cannot see the screen learns — without it
+        // an invocation that started nothing answers exactly like one
+        // that started an app.
+        return Err(ActionError::Refused(format!(
+            "Couldn't open {display_name}: {message}"
+        )));
     }
+    Ok(())
 }
 
 impl Default for ApplicationsProvider {
@@ -584,11 +598,19 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    /// Opening a row for a package that isn't installed must surface a
-    /// visible error rather than failing silently. Drives the real
+    /// A launch that cannot start has to reach both audiences: the
+    /// person looking at the screen gets a notification, and the caller
+    /// that invoked the row by address gets a refusal. Drives the real
     /// `on_open` closure the palette fires on Enter.
+    ///
+    /// The refusal is the half that is easy to lose. Without it the
+    /// control socket answers a failed launch exactly as it answers a
+    /// successful one, so a script — or an agent — is told the app
+    /// opened and goes on to wait for a window that will never arrive.
     #[test]
-    fn failed_launch_pushes_an_error_notification() {
+    fn a_failed_launch_notifies_the_user_and_refuses_the_caller() {
+        use crate::shell::search::action_api::ActionError;
+
         let p = ApplicationsProvider::new();
         let c = chrome_rc();
         let mut doc = AutoCommit::new();
@@ -597,7 +619,28 @@ mod tests {
         let out = p.results_for("ghost", vec![app("dev.qos.ghost", "Ghost")], OpenTarget::Beside);
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
-        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        let outcome = (row.on_open)(
+            &mut doc,
+            &automerge::ROOT,
+            &c,
+            &crate::shell::search::action_api::ActionArgs::none(),
+        );
+
+        let err = outcome.expect_err("a launch that cannot start must not report success");
+        assert!(
+            matches!(err, ActionError::Refused(_)),
+            "a launch failure is a refusal, not an argument error: {err:?}"
+        );
+        assert_eq!(
+            err.code(),
+            "action_failed",
+            "the wire code must say the action ran and could not do its job"
+        );
+        assert!(
+            err.to_string().contains("Ghost"),
+            "the refusal must name what failed to open: {err}"
+        );
+
         let st = c.borrow();
         let n = st
             .notifications()

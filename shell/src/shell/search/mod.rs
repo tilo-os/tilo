@@ -227,6 +227,37 @@ impl SearchResult {
             }),
         }
     }
+
+    /// [`SearchResult::nullary`] for a row that can refuse.
+    ///
+    /// Taking no arguments and always succeeding are separate
+    /// properties, and rows that launch something have the first
+    /// without the second: the package can be missing, the sandbox can
+    /// decline, there can be no display to open onto. Those rows need
+    /// to say so, and a caller driving the palette over the control
+    /// socket has no other way to find out — it cannot see the
+    /// notification the on-screen user gets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nullary_fallible(
+        kind: ResourceKind,
+        provider_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: Option<String>,
+        score: i32,
+        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) -> Result<(), ActionError> + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            provider_id: provider_id.into(),
+            id: id.into(),
+            title: title.into(),
+            subtitle,
+            score,
+            params: Vec::new(),
+            on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
+        }
+    }
 }
 
 impl std::fmt::Debug for SearchResult {
