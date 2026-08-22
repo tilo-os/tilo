@@ -524,10 +524,16 @@ fn outgoing_source_time(a: &Clip, playhead: f64) -> f64 {
 /// Pure: no decoding, no GPU, no I/O — so the whole layering, envelope
 /// and transition model is unit-testable without a device.
 pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
+    // Solo wins over mute: while any video track is soloed, only soloed
+    // video tracks are seen, and a muted one among them stays hidden.
+    let soloing = project
+        .tracks
+        .iter()
+        .any(|t| t.kind == TrackKind::Video && t.solo);
     let mut video: Vec<&Track> = project
         .tracks
         .iter()
-        .filter(|t| t.kind == TrackKind::Video && !t.muted)
+        .filter(|t| t.kind == TrackKind::Video && !t.muted && (!soloing || t.solo))
         .collect();
     // Bottom → top: V1 (index 1) is drawn first, V2 over it. `locked` is
     // an editing lock, not a visibility one, so it never hides a layer.
@@ -727,7 +733,7 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
         // Clip placed at timeline 5s, sourcing in_point=3s.
         let cid = p.add_clip(tid, mid, 5.0).unwrap();
         p.clip_mut(cid).unwrap().in_point = 3.0;
@@ -758,7 +764,7 @@ mod tests {
             hydration: crate::media::Hydration::Local,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 20.0;
         (p, mid)
@@ -808,7 +814,7 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
         p.add_clip(tid, mid, 0.0);
         let mut dec = PreviewDecoder::new_synthesized();
         assert!(!dec.update(&p, 1.0), "no frame for an un-hydrated reference");
@@ -914,8 +920,8 @@ mod tests {
         let m3 = push_media(&mut p, 3);
         let v1 = Uuid::new_v4();
         let v2 = Uuid::new_v4();
-        p.tracks.push(Track { id: v1, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
-        p.tracks.push(Track { id: v2, name: "V2".into(), kind: TrackKind::Video, index: 2, muted: false, locked: false });
+        p.tracks.push(Track { id: v1, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
+        p.tracks.push(Track { id: v2, name: "V2".into(), kind: TrackKind::Video, index: 2, muted: false, locked: false, solo: false });
         // V1: two abutting clips, cut at 5s.
         let a = p.add_clip(v1, m1, 0.0).unwrap();
         p.clip_mut(a).unwrap().out_point = 5.0;
@@ -951,6 +957,29 @@ mod tests {
         p.tracks[idx].muted = false;
         p.tracks[idx].locked = true;
         assert_eq!(plan_layers(&p, 7.0).len(), 2, "a locked track still renders");
+    }
+
+    #[test]
+    fn soloing_a_track_hides_the_others() {
+        let (mut p, v1, v2) = stacked_project();
+        let i1 = p.tracks.iter().position(|t| t.id == v1).unwrap();
+        let i2 = p.tracks.iter().position(|t| t.id == v2).unwrap();
+        assert_eq!(plan_layers(&p, 7.0).len(), 2, "both tracks render by default");
+
+        p.tracks[i2].solo = true;
+        let soloed = plan_layers(&p, 7.0);
+        assert_eq!(soloed.len(), 1, "soloing V2 hides V1: {soloed:?}");
+        assert_eq!(p.clip(soloed[0].clip).unwrap().track, v2);
+
+        // Soloing both is the same as soloing neither.
+        p.tracks[i1].solo = true;
+        assert_eq!(plan_layers(&p, 7.0).len(), 2, "every track soloed shows every track");
+
+        // Mute still wins for a track that is itself soloed.
+        p.tracks[i1].muted = true;
+        let muted_solo = plan_layers(&p, 7.0);
+        assert_eq!(muted_solo.len(), 1, "a muted track stays hidden even when soloed");
+        assert_eq!(p.clip(muted_solo[0].clip).unwrap().track, v2);
     }
 
     #[test]
