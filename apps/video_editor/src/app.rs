@@ -39,7 +39,7 @@ use crate::actions::{
 };
 use crate::doc::VideoDoc;
 use crate::export::{
-    begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
+    Container, ExportSettings, ExportStatus, FrameRate, Resolution,
 };
 use crate::model::{Clip, ClipId, EffectKind, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
 use crate::portal::{self, ImportChannel, ImportOutcome};
@@ -76,6 +76,19 @@ const MAX_SCRUBBER_W: f64 = 560.0;
 /// a curtain. Deliberately a number here rather than the alpha of
 /// `surfaces.scrim`: that token is opaque in every theme.
 const SCRIM_ALPHA: f64 = 0.55;
+/// How dark the export modal's backdrop gets. Heavier than the bin flap's
+/// veil — a modal really does take the whole app — but still a veil: the user
+/// keeps their place in the timeline behind it.
+const MODAL_SCRIM_ALPHA: f64 = 0.72;
+/// Vertical space the export card's header (title + filename) needs before
+/// the first section label can start.
+const EXPORT_HEADER_H: f64 = 76.0;
+/// Space the card's footer needs: size estimate, status line, buttons.
+const EXPORT_FOOTER_H: f64 = 104.0;
+/// A section label's own height, above its row of segments.
+const EXPORT_LABEL_H: f64 = 18.0;
+/// The least a label-plus-segments group can be squeezed to.
+const EXPORT_GROUP_H: f64 = 50.0;
 
 /// What the editor says, in plain words, when a source's bytes are not on this
 /// device — the reference replicated but the content has not been hydrated
@@ -85,6 +98,14 @@ const MEDIA_NOT_LOCAL: &str = "Not on this device";
 /// The same claim for a pane too narrow to hold the full phrase (the media
 /// bin is a fixed 268px column). Shorter, never vaguer.
 const MEDIA_NOT_LOCAL_SHORT: &str = "Not on device";
+
+/// What the editor says when a source's bytes ARE here but are not media — a
+/// web page saved with a `.mp4` extension, a truncated download, a format
+/// nothing on this box can decode. Distinct from [`MEDIA_NOT_LOCAL`]: fetching
+/// it again will not help.
+const MEDIA_UNREADABLE: &str = "Unreadable media";
+/// The compact form, for the media bin's fixed-width column.
+const MEDIA_UNREADABLE_SHORT: &str = "Unreadable";
 
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
@@ -501,6 +522,18 @@ pub struct VideoEditorApp {
     /// thumbnail and waveform passes already do, so the disclosure costs no
     /// extra stat and never runs in `draw`.
     projected_media: HashSet<MediaId>,
+    /// The render in flight, if any. The worker encodes off the UI thread and
+    /// publishes progress; this polls it each frame. Dropped once its status
+    /// is terminal and the dialog has shown the outcome.
+    export_job: Option<crate::export::ExportJob>,
+    /// A destination-picker round-trip in flight, drained each frame exactly
+    /// like the import one. The user chooses where the file lands (and, under
+    /// a strict sandbox, that grant is what earns the write).
+    export_dest_rx: Option<portal::ExportDestChannel>,
+    /// A short, honest line about the export flow itself — choosing a
+    /// destination, or why the round-trip failed. Distinct from
+    /// [`ExportStatus`], which reports the *render*.
+    export_notice: Option<String>,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -597,6 +630,9 @@ impl VideoEditorApp {
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
             projected_media: HashSet::new(),
+            export_job: None,
+            export_dest_rx: None,
+            export_notice: None,
         }
     }
 
@@ -959,6 +995,41 @@ impl VideoEditorApp {
     /// set `sync` resolves, so a `draw` pass never touches the filesystem.
     fn media_is_projected(&self, mid: MediaId) -> bool {
         self.projected_media.contains(&mid)
+    }
+
+    /// Whether this source's bytes are present but are not usable media.
+    ///
+    /// Import refuses such a file now, but a document written before that
+    /// refusal existed still carries the entry, and it renders from whatever
+    /// was probed at the time — which for a web page saved as `.mp4` is
+    /// nothing at all. Derived from what the item actually carries (no
+    /// duration, no dimensions) or from a decode that has since been proven
+    /// impossible, so it cannot drift from what the rest of the app knows.
+    fn media_is_unreadable(&self, mid: MediaId) -> bool {
+        if self.media_is_projected(mid) {
+            return false; // absent bytes are a different, recoverable state
+        }
+        let Some(m) = self.project.media(mid) else { return false };
+        if self.thumbnails.is_undecodable(mid) {
+            return true;
+        }
+        m.duration <= 0.0 && m.width == 0 && m.height == 0
+    }
+
+    /// The bin row's metadata line. Unknown is written as unknown: a source
+    /// that carries no dimensions or no length must not be rendered as
+    /// "0p · 0:00", which reads as a probed fact and is not one.
+    fn bin_subtitle(&self, m: &MediaItem) -> String {
+        let dur = if m.duration > 0.0 {
+            clock(m.duration)
+        } else {
+            "length unknown".to_string()
+        };
+        match m.kind {
+            MediaKind::Audio => format!("Audio · {dur}"),
+            _ if m.height == 0 => format!("size unknown · {dur}"),
+            _ => format!("{}p · {}", m.height, dur),
+        }
     }
 
     /// Media for the bin in a stable, meaningful order: visual media
@@ -2351,19 +2422,29 @@ impl VideoEditorApp {
         let x0 = card.x0 + 24.0;
         let x1 = card.x1 - 24.0;
         let mut l = ExportLayout { card, ..Default::default() };
-        let mut y = card.y0 + 70.0;
+        // The three groups are spaced within the band between the header and
+        // the footer rather than from fixed offsets off the card top. The old
+        // constants assumed a 360px card AND that the header was one line: the
+        // filename subtitle and the RESOLUTION label were both computed to land
+        // at the same place, and drew through each other.
+        let content_top = card.y0 + EXPORT_HEADER_H;
+        let footer_top = (card.y1 - EXPORT_FOOTER_H).max(content_top + EXPORT_GROUP_H);
+        let step = ((footer_top - content_top) / 3.0).clamp(EXPORT_GROUP_H, 64.0);
         let seg = |x0: f64, x1: f64, n: usize, y: f64| -> Vec<Rect> {
             let w = (x1 - x0) / n as f64;
             (0..n).map(|i| Rect::new(x0 + i as f64 * w, y, x0 + (i as f64 + 1.0) * w - 4.0, y + 32.0)).collect()
         };
+        // Each group's label is drawn 18px above its segments, so the segment
+        // row starts one label-height into the group's slot.
+        let mut y = content_top + EXPORT_LABEL_H;
         for (i, rect) in seg(x0, x1, Resolution::ALL.len(), y).into_iter().enumerate() {
             l.resolution.push((Resolution::ALL[i], rect));
         }
-        y += 64.0;
+        y += step;
         for (i, rect) in seg(x0, x1, Container::ALL.len(), y).into_iter().enumerate() {
             l.container.push((Container::ALL[i], rect));
         }
-        y += 64.0;
+        y += step;
         for (i, rect) in seg(x0, x1, FrameRate::ALL.len(), y).into_iter().enumerate() {
             l.fps.push((FrameRate::ALL[i], rect));
         }
@@ -2717,6 +2798,8 @@ impl Widget for VideoEditorApp {
             || self.flap_animating()
             || self.import_rx.is_some()
             || self.bin_rename.is_some() // a live rename blinks its caret
+            || self.export_job.is_some() // a running render moves its progress bar
+            || self.export_dest_rx.is_some() // …and a picker is still an action in flight
     }
 
     fn build_layout(
@@ -2758,6 +2841,8 @@ impl Widget for VideoEditorApp {
     ) {
         self.advance_playback();
         self.advance_flap();
+        // Destination round-trip + render progress, every frame.
+        self.poll_export();
         // Track the decoded frame to the (possibly advancing) playhead.
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
@@ -3188,7 +3273,9 @@ impl VideoEditorApp {
                 return true;
             }
             if matches!(key, Key::Named(NamedKey::Enter)) {
-                self.export_status = begin_export(&self.project, &self.export);
+                if self.export_is_offered() {
+                    self.request_export();
+                }
                 return true;
             }
             return false;
@@ -3752,13 +3839,110 @@ impl VideoEditorApp {
             }
         }
         if l.cancel.contains(p) {
-            self.show_export = false;
+            if self.export_running() {
+                // A render in flight: this is Cancel, not Close. Stop it and
+                // leave the dialog up so the outcome is visible.
+                if let Some(job) = self.export_job.as_ref() {
+                    job.cancel();
+                }
+            } else {
+                self.show_export = false;
+            }
             return;
         }
         if l.confirm.contains(p) {
-            self.export_status = begin_export(&self.project, &self.export);
+            // Matches what the button paints: a disabled Export refuses rather
+            // than starting something that can only fail.
+            if self.export_is_offered() {
+                self.request_export();
+            }
             let _ = state;
         }
+    }
+
+    // ---- export ----------------------------------------------------------
+    /// Ask the user where the render should land, then encode there. The
+    /// picker is the grant: under a strict sandbox it is what earns the write
+    /// to somewhere like `~/Videos`, and without it the file lands in a temp
+    /// directory the user was never told about and cannot find.
+    fn request_export(&mut self) {
+        if self.export_job.is_some() {
+            return; // one render at a time
+        }
+        if let Some(reason) = crate::export::unavailable_reason() {
+            self.export_status = ExportStatus::Failed { reason: reason.to_string() };
+            return;
+        }
+        let name = self.export.suggested_filename(&self.project.name);
+        let ext = self.export.container.extension();
+        self.export_notice = Some("Choose where to save…".to_string());
+        self.export_dest_rx = Some(portal::request_export_destination(&name, ext));
+    }
+
+    /// Begin the render at `destination` on a worker thread.
+    fn begin_export_to(&mut self, destination: PathBuf) {
+        self.export_notice = None;
+        self.export_status = ExportStatus::Rendering { progress: 0.0 };
+        self.export_job = Some(crate::export::start_export(&self.project, &self.export, destination));
+    }
+
+    /// Drain the destination picker and poll the running render. Called every
+    /// frame; `needs_animation_frame` keeps frames coming while a job runs, so
+    /// the progress bar actually moves.
+    fn poll_export(&mut self) {
+        // Destination round-trip.
+        let mut outcome = None;
+        let mut clear = false;
+        if let Some(rx) = self.export_dest_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(o) => {
+                    outcome = Some(o);
+                    clear = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
+            }
+        }
+        if clear {
+            self.export_dest_rx = None;
+        }
+        match outcome {
+            Some(portal::ExportDestOutcome::Opened(path)) => self.begin_export_to(path),
+            Some(portal::ExportDestOutcome::Cancelled) => self.export_notice = None,
+            Some(portal::ExportDestOutcome::Failed(reason)) => {
+                // No portal on this box. Say where the file will go rather than
+                // silently dropping it somewhere the user will never look.
+                let fallback = crate::export::output_path(&self.export, &self.project);
+                self.export_notice = Some(format!(
+                    "{reason} — saving to {}",
+                    fallback.display()
+                ));
+                self.begin_export_to(fallback);
+            }
+            None => {}
+        }
+        // Running render.
+        if let Some(job) = self.export_job.as_ref() {
+            let status = job.status();
+            let finished = !matches!(status, ExportStatus::Rendering { .. });
+            self.export_status = status;
+            if finished {
+                self.export_job = None;
+            }
+        }
+    }
+
+    /// Whether a render is in flight (so Cancel means "stop it", not "close").
+    fn export_running(&self) -> bool {
+        self.export_job.is_some()
+    }
+
+    /// Whether the Export action is actually available. The dialog paints the
+    /// button from this and the press path gates on it, so the offer and the
+    /// behaviour cannot disagree — which they did: the dialog said "Export
+    /// needs the GStreamer build" and put an enabled Export button under it.
+    fn export_is_offered(&self) -> bool {
+        crate::export::unavailable_reason().is_none() && !self.export_running()
     }
 
     fn transport_action(&mut self, action: TransportAction) {
@@ -4203,36 +4387,39 @@ impl VideoEditorApp {
                 let shown = elide_w(&m.name, avail, tr);
                 text_w(scene, tr, tf, &shown, 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
             }
-            let sub = match m.kind {
-                MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
-                _ => format!("{}p · {}", m.height, clock(m.duration)),
+            let sub = self.bin_subtitle(m);
+            // A source the editor cannot use says which kind of "cannot": the
+            // bytes are not here (fetchable), or they are here and are not
+            // media (not fetchable — the file itself is the problem). The row
+            // still shows whatever metadata the CRDT genuinely carries.
+            //
+            // The chip shares the sub-line: where both do not fit, the state
+            // wins and the metadata is dropped, because a user who cannot play
+            // the clip does not need to know its height first.
+            let (long, short) = if self.media_is_unreadable(mid) {
+                (Some(MEDIA_UNREADABLE), Some(MEDIA_UNREADABLE_SHORT))
+            } else if self.media_is_projected(mid) {
+                (Some(MEDIA_NOT_LOCAL), Some(MEDIA_NOT_LOCAL_SHORT))
+            } else {
+                (None, None)
             };
-            // Bytes absent from this device. The row still shows the metadata
-            // the CRDT replicated (that part is real), and says plainly that
-            // the picture beside it is a stand-in for footage that is not here.
-            // The chip shares the sub-line: where both do not fit, availability
-            // wins and the resolution/duration is dropped, because a user who
-            // cannot play the clip does not need to know its height first.
-            let projected = self.media_is_projected(mid);
             let (sw, _) = tr.measure(&sub, 11.0, None);
             let right = rect.x1 - 8.0;
             // Longest wording that fits, rather than one that fits nowhere and
             // elides to "Not on this devi…". Beside the metadata when there is
             // room; in its place when there is not.
-            let chip = projected
-                .then(|| {
-                    [
-                        (tx + sw as f64 + 8.0, MEDIA_NOT_LOCAL),
-                        (tx + sw as f64 + 8.0, MEDIA_NOT_LOCAL_SHORT),
-                        (tx, MEDIA_NOT_LOCAL),
-                        (tx, MEDIA_NOT_LOCAL_SHORT),
-                    ]
-                    .into_iter()
-                    .find(|(x0, label)| {
-                        x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right
-                    })
+            let chip = long.zip(short).and_then(|(long, short)| {
+                [
+                    (tx + sw as f64 + 8.0, long),
+                    (tx + sw as f64 + 8.0, short),
+                    (tx, long),
+                    (tx, short),
+                ]
+                .into_iter()
+                .find(|(x0, label)| {
+                    x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right
                 })
-                .flatten();
+            });
             // The metadata line survives unless the chip had to take its place.
             if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
                 text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
@@ -4423,8 +4610,14 @@ impl VideoEditorApp {
         // canvas, because the picture behind this line is a stand-in generated
         // from metadata, not the user's footage.
         if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
-            if self.media_is_projected(clip.media) {
-                let msg = MEDIA_NOT_LOCAL;
+            let unusable = if self.media_is_unreadable(clip.media) {
+                Some(MEDIA_UNREADABLE)
+            } else if self.media_is_projected(clip.media) {
+                Some(MEDIA_NOT_LOCAL)
+            } else {
+                None
+            };
+            if let Some(msg) = unusable {
                 let (mw, _) = tr.measure_weighted(msg, 12.0, None, TextWeight::Semibold);
                 let pad = 8.0;
                 let chip = Rect::new(
@@ -5048,13 +5241,20 @@ impl VideoEditorApp {
                 }
             }
         }
-        // Bytes absent from this device: hatch the body so the clip cannot be
-        // mistaken for one whose footage is here, and name the reason when the
-        // clip is wide enough to hold the words.
-        if self.media_is_projected(clip.media) {
+        // A source the clip cannot draw from: hatch the body so it cannot be
+        // mistaken for one whose footage is here, and name which kind of
+        // problem it is when the clip is wide enough to hold the words.
+        let unusable = if self.media_is_unreadable(clip.media) {
+            Some(MEDIA_UNREADABLE)
+        } else if self.media_is_projected(clip.media) {
+            Some(MEDIA_NOT_LOCAL)
+        } else {
+            None
+        };
+        if let Some(msg) = unusable {
             hatch_rect(scene, tf, with_alpha(c.semantic.warning, 0.30), cr, 7.0);
             if cr.width() > 118.0 && inner.height() > 14.0 {
-                let (mw, mh) = tr.measure(MEDIA_NOT_LOCAL, 10.0, None);
+                let (mw, mh) = tr.measure(msg, 10.0, None);
                 let pill = Rect::new(
                     inner.center().x - mw as f64 / 2.0 - 6.0,
                     inner.center().y - mh as f64 / 2.0 - 2.0,
@@ -5063,7 +5263,7 @@ impl VideoEditorApp {
                 );
                 fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), pill, 4.0);
                 text(
-                    scene, tr, tf, MEDIA_NOT_LOCAL, 10.0,
+                    scene, tr, tf, msg, 10.0,
                     with_alpha(Color::WHITE, 0.95),
                     pill.x0 + 6.0,
                     pill.y0 + 2.0,
@@ -5106,8 +5306,10 @@ impl VideoEditorApp {
 
     fn draw_export_modal(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
         let c = &theme.tokens.colors;
-        // Scrim.
-        fill_rect(scene, tf, c.surfaces.overlay, self.rect);
+        // Backdrop. `surfaces.overlay` is the opaque deep-menu surface — using
+        // it here painted solid black and deleted the editor behind the dialog.
+        // The scrim token carries the theme's hue; the strength is ours.
+        fill_rect(scene, tf, with_alpha(c.surfaces.scrim, MODAL_SCRIM_ALPHA), self.rect);
         let l = self.export_layout(r);
         let card = l.card;
         fill_rrect(scene, tf, c.surfaces.raised, card, 14.0);
@@ -5163,8 +5365,28 @@ impl VideoEditorApp {
                 }
             }
         }
-        draw_button(scene, tf, tr, theme, l.cancel, "Close", false, l.cancel.contains(self.last_mouse));
-        draw_button(scene, tf, tr, theme, l.confirm, "Export", true, l.confirm.contains(self.last_mouse));
+        // The flow's own status (choosing a destination, a portal refusal)
+        // sits under the render status, so an action is never silent.
+        if let Some(notice) = &self.export_notice {
+            let shown = elide_w(notice, (card.width() - 48.0) as f32, tr);
+            text(scene, tr, tf, &shown, 10.5, c.text_dim, x0, card.y1 - 82.0);
+        }
+        // A render in flight turns Close into Cancel — the only way to stop it.
+        let running = self.export_running();
+        draw_button(
+            scene, tf, tr, theme, l.cancel,
+            if running { "Cancel" } else { "Close" },
+            false, l.cancel.contains(self.last_mouse),
+        );
+        // Export is offered only when it can actually happen. The dialog used
+        // to say "Export needs the GStreamer build" and put a bright, enabled
+        // Export button directly underneath it.
+        let can_export = self.export_is_offered();
+        draw_button_enabled(
+            scene, tf, tr, theme, l.confirm,
+            if running { "Rendering…" } else { "Export" },
+            true, l.confirm.contains(self.last_mouse), can_export,
+        );
     }
 }
 
@@ -5357,12 +5579,30 @@ fn draw_button(
     primary: bool,
     hovered: bool,
 ) {
+    draw_button_enabled(scene, tf, tr, theme, rect, label, primary, hovered, true);
+}
+
+/// [`draw_button`] plus an explicit enabled flag, so a control the app cannot
+/// actually perform is painted with the toolkit's own disabled treatment
+/// instead of an inviting primary fill it will only refuse.
+fn draw_button_enabled(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    primary: bool,
+    hovered: bool,
+    enabled: bool,
+) {
     use ui::widget::{Button, ButtonFace, ButtonStyle};
     let face = ButtonFace::new(rect, label)
         .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral })
         .radius(7.0)
         .text_size(13.0)
-        .hovered(hovered);
+        .hovered(hovered && enabled)
+        .disabled(!enabled);
     Button::paint(scene, tf, tr, theme, &face);
 }
 
@@ -5703,6 +5943,95 @@ mod tests {
             changed > 200,
             "the bin row must visibly disclose absent media; only {changed} pixels changed",
         );
+    }
+
+    /// A document written before import learned to refuse non-media still
+    /// carries the entry, and opening that document is not an import — so the
+    /// probe's refusal never runs. The user's own saved project holds an HTML
+    /// page saved as `.mp4`: duration 0, 0x0, bytes present. It rendered as
+    /// `0p · 0:00`, which reads as two probed facts and is neither.
+    #[test]
+    fn a_loaded_document_says_unknown_rather_than_inventing_zeroes() {
+        // Real bytes on disk that are not media — the actual failure mode.
+        let f = std::env::temp_dir()
+            .join(format!("qos-ve-notmedia-{}.mp4", std::process::id()));
+        std::fs::write(&f, b"<!doctype html><html><body>not a video</body></html>").unwrap();
+
+        // Seed the document directly: this is a LOAD, not an import.
+        let mut doc = AutoCommit::new();
+        // Built off a real sample item so the shape stays valid as `MediaItem`
+        // grows; only the fields this defect is about are overridden.
+        let base = crate::doc::sample_project().media.remove(0);
+        let poisoned = MediaItem {
+            id: Uuid::new_v4(),
+            name: "everything_wrong_CMAF_480.mp4".to_string(),
+            kind: MediaKind::Video,
+            duration: 0.0,
+            width: 0,
+            height: 0,
+            fps: 0.0,
+            path: f.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+            ..base
+        };
+        VideoDoc::write_project_meta(&mut doc, &Project::new("Loaded"));
+        VideoDoc::upsert_media(&mut doc, &poisoned);
+
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.sync(&mut doc, &automerge::ROOT);
+        let m = app
+            .project
+            .media
+            .iter()
+            .find(|m| m.id == poisoned.id)
+            .expect("the loaded document's entry survives the load")
+            .clone();
+
+        // The bytes are here, so this is NOT the "not on this device" state.
+        assert!(
+            !app.media_is_projected(m.id),
+            "the file is on disk; calling it absent would send the user fetching",
+        );
+        assert!(
+            app.media_is_unreadable(m.id),
+            "a source with no duration and no dimensions is not usable media",
+        );
+
+        let sub = app.bin_subtitle(&m);
+        assert!(
+            !sub.contains("0p") && !sub.contains("0:00"),
+            "unknown metadata must not be printed as a fact; got {sub:?}",
+        );
+        assert!(
+            sub.contains("unknown"),
+            "the row must say what it does not know; got {sub:?}",
+        );
+
+        // …and the user must be able to get rid of it. The bin's own menu is
+        // the way out, driven here exactly as a right-click drives it.
+        let r = app.regions();
+        let row = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(id, _)| *id == m.id)
+            .expect("the entry has a bin row")
+            .1;
+        app.open_bin_menu(m.id, row.center());
+        assert!(app.bin_menu.is_open(), "the row offers a menu");
+        let delete = app
+            .bin_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some("Delete"))
+            .expect("the menu offers Delete");
+        app.bin_menu_choose(&mut doc, delete);
+        assert!(
+            !app.project.media.iter().any(|x| x.id == m.id),
+            "Delete must remove an unusable source from the document",
+        );
+
+        let _ = std::fs::remove_file(&f);
     }
 
     #[test]
@@ -6950,6 +7279,87 @@ mod tests {
                     "the knob is inside the track at {w}x{h}, frac {frac}",
                 );
             }
+        }
+    }
+
+    /// The card's header and its first section were both positioned from
+    /// fixed offsets off the card top, so the filename subtitle and the
+    /// RESOLUTION label were drawn through each other.
+    #[test]
+    fn the_export_dialog_header_never_collides_with_the_first_section() {
+        let mut tr = TextRenderer::new();
+        let subtitle_h = tr.measure("Hg", 12.0, None).1 as f64;
+        for (w, h) in SIZES {
+            let (mut app, _doc) = app_sized(w, h);
+            app.show_export = true;
+            let r = app.regions();
+            let l = app.export_layout(&r);
+            let subtitle_bottom = l.card.y0 + 44.0 + subtitle_h;
+            let first_label_top = l
+                .resolution
+                .first()
+                .expect("the dialog always offers a resolution")
+                .1
+                .y0
+                - 18.0;
+            assert!(
+                first_label_top >= subtitle_bottom,
+                "{w}x{h}: RESOLUTION starts at {first_label_top} but the filename \
+                 runs to {subtitle_bottom} — they overlap",
+            );
+            // …and the groups still stop before the footer they share the card with.
+            let last = l.fps.last().expect("frame rates are offered").1;
+            assert!(
+                last.y1 <= l.card.y1 - 96.0,
+                "{w}x{h}: the frame-rate row runs into the size estimate",
+            );
+        }
+    }
+
+    /// The dialog must not offer an action it will refuse. It used to say
+    /// "Export needs the GStreamer build" and paint an enabled primary Export
+    /// button directly beneath that sentence.
+    #[test]
+    fn the_export_button_is_only_offered_when_export_can_actually_run() {
+        let (mut app, mut doc) = app_sized(1280.0, 800.0);
+        app.show_export = true;
+        let r = app.regions();
+        let l = app.export_layout(&r);
+        assert_eq!(
+            app.export_is_offered(),
+            crate::export::unavailable_reason().is_none(),
+            "the offer must track what the export module says it can do",
+        );
+        if !app.export_is_offered() {
+            // Pressing it must do nothing at all — no job, no status change.
+            app.press_export(&mut doc, &r, l.confirm.center());
+            assert!(
+                matches!(app.export_status, ExportStatus::Idle),
+                "a refused Export must not move the status",
+            );
+            assert!(!app.export_running(), "a refused Export must not start a job");
+        }
+    }
+
+    /// Same defect as the media bin's scrim, one token over: the modal painted
+    /// `surfaces.overlay` — the opaque deep-menu surface — as its backdrop, so
+    /// the editor vanished behind the dialog instead of dimming.
+    #[test]
+    fn the_export_modal_dims_the_editor_rather_than_deleting_it() {
+        for theme in [Theme::dark(), Theme::light()] {
+            let (mut app, _doc) = app_sized(1280.0, 800.0);
+            app.show_export = true;
+            let r = app.regions();
+            let px = render_pixels(&mut app, 1280, 800, &theme);
+            // The timeline lanes stretch well past the card on both sides.
+            let card = app.export_layout(&r).card;
+            let left = Rect::new(r.lanes.x0, r.lanes.y0, card.x0 - 8.0, r.lanes.y1);
+            let colours = region_colours(&px, 1280, 800, left);
+            assert!(
+                colours > 2,
+                "the timeline behind the export dialog is a flat slab \
+                 ({colours} distinct colours) — the backdrop erased it",
+            );
         }
     }
 
