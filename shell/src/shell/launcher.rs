@@ -1149,6 +1149,19 @@ pub fn placement_for_toplevel(
     }
 }
 
+/// Drop the placement note for `package_id`, if it has one.
+///
+/// The undo for a [`set_pending_placement`] whose launch then failed to
+/// start: the note names a tab the window will never arrive for, and
+/// leaving it would hand that tab to whatever the user next opened of
+/// the same app.
+pub fn clear_pending_placement(package_id: &str) {
+    let mut pending = PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned");
+    pending.retain(|p| p.key != package_id);
+}
+
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
 pub fn clear_pending_placements() {
