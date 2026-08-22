@@ -85,6 +85,23 @@ pub struct RecordId(String);
 impl RecordId {
     /// The record a file *is*. Relative paths are resolved against the current
     /// directory so two spellings of one file are one record.
+    ///
+    /// # A path is not a portable identity
+    ///
+    /// The id this returns *contains* the absolute path, so two peers reach
+    /// one record only when the file sits at the same path on both machines.
+    /// That holds for a shared mount, and for a file each side opened from
+    /// the same place. It does **not** hold for content that never had a path
+    /// in common — an image dropped into a document is the case that comes up
+    /// first. The sender's `file:/home/q/Downloads/photo.png` names nothing on
+    /// the receiver, and a peer that resolved it against a local file of its
+    /// own would be worse than one that resolved it to nothing.
+    ///
+    /// So embedded content wants a **content-addressed** record — minted or
+    /// hashed, with the bytes travelling as the record's own content — not a
+    /// file record. Reaching for `for_file` to make a dropped image shareable
+    /// produces something that looks right on the machine that dropped it and
+    /// is empty everywhere else, which is the expensive way to find this out.
     pub fn for_file(path: impl AsRef<Path>) -> Self {
         let p = path.as_ref();
         let abs = if p.is_absolute() {
