@@ -30,6 +30,8 @@ import re
 import shutil
 import socket
 import subprocess
+
+from reaper import die_with_parent
 import sys
 import tempfile
 import time
@@ -111,7 +113,7 @@ class Session:
         self.proc = subprocess.Popen(
             [str(SHELL), "--backend", "headless", "--enable-peer-sync"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
-            start_new_session=True,
+            preexec_fn=die_with_parent(),
         )
 
     def wait_up(self, timeout=45.0) -> bool:
