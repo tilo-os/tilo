@@ -2,8 +2,9 @@
 //! all shell content.
 //!
 //! Matches `nirios-concept/src/components/DesktopView.tsx:210-217`:
-//!   1. Linear gradient top-left → bottom-right between the theme's two
-//!      ground surfaces, settled toward neutral (see [`ground_stops`]).
+//!   1. Linear gradient top-left → bottom-right across the theme's ground
+//!      surface, settled toward neutral and falling away toward the far
+//!      corner (see [`ground_stops`]).
 //!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
 //!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
 //!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
@@ -43,6 +44,11 @@ const GRID_STEP: f64 = 24.0;
 /// the theme still tints its own ground rather than every theme
 /// grounding on the same grey.
 const GROUND_NEUTRALITY: f32 = 0.72;
+
+/// How far the far corner of the desktop falls away from the near one.
+/// Enough to read as depth across a whole screen, gentle enough that a
+/// light theme's ground stays light rather than ramping into grey.
+const GROUND_FALLOFF: f32 = 0.82;
 
 /// Edge length (in pixels) of the tileable noise texture.
 const NOISE_SIZE: u32 = 64;
@@ -149,11 +155,22 @@ pub struct DesktopBackdrop {
 /// (a light theme still grounds light, high contrast still grounds
 /// black) while letting content, not the wallpaper, carry the colour.
 fn ground_stops(theme: &Theme) -> (Color, Color) {
-    let c = &theme.tokens.colors;
-    (
-        settle_toward_neutral(c.surfaces.base, GROUND_NEUTRALITY),
-        settle_toward_neutral(c.surfaces.scrim, GROUND_NEUTRALITY),
-    )
+    let base = settle_toward_neutral(theme.tokens.colors.surfaces.base, GROUND_NEUTRALITY);
+    (base, shade(base, GROUND_FALLOFF))
+}
+
+/// Scale a colour's channels toward black by `factor`, keeping its hue.
+///
+/// Both ends of the desktop gradient are the *same* ground, one lit and
+/// one fallen away, which is what makes the ramp read as a surface
+/// catching light rather than as two different materials. Deriving the
+/// far end from the near one keeps that true in every theme: a light
+/// theme grounds light at both ends, a dark theme dark at both.
+fn shade(color: Color, factor: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let f = factor.clamp(0.0, 1.0);
+    let m = |v: u8| (v as f32 * f).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(m(r), m(g), m(b), a)
 }
 
 /// Mix `color` toward its own perceived luminance by `amount` in
