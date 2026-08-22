@@ -40,21 +40,21 @@ const RECORD_BRING_PARAMS: &[ActionParam] = &[
 /// What `agent.invite` may be told.
 ///
 /// Optional, because this OS ships an agent and it has a name already:
-/// `qos-agent` is launched with `--name`, which defaults to `Scribe`
+/// `qos-agent` is launched with `--name`, which defaults to `Claude`
 /// (`apps/agent/src/main.rs`). A session running a differently-named one
 /// passes it; the common case does not have to repeat what the system
 /// already knows.
 const AGENT_INVITE_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "name",
     ParamType::Text,
-    "The agent's name, as it was launched with. Defaults to `Scribe`.",
+    "The agent's name, as it was launched with. Defaults to `Claude`.",
 )];
 
 /// The agent this OS ships, and so the one `agent.invite` admits when it
 /// is not told otherwise. Kept in step with `qos-agent`'s own default by
 /// being the same string for the same reason, not by being imported —
 /// the shell does not depend on the agent binary.
-const DEFAULT_AGENT_NAME: &str = "Scribe";
+const DEFAULT_AGENT_NAME: &str = "Claude";
 
 /// What `peer.invite.named` must be told: who is being invited, and
 /// what to call them. Both required — an invite to nobody in particular

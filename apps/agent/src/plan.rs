@@ -2,7 +2,7 @@
 //! carrying them out.
 //!
 //! An instruction is a paragraph addressed to the agent by name —
-//! `Scribe: turn the bullets into a table`. The vocabulary is small and
+//! `Claude: turn the bullets into a table`. The vocabulary is small and
 //! scripted; the shape is what matters: the agent reads the same document
 //! everyone else does, and answers in it.
 
