@@ -19,7 +19,7 @@ Storyboard asked for: *Search · multiple apps · collab · 2 users · 1 agent �
 | Search "word processor" → not installed → installs as qpkg → opens | **BUILT 2026-08-22 (P0-c).** Was: NOT FOUND in the palette. A miss is a notification: "`{id}` is not installed" (`shell/src/shell/launcher.rs:137-164`). The **Store app** does download → `qos-install install` (ed25519 + BLAKE3 verify) → `qos-install run` (`apps/store/src/actions.rs:248-300`). | Build (P0): a palette row "Word Processor — not installed · Install & open" that reuses the store's `open_qos` plan. Serve a local registry on set day (`registries.toml`, `GET {base}/entries`, `apps/store/src/config.rs:28-37`). |
 | "Cut to bob: you see the window opening there too" | **NOT FOUND.** Room replication carries identity, name, owner, capabilities — *not* strips/groups/tabs (`shell/src/shell/state.rs:1928-1935`). Nothing auto-spawns on the peer. | bob opens the same document himself from Files. It converges because both sessions share the `RoomId` the invite set and the launcher forwards it as `QOS_WORKSPACE_ID` (`crates/packaging/launcher/src/sandbox.rs:210`, `ui/src/collaboration.rs:963-999`). Narrate it as a feature: the app is drawn on his machine, not streamed. |
 | ada's writing appears on bob's screen | **PARTIAL — broken for launched apps.** The legacy JSON broker bridges outbound deltas to libp2p (`collab_broker.rs:1017-1031`) but sandboxed apps dial the capnp broker (`QOS_SVC_COLLAB_FD`), which has no network handle at all (`collab_broker_capnp.rs:601-603, 702-707`; `grep publish_app_crdt` → 0 hits). Inbound works (shared `PeerTable`). | **Build (P0, the critical fix):** give the capnp broker the same `peer_sync` outbound publish the JSON path has. Without it nothing typed in a launched app leaves the machine. |
-| Drag an image from Files into the document | **IMPOSSIBLE on Wayland today.** The vendored winit emits `DroppedFile` on X11/macOS/Windows only — there is no data_device code under `vendor/winit/src/platform_impl/linux/wayland/`. The word processor's drop handler (`apps/word-processor/src/widget.rs:5764-5777`) can never fire; Files has no `wl_data_source` (`apps/file-explorer/src/views/file_view.rs:78-146` is in-process only). | Film: toolbar **Insert image** → the compositor's own portal file chooser (`shell/src/portal/file_chooser.rs`, wired at `shell/src/compositor/hosted.rs:403` / native) → pick `photo.png`. The image is `ScalarValue::Bytes` in the Automerge doc (`crates/doc/qdoc/src/model.rs:2005`) so it replicates exactly like text. This beat is *better* than DnD: it shows the sandbox. |
+| Drag an image from Files into the document | **BUILT 2026-08-22** (branch `files-to-app-dnd`): the compositor promotes a Files drag to a server-side `wl_data_device` drag offering `text/uri-list` + the image bytes; the vendored winit now receives Wayland drops; the word processor inserts at the drop point. Proof: `shell/tests/clipboard_e2e.rs` (`…drops_onto_a_client`, and the `QOS_LIVE_APP_DND=1` word-processor lane). The Insert-image button remains the fallback. Was: **IMPOSSIBLE on Wayland.** The vendored winit emits `DroppedFile` on X11/macOS/Windows only — there is no data_device code under `vendor/winit/src/platform_impl/linux/wayland/`. The word processor's drop handler (`apps/word-processor/src/widget.rs:5764-5777`) can never fire; Files has no `wl_data_source` (`apps/file-explorer/src/views/file_view.rs:78-146` is in-process only). | Film: toolbar **Insert image** → the compositor's own portal file chooser (`shell/src/portal/file_chooser.rs`, wired at `shell/src/compositor/hosted.rs:403` / native) → pick `photo.png`. The image is `ScalarValue::Bytes` in the Automerge doc (`crates/doc/qdoc/src/model.rs:2005`) so it replicates exactly like text. This beat is *better* than DnD: it shows the sandbox. |
 | The agent does something | **No LLM anywhere; the action model is real.** Word processor exports `SpliceText / SetMark / SetParagraphStyle / InsertTable / InsertImage / …` as replayable, attributed actions (`apps/word-processor/src/actions.rs:112, 494, 792`); `App::invoke_semantic_action` is proven byte-identical to the toolbar (`ui/src/app.rs:2398, 7000`); the history strip renders per-author versions (`apps/word-processor/src/history_panel.rs`, `ui/src/history_source/authors.rs`). | Build (P0): a headless `qos-agent` process that joins the document's broker route and applies actions. No window, no pointer — which is exactly the pitch. Optional: a real model call inside it. |
 
 Everything else in the storyboard (empty desktop, strip layout, Files thumbnails + sync badges,
@@ -147,15 +147,17 @@ toolkit's presence layer, not from the app — every app gets them for free."
 
 ### Beat 5 — The image (3:05–3:35) · ada, then bob
 
-**Actions (ada).** Clicks the toolbar *Image* button (`widget.rs:353, 7964`) → the OS file
-chooser opens (`shell/src/portal/file_chooser.rs`) → picks `Demo › photo.png` → image lands at
-the caret. Optionally drags the corner to resize (`word_processor.rs:630`).
+**Actions (ada).** Drags `photo.png` out of Files and drops it on the document; it lands at
+the drop point. (Fallback if the layout fights you on the day: toolbar *Image* button →
+the OS file chooser, `shell/src/portal/file_chooser.rs`.) Optionally drags the corner to resize
+(`word_processor.rs:630`). Mind the layout: a group laid out at full width (the first-boot
+demo group is) slides its neighbour off screen when focused — keep Files at a normal width.
 
 **Actions (cut to bob).** The image appears in his document.
 
-**Said.** "The app can't read that folder. The dialog you saw is drawn by the OS, and the app
-gets exactly the one file the user chose — that's the portal model. The image is bytes inside
-the same document, so it replicates like the text did."
+**Said.** "The app can't read that folder. What it received is the file's bytes, handed over
+by the OS as part of the drop — the app never sees a path it has no right to. The image is
+bytes inside the same document, so it replicates like the text did."
 
 ### Beat 6 — The agent (3:35–4:35) · ada, both screens
 
