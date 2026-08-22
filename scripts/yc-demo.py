@@ -69,7 +69,7 @@ import zlib
 # doing the importing needs.
 sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
-from reaper import die_with_parent          # noqa: E402
+from reaper import die_with_parent, track   # noqa: E402
 
 # Set from `--keep`. Off means the kernel reaps a compositor with this
 # script, however this script dies.
@@ -292,6 +292,13 @@ class Session:
             start_new_session=KEEP_SESSIONS,
             preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS),
         )
+        # The kernel's PDEATHSIG covers the case nothing in userspace can
+        # (this process being SIGKILLed). The exit sweep covers the one it
+        # does not: a child that outlived an intermediate parent and was
+        # reparented. A `--keep` run is asking for survivors and gets no
+        # sweep.
+        if not KEEP_SESSIONS:
+            track(self.proc)
 
     def wait_ready(self, timeout: float = 90.0) -> None:
         deadline = time.time() + timeout
@@ -1270,16 +1277,21 @@ class DocumentReader:
         """
         deadline = time.time() + timeout
         newest: bytes | None = None
+        seen: set[int] = set()          # blobs already searched, by id
         while time.time() < deadline:
-            for doc in self.documents():
-                newest = doc
-                if _carries(doc, needle):
-                    return doc, True
-            for d in self.deltas():
-                # A delta can carry the text too, and does when the far
-                # app was already attached while it was typed.
-                if _carries(d, needle):
-                    return newest if newest is not None else d, True
+            docs = self.documents()
+            if docs:
+                newest = docs[-1]
+            # A delta carries the text too, and does when the far app was
+            # already attached while it was typed. Both kinds are worth
+            # searching; only a document is worth reporting a size for.
+            for blob in docs + self.deltas():
+                key = hash(blob)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _carries(blob, needle):
+                    return (newest if newest is not None else blob), True
             time.sleep(0.5)
         return newest, False
 
@@ -1297,11 +1309,19 @@ def _carries(blob: bytes, needle: str) -> bool:
     want = needle.encode()
     if want in blob:
         return True
-    for start in range(len(blob)):
-        if blob[start] != 0x78:      # zlib header, the only cheap anchor
+    # Only then the compressed spans, and only the plausible ones: a
+    # zlib stream starts 0x78 followed by one of four check bytes, which
+    # takes the candidate count from "every byte" to a handful. Bounded
+    # anyway — this runs inside a polling loop, and a scan that costs
+    # more than the hop it is watching for would time the beat out
+    # itself.
+    for start in range(min(len(blob), 1 << 20)):
+        if blob[start] != 0x78 or start + 1 >= len(blob):
+            continue
+        if blob[start + 1] not in (0x01, 0x5E, 0x9C, 0xDA):
             continue
         try:
-            if want in zlib.decompressobj().decompress(blob[start:]):
+            if want in zlib.decompressobj().decompress(blob[start:], 1 << 24):
                 return True
         except zlib.error:
             continue
@@ -1824,27 +1844,31 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
         if reader is not None:
             reader.close()
 
-    if carried:
+    # Which of the three outcomes this was decides how it is recorded,
+    # and the distinction is not cosmetic. A document that came back
+    # without the text is a question that was *asked and answered*: the
+    # claim is false, it counts as a failure, and it gates the exit code
+    # like every other claim here. Silence is a different thing — nothing
+    # was established either way — and that is what a GAP is for.
+    if doc is not None:
         claim("bob's own word processor holds what ada typed",
               carried, True)
-        note(f"answered with a {len(doc)} byte document carrying "
-             f"{TYPED_TEXT!r} — produced by his app, not by the wire")
-    elif doc is not None:
-        # A document really did come back, and really does not have it.
-        # This is the honest failure: the two apps are attached, they
-        # answer each other's handshake, and their documents are still
-        # two documents.
-        gap(f"bob's word processor answered with a {len(doc)} byte "
-            f"document that does not carry {TYPED_TEXT!r} — the two "
-            f"documents have NOT converged. Presence crosses and the "
-            f"document does not; nothing on his screen shows what "
-            f"ada wrote")
+        if carried:
+            note(f"answered with a {len(doc)} byte document carrying "
+                 f"{TYPED_TEXT!r} — produced by his app out of the "
+                 f"document it holds, not read back off the wire")
+        else:
+            note(f"his app answered with {len(doc)} bytes and none of it "
+                 f"is {TYPED_TEXT!r}: the two apps are attached and "
+                 f"answer each other's handshake, and their documents "
+                 f"are still two documents. Presence crosses, the "
+                 f"document does not, and nothing on his screen shows "
+                 f"what ada wrote")
     else:
         gap(f"no app in bob's session answered the late-join handshake "
-            f"within {DOC_SYNC_TIMEOUT_S:.0f}s, so his document could not "
-            f"be read back at all — the beat did NOT converge, and this "
-            f"run cannot say whether the cause is the document path or "
-            f"the handshake. See {bob.log_path}")
+            f"within {DOC_SYNC_TIMEOUT_S:.0f}s, so his document was never "
+            f"read back — this run establishes nothing about beat 7 in "
+            f"either direction. See {bob.log_path}")
     bob.settle(2.0)
     bob.snapshot(os.path.join(shots, "08-bob-received.png"))
 
