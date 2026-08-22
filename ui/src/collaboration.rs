@@ -62,8 +62,19 @@ use std::os::unix::net::UnixStream;
 use std::os::fd::RawFd;
 use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::LocalSet;
+
+/// How long an app waits for the collaboration connect path to report
+/// before opening without it.
+///
+/// This is spent on the main thread ahead of the first frame, so it is
+/// the window's worst-case delay when something upstream is wedged. It
+/// is set far above the path's real cost — every step before the report
+/// is a local syscall — so reaching it means something is wrong, not
+/// that the machine is slow.
+const SHOVEL_INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CollabRequest {
@@ -707,20 +718,67 @@ impl CollaborationManager {
         let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
 
-        // Extract the raw fd (if any) *before* moving the source into
-        // the closure — `SdkConnectSource::Fd` is `!Send` in principle
-        // (RawFd is Send, but this keeps the intent explicit).
-        let handle = thread::Builder::new()
+        // The source moves into the closure — `SdkConnectSource::Fd` is
+        // `!Send` in principle (RawFd is Send, but this keeps the
+        // intent explicit).
+        //
+        // A thread we cannot start is a service we cannot reach, which
+        // is a state this function already has a word for. It is not a
+        // reason to take the app down with us: `collab` is
+        // `optional@1`, and an app whose broker is unreachable has to
+        // open anyway.
+        let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
             .spawn(move || run_shovel(source, identity_bytes, outbound_rx, inbound_tx, init_tx))
-            .expect("spawn ui-collab-shovel thread");
+        {
+            Ok(handle) => handle,
+            Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
+        };
 
-        // Wait for the shovel to report initial connect status. This
-        // is a bounded wait: `run_shovel` reports before entering its
-        // event loop.
-        let status = init_rx
-            .recv()
-            .expect("shovel thread must send an init status before its main loop");
+        // Wait for the shovel to report initial connect status.
+        //
+        // This runs on the app's main thread before its first frame, so
+        // whatever happens here happens instead of the window
+        // appearing. Two things therefore must not: waiting forever,
+        // and panicking.
+        //
+        // `run_shovel` reports before entering its event loop and every
+        // step to that point is local — no round trip to the broker —
+        // so the wait is short in every case we know how to produce.
+        // The deadline is for the ones we do not: a connect path that
+        // wedges costs a few seconds and a session without
+        // collaboration, never an app that will not open. Dropping the
+        // channels lets a thread that reports late exit on its own.
+        let status = match init_rx.recv_timeout(SHOVEL_INIT_TIMEOUT) {
+            Ok(status) => status,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                tracing::warn!(
+                    "collab: the connect path did not report within {SHOVEL_INIT_TIMEOUT:?}; \
+                     continuing without collaboration"
+                );
+                return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "collab connect did not report in time",
+                    ),
+                ));
+            }
+            // The thread ended without reporting. There is nothing on
+            // the other end to hand out, so this is simply a service
+            // that is not available.
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                tracing::warn!(
+                    "collab: the connect path ended without reporting; \
+                     continuing without collaboration"
+                );
+                return Err(runtime_portal::NotAvailable::ConnectionFailed(
+                    std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "collab connect ended without reporting",
+                    ),
+                ));
+            }
+        };
 
         match status {
             InitStatus::Ready => Ok(SdkChannel {
@@ -1139,9 +1197,19 @@ async fn drive_shovel(
                     Some(r) if !r.is_empty() => format!("{cluster_id}#record:{r}"),
                     _ => cluster_id.to_string(),
                 };
+                // Without a channel every later request falls through
+                // its `if let Some(ch)` and is dropped, while the app
+                // still reports itself connected — collaboration that
+                // is switched off and says nothing. Say something.
                 let ch = match client.join_channel(&channel_id, &identity_bytes).await {
                     Ok(ch) => ch,
-                    Err(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(
+                            "collab: joining channel {channel_id} failed ({e}); \
+                             this app's edits and presence will not leave it"
+                        );
+                        continue;
+                    }
                 };
 
                 // subscribe(): forward signed op events.
@@ -2269,6 +2337,45 @@ mod tests {
     // --- tests -----------------------------------------------------------
 
     #[test]
+    #[serial_test::serial(qos_svc_collab_fd)]
+    fn a_broker_that_is_not_there_does_not_hold_the_app_up() {
+        // A connected socket whose far end is gone — the shape of a
+        // broker that died between the launcher's connect and the
+        // app's first call.
+        //
+        // `new()` runs on the main thread before the first frame, so
+        // whatever it does here it does instead of the window
+        // appearing. `collab` is `optional@1`: this has to come back,
+        // and the app has to keep working afterwards.
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        drop(theirs);
+        let fd = ours.into_raw_fd();
+        // SAFETY: serialised on `qos_svc_collab_fd` against every other
+        // test that reads or writes these two variables.
+        unsafe {
+            std::env::set_var("QOS_SVC_COLLAB_FD", fd.to_string());
+            std::env::remove_var("QUICK_COLLAB_SOCK");
+        }
+
+        let started = Instant::now();
+        let mut mgr = CollaborationManager::new();
+        let took = started.elapsed();
+
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("QOS_SVC_COLLAB_FD") };
+
+        assert!(
+            took < SHOVEL_INIT_TIMEOUT * 2,
+            "constructing the manager must not stall the first frame (took {took:?})"
+        );
+        // Whichever backend it settled on, the app goes on calling these
+        // every frame. Neither may panic.
+        mgr.send(CollabRequest::SyncCRDT { data: b"after the broker died".to_vec() });
+        let _ = mgr.poll();
+    }
+
+    #[test]
+    #[serial_test::serial(qos_svc_collab_fd)]
     fn disconnected_manager_is_a_no_op() {
         // No SDK, no legacy socket set. `new` cannot reach anything —
         // falls through to `Backend::Disabled`.
