@@ -835,7 +835,8 @@ mod tests {
         );
         assert!(
             tree_b.read().room_epoch() > before,
-            "content landed in the guest's tree but nothing told the frame              loop to rebuild, so it would never be drawn"
+            "content landed in the guest's tree but nothing told the frame \
+             loop to rebuild, so it would never be drawn"
         );
     }
 

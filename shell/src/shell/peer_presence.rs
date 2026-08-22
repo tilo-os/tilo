@@ -47,7 +47,8 @@
 //! [`PeerPresence::publish_local_cursor`] closes that: it is driven
 //! level-triggered from the frame loop, so the session publishes where
 //! its own pointer is whether or not anything is running in front of
-//! it. [`should_publish_cursor`] is the gate — a move goes out at most
+//! it, addressed to the room whose workspace is on screen.
+//! [`should_publish_cursor`] is the gate — a move goes out at most
 //! every [`MIN_PUBLISH_GAP`], and a pointer that has stopped is
 //! restated every [`CURSOR_KEEPALIVE`] so somebody who joins the room
 //! afterwards sees the people already in it rather than an empty
@@ -58,6 +59,25 @@
 //! [`ui::presence::PresenceCtx::apply_remote_presence`] — the same
 //! decode an app runs — so a peer painted by the compositor and a peer
 //! painted inside an app are the same peer, arrived by the same route.
+//!
+//! **Who a peer is.** Two things, kept apart on purpose.
+//!
+//! The *identity* is `peer@<handle>`, derived from the handle the
+//! frame carries — the same spelling the broker gives a peer seen
+//! inside an app. One person is one id on both paths, which is what
+//! makes them one cursor in one colour rather than two people who
+//! happen to move together, and it is why a peer that later gains a
+//! name does not change colour in front of the people watching it.
+//!
+//! The *name* is a governance fact, read from the room document by
+//! [`ShellNetwork::peer_labels`]. The room's authority writes it and
+//! `apply_room_changes` refuses it from anybody else. A frame's own
+//! `user` field — what the sending session says it is called — is
+//! never used: a peer that can announce its own name can announce
+//! anybody's, beside a caret editing a document whose access that
+//! same room governs. A peer nobody has named keeps its id, which
+//! `display_name` falls back to, so a pill is never blank and never
+//! carries a name nobody chose.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -83,10 +103,9 @@ pub struct PeerPresence {
     /// Kept alive for the session, and re-pointed as rooms change.
     subscription: Arc<RoomSubscription>,
     /// The rooms this session is in, mirrored from [`Self::set_rooms`].
-    /// The subscription owns its own copy for delivery; this one is
-    /// what [`Self::publish_local_cursor`] addresses the desktop
-    /// pointer to, and it has to be readable without going back
-    /// through the broker.
+    /// The subscription owns its own copy for delivery; this one
+    /// scopes the bookkeeping below, so a room this session has left
+    /// stops being remembered as something it has spoken about.
     rooms: Mutex<Vec<String>>,
     /// What this session last put on the wire, per room: where the
     /// pointer was and when it was said. Read by
@@ -206,8 +225,8 @@ impl PeerPresence {
         self.subscription.set_rooms(rooms);
     }
 
-    /// Put this session's own pointer on the wire, for every room it
-    /// is in. Returns whether anything went out.
+    /// Put this session's own pointer on the wire, in the room the
+    /// user is actually looking at. Returns whether anything went out.
     ///
     /// This is the desktop's publisher, and it is deliberately
     /// level-triggered rather than hooked onto motion: the frame loop
@@ -215,48 +234,46 @@ impl PeerPresence {
     /// one call there covers every source that can move it — a real
     /// seat, a peer's injected input, the test control socket — and
     /// covers it whether or not an app happens to be running.
-    pub fn publish_local_cursor(&self) -> bool {
-        self.publish_local_cursor_at(Instant::now())
+    ///
+    /// One room, not every room this session is in. A pointer is
+    /// somewhere, and the somewhere is the workspace on screen; sending
+    /// it to the rest would put a cursor in front of people whose
+    /// workspace this user is not even looking at, which is a peer who
+    /// is not there.
+    pub fn publish_local_cursor(&self, room: &str) -> bool {
+        self.publish_local_cursor_at(room, Instant::now())
     }
 
     /// [`Self::publish_local_cursor`] with the clock supplied, so the
     /// throttle and the keepalive can be exercised without sleeping.
-    pub fn publish_local_cursor_at(&self, now: Instant) -> bool {
+    pub fn publish_local_cursor_at(&self, room: &str, now: Instant) -> bool {
+        if room.is_empty() {
+            return false;
+        }
         let at = *self
             .cursor
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let rooms = match self.rooms.lock() {
-            Ok(g) => g.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        };
         let mut last = self
             .last_published
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut sent = false;
-        for room in rooms {
-            if room.is_empty() {
-                continue;
-            }
-            if !should_publish_cursor(
-                last.get(&room).copied(),
-                at,
-                now,
-                MIN_PUBLISH_GAP,
-                CURSOR_KEEPALIVE,
-            ) {
-                continue;
-            }
-            let key = PresenceKey::Workspace { id: room.clone() };
-            let Ok(key_str) = serde_json::to_string(&key) else {
-                continue;
-            };
-            self.net.publish_presence(key_str, at);
-            last.insert(room, (at, now));
-            sent = true;
+        if !should_publish_cursor(
+            last.get(room).copied(),
+            at,
+            now,
+            MIN_PUBLISH_GAP,
+            CURSOR_KEEPALIVE,
+        ) {
+            return false;
         }
-        sent
+        let key = PresenceKey::Workspace { id: room.to_string() };
+        let Ok(key_str) = serde_json::to_string(&key) else {
+            return false;
+        };
+        self.net.publish_presence(key_str, at);
+        last.insert(room.to_string(), (at, now));
+        true
     }
 
     /// Record where this session's pointer is, in scene space.
@@ -276,31 +293,73 @@ impl PeerPresence {
             };
             std::mem::take(&mut *buf)
         };
-        fold_inbound(drained, presence)
+        let net = Arc::clone(&self.net);
+        fold_inbound(drained, presence, &|room| net.peer_labels(room))
     }
 }
+
+/// What a room calls the peers in it, keyed by the handle presence
+/// frames identify their sender by.
+pub type PeerLabels = std::collections::BTreeMap<u64, String>;
 
 /// Fold inbound presence into `presence`, returning whether anything
 /// landed. Split out from [`PeerPresence::pump`] so the fold can be
 /// driven without standing a network up; `pump` does nothing else.
+///
+/// `labels` answers "what does this room call that peer". It is a
+/// parameter rather than a lookup done here so the fold stays testable
+/// without a network, and so there is exactly one implementation of it
+/// in production: the room document, via
+/// [`ShellNetwork::peer_labels`].
 pub fn fold_inbound(
     entries: Vec<crate::shell::network::InboundPresence>,
     presence: &mut PresenceCtx,
+    labels: &dyn Fn(&str) -> PeerLabels,
 ) -> bool {
     let mut any = false;
+    // Entries in one drain are nearly always the same room; resolving
+    // per entry would re-read the tree once per pointer sample.
+    let mut resolved: Option<(String, PeerLabels)> = None;
     for entry in entries {
         let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
             continue;
         };
-        // Label the cursor with who the publishing session says is at
-        // it. When it says nothing, fall back to the session handle
-        // rather than inventing a name — an unlabelled peer is honest,
-        // a wrong label is not.
-        let user = if entry.user.is_empty() {
-            format!("p{:016x}", entry.peer)
-        } else {
-            entry.user.clone()
-        };
+        // The id is the sending *session*, spelled from the handle its
+        // frames carry — the same spelling the broker gives a peer
+        // seen inside an app. One person is therefore one id on both
+        // paths, which is what makes them one cursor in one colour
+        // instead of two people who happen to move together.
+        //
+        // Deliberately not `entry.user`. That is the sending session's
+        // word for who is at it, and a peer that can announce its own
+        // name can announce anybody's — beside a caret editing a
+        // document whose access that same room governs.
+        let user = format!("peer@{}", entry.peer);
+
+        // What the room calls them. Names are a governance fact: the
+        // room's authority writes them into the room document and
+        // `apply_room_changes` refuses them from anyone else, so this
+        // is the one place a label can come from.
+        //
+        // A peer nobody has named has no entry here and keeps the id
+        // above. `PresenceCtx::display_name` falls back to it, so the
+        // pill is never blank and never shows a name nobody chose.
+        if let PresenceKey::Workspace { id: room } = &key {
+            let known = match &resolved {
+                Some((seen, map)) if seen == room => map,
+                _ => {
+                    resolved = Some((room.clone(), labels(room)));
+                    &resolved.as_ref().expect("just set").1
+                }
+            };
+            if let Some(name) = known.get(&entry.peer) {
+                presence.set_display_name(
+                    ui::permissions::UserId(user.clone()),
+                    name.clone(),
+                );
+            }
+        }
+
         presence.apply_remote_presence(
             user,
             key,
@@ -392,6 +451,9 @@ mod tests {
         );
     }
 
+    /// A frame as it arrives off the wire. `user` is what the *sender*
+    /// claims to be called, and is deliberately never used as a label —
+    /// the tests below pass a wrong one on purpose.
     fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
         InboundPresence {
             peer,
@@ -403,6 +465,17 @@ mod tests {
         }
     }
 
+    /// No room has named anybody.
+    fn unnamed(_room: &str) -> PeerLabels {
+        PeerLabels::new()
+    }
+
+    /// The room's names, as its authority wrote them.
+    fn named(pairs: &[(u64, &str)]) -> impl Fn(&str) -> PeerLabels + use<> {
+        let map: PeerLabels = pairs.iter().map(|(h, n)| (*h, (*n).to_string())).collect();
+        move |_room: &str| map.clone()
+    }
+
     #[test]
     fn a_peer_lands_on_the_room_the_overlay_reads() {
         // The overlay looks pointers up by room, because the room is
@@ -412,7 +485,8 @@ mod tests {
         let mut presence = PresenceCtx::default();
         assert!(fold_inbound(
             vec![arrived("bob", 7, room, (120.0, 240.0))],
-            &mut presence
+            &mut presence,
+            &unnamed,
         ));
 
         let key = PresenceKey::Workspace { id: room.into() };
@@ -421,8 +495,101 @@ mod tests {
             .get(&key)
             .expect("the pointer should be filed under the room");
         assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].0, UserId("bob".into()));
+        assert_eq!(peers[0].0, UserId("peer@7".into()));
         assert_eq!(peers[0].1, (120.0, 240.0));
+    }
+
+    #[test]
+    fn a_peer_is_called_what_the_room_calls_it() {
+        // Names are governance: the room's authority writes them into
+        // the room document and nobody else may. So the label comes
+        // from there, and the sender's own word for itself — "bob"
+        // below — is not consulted.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(
+            vec![arrived("bob", 7, room, (10.0, 10.0))],
+            &mut presence,
+            &named(&[(7, "Xaver")]),
+        );
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: room.into() })
+            .expect("a pointer");
+        assert_eq!(
+            presence.display_name(&peers[0].0),
+            "Xaver",
+            "the pill must read what the room says, not what the sender claimed"
+        );
+    }
+
+    #[test]
+    fn a_sender_cannot_name_itself() {
+        // The spoofable half. A session that says it is somebody must
+        // not be drawn as that somebody; an unnamed peer keeps its id.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(
+            vec![arrived("Quinten", 7, room, (10.0, 10.0))],
+            &mut presence,
+            &unnamed,
+        );
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: room.into() })
+            .expect("a pointer");
+        assert_eq!(
+            presence.display_name(&peers[0].0),
+            "peer@7",
+            "a name the sender chose for itself must not reach the screen"
+        );
+    }
+
+    #[test]
+    fn a_name_does_not_move_a_peer_to_a_new_colour() {
+        // A peer that gains a name must not change colour in front of
+        // the people watching it, so the name is a label on a stable
+        // id rather than a new identity.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut before = PresenceCtx::default();
+        fold_inbound(
+            vec![arrived("", 7, room, (10.0, 10.0))],
+            &mut before,
+            &unnamed,
+        );
+        let mut after = PresenceCtx::default();
+        fold_inbound(
+            vec![arrived("", 7, room, (10.0, 10.0))],
+            &mut after,
+            &named(&[(7, "Xaver")]),
+        );
+        let key = PresenceKey::Workspace { id: room.into() };
+        let a = &before.pointers.get(&key).expect("a pointer")[0].0;
+        let b = &after.pointers.get(&key).expect("a pointer")[0].0;
+        assert_eq!(a, b, "the identity must be the same before and after a name");
+        assert_eq!(
+            before.color_for(a),
+            after.color_for(b),
+            "and so must the colour"
+        );
+    }
+
+    #[test]
+    fn naming_a_peer_does_not_conjure_a_cursor() {
+        // The roster says who is here, not where they are. A room that
+        // has named somebody who has not pointed must paint nothing.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        assert!(!fold_inbound(
+            Vec::new(),
+            &mut presence,
+            &named(&[(7, "Xaver"), (8, "Quinten")]),
+        ));
+        assert!(
+            presence.pointers.is_empty(),
+            "a name is not a position: {:?}",
+            presence.pointers
+        );
     }
 
     #[test]
@@ -439,6 +606,7 @@ mod tests {
                 arrived("bob", 7, room, (600.0, 300.0)),
             ],
             &mut presence,
+            &unnamed,
         );
 
         let key = PresenceKey::Workspace { id: room.into() };
@@ -466,13 +634,14 @@ mod tests {
                 arrived("carol", 8, there, (20.0, 20.0)),
             ],
             &mut presence,
+            &unnamed,
         );
         let peers = presence
             .pointers
             .get(&PresenceKey::Workspace { id: here.into() })
             .expect("a pointer in this room");
         assert_eq!(peers.len(), 1);
-        assert_eq!(peers[0].0, UserId("bob".into()));
+        assert_eq!(peers[0].0, UserId("peer@7".into()));
     }
 
     #[test]
@@ -481,11 +650,20 @@ mod tests {
         // without inventing a person who did not announce themselves.
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let mut presence = PresenceCtx::default();
-        fold_inbound(vec![arrived("", 0x2a, room, (5.0, 5.0))], &mut presence);
+        fold_inbound(
+            vec![arrived("", 0x2a, room, (5.0, 5.0))],
+            &mut presence,
+            &unnamed,
+        );
         let peers = presence
             .pointers
             .get(&PresenceKey::Workspace { id: room.into() })
             .expect("a pointer");
-        assert_eq!(peers[0].0, UserId("p000000000000002a".into()));
+        assert_eq!(peers[0].0, UserId("peer@42".into()));
+        assert_eq!(
+            presence.display_name(&peers[0].0),
+            "peer@42",
+            "never blank"
+        );
     }
 }
