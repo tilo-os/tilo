@@ -1620,6 +1620,13 @@ pub fn spawn_full(
             std::thread::Builder::new()
                 .name("qos-collab-broker-drain".into())
                 .spawn(move || {
+                    // The name already announced for each peer, per
+                    // cluster. Presence arrives at pointer rate, and the
+                    // roster it implies changes almost never, so the
+                    // announcement is made when the answer changes and
+                    // not on every frame.
+                    let mut announced: std::collections::HashMap<(String, u64), String> =
+                        std::collections::HashMap::new();
                     while !quit.load(Ordering::Relaxed) {
                         // Drain inbound unsigned CRDT increments.
                         let drained: Vec<_> = {
@@ -1733,12 +1740,49 @@ pub fn spawn_full(
                             // a local peer slot: `user_id` is what the
                             // receiving app colours the caret by, so two
                             // peers must never collapse onto one id.
+                            let user_id = format!("peer@{}", entry.peer);
+                            // What this peer is called, according to the
+                            // room -- which is to say, according to
+                            // whoever invited them. A peer that has not
+                            // been named has no entry, and is left
+                            // labelled with the id above rather than
+                            // given a name nobody chose.
+                            //
+                            // Announced as a roster fact, separately
+                            // from the presence itself, so the id keeps
+                            // being the identity: it is what the caret
+                            // is coloured by, and a peer that gains a
+                            // name must not change colour in front of
+                            // the people watching it.
+                            let name = drain_net
+                                .peer_labels(&entry.cluster_id)
+                                .get(&entry.peer)
+                                .cloned();
+                            let route = CrdtRoute::cluster(entry.cluster_id.clone());
+                            if let Some(name) = name {
+                                let slot = (entry.cluster_id.clone(), entry.peer);
+                                if announced.get(&slot) != Some(&name) {
+                                    announced.insert(slot, name.clone());
+                                    let roster = CollabEvent::Context {
+                                        collaborators: vec![ui::collaboration::Collaborator {
+                                            id: user_id.clone(),
+                                            name,
+                                            // The palette colour the id
+                                            // already resolves to. A
+                                            // roster entry names a peer;
+                                            // it does not recolour one.
+                                            color: [0.0, 0.0, 0.0],
+                                        }],
+                                        permissions: Vec::new(),
+                                    };
+                                    drain_table.fanout_to_route(&roster, u64::MAX, &route);
+                                }
+                            }
                             let event = CollabEvent::RemotePresenceUpdate {
-                                user_id: format!("peer@{}", entry.peer),
+                                user_id,
                                 key,
                                 payload,
                             };
-                            let route = CrdtRoute::cluster(entry.cluster_id);
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
