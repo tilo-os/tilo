@@ -80,6 +80,17 @@ pub struct FrameBuilder {
     /// display, the size of the viewport", which is true for winit, headless
     /// and every single-output DRM setup.
     outputs: Option<Vec<OutputGeometry>>,
+    /// Live peer presence for this session.
+    ///
+    /// Persistent rather than rebuilt per paint. A cursor is a thing
+    /// that is *somewhere* between the frames that move it, and every
+    /// paint used to hand the widget tree a fresh empty context — so
+    /// the overlay that draws peers was drawing an empty map on every
+    /// frame no matter what the room was doing.
+    presence: PresenceCtx,
+    /// Source that fills [`Self::presence`]. `None` in a session with
+    /// no peer sync, which paints no peers because there are none.
+    peer_presence: Option<crate::shell::peer_presence::PeerPresence>,
 }
 
 impl FrameBuilder {
@@ -184,6 +195,8 @@ impl FrameBuilder {
             theme,
             viewport: (viewport.0 as f64, viewport.1 as f64),
             outputs: None,
+            presence: PresenceCtx::default(),
+            peer_presence: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -311,15 +324,40 @@ impl FrameBuilder {
     /// compositor backend).
     pub fn paint(&mut self) -> Scene {
         let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
         self.host.draw(
             &mut scene,
             Affine::IDENTITY,
             &mut self.text_renderer,
             &self.theme,
-            &presence,
+            &self.presence,
         );
         scene
+    }
+
+    /// Attach the session's peer-presence relay. Called once the
+    /// broker and peer sync are both up.
+    pub fn set_peer_presence(&mut self, presence: crate::shell::peer_presence::PeerPresence) {
+        self.peer_presence = Some(presence);
+    }
+
+    /// The session's peer-presence relay, if one is attached.
+    pub fn peer_presence(&self) -> Option<&crate::shell::peer_presence::PeerPresence> {
+        self.peer_presence.as_ref()
+    }
+
+    /// Fold everything peers have sent since the last frame into the
+    /// presence the next paint will read. Returns whether a peer
+    /// moved, which is a reason to repaint.
+    pub fn pump_peer_presence(&mut self) -> bool {
+        let Some(relay) = self.peer_presence.as_ref() else {
+            return false;
+        };
+        relay.pump(&mut self.presence)
+    }
+
+    /// Read-only view of the presence the next paint will draw.
+    pub fn presence(&self) -> &PresenceCtx {
+        &self.presence
     }
 
     /// Convenience for the offscreen scene-set path: `relayout` then
