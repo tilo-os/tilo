@@ -65,6 +65,31 @@ pub struct Theme {
 
 impl Default for Theme { fn default() -> Self { Self::dark() } }
 
+/// Every shipped palette, including the two accessibility tracks.
+///
+/// Anything asserted about "a theme's surfaces" is asserted about all of them,
+/// so a new preset cannot quietly ship a card its text cannot be read on — or
+/// a tab bar whose tiers only separate on one side of the light/dark line.
+/// Crate-visible (test builds only) because the widgets that read these
+/// surfaces live in sibling modules and need to sweep the same list.
+#[cfg(test)]
+pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
+    Theme::dark,
+    Theme::light,
+    Theme::qos_blue,
+    Theme::dracula,
+    Theme::nord,
+    Theme::gruvbox,
+    Theme::gruvbox_light,
+    Theme::catppuccin_mocha,
+    Theme::catppuccin_latte,
+    Theme::solarized,
+    Theme::oled,
+    Theme::warm_light,
+    Theme::rose_pine,
+    Theme::high_contrast,
+];
+
 /// A widget's desired global appearance, polled by [`crate::app::App`] once per
 /// frame (when [`crate::app::App::appearance_reconcile`] is enabled) and
 /// reconciled against the live theme. Mirrors the level-triggered
@@ -136,6 +161,14 @@ impl Theme {
     /// already holds a `&Theme` does not have to reach through `tokens`.
     pub fn on_card(&self) -> crate::tokens::colors::OnCard {
         self.tokens.colors.on_card()
+    }
+
+    /// The hairline that separates a window from the desktop behind it. Thin
+    /// forwarder to [`crate::tokens::Colors::window_edge`], which explains why
+    /// the edge is derived from the desktop ground rather than taken as a
+    /// constant.
+    pub fn window_edge(&self) -> Color {
+        self.tokens.colors.window_edge()
     }
 
     /// This theme with its three text tiers re-pointed at the ink the
@@ -627,26 +660,6 @@ mod tests {
     use super::*;
     use crate::color_compat::ColorCompat;
 
-    /// Every shipped palette, including the two accessibility tracks.
-    /// Anything asserted about "a theme's surfaces" is asserted about all of
-    /// them, so a new preset cannot quietly ship a card its text cannot be
-    /// read on.
-    const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
-        Theme::dark,
-        Theme::light,
-        Theme::qos_blue,
-        Theme::dracula,
-        Theme::nord,
-        Theme::gruvbox,
-        Theme::gruvbox_light,
-        Theme::catppuccin_mocha,
-        Theme::catppuccin_latte,
-        Theme::solarized,
-        Theme::oled,
-        Theme::warm_light,
-        Theme::rose_pine,
-        Theme::high_contrast,
-    ];
     use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
     fn rgb(c: Color) -> [u8; 3] { [c.r(), c.g(), c.b()] }
@@ -780,6 +793,75 @@ mod tests {
                 t.name
             );
         }
+    }
+
+    /// The window's edge has to register against the desktop it is painted
+    /// on, in every preset.
+    ///
+    /// This is the sibling of `on_card_ink_clears_aa_on_every_preset_card`,
+    /// and it exists for the same reason: "what colour is the line around a
+    /// window" was answered by one constant per palette, and a constant can
+    /// only be right about a surface someone checked. The edge used to be
+    /// stroked over the *app's* content, where the shell has no idea what is
+    /// underneath — so the answer was wrong by construction on any app that
+    /// painted the opposite way from the theme. Moving it onto the desktop
+    /// makes the ground knowable; this pins that the derived edge actually
+    /// separates from that ground rather than dissolving into it.
+    #[test]
+    fn window_edge_registers_against_the_desktop_on_every_preset() {
+        use crate::a11y::relative_luminance;
+        for t in ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+            let ground = t.tokens.colors.surfaces.base;
+            let edge = t.window_edge();
+            // What the eye receives where the hairline meets the desktop.
+            let a = edge.a() as f32 / 255.0;
+            let ch = |o: u8, g: u8| ((o as f32) * a + (g as f32) * (1.0 - a)).round() as u8;
+            let seen = Color::from_rgb8(
+                ch(edge.r(), ground.r()),
+                ch(edge.g(), ground.g()),
+                ch(edge.b(), ground.b()),
+            );
+            let moved = (relative_luminance(seen) - relative_luminance(ground)).abs();
+            assert!(
+                moved >= 0.02,
+                "{}: the window edge composites to within {moved:.4} of the \
+                 desktop it is drawn on — that is not an edge, it is the \
+                 desktop. Edge {:?} on ground {:?}",
+                t.name,
+                [edge.r(), edge.g(), edge.b(), edge.a()],
+                [ground.r(), ground.g(), ground.b()],
+            );
+        }
+    }
+
+    /// A preset whose declared border matches its own ground must not ship
+    /// that value: the derivation has to flip it, not pass it through.
+    ///
+    /// Without this the sweep above would be satisfied by every current preset
+    /// happening to declare a workable border, and the fallback branch would
+    /// never be exercised — leaving the next palette free to reintroduce the
+    /// bug.
+    #[test]
+    fn window_edge_flips_a_border_its_ground_would_swallow() {
+        let mut t = Theme::dark();
+        // A white hairline on a white desktop: the exact shape of the bug,
+        // an edge declared without reference to what it lands on.
+        t.tokens.colors.surfaces.base = Color::WHITE;
+        t.tokens.colors.surfaces.window_card_border = Color::from_rgba8(255, 255, 255, 51);
+        let edge = t.window_edge();
+        assert_eq!(
+            [edge.r(), edge.g(), edge.b()],
+            [0, 0, 0],
+            "a white edge on a white desktop must flip to the dark polarity; \
+             got {:?}",
+            [edge.r(), edge.g(), edge.b(), edge.a()],
+        );
+        assert_eq!(
+            edge.a(), 51,
+            "flipping the polarity must keep the declared weight — an edge \
+             that changes strength as well as side stops being the same \
+             design decision",
+        );
     }
 
     /// `Theme::on_window_card` is what shared widgets are handed when they
