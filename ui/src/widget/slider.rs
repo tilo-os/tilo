@@ -13,6 +13,8 @@ use crate::permissions::PermissionScope;
 /// Both `draw` and `handle_event` use this to translate between
 /// cursor x and a 0..1 value, so it has to live in one place.
 const TRACK_PADDING: f64 = 5.0;
+/// Thickness of the slider track.
+const TRACK_HEIGHT: f64 = 6.0;
 
 /// Knob radius at rest. Hover and press scale this — see the
 /// `_SCALE` constants below. Pulled out so tests can pin the
@@ -159,6 +161,157 @@ impl Slider {
     }
 }
 
+/// An immediate-mode slider face: everything [`Slider::paint`] needs to draw
+/// one, with no widget instance and no CRDT binding.
+///
+/// A canvas app that owns its own hit-testing (a timeline inspector, a mixer
+/// strip) cannot mount a retained [`Slider`] per control — it has no Taffy
+/// node for them, and it needs a whole drag to land as one undo boundary. It
+/// can still share the *look*, which is what this is for. Mirrors
+/// [`Button::paint`](crate::widget::Button::paint) and
+/// [`ToggleGroup::paint`](crate::widget::ToggleGroup::paint).
+#[derive(Clone, Copy, Debug)]
+pub struct SliderFace {
+    rect: Rect,
+    value: f64,
+    hovered: bool,
+    dragging: bool,
+    focused: bool,
+    disabled: bool,
+}
+
+impl SliderFace {
+    /// A face over `rect` showing `value` (clamped to 0..=1).
+    pub fn new(rect: Rect, value: f64) -> Self {
+        Self {
+            rect,
+            value: value.clamp(0.0, 1.0),
+            hovered: false,
+            dragging: false,
+            focused: false,
+            disabled: false,
+        }
+    }
+    pub fn hovered(mut self, v: bool) -> Self { self.hovered = v; self }
+    pub fn dragging(mut self, v: bool) -> Self { self.dragging = v; self }
+    pub fn focused(mut self, v: bool) -> Self { self.focused = v; self }
+    pub fn disabled(mut self, v: bool) -> Self { self.disabled = v; self }
+
+    /// The track rect this face paints, so a caller hit-tests the geometry it
+    /// actually draws.
+    pub fn track_rect(&self) -> Rect {
+        Rect::new(
+            self.rect.x0 + TRACK_PADDING,
+            self.rect.y0 + (self.rect.height() - TRACK_HEIGHT) / 2.0,
+            self.rect.x1 - TRACK_PADDING,
+            self.rect.y0 + (self.rect.height() + TRACK_HEIGHT) / 2.0,
+        )
+    }
+
+    fn knob_radius(&self) -> f64 {
+        if self.dragging {
+            KNOB_RADIUS * KNOB_RADIUS_PRESS_SCALE
+        } else if self.hovered {
+            KNOB_RADIUS * KNOB_RADIUS_HOVER_SCALE
+        } else {
+            KNOB_RADIUS
+        }
+    }
+}
+
+impl Slider {
+    /// Paint a themed slider face. The single painter for both the retained
+    /// widget and any immediate-mode caller, so the two cannot drift apart.
+    pub fn paint(scene: &mut Scene, transform: Affine, theme: &Theme, face: &SliderFace) {
+        if face.disabled {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &face.rect,
+            );
+        }
+        let colors = &theme.tokens.colors;
+        let track_rect = face.track_rect();
+        let track_shape = RoundedRect::from_rect(track_rect, 3.0);
+        scene.fill(vello::peniko::Fill::NonZero, transform, colors.neutral[3], None, &track_shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &track_shape,
+        );
+
+        // Filled portion of the track.
+        let active = Rect::new(
+            track_rect.x0,
+            track_rect.y0,
+            track_rect.x0 + face.value * track_rect.width(),
+            track_rect.y1,
+        );
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &RoundedRect::from_rect(active, 3.0),
+        );
+
+        // Knob — radius scales with state so hover/press are obvious even
+        // before you read the colours.
+        let knob_radius = face.knob_radius();
+        let knob_center = Point::new(active.x1, face.rect.center().y);
+        let knob_shape = Circle::new(knob_center, knob_radius);
+        let (fill_color, border_color, border_width) = if face.dragging {
+            (theme.accent_primary, colors.border_white_20, 1.5)
+        } else if face.hovered {
+            (colors.surface_white_20, theme.text_dim, 1.5)
+        } else {
+            (colors.surface_white_10, colors.border_white_20, 1.5)
+        };
+        // Pressed halo: nested strokes outside the knob, drawn first so the
+        // knob sits cleanly on top.
+        if face.dragging {
+            for (r, col) in [
+                (knob_radius + 4.0, colors.border_white_10),
+                (knob_radius + 2.0, colors.border_white_20),
+            ] {
+                scene.stroke(
+                    &vello::kurbo::Stroke::new(1.0),
+                    transform,
+                    col,
+                    None,
+                    &Circle::new(knob_center, r),
+                );
+            }
+        }
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
+        scene.stroke(
+            &vello::kurbo::Stroke::new(border_width),
+            transform,
+            border_color,
+            None,
+            &knob_shape,
+        );
+
+        // Tight focus ring around the knob, not the whole widget rect.
+        if face.focused {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.5),
+                transform,
+                theme.border_focus,
+                None,
+                &Circle::new(knob_center, knob_radius + 2.0),
+            );
+        }
+        if face.disabled {
+            scene.pop_layer();
+        }
+    }
+}
+
 impl Widget for Slider {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_change_path.as_str()) {
@@ -196,92 +349,17 @@ impl Widget for Slider {
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, _text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
-        // Disabled widgets paint their (forced-idle) look under a reduced
-        // group opacity so they read as non-interactive.
-        let disabled = !self.enabled;
-        if disabled {
-            scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &self.rect);
-        }
-        // Focus indicator (deferred until after the knob is positioned so
-        // we can draw a tight ring around the knob, not the whole widget
-        // rect — the full-rect ring looked like a stray border around
-        // siblings in a Row layout).
-        // Track
-        let track_height = 6.0;
-        let track_rect = Rect::new(
-            self.rect.x0 + TRACK_PADDING,
-            self.rect.y0 + (self.rect.height() - track_height) / 2.0,
-            self.rect.x1 - TRACK_PADDING,
-            self.rect.y0 + (self.rect.height() + track_height) / 2.0,
+        Slider::paint(
+            scene,
+            transform,
+            theme,
+            &SliderFace::new(self.rect, self.value)
+                .hovered(self.is_hovered)
+                .dragging(self.is_dragging)
+                .focused(self.is_focused)
+                .disabled(!self.enabled),
         );
-        let track_shape = RoundedRect::from_rect(track_rect, 3.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.tokens.colors.neutral[3], None, &track_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, theme.tokens.colors.border_standard, None, &track_shape);
-
-        // Active Track (Blue part on the left)
-        let active_track_rect = Rect::new(
-            track_rect.x0,
-            track_rect.y0,
-            track_rect.x0 + self.value * track_rect.width(),
-            track_rect.y1,
-        );
-        let active_track_shape = RoundedRect::from_rect(active_track_rect, 3.0);
-        // Active track = filled portion of the slider — concept uses
-        // indigo-500 here, indigo-600 only for hover affordances.
-        scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &active_track_shape);
-
-        // Knob — radius scales with state so hover/press are obvious
-        // even before you read the colors. Idle uses the translucent
-        // surface_white_10 token over a border_white_20 stroke, hover
-        // bumps the fill to surface_white_20, press fills with the
-        // accent and adds a soft halo.
-        let knob_radius = self.knob_radius_for_state();
-        let knob_x = track_rect.x0 + self.value * track_rect.width();
-        let knob_y = self.rect.y0 + self.rect.height() / 2.0;
-        let knob_center = Point::new(knob_x, knob_y);
-        let knob_shape = Circle::new(knob_center, knob_radius);
-
-        let colors = &theme.tokens.colors;
-        let (fill_color, border_color, border_width) = if self.is_dragging {
-            (theme.accent_primary, colors.border_white_20, 1.5)
-        } else if self.is_hovered {
-            (colors.surface_white_20, theme.text_dim, 1.5)
-        } else {
-            (colors.surface_white_10, colors.border_white_20, 1.5)
-        };
-
-        // Pressed halo: two nested strokes at decreasing alpha *outside*
-        // the knob so you get a visible glow on engage. Drawn before the
-        // fill so the knob sits cleanly on top.
-        if self.is_dragging {
-            let halo_outer = Circle::new(knob_center, knob_radius + 4.0);
-            let halo_inner = Circle::new(knob_center, knob_radius + 2.0);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_10, None, &halo_outer);
-            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, colors.border_white_20, None, &halo_inner);
-        }
-
-        scene.fill(vello::peniko::Fill::NonZero, transform, fill_color, None, &knob_shape);
-        scene.stroke(&vello::kurbo::Stroke::new(border_width), transform, border_color, None, &knob_shape);
-
-        // Tight focus ring around the knob (2 px outset) — replaces the
-        // earlier full-rect border that looked like a misdrawn outer
-        // chrome when the slider lived inside a Row.
-        if self.is_focused {
-            let focus_ring = Circle::new(knob_center, knob_radius + 2.0);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
-                transform,
-                theme.border_focus,
-                None,
-                &focus_ring,
-            );
-        }
-
-        if disabled {
-            scene.pop_layer();
-        }
     }
-
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, _modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, _taffy: &TaffyTree<()>) {
         // Disabled: reject all input — no drag, no value change, no hover.
         if !self.enabled { return; }
