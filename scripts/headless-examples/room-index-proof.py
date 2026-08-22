@@ -348,9 +348,14 @@ def main() -> int:
 
         # The owner makes him an editor. This is the room's governance,
         # so it travels the path that already existed for it.
+        # Workspace scope, not room scope. `Scope::Room` covers only
+        # room-shaped resources (`Scope::matches_resource`), so a
+        # room-scoped grant authorises nothing a person *does* here —
+        # `Scope::Workspace` is the spelling that means "an editor in
+        # this workspace", and it is what the roster reads as membership.
         granted = quinten.call({
             "op": "grant", "subject": "person:xaver",
-            "scope": "room", "verb": "write",
+            "scope": "workspace", "verb": "write",
         })
         check("quinten grants xaver write in the room", "err" not in granted,
               json.dumps(granted.get("answer", granted.get("err", {})))[:120])
@@ -367,8 +372,8 @@ def main() -> int:
               got if got else "NOT REPLICATED after 45s")
 
         print("\n[6] both at once — neither loses")
-        q2_id, q2_tok = a_document(shared, "quinten-同time")
-        x2_id, x2_tok = a_document(shared, "xaver-同time")
+        q2_id, q2_tok = a_document(shared, "quinten-atonce")
+        x2_id, x2_tok = a_document(shared, "xaver-atonce")
         # Issued back to back with no wait between them, so the two
         # references are in flight against each other.
         bring(quinten, q2_id)
