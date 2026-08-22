@@ -48,8 +48,12 @@ gstreamer-app = { version = "0.24", optional = true }
 # hermetic with the decoder compiled in. Full `gst` export (encode + mux) stays
 # opt-in — it is heavy and off the normal preview path.
 default = ["decode"]
-# Real decode for the preview canvas, via the shared `media::MediaEngine`.
-decode = ["media/decode"]
+# Real decode for the preview canvas, via the shared `media::MediaEngine`, and
+# real audio peaks for compressed sources (`waveform`), which pull PCM through
+# an `appsink` the engine does not expose. `media/decode` already links the
+# gstreamer stack in this configuration, so naming the crates directly adds no
+# new system requirement — it only lets this crate talk to the pipeline itself.
+decode = ["media/decode", "dep:gstreamer", "dep:gstreamer-app"]
 # Real export through GStreamer (encode + mux to a real file). Heavier; needs
 # the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
 gst = ["dep:gstreamer", "dep:gstreamer-app"]
