@@ -1,26 +1,83 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
-//! * **Real decode** (`--features decode`) drives a GStreamer `playbin` whose
-//!   video is diverted through `videoconvert ! appsink(RGBA)` for decoded
-//!   frames and whose audio is routed to a real system sink (`autoaudiosink`) —
-//!   the audible + visible path, mirroring `apps/music`'s real sink chain and
-//!   `apps/tube`'s appsink. This decodes **any** codec GStreamer can plug
-//!   (H.264 / VP9 / AV1) from a local file, the FUSE workspace, or a stream URL.
+//! * **Real decode** (`--features decode`) drives the GStreamer pipeline in
+//!   [`crate::gst_backend`]: `playbin3` with hardware decoders ranked above
+//!   software ones, a sink that negotiates the best memory the consumer
+//!   declared it can take (dmabuf → planar → RGBA), frame-exact `ACCURATE`
+//!   seeking that reads the preroll without ever starting the audio sink, and
+//!   real clock-driven playback. It decodes any codec GStreamer can plug from
+//!   a local file, the FUSE workspace, or a stream URL.
 //! * **Synthesized fallback** (default) produces a deterministic RGBA test
 //!   pattern driven by a real playhead clock, plus genuine buffering progress
 //!   from the prefetcher when a file source is opened. It needs no gstreamer
 //!   stack, so hermetic builds, `--shots` and CI stay green.
 //!
 //! The public surface ([`MediaEngine`]) is identical either way, so a consumer
-//! never branches on which backend is linked.
+//! never branches on which backend is linked. What a consumer *does* declare
+//! is what memory it can paint — see [`EngineConfig`] and [`FrameAcceptance`].
 
 use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::event::{MediaEvent, VideoFrame};
+use crate::frame::{Frame, FrameAcceptance, FramePayload};
+use crate::hw::{HwPolicy, HwReport};
 use crate::ring::{PrefetchProgress, Prefetcher};
 use crate::source::Source;
 use crate::transport::{correction, Correction, TransportState};
+
+#[cfg(feature = "decode")]
+pub use crate::gst_backend::SeekMode;
+
+/// Which seek precision the engine uses when nothing more specific is asked
+/// for. Exact by default: an editor scrubbing to 12.500s must see the frame at
+/// 12.500s, not the keyframe up to two seconds behind it.
+#[cfg(not(feature = "decode"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SeekMode {
+    /// Present the frame at the requested time.
+    Accurate,
+    /// Snap to the nearest keyframe — cheap, coarse.
+    Keyframe,
+}
+
+/// How an engine should be built.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineConfig {
+    /// What memory the consumer can paint. [`FrameAcceptance::Rgba`] (the
+    /// default) keeps the long-standing [`VideoFrame`] behaviour;
+    /// [`FrameAcceptance::Native`] lets the pipeline keep pictures on the GPU.
+    pub acceptance: FrameAcceptance,
+    /// Hardware-decode policy. Defaults to whatever `QOS_MEDIA_HWDEC` says.
+    pub hw_policy: HwPolicy,
+    /// Starting output volume, `0.0..=1.0`.
+    pub volume: f32,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            acceptance: FrameAcceptance::Rgba,
+            hw_policy: HwPolicy::from_env(),
+            volume: 0.8,
+        }
+    }
+}
+
+impl EngineConfig {
+    /// The configuration a GPU-side consumer wants: frames stay in whatever
+    /// memory the decoder produced them in, ready for a zero-copy import.
+    pub fn gpu() -> Self {
+        Self { acceptance: FrameAcceptance::Native, ..Self::default() }
+    }
+
+    /// Start muted — the editor's preview and every thumbnail decode, which
+    /// must never make a sound.
+    pub fn silent(mut self) -> Self {
+        self.volume = 0.0;
+        self
+    }
+}
 
 /// Placeholder stream length for the synthesized fallback when nothing better
 /// is known. Real decode always overrides this from the pipeline's duration.
@@ -47,34 +104,89 @@ pub struct MediaEngine {
     backend: Backend,
     source: Option<Source>,
     volume: f32,
+    muted: bool,
+    config: EngineConfig,
 }
 
 enum Backend {
     Synth(SynthState),
     #[cfg(feature = "decode")]
-    Gst(gst_backend::GstState),
+    Gst(crate::gst_backend::GstState),
 }
 
 impl MediaEngine {
-    /// Build an engine. With `--features decode` this stands up a real
-    /// GStreamer pipeline; if GStreamer can't initialise (or the feature is
-    /// off) it transparently falls back to the synthesized backend. Never
-    /// fails.
+    /// Build an engine with the default configuration: system-memory RGBA
+    /// frames, hardware decode per `QOS_MEDIA_HWDEC`. With `--features decode`
+    /// this stands up a real GStreamer pipeline; if GStreamer can't initialise
+    /// (or the feature is off) it transparently falls back to the synthesized
+    /// backend. Never fails.
     pub fn new() -> Self {
+        Self::with_config(EngineConfig::default())
+    }
+
+    /// Build an engine that keeps pictures in whatever memory the decoder
+    /// produced them in — a dmabuf when the hardware can export one, planar
+    /// YUV otherwise. Read frames with [`Self::latest`] and import or upload
+    /// them yourself; [`Self::latest_frame`] stays empty for a non-RGBA
+    /// payload rather than converting behind your back.
+    pub fn new_gpu() -> Self {
+        Self::with_config(EngineConfig::gpu())
+    }
+
+    /// Build an engine from an explicit configuration.
+    pub fn with_config(config: EngineConfig) -> Self {
         #[cfg(feature = "decode")]
         {
-            if let Some(gst) = gst_backend::GstState::new() {
-                return Self { backend: Backend::Gst(gst), source: None, volume: 0.8 };
+            if let Some(gst) = crate::gst_backend::GstState::new(config.acceptance) {
+                return Self {
+                    backend: Backend::Gst(gst),
+                    source: None,
+                    volume: config.volume,
+                    muted: false,
+                    config,
+                };
             }
         }
-        Self { backend: Backend::Synth(SynthState::new()), source: None, volume: 0.8 }
+        Self {
+            backend: Backend::Synth(SynthState::new()),
+            source: None,
+            volume: config.volume,
+            muted: false,
+            config,
+        }
     }
 
     /// Force the synthesized backend regardless of build features. Used by the
     /// hermetic engine tests so event ordering and transport application are
     /// exercised deterministically without a real decode.
     pub fn new_synthesized() -> Self {
-        Self { backend: Backend::Synth(SynthState::new()), source: None, volume: 0.8 }
+        Self {
+            backend: Backend::Synth(SynthState::new()),
+            source: None,
+            volume: 0.8,
+            muted: false,
+            config: EngineConfig::default(),
+        }
+    }
+
+    /// The configuration this engine was built with.
+    pub fn config(&self) -> EngineConfig {
+        self.config
+    }
+
+    /// What the decode pipeline actually plugged: the decoder element's name,
+    /// its family, and the caps the sink negotiated.
+    ///
+    /// This is an **observation**, not a restatement of configuration. Until a
+    /// frame has prerolled it reports nothing, and [`HwReport::is_hardware`]
+    /// is `false` — so a caller can never read "not yet known" as "yes,
+    /// hardware".
+    pub fn hw_report(&self) -> HwReport {
+        match &self.backend {
+            Backend::Synth(_) => HwReport::default(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(g) => g.hw_report(),
+        }
     }
 
     /// Whether this engine is decoding through a real GStreamer pipeline (vs.
@@ -145,17 +257,73 @@ impl MediaEngine {
         }
     }
 
-    /// Seek to an absolute playhead position in milliseconds (clamped to the
-    /// known duration).
+    /// Seek to an absolute playhead position in milliseconds.
+    ///
+    /// **Frame-exact.** The decoder runs forward from the preceding keyframe
+    /// so the picture presented is the one at `ms`, not the keyframe before
+    /// it — which with a typical two-second GOP could be nearly two seconds
+    /// away, and left non-keyframes unreachable entirely.
+    ///
+    /// When the pipeline is paused (the scrubbing case) the new picture
+    /// arrives on the preroll path and the audio sink is never started, so
+    /// scrubbing is silent.
     pub fn seek_ms(&mut self, ms: u64) {
+        self.seek_with(ms, SeekMode::Accurate);
+    }
+
+    /// Seek at an explicit precision. [`SeekMode::Keyframe`] is the cheap,
+    /// coarse option for a fast drag where landing within a GOP is acceptable;
+    /// [`SeekMode::Accurate`] is the default everywhere else.
+    pub fn seek_with(&mut self, ms: u64, mode: SeekMode) {
         match &mut self.backend {
-            Backend::Synth(s) => s.seek(ms),
+            Backend::Synth(s) => {
+                let _ = mode;
+                s.seek(ms)
+            }
             #[cfg(feature = "decode")]
-            Backend::Gst(g) => g.seek(ms),
+            Backend::Gst(g) => g.seek(ms, mode),
+        }
+    }
+
+    /// Seek to `ms` and pump until the picture for that time has landed, or
+    /// `timeout` elapses. Returns whether a frame arrived.
+    ///
+    /// The blocking counterpart to [`Self::seek_ms`], for callers that need a
+    /// specific frame in hand rather than eventually — extracting a thumbnail,
+    /// or settling a scrub before a screenshot. An interactive preview should
+    /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
+    pub fn seek_and_wait(&mut self, ms: u64, timeout: std::time::Duration) -> bool {
+        self.seek_with(ms, SeekMode::Accurate);
+        let deadline = Instant::now() + timeout;
+        loop {
+            #[cfg(feature = "decode")]
+            if let Backend::Gst(g) = &mut self.backend {
+                // A flushing seek is asynchronous: the new preroll only exists
+                // once the state change completes.
+                g.wait_settled(std::time::Duration::from_millis(50));
+            }
+            self.poll();
+            let landed = match &self.backend {
+                Backend::Synth(s) => s.latest.is_some(),
+                #[cfg(feature = "decode")]
+                Backend::Gst(g) => g.latest().is_some(),
+            };
+            if landed {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
     /// Set output volume in `0.0..=1.0`.
+    ///
+    /// Applied to a dedicated gain element in the audio chain rather than to
+    /// `playbin`'s own property, so changing it does not re-negotiate the
+    /// stream. Muting is separate ([`Self::set_muted`]) and preserves this
+    /// level.
     pub fn set_volume(&mut self, v: f32) {
         self.volume = v.clamp(0.0, 1.0);
         match &mut self.backend {
@@ -167,6 +335,35 @@ impl MediaEngine {
 
     pub fn volume(&self) -> f32 {
         self.volume
+    }
+
+    /// Silence the output without losing the volume setting.
+    pub fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        match &mut self.backend {
+            Backend::Synth(_) => {}
+            #[cfg(feature = "decode")]
+            Backend::Gst(g) => g.set_muted(muted),
+        }
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted
+    }
+
+    /// The audio sink element, for routing or monitoring this source's output
+    /// — setting a PipeWire target node, attaching a level meter, or tapping a
+    /// tee into a mixer. `None` on the synthesized backend (no audio at all)
+    /// and when the audio chain could not be built.
+    ///
+    /// Mixing several sources together is the caller's job; this is the point
+    /// where a mixer attaches to one source's output.
+    #[cfg(feature = "decode")]
+    pub fn audio_sink(&self) -> Option<gstreamer::Element> {
+        match &self.backend {
+            Backend::Synth(_) => None,
+            Backend::Gst(g) => g.audio_sink(),
+        }
     }
 
     /// The current playhead in milliseconds.
@@ -196,12 +393,31 @@ impl MediaEngine {
         }
     }
 
-    /// The most recently produced frame, if any.
+    /// The most recently produced frame as system-memory RGBA, if any.
+    ///
+    /// Always populated under the default [`FrameAcceptance::Rgba`] config.
+    /// Under [`FrameAcceptance::Native`] a picture may be a dmabuf or planar
+    /// YUV, in which case this is `None` — reading it must not trigger a
+    /// hidden GPU readback. Those consumers use [`Self::latest`].
     pub fn latest_frame(&self) -> Option<&VideoFrame> {
         match &self.backend {
             Backend::Synth(s) => s.latest.as_ref(),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.latest_frame(),
+        }
+    }
+
+    /// The most recent picture in whatever memory the decoder produced it in.
+    ///
+    /// A [`FramePayload::Dmabuf`] is still on the GPU and ready for a
+    /// zero-copy import; a [`FramePayload::Planar`] is NV12/P010 in system
+    /// memory, ready for a two-plane upload; a [`FramePayload::Rgba`] is the
+    /// packed buffer [`Self::latest_frame`] also exposes.
+    pub fn latest(&self) -> Option<&Frame> {
+        match &self.backend {
+            Backend::Synth(s) => s.latest_native.as_ref(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(g) => g.latest(),
         }
     }
 
@@ -286,6 +502,10 @@ struct SynthState {
     ended: bool,
     announced_duration: bool,
     latest: Option<VideoFrame>,
+    /// The same picture as a [`Frame`], so `MediaEngine::latest` answers on
+    /// both backends. The synthesized pattern is RGBA, so the two views share
+    /// one allocation.
+    latest_native: Option<Frame>,
     /// Position at which `latest` was last generated, so we only re-render the
     /// pattern when the playhead actually moved.
     last_frame_pos: Option<u64>,
@@ -305,6 +525,7 @@ impl SynthState {
             ended: false,
             announced_duration: false,
             latest: None,
+            latest_native: None,
             last_frame_pos: None,
             prefetch: None,
             last_buffering: None,
@@ -446,232 +667,15 @@ impl SynthState {
                 }
             }
         }
-        self.latest = Some(VideoFrame::new(SYNTH_W, SYNTH_H, rgba, self.position));
+        let frame = VideoFrame::new(SYNTH_W, SYNTH_H, rgba, self.position);
+        self.latest_native = Some(Frame {
+            width: SYNTH_W,
+            height: SYNTH_H,
+            pts_ms: self.position,
+            payload: FramePayload::Rgba(frame.rgba.clone()),
+        });
+        self.latest = Some(frame);
         self.last_frame_pos = Some(self.position);
-    }
-}
-
-// =====================================================================
-// Real GStreamer backend (only compiled with `--features decode`)
-// =====================================================================
-
-#[cfg(feature = "decode")]
-mod gst_backend {
-    use super::*;
-    use std::collections::VecDeque;
-    use gstreamer as gst;
-    use gstreamer::prelude::*;
-    use gstreamer_app as gst_app;
-    use gstreamer_video as gst_video;
-
-    pub struct GstState {
-        playbin: gst::Element,
-        appsink: gst_app::AppSink,
-        bus: gst::Bus,
-        latest: Option<VideoFrame>,
-        playing: bool,
-        duration_announced: bool,
-        last_position: Option<u64>,
-        last_buffering: Option<u8>,
-        buffering: u8,
-        pending: VecDeque<MediaEvent>,
-    }
-
-    impl GstState {
-        /// Build the pipeline with no source yet. Returns `None` if GStreamer
-        /// can't initialise or the `playbin` / sink chain can't be built, so
-        /// the engine falls back to the synthesized backend.
-        pub fn new() -> Option<Self> {
-            gst::init().ok()?;
-            let playbin = gst::ElementFactory::make("playbin").build().ok()?;
-
-            // Divert video to an RGBA appsink (`sync=true` paces frames to PTS).
-            let video_bin = gst::parse::bin_from_description(
-                "videoconvert ! appsink name=qos_vsink caps=video/x-raw,format=RGBA \
-                 sync=true max-buffers=4 drop=true",
-                true,
-            )
-            .ok()?;
-            let appsink = video_bin
-                .by_name("qos_vsink")?
-                .downcast::<gst_app::AppSink>()
-                .ok()?;
-            playbin.set_property("video-sink", &video_bin);
-
-            // Route audio through an explicit real sink chain so playback is
-            // audible (autoaudiosink plugs pipewire/pulse/alsa) — never a
-            // fakesink. If the elements are missing, leave playbin's default.
-            if let Ok(audio_bin) = gst::parse::bin_from_description(
-                "audioconvert ! audioresample ! autoaudiosink name=qos_asink sync=true",
-                true,
-            ) {
-                playbin.set_property("audio-sink", &audio_bin);
-            }
-            playbin.set_property("mute", false);
-            playbin.set_property("volume", 0.8f64);
-
-            let bus = playbin.bus()?;
-            Some(Self {
-                playbin,
-                appsink,
-                bus,
-                latest: None,
-                playing: false,
-                duration_announced: false,
-                last_position: None,
-                last_buffering: None,
-                buffering: 100,
-                pending: VecDeque::new(),
-            })
-        }
-
-        pub fn open(&mut self, source: &Source, volume: f32) {
-            let _ = self.playbin.set_state(gst::State::Null);
-            self.latest = None;
-            self.playing = false;
-            self.duration_announced = false;
-            self.last_position = None;
-            self.last_buffering = None;
-            self.buffering = 100;
-            self.pending.clear();
-            self.playbin.set_property("uri", source.to_uri());
-            self.playbin.set_property("mute", false);
-            self.playbin.set_property("volume", volume as f64);
-            // Preroll so a first frame + the duration become available before
-            // the user presses play.
-            let _ = self.playbin.set_state(gst::State::Paused);
-        }
-
-        pub fn set_playing(&mut self, playing: bool) {
-            self.playing = playing;
-            let state = if playing { gst::State::Playing } else { gst::State::Paused };
-            let _ = self.playbin.set_state(state);
-        }
-
-        pub fn is_playing(&self) -> bool {
-            self.playing
-        }
-
-        pub fn seek(&mut self, ms: u64) {
-            let _ = self.playbin.seek_simple(
-                gst::SeekFlags::FLUSH | gst::SeekFlags::KEY_UNIT,
-                gst::ClockTime::from_mseconds(ms),
-            );
-        }
-
-        pub fn set_volume(&mut self, v: f32) {
-            self.playbin.set_property("volume", v as f64);
-        }
-
-        pub fn position_ms(&self) -> u64 {
-            self.playbin
-                .query_position::<gst::ClockTime>()
-                .map(|p| p.mseconds())
-                .or(self.last_position)
-                .or_else(|| self.latest.as_ref().map(|f| f.pts_ms))
-                .unwrap_or(0)
-        }
-
-        pub fn duration_ms(&self) -> Option<u64> {
-            self.playbin
-                .query_duration::<gst::ClockTime>()
-                .map(|d| d.mseconds())
-        }
-
-        pub fn buffering_percent(&self) -> u8 {
-            self.buffering
-        }
-
-        pub fn latest_frame(&self) -> Option<&VideoFrame> {
-            self.latest.as_ref()
-        }
-
-        pub fn poll(&mut self) -> Vec<MediaEvent> {
-            let mut events: Vec<MediaEvent> = self.pending.drain(..).collect();
-
-            // Duration, announced once as soon as it is known.
-            if !self.duration_announced {
-                if let Some(ms) = self.duration_ms() {
-                    events.push(MediaEvent::DurationKnown { ms });
-                    self.duration_announced = true;
-                }
-            }
-
-            // Drain bus messages (buffering / eos / error).
-            while let Some(msg) = self.bus.pop() {
-                use gst::MessageView;
-                match msg.view() {
-                    MessageView::Buffering(b) => {
-                        let pct = b.percent().clamp(0, 100) as u8;
-                        self.buffering = pct;
-                        if self.last_buffering != Some(pct) {
-                            self.last_buffering = Some(pct);
-                            events.push(MediaEvent::Buffering { percent: pct });
-                        }
-                    }
-                    MessageView::Eos(_) => {
-                        self.playing = false;
-                        events.push(MediaEvent::Ended);
-                    }
-                    MessageView::Error(e) => {
-                        self.playing = false;
-                        events.push(MediaEvent::Error(e.error().to_string()));
-                    }
-                    _ => {}
-                }
-            }
-
-            // Pull the freshest decoded frame(s); keep only the last so the
-            // surface never lags behind the pipeline.
-            while let Some(sample) = self
-                .appsink
-                .try_pull_sample(Some(gst::ClockTime::ZERO))
-            {
-                if let Some(frame) = frame_from_sample(&sample) {
-                    self.latest = Some(frame);
-                }
-            }
-
-            // Position, emitted when it advances.
-            let pos = self.position_ms();
-            if self.last_position != Some(pos) {
-                self.last_position = Some(pos);
-                events.push(MediaEvent::Position { ms: pos });
-            }
-
-            events
-        }
-    }
-
-    impl Drop for GstState {
-        fn drop(&mut self) {
-            let _ = self.playbin.set_state(gst::State::Null);
-        }
-    }
-
-    /// Copy one RGBA appsink sample into an owned, tightly-packed [`VideoFrame`],
-    /// honouring GStreamer's row stride (which may pad past `width * 4`).
-    fn frame_from_sample(sample: &gst::Sample) -> Option<VideoFrame> {
-        let caps = sample.caps()?;
-        let info = gst_video::VideoInfo::from_caps(caps).ok()?;
-        let buffer = sample.buffer()?;
-        let pts_ms = buffer.pts().map(|p| p.mseconds()).unwrap_or(0);
-        let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &info).ok()?;
-
-        let w = info.width() as usize;
-        let h = info.height() as usize;
-        let stride = info.stride()[0] as usize;
-        let data = frame.plane_data(0).ok()?;
-        let row = w * 4;
-        if stride < row || data.len() < stride * h {
-            return None;
-        }
-        let mut rgba = Vec::with_capacity(row * h);
-        for y in 0..h {
-            let start = y * stride;
-            rgba.extend_from_slice(&data[start..start + row]);
-        }
-        Some(VideoFrame::new(info.width(), info.height(), rgba, pts_ms))
     }
 }
 
