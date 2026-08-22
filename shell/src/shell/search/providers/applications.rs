@@ -132,6 +132,7 @@ impl ApplicationsProvider {
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
                     launch_installed_app(chrome, &package_id, &display_name);
                 }),
+                params: Vec::new(),
             });
         }
         out
@@ -259,6 +260,7 @@ impl ApplicationsProvider {
                         capabilities,
                     );
                 }),
+                params: Vec::new(),
             });
         }
         out
