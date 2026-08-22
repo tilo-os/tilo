@@ -145,6 +145,11 @@ impl EngineSession {
     pub fn poll_into_cache(&mut self) -> bool {
         self.last_used = Instant::now();
         self.engine.poll();
+        if !self.engine.frame_is_current() {
+            // Still showing the previous position's picture; nothing new to
+            // file yet.
+            return false;
+        }
         let Some(frame) = self.engine.latest() else {
             return false;
         };

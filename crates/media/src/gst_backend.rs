@@ -31,7 +31,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 
 use gstreamer as gst;
-use gstreamer::glib::translate::FromGlib;
+use gstreamer::glib::translate::{FromGlib, IntoGlib};
 use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
@@ -41,7 +41,7 @@ use crate::dmabuf::{
 };
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
-use crate::hw::{rank_for, DecoderKind, HwPolicy, HwReport};
+use crate::hw::{rank_for, DecoderEntry, DecoderKind, HwPolicy, HwReport};
 use crate::source::Source;
 
 // ---------------------------------------------------------------------------
@@ -84,6 +84,63 @@ fn apply_decoder_ranks(policy: HwPolicy) {
     tracing::debug!("media: decoder ranks applied for policy {policy:?}");
 }
 
+/// Every video decoder in the GStreamer registry, with the rank it currently
+/// carries.
+///
+/// This is what makes "no hardware decode happened" a *checkable* statement
+/// rather than an excuse: a caller (or a test) can ask whether a hardware
+/// decoder for the stream even exists on this machine before concluding
+/// anything about why a software one was chosen.
+///
+/// Initialises GStreamer if it is not already up; returns an empty list if it
+/// cannot be initialised at all.
+pub fn available_video_decoders() -> Vec<DecoderEntry> {
+    if gst::init().is_err() {
+        return Vec::new();
+    }
+    let registry = gst::Registry::get();
+    let mut out: Vec<DecoderEntry> = registry
+        .features(gst::ElementFactory::static_type())
+        .into_iter()
+        .filter_map(|f| {
+            let name = f.name().to_string();
+            if !crate::hw::looks_like_video_decoder(&name) {
+                return None;
+            }
+            Some(DecoderEntry {
+                kind: DecoderKind::classify(&name),
+                rank: f.rank().into_glib() as u32,
+                name,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.rank.cmp(&a.rank).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// The video decoders in the registry that can handle `media_type` (a caps
+/// media type such as `video/x-h264`), hardware ones first.
+///
+/// Used to answer "does this machine have a hardware decoder for *this*
+/// stream?" — the question that separates "hardware decode is broken" from
+/// "this box has no hardware decoder for this codec".
+pub fn decoders_for(media_type: &str) -> Vec<DecoderEntry> {
+    if gst::init().is_err() {
+        return Vec::new();
+    }
+    let Ok(caps) = gst::Caps::from_str(media_type) else {
+        return Vec::new();
+    };
+    available_video_decoders()
+        .into_iter()
+        .filter(|d| {
+            gst::ElementFactory::find(&d.name)
+                .map(|f| f.can_sink_any_caps(&caps))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// The caps an appsink advertises for a given [`FrameAcceptance`].
 ///
 /// Structures are ordered best-first: GStreamer negotiates the first one both
@@ -113,7 +170,8 @@ fn build_video_sink(acceptance: FrameAcceptance) -> Option<(gst::Element, gst_ap
         // reads the preroll instead, which is not paced at all.
         .sync(true)
         .max_buffers(8)
-        .drop(true)
+        // Start paused, so start without dropping — see `set_drop_policy`.
+        .drop(false)
         .enable_last_sample(false)
         .build();
 
@@ -206,17 +264,30 @@ pub struct GstState {
 
     volume: f32,
     muted: bool,
+    policy: HwPolicy,
+
+    /// Monotonic count of pictures stored since this pipeline was built.
+    /// Paired with `frames_at_seek`, this is how a caller distinguishes "the
+    /// frame for the position I just asked for" from "the frame that was
+    /// already on screen".
+    frames_stored: u64,
+    /// `frames_stored` at the moment the last seek was accepted.
+    frames_at_seek: u64,
 }
 
 impl GstState {
     /// Build the pipeline with no source yet. `None` when GStreamer cannot
     /// initialise or the sink chain cannot be built, so the engine falls back
     /// to the synthesized backend.
-    pub fn new(acceptance: FrameAcceptance) -> Option<Self> {
+    pub fn new(acceptance: FrameAcceptance, policy: HwPolicy) -> Option<Self> {
         gst::init().ok()?;
-        let policy = HwPolicy::from_env();
-        static RANKS: std::sync::Once = std::sync::Once::new();
-        RANKS.call_once(|| apply_decoder_ranks(policy));
+        // Ranks are re-applied per pipeline rather than once per process.
+        // GStreamer's registry ranks are global, so the most recently built
+        // engine's policy is the one in force — but re-applying makes the
+        // policy a property of the engine's configuration rather than of
+        // whichever code happened to touch the registry first, which is what
+        // lets a caller (and a test) actually choose it.
+        apply_decoder_ranks(policy);
 
         // `playbin3` drives `decodebin3`, which does per-stream decoder
         // selection and gapless stream switching. Fall back to `playbin` on a
@@ -286,11 +357,19 @@ impl GstState {
             seek_target_ms: None,
             volume: 0.8,
             muted: false,
+            policy,
+            frames_stored: 0,
+            frames_at_seek: 0,
         })
     }
 
     pub fn acceptance(&self) -> FrameAcceptance {
         self.acceptance
+    }
+
+    /// The hardware-decode policy this pipeline was built under.
+    pub fn policy(&self) -> HwPolicy {
+        self.policy
     }
 
     /// What the pipeline actually plugged. Empty until the first frame has
@@ -311,10 +390,16 @@ impl GstState {
         self.pending.clear();
         self.seek_in_flight = false;
         self.seek_target_ms = None;
+        self.frames_stored = 0;
+        self.frames_at_seek = 0;
         if let Ok(mut o) = self.observed.lock() {
             o.report = HwReport::default();
         }
 
+        // Another engine may have been built since, leaving the registry on
+        // its policy. Re-assert ours before the decoder is autoplugged.
+        apply_decoder_ranks(self.policy);
+        self.set_drop_policy(false);
         self.playbin.set_property("uri", source.to_uri());
         self.volume = volume.clamp(0.0, 1.0);
         self.apply_gain();
@@ -339,8 +424,27 @@ impl GstState {
         settled
     }
 
+    /// Choose whether the sink discards buffers when its queue fills.
+    ///
+    /// The two modes want opposite behaviour, and getting it wrong is a
+    /// **silent two-frame error**, not a stall:
+    ///
+    /// * **Scrubbing / paused.** After a flushing seek the decoder pushes the
+    ///   target frame and then races ahead. With `drop=true` the sink discards
+    ///   the *oldest* buffer to make room for newer ones, so the frame that
+    ///   was seeked to is thrown away and a later one is served in its place —
+    ///   a constant offset that looks exactly like an inaccurate seek. With
+    ///   `drop=false` the sink blocks the decoder instead and the frame at the
+    ///   requested time survives.
+    /// * **Playing.** Dropping is right: a slow consumer must not make the
+    ///   picture lag the clock.
+    fn set_drop_policy(&self, playing: bool) {
+        self.appsink.set_property("drop", playing);
+    }
+
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
+        self.set_drop_policy(playing);
         let state = if playing { gst::State::Playing } else { gst::State::Paused };
         let _ = self.playbin.set_state(state);
         if playing {
@@ -361,17 +465,26 @@ impl GstState {
     /// pipeline stays in whatever state it is in — a paused pipeline
     /// re-prerolls and the new frame arrives on the preroll path, so scrubbing
     /// never starts the audio sink.
-    pub fn seek(&mut self, ms: u64, mode: SeekMode) {
+    pub fn seek(&mut self, ms: u64, mode: SeekMode) -> bool {
         let pos = gst::ClockTime::from_mseconds(ms);
         match self.playbin.seek_simple(mode.flags(), pos) {
             Ok(()) => {
                 self.seek_in_flight = true;
                 self.seek_target_ms = Some(ms);
+                // Anything already held belongs to the *previous* position.
+                // Record the watermark rather than clearing the frame: the
+                // preview keeps painting the old picture (no flicker) while
+                // `frame_is_post_seek` reports, truthfully, that it is stale.
+                self.frames_at_seek = self.frames_stored;
+                true
             }
             Err(e) => {
-                // A seek before the pipeline is ready is normal and retried by
-                // the caller; anything else is worth surfacing.
+                // A pipeline that has not finished prerolling refuses seeks.
+                // That is expected right after `open`, and the caller retries —
+                // but it must know, or it waits forever for a picture nobody
+                // ever asked for.
                 tracing::debug!("media: seek to {ms}ms not accepted yet: {e}");
+                false
             }
         }
     }
@@ -449,8 +562,23 @@ impl GstState {
     }
 
     /// The most recent picture in its native memory.
+    ///
+    /// May belong to a previous position if a seek is still in flight — see
+    /// [`Self::frame_is_post_seek`].
     pub fn latest(&self) -> Option<&Frame> {
         self.latest.as_ref()
+    }
+
+    /// Whether the held picture was decoded *after* the most recent seek.
+    ///
+    /// Without this, a caller that waits for "a frame to exist" is satisfied
+    /// instantly by the frame that was already on screen, and every seek after
+    /// the first appears to return the previous position's picture. The frame
+    /// is deliberately not cleared on seek — the preview keeps painting the
+    /// old one so scrubbing does not flicker — so staleness has to be
+    /// reported rather than inferred from absence.
+    pub fn frame_is_post_seek(&self) -> bool {
+        self.frames_stored > self.frames_at_seek
     }
 
     /// The most recent picture as system-memory RGBA.
@@ -467,21 +595,33 @@ impl GstState {
         self.latest_rgba.as_ref()
     }
 
-    /// Take whatever frame the sink has, preferring a freshly decoded sample
-    /// and falling back to the preroll (which is the only sample that exists
-    /// while the pipeline is paused after a seek).
+    /// Take whatever picture the sink is holding.
+    ///
+    /// **Order matters, and getting it wrong loses frames silently.** `appsink`
+    /// serves both pull APIs from one internal object queue: asking for a
+    /// regular sample pops from that queue and *discards* anything that is not
+    /// one — including a preroll. So calling `try_pull_sample` first, then
+    /// falling back to `try_pull_preroll`, throws the preroll away and then
+    /// finds nothing, with no error anywhere. While paused (scrubbing, or
+    /// freshly opened) the preroll is the only picture that exists, so it has
+    /// to be asked for first.
     fn drain_samples(&mut self) -> bool {
         let mut got = false;
-        // Newest-wins: the surface must not lag the pipeline during playback.
-        while let Some(sample) = self.appsink.try_pull_sample(gst::ClockTime::ZERO) {
-            if let Some(frame) = frame_from_sample(&sample, self.acceptance) {
-                self.record_caps(&sample);
-                self.store(frame);
-                got = true;
+
+        // Paused, or playing but not yet seeded: the preroll is the picture.
+        if !self.playing || self.latest.is_none() {
+            if let Some(sample) = self.appsink.try_pull_preroll(gst::ClockTime::ZERO) {
+                if let Some(frame) = frame_from_sample(&sample, self.acceptance) {
+                    self.record_caps(&sample);
+                    self.store(frame);
+                    got = true;
+                }
             }
         }
-        if !got {
-            if let Some(sample) = self.appsink.try_pull_preroll(gst::ClockTime::ZERO) {
+
+        // Playing: drain to the newest so the surface never lags the pipeline.
+        if self.playing {
+            while let Some(sample) = self.appsink.try_pull_sample(gst::ClockTime::ZERO) {
                 if let Some(frame) = frame_from_sample(&sample, self.acceptance) {
                     self.record_caps(&sample);
                     self.store(frame);
@@ -502,6 +642,7 @@ impl GstState {
     /// [`Self::latest`], and converting behind its back would reintroduce the
     /// per-frame CPU cost this path removes.
     fn store(&mut self, frame: Frame) {
+        self.frames_stored += 1;
         self.latest_rgba = match frame.payload {
             FramePayload::Rgba(_) => frame.to_video_frame(),
             _ => None,
