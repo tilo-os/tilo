@@ -27,8 +27,10 @@ import copy
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 from _control import call
@@ -70,7 +72,19 @@ def main() -> int:
     except FileNotFoundError:
         pass
 
-    env = {**os.environ, "QOS_TEST_CONTROL": SOCKET}
+    # A throwaway state directory, so the run does not depend on whatever
+    # this machine happens to have persisted. That matters more than it
+    # looks: the capability gate resolves against the *active* workspace,
+    # and a session that loads a workspace owned by someone else will
+    # correctly show only the handful of resources anyone may see. Against
+    # leftover state this check would then "pass" while measuring
+    # something else entirely.
+    state_dir = tempfile.mkdtemp(prefix="qos-action-proof-")
+    env = {
+        **os.environ,
+        "QOS_TEST_CONTROL": SOCKET,
+        "QOS_STATE_PATH": os.path.join(state_dir, "state.json"),
+    }
     env.pop("DISPLAY", None)
     env.pop("WAYLAND_DISPLAY", None)
     proc = subprocess.Popen(
@@ -104,6 +118,19 @@ def main() -> int:
             "count matches the returned list",
             answer["count"] == len(actions),
             f"count={answer['count']} len={len(actions)}",
+        )
+
+        # The surface must contain acts, not just things that can be
+        # shown. Without this the check cannot tell a working gate from
+        # one that hid everything an owner is entitled to do — which is
+        # precisely what a session pointed at someone else's workspace
+        # looks like.
+        addresses = {f"{a['provider']}:{a['id']}" for a in actions}
+        gated = "actions:window.new.terminal"
+        check(
+            "a gated act is visible to the workspace owner",
+            gated in addresses,
+            f"{gated} present" if gated in addresses else f"{gated} MISSING",
         )
 
         providers = sorted({a["provider"] for a in actions})
@@ -182,6 +209,7 @@ def main() -> int:
             os.unlink(SOCKET)
         except FileNotFoundError:
             pass
+        shutil.rmtree(state_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
