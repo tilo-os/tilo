@@ -877,15 +877,6 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ApplicationsProvider::new(),
         ));
-        // Applications that are not here yet. Same chip and group as the
-        // installed ones, ranked below them; Enter fetches, verifies and
-        // opens. The refresher is a no-op without a `registries.toml`,
-        // so tests and headless runs never reach the network.
-        search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::CatalogProvider::new(
-                crate::shell::app_catalog::CatalogHandle::spawn_refresher(),
-            ),
-        ));
         // Applications qOS did not package. Separate provider and
         // separate chip from the one above: these run unconfined, and
         // the palette is where the user chooses between them.
@@ -2814,24 +2805,6 @@ impl ShellOverlayHost {
         posted
     }
 
-    /// Drain finished installs (see [`crate::shell::app_catalog`]).
-    /// A success launches the app through the Applications path; a
-    /// failure is quoted back as a notification. Returns whether
-    /// anything was posted.
-    pub(crate) fn drain_install_events(&mut self) -> bool {
-        let events = crate::shell::app_catalog::drain_events();
-        if events.is_empty() {
-            return false;
-        }
-        let Some(chrome_handle) = self.chrome.clone() else {
-            return false;
-        };
-        for event in events {
-            crate::shell::search::providers::catalog::apply_install_event(&chrome_handle, event);
-        }
-        true
-    }
-
     pub fn pump_permission_prompt(&mut self) {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
@@ -4673,9 +4646,6 @@ impl Widget for ShellOverlayHost {
         // something the user can see; the frame thread only ever takes
         // a mutex and moves a Vec out.
         let launch_dirty = self.drain_launch_events();
-        // Installs picked from the palette report back the same way;
-        // a finished one launches from here, on the frame thread.
-        let install_dirty = self.drain_install_events();
         // Notification lifecycle: drop expired toasts so the stack
         // shrinks even on frames where the user does nothing. The
         // widget's own `update` also drives this, but routing it
@@ -4697,7 +4667,7 @@ impl Widget for ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             chrome.borrow().tree_mut().commit_room_change();
         }
-        a || b || c || d || launch_dirty || install_dirty || chrome_dirty || portal_dirty || picker_dirty
+        a || b || c || d || launch_dirty || chrome_dirty || portal_dirty || picker_dirty
     }
 
     fn build_layout(

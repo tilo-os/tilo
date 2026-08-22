@@ -236,12 +236,6 @@ runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../crates/packaging/launcher" }
-# The app catalog behind "Install & open" palette rows: the registry
-# entry types (signature-checked before a row is offered) and a blocking
-# HTTP client for `/entries` + the `.qpkg` download, both on worker
-# threads. Same `registries.toml` the Store app reads.
-registry-types = { path = "../crates/packaging/registry-types" }
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
 # The host's own applications: `.desktop` entries the compositor reads
 # so a Flatpak or a distribution binary is launchable and searchable.
 desktop-entry = { package = "qos-desktop-entry", path = "../crates/system/desktop-entry" }
@@ -320,8 +314,6 @@ vello_encoding.workspace = true
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
 # never write a real key to `/var/lib/qos-fs/peer-key` from the test suite.
 tempfile.workspace = true
-# Signed registry-entry fixtures for the app-catalog tests.
-hex.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
 # transitively (libp2p, zbus, tokio) — pinning it here is just for the

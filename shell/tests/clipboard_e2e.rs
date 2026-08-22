@@ -1667,6 +1667,21 @@ impl Compositor {
         );
     }
 
+    /// Every named chrome target this frame, for a failure message.
+    fn target_names(&self) -> Vec<String> {
+        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        resp.get("targets")
+            .and_then(|t| t.as_array())
+            .map(|ts| ts.iter().filter_map(|t| t.get("name")?.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Write a PNG of the current frame to `path`.
+    fn snapshot(&self, path: &Path) {
+        let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
+        assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
+    }
+
     /// A click at `(x, y)` through the real input path.
     fn click_at(&self, x: f64, y: f64) {
         self.pointer_move(x, y);
