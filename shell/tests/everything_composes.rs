@@ -244,6 +244,7 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
                 app_id: "everything".into(),
                 cluster_id: test_cluster(),
                 record: None,
+                handle: None,
             },
         );
     }
