@@ -782,7 +782,7 @@ mod tests {
             hydration: crate::media::Hydration::Projected,
         });
         let tid = Uuid::new_v4();
-        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false, solo: false });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         p.clip_mut(cid).unwrap().out_point = 0.2;
 
@@ -859,6 +859,7 @@ mod tests {
             index: 1,
             muted: false,
             locked: false,
+            solo: false,
         });
         let cid = p.add_clip(tid, mid, 0.0).unwrap();
         {
