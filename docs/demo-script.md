@@ -38,11 +38,18 @@ A different mechanism, and the more interesting one: an agent is not a peer.
 It is a capability principal (`agent:<id>`) granted through the permission
 model, and it reaches the document as a broker client.
 
-## 4 · Both join — you see their cursors ✅
+## 4 · Both join — you see their cursors ❌ NOT ON SCREEN
 
-Real presence across machines: caret, pointer, selection and the run a peer
-just typed, each in that peer's colour with their name. Proven by a screenshot
-taken from the *receiving* machine, the peer labelled by its own id.
+Presence genuinely crosses the network, and inside an app window a peer's
+caret and pointer render correctly — that much was proven from the receiving
+machine, the peer labelled by its own id.
+
+**The desktop layer draws nothing.** `RemoteCursorOverlay::new()` is called
+only in `shell/tests/remote_cursors_test.rs`; the compositor never mounts it.
+Filmed, this beat is twenty-eight seconds of empty desktop.
+
+This entry said ✅ until someone watched the frames instead of the
+assertions.
 
 ## 5 · Search "word processor" → not installed → installs → opens ✅
 
@@ -50,9 +57,15 @@ The palette offers apps this machine does not have yet in the same rows as the
 ones it does. Installing verifies an ed25519 signature and a BLAKE3 digest,
 then runs it.
 
-Do not say "fast" until an install has been timed on a clean session.
+Timed, on twelve clean sessions: a median of **6.7s** from the keystroke to
+the app's own first frame, spread 5.0–9.5s — roughly a quarter fetching, two
+quarters verifying and unpacking, one quarter starting and painting. That is
+a 446 MB debug package over a loopback registry, on a machine that was busy;
+most of it is the package's size, not the mechanism. So say "a few seconds",
+never "instant" — a viewer can time this one off the recording.
+Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
-## 6 · Cut to Xaver — the window opens there too ✅
+## 6 · Cut to Xaver — the window opens there too ❌ ASSERTION GREEN, SCREEN BLANK
 
 A workspace is shared, so its windows are shared. The room document carries
 that room's strips, groups and tabs, each entry written only by the peer that
@@ -62,12 +75,29 @@ What does **not** travel is view state — focus, scroll, active tab. Xaver sees
 the window arrive without his own view moving, asserted on the same object in
 the same run.
 
-## 7 · Quinten's writing appears on Xaver's screen ⏳
+**But it is not drawn.** The screenshot taken at the instant the script
+declares success shows an empty desktop. The room document carries the window,
+xaver's tree holds it, and his compositor renders nothing. This is the exact
+failure the whole verification pass exists to catch — an assertion that goes
+green while the screen stays blank is worse than one that fails, because it
+reads as proof.
 
-The last piece. Deltas and presence cross, but two independently created
-documents had no way to learn of each other: the only full-state frame was
-fanned out locally and never republished. A snapshot path to the room closes
-it. Proof in flight.
+## 7 · Quinten's writing appears on Xaver's screen ✅
+
+Two real packaged word processors converge. Proven from the receiving side:
+`/tmp/qs-gpxaor_7/shots/bob-received.png` shows bob's page reading text he
+never typed, with alice's caret and pointer labelled by her peer id.
+
+The cause was not routing, which is why it survived so long. The op stream
+carries three kinds of frame — a signed envelope, a delta, a whole document —
+and nothing on the wire said which, so the reader guessed by trying to decode
+each one as a signed envelope and skipping what failed. That discarded every
+unsigned frame there is, including the full-state snapshot by which two
+independently created documents learn of each other. Presence rides a separate
+stream and was never affected — which is precisely why presence crossed while
+the page stayed blank, and why this read as a routing bug for days.
+
+Frames now carry a kind tag.
 
 ## 8 · An image into the document ✅ — but mind which Files
 

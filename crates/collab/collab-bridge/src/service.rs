@@ -13,8 +13,8 @@ use capnp::capability::Promise;
 use futures::FutureExt;
 
 use runtime_collab::raw::{
-    channel_handle, collab_service, context_stream, cursor_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
+    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 
 use crate::translate::{hello_from_join, presence_request};
