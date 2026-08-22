@@ -606,9 +606,15 @@ def pick_from_chooser(session, viewport: tuple[int, int] | None = None) -> None:
     before that fix they went to the app behind the dialog.
     """
     del viewport                      # kept: callers pass one, none needed
-    for _ in range(2):
+    # More presses than there are rows, on purpose. `move_selection`
+    # clamps at the end of the list and the listing is dirs-then-files,
+    # so any number of Downs past the count lands on the last entry —
+    # which is the image. That makes this independent of how many rows
+    # there are and of whether the first key after the dialog mounts is
+    # swallowed, neither of which is worth guessing at.
+    for _ in range(4):
         session.key("ArrowDown")
-        time.sleep(0.6)
+        time.sleep(0.5)
     session.key("Enter")
 
 
