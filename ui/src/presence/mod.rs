@@ -103,6 +103,69 @@ pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
     (0xf4, 0x89, 0x71),
 ];
 
+/// Give everyone in a room a colour nobody else in it is wearing.
+///
+/// [`user_color`] alone cannot promise this. It is a hash, so two ids
+/// land on the same ring entry roughly one time in
+/// [`PEER_PALETTE`]`.len()`, and `carol` lands exactly on `alice`'s
+/// pink. One time in twenty-four sounds rare until four people are in a
+/// room, where it is closer to one time in four.
+///
+/// So the room resolves it. Everyone keeps the colour their id gives
+/// them when it is free, and whoever collides steps to the next free
+/// entry. Ids are walked in sorted order, which is what makes this
+/// agree across machines: every host in a room ends up seeing the same
+/// membership (each sees the others plus itself), so each computes the
+/// same assignment, and a person is the same colour on every screen.
+/// Sorted order also bounds the churn — a new arrival can only move
+/// someone it actually collides with, and only someone whose id sorts
+/// after its own.
+///
+/// `reserved` are colours already spoken for by an explicit roster
+/// choice; they are held back so a computed colour never lands on one.
+pub fn assign_peer_colors(
+    ids: &[&str],
+    reserved: &[(u8, u8, u8)],
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut sorted: Vec<&str> = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut taken = [false; PEER_PALETTE.len()];
+    for c in reserved {
+        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c) {
+            taken[i] = true;
+        }
+    }
+
+    let mut out = HashMap::with_capacity(sorted.len());
+    for id in sorted {
+        let natural = user_color(id);
+        let start = PEER_PALETTE
+            .iter()
+            .position(|p| *p == natural)
+            // Every colour `user_color` returns is a ring member, so this
+            // cannot fire; falling back to 0 keeps the loop total rather
+            // than panicking in a draw path if that ever stops holding.
+            .unwrap_or(0);
+        let mut slot = start;
+        for step in 0..PEER_PALETTE.len() {
+            let i = (start + step) % PEER_PALETTE.len();
+            if !taken[i] {
+                slot = i;
+                break;
+            }
+            // More people than colours: everyone past the ring's size
+            // keeps their natural entry and shares it. A name still says
+            // who is who.
+            slot = start;
+        }
+        taken[slot] = true;
+        out.insert(id.to_string(), PEER_PALETTE[slot]);
+    }
+    out
+}
+
 /// How far apart two colours are, weighted the way an eye weights them
 /// (the "redmean" approximation). Used to state, as a test rather than
 /// as a hope, that no two peers can be painted in confusable colours.
@@ -203,6 +266,79 @@ mod color_tests {
                 color_distance(ca, cb),
             );
         }
+    }
+
+    /// The case the ring alone cannot fix: `carol` hashes onto exactly
+    /// the pink `alice` is pinned to. In a room with both, one of them
+    /// has to move.
+    #[test]
+    fn a_room_never_puts_two_people_in_one_colour() {
+        assert_eq!(
+            user_color("carol"),
+            user_color("alice"),
+            "this test is guarding a real collision; if the hash moved, \
+             pick another colliding pair rather than deleting the test",
+        );
+
+        let room = ["alice", "bob", "carol", "danah", "erin", "dana"];
+        let assigned = assign_peer_colors(&room, &[]);
+        assert_eq!(assigned.len(), room.len());
+        for (i, a) in room.iter().enumerate() {
+            for b in &room[i + 1..] {
+                assert_ne!(
+                    assigned[*a], assigned[*b],
+                    "{a} and {b} were given the same colour",
+                );
+                assert!(
+                    color_distance(assigned[*a], assigned[*b]) >= 60.0,
+                    "{a} and {b} are too close to tell apart",
+                );
+            }
+        }
+        // Whoever does not collide keeps the colour their id gives them.
+        assert_eq!(assigned["alice"], user_color("alice"));
+        assert_eq!(assigned["bob"], user_color("bob"));
+    }
+
+    /// Two machines in one room compute the same assignment, because
+    /// each sees the same membership: the other people plus itself.
+    /// Without that a person would be pink on one screen and orange on
+    /// the next.
+    #[test]
+    fn every_machine_in_a_room_agrees_on_who_is_what_colour() {
+        let room = ["alice", "bob", "carol"];
+        // What each host has: everyone else, plus itself.
+        for me in room {
+            let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
+            mine.push(me);
+            assert_eq!(
+                assign_peer_colors(&mine, &[]),
+                assign_peer_colors(&room, &[]),
+                "the host running as {me} disagrees with the others",
+            );
+        }
+    }
+
+    /// A colour the roster handed out explicitly is not available to be
+    /// computed onto, or an invited peer and a live one could collide.
+    #[test]
+    fn an_explicit_roster_colour_is_not_reassigned_to_someone_else() {
+        let taken = user_color("carol"); // == alice's pink
+        let assigned = assign_peer_colors(&["carol"], &[taken]);
+        assert_ne!(
+            assigned["carol"], taken,
+            "carol took a colour the roster had already spoken for",
+        );
+    }
+
+    /// Someone arriving late must not repaint the people already there
+    /// unless they actually collide with one.
+    #[test]
+    fn a_late_arrival_leaves_the_others_alone() {
+        let before = assign_peer_colors(&["alice", "bob"], &[]);
+        let after = assign_peer_colors(&["alice", "bob", "dana"], &[]);
+        assert_eq!(before["alice"], after["alice"]);
+        assert_eq!(before["bob"], after["bob"]);
     }
 
     #[test]

@@ -235,11 +235,14 @@ impl PresenceCtx {
 // Several peers at once
 // =====================================================================
 
-/// Radius of the solid dot at a peer's pointer.
-const DOT_R: f64 = 5.0;
+/// Radius of the solid dot at a peer's pointer. Larger than the single
+/// -peer pointer this grew out of: with a name pill beside it, a 5px
+/// dot reads as a speck next to its own label, and a person's cursor
+/// should be the thing you find first.
+const DOT_R: f64 = 6.5;
 /// Outer edge of the dot including its contrast ring — what a name pill
 /// has to clear.
-const RING_R: f64 = 6.5;
+const RING_R: f64 = 8.5;
 /// Breathing room between the dot and its pill, and between two pills.
 const PILL_GAP: f64 = 4.0;
 /// How far a pill is allowed to sit from its own pointer before it stops
@@ -343,16 +346,20 @@ pub fn layout_peer_pills(viewport: Rect, pills: &[PillRequest]) -> Vec<PillPlace
         ];
 
         let mut chosen = None;
-        for (x, y) in corners {
+        for (n, (x, y)) in corners.into_iter().enumerate() {
             let r = Rect::new(x, y, x + w, y + h);
             if inside(&r, &vp) && clear(&r, &placed) {
-                chosen = Some(r);
+                // Anything but the first corner means this pill moved to
+                // get out of someone's way or off an edge, and in a
+                // cluster of pointers a pill that is not below-right of
+                // its own is no longer obviously its own. Draw the line.
+                chosen = Some((r, n > 0));
                 break;
             }
         }
 
         let (rect, tethered) = match chosen {
-            Some(r) => (r, false),
+            Some((r, moved)) => (r, moved),
             None => {
                 // Every corner is taken or off-window. Keep the pill on
                 // the side of the pointer that fits and walk it down the
@@ -497,18 +504,18 @@ fn draw_peer_dot(scene: &mut Scene, transform: Affine, pos: (f64, f64), peer: Co
         t,
         peer.with_alpha_factor(0.22),
         None,
-        &Circle::new(Point::ORIGIN, 9.0),
+        &Circle::new(Point::ORIGIN, RING_R + 3.0),
     );
     scene.stroke(
         &Stroke::new(2.0),
         t,
         Color::BLACK.with_alpha_factor(0.18),
         None,
-        &Circle::new(Point::ORIGIN, RING_R + 0.5),
+        &Circle::new(Point::ORIGIN, RING_R - 0.5),
     );
     let dot = Circle::new(Point::ORIGIN, DOT_R);
     scene.fill(Fill::NonZero, t, peer, None, &dot);
-    scene.stroke(&Stroke::new(1.5), t, Color::WHITE, None, &dot);
+    scene.stroke(&Stroke::new(2.0), t, Color::WHITE, None, &dot);
 }
 
 /// A peer's name pill: their colour as the fill, a soft drop shadow, and

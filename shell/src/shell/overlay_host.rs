@@ -9020,6 +9020,18 @@ impl ShellOverlayHost {
             return Vec::new();
         };
 
+        // Settle the colours over everyone in the room before deciding
+        // what is on screen, and include the local user: every host in a
+        // room sees the same membership that way — the others plus
+        // itself — so every host computes the same assignment and a
+        // person is one colour on every screen. Filtering to the visible
+        // ones first would make each host compute over a different set.
+        let local = crate::shell::state::local_user_id();
+        let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
+        room_ids.push(local.as_str());
+        let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
+        let assigned = ui::presence::assign_peer_colors(&room_ids, &reserved);
+
         peers
             .iter()
             .filter(|(_, pos)| {
@@ -9031,7 +9043,15 @@ impl ShellOverlayHost {
                 self.rect.contains(Point::new(pos.0 as f64, pos.1 as f64))
             })
             .map(|(user, pos)| {
-                let (r, g, b) = presence.color_for(user);
+                // An explicit roster colour is a decision someone made
+                // and outranks anything computed; everyone else takes
+                // what the room settled on.
+                let (r, g, b) = presence
+                    .color_overrides
+                    .get(user)
+                    .copied()
+                    .or_else(|| assigned.get(user.0.as_str()).copied())
+                    .unwrap_or_else(|| presence.color_for(user));
                 ui::presence::PeerCursor {
                     pos: (pos.0 as f64, pos.1 as f64),
                     // Name the peer rather than their id when the roster
