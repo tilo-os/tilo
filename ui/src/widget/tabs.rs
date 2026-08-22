@@ -930,7 +930,21 @@ impl TabBar {
     fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
         let lead = if self.tabs[i].app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 };
         let x0 = r.x0 + PILL_PAD_X + lead;
-        let x1 = r.x1 - CHIP_CLUSTER_W;
+        // A pill at its natural width reserves the whole chip cluster, so
+        // hovering it never reflows the row. A *squeezed* pill has
+        // already given that up — the group is too narrow to give every
+        // tab what it wants — and there the reserve is the wrong thing to
+        // protect: holding all three chips' width back leaves nothing for
+        // the name, and a row of pills reading "…" tells the reader less
+        // than the overflow it replaced. So a squeezed pill keeps only
+        // the close chip, which is the one that has to stay hittable, and
+        // hands the rest to the title.
+        let reserve = if r.width() + 0.5 >= self.natural_pill_width(i) {
+            CHIP_CLUSTER_W
+        } else {
+            CLOSE_INSET + CLOSE_W
+        };
+        let x1 = r.x1 - reserve;
         (x0, x1.max(x0))
     }
 
@@ -4633,7 +4647,7 @@ mod tests {
             "g1",
             vec![
                 TabDescriptor::new(1, "Notes"),
-                TabDescriptor::new(2, "file-explorer"),
+                TabDescriptor::new(2, "file-explorer-preferences"),
                 TabDescriptor::new(3, "Terminal"),
             ],
             1,
@@ -4648,7 +4662,7 @@ mod tests {
             "a title that outruns its pill must carry an ellipsis, got {long:?}",
         );
         assert!(
-            "file-explorer".starts_with(long.trim_end_matches('\u{2026}')),
+            "file-explorer-preferences".starts_with(long.trim_end_matches('\u{2026}')),
             "the elided title must be a prefix of the real one, got {long:?}",
         );
         // An ellipsis on its own would satisfy the two checks above while
@@ -4659,7 +4673,7 @@ mod tests {
             "the elided title must keep a readable stem, got {long:?}",
         );
         assert!(
-            long.chars().count() < "file-explorer".chars().count(),
+            long.chars().count() < "file-explorer-preferences".chars().count(),
             "the elided title must be shorter than the real one, got {long:?}",
         );
 
@@ -4671,5 +4685,62 @@ mod tests {
             Some("Notes"),
             "a title with room to spare must not be touched",
         );
+    }
+
+    /// The default window group takes about three quarters of its strip.
+    /// A demo that wants three windows on screen narrows them to a third
+    /// each, and the boot workspace's four tabs then have to share ~460
+    /// px — every pill squeezed well below its natural width.
+    ///
+    /// Every pill still has to say which tab it is. Holding the whole
+    /// hover-chip reserve back at that width left the title zone at
+    /// nothing and the entire row rendered as bare ellipses, which tells
+    /// the reader strictly less than the overflow it replaced.
+    #[test]
+    fn squeezed_pills_still_name_their_tabs() {
+        let mut tr = TextRenderer::new();
+        let theme = crate::theme::Theme::dark();
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+                TabDescriptor::new(3, "Terminal"),
+                TabDescriptor::new(4, "Browser"),
+            ],
+            1,
+        );
+        // A third of a 1600 px display's usable width, which is the shape
+        // the narrow side-by-side capture renders.
+        let width = 460.0;
+        lay_out_at_width(&mut b, width);
+
+        let bar_rect = b.bar_rect();
+        for i in 0..b.tabs().len() {
+            let title = b.tabs()[i].title.clone();
+            let shown = b
+                .visible_title(i, &mut tr, &theme)
+                .unwrap_or_else(|| panic!("pill {i} ({title}) renders no title at all"));
+            let stem = shown.trim_end_matches('\u{2026}');
+            assert!(
+                stem.chars().count() >= 3,
+                "pill {i} ({title}) renders {shown:?} — a squeezed pill must \
+                 still carry enough of its name to be recognised",
+            );
+            assert!(
+                title.starts_with(stem),
+                "pill {i} renders {shown:?}, which is not a prefix of {title:?}",
+            );
+        }
+        // Containment still holds at this width — the squeeze is what
+        // buys the titles their room, not an overflow.
+        for (i, r) in b.tab_rects().iter().enumerate() {
+            assert!(
+                r.x1 <= bar_rect.x1 + 0.5,
+                "pill {i} ends at {} past the group edge at {}",
+                r.x1,
+                bar_rect.x1,
+            );
+        }
     }
 }
