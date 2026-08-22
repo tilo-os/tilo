@@ -300,14 +300,22 @@ impl PeerPublisher {
     }
 }
 
+/// A sink that keeps what it was asked to publish instead of
+/// publishing it.
+///
+/// The question a test about this module wants to ask is "what route
+/// reached the wire", and standing up libp2p to ask it would exercise
+/// the transport instead. Lives here rather than in one test module
+/// because both broker transports have the same question to answer and
+/// should answer it against the same instrument.
 #[cfg(test)]
-mod tests {
+pub mod recording {
     use super::*;
     use std::sync::Mutex;
 
     /// What actually reached the wire, in order.
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub(crate) enum Sent {
+    pub enum Sent {
         Incremental {
             app_id: String,
             cluster_id: String,
@@ -318,6 +326,7 @@ mod tests {
             app_id: String,
             cluster_id: String,
             record_id: String,
+            payload: Vec<u8>,
         },
         Scrollback {
             before_seq: u64,
@@ -326,12 +335,18 @@ mod tests {
     }
 
     #[derive(Default)]
-    pub(crate) struct RecordingSink {
-        pub(crate) sent: Mutex<Vec<Sent>>,
+    pub struct RecordingSink {
+        sent: Mutex<Vec<Sent>>,
     }
 
     impl RecordingSink {
-        fn drain(&self) -> Vec<Sent> {
+        /// Everything published so far, oldest first.
+        pub fn snapshot(&self) -> Vec<Sent> {
+            self.sent.lock().unwrap().clone()
+        }
+
+        /// Take everything published so far, leaving the log empty.
+        pub fn drain(&self) -> Vec<Sent> {
             std::mem::take(&mut *self.sent.lock().unwrap())
         }
     }
@@ -357,12 +372,13 @@ mod tests {
             app_id: String,
             cluster_id: String,
             record_id: String,
-            _envelope: SignedOp,
+            envelope: SignedOp,
         ) {
             self.sent.lock().unwrap().push(Sent::Signed {
                 app_id,
                 cluster_id,
                 record_id,
+                payload: envelope.payload.clone(),
             });
         }
 
@@ -373,6 +389,12 @@ mod tests {
                 .push(Sent::Scrollback { before_seq, max });
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recording::{RecordingSink, Sent};
+    use super::*;
 
     fn wired() -> (Arc<PeerPublisher>, Arc<RecordingSink>) {
         let sink = Arc::new(RecordingSink::default());
