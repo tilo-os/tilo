@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# A local app registry for the "search → not installed → Install & open"
-# palette flow (plan/yc-demo.md, beat 3).
+# A local app registry for the "search → the app is not here → it opens"
+# palette flow (plan/yc-demo.md, beat 3; shell/src/shell/catalogue.rs).
 #
 #   scripts/demo-registry.sh up      # build, pack, sign, configure, serve (foreground)
 #   scripts/demo-registry.sh down    # restore registries.toml, stop a background server
 #   scripts/demo-registry.sh reset   # forget the installed word processor so the beat repeats
 #
 # What `up` does, all in userspace, nothing on the host:
-#   1. builds qos-pkg, qos-install, qos-launcher and the word processor;
+#   1. builds qos-pkg, qos-install, qos-launcher, qos-catalogue and the word processor;
 #   2. mints a publisher identity (once) with `qos-pkg keygen`;
 #   3. installs the signed runtime bundle the manifest pins, from the host
 #      root, once — the launcher refuses to start an app without it;
@@ -15,8 +15,8 @@
 #      for it with `qos-pkg entry`;
 #   5. points the Store's registries.toml (which the shell's palette also
 #      reads) at http://127.0.0.1:$PORT, keeping a backup;
-#   6. makes sure the word processor is NOT installed, so the palette
-#      offers "Install & open Word Processor";
+#   6. makes sure the word processor is NOT installed, so the palette's
+#      "Open Word Processor" row is the catalogue's, not the registry's;
 #   7. serves the directory with python's http.server: GET /entries is the
 #      signed catalogue, GET /word-processor.qpkg is the package.
 #
@@ -25,7 +25,8 @@
 #
 #   cargo run -p shell -- --enable-peer-sync          # (--release with QOS_DEMO_PROFILE=release)
 #
-# Super+Space, type "word", Enter.
+# Super+Space, type "word", Enter — the row reads "Open Word Processor" like
+# any installed app; the fetch happens behind it.
 set -euo pipefail
 
 REPO="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
@@ -50,9 +51,9 @@ say() { printf '\033[1m[demo-registry]\033[0m %s\n' "$*"; }
 die() { echo "FATAL: $*" >&2; exit 1; }
 
 build() {
-    say "building qos-pkg, qos-install, qos-launcher, word-processor"
-    (cd "$REPO" && cargo build $CARGO_PROFILE_FLAG -p pkg-cli -p install -p launcher -p word-processor)
-    for b in qos-pkg qos-install qos-launcher word-processor; do
+    say "building qos-pkg, qos-install, qos-launcher, qos-catalogue, word-processor"
+    (cd "$REPO" && cargo build $CARGO_PROFILE_FLAG -p pkg-cli -p install -p launcher -p app-catalogue -p word-processor)
+    for b in qos-pkg qos-install qos-launcher qos-catalogue word-processor; do
         [ -x "$BIN/$b" ] || die "$BIN/$b missing after build"
     done
 }
