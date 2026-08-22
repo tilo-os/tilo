@@ -36,7 +36,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 
-use crate::shell::state::{PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree};
+use crate::shell::state::{
+    Collaborator, PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree,
+};
 
 /// Signed invite issued by a workspace owner so a remote peer can dial
 /// in and replicate the tree. Round-trips through
@@ -297,6 +299,30 @@ pub fn accept_invite_into(
     }
     tree.set_room(local, room);
     tree.pin_room_authority(room, PeerOrigin::peer_base58(&token.owner_peer_id));
+    // Someone is now in this room with us, and the chrome has to say so.
+    //
+    // Pointing the workspace at the inviter's room and pinning who
+    // governs it is what makes this machine a member; it left the roster
+    // — the top-bar avatar stack, the wheel-disc presence dots, the
+    // collaborators overlay — untouched, so a session that had genuinely
+    // joined a real person showed an empty stack while a session that
+    // had joined nobody showed the seeded fakes. Exactly backwards.
+    //
+    // The inviter is recorded under their session handle rather than a
+    // name, because a name is not in the token and inventing one would
+    // be the same failure in a smaller font. What *is* in the token, and
+    // inside its signature, is the owner's libp2p peer id — so the entry
+    // is as verified as the room it joined. The first presence frame
+    // that session publishes carries the name of whoever is sitting at
+    // it, and [`WorkspaceTree::note_peer_present`] replaces this row
+    // with the named one rather than drawing a second avatar.
+    if let Ok(peer) = token.owner_peer_id.parse::<libp2p::PeerId>() {
+        let handle =
+            crate::shell::state::session_handle(crate::network::behaviour::peer_liveness_handle(
+                &peer,
+            ));
+        tree.admit_collaborator(local, Collaborator::new(handle.clone(), handle));
+    }
     Ok(room)
 }
 
