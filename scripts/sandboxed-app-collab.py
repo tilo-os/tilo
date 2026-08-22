@@ -207,6 +207,16 @@ class Session:
                 self.proc.kill()
         if self._log:
             self._log.close()
+        # The runtime dir holds the compositor's control and broker
+        # sockets, and it is named after this harness's pid. Leaving it
+        # behind litters /run/user with one tree per run, and the next
+        # run that happens to reuse the pid inherits a stale broker
+        # socket rather than binding its own.
+        shutil.rmtree(self.runtime_dir, ignore_errors=True)
+        try:
+            os.unlink(self.sock)
+        except OSError:
+            pass
 
     # -- driving -----------------------------------------------------
 
