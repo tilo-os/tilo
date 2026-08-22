@@ -4417,13 +4417,37 @@ impl ShellOverlayHost {
         ((avail - OVERVIEW_GRID_GAP_PX * (cols as f64 - 1.0)) / cols as f64).max(1.0)
     }
 
+    /// Y-coordinate where the header block starts.
+    ///
+    /// The header and the grid are composed as one block and centred in
+    /// the column while they fit, so a handful of workspaces reads as a
+    /// deliberate band across the screen rather than as content shoved
+    /// against the top edge with a screen's worth of void beneath it.
+    /// Once the grid is taller than the column the block pins to the top
+    /// and `overview_scroll_y` takes over.
+    fn overview_header_top(&self) -> f64 {
+        let col = self.overview_column_rect();
+        let block = OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+            + self.overview_content_height();
+        let slack = col.height() - block;
+        if slack > 0.0 {
+            // Slightly above the geometric centre: content placed dead
+            // centre reads as sitting low.
+            col.y0 + slack * 0.42
+        } else {
+            col.y0
+        }
+    }
+
     /// Y-coordinate where the first grid row starts. Matches the draw path
     /// so hit-test + draw stay in sync. `overview_scroll_y` shifts every
     /// row upward so the wheel handler can pan beyond the visible band
     /// when the workspace list overflows.
     fn overview_first_row_top(&self) -> f64 {
-        let col = self.overview_column_rect();
-        col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+        self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
             - self.overview_scroll_y
     }
 
@@ -4466,11 +4490,14 @@ impl ShellOverlayHost {
         rows as f64 * (OVERVIEW_CARD_HEIGHT_PX + OVERVIEW_GRID_GAP_PX) - OVERVIEW_GRID_GAP_PX
     }
 
-    /// Height of the band the grid scrolls inside — the column minus the
-    /// header block above it.
+    /// Height of the band the grid scrolls inside — the column below the
+    /// header block.
     fn overview_viewport_height(&self) -> f64 {
         let col = self.overview_column_rect();
-        (col.y1 - col.y0 - OVERVIEW_HEADER_HEIGHT_PX - OVERVIEW_HEADER_MARGIN_BOTTOM_PX).max(0.0)
+        let top = self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX;
+        (col.y1 - top).max(0.0)
     }
 
     /// Maximum legal `overview_scroll_y` — the content overflow below
@@ -4554,22 +4581,24 @@ const OVERVIEW_CARD_MIN_WIDTH_PX: f64 = 300.0;
 /// without making the screen any easier to read.
 const OVERVIEW_GRID_MAX_COLS: usize = 4;
 /// Height of every workspace card. Uniform so the grid reads as a set of
-/// peers; tall enough for a title row, the window strip, and a meta footer.
-const OVERVIEW_CARD_HEIGHT_PX: f64 = 232.0;
+/// peers: a title row, the window strip, and a meta footer.
+const OVERVIEW_CARD_HEIGHT_PX: f64 = 284.0;
 const OVERVIEW_CARD_RADIUS_PX: f64 = 18.0;
 /// Border weight for a resting card. The current card strokes at twice this.
 const OVERVIEW_CARD_BORDER_PX: f64 = 1.0;
 /// Inner padding on each card.
 const OVERVIEW_CARD_PADDING_PX: f64 = 16.0;
 /// Height of the window-strip region inside a card — the part that shows
-/// what is actually open in that workspace.
-const OVERVIEW_WINDOWS_HEIGHT_PX: f64 = 108.0;
+/// what is actually open in that workspace. Roughly screen-shaped against
+/// the card's inner width, so the region reads as a workspace rather than
+/// as a bar of chips.
+const OVERVIEW_WINDOWS_HEIGHT_PX: f64 = 194.0;
 /// Corner radius of one window-group frame inside the strip.
 const OVERVIEW_GROUP_RADIUS_PX: f64 = 10.0;
 /// Gutter between adjacent window-group frames.
 const OVERVIEW_GROUP_GAP_PX: f64 = 8.0;
 /// Height of a tab chip inside a window-group frame.
-const OVERVIEW_TAB_CHIP_HEIGHT_PX: f64 = 22.0;
+const OVERVIEW_TAB_CHIP_HEIGHT_PX: f64 = 24.0;
 /// Gutter between tab chips.
 const OVERVIEW_TAB_CHIP_GAP_PX: f64 = 6.0;
 /// Space reserved above the first grid row for the "Workspaces" header block
@@ -7989,6 +8018,33 @@ fn draw_window_group(
         drawn += 1;
     }
 
+    // The body below the tab row is the window's content area, and the
+    // shell has no pixels for it (see this function's header). What it
+    // does know is which tab is in front, so the body carries that app's
+    // own mark, quietly and large — the honest answer to "what is this
+    // window showing" at a glance, where a blank panel answers nothing.
+    let body_top = y + chip_h + gap;
+    let body = Rect::new(rect.x0 + pad, body_top, rect.x1 - pad, rect.y1 - pad);
+    if body.width() > 16.0 && body.height() > 16.0 {
+        if let Some(active) = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first())
+        {
+            let d = (body.width().min(body.height()) * 0.55).min(80.0);
+            let c = body.center();
+            ui::icons::draw_icon(
+                scene,
+                transform,
+                Rect::new(c.x - d / 2.0, c.y - d / 2.0, c.x + d / 2.0, c.y + d / 2.0),
+                tile_icon(&active.tile),
+                colors.text_tertiary.with_alpha_factor(0.5),
+                1.5,
+            );
+        }
+    }
+
     let hidden = group.tabs.len().saturating_sub(drawn);
     if hidden > 0 {
         let label = format!("+{hidden}");
@@ -8027,7 +8083,7 @@ impl ShellOverlayHost {
         tree: &crate::shell::state::WorkspaceTree,
         is_active: bool,
     ) {
-        use ui::widget::{Chip, ChipLead, ChipStyle, EmptyState};
+        use ui::widget::{Chip, ChipLead, ChipStyle};
 
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -8149,19 +8205,36 @@ impl ShellOverlayHost {
             .collect();
 
         if groups.is_empty() {
-            // A workspace with nothing in it says so, and looks composed
-            // saying it. Nothing is invented to fill the space.
-            EmptyState::paint(
+            // A workspace with nothing in it says so, in the same chip
+            // language the populated cards use: the shared ghost style is
+            // exactly this — a slot where a value could be, rather than a
+            // value. Nothing is invented to fill the space, and the empty
+            // card stays quieter than its own title instead of shouting a
+            // banner across the grid.
+            let ghost = RoundedRect::from_rect(strip, OVERVIEW_GROUP_RADIUS_PX);
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [5.0, 5.0]),
+                card_xform,
+                colors.border_standard,
+                None,
+                &ghost,
+            );
+            let label = "No windows";
+            let chip_h = OVERVIEW_TAB_CHIP_HEIGHT_PX;
+            let lead = ChipLead::Glyph(ui::icons::Icon::LayoutGrid);
+            let w = Chip::natural_width_at(label, chip_h, lead, theme, text_renderer)
+                .min(strip.width());
+            let cx = strip.center().x;
+            let cy = strip.center().y;
+            Chip::draw_at(
                 scene,
                 card_xform,
-                text_renderer,
+                Rect::new(cx - w / 2.0, cy - chip_h / 2.0, cx + w / 2.0, cy + chip_h / 2.0),
+                label,
+                lead,
+                ChipStyle::ghost(),
                 theme,
-                strip,
-                Some(ui::icons::Icon::LayoutGrid),
-                "No windows",
-                None,
-                None,
-                Point::new(f64::MIN, f64::MIN),
+                text_renderer,
             );
         } else {
             // Frames are sized by each group's share of the strip, so the
@@ -8197,7 +8270,7 @@ impl ShellOverlayHost {
         }
 
         // -- Footer: the counts, and who else is here.
-        let footer_size = tokens.typography.scale.xs;
+        let footer_size = tokens.typography.scale.sm;
         let tab_total: usize = groups.iter().map(|g| g.tabs.len()).sum();
         let counts = if tab_total > groups.len() {
             format!("{} · {} tabs", windows_label(groups.len()), tab_total)
@@ -8299,7 +8372,7 @@ impl ShellOverlayHost {
         let title_weight = TextWeight::Bold;
         let (tw, th) = text_renderer.measure_weighted(title, title_size, None, title_weight);
         let tx = (col.x0 + col.x1) / 2.0 - tw as f64 / 2.0;
-        let ty = col.y0 + 4.0;
+        let ty = self.overview_header_top() + 4.0;
         text_renderer.draw_text_weighted(
             scene,
             title,
@@ -8333,7 +8406,9 @@ impl ShellOverlayHost {
         // gutter, not the column itself: the current card's glow paints
         // outside its own rect, and clipping at the column edge would slice
         // off the very indicator that says which workspace is current.
-        let viewport_top = col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
+        let viewport_top = self.overview_header_top()
+            + OVERVIEW_HEADER_HEIGHT_PX
+            + OVERVIEW_HEADER_MARGIN_BOTTOM_PX
             - OVERVIEW_GRID_GAP_PX / 2.0;
         let scroll_clip = Rect::new(
             col.x0 - OVERVIEW_SCROLL_GUTTER_PX,
@@ -8408,8 +8483,8 @@ impl ShellOverlayHost {
         let label = "Add workspace";
         let label_size = tokens.typography.scale.base;
         let (lw, lh) = text_renderer.measure(label, label_size, None);
-        let icon_size = 22.0_f64;
-        let icon_label_gap = 8.0_f64;
+        let icon_size = 30.0_f64;
+        let icon_label_gap = 12.0_f64;
         let unit_cx = (add_rect.x0 + add_rect.x1) / 2.0;
         let unit_cy = (add_rect.y0 + add_rect.y1) / 2.0;
         // Icon over label, centred as a unit: at grid-cell proportions a
