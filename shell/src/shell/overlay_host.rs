@@ -2428,7 +2428,11 @@ impl ShellOverlayHost {
                 if !row.group_is_laid_out(group_id) {
                     continue;
                 }
-                row.scroll_group_into_view(group_id);
+                // Eased, not teleported: a focus change (click, Alt+Shift
+                // wheel jump, keyboard) slides the strip to the group on
+                // the snap curve, the way Niri's focus-column-left/right
+                // slides the view.
+                row.scroll_group_into_view_animated(group_id, Instant::now());
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
         }
@@ -3017,6 +3021,21 @@ impl ShellOverlayHost {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
         Some(unsafe { &mut *ptr })
+    }
+
+    /// Select `tab` inside `group` on the live widget tree — the
+    /// authoritative side for the active tab (the per-frame
+    /// `harvest_active_tab_writeback` mirrors widgets into the tree, so
+    /// a tree-only write is overwritten one frame later). Used by the
+    /// compositor's Alt+Shift wheel window jump. Returns `true` when
+    /// the widget-side active tab changed.
+    pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
+        let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
+            return false;
+        };
+        // SAFETY: see field doc on `group_row_ptrs`.
+        let row: &mut GroupRow = unsafe { &mut *ptr };
+        row.set_group_active_tab(group, tab)
     }
 
     /// Read-only accessor for the cached "+ Add workspace" tile rect.

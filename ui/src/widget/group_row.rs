@@ -46,6 +46,57 @@ const SNAP_ANIM_MS: u64 = 200;
 /// two events.
 const MAKE_SPACE_ANIM_MS: u64 = 420;
 
+/// Touchpad travel that equals one wheel detent for the discrete jump
+/// gestures (strip group jump, shell workspace switch) — one jump per
+/// this many pixels of accumulated scroll. Also the scale for hi-res
+/// wheels whose notches the host session reports as pixel deltas.
+pub const JUMP_PX_PER_DETENT: f64 = 50.0;
+
+/// Turns a stream of scroll deltas (in fractional detents) into whole
+/// discrete steps: the Niri wheel-bind feel, where a clicky wheel fires
+/// once per notch and a touchpad fires once per [`JUMP_PX_PER_DETENT`]
+/// of accumulated travel. Reversing direction drops the partial
+/// balance. Deliberately NO quiet-time decay: real hardware (hi-res
+/// wheels, touchpads) delivers fractional detents with arbitrary
+/// pauses, and a decay meant slow deliberate scrolling could never
+/// reach a whole detent — observed live as "the jump works once, then
+/// I can not scroll further". A stale sub-detent balance is harmless:
+/// the flip reset clears it the moment the user scrolls the other way,
+/// and same-direction leftovers only make the next jump come a hair
+/// sooner. Shared by the shell's modifier-wheel gestures so every
+/// consumer counts detents the same way.
+#[derive(Default)]
+pub struct WheelJumpAccum {
+    accum: f64,
+}
+
+impl WheelJumpAccum {
+    pub fn push(&mut self, detents: f64, _now: Instant) -> i32 {
+        if detents == 0.0 {
+            return 0;
+        }
+        if self.accum != 0.0 && self.accum.signum() != detents.signum() {
+            self.accum = 0.0;
+        }
+        self.accum += detents;
+        let whole = self.accum.trunc();
+        self.accum -= whole;
+        whole as i32
+    }
+}
+
+/// Scroll delta → fractional detents for the jump gestures, on the same
+/// axis promotion the strip has always used (vertical wheel promoted to
+/// horizontal travel; winit's positive-y-is-up flipped). So wheel-DOWN
+/// yields a positive detent = jump RIGHT / next, matching Niri's
+/// `Mod+Shift+WheelScrollDown → focus-column-right`.
+pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
+    match delta {
+        MouseScrollDelta::LineDelta(x, y) => (-x - y) as f64,
+        MouseScrollDelta::PixelDelta(pp) => (-pp.x - pp.y) / JUMP_PX_PER_DETENT,
+    }
+}
+
 /// In-flight "make space" motion. `offsets` is how far *left* of its new
 /// home each affected group started, keyed by group id, so the eased
 /// paint is `new_x + offset * (1 - t)` — the group renders where it used
@@ -684,19 +735,51 @@ impl GroupRow {
     }
 
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
-        let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
+        let Some(sx) = self.into_view_target(group_id) else {
             return false;
         };
+        self.scroll_x = sx;
+        self.scroll_dirty = true;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+        true
+    }
+
+    /// Animated variant of [`Self::scroll_group_into_view`]: the same pan
+    /// target, but eased there on the wheel-snap curve (`SNAP_ANIM_MS`
+    /// cubic-out) instead of teleporting. This is what makes a focus jump
+    /// (click, Alt+Shift wheel, keyboard) read as motion rather than a
+    /// cut — the way Niri's `focus-column-left/right` slides the view to
+    /// the newly-focused column. Returns `true` when a pan was started.
+    pub fn scroll_group_into_view_animated(&mut self, group_id: u64, now: Instant) -> bool {
+        let Some(sx) = self.into_view_target(group_id) else {
+            return false;
+        };
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: sx,
+            started: now,
+        });
+        self.last_wheel_at = None;
+        self.scroll_dirty = true;
+        true
+    }
+
+    /// Shared target math for [`Self::scroll_group_into_view`] and its
+    /// animated variant: the `scroll_x` that puts `group_id` fully inside
+    /// the viewport, or `None` when the group is missing, not laid out
+    /// yet, or already fully visible (nothing to do).
+    fn into_view_target(&self, group_id: u64) -> Option<f64> {
+        let g = self.groups.iter().find(|g| g.id == group_id)?;
         let gr = g.get_rect();
         // Degenerate rect → layout hasn't run for this group yet.
         if gr.width() <= 0.0 {
-            return false;
+            return None;
         }
         // Groups must clear the leading wheel-disc gutter on the left and
         // the row's right edge on the right.
         let left_bound = self.rect.x0 + self.leading_inset;
         let right_bound = self.rect.x1;
-        let before = self.scroll_x;
         let mut sx = self.scroll_x;
         // Reveal the right edge first, then the left — so for a group wider
         // than the clear viewport the left (start) edge wins and the user
@@ -710,15 +793,7 @@ impl GroupRow {
         let viewport = self.rect.width().max(1.0);
         let upper = self.max_scroll_x().max(viewport * 3.0);
         sx = sx.clamp(0.0, upper);
-        if (sx - before).abs() > f64::EPSILON {
-            self.scroll_x = sx;
-            self.scroll_dirty = true;
-            self.snap_anim = None;
-            self.last_wheel_at = None;
-            true
-        } else {
-            false
-        }
+        ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
     }
 
     /// True while a snap-to-nearest-group animation is in flight, or
@@ -790,6 +865,28 @@ impl GroupRow {
             }
         }
         best
+    }
+
+    /// Select `tab_id` inside `group_id`, widget-side — the direction
+    /// that sticks: the bar's `active_id` is authoritative and the
+    /// shell's per-frame harvest mirrors it into the persisted tree, so
+    /// a tree-only write would be overwritten one frame later. Used by
+    /// the shell's Alt+Shift wheel window jump. Returns `true` when the
+    /// active tab changed.
+    pub fn set_group_active_tab(&mut self, group_id: u64, tab_id: u64) -> bool {
+        let Some(g) = self.groups.iter_mut().find(|g| g.id == group_id) else {
+            return false;
+        };
+        if !g.set_active_tab(tab_id) {
+            return false;
+        }
+        // The displayed tile changed under a programmatic jump — force
+        // the parent's subtree cache and the taffy tree to rebuild this
+        // frame, the same invalidation a click on the pill produces
+        // through the event path.
+        self.scroll_dirty = true;
+        self.structure_dirty = true;
+        true
     }
 
     /// Per-frame snap tick. Called from `apply_layout` so the snap
@@ -890,6 +987,13 @@ impl GroupRow {
     /// the user having stopped wheeling some duration ago without
     /// having to actually sleep or run a real event loop.
     #[cfg(test)]
+    /// Test-only view of the live snap stops (each group's left edge in
+    /// canvas-x), as built by the last `apply_layout` pass.
+    #[cfg(test)]
+    pub(crate) fn group_left_edges_for_test(&self) -> &[f64] {
+        &self.group_left_edges
+    }
+
     pub(crate) fn set_last_wheel_at_for_test(&mut self, t: Instant) {
         self.last_wheel_at = Some(t);
     }
@@ -1887,62 +1991,14 @@ impl Widget for GroupRow {
             return;
         }
 
-        // Horizontal scroll for the strip. Niri-style: the user spins
-        // the vertical wheel while the cursor is over the row's rect
-        // and the strip pans horizontally so off-screen-right groups
-        // come into view. We claim the event (`*handled = true`) only
-        // when there's actually content to scroll — otherwise the
-        // sibling `StripView` retains the wheel for inter-strip
-        // pagination, preserving its existing behaviour.
-        //
-        // Wheel handling lives BEFORE the per-child dispatch below so a
-        // child's `TileHost` can't swallow the wheel for its own
-        // (non-existent) internal scroll. The dispatch loop still runs
-        // after, but with `handled = true` the loop early-exits on the
-        // first child it visits.
-        // Wheel-over-strip pans `scroll_x` Niri-style. The strip is
-        // an INFINITE canvas — even when the current content fits
-        // inside the viewport, scrolling must reveal "future" empty
-        // strip space where the user can drop new windows. We
-        // therefore don't gate on `max_scroll_x() > 0` and don't
-        // clamp `scroll_x` to that tight bound either; instead the
-        // upper clamp is `max(max_scroll_x, viewport * 3)` so the
-        // user can pan two screenfuls of empty wallpaper past their
-        // rightmost group. Lower clamp stays at 0 — Niri-likely you
-        // can't scroll past the strip's leftmost edge.
-        //
-        // Tab cycling (the 1ccb405 mistake) belongs to a completely
-        // different gesture; the strip pans, period.
-        if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.rect.contains(self.last_cursor)
-        {
-            // Sign convention: a horizontal trackpad swipe pans the strip
-            // in the natural direction — swipe-right (dx>0) reveals content
-            // to the LEFT (decrease scroll_x → contribution `-x`), matching
-            // touch-content-tracks-the-finger. Vertical wheel is promoted to
-            // a horizontal pan the same way (wheel-up reveals content to the
-            // LEFT → `-y`). PixelDelta carries the same axis convention 1:1.
-            // 30 px / LineDelta matches the strip's prior per-line factor.
-            let dx = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (-*x - *y) as f64 * 30.0,
-                MouseScrollDelta::PixelDelta(pp) => -pp.x - pp.y,
-            };
-            if dx != 0.0 {
-                let viewport = self.rect.width().max(1.0);
-                let upper = self.max_scroll_x().max(viewport * 3.0);
-                let before = self.scroll_x;
-                self.scroll_x = (self.scroll_x + dx).clamp(0.0, upper);
-                if (self.scroll_x - before).abs() > f64::EPSILON {
-                    // Force the parent Column's subtree cache to
-                    // rebuild this frame — without it the cache
-                    // keeps painting the pre-pan positions.
-                    self.scroll_dirty = true;
-                }
-                self.last_wheel_at = Some(Instant::now());
-                self.snap_anim = None;
-                *handled = true;
-            }
-        }
+        // A bare wheel NEVER moves the strip — hard boundary
+        // (2026-08-22): scrolling is for content inside a window, and
+        // the view must not slide out from under the user. The strip
+        // travels only through focus changes (click, Alt+Shift wheel
+        // jump, keyboard) and the shell's modifier-wheel gestures,
+        // which arrive via `scroll_group_into_view_animated`, not
+        // through this event path. The wheel is deliberately left
+        // unclaimed here so nothing about it reaches the strip.
 
         // Dispatch to inter-group resize handles FIRST so a press in
         // the gap claims the event before it reaches the adjacent
@@ -2951,6 +3007,63 @@ mod tests {
     }
 
     #[test]
+    fn scroll_group_into_view_animated_eases_to_the_same_target() {
+        // Two identical rows: one panned by the teleporting variant (the
+        // reference target), one by the animated variant. The animated row
+        // must end up exactly where the plain one jumped — just later,
+        // via the snap curve.
+        let build = || {
+            let (mut row, _taffy, _root) =
+                make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+            row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+            row.set_content_w_for_test(row.content_width());
+            row
+        };
+        let mut plain = build();
+        let mut anim = build();
+        let target_id = 500; // far-right group, off the viewport's edge
+        assert!(plain.scroll_group_into_view(target_id));
+        let expected = plain.scroll_x();
+        assert!(expected > 0.0);
+
+        let t0 = Instant::now();
+        assert!(
+            anim.scroll_group_into_view_animated(target_id, t0),
+            "an off-screen group must start an animated pan"
+        );
+        // Eased, not teleported: the call itself must not move the strip.
+        assert_eq!(anim.scroll_x(), 0.0, "the pan is applied by ticks, not the call");
+        // Mid-curve the strip is in motion, strictly between rest and target.
+        anim.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS / 2));
+        let mid = anim.scroll_x();
+        assert!(
+            mid > 0.0 && mid < expected,
+            "halfway through the curve scroll_x must be between 0 and {expected}, got {mid}"
+        );
+        // After the full duration it rests exactly on the plain target.
+        anim.tick_snap_at(t0 + Duration::from_millis(SNAP_ANIM_MS + 50));
+        assert_eq!(
+            anim.scroll_x(),
+            expected,
+            "the animated pan must settle on the same target the teleporting variant picks"
+        );
+    }
+
+    #[test]
+    fn scroll_group_into_view_animated_is_a_noop_for_a_visible_group() {
+        // Keep the fixture's full 2000 px viewport: the first group is
+        // fully inside it, so there is nothing to animate.
+        let (mut row, _taffy, _root) =
+            make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        assert!(!row.scroll_group_into_view_animated(100, Instant::now()));
+        assert_eq!(row.scroll_x(), 0.0);
+        assert!(
+            !row.needs_animation_frame(),
+            "a no-op must not leave an animation pumping frames"
+        );
+    }
+
+    #[test]
     fn drop_into_new_window_works_when_release_is_in_empty_strip_area_below_group() {
         // Regression for the "drop zones show but drop has no effect" bug:
         // when the user drags a tab and releases into the strip area below
@@ -3827,158 +3940,77 @@ mod tests {
     }
 
     #[test]
-    fn wheel_pans_strip_horizontally_when_content_overflows() {
-        // End-to-end: a vertical wheel event over the row's rect, while
-        // there's overflow, must (a) update `scroll_x` (b) shift each
-        // group's stored `Rect` left by that amount on the next layout
-        // pass, and (c) claim the event so a sibling `StripView`
-        // doesn't paginate strips out from under the user.
+    fn wheel_over_strip_never_moves_it() {
+        // Hard boundary (2026-08-22): a bare wheel must NOT move the
+        // strip — not a pan, not a jump. The view travels only through
+        // focus changes and the shell's modifier-wheel gestures. This
+        // holds both when content overflows the viewport and when it
+        // fits, and the event is left unclaimed.
         use winit::dpi::PhysicalPosition;
 
-        // 8 groups so the sum of `WIDTH_MIN_PX` (300) floors exceeds
-        // the 1200 px viewport even after shrink — without this the
-        // scroll machinery doesn't engage, since groups would shrink
-        // to fit. See the matching update on
-        // `content_width_exceeds_viewport_when_groups_overflow`.
-        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
-        let pre_rect_0 = row.groups[0].get_rect();
-
-        // Move the cursor to the centre of the row so the wheel
-        // handler's containment check passes.
-        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
-        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
-        let mut state = AutoCommit::new();
-        let root_obj = automerge::ROOT.clone();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        // Synthesise CursorMoved + MouseWheel through handle_event.
-        // DeviceId is opaque in winit; we use the dummy variant.
-        let dev = unsafe { std::mem::zeroed() };
-        row.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(cx, cy),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root_obj,
-            &mut handled,
-            &mut focus,
-            root,
-            &taffy,
-        );
-        // Wheel down (y < 0) → scroll content right (scroll_x > 0).
-        row.handle_event(
-            &WindowEvent::MouseWheel {
-                device_id: dev,
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root_obj,
-            &mut handled,
-            &mut focus,
-            root,
-            &taffy,
-        );
-        assert!(handled, "wheel over an overflowing row must claim the event");
-        assert!(
-            row.scroll_x() > 0.0,
-            "wheel-down must increase scroll_x; got {}",
-            row.scroll_x()
-        );
-        // Re-run the layout pass: with a non-zero scroll, every child's
-        // x must shift left by `scroll_x`.
-        row.apply_layout(&taffy, root, Point::ORIGIN);
-        let post_rect_0 = row.groups[0].get_rect();
-        let dx = pre_rect_0.x0 - post_rect_0.x0;
-        assert!(
-            (dx - row.scroll_x()).abs() < 0.5,
-            "group[0]'s x must shift left by exactly scroll_x; pre={} post={} dx={} scroll_x={}",
-            pre_rect_0.x0,
-            post_rect_0.x0,
-            dx,
-            row.scroll_x()
-        );
+        for (mut row, taffy, root) in [
+            make_overflow_row(8, 1200.0),
+            make_row_with_groups_with_taffy(&[&[1], &[10]]),
+        ] {
+            let pre_rect_0 = row.groups[0].get_rect();
+            let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+            let cx = (row.rect.x0 + row.rect.x1) / 2.0;
+            let mut state = AutoCommit::new();
+            let root_obj = automerge::ROOT.clone();
+            let modifiers = Modifiers::default();
+            let mut handled = false;
+            let mut focus = None;
+            let dev = unsafe { std::mem::zeroed() };
+            row.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: dev,
+                    position: PhysicalPosition::new(cx, cy),
+                },
+                1.0,
+                &modifiers,
+                &mut state,
+                &root_obj,
+                &mut handled,
+                &mut focus,
+                root,
+                &taffy,
+            );
+            row.handle_event(
+                &WindowEvent::MouseWheel {
+                    device_id: dev,
+                    delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                    phase: winit::event::TouchPhase::Moved,
+                },
+                1.0,
+                &modifiers,
+                &mut state,
+                &root_obj,
+                &mut handled,
+                &mut focus,
+                root,
+                &taffy,
+            );
+            assert!(
+                !handled,
+                "a bare wheel must be left unclaimed by the strip"
+            );
+            // Give any (wrongly started) eased travel every chance to
+            // show itself before reading the position.
+            row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+            assert_eq!(
+                row.scroll_x(),
+                0.0,
+                "a bare wheel must not move the strip"
+            );
+            row.apply_layout(&taffy, root, Point::ORIGIN);
+            assert_eq!(
+                row.groups[0].get_rect().x0,
+                pre_rect_0.x0,
+                "group rects must not shift after a bare wheel"
+            );
+        }
     }
 
-    #[test]
-    fn wheel_does_not_claim_when_strip_fits_inside_viewport() {
-        // Inverse of the overflow case: when content fits, the wheel
-        // event is left for `StripView` to paginate strips. This
-        // preserves the existing inter-strip nav behaviour for
-        // single-strip-fits-viewport workspaces (the bootstrap default).
-        use winit::dpi::PhysicalPosition;
-
-        // Two Normal=600 groups in a wide 2000-px viewport: 1208 px
-        // content < 2000 px viewport, no overflow, max_scroll = 0.
-        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[10]]);
-        assert_eq!(
-            row.max_scroll_x(),
-            0.0,
-            "precondition: 2-group row in wide viewport must not overflow"
-        );
-
-        let cy = (row.rect.y0 + row.rect.y1) / 2.0;
-        let cx = (row.rect.x0 + row.rect.x1) / 2.0;
-        let mut state = AutoCommit::new();
-        let root_obj = automerge::ROOT.clone();
-        let modifiers = Modifiers::default();
-        let mut handled = false;
-        let mut focus = None;
-        let dev = unsafe { std::mem::zeroed() };
-        row.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: dev,
-                position: PhysicalPosition::new(cx, cy),
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root_obj,
-            &mut handled,
-            &mut focus,
-            root,
-            &taffy,
-        );
-        row.handle_event(
-            &WindowEvent::MouseWheel {
-                device_id: dev,
-                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
-                phase: winit::event::TouchPhase::Moved,
-            },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root_obj,
-            &mut handled,
-            &mut focus,
-            root,
-            &taffy,
-        );
-        // 2026-06-02 design change: the strip is Niri-style infinite,
-        // so wheel-over-strip ALWAYS pans (into empty wallpaper past
-        // the rightmost group when there's no content overflow). The
-        // wheel handler claims the event regardless of overflow; the
-        // sibling StripView's inter-strip pagination has been moved
-        // out of the wheel path (use chord keys / palette commands).
-        assert!(
-            handled,
-            "wheel over the strip must always be claimed (Niri-style infinite pan)"
-        );
-        // Wheel-down (y < 0) translates to dx = (0 - (-3)) * 30 = 90,
-        // so scroll_x advances by 90 px into the empty-wallpaper
-        // buffer (`viewport * 3` upper clamp).
-        assert!(
-            row.scroll_x() > 0.0,
-            "no-overflow strip must STILL pan into empty wallpaper space; got scroll_x={}",
-            row.scroll_x()
-        );
-    }
 
     #[test]
     fn scroll_snaps_to_nearest_group_after_wheel_idle() {
@@ -4055,12 +4087,11 @@ mod tests {
     }
 
     #[test]
-    fn fresh_wheel_cancels_in_flight_snap() {
-        // If the user starts panning again mid-snap, the snap must
-        // cancel — the new wheel event resets `last_wheel_at`, the
-        // idle gate fails, and the existing snap is dropped on the
-        // next tick. Without this, the strip would fight the user's
-        // input mid-curve.
+    fn wheel_mid_snap_leaves_the_snap_untouched() {
+        // A wheel notch arriving while a snap is easing must not
+        // perturb it in any way — the bare wheel is a no-op for the
+        // strip (hard boundary 2026-08-22), so the in-flight curve
+        // keeps its target and settles exactly where it was headed.
         use winit::dpi::PhysicalPosition;
 
         // 8 groups → sum-of-mins exceeds the 1200 px viewport so
@@ -4105,9 +4136,30 @@ mod tests {
             1.0, &modifiers, &mut state, &root_obj,
             &mut handled, &mut focus, root, &taffy,
         );
+        let anim = row
+            .snap_anim
+            .expect("the in-flight snap must survive a bare wheel notch");
+        // The idle snap was easing toward the stop nearest 300; the
+        // notch must not have re-targeted it.
+        let edges = row.group_left_edges_for_test().to_vec();
+        let expected = edges
+            .iter()
+            .copied()
+            .min_by(|a, b| (a - 300.0).abs().partial_cmp(&(b - 300.0).abs()).unwrap())
+            .unwrap();
         assert!(
-            row.snap_anim.is_none(),
-            "fresh wheel event must cancel the in-flight snap",
+            (anim.to - expected).abs() < 0.5,
+            "the snap must still target the stop nearest its origin \
+             ({expected}); got {}",
+            anim.to
+        );
+        // And it settles exactly there.
+        row.tick_snap_at(Instant::now() + Duration::from_millis(400));
+        assert!(
+            (row.scroll_x() - expected).abs() < 0.5,
+            "the snap must settle on its original target ({expected}); \
+             got {}",
+            row.scroll_x()
         );
     }
 
