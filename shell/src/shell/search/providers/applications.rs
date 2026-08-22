@@ -89,69 +89,68 @@ impl ApplicationsProvider {
                 subtitle: Some(subtitle),
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
-                    // The app opens into the workspace the user is
-                    // looking at: that workspace's grants become its
-                    // sandbox, and its id becomes the collaboration
-                    // room it joins — so opening the same app in two
-                    // workspaces gives two independent sessions.
-                    //
-                    // The grants are published immediately before the
-                    // launch rather than cached: a grant made a moment
-                    // ago in the permissions UI must reach this launch,
-                    // and a revoked one must not.
-                    //
-                    // Scoped so the borrow is released before the error
-                    // branch below takes a mutable one.
-                    let launched = {
-                        let st = chrome.borrow();
-                        let tree = st.tree();
-                        // Where the window goes is decided here, while the
-                        // user's selection and the layout they were looking
-                        // at are both still true — the window itself maps
-                        // seconds later, on another process. See
-                        // `crate::shell::placement`.
-                        //
-                        // An explicit target beats the rule: the "+" on a
-                        // group's tab strip names the destination, and
-                        // that is a stronger statement of intent than any
-                        // inference from what happens to be selected.
-                        crate::shell::placement::note_placement_for_launch_targeted(
-                            &package_id,
-                            &tree,
-                            st.strip_viewport(),
-                            st.open_target,
-                        );
-                        tree.active_workspace().map(|ws| {
-                            launcher::set_workspace_capabilities(ws.capabilities.clone());
-                            launcher::launch_in_workspace(&package_id, ws)
-                        })
-                    };
-                    // The launch itself is non-blocking: everything past
-                    // resolution happens on a worker thread. Only the
-                    // pre-fork failures land here; the rest arrive as
-                    // launch events the chrome drains each frame.
-                    //
-                    // No active workspace means there is no room and no
-                    // grant to launch into, so there is nothing to
-                    // start — reported the same way a resolution
-                    // failure is.
-                    let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
-                    if let Err(err) = outcome {
-                        let mut st = chrome.borrow_mut();
-                        st.push_notification_full(
-                            Notification::new(
-                                format!("Couldn't open {display_name}"),
-                                err.user_message(),
-                            )
-                            .with_severity(NotificationSeverity::Error)
-                            .with_app_name("Applications"),
-                        );
-                        st.bump();
-                    }
+                    launch_installed_app(chrome, &package_id, &display_name);
                 }),
             });
         }
         out
+    }
+}
+
+/// Launch an installed package into the workspace the user is looking
+/// at, reporting a pre-fork failure as a notification.
+///
+/// Shared by the Applications row and by the catalog's post-install
+/// launch, so "the app opens" means one thing: the same placement, the
+/// same grants, the same room. The app opens into the active workspace —
+/// that workspace's grants become its sandbox, and its id becomes the
+/// collaboration room it joins — so opening the same app in two
+/// workspaces gives two independent sessions.
+///
+/// The grants are published immediately before the launch rather than
+/// cached: a grant made a moment ago in the permissions UI must reach
+/// this launch, and a revoked one must not.
+pub(crate) fn launch_installed_app(chrome: &Chrome, package_id: &str, display_name: &str) {
+    // Scoped so the borrow is released before the error branch below
+    // takes a mutable one.
+    let launched = {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        // Where the window goes is decided here, while the user's
+        // selection and the layout they were looking at are both still
+        // true — the window itself maps seconds later, on another
+        // process. See `crate::shell::placement`.
+        //
+        // An explicit target beats the rule: the "+" on a group's tab
+        // strip names the destination, and that is a stronger statement
+        // of intent than any inference from what happens to be selected.
+        crate::shell::placement::note_placement_for_launch_targeted(
+            package_id,
+            &tree,
+            st.strip_viewport(),
+            st.open_target,
+        );
+        tree.active_workspace().map(|ws| {
+            launcher::set_workspace_capabilities(ws.capabilities.clone());
+            launcher::launch_in_workspace(package_id, ws)
+        })
+    };
+    // The launch itself is non-blocking: everything past resolution
+    // happens on a worker thread. Only the pre-fork failures land here;
+    // the rest arrive as launch events the chrome drains each frame.
+    //
+    // No active workspace means there is no room and no grant to launch
+    // into, so there is nothing to start — reported the same way a
+    // resolution failure is.
+    let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
+    if let Err(err) = outcome {
+        let mut st = chrome.borrow_mut();
+        st.push_notification_full(
+            Notification::new(format!("Couldn't open {display_name}"), err.user_message())
+                .with_severity(NotificationSeverity::Error)
+                .with_app_name("Applications"),
+        );
+        st.bump();
     }
 }
 
@@ -200,7 +199,7 @@ impl SearchProvider for ApplicationsProvider {
 /// often the only exact handle a user - or a script - has for it.
 /// Scoring that the same 25 as an incidental substring let a file called
 /// `hex-editor.rs` outrank the app itself.
-fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str>) -> Option<i32> {
+pub(crate) fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str>) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
