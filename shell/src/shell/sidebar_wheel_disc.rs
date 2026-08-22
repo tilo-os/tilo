@@ -120,7 +120,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Shape, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
 use winit::event::WindowEvent;
 
@@ -332,12 +332,18 @@ impl WheelCacheFp {
 pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.34;
 
 /// Fractional vertical inset applied at both the top and bottom of the
-/// taffy-allocated slot so the wheel disc occupies roughly 10%–90% of
-/// the available height. The overlay host allocates the full sidebar
-/// slot height to the disc's taffy node; we trim it here so the
-/// visible disc footprint reads as deliberately inset from the topbar
-/// and floor rather than running edge-to-edge.
-pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.10;
+/// taffy-allocated slot. The overlay host allocates the full sidebar
+/// slot height to the disc's taffy node; we trim it here so the visible
+/// footprint reads as deliberately inset from the topbar and floor
+/// rather than running edge-to-edge.
+///
+/// It also buys the band its depth. The band has to bend back toward the
+/// disc's centre to stay inside a tall, narrow slot, so height and depth
+/// trade off directly: at the previous 0.10 the footprint was 3.7 times
+/// taller than it was wide on a 900-px display and the band came out at
+/// 129 px, too shallow to hold a workspace name without truncating it.
+/// 0.16 costs 15% of the disc's height and returns a fifth more depth.
+pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.16;
 
 /// Concept's `DRAG_FACTOR` from `App.tsx:41` — degrees of rotation per
 /// pixel of vertical drag.
@@ -401,22 +407,50 @@ const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 ///
 /// It was 0.22 — nearly half the footprint's height was a ramp, which is
 /// most of why the body read as a graded smear rather than as a surface.
-/// At 0.11 the band is flat for the four fifths of its run you actually
-/// look at and only dissolves where it leaves the slot.
-const FADE_IN_STOP: f32 = 0.11;
+/// At 0.13 the band is flat across the three quarters of its run you
+/// actually look at and only dissolves where it leaves the slot. It also
+/// has to stay above `1 - BAND_TANGENT_FRACTION` so the tail the inner
+/// arc gets clipped in is already fading by the time the clip bites.
+const FADE_IN_STOP: f32 = 0.13;
 
 /// How far past the footprint's right edge the rim's shadow is allowed to
 /// reach. The disc's paint group is clipped this much wider so the shadow
 /// can sit outside the rim and still be faded with everything else.
 const RIM_SHADOW_REACH: f64 = 26.0;
 
+/// Clear space between the footprint's left edge and the band's inner
+/// arc at its closest approach. Keeps the arc off the edge so the band
+/// visibly ends on its own curve rather than on the clip.
+const BAND_LEFT_INSET: f64 = 12.0;
+
+/// How far down the footprint the band's inner arc is allowed to come
+/// closest to the left edge, as a fraction of half the footprint height.
+///
+/// The band's depth and the height it spans trade off against each other:
+/// the arc has to bend back toward the centre to stay inside a tall,
+/// narrow slot, and every pixel of height costs depth. Sizing the band so
+/// the arc passes exactly through the footprint's corners spends the
+/// whole budget on height and leaves the band too shallow to carry a
+/// workspace name — at 1600x900 it came out at 109 px, which truncated
+/// "Research" to "Res…".
+///
+/// Pulling the tangent point in buys that depth back. Past it the arc
+/// does drift into the clip, but only across the last few per cent of
+/// the footprint, where [`FADE_IN_STOP`] has already taken the band well
+/// down on its way to nothing — so the cut has almost nothing to cut.
+/// The two constants have to be read together: the clip begins at
+/// `(1 - BAND_TANGENT_FRACTION) / 2` of the footprint's height, and that
+/// has to stay a small fraction of `FADE_IN_STOP`.
+/// `band_clip_starts_where_the_fade_has_already_taken_hold` pins it.
+const BAND_TANGENT_FRACTION: f64 = 0.93;
+
 /// Clearance between the rim and the outer end of a sector's label, and
 /// between the inner arc and the label's inner end. The two together set
 /// the chip's width, which is the same for every sector because the band
 /// has a constant radial depth — so the labels form a ring rather than a
 /// ragged column.
-const LABEL_RIM_GAP: f64 = 20.0;
-const LABEL_INNER_INSET: f64 = 16.0;
+const LABEL_RIM_GAP: f64 = 12.0;
+const LABEL_INNER_INSET: f64 = 12.0;
 
 /// Narrowest a sector's chip may get before the sector shows no label at
 /// all. Below this even a truncated name is an ellipsis and a letter,
@@ -426,10 +460,10 @@ const LABEL_MIN_W: f64 = 62.0;
 /// Height of an inactive sector's chip; the active sector's is
 /// [`SECTOR_CHIP_H_ACTIVE`]. One step apart, so the set reads as one
 /// family of things in two states rather than as two kinds of object.
-const SECTOR_CHIP_H: f64 = 28.0;
+const SECTOR_CHIP_H: f64 = 32.0;
 
 /// Height of the active sector's chip. See [`SECTOR_CHIP_H`].
-const SECTOR_CHIP_H_ACTIVE: f64 = 36.0;
+const SECTOR_CHIP_H_ACTIVE: f64 = 44.0;
 
 /// Fill strength of the active sector's wedge, as a factor on the
 /// workspace's own colour. Enough that the wedge is unmistakably the lit
@@ -437,12 +471,18 @@ const SECTOR_CHIP_H_ACTIVE: f64 = 36.0;
 /// in the sector.
 const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
 
-/// Diameter of the add-workspace button, and the band at the bottom of
-/// the footprint it is centred in. Sector labels that would collide with
-/// that band are dropped, so the affordance is never covered however far
-/// the wheel has been turned.
+/// Strength of an inactive sector's label relative to the active one.
+/// The two states share a colour and a shape and differ in presence, so
+/// the set reads as one list with a current entry rather than as a bright
+/// thing beside some dim things.
+const INACTIVE_LABEL_ALPHA: f32 = 0.62;
+
+/// Diameter of the add-workspace button, and how far down the band it
+/// sits as a fraction of half the footprint's height. Sector labels that
+/// would collide with it are dropped, so the affordance is never covered
+/// however far the wheel has been turned.
 const ADD_BUTTON_D: f64 = 34.0;
-const ADD_BAND: f64 = 76.0;
+const ADD_BAND_FRACTION: f64 = 0.78;
 
 /// Angular slop past the last on-screen degree that sectors are still
 /// built for. Cheap insurance that a divider or a tint never stops short
@@ -664,6 +704,21 @@ impl SidebarWheelDisc {
         let dx = p.x - c.x;
         let dy = p.y - c.y;
         dx * dx + dy * dy <= radius * radius
+    }
+}
+
+/// How many display slots either side of the active one the sector fan
+/// has to run to cover `sweep` radians, plus one so a sector entering the
+/// footprint is already drawn when its leading divider appears.
+///
+/// Returning 0 for a gap of half a turn or more is the single-workspace
+/// case: `spoke_gap_deg` widens to 360° there so the wheel cannot scroll
+/// past its only entry, and one slot is the whole disc.
+fn slot_reach(sweep_rad: f64, gap_deg: f64) -> i32 {
+    if gap_deg >= 180.0 {
+        0
+    } else {
+        (sweep_rad.to_degrees() / gap_deg).ceil() as i32 + 1
     }
 }
 
@@ -923,13 +978,29 @@ impl Widget for SidebarWheelDisc {
         // to the left edge, and both are inside the vertical fade by
         // then anyway.
         let half_h = self.rect.height() / 2.0;
-        let theta_lim = (half_h / radius).clamp(0.0, 1.0).asin();
         let r_out = radius;
-        let r_in = ((self.rect.x0 - cx) / theta_lim.cos().max(0.2) + 2.0)
+        // The inner arc has to clear the footprint's left edge over its
+        // OWN sweep, which runs further than the rim's: the rim exits
+        // through the top and bottom edges at `theta_lim`, but the inner
+        // arc is still climbing at that angle and only reaches the same
+        // height further round. Sizing the band off `theta_lim` therefore
+        // let the arc drift left of the edge for the last quarter of its
+        // run, where the clip turned it into a straight vertical cut with
+        // the vertical fade nowhere near it yet.
+        //
+        // `sqrt(d^2 + half_h^2)` is the radius whose arc passes exactly
+        // through the footprint's two left-hand corners, so the band is
+        // as deep as it can be while ending on a curve everywhere.
+        let d_left = (self.rect.x0 - cx + BAND_LEFT_INSET).max(1.0);
+        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
+        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
+            .sqrt()
             .clamp(4.0, r_out - 12.0);
         // Sectors are built a little past the last on-screen degree so a
-        // divider never stops short of the footprint's corner.
-        let sweep = theta_lim + SWEEP_SLOP_DEG.to_radians();
+        // divider never stops short of the footprint's corner. The band's
+        // reach is set by its INNER arc, which is still climbing where the
+        // rim has already left through the top and bottom edges.
+        let sweep = (half_h / r_in).clamp(0.0, 1.0).asin() + SWEEP_SLOP_DEG.to_radians();
 
         // ---- Pass 1: the band -------------------------------------------
         // Body, edges and the shadow that lifts the wheel off whatever is
@@ -1036,7 +1107,12 @@ impl Widget for SidebarWheelDisc {
 
         // The add-workspace button's box is settled before any sector is
         // placed, so labels can be kept out of it.
-        let add_cy = (self.rect.y1 - ADD_BAND / 2.0).max(cy);
+        // Placed by how far down the band it sits rather than by how far
+        // up from the footprint's floor: the floor is inside the vertical
+        // fade, and a button pinned to it ended up hanging under the band
+        // on bare wallpaper — the exact complaint that moved this
+        // affordance twice before.
+        let add_cy = cy + half_h * ADD_BAND_FRACTION;
         let add_dy = add_cy - cy;
         let add_span_in = (r_in * r_in - add_dy * add_dy).max(0.0).sqrt();
         let add_span_out = (r_out * r_out - add_dy * add_dy).max(0.0).sqrt();
@@ -1069,14 +1145,7 @@ impl Widget for SidebarWheelDisc {
             let n_i = n as i32;
             let gap = self.spoke_gap_deg() as f64;
             let rot = self.visual_rotation_deg() as f64;
-            // How many slots either side of the active one reach the edge
-            // of the sweep. One extra so a sector entering the slot is
-            // already drawn when its leading divider appears.
-            let slots = if gap >= 180.0 {
-                0
-            } else {
-                (sweep.to_degrees() / gap).ceil() as i32 + 1
-            };
+            let slots = slot_reach(sweep, gap);
 
             for k in -slots..=slots {
                 let mid_deg = rot + k as f64 * gap;
@@ -1186,11 +1255,7 @@ impl Widget for SidebarWheelDisc {
             let n_i = n as i32;
             let gap = self.spoke_gap_deg() as f64;
             let rot = self.visual_rotation_deg() as f64;
-            let slots = if gap >= 180.0 {
-                0
-            } else {
-                (sweep.to_degrees() / gap).ceil() as i32 + 1
-            };
+            let slots = slot_reach(sweep, gap);
 
             for k in -slots..=slots {
                 let mid_deg = rot + k as f64 * gap;
@@ -1215,22 +1280,39 @@ impl Widget for SidebarWheelDisc {
                 // Where the chip actually lands once rotated. Used for the
                 // click target and to keep labels off the add button.
                 let placed = rotate.transform_rect_bbox(chip);
-                if placed.intersect(self.plus_rect).area() > 0.0 {
+                // `Rect::intersect` hands back an INVERTED rect when the
+                // two are disjoint, and a rect with a negative width and a
+                // negative height has a positive `area()` — so testing the
+                // area alone reports every miss as a hit.
+                let clash = placed.intersect(self.plus_rect);
+                if clash.width() > 0.0 && clash.height() > 0.0 {
                     continue;
                 }
 
-                let style = if is_active {
-                    ChipStyle::tinted(self.spoke_color(idx))
+                // The sector is the container, so the label does not
+                // bring a pill of its own — a pill inside a lit wedge is a
+                // box inside a box, and it was the pill that made the old
+                // rail read as a list parked next to a curve.
+                //
+                // Both states paint the same white label; the active one
+                // is simply bigger and at full strength. Colouring the
+                // active label with its workspace's own hue put it on a
+                // wedge of that same hue, which is the worst place for it
+                // — the identity is already carried by the wedge, and the
+                // name's only job there is to be the most legible thing in
+                // the sector.
+                let style = ChipStyle::bare(None).with_alpha(if is_active {
+                    fade_a
                 } else {
-                    ChipStyle::quiet()
-                };
+                    fade_a * INACTIVE_LABEL_ALPHA
+                });
                 Chip::draw_at(
                     scene,
                     transform * rotate,
                     chip,
                     &self.spokes[idx].text,
                     ChipLead::Glyph(self.spoke_icon(idx)),
-                    style.with_alpha(fade_a),
+                    style,
                     theme,
                     text_renderer,
                 );
@@ -1715,6 +1797,28 @@ impl SidebarWheelDisc {
         }
     }
 
+    /// Test helper: the band's inner and outer radii, computed by the
+    /// same expressions `draw` paints them from. Lets a test check where
+    /// something landed relative to the band without reading pixels.
+    #[cfg(test)]
+    pub(crate) fn band_radii_for_tests(&self) -> (f64, f64) {
+        let radius = self.diameter_px / 2.0;
+        let c = self.center();
+        let half_h = self.rect.height() / 2.0;
+        let d_left = (self.rect.x0 - c.x + BAND_LEFT_INSET).max(1.0);
+        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
+        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
+            .sqrt()
+            .clamp(4.0, radius - 12.0);
+        (r_in, radius)
+    }
+
+    /// Test helper: the disc's off-screen centre.
+    #[cfg(test)]
+    pub(crate) fn center_for_tests(&self) -> Point {
+        self.center()
+    }
+
     /// Test helper: pins the post-`apply_layout` rect for tests that
     /// assert on the clamped position rather than a transient cache.
     #[cfg(test)]
@@ -1871,37 +1975,37 @@ mod tests {
         Rect::new(0.0, 40.0, 234.0, 830.0)
     }
 
-    /// A switcher exists to say what you would be switching TO. Neighbours
-    /// were unlabelled specks, so you could see that other workspaces
-    /// existed but not which ones — and the click target proves the row is
-    /// really there, because it is grown from the painted chip.
+    /// A switcher exists to say what you would be switching TO. Every
+    /// sector on screen carries its workspace's name, and the click target
+    /// is grown from the label that was actually painted — so a hit rect
+    /// wide enough to hold a name is proof the name is there.
     #[test]
     fn visible_neighbours_carry_a_name_not_just_a_speck() {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
-        // A bare marker's hit box is 28 px square; a row's spans the rail.
-        let bare_marker_w = 28.0;
         let named: Vec<usize> = (0..d.spokes.len())
             .filter(|i| {
-                *i != d.active_idx && d.spoke_hit_rects[*i].width() > bare_marker_w * 1.5
+                *i != d.active_idx
+                    && d.spoke_hit_rects[*i].width().max(d.spoke_hit_rects[*i].height())
+                        >= LABEL_MIN_W
             })
             .collect();
         assert!(
             !named.is_empty(),
-            "no neighbour got a named row: hit rects {:?}",
+            "no neighbour got a named sector: hit rects {:?}",
             d.spoke_hit_rects
         );
     }
 
-    /// The wheel is a ring, so the rail has to be balanced around the
+    /// The wheel is a ring, so the sectors have to be balanced around the
     /// workspace you are on. Offsetting by the raw index difference put
     /// every other workspace on ONE side: with three workspaces and the
     /// first one active, the whole upper arc was empty and the other two
     /// stacked below it.
     #[test]
-    fn the_rail_wraps_around_the_active_workspace() {
+    fn sectors_wrap_around_the_active_workspace() {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
@@ -1924,13 +2028,14 @@ mod tests {
         );
     }
 
-    /// The add-workspace row closes the rail, so nothing may ever land on
-    /// top of it — a marker crowding it is what drove the affordance off
-    /// the rim and then off the disc entirely. Sweeping the rotation
-    /// covers the positions rows pass through between detents, not just
-    /// the ones they rest at.
+    /// The add-workspace button does not rotate, so a sector label can
+    /// sweep onto it. Nothing may ever land on top of it — a label
+    /// crowding it is what drove this affordance off the rim and then off
+    /// the disc entirely. Sweeping the rotation covers the positions
+    /// labels pass through between detents, not just the ones they rest
+    /// at.
     #[test]
-    fn the_add_row_is_never_covered_by_a_workspace_row() {
+    fn the_add_button_is_never_covered_by_a_sector_label() {
         let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"]);
         layout_into_slot(&mut d, live_slot());
 
@@ -1939,7 +2044,7 @@ mod tests {
             paint(&mut d);
             assert!(
                 d.plus_rect.area() > 0.0,
-                "the tail row is placed at every rotation"
+                "the add button is placed at every rotation"
             );
             for (i, row) in d.spoke_hit_rects.iter().enumerate() {
                 if row.area() <= 0.0 {
@@ -1948,12 +2053,97 @@ mod tests {
                 let hit = row.intersect(d.plus_rect);
                 assert!(
                     hit.width() <= 0.0 || hit.height() <= 0.0,
-                    "workspace row {i} covers the add row at {}°: row {row:?} tail {:?}",
+                    "sector label {i} covers the add button at {}°: label {row:?} button {:?}",
                     d.rotation_deg,
                     d.plus_rect
                 );
             }
         }
+    }
+
+    /// The add button has to sit ON the band. Pinned to the footprint's
+    /// floor it hung underneath, on bare wallpaper, which is what moved
+    /// this affordance twice before — the fix was a surface to sit on, not
+    /// another spot to float in.
+    #[test]
+    fn the_add_button_sits_on_the_band() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+
+        let (r_in, r_out) = d.band_radii_for_tests();
+        let c = d.center_for_tests();
+        let p = d.plus_rect.center();
+        let dist = ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt();
+        assert!(
+            dist > r_in && dist < r_out,
+            "the add button is off the band: {dist:.0} px from the centre, \
+             band runs {r_in:.0}..{r_out:.0}"
+        );
+        assert!(
+            d.rect.contains(p),
+            "the add button left the footprint: {:?} not in {:?}",
+            p,
+            d.rect
+        );
+    }
+
+    /// The band's inner arc bends back toward the disc's centre faster
+    /// than the footprint's left edge does, so past a point it leaves
+    /// through that edge and the clip turns the curve into a straight
+    /// vertical cut. That is survivable only while the vertical fade has
+    /// already taken the band down — a crisp cut through a surface at full
+    /// strength is the "someone drew a box" failure the curve exists to
+    /// avoid.
+    ///
+    /// Asserts on the two production constants that decide it rather than
+    /// on a rendered pixel, because the relationship is what has to hold:
+    /// change either one alone and this fails.
+    #[test]
+    fn band_clip_starts_where_the_fade_has_already_taken_hold() {
+        // Fraction of the footprint's height between its edge and the
+        // point the inner arc starts being clipped.
+        let clip_at = (1.0 - BAND_TANGENT_FRACTION) / 2.0;
+        // The fade ramps linearly from 0 at the edge to 1 at FADE_IN_STOP.
+        let alpha_at_clip = clip_at / FADE_IN_STOP as f64;
+        assert!(
+            alpha_at_clip <= 0.35,
+            "the band gets clipped while still at {:.0}% alpha — the cut \
+             will read as a straight edge sliced through the surface. \
+             Raise BAND_TANGENT_FRACTION ({BAND_TANGENT_FRACTION}) or \
+             FADE_IN_STOP ({FADE_IN_STOP}).",
+            alpha_at_clip * 100.0
+        );
+    }
+
+    /// Display slots have to cover the whole visible sweep, not just the
+    /// workspaces. Indexing sectors off the workspace list left a stretch
+    /// of unsegmented band rotating through whenever there were fewer
+    /// workspaces than the sweep had room for — a wheel with a bald patch,
+    /// which is the one thing that stops it reading as a wheel.
+    #[test]
+    fn sector_slots_cover_the_whole_sweep() {
+        for sweep_deg in [20.0_f64, 31.0, 38.0, 44.0] {
+            let reach = slot_reach(sweep_deg.to_radians(), SPOKE_ANGLE_STEP_DEG as f64);
+            // The fan runs from `-reach` to `+reach` slots, and each slot
+            // spans half a gap either side of its centreline.
+            let covered = reach as f64 * SPOKE_ANGLE_STEP_DEG as f64
+                + SPOKE_ANGLE_STEP_DEG as f64 / 2.0;
+            assert!(
+                covered >= sweep_deg,
+                "at a {sweep_deg}° sweep the fan only reaches {covered}° — \
+                 the rest of the band has no sector on it"
+            );
+        }
+    }
+
+    /// A one-workspace disc is the degenerate case: `spoke_gap_deg` widens
+    /// to a full turn so the wheel cannot scroll past its only entry, and
+    /// the fan must collapse to that single slot rather than tiling copies
+    /// of it around the band.
+    #[test]
+    fn a_single_workspace_gets_exactly_one_slot() {
+        assert_eq!(slot_reach(40.0_f64.to_radians(), 360.0), 0);
     }
 
     /// Dragging the rim has to keep asking for frames. The rotation is
