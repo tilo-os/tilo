@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
-use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+use crate::shell::search::action_api::{ActionArgs, ActionVisibility, ResourceRef};
 use crate::shell::search::visibility::CapabilityVisibility;
 
 /// Run `f` against the live chrome with a capability gate built from the
@@ -42,6 +42,27 @@ use crate::shell::search::visibility::CapabilityVisibility;
 /// Failing to resolve a workspace is an error rather than a fallback to
 /// "show everything". A gate that opens when it cannot find its policy
 /// is not a gate.
+/// One action's declared parameters, as the wire carries them.
+///
+/// The descriptor is what a caller that cannot see the screen builds an
+/// invocation from, so it says the type and whether the value is
+/// required, not just the name.
+fn params_json(
+    params: &[crate::shell::search::action_api::ActionParam],
+) -> Vec<serde_json::Value> {
+    params
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "name": p.name,
+                "type": p.ty.label(),
+                "required": p.required,
+                "description": p.description,
+            })
+        })
+        .collect()
+}
+
 fn with_action_gate<R>(
     chrome_handle: &crate::shell::chrome_state::Chrome,
     f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
@@ -547,6 +568,11 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                     "title": a.title,
                     "subtitle": a.subtitle,
                     "score": a.score,
+                    // What to pass. Empty for the nullary majority, and
+                    // still inert either way: a parameter list describes
+                    // an invocation, it is not one, so enumeration stays
+                    // something a caller can do freely.
+                    "params": params_json(&a.params),
                 })
             })
             .collect();
@@ -565,23 +591,39 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// to the side-effect, and an address that is unknown — or hidden by
     /// the visibility gate — fails here, loudly, instead of becoming an
     /// invocation that does nothing.
-    fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
+    fn resolve_action(
+        &self,
+        provider: &str,
+        id: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, test_control::ActionRefusal> {
         let (doc, root) = self
             .doc
-            .ok_or_else(|| "control state has no live document".to_string())?;
+            .ok_or_else(|| test_control::ActionRefusal::unknown("control state has no live document"))?;
         let chrome_handle = self.fb.chrome_handle();
         let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
             self.fb.host().action_catalog("", chrome, doc, root, gate)
-        })?;
+        })
+        .map_err(test_control::ActionRefusal::unknown)?;
         let resource = ResourceRef::new(provider, id);
         let selected = catalog.select(&resource).ok_or_else(|| {
-            format!("no visible action addressed by ({provider}, {id}) in the current catalogue")
+            test_control::ActionRefusal::unknown(format!(
+                "no visible action addressed by ({provider}, {id}) in the current catalogue"
+            ))
         })?;
+        // Bind here, before anything is planned. An argument set that
+        // does not fit is refused with the document untouched, and the
+        // refusal names the parameter — which is the only thing a caller
+        // with no screen has to correct against.
+        let values = test_control::arg_values_from_json(args)?;
+        ActionArgs::bind(selected.params(), values)
+            .map_err(|e| test_control::ActionRefusal::invalid_arguments(e.to_string()))?;
         Ok(serde_json::json!({
             "provider": provider,
             "id": id,
             "kind": selected.kind().label(),
             "title": selected.title(),
+            "params": params_json(selected.params()),
         }))
     }
 
@@ -963,7 +1005,7 @@ fn execute_planned_action(
             // these into structured wire responses.
             write_snapshot_png(fb, path);
         }
-        PlannedAction::InvokeAction { provider, id } => {
+        PlannedAction::InvokeAction { provider, id, args } => {
             // Re-resolve rather than carrying a handle over from
             // dispatch: the document is mutable between planning and
             // execution, so the catalogue the caller was shown may no
@@ -989,7 +1031,31 @@ fn execute_planned_action(
                 // The `Ref` above is dropped with the block, so the
                 // provider's callback is free to borrow the chrome cell
                 // mutably — which most of them do.
-                Some(selected) => selected.invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle),
+                Some(selected) => {
+                    // Re-bound against *this* resolution's parameters.
+                    // The catalogue was rebuilt a moment ago and can have
+                    // landed on a different action under the same
+                    // address; arguments checked against the previous one
+                    // would be an assurance about something else.
+                    let bound = test_control::arg_values_from_json(args)
+                        .map_err(|r| r.message)
+                        .and_then(|values| {
+                            selected
+                                .invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle, values)
+                                .map_err(|e| e.to_string())
+                        });
+                    if let Err(why) = bound {
+                        // The dispatcher already answered `ok` on the
+                        // wire, so this is the only place the failure can
+                        // surface. It is logged rather than swallowed:
+                        // the caller polls state to see the effect, and a
+                        // silent no-op here is indistinguishable from an
+                        // effect that has not landed yet.
+                        eprintln!(
+                            "nirios compositor: ({provider}, {id}) did not run: {why}"
+                        );
+                    }
+                }
                 None => eprintln!(
                     "nirios compositor: action ({provider}, {id}) vanished between \
                      resolve and invoke; nothing was run"
