@@ -13,12 +13,20 @@ So the demo gets its own HOME. Nothing here is wired into the shell; it
 is purely the environment the demo processes are launched with, which is
 why it cannot regress a normal session.
 
-    env $(scripts/demo-home.py --print-env) cargo run --bin shell ...
+    env $(scripts/demo-home.py --print-env) ./target/debug/shell ...
 
-or from Python:
+Note the environment has to go to the *compositor*, not to cargo: staging
+cargo's HOME breaks the build shim. Build first, then run the binary.
 
-    from demo_home import stage
-    env = stage()                       # -> dict of environment overrides
+From Python there is no plain import to reach for - the filename is
+hyphenated, so `import demo_home` cannot resolve it. Load it by path:
+
+    import importlib.util, pathlib
+    spec = importlib.util.spec_from_file_location(
+        "demo_home", pathlib.Path(__file__).parent / "demo-home.py")
+    demo_home = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(demo_home)
+    env = demo_home.stage()             # -> dict of environment overrides
 
 The staged tree holds a small, real corpus so the palette has something
 to find. It is demo data behind a demo entrypoint, not content shipped
