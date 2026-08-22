@@ -37,6 +37,41 @@ const RECORD_BRING_PARAMS: &[ActionParam] = &[
     ),
 ];
 
+/// What `agent.invite` may be told.
+///
+/// Optional, because this OS ships an agent and it has a name already:
+/// `qos-agent` is launched with `--name`, which defaults to `Scribe`
+/// (`apps/agent/src/main.rs`). A session running a differently-named one
+/// passes it; the common case does not have to repeat what the system
+/// already knows.
+const AGENT_INVITE_PARAMS: &[ActionParam] = &[ActionParam::optional(
+    "name",
+    ParamType::Text,
+    "The agent's name, as it was launched with. Defaults to `Scribe`.",
+)];
+
+/// The agent this OS ships, and so the one `agent.invite` admits when it
+/// is not told otherwise. Kept in step with `qos-agent`'s own default by
+/// being the same string for the same reason, not by being imported —
+/// the shell does not depend on the agent binary.
+const DEFAULT_AGENT_NAME: &str = "Scribe";
+
+/// What `peer.invite.named` must be told: who is being invited, and
+/// what to call them. Both required — an invite to nobody in particular
+/// is [`peer.invite`], and this row exists precisely to say who.
+const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "peer",
+        ParamType::Text,
+        "The invitee's libp2p `PeerId`, base58 — the identity the name is attached to.",
+    ),
+    ActionParam::required(
+        "name",
+        ParamType::Text,
+        "What to call them in this room. Shown beside their cursor and caret.",
+    ),
+];
+
 /// One action row. `id` is the palette command id (`overview.toggle`,
 /// `settings.open`, …); `apply` performs the action when the user picks
 /// the row (or an agent invokes its address).
@@ -149,6 +184,140 @@ impl Action {
                 Ok(())
             },
         ),
+        // Inviting somebody by name. `peer.invite` mints a token and
+        // says nothing about who it is for, which is why a peer that
+        // joins with one is drawn as the number its transport identity
+        // hashes to. A number says a machine is here; it does not say
+        // who is here.
+        //
+        // The name has to come from the inviter rather than from the
+        // invitee, and that is not a stylistic preference: a peer that
+        // announced its own name could announce any name, and it would
+        // render next to a caret inside a document this room's
+        // capabilities gate. So the name is recorded here, by the
+        // person doing the inviting, into the room document — the same
+        // replicated, authority-checked place the capability grants
+        // live, refused from every peer but the room's own.
+        //
+        // The peer id stays the identity; the name is a label on it.
+        // A peer nobody has named keeps its id as its label, which is
+        // honest, rather than acquiring a name nobody chose.
+        Action {
+            id: "peer.invite.named",
+            label: "Invite peer to workspace as",
+            subtitle: "Name the peer you are inviting, then mint their invite token",
+            params: PEER_INVITE_NAMED_PARAMS,
+            apply: |st, args| {
+                let peer = args.text("peer").unwrap_or_default().trim().to_string();
+                let name = args.text("name").unwrap_or_default().trim().to_string();
+                if peer.is_empty() {
+                    return Err(ActionError::Refused(
+                        "an invite has to name the peer it is for".into(),
+                    ));
+                }
+                if name.is_empty() {
+                    return Err(ActionError::Refused(
+                        "an invite has to say what to call them".into(),
+                    ));
+                }
+                let user = st.local_user_id.clone();
+                // Scoped so the tree's write lock is released before
+                // anything else on the chrome is touched.
+                let named = {
+                    let mut tree = st.tree_mut();
+                    let Some(room) = tree.active_workspace().map(|w| w.room) else {
+                        return Err(ActionError::Refused(
+                            "there is no room here to invite anyone into".into(),
+                        ));
+                    };
+                    tree.name_peer(room, &user, &peer, &name)
+                };
+                if !named {
+                    return Err(ActionError::Refused(format!(
+                        "{user} cannot name a peer in this room — either it is not \
+                         administered here, or `{peer}` is not a peer id"
+                    )));
+                }
+                // And mint the token, so naming somebody and inviting
+                // them are one gesture rather than two that can be done
+                // in the wrong order.
+                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
+                Ok(())
+            },
+        },
+        // Admitting an agent. Deliberately alongside the peer rows and
+        // not in a corner of its own: a person reaching for "who else is
+        // in this room with me" should find both answers in one place,
+        // because the OS's claim is that an agent is an ordinary kind of
+        // participant rather than a special mode.
+        //
+        // It is not, however, the *same* operation. A peer is reached
+        // over the network and admitted with a signed token it presents;
+        // an agent presents nothing, and is admitted by the room
+        // recording a capability naming it. So this mints no token and
+        // opens no prompt — it writes the grant, and the grant is what
+        // the agent's authority is made of. Revoking it in Workspace
+        // Settings is the whole of taking it back.
+        Action {
+            id: "agent.invite",
+            label: "Invite agent to workspace",
+            subtitle: "Admit an agent to this room as a member, revocable like any other",
+            params: AGENT_INVITE_PARAMS,
+            apply: |st, args| {
+                use crate::shell::state::{CapOverride, Subject, Verb};
+                let name = args.text("name").unwrap_or(DEFAULT_AGENT_NAME).trim();
+                let name = if name.is_empty() {
+                    DEFAULT_AGENT_NAME
+                } else {
+                    name
+                };
+                // The principal is the name case-folded. A capability
+                // naming `Scribe` and one naming `scribe` are two
+                // different subjects, so admitting an agent under one
+                // spelling and asking about it under the other is an
+                // agent that is half in the room — which reads on screen
+                // as a grant that did not take.
+                let agent = name.to_lowercase();
+                let user = st.local_user_id.clone();
+                // Scoped so the tree's write lock is released before
+                // anything else on the chrome is touched.
+                let granted = {
+                    let mut tree = st.tree_mut();
+                    let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
+                        return Err(ActionError::Refused(
+                            "there is no room here to admit an agent to".into(),
+                        ));
+                    };
+                    let room = ws_id.raw().to_string();
+                    // Membership is an ordinary grant on the room —
+                    // `CapOverride::membership` is spelled that way
+                    // precisely because it is not a second mechanism.
+                    // Through the tree so the capability reaches the room
+                    // document (and therefore the room's other members)
+                    // and the disk, rather than only this process.
+                    let cap = CapOverride::membership(
+                        Subject::agent(agent.clone()),
+                        room,
+                        Verb::Write,
+                    )
+                    .with_id(format!("agent-member:{agent}"));
+                    tree.grant_in_workspace(ws_id, &user, cap)
+                };
+                if granted.is_none() {
+                    return Err(ActionError::Refused(format!(
+                        "{user} does not administer this room, so {agent} was not admitted"
+                    )));
+                }
+                // What admitting somebody produces is that they are in
+                // the room, and the roster is where a person reads that.
+                // Showing it is the same move `peer.invite` makes when it
+                // puts its token on screen: an invitation that leaves
+                // nothing to look at cannot be checked by the person who
+                // issued it.
+                st.overlays.collaborators = true;
+                Ok(())
+            },
+        },
         // Making a window. Before these existed the palette could open
         // every overlay the shell has and not one new tab, so the only
         // route to a second terminal was to find the app again — and
@@ -275,6 +444,19 @@ impl SearchProvider for ActionsProvider {
             if action.id.starts_with("peer.") && !ctx.chrome.peer_sync_enabled {
                 continue;
             }
+            // Admitting an agent needs two things this session may not
+            // have, and offering a row that cannot work is worse than
+            // offering none: a room to record the capability in, and a
+            // working broker, which is the only way an agent ever reaches
+            // the room. Note that peer sync is *not* one of them — an
+            // agent connects to this session's own broker socket, so it
+            // works in a session that never talks to the network, and
+            // hiding the row there would hide a working feature.
+            if action.id.starts_with("agent.")
+                && (!ctx.chrome.collab_available() || ctx.chrome.tree().active_workspace().is_none())
+            {
+                continue;
+            }
             let label_lower = action.label.to_lowercase();
             let subtitle_lower = action.subtitle.to_lowercase();
             let score = match_score(&needle_lower, &label_lower, &subtitle_lower);
@@ -357,6 +539,20 @@ mod tests {
         ChromeState::new_with_handle(handle)
     }
 
+    /// A session with a room this machine administers — the state
+    /// `agent.invite` needs, and the state a real session is in.
+    fn chrome_with_room() -> crate::shell::chrome_state::Chrome {
+        use crate::shell::state::{Workspace, WorkspaceId};
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut ws = Workspace::test_default(id, "Demo");
+        ws.set_owner(crate::shell::state::local_user_id());
+        tree.workspaces.push(ws);
+        tree.active = id;
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(tree));
+        ChromeState::new_with_handle(handle)
+    }
+
     #[test]
     fn prefix_beats_substring_beats_subtitle() {
         let p = ActionsProvider::new();
@@ -377,9 +573,10 @@ mod tests {
     #[test]
     fn empty_needle_returns_everything() {
         let p = ActionsProvider::new();
-        let c = chrome_rc();
-        // Every action, peer-sync included, so "everything" means the
-        // whole table rather than the subset a default session offers.
+        // Every action, peer-sync and agent rows included, so
+        // "everything" means the whole table rather than the subset a
+        // default session offers.
+        let c = chrome_with_room();
         c.borrow_mut().peer_sync_enabled = true;
         let cs = c.borrow();
         let doc = AutoCommit::new();
@@ -547,5 +744,133 @@ mod tests {
             doc_root: &automerge::ROOT,
         });
         assert!(out.iter().any(|r| r.id == "settings.open"));
+    }
+
+    /// The row is offered only where it can work.
+    ///
+    /// Two conditions, and they are different from the peer rows'. A
+    /// room is needed because the grant is recorded *in* one. A working
+    /// broker is needed because that is how an agent reaches the room at
+    /// all. Peer sync deliberately is not: an agent connects to this
+    /// session's own broker socket, so it works on a machine that never
+    /// talks to the network.
+    #[test]
+    fn the_agent_row_is_offered_only_where_it_can_work() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let offered = |chrome: &ChromeState| {
+            p.query(SearchContext {
+                needle: "agent",
+                wanted: &[ResourceKind::Action],
+                chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+            .iter()
+            .any(|r| r.id == "agent.invite")
+        };
+
+        let roomless = chrome_rc();
+        assert!(
+            !offered(&roomless.borrow()),
+            "a session with no room has nowhere to record the grant, so it \
+             must not offer to admit anyone",
+        );
+
+        let broker_down = chrome_with_room();
+        broker_down
+            .borrow_mut()
+            .set_collab_unavailable("the broker could not start");
+        assert!(
+            !offered(&broker_down.borrow()),
+            "an agent reaches the room through the broker; with none there \
+             is nothing for the grant to admit",
+        );
+
+        let ready = chrome_with_room();
+        assert!(
+            offered(&ready.borrow()),
+            "a session with a room and a working broker must offer the row",
+        );
+        assert!(
+            !ready.borrow().peer_sync_enabled,
+            "and must do so without peer sync, which this row does not need",
+        );
+    }
+
+    /// Invoking it admits the agent to the room the capability model
+    /// answers about — asserted through `agent_members`, the same reader
+    /// the roster paints from, rather than by looking for a row in a
+    /// vector this test put there.
+    #[test]
+    fn invoking_it_admits_the_agent_to_the_room() {
+        let c = chrome_with_room();
+
+        let before = c
+            .borrow()
+            .tree()
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert!(before.is_empty(), "nobody is admitted before the action runs");
+
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("the action is registered");
+        (action.apply)(&mut c.borrow_mut(), &ActionArgs::none())
+            .expect("the room's owner may admit an agent");
+
+        let after = c
+            .borrow()
+            .tree()
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert_eq!(
+            after,
+            vec![("scribe".to_string(), crate::shell::state::CapRole::Editor)],
+            "the shipped agent is admitted under its own name, case-folded",
+        );
+        assert!(
+            c.borrow().overlays.collaborators,
+            "and the roster is shown, so the person who issued the \
+             invitation can see that it took",
+        );
+    }
+
+    /// A name typed in any case names one agent. Two spellings would be
+    /// two subjects, which reads on screen as a grant that did not take.
+    #[test]
+    fn the_name_is_case_folded_into_one_principal() {
+        let c = chrome_with_room();
+        let action = Action::ALL
+            .iter()
+            .find(|a| a.id == "agent.invite")
+            .expect("registered");
+        for spelling in ["Scribe", "SCRIBE", "  scribe  "] {
+            // Through the real binding path, so the parameter this row
+            // declares is the one being exercised.
+            let args = ActionArgs::bind(
+                AGENT_INVITE_PARAMS,
+                [(
+                    "name".to_string(),
+                    crate::shell::search::action_api::ArgValue::Text(spelling.to_string()),
+                )],
+            )
+            .expect("name is a declared text parameter");
+            (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
+        }
+        let members = c
+            .borrow()
+            .tree()
+            .active_workspace()
+            .expect("fixture has a room")
+            .agent_members();
+        assert_eq!(
+            members.len(),
+            1,
+            "three spellings of one name must be one agent, got {members:?}",
+        );
     }
 }

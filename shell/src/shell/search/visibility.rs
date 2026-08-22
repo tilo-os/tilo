@@ -107,8 +107,14 @@ fn chrome_action_verb(id: &str) -> Option<Verb> {
         | "collaborators.open"
         | "room.activity.open" => None,
 
-        // Membership: admitting a peer, or joining someone else's room.
-        "peer.invite" | "peer.connect" => Some(Verb::Invite),
+        // Membership: admitting a peer, joining someone else's room, or
+        // admitting an agent. The third is the same act as the first —
+        // it decides who is in this room — so it is gated on the same
+        // verb. That an agent is not a person changes what the row
+        // writes, not who is allowed to write it.
+        "peer.invite" | "peer.invite.named" | "peer.connect" | "agent.invite" => {
+            Some(Verb::Invite)
+        }
 
         // Acts on the room's contents.
         "tab.new.terminal.here" | "window.new.terminal" | "tab.duplicate" => Some(Verb::Write),
@@ -231,7 +237,7 @@ mod tests {
             assert_eq!(verb, Verb::Write, "{id}");
         }
 
-        for id in ["peer.invite", "peer.connect"] {
+        for id in ["peer.invite", "peer.invite.named", "peer.connect", "agent.invite"] {
             let (_, verb) = required_capability(&resource("actions", id), &ResourceKind::Action)
                 .unwrap_or_else(|| panic!("{id} must be gated"));
             assert_eq!(verb, Verb::Invite, "{id}");
