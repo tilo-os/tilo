@@ -84,7 +84,21 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
             workspace_id: Some(3),
         },
     ];
+    // Size the disc so its visible sliver fits this canvas, the way the
+    // live shell does — the overlay host overrides the wheel's slot to
+    // a viewport-derived width rather than taking the widget's default.
+    // Without this the sliver is wider than the canvas and the rim, the
+    // markers and the label all land off the right edge, leaving the
+    // snapshot pinned on empty background.
+    //
+    // `visible_width_px` is linear in the diameter, so one ratio solves
+    // it exactly without the test needing the geometry constant. The
+    // 48 px of slack keeps the active marker's halo — which is centred
+    // on the rim, at the sliver's right edge — inside the frame.
     let mut disc = SidebarWheelDisc::new(spokes);
+    let target_visible = CANVAS_W as f64 - 48.0;
+    let scaled_diameter = disc.diameter_px * (target_visible / disc.visible_width_px());
+    disc = disc.with_diameter(scaled_diameter);
     // Keep the default 4500 px diameter (post 2026-05-23 redesign). The
     // disc mounts at the canvas's LEFT edge so the partial-arc design
     // reads correctly: only the right ~66° of the rim protrudes into the
