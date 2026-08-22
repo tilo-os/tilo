@@ -6588,6 +6588,32 @@ impl Widget for WordProcessorWidget {
     }
 }
 
+/// Lets the shell host the word processor in a tab directly, the same way
+/// it hosts the terminal and the file explorer, instead of standing a
+/// placeholder card in its place.
+impl ui::widget::AppWidget for WordProcessorWidget {
+    fn app_kind(&self) -> ui::widget::AppKind {
+        // The toolkit's app-kind vocabulary has no separate "documents"
+        // variant; a word processor is an editor of text, which is what
+        // `Editor` names and what its tab glyph depicts.
+        ui::widget::AppKind::Editor
+    }
+
+    fn app_title(&self) -> &str {
+        "Document"
+    }
+
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        // Nerd Font document glyph, matching the convention the other
+        // hosted apps use for their tab pill.
+        ui::widget::IconDescriptor::Glyph("󰈬")
+    }
+
+    fn permission_hint(&self) -> Option<ui::widget::AppKind> {
+        Some(ui::widget::AppKind::Editor)
+    }
+}
+
 impl WordProcessorWidget {
     fn block_index_cached(&self, block: &str) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == block)

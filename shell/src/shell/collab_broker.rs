@@ -484,6 +484,58 @@ pub struct PeerTable {
     /// Optional capnp fanout sink. Set once during `spawn_*` when
     /// the capnp listener is bound.
     capnp: Mutex<Option<Arc<CapnpBrokerState>>>,
+    /// Subscribers that live inside the shell process rather than on
+    /// the far side of a socket. See [`RoomSubscription`].
+    local_subs: Mutex<Vec<Arc<RoomSubscription>>>,
+}
+
+/// A subscriber inside the shell process, addressed by room.
+///
+/// The shell hosts the broker but was never a reader of it, so the
+/// presence its own apps publish went out to the other apps in the
+/// room and nowhere else — the compositor drawing those windows never
+/// saw it.
+///
+/// A room subscription is how it reads. It is addressed the way every
+/// other subscriber is: a room is a cluster, and delivery is decided
+/// by [`CrdtRoute::delivers_to`] against `CrdtRoute::cluster(room)`.
+/// That is deliberate rather than convenient — presence is widened to
+/// cluster scope on the way out ([`CrdtRoute::to_cluster_scope`])
+/// precisely so a peer working in a different document of the same
+/// room is still a legitimate audience, and a subscriber that names
+/// the room inherits exactly that reach. Two apps in one room reach
+/// one subscription, which is what makes a cursor crossing from one
+/// app to the other a single peer moving rather than two peers
+/// appearing.
+///
+/// Rooms are mutable because a session's set of them is: workspaces
+/// are created, and a workspace joins a peer's room when an invite is
+/// accepted.
+pub struct RoomSubscription {
+    rooms: Mutex<Vec<String>>,
+    sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
+}
+
+impl RoomSubscription {
+    /// Replace the set of rooms this subscription covers.
+    pub fn set_rooms(&self, rooms: Vec<String>) {
+        if let Ok(mut g) = self.rooms.lock() {
+            *g = rooms;
+        }
+    }
+
+    /// Whether `route` addresses any room this subscription holds.
+    /// Uses the broker's own delivery predicate, so a subscription
+    /// can never receive something a socket peer in the same room
+    /// would not have.
+    fn wants(&self, route: &CrdtRoute) -> bool {
+        let Ok(rooms) = self.rooms.lock() else {
+            return false;
+        };
+        rooms
+            .iter()
+            .any(|room| route.delivers_to(&CrdtRoute::cluster(room.clone())))
+    }
 }
 
 impl PeerTable {
@@ -492,7 +544,31 @@ impl PeerTable {
             peers: Mutex::new(Vec::new()),
             peer_id_counter: AtomicU64::new(0),
             capnp: Mutex::new(None),
+            local_subs: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register an in-process subscriber and hand back its handle so
+    /// the caller can keep its room set current.
+    pub(crate) fn subscribe_rooms(
+        &self,
+        rooms: Vec<String>,
+        sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
+    ) -> Arc<RoomSubscription> {
+        let sub = Arc::new(RoomSubscription {
+            rooms: Mutex::new(rooms),
+            sink,
+        });
+        if let Ok(mut g) = self.local_subs.lock() {
+            g.push(Arc::clone(&sub));
+        }
+        sub
+    }
+
+    /// Snapshot the in-process subscribers so the sinks run without
+    /// the registry lock held.
+    fn local_subs(&self) -> Vec<Arc<RoomSubscription>> {
+        self.local_subs.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     /// Mint the next peer id. Legacy accept + capnp accept both go
@@ -584,6 +660,11 @@ impl PeerTable {
         }
         for id in dead {
             self.remove(id);
+        }
+        for sub in self.local_subs() {
+            if sub.wants(route) {
+                (sub.sink)(event, route);
+            }
         }
         if let Some(capnp) = self.capnp_state() {
             capnp.fanout_to_route(event, except, route);
@@ -1205,6 +1286,25 @@ impl BrokerHandle {
     pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>, route: &CrdtRoute) {
         self.peers
             .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
+    }
+
+    /// Subscribe this process to the rooms it hosts.
+    ///
+    /// The shell runs the broker but is not otherwise a reader of it,
+    /// so everything its apps published reached the other apps and
+    /// stopped there. This is how the compositor reads the same
+    /// stream — addressed by room, and delivered by the broker's own
+    /// [`CrdtRoute::delivers_to`], so a subscription sees exactly what
+    /// a socket peer in that room would see and nothing more.
+    ///
+    /// The sink runs on the reader thread that decoded the frame.
+    /// Keep it short: hand the event to a queue and return.
+    pub fn subscribe_rooms(
+        &self,
+        rooms: Vec<String>,
+        sink: Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>,
+    ) -> Arc<RoomSubscription> {
+        self.peers.subscribe_rooms(rooms, sink)
     }
 
     /// Shared handle to the broker's per-channel state + audit log.
@@ -2051,6 +2151,92 @@ mod tests {
         drop(sender_shared);
         drop(sender_private);
         drop(receiver);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_room_subscription_hears_every_app_in_the_room_as_one_stream() {
+        // The property the compositor's peer cursors rest on.
+        //
+        // Presence is widened to cluster scope on the way out, so a
+        // subscription that names a room hears every app in it. Two
+        // different apps pointing inside one room reach one
+        // subscriber, which is what makes a cursor crossing from one
+        // to the other a single peer moving rather than a second peer
+        // appearing. A third app in a different room must not be
+        // heard at all, or "who is here" would leak between rooms.
+        let socket_path = temp_sock("room-sub");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let other_room = "3f2b1c00-0000-4000-8000-0000000000ff";
+        let heard: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_heard = Arc::clone(&heard);
+        let _sub = handle.subscribe_rooms(
+            vec![TEST_CLUSTER.to_string()],
+            Box::new(move |event, route| {
+                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event {
+                    if let ui::collaboration::PresencePayload::Pointer { x, .. } = payload {
+                        sink_heard
+                            .lock()
+                            .unwrap()
+                            .push((route.cluster_id.clone(), format!("{x}")));
+                    }
+                }
+            }),
+        );
+
+        let mut files = connect_manager_as(&socket_path, "dev.qos.file-explorer", TEST_CLUSTER);
+        let mut words = connect_manager_as(&socket_path, "dev.qos.word-processor", TEST_CLUSTER);
+        let mut elsewhere = connect_manager_as(&socket_path, "dev.qos.word-processor", other_room);
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+
+        let key = PresenceKey::Workspace {
+            id: TEST_CLUSTER.into(),
+        };
+        files.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 1.0 },
+        });
+        words.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 2.0, y: 2.0 },
+        });
+        elsewhere.send(CollabRequest::Presence {
+            key: PresenceKey::Workspace {
+                id: other_room.into(),
+            },
+            payload: ui::collaboration::PresencePayload::Pointer { x: 3.0, y: 3.0 },
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && heard.lock().unwrap().len() < 2 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Give the third frame the same chance to arrive as the two
+        // that should — otherwise "it did not leak" only says "it was
+        // slower", and the test would pass on a race it never ran.
+        std::thread::sleep(Duration::from_millis(150));
+
+        let got = heard.lock().unwrap().clone();
+        let xs: Vec<&str> = got.iter().map(|(_, x)| x.as_str()).collect();
+        assert!(
+            xs.contains(&"1") && xs.contains(&"2"),
+            "both apps in the room should reach one subscription, got {got:?}"
+        );
+        assert!(
+            !xs.contains(&"3"),
+            "an app in another room must not reach it, got {got:?}"
+        );
+        assert!(
+            got.iter().all(|(room, _)| room == TEST_CLUSTER),
+            "every frame should be delivered on the room it was published in, got {got:?}"
+        );
+
+        drop(files);
+        drop(words);
+        drop(elsewhere);
         drop(handle);
     }
 

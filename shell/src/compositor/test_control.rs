@@ -47,8 +47,8 @@
 //!   [`shell::state::WorkspaceTree`] + a structured view of the
 //!   [`ChromeState`] (overlays, search scope, ws-settings tab,
 //!   revision, …). The response shape is `Response::State {
-//!   workspace_tree, chrome }`, both `serde_json::Value` so future
-//!   ChromeState fields surface without bumping the wire schema.
+//!   workspace_tree, chrome, peers }`, each `serde_json::Value` so
+//!   future fields surface without bumping the wire schema.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -199,6 +199,16 @@ pub enum Command {
     /// only happens on a release that arrives after the pointer has moved
     /// over another client. These two ops decompose that.
     PointerMove { x: f64, y: f64 },
+    /// Give every window group in the active strip the same share of
+    /// it, in permille.
+    ///
+    /// A group takes about three quarters of its strip by default, so
+    /// two of them never fit on screen at once and the second is
+    /// scrolled off. A harness that needs to see two apps side by side
+    /// — a peer's cursor crossing from one to the other is the case —
+    /// has no other way to compose that scene. Drives the same
+    /// `WindowWidth::Fraction` + doc mirror a width drag does.
+    SetGroupWidth { permille: u16 },
     /// Press or release the left pointer button at the current position.
     PointerButton { pressed: bool },
     /// Copy `text` from **in-process chrome**, through the same
@@ -224,6 +234,29 @@ pub enum Command {
         #[serde(default)]
         primary: bool,
     },
+    /// Enumerate the actions and resources the shell exports right now,
+    /// through the same provider registry that feeds the Ctrl+K palette.
+    ///
+    /// Read-only by construction: the reply carries typed descriptors and
+    /// no invoke handles, so surveying "what can I do here" can never
+    /// fire a side-effect. An empty `query` lists every provider's
+    /// default set rather than guessing a needle.
+    ///
+    /// This is the command that makes the shell drivable by something
+    /// that cannot see the screen — a descriptor is addressed by a
+    /// stable `(provider, id)` pair, never by a screen position.
+    ActionsEnumerate {
+        #[serde(default)]
+        query: String,
+    },
+    /// Invoke one enumerated action by its stable `(provider, id)`
+    /// address, with no window, no scene and no synthetic input.
+    ///
+    /// The address is resolved against a freshly built catalogue before
+    /// anything runs, so an id that is unknown *or* hidden by the
+    /// visibility gate is refused rather than silently ignored — you
+    /// cannot invoke what you were never shown.
+    ActionsInvoke { provider: String, id: String },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -259,6 +292,9 @@ pub enum Response {
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
+        /// The peers this session would paint, straight off the
+        /// `PresenceCtx` the overlay reads.
+        peers: serde_json::Value,
     },
     /// Answer to a capability query or administration command
     /// (`grant`, `revoke`, `check_action`). Opaque JSON so the shape
@@ -319,6 +355,19 @@ pub trait ControlState {
     fn chrome_state_json(&self) -> serde_json::Value {
         serde_json::Value::Null
     }
+    /// The peers this session would paint right now, read from the
+    /// same `PresenceCtx` the overlay draws from.
+    ///
+    /// Exposed because a peer cursor is otherwise only assertable by
+    /// looking at a picture, and "no peer arrived" and "a peer arrived
+    /// and was not drawn" produce the same picture. A harness that
+    /// cannot tell those apart cannot prove either.
+    ///
+    /// Default impl returns [`serde_json::Value::Null`] so mock
+    /// fixtures stay terse.
+    fn peers_json(&self) -> serde_json::Value {
+        serde_json::Value::Null
+    }
     /// Per-surface frame ground truth: what the compositor itself knows
     /// about whether each foreign toplevel has ever presented.
     ///
@@ -367,6 +416,29 @@ pub trait ControlState {
     ) -> Result<serde_json::Value, String> {
         Err("no live workspace on this control state".to_string())
     }
+
+    /// Enumerate the exported action surface for `query` as JSON.
+    ///
+    /// Default impl refuses for the same reason the capability methods
+    /// do: a `ControlState` with no live registry and no document has
+    /// nothing to enumerate, and returning an empty list would let a
+    /// harness read "this shell exports nothing" out of "this fixture
+    /// cannot answer". Those are different facts and must not share a
+    /// wire shape.
+    fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
+        Err("no live action registry on this control state".to_string())
+    }
+
+    /// Resolve `(provider, id)` against a freshly built catalogue and
+    /// report what it addresses, without invoking it.
+    ///
+    /// This is the validation half of `actions_invoke`: it answers
+    /// "is this address real, and may this caller see it?" so the
+    /// transport can refuse a bad address with a structured error
+    /// instead of planning an invocation that silently does nothing.
+    fn resolve_action(&self, _provider: &str, _id: &str) -> Result<serde_json::Value, String> {
+        Err("no live action registry on this control state".to_string())
+    }
 }
 
 /// Side-effect actions the transport layer must execute after a
@@ -408,6 +480,19 @@ pub enum PlannedAction {
     /// invocation. Failures are logged via `eprintln!` — they don't
     /// propagate to the wire response (Phase 5 will).
     Snapshot { path: PathBuf },
+    /// Give every live window group the same share of its strip, in
+    /// permille. Applied against the widget tree because that is where
+    /// the laid-out width lives.
+    SetGroupWidth { permille: u16 },
+    /// Run one already-validated action against the live CRDT.
+    ///
+    /// Carried as a planned action rather than executed inside
+    /// `dispatch_command` because invoking mutates the document, and the
+    /// dispatch layer only ever holds it immutably. The address was
+    /// resolved and permission-checked before this value was produced;
+    /// the executor re-resolves against a fresh catalogue because the
+    /// document may have moved on between planning and execution.
+    InvokeAction { provider: String, id: String },
 }
 
 /// Wire-friendly key identifier. Mirrors the subset of
@@ -703,6 +788,7 @@ pub fn dispatch_command<S: ControlState>(
                 Response::State {
                     workspace_tree: state.workspace_tree_json(),
                     chrome: state.chrome_state_json(),
+                    peers: state.peers_json(),
                 },
                 Vec::new(),
             )
@@ -747,6 +833,12 @@ pub fn dispatch_command<S: ControlState>(
             Response::Ok { frame: 0 },
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],
         ),
+        Command::SetGroupWidth { permille } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::SetGroupWidth {
+                permille: *permille,
+            }],
+        ),
         Command::PointerButton { pressed } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::MouseLeftButton { pressed: *pressed }],
@@ -771,6 +863,33 @@ pub fn dispatch_command<S: ControlState>(
                 ui::text_selection::clipboard_paste()
             };
             (Response::Clipboard { text }, Vec::new())
+        }
+        Command::ActionsEnumerate { query } => (
+            answer_or_err(state.enumerate_actions(query), "enumerate_failed"),
+            Vec::new(),
+        ),
+        Command::ActionsInvoke { provider, id } => {
+            // Resolve before planning. An unknown or hidden address is a
+            // structured refusal here, not an invocation that quietly
+            // does nothing — "I ran it and nothing happened" and "that
+            // action does not exist for you" must not look alike to a
+            // caller that cannot see the screen.
+            match state.resolve_action(provider, id) {
+                Ok(resolved) => (
+                    Response::Answer(resolved),
+                    vec![PlannedAction::InvokeAction {
+                        provider: provider.clone(),
+                        id: id.clone(),
+                    }],
+                ),
+                Err(message) => (
+                    Response::Err {
+                        code: "unknown_action".to_string(),
+                        message,
+                    },
+                    Vec::new(),
+                ),
+            }
         }
     }
 }
@@ -1458,6 +1577,7 @@ mod tests {
         let Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State, got something else");
@@ -1492,6 +1612,7 @@ mod tests {
         let Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State");
@@ -1503,12 +1624,13 @@ mod tests {
     /// Wire format for `Response::State` — the serialiser tags the
     /// variant `state` (snake_case) and the payload is the two JSON
     /// blobs. Guards against accidental rename of `workspace_tree` /
-    /// `chrome` in the response envelope.
+    /// `chrome` / `peers` in the response envelope.
     #[test]
-    fn serialise_state_response_emits_workspace_tree_and_chrome() {
+    fn serialise_state_response_emits_workspace_tree_chrome_and_peers() {
         let resp = Response::State {
             workspace_tree: serde_json::json!({ "workspaces": [] }),
             chrome: serde_json::json!({ "overlays": {} }),
+            peers: serde_json::json!({ "pointers": [] }),
         };
         let out = serialise_response(&resp);
         assert!(
@@ -1517,5 +1639,177 @@ mod tests {
         );
         assert!(out.contains("\"workspace_tree\""), "got {out}");
         assert!(out.contains("\"chrome\""), "got {out}");
+        assert!(out.contains("\"peers\""), "got {out}");
+    }
+
+    /// A `ControlState` that exports exactly one action, so the
+    /// dispatcher can be driven without a compositor.
+    struct ActionState;
+
+    impl ControlState for ActionState {
+        fn widget_registry(&self) -> HashMap<String, Rect> {
+            HashMap::new()
+        }
+
+        fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+            Ok(serde_json::json!({
+                "query": query,
+                "count": 1,
+                "actions": [{
+                    "provider": "shell.actions",
+                    "id": "settings.open",
+                    "kind": "Actions",
+                    "title": "Open settings",
+                    "subtitle": null,
+                    "score": 0,
+                }],
+            }))
+        }
+
+        fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
+            if (provider, id) == ("shell.actions", "settings.open") {
+                Ok(serde_json::json!({
+                    "provider": provider,
+                    "id": id,
+                    "kind": "Actions",
+                    "title": "Open settings",
+                }))
+            } else {
+                Err(format!("no visible action addressed by ({provider}, {id})"))
+            }
+        }
+    }
+
+    /// The headline covenant of the enumeration half: asking "what can I
+    /// do here" plans **no** action. If enumeration could ever produce a
+    /// `PlannedAction`, a caller surveying the surface would be mutating
+    /// the session just by looking at it.
+    #[test]
+    fn enumerate_answers_without_planning_any_side_effect() {
+        let (resp, actions) = dispatch_command(
+            &Command::ActionsEnumerate {
+                query: String::new(),
+            },
+            &ActionState,
+        );
+
+        assert!(
+            actions.is_empty(),
+            "enumeration must plan no actions; got {actions:?}"
+        );
+        let Response::Answer(payload) = resp else {
+            panic!("expected Response::Answer, got {resp:?}");
+        };
+        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["actions"][0]["provider"], "shell.actions");
+        assert_eq!(payload["actions"][0]["id"], "settings.open");
+    }
+
+    /// A known address resolves, reports what it names, and plans
+    /// exactly one invocation carrying that same address.
+    #[test]
+    fn invoke_resolves_the_address_then_plans_one_invocation() {
+        let (resp, actions) = dispatch_command(
+            &Command::ActionsInvoke {
+                provider: "shell.actions".to_string(),
+                id: "settings.open".to_string(),
+            },
+            &ActionState,
+        );
+
+        let Response::Answer(payload) = resp else {
+            panic!("expected Response::Answer, got {resp:?}");
+        };
+        assert_eq!(payload["title"], "Open settings");
+        assert_eq!(
+            actions,
+            vec![PlannedAction::InvokeAction {
+                provider: "shell.actions".to_string(),
+                id: "settings.open".to_string(),
+            }]
+        );
+    }
+
+    /// You cannot invoke what you were never shown. An address the
+    /// catalogue does not expose is a structured refusal that plans
+    /// **nothing** — not an `Ok` whose invocation quietly no-ops.
+    ///
+    /// The distinction matters most to exactly the caller this API is
+    /// for: something driving the shell without being able to see it
+    /// cannot tell "it ran and changed nothing" from "it never ran"
+    /// unless the wire says so.
+    #[test]
+    fn unknown_address_is_refused_and_plans_nothing() {
+        let (resp, actions) = dispatch_command(
+            &Command::ActionsInvoke {
+                provider: "shell.actions".to_string(),
+                id: "definitely.not.a.real.action".to_string(),
+            },
+            &ActionState,
+        );
+
+        assert!(
+            actions.is_empty(),
+            "a refused address must plan no invocation; got {actions:?}"
+        );
+        let Response::Err { code, .. } = resp else {
+            panic!("expected Response::Err, got {resp:?}");
+        };
+        assert_eq!(code, "unknown_action");
+    }
+
+    /// A control state with no live registry **refuses** rather than
+    /// reporting an empty surface. "This shell exports nothing" and
+    /// "this fixture cannot answer" are different facts, and a harness
+    /// that read one as the other would conclude the action model was
+    /// missing when it was merely out of reach.
+    #[test]
+    fn stateless_control_refuses_enumeration_rather_than_reporting_empty() {
+        let state = StaticState::new(&[]);
+        let (resp, actions) = dispatch_command(
+            &Command::ActionsEnumerate {
+                query: String::new(),
+            },
+            &state,
+        );
+
+        assert!(actions.is_empty());
+        let Response::Err { code, .. } = resp else {
+            panic!("a stateless control must refuse, not answer; got {resp:?}");
+        };
+        assert_eq!(code, "enumerate_failed");
+    }
+
+    /// Wire round-trip for both new ops — guards the `op` tags and field
+    /// names the CLI, the demo script and the MCP shim all encode by hand.
+    #[test]
+    fn action_ops_round_trip_over_the_wire() {
+        let enumerate = parse_command(r#"{"op":"actions_enumerate","query":"settings"}"#)
+            .expect("actions_enumerate should parse");
+        assert_eq!(
+            enumerate,
+            Command::ActionsEnumerate {
+                query: "settings".to_string()
+            }
+        );
+
+        let bare = parse_command(r#"{"op":"actions_enumerate"}"#)
+            .expect("actions_enumerate should parse without a query");
+        assert_eq!(
+            bare,
+            Command::ActionsEnumerate {
+                query: String::new()
+            }
+        );
+
+        let invoke = parse_command(r#"{"op":"actions_invoke","provider":"p","id":"i"}"#)
+            .expect("actions_invoke should parse");
+        assert_eq!(
+            invoke,
+            Command::ActionsInvoke {
+                provider: "p".to_string(),
+                id: "i".to_string()
+            }
+        );
     }
 }

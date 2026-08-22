@@ -88,7 +88,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.file-explorer"));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.file-explorer");
+    let (mut state, autosave) = ui::persist::open("dev.qos.file-explorer");
+    // Two windows of the file manager are two authors of the same document
+    // — an inline rename is native collaborative `Text` (see
+    // `actions.rs`), so concurrent edits have to be attributable to tell
+    // them apart. A missing `QUICK_APP_ID` falls back to a per-process id
+    // so two un-configured instances still get distinct actors.
+    let app_id = std::env::var("QUICK_APP_ID")
+        .unwrap_or_else(|_| format!("files-{}", std::process::id()));
+    state
+        .doc
+        .set_actor(automerge::ActorId::from(app_id.as_bytes()));
     let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run();
     Ok(())
