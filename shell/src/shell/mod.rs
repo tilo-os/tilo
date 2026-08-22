@@ -45,6 +45,7 @@ pub mod notification;
 pub mod overlay_host;
 pub mod osd;
 pub mod peer_presence;
+pub mod peer_windows;
 pub mod overview;
 pub mod peer_join_toast;
 pub mod peer_view;
@@ -1041,6 +1042,7 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
     match to_ui_tile(t) {
         UiTile::App(_) => "App",
         UiTile::Stub { .. } => "Stub",
+        UiTile::Notice { .. } => "Notice",
     }
 }
 
@@ -1054,8 +1056,13 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         ShellTile::Stub { kind, .. } => to_ui_kind(kind),
         ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
         // No `AppKind` describes "arbitrary external client"; `Settings`
-        // is the same catch-all `to_ui_kind` uses for unknown kinds.
-        ShellTile::Foreign { .. } => UiKind::Settings,
+        // is the same catch-all `to_ui_kind` uses for unknown kinds. A
+        // peer window is the same case seen from the other side — the app
+        // it names is an external client too — so it wears the same
+        // glyph, and keeps wearing it when the local instance binds in and
+        // the tile becomes `Foreign`. The pill does not change under the
+        // user as the window arrives.
+        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } => UiKind::Settings,
     }
 }
 
@@ -1073,6 +1080,16 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
         ShellTile::Foreign { app_id, surface_id } => UiTile::App(Box::new(
             crate::compositor::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),
         )),
+        // A window somebody else in the room has open, which this machine
+        // has not (yet) got its own instance of. The card states what is
+        // being done about that, which `shell::peer_windows` decided and
+        // wrote into the tile — it is never a promise, and when the local
+        // instance arrives this tile becomes a `Foreign` above and the
+        // card is gone.
+        ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
+            title: label.clone(),
+            detail: note.clone(),
+        },
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // Terminal — spawn a real PTY; on failure fall back to a Stub per
             // spec §9a, mirroring the same pattern `default_demo_tabs` uses
