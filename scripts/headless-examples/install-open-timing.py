@@ -48,9 +48,10 @@ Loopback. `serve-test-registry` binds `127.0.0.1` and serves a really
 packed, really signed `.qpkg`, which is what happens on the day
 (`plan/yc-demo.md` — a local registry is served on set). A run against
 a registry across the internet is a different measurement and this
-script does not pretend otherwise; `--report-only` prints the
-conditions it measured under alongside the numbers so the two cannot be
-confused later.
+script does not pretend otherwise. Every run prints the conditions it
+measured under — payload size, filesystem, load average — alongside the
+numbers, so a timing and the machine that produced it cannot drift
+apart later.
 
 Usage
 -----
