@@ -68,6 +68,49 @@ fn drain_events(stream: &mut UnixStream, timeout: Duration) -> Vec<CollabEvent> 
     out
 }
 
+/// Read fan-out events until `want` signed increments have arrived, or
+/// `timeout` elapses. Returns everything read.
+///
+/// `drain_events` cannot be used to answer "has the broker finished
+/// recording the editor's ops": it stops at the first read that times
+/// out, which is the first scheduling gap rather than the end of the
+/// stream. The two connections in these scenarios are served by
+/// independent reader threads with no ordering between them, so a
+/// `FetchScrollback` sent after a quiet socket can still be answered
+/// from a half-written op log — and `scrollback_for` faithfully returns
+/// the tail of whatever is there, so the test reads `[3, 4, 5]` where it
+/// wanted `[8, 9, 10]` and blames paging.
+///
+/// Waiting on the count the scenario actually depends on removes the
+/// guess. The deadline is generous because it is a backstop, not a
+/// pacing device: on a machine that is not loaded this returns as soon
+/// as the last event lands.
+fn drain_until_signed(
+    stream: &mut UnixStream,
+    want: usize,
+    timeout: Duration,
+) -> Vec<CollabEvent> {
+    let deadline = Instant::now() + timeout;
+    let mut out = Vec::new();
+    let mut signed = 0usize;
+    while signed < want {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            break;
+        }
+        match read_event(stream, remain) {
+            Some(ev) => {
+                if matches!(ev, CollabEvent::SignedCRDTIncremental { .. }) {
+                    signed += 1;
+                }
+                out.push(ev);
+            }
+            None => continue,
+        }
+    }
+    out
+}
+
 fn unique_socket(label: &str) -> PathBuf {
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
@@ -199,7 +242,7 @@ fn peer_can_fetch_recent_scrollback() {
     }
     // Drain the observer's fan-out so the subsequent batch read is
     // unambiguous.
-    let fanned = drain_events(&mut observer, Duration::from_millis(500));
+    let fanned = drain_until_signed(&mut observer, 5, Duration::from_secs(10));
     let signed_count = fanned
         .iter()
         .filter(|e| matches!(e, CollabEvent::SignedCRDTIncremental { .. }))
@@ -337,7 +380,7 @@ fn scrollback_paging_respects_max() {
             },
         );
     }
-    let _drained = drain_events(&mut observer, Duration::from_millis(500));
+    let _drained = drain_until_signed(&mut observer, 10, Duration::from_secs(10));
 
     write_frame(
         &mut observer,
