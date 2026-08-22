@@ -2817,6 +2817,40 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
     )
 }
 
+/// Resolve the wayland `app_id` this process announces.
+///
+/// `QOS_PACKAGE_ID` when the launcher set it — that is the package's
+/// real identity and what every id-keyed lookup in the compositor is
+/// written against. Failing that, the **binary's own name**, which is
+/// still a name for this app and not a name for every app.
+///
+/// The old fallback was a single shared `org.qos.app`. It is worth
+/// being precise about why that was wrong, because it looked harmless:
+/// the compositor labels a tab from the app-id, claims a launch's
+/// placement note by it, and answers "is this document already open"
+/// by it. One id shared by every app made all three collapse onto each
+/// other — most visibly as a tab reading `app`, which is the trailing
+/// component of `org.qos.app` and the name of nothing. A binary name is
+/// specific, stable for a given app, and matches the trailing-component
+/// convention package ids already follow (`dev.qos.notes` ↔ `notes`),
+/// so a dev run of an app is recognisable as that app.
+///
+/// The generic id survives only for the case where there is genuinely
+/// nothing to say — no package, no readable binary name.
+fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(id) = package_id.and_then(non_blank) {
+        return id;
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        return bin;
+    }
+    "org.qos.app".to_string()
+}
+
 /// Pure title resolution, so the precedence is unit-testable without
 /// touching the process environment. In order, the first non-blank
 /// candidate wins:
@@ -3137,10 +3171,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            let app_id = std::env::var("QOS_PACKAGE_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "org.qos.app".to_string());
+            let app_id = resolve_app_id(
+                std::env::var("QOS_PACKAGE_ID").ok().as_deref(),
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .as_deref(),
+            );
             window_attributes = window_attributes.with_name(app_id, "");
         }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
@@ -4663,6 +4700,38 @@ mod window_title_tests {
         let t = resolve_title_from(None, None, None, None);
         assert_eq!(t, "qOS App");
         assert_ne!(t, "QuickUI App");
+    }
+
+    /// The wayland app-id is what the compositor labels a tab from,
+    /// claims a launch's placement note by, and answers "is this
+    /// document already open" by. A single shared id collapses all
+    /// three — most visibly as a tab reading `app`.
+    #[test]
+    fn the_app_id_is_never_the_generic_one_when_anything_identifies_the_app() {
+        assert_eq!(
+            resolve_app_id(Some("dev.qos.file-explorer"), Some("file-explorer")),
+            "dev.qos.file-explorer",
+            "the package id is the identity everything else is keyed on"
+        );
+        assert_eq!(
+            resolve_app_id(None, Some("file-explorer")),
+            "file-explorer",
+            "outside a sandbox the binary still names this app, and it \
+             matches the trailing-component convention package ids use"
+        );
+        assert_eq!(
+            resolve_app_id(Some("   "), Some("terminal")),
+            "terminal",
+            "a blank package id is no package id"
+        );
+        assert_eq!(
+            resolve_app_id(None, None),
+            "org.qos.app",
+            "the generic id survives only when there is nothing to say"
+        );
+        // The regression in one line: no run with a name to its own
+        // binary may announce the id that produced a tab called `app`.
+        assert_ne!(resolve_app_id(None, Some("file-explorer")), "org.qos.app");
     }
 
     #[test]
