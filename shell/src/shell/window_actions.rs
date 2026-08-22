@@ -152,7 +152,13 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<TabId, DuplicateErro
             TileContent::AppPlaceholder { kind, label } | TileContent::Stub { kind, label } => {
                 (kind.clone(), label.clone(), group.id)
             }
-            TileContent::Foreign { .. } => return Err(DuplicateError::ForeignWindow),
+            // Neither can be duplicated: one is a live client's surface,
+            // and the other is a window belonging to somebody else's
+            // machine. Copying either would produce a tab claiming to host
+            // something this side does not have.
+            TileContent::Foreign { .. } | TileContent::PeerWindow { .. } => {
+                return Err(DuplicateError::ForeignWindow);
+            }
         }
     };
     let placement = Placement::TabIn(group);

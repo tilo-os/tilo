@@ -883,7 +883,10 @@ impl ChromeState {
         let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
         let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
         Some(match &tab.tile {
-            TileContent::Foreign { app_id, .. } => app_id.clone(),
+            TileContent::Foreign { app_id, .. }
+            // A peer window already carries an app id, in the same
+            // namespace `AppKind::app_id` maps the others into.
+            | TileContent::PeerWindow { app_id, .. } => app_id.clone(),
             TileContent::AppPlaceholder { kind, .. }
             | TileContent::Stub { kind, .. } => kind.app_id(),
         })
