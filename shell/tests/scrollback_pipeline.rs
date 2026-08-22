@@ -265,7 +265,7 @@ fn empty_scrollback_returns_exhausted_true() {
             app_id: "test".into(),
             cluster_id: test_cluster(),
             record: None,
-                handle: None,
+            handle: None,
         },
     );
 
@@ -614,7 +614,7 @@ fn cooperative_scrollback_round_trip() {
             app_id: "test".into(),
             cluster_id: test_cluster(),
             record: None,
-                handle: None,
+            handle: None,
         },
     );
 
@@ -735,7 +735,7 @@ fn cooperative_request_published_when_local_empty() {
             app_id: "test".into(),
             cluster_id: test_cluster(),
             record: None,
-                handle: None,
+            handle: None,
         },
     );
 
@@ -808,7 +808,7 @@ fn cooperative_responder_answers_when_log_has_match() {
             app_id: "test".into(),
             cluster_id: test_cluster(),
             record: None,
-                handle: None,
+            handle: None,
         },
     );
     for seq in 1..=3_u64 {
