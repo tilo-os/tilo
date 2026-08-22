@@ -342,11 +342,21 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
+                    // The rect the widget tree laid this tab into, so a
+                    // harness can aim at a window instead of guessing
+                    // where the layout put it.
+                    let placement = store.placement(tab.surface_id).map(|r| {
+                        serde_json::json!({
+                            "x": r.x0, "y": r.y0,
+                            "w": r.width(), "h": r.height(),
+                        })
+                    });
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
+                        "rect": placement,
                     })
                 })
                 .collect();
