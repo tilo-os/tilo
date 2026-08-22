@@ -27,6 +27,12 @@ serde_json.workspace = true
 
 # Real decode stack — only linked under `--features decode`. Same pins as
 # `apps/tube` / `apps/camera` so no second gstreamer copy resolves.
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
-gstreamer-video = { workspace = true, optional = true }
+#
+# `v1_24` is required, not cosmetic: `VideoInfoDmaDrm` (which parses a
+# `drm-format` caps field into a fourcc + modifier) and `AppSinkCallbacks::
+# propose_allocation` (which is what lets the sink advertise `GstVideoMeta`, so
+# a decoder will negotiate `memory:DMABuf` at all) both appeared in GStreamer
+# 1.24. The build container and the OS image both ship 1.26.
+gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
+gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
+gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
