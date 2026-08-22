@@ -627,7 +627,17 @@ impl PresenceCtx {
     /// Record (or update) a peer's friendly display name — seeded from the
     /// collab roster. Overwrites any prior name.
     pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
-        self.names.insert(user, name.into());
+        let name = name.into();
+        // A name can arrive after the peer's pointer already has. The
+        // roster is the one answer to "what is this peer called", so an
+        // already-drawn pill is relabelled rather than left showing the
+        // id until the peer happens to move again.
+        for cursor in &mut self.remote_cursors {
+            if cursor.user_id == user.0 {
+                cursor.label = name.clone();
+            }
+        }
+        self.names.insert(user, name);
     }
 
     /// The friendly name to show for `user`, falling back to the raw id
@@ -840,9 +850,13 @@ impl PresenceCtx {
             b as f32 / 255.0,
             alpha.clamp(0.0, 1.0),
         ];
+        // Told a name, use it; otherwise ask the roster, which falls
+        // back to the raw id. Resolving through the roster is what lets
+        // a pointer that moves without carrying a name still be
+        // labelled with one the room already knows.
         let label = display_name
             .map(|s| s.to_string())
-            .unwrap_or_else(|| user_id.clone());
+            .unwrap_or_else(|| self.display_name(&uid));
         if let Some(existing) = self
             .remote_cursors
             .iter_mut()
@@ -1371,6 +1385,79 @@ mod string_id_wrapper_tests {
         let pu = ctx.user(&alice);
         assert_eq!(pu.name, "Alice Smith");
         assert_eq!(pu.color, user_color("alice"));
+    }
+
+    /// A peer the room has not named is labelled with the id it arrived
+    /// under — not blank, and not somebody who does not exist.
+    ///
+    /// Both of the wrong answers are worse than the id. A blank chip
+    /// floating over a caret reads as a rendering fault; a stand-in name
+    /// reads as a person, and there is no person. The id is ugly and
+    /// true, which is the right trade until an inviter says otherwise.
+    #[test]
+    fn an_unnamed_peer_is_labelled_with_its_id_and_never_with_a_stand_in() {
+        let ctx = PresenceCtx::empty();
+        let peer = UserId("peer@5537458103208628978".into());
+
+        let label = ctx.display_name(&peer);
+        assert_eq!(label, "peer@5537458103208628978");
+        assert!(!label.trim().is_empty(), "a caret chip must never be blank");
+        assert_eq!(
+            ctx.user(&peer).name,
+            "peer@5537458103208628978",
+            "every renderer resolves the same way, so none of them invents a name",
+        );
+    }
+
+    /// Gaining a name must not change what colour a peer is drawn in.
+    ///
+    /// Colour is keyed on the id and the name is a label on it, which is
+    /// what makes this hold — but it holds only for as long as nothing
+    /// starts keying colour on the label, so it is asserted rather than
+    /// left to be noticed by somebody watching a caret change colour
+    /// mid-sentence.
+    #[test]
+    fn a_peer_that_gains_a_name_keeps_its_colour() {
+        let mut ctx = PresenceCtx::empty();
+        let peer = UserId("peer@5537458103208628978".into());
+        let before = ctx.color_for(&peer);
+
+        ctx.set_display_name(peer.clone(), "Xaver");
+
+        assert_eq!(ctx.display_name(&peer), "Xaver");
+        assert_eq!(
+            ctx.color_for(&peer),
+            before,
+            "a peer must not change colour in front of the people watching it",
+        );
+    }
+
+    /// A name can arrive after the pointer it belongs to. The pill has to
+    /// pick it up, or a peer stays a number on screen until they happen
+    /// to move again.
+    #[test]
+    fn a_name_that_arrives_after_the_pointer_relabels_it() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+        assert_eq!(ctx.remote_cursors[0].label, "peer@77");
+
+        ctx.set_display_name(UserId("peer@77".into()), "Xaver");
+
+        assert_eq!(ctx.remote_cursors.len(), 1, "naming a peer adds no second pointer");
+        assert_eq!(ctx.remote_cursors[0].label, "Xaver");
+        assert_eq!(ctx.remote_cursors[0].position, [10.0, 20.0], "and moves none");
+    }
+
+    /// And the other order: a name learned from the roster before the
+    /// peer's first move labels that move when it lands.
+    #[test]
+    fn a_pointer_that_arrives_after_the_name_is_labelled_with_it() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.set_display_name(UserId("peer@77".into()), "Xaver");
+
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+
+        assert_eq!(ctx.remote_cursors[0].label, "Xaver");
     }
 
     #[test]

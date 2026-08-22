@@ -1610,27 +1610,21 @@ impl App {
             match event {
                 CollabEvent::Context { collaborators, .. } => {
                     for c in collaborators {
-                        self.state.collab.cursors.entry(c.id.clone()).or_insert(
-                            crate::state::RemoteCursor {
-                                x: 0.0,
-                                y: 0.0,
-                                color: crate::color_compat::rgb(
-                                    c.color[0] as f64,
-                                    c.color[1] as f64,
-                                    c.color[2] as f64,
-                                ),
-                                name: c.name.clone(),
-                            },
-                        );
-                        // Seed the overlay-side presence so peer
-                        // labels come through with the server-
-                        // announced friendly name; later cursor
-                        // moves preserve the label because they
-                        // pass display_name=None.
-                        self.presence_ctx
-                            .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
-                        // Seed the roster so caret chips and mist tags for
-                        // this peer show the friendly name, not the raw id.
+                        // The roster says who is here and what they are
+                        // called. It does **not** say where their
+                        // pointer is, so it does not make one: a
+                        // cursor minted here would be drawn at the
+                        // origin, and a pointer painted somewhere the
+                        // peer is not is a lie the screen tells about a
+                        // real person. A peer that already has a
+                        // pointer keeps it, relabelled.
+                        if let Some(cursor) = self.state.collab.cursors.get_mut(&c.id) {
+                            cursor.name = c.name.clone();
+                        }
+                        // Seed the roster so caret chips, cursor pills
+                        // and mist tags for this peer show the name the
+                        // room gave them rather than the raw id. Peers
+                        // already on screen are relabelled in place.
                         self.presence_ctx.set_display_name(
                             crate::permissions::UserId(c.id.clone()),
                             c.name.clone(),

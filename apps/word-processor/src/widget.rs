@@ -742,6 +742,14 @@ fn block_presence_key(block_id: &str) -> PresenceKey {
 pub(crate) struct RemoteCaretOverlay {
     pub user: UserId,
     pub rect: Rect,
+    /// What to write on the pill: the name the room gave this peer, or
+    /// the peer's own id when the room has not named them.
+    ///
+    /// Resolved here rather than at paint time so it can be asserted on.
+    /// A pill that says who is editing is the visible half of the whole
+    /// collaboration claim, and "the label is right" is not something to
+    /// find out by looking at a screenshot.
+    pub label: String,
 }
 
 /// A resolved remote collaborator selection to paint this frame: one-or-more
@@ -5677,6 +5685,7 @@ impl Widget for WordProcessorWidget {
                 theme,
                 presence,
                 &c.user,
+                &c.label,
                 c.rect.x0,
                 c.rect.y0,
             );
@@ -6738,7 +6747,12 @@ impl WordProcessorWidget {
                         l.text_x + cx as f64 + CARET_WIDTH,
                         l.y_top + cy as f64 + ch as f64,
                     );
-                    carets.push(RemoteCaretOverlay { user: user.clone(), rect });
+                    let label = presence.display_name(user);
+                    carets.push(RemoteCaretOverlay {
+                        user: user.clone(),
+                        rect,
+                        label,
+                    });
                 }
             }
         }
@@ -6812,10 +6826,10 @@ impl WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
         user: &UserId,
+        label: &str,
         caret_x: f64,
         caret_top: f64,
     ) {
-        let label = &user.0;
         let (r, g, b) = presence.color_for(user);
         let peer = Color::from_rgb8(r, g, b);
         let size = 11.0_f32;
@@ -11274,6 +11288,51 @@ mod tests {
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "no remote carets without peers");
         assert!(selections.is_empty(), "no remote selections without peers");
+    }
+
+    /// The pill over a peer's caret says who is editing, not which
+    /// machine is.
+    ///
+    /// A peer reaches this app as its transport identity — the id its
+    /// caret is coloured by — and the name that belongs to that id lives
+    /// in the room, written by whoever invited them. Reading the label
+    /// off the id instead put `peer@5537458103208628978` over a caret in
+    /// somebody's document.
+    #[test]
+    fn a_named_peers_caret_is_labelled_with_their_name() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+        let peer = "peer@5537458103208628978";
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+        presence.set_display_name(ui::permissions::UserId(peer.into()), "Xaver");
+
+        let (carets, _) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].label, "Xaver");
+        assert_eq!(
+            carets[0].user.0, peer,
+            "the id stays the identity — it is what the caret is coloured by",
+        );
+    }
+
+    /// And a peer nobody named keeps its id on the pill: not blank, and
+    /// not a person who does not exist. An unlabelled caret is honest;
+    /// an invented name is a claim about who is in the room.
+    #[test]
+    fn an_unnamed_peers_caret_is_labelled_with_its_id() {
+        let (_state, wp) = drawn_focused();
+        let block_id = first_block_id(&wp);
+        let peer = "peer@5537458103208628978";
+
+        let mut presence = PresenceCtx::empty();
+        presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+
+        let (carets, _) = wp.remote_presence_overlays(&presence);
+        assert_eq!(carets.len(), 1);
+        assert_eq!(carets[0].label, peer);
+        assert!(!carets[0].label.trim().is_empty());
     }
 
     /// A `PresenceCtx` carrying a remote collaborator's caret (under the same
