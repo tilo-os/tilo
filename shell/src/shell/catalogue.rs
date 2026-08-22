@@ -260,6 +260,19 @@ pub fn note_pending_notice(package_id: &str, notification_id: u64) {
     pending.push((package_id.to_string(), notification_id));
 }
 
+/// The package ids with an open still outstanding, and the notice each
+/// one raised.
+///
+/// A peek, not a take: the frame thread walks this every frame to ask
+/// whether the window it is waiting for has appeared yet, and asking is
+/// not settling. Retirement goes through [`take_pending_notice`].
+pub fn pending_notices() -> Vec<(String, u64)> {
+    PENDING_NOTICES
+        .lock()
+        .expect("PENDING_NOTICES poisoned")
+        .clone()
+}
+
 /// Take the notification raised for `package_id`, if one is still
 /// outstanding. Called on the frame thread when the launch resolves,
 /// so the "opening" toast is retired by the app appearing rather than
@@ -294,7 +307,7 @@ pub fn install_and_launch(
         push_failure(
             &package_id,
             &display_name,
-            "this system has no app catalogue installed (qos-catalogue is missing)".to_string(),
+            "this system has no app catalogue (qos-catalogue is missing)".to_string(),
         );
         return;
     };
@@ -341,7 +354,7 @@ pub fn install_and_launch(
         push_failure(
             &identity.0,
             &identity.1,
-            "could not start the install worker".to_string(),
+            "could not start loading it".to_string(),
         );
     }
 }

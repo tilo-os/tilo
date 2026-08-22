@@ -161,7 +161,7 @@ impl LaunchError {
     pub fn user_message(&self) -> String {
         match self {
             LaunchError::NotInstalled { package_id } => {
-                format!("{package_id} is not installed")
+                format!("this desktop has no app with the id {package_id}")
             }
             LaunchError::NotAGuiApp { package_id } => {
                 format!("{package_id} has no graphical entrypoint")
