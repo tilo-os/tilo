@@ -154,6 +154,14 @@ pub struct ChipStyle {
     pub tint: Option<Color>,
     /// Dashed border and dimmed label — an empty slot, not a value.
     pub ghost: bool,
+    /// Drop the pill entirely and paint only the lead and the label.
+    ///
+    /// For chips that already sit inside something that is doing the
+    /// containing — a lit sector of the workspace disc, a row that is
+    /// itself the selection. A pill drawn inside another container reads
+    /// as a box inside a box, and the outer one stops looking like it
+    /// holds anything.
+    pub bare: bool,
     /// Multiplies every painted alpha. Lets a caller fade a whole chip
     /// without recolouring it stop by stop.
     pub alpha: f32,
@@ -161,7 +169,7 @@ pub struct ChipStyle {
 
 impl Default for ChipStyle {
     fn default() -> Self {
-        Self { tint: None, ghost: false, alpha: 1.0 }
+        Self { tint: None, ghost: false, bare: false, alpha: 1.0 }
     }
 }
 
@@ -179,6 +187,14 @@ impl ChipStyle {
     /// Empty-slot chip — dashed border, dimmed contents.
     pub fn ghost() -> Self {
         Self { ghost: true, ..Self::default() }
+    }
+
+    /// Container-less chip — lead and label only, no fill and no border.
+    /// `tint` still colours the lead and the label, so a bare chip has
+    /// the same quiet/selected pair the pill form does. See
+    /// [`ChipStyle::bare`] for when this is the right shape.
+    pub fn bare(tint: Option<Color>) -> Self {
+        Self { tint, bare: true, ..Self::default() }
     }
 
     /// Fade the whole chip by `alpha` (clamped to `0.0..=1.0`).
@@ -258,18 +274,20 @@ impl Chip {
         // Surface + border. A tinted chip carries its accent at the same
         // 0.18 fill / full-strength border the selected widget state uses,
         // so a rail of these reads identically to a row of real Chips.
-        let (bg, border) = match (style.tint, style.ghost) {
-            (_, true) => (colors.surface_white_5, colors.border_standard),
-            (Some(t), _) => (t.with_alpha_factor(0.18), t),
-            (None, _) => (colors.surface_white_5, colors.border_standard),
-        };
-        scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
-        let stroke = if style.ghost {
-            Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0])
-        } else {
-            Stroke::new(1.0)
-        };
-        scene.stroke(&stroke, transform, fade(border, 1.0), None, &pill);
+        if !style.bare {
+            let (bg, border) = match (style.tint, style.ghost) {
+                (_, true) => (colors.surface_white_5, colors.border_standard),
+                (Some(t), _) => (t.with_alpha_factor(0.18), t),
+                (None, _) => (colors.surface_white_5, colors.border_standard),
+            };
+            scene.fill(Fill::NonZero, transform, fade(bg, 1.0), None, &pill);
+            let stroke = if style.ghost {
+                Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0])
+            } else {
+                Stroke::new(1.0)
+            };
+            scene.stroke(&stroke, transform, fade(border, 1.0), None, &pill);
+        }
 
         let cy = rect.center().y;
         // An icon-only chip centres its lead: with no label to sit beside,
@@ -285,8 +303,12 @@ impl Chip {
         } else {
             rect.x0 + PAD_X
         };
+        // A bare chip has no fill to sit the lead against, so a `text_dim`
+        // glyph beside a `text_primary` label reads as two unrelated marks
+        // rather than as one token. Pull the lead up to the label there.
         let lead_col = match style.tint {
             Some(t) => t,
+            None if style.bare => colors.text_primary,
             None => colors.text_dim,
         };
         match lead {
