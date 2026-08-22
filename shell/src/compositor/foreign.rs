@@ -1411,8 +1411,8 @@ mod tests {
 
     #[test]
     fn reconcile_copies_adoptions_and_teardowns_across_trees() {
-        let mut source = WorkspaceTree::bootstrap_default();
-        let mut rendered = WorkspaceTree::bootstrap_default();
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
         assert!(
             !reconcile_foreign_tabs(&source, &mut rendered),
             "two pristine trees need no mirroring"
@@ -1440,8 +1440,8 @@ mod tests {
 
     #[test]
     fn reconcile_propagates_a_late_set_app_id() {
-        let mut source = WorkspaceTree::bootstrap_default();
-        let mut rendered = WorkspaceTree::bootstrap_default();
+        let mut source = WorkspaceTree::bootstrap_demo();
+        let mut rendered = WorkspaceTree::bootstrap_demo();
         crate::compositor::tab_binding::adopt_toplevel(&mut source, 77, None);
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
@@ -1461,7 +1461,7 @@ mod tests {
     fn visibility_tracks_the_groups_active_tab() {
         use crate::compositor::tab_binding::{Placement, adopt_toplevel, adopt_toplevel_at};
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // A lone selected window, so each adoption opens its own column
         // rather than joining a tabbed group — which is the arrangement
         // this test is about.

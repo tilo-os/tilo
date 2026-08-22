@@ -339,7 +339,7 @@ mod tests {
 
     #[test]
     fn apply_drop_appends_tab_to_first_group_of_active_workspace() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let before = tree.active_workspace().unwrap().strips[0].window_groups[0]
             .tabs
             .len();
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn apply_drop_focuses_the_new_tab() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let tab_id = apply_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.active_tab, tab_id);
@@ -369,7 +369,7 @@ mod tests {
 
     #[test]
     fn apply_drop_creates_group_when_strip_is_empty() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // Empty the first strip so the helper has to create a group.
         tree.active_workspace_mut().unwrap().strips[0]
             .window_groups
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn apply_drop_labels_folder_tab_with_files_prefix() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         apply_workspace_drop(&mut tree, DraggedItem::folder("Documents")).unwrap();
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "Files — Documents");
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn apply_drop_labels_code_file_tab_with_filename_only() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         apply_workspace_drop(&mut tree, DraggedItem::file("main.tsx")).unwrap();
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.tabs.last().unwrap().title, "main.tsx");
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn apply_drop_at_targets_the_named_group_not_the_first() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // Give the active workspace's first strip a SECOND group, so
         // "first group" and "target group" are distinguishable.
         let (strip_id, first_group_id, second_group_id) = {
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn apply_drop_at_returns_none_for_unknown_group() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let strip_id = tree.active_workspace().unwrap().strips[0].id;
         // A group id that doesn't exist in the strip → stale target.
         let result =
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn apply_drop_at_returns_none_for_unknown_strip() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let group_id = tree.active_workspace().unwrap().strips[0].window_groups[0].id;
         let result = apply_workspace_drop_at(
             &mut tree,
@@ -555,7 +555,7 @@ mod tests {
 
     #[test]
     fn apply_drop_preserves_previous_tabs() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let titles_before: Vec<String> = tree.active_workspace().unwrap().strips[0].window_groups
             [0]
         .tabs

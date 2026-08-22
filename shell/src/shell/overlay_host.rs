@@ -10965,7 +10965,7 @@ mod wifi_password_tests {
         crate::shell::chrome_state::Chrome,
         std::rc::Rc<JoinRecorder>,
     ) {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         let rec = std::rc::Rc::new(JoinRecorder {
             attempts: RefCell::new(Vec::new()),
             reject,
@@ -11178,7 +11178,7 @@ mod palette_dispatch_tests {
     use ui::widget::Container;
 
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         (host, chrome)
@@ -11257,7 +11257,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn peer_sync_invite_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
             .with_chrome(chrome.clone())
@@ -11274,7 +11274,7 @@ mod palette_dispatch_tests {
 
     #[test]
     fn peer_sync_connect_enqueues_action_when_flag_on() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let mut h = ShellOverlayHost::new(Box::new(Container::new()))
             .with_chrome(chrome.clone())
@@ -11297,7 +11297,7 @@ mod palette_dispatch_tests {
         // a peer-sync id twice must still dispatch (no panic, no
         // duplicate-row regression). Indirectly proven by checking
         // each dispatch enqueues exactly one action.
-        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_default()));
+        let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         assert!(h.dispatch_palette_command("peer.invite"));
         assert_eq!(h.take_peer_sync_actions().len(), 1);
     }
@@ -11311,9 +11311,9 @@ mod workspace_slide_tests {
     use ui::widget::Container;
 
     fn host_with_two_workspaces() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         // Add a second workspace so we actually have something to
-        // switch *to*. `bootstrap_default` only seeds one, and
+        // switch *to*. `bootstrap_demo` only seeds one, and
         // `switch_down` is a no-op when there's nothing below.
         tree.append_empty_workspace("Second");
         let chrome = ChromeState::new(tree);
@@ -11697,7 +11697,7 @@ mod modal_curve_tests {
         use crate::shell::state::WorkspaceTree;
         use ui::widget::Container;
 
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         tree.append_empty_workspace("Second");
         tree.append_empty_workspace("Third");
         let chrome = ChromeState::new(tree);
@@ -11906,7 +11906,7 @@ mod overlay_event_absorb_tests {
     /// fraction of the viewport, so its filter band is only as tight as
     /// the screen is narrow.
     fn build_harness_sized(vw: f64, vh: f64) -> AbsorbHarness {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let log = Rc::new(RefCell::new(Vec::<String>::new()));
         let content = Box::new(RecordingContent::new(log.clone()));
@@ -12479,7 +12479,7 @@ mod tests {
     }
 
     fn build_harness() -> Harness {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let chrome = ChromeState::new(tree);
         let content = Box::new(StubContent::new());
         let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
@@ -12907,7 +12907,7 @@ mod tests {
     /// is deliberately *not* among its answers. `Super+K` is the global
     /// surface, and it must offer that app.
     ///
-    /// The precondition matters: `bootstrap_default`'s active tab is
+    /// The precondition matters: `bootstrap_demo`'s active tab is
     /// Notes, which `NotesProvider` claims via `owns_tab`. Without a
     /// claiming provider `ActiveApp` allows everything and the narrow
     /// half of this test would pass vacuously. Drives the whole

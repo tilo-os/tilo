@@ -5,12 +5,12 @@ use shell::shell::state::{
 
 #[test]
 fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
-    // `bootstrap_default` seeds a 3-workspace fixture (Home / Research /
+    // `bootstrap_demo` seeds a 3-workspace fixture (Home / Research /
     // Design) so the overview overlay renders a populated 3-card grid on
     // first run. Pin the shape here so accidental drift in the seed —
     // adding a fourth demo workspace, dropping Research, doubling up
     // strips — surfaces as a test failure rather than a silent UX shift.
-    let t = WorkspaceTree::bootstrap_default();
+    let t = WorkspaceTree::bootstrap_demo();
     assert_eq!(t.workspaces.len(), 3);
     for ws in &t.workspaces {
         assert_eq!(
@@ -29,7 +29,7 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
 
 #[test]
 fn append_workspace_sets_active() {
-    let mut t = WorkspaceTree::bootstrap_default();
+    let mut t = WorkspaceTree::bootstrap_demo();
     let new_id = t.append_empty_workspace("New");
     t.set_active(new_id);
     assert_eq!(t.active, new_id);
@@ -73,7 +73,7 @@ fn legacy_pixel_widths_migrate_to_the_share_they_represented() {
 /// manual resize survives a restart.
 #[test]
 fn fraction_widths_round_trip_through_persisted_json() {
-    let mut tree = WorkspaceTree::bootstrap_default();
+    let mut tree = WorkspaceTree::bootstrap_demo();
     tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(742);
     let json = serde_json::to_string(&tree).expect("serialize");
     let back: WorkspaceTree = serde_json::from_str(&json).expect("deserialize");
@@ -102,7 +102,7 @@ fn persistence_roundtrip_atomic() {
     use shell::shell::persist::{load_tree_from, save_tree_to};
     use shell::shell::state::WorkspaceTree;
     let tmp = std::env::temp_dir().join(format!("qd-test-{}.json", std::process::id()));
-    let t = WorkspaceTree::bootstrap_default();
+    let t = WorkspaceTree::bootstrap_demo();
     save_tree_to(&t, &tmp).expect("save");
     let loaded = load_tree_from(&tmp).expect("load");
     assert_eq!(loaded.workspaces.len(), t.workspaces.len());
@@ -132,6 +132,6 @@ fn load_missing_file_returns_default() {
 #[test]
 fn nirios_shell_root_constructs_from_tree() {
     use shell::shell::build_nirios_root;
-    let tree = shell::shell::state::WorkspaceTree::bootstrap_default();
+    let tree = shell::shell::state::WorkspaceTree::bootstrap_demo();
     let _boxed: Box<dyn ui::widget::Widget> = build_nirios_root(&tree);
 }

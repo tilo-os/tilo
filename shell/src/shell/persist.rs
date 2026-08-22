@@ -273,10 +273,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
 
-        // Persist a non-empty bootstrap tree. `bootstrap_default`
+        // Persist a non-empty bootstrap tree. `bootstrap_demo`
         // already calls `seed_doc_from_cache`, so on disk the cache
         // alone carries the workspace data.
-        let original = WorkspaceTree::bootstrap_default();
+        let original = WorkspaceTree::bootstrap_demo();
         save_tree_to(&original, &path).expect("save");
 
         // Round-trip via the production load path.
@@ -344,12 +344,21 @@ mod tests {
             .expect("write legacy state");
 
         let (mut first_boot, _) = load_or_default(&path);
+        // Identify the tree by the id the fixture wrote, not by its shape.
+        // `bootstrap_default` is also a single workspace, so a length check
+        // no longer tells a loaded file apart from the bootstrap fallback —
+        // and a silent fallback would leave the rest of this test asserting
+        // about a brand-new tree instead of a migrated one. The id is minted
+        // fresh by the fallback and can never be 7.
         assert_eq!(
-            first_boot.workspaces.len(),
-            1,
-            "the legacy state file must still load — a fallback to \
-             `bootstrap_default` here would make the rest of this test \
-             vacuous"
+            first_boot
+                .workspaces
+                .iter()
+                .map(|w| w.id)
+                .collect::<Vec<_>>(),
+            vec![WorkspaceId(7)],
+            "the legacy state file must still load; got the bootstrap \
+             fallback or something else entirely"
         );
         assert!(
             first_boot.workspaces[0].room.is_nil(),
@@ -393,7 +402,7 @@ mod tests {
     fn a_written_state_file_stamps_its_schema_version() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
-        save_tree_to(&WorkspaceTree::bootstrap_default(), &path).expect("save");
+        save_tree_to(&WorkspaceTree::bootstrap_demo(), &path).expect("save");
 
         let raw: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read")).expect("json");
