@@ -285,6 +285,19 @@ pub struct TopBarChrome {
     last_cursor: Option<Point>,
 }
 
+/// Body of a Selector-role control in the bar — the workspace pill, the
+/// centre band, the tray pill.
+///
+/// These filled with `surfaces.raised`, which is `#ffffff` on the light
+/// palette while the bar's own surface is also white: the pills had no
+/// visible body at all on light, so the capsule shape they had been given
+/// was invisible and the workspace name floated loose in the bar. The
+/// shared selection tier derives its lift from the ground by luminance,
+/// so a Selector has a body on every theme.
+fn bar_selector_body(theme: &Theme, state: ui::chrome::SelectionState) -> ui::chrome::SelectionTier {
+    ui::chrome::selection_tier(theme, state)
+}
+
 impl TopBarChrome {
     pub fn from_tree(tree: &WorkspaceTree) -> Self {
         let mut this = Self {
@@ -1047,13 +1060,12 @@ impl Widget for TopBarChrome {
             ws_pill_outer,
             ui::chrome::ChromeRole::Selector.radius(theme, ws_pill_outer.height()),
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &pill,
-        );
+        // The current workspace is the active Selector in the bar.
+        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+        scene.fill(Fill::NonZero, transform, body.fill, None, &pill);
+        if let Some(edge) = body.border {
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, edge, None, &pill);
+        }
         text_renderer.draw_text_weighted(
             scene,
             &ws_label,
@@ -1093,13 +1105,12 @@ impl Widget for TopBarChrome {
             band,
             ui::chrome::ChromeRole::Selector.radius(theme, band.height()),
         );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &band_rr,
-        );
+        // The centre band is a Selector: you scroll between its three widgets.
+        let body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
+        scene.fill(Fill::NonZero, transform, body.fill, None, &band_rr);
+        if let Some(edge) = body.border {
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, edge, None, &band_rr);
+        }
 
         // Three-dot indicator on the left of the band (vertical stack).
         let dot_x = band.x0 + 12.0;
@@ -1392,11 +1403,15 @@ impl Widget for TopBarChrome {
             rx,
             center_y + tray_h / 2.0,
         );
-        let tray = RoundedRect::from_rect(self.tray_pill_rect, tray_h / 2.0);
+        let tray = RoundedRect::from_rect(
+            self.tray_pill_rect,
+            ui::chrome::ChromeRole::Selector.radius(theme, tray_h),
+        );
+        let tray_body = bar_selector_body(theme, ui::chrome::SelectionState::active(true));
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            tray_body.fill,
             None,
             &tray,
         );
