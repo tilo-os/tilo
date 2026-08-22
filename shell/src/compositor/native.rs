@@ -3073,6 +3073,13 @@ pub fn run() -> ! {
                     .map(|w| w.room.to_string())
                     .collect::<Vec<_>>()
             });
+            // Say where this session's pointer is, whether or not
+            // anything is running in front of it. The app-driven
+            // republish only speaks while a local app publishes a
+            // pointer, so on a desktop with nothing open it never
+            // spoke — and two people in one room watched each other
+            // not appear.
+            relay.publish_local_cursor();
             frame_builder.pump_peer_presence()
         } else {
             false
