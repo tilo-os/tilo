@@ -878,10 +878,15 @@ impl Widget for SidebarWheelDisc {
         // directions of softness compose: radial from the band's own
         // alpha, vertical from the gradient. The result has no hard
         // edge on any side.
+        // Many thin bands that barely overlap, rather than a few wide
+        // ones. Where two translucent strokes overlap their alphas
+        // composite, so wide overlapping bands accumulate unevenly and
+        // the ramp shows as visible stripes running along the arc. At
+        // this step the seams are finer than a single alpha level.
         let body_fill = colors.surfaces.overlay;
-        let bands = 18;
+        let bands = 96;
         let depth = (self.rect.width() * 1.25).min(radius - 2.0);
-        let band_w = (depth / bands as f64) * 1.9;
+        let band_w = (depth / bands as f64) * 1.15;
         for i in 0..bands {
             let t = i as f64 / bands as f64;
             let band_r = radius - t * depth;
