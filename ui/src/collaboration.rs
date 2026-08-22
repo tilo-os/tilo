@@ -980,6 +980,22 @@ pub fn local_user_id() -> crate::permissions::UserId {
     crate::permissions::UserId(auto_hello_env().0)
 }
 
+/// The room this process collaborates in — the cluster every CRDT delta
+/// it sends is addressed to.
+///
+/// Exposed so presence can be scoped from the *same* source the routing
+/// already uses. Deriving the two independently is how a window ends up
+/// publishing "who is here" into a room it is not addressing its
+/// documents to, and nothing would report the disagreement.
+///
+/// `Uuid::nil()` is the unaddressable value: no workspace in the
+/// environment. The broker rejects it deliberately (an unminted room
+/// would otherwise make every workspace on every machine one enormous
+/// shared room), so callers must treat it as "no room", not as a room.
+pub fn local_cluster_id() -> Uuid {
+    auto_hello_env().1
+}
+
 fn auto_hello_env_uncached() -> (String, Uuid) {
     // Only the last-resort random id is remembered, and only because a
     // *fresh* uuid per call would hand a second manager in the same

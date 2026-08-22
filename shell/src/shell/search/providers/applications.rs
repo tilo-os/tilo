@@ -1,4 +1,5 @@
-//! Applications provider: installed apps, launchable from the palette.
+//! Applications provider: apps you can open, launchable from the
+//! palette.
 //!
 //! Typing an app's name into Ctrl+K offers `Open <App>`; picking the row
 //! starts the package as a real sandboxed process through
@@ -6,9 +7,35 @@
 //! trigger in the shell today, so everything a launch needs to report —
 //! "not installed", "no display yet", "qos-launcher missing" — surfaces
 //! here as a notification.
+//!
+//! ## Apps that are not here yet
+//!
+//! What this provider offers is installed apps **plus** whatever the
+//! machine's configured registries describe and it does not have (see
+//! [`crate::shell::catalogue`]). Both become the same row: the same
+//! `Open <App>` wording, the same subtitle shape, the same activation,
+//! in the same group.
+//!
+//! That sameness is the design, not an oversight, and it is why this
+//! lives in the existing provider rather than a second one. A second
+//! provider would be a second group, with its own header — a visible
+//! "here is the other kind of app" section, which is exactly the
+//! distinction there is no reason to draw. From where the user is
+//! standing nothing different is happening: they asked to open an app,
+//! and an app opens. Fetching it first is a step on the way, in the
+//! same sense that reading a manifest off disk is a step on the way
+//! for an app that is already here.
+//!
+//! One consequence has to be honoured rather than designed around: an
+//! app that has to be fetched takes seconds, not milliseconds. Silence
+//! across those seconds is indistinguishable from an activation that
+//! did nothing, so an open that needs a fetch — and only that one —
+//! raises a notification while it runs, retired by the app actually
+//! starting.
 
 use std::rc::Rc;
 
+use crate::shell::catalogue::{self, CatalogueApp};
 use crate::shell::chrome_state::{Chrome, OpenTarget};
 use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
@@ -18,6 +45,20 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 /// [`ResourceKind::Application`]'s label; kept as a constant because
 /// the provider's `name()` is the group header too.
 pub const APPLICATIONS_KIND: &str = "Applications";
+
+/// How much an app the machine does not have yet gives up against one
+/// it does.
+///
+/// Exactly one point: enough that an app you have wins a *tie* against
+/// one you don't, and nothing more. Every band in [`match_score`] is at
+/// least five points apart, so this can never drag a better match below
+/// a worse one — typing an available app's name outright still beats a
+/// vague fuzzy hit on an installed one, which is what naming an app
+/// means. The two alternatives are both worse: ranking the lists
+/// separately, or pushing not-installed apps below every installed one,
+/// each make "the app I actually named" lose to "an app I happen to
+/// have".
+const NOT_INSTALLED_TIEBREAK: i32 = 1;
 
 pub struct ApplicationsProvider {
     kinds: Vec<ResourceKind>,
@@ -90,6 +131,133 @@ impl ApplicationsProvider {
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
                     launch_installed_app(chrome, &package_id, &display_name);
+                }),
+            });
+        }
+        out
+    }
+
+    /// The apps the configured registries offer that are not installed
+    /// here. Answered from cache — see [`catalogue::available_apps`].
+    fn catalogue_apps(&self) -> Vec<CatalogueApp> {
+        catalogue::available_apps()
+    }
+
+    /// Score not-yet-installed apps against `needle` and build their
+    /// rows.
+    ///
+    /// Deliberately a near-mirror of [`Self::results_for`]: the title
+    /// wording, the subtitle shape and the score bands are the same
+    /// function of the same fields, because the row a user sees must
+    /// not be able to tell them apart. `installed` is the ids already
+    /// present, so an app cannot be offered twice in the window
+    /// between an install finishing and the catalogue being refetched.
+    pub(crate) fn catalogue_results_for(
+        &self,
+        needle: &str,
+        apps: Vec<CatalogueApp>,
+        installed: &[String],
+        open_target: OpenTarget,
+    ) -> Vec<SearchResult> {
+        let needle_lower = needle.to_lowercase();
+        let mut out = Vec::new();
+        for app in apps {
+            if installed.iter().any(|id| *id == app.package_id) {
+                continue;
+            }
+            let name_lower = app.display_name.to_lowercase();
+            let id_lower = app.package_id.to_lowercase();
+            let category_lower = app.category.as_deref().map(str::to_lowercase);
+            let Some(score) = match_score(
+                &needle_lower,
+                &name_lower,
+                &id_lower,
+                category_lower.as_deref(),
+            ) else {
+                continue;
+            };
+            let package_id = app.package_id.clone();
+            let display_name = app.display_name.clone();
+            let version = app.version.clone();
+            let registry = app.registry.clone();
+            // Identical to the installed subtitle, field for field.
+            let detail = match app.category.as_deref() {
+                Some(cat) => format!("{cat} · {}", app.package_id),
+                None => format!("{} · {}", app.package_id, app.version),
+            };
+            let subtitle = format!("{} · {detail}", open_target.result_hint());
+            out.push(SearchResult {
+                kind: ResourceKind::Application,
+                provider_id: self.id().to_string(),
+                id: app.package_id.clone(),
+                title: format!("Open {}", app.display_name),
+                subtitle: Some(subtitle),
+                score: score - NOT_INSTALLED_TIEBREAK,
+                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    // Everything decided on the frame thread is decided
+                    // *now*, while the user's selection and the layout
+                    // they were looking at are both still true. The
+                    // window may be a minute away — long enough for the
+                    // active workspace to have changed — so the room
+                    // and the grants are captured here and carried to
+                    // the launch rather than read again when it
+                    // happens. Opening an app somewhere means opening
+                    // it where you asked.
+                    let context = {
+                        let st = chrome.borrow();
+                        let tree = st.tree();
+                        crate::shell::placement::note_placement_for_launch_targeted(
+                            &package_id,
+                            &tree,
+                            st.strip_viewport(),
+                            st.open_target,
+                        );
+                        tree.active_workspace()
+                            .map(|ws| (ws.room, ws.capabilities.clone()))
+                    };
+                    let Some((room, capabilities)) = context else {
+                        // No active workspace is no room and no grant
+                        // to launch into — reported exactly as an
+                        // installed app's launch reports it, because it
+                        // is exactly the same failure.
+                        let mut st = chrome.borrow_mut();
+                        st.push_notification_full(
+                            Notification::new(
+                                format!("Couldn't open {display_name}"),
+                                launcher::LaunchError::NoWorkspace.user_message(),
+                            )
+                            .with_severity(NotificationSeverity::Error)
+                            .with_app_name("Applications"),
+                        );
+                        st.bump();
+                        return;
+                    };
+                    // The palette closes the instant this returns, so
+                    // this notification is the only thing standing
+                    // between the user and an apparently dead Enter
+                    // key. It says the app is coming and where from;
+                    // it is retired when the app starts, not by a
+                    // timer.
+                    let notice = {
+                        let mut st = chrome.borrow_mut();
+                        let id = st.push_notification_full(
+                            Notification::new(
+                                format!("Opening {display_name}"),
+                                format!("Fetching {version} from {registry}…"),
+                            )
+                            .with_app_name("Applications")
+                            .with_dismiss_after(std::time::Duration::from_secs(120)),
+                        );
+                        st.bump();
+                        id
+                    };
+                    catalogue::note_pending_notice(&package_id, notice);
+                    catalogue::install_and_launch(
+                        package_id.clone(),
+                        display_name.clone(),
+                        room,
+                        capabilities,
+                    );
                 }),
             });
         }
@@ -178,7 +346,17 @@ impl SearchProvider for ApplicationsProvider {
         {
             return Vec::new();
         }
-        self.results_for(ctx.needle, self.apps(), ctx.chrome.open_target)
+        let installed = self.apps();
+        let installed_ids: Vec<String> =
+            installed.iter().map(|a| a.package_id.clone()).collect();
+        let mut out = self.results_for(ctx.needle, installed, ctx.chrome.open_target);
+        out.extend(self.catalogue_results_for(
+            ctx.needle,
+            self.catalogue_apps(),
+            &installed_ids,
+            ctx.chrome.open_target,
+        ));
+        out
     }
 }
 
@@ -259,6 +437,18 @@ mod tests {
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
         app_in(package_id, display_name, None)
+    }
+
+    fn offered(package_id: &str, display_name: &str, category: Option<&str>) -> CatalogueApp {
+        CatalogueApp {
+            package_id: package_id.to_string(),
+            display_name: display_name.to_string(),
+            description: "does a thing".to_string(),
+            category: category.map(str::to_string),
+            version: "0.1.0".to_string(),
+            registry: "qOS main".to_string(),
+            trust: "verified".to_string(),
+        }
     }
 
     fn app_in(package_id: &str, display_name: &str, category: Option<&str>) -> InstalledApp {
@@ -416,6 +606,211 @@ mod tests {
         assert!(
             !n.body.is_empty(),
             "the notification must say why the launch failed"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Apps that are not installed here yet.
+    //
+    // The load-bearing property across these is *sameness*: a row for
+    // an app the machine has to fetch must be indistinguishable from a
+    // row for one it already has. A test that only checked "a row
+    // exists" would pass while the row said "Install" in a separate
+    // section, so these assert on the exact strings.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn an_uninstalled_app_offers_an_ordinary_open_row() {
+        let p = ApplicationsProvider::new();
+        let out = p.catalogue_results_for(
+            "she",
+            vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(out.len(), 1, "the offered app must match: {out:?}");
+        assert_eq!(
+            out[0].title, "Open Sheets",
+            "an app the machine has to fetch is still just opened"
+        );
+        assert_eq!(out[0].id, "dev.qos.sheets");
+        assert_eq!(out[0].kind, ResourceKind::Application);
+        assert_eq!(
+            out[0].provider_id, "applications",
+            "one provider means one group header — a second would be a \
+             visible 'other kind of app' section"
+        );
+    }
+
+    /// The row must not be readable as "not installed". Nothing in the
+    /// user-visible strings may hint at installing.
+    #[test]
+    fn nothing_in_an_uninstalled_row_says_install() {
+        let p = ApplicationsProvider::new();
+        let out = p.catalogue_results_for(
+            "",
+            vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
+            &[],
+            OpenTarget::Beside,
+        );
+        let row = &out[0];
+        let visible = format!("{} {}", row.title, row.subtitle.clone().unwrap_or_default());
+        let lowered = visible.to_lowercase();
+        for word in ["install", "download", "fetch", "available", "get "] {
+            assert!(
+                !lowered.contains(word),
+                "{word:?} must not appear in a row the user reads as opening \
+                 an app: {visible:?}"
+            );
+        }
+    }
+
+    /// Byte-for-byte the same subtitle an installed app with the same
+    /// metadata would produce. This is the assertion that would fail
+    /// first if someone added a badge or a source marker.
+    #[test]
+    fn an_uninstalled_row_has_the_same_subtitle_as_an_installed_one() {
+        let p = ApplicationsProvider::new();
+        let installed = p.results_for(
+            "",
+            vec![app_in("dev.qos.sheets", "Sheets", Some("Office"))],
+            OpenTarget::Beside,
+        );
+        let available = p.catalogue_results_for(
+            "",
+            vec![offered("dev.qos.sheets", "Sheets", Some("Office"))],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(installed[0].title, available[0].title);
+        assert_eq!(
+            installed[0].subtitle, available[0].subtitle,
+            "the two rows have to be indistinguishable"
+        );
+
+        // And with no category declared, where the subtitle falls back
+        // to id + version.
+        let installed = p.results_for(
+            "",
+            vec![app("dev.qos.plain", "Plain")],
+            OpenTarget::Beside,
+        );
+        let available = p.catalogue_results_for(
+            "",
+            vec![offered("dev.qos.plain", "Plain", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert_eq!(installed[0].subtitle, available[0].subtitle);
+    }
+
+    /// The ranking rule, stated as the two cases that matter.
+    #[test]
+    fn an_app_you_have_wins_a_tie_but_not_a_better_match() {
+        let p = ApplicationsProvider::new();
+        // Same name, same match quality: the one already here wins.
+        let mine = p.results_for("notes", vec![app("dev.qos.notes", "Notes")], OpenTarget::Beside);
+        let theirs = p.catalogue_results_for(
+            "notes",
+            vec![offered("org.other.notes", "Notes", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert!(
+            mine[0].score > theirs[0].score,
+            "at equal match quality the installed app ranks first: \
+             {} vs {}",
+            mine[0].score,
+            theirs[0].score
+        );
+
+        // A weaker match on an installed app must NOT beat the app the
+        // user actually named.
+        let vague = p.results_for(
+            "sheets",
+            // "sheets" is a fuzzy subsequence of "Some Header Editor
+            // Extra Tools" — the weakest band there is.
+            vec![app("dev.qos.shed", "Shed Helper Editor Extra Tool Set")],
+            OpenTarget::Beside,
+        );
+        let named = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert!(
+            !vague.is_empty() && !named.is_empty(),
+            "both sides must actually match for this to prove anything"
+        );
+        assert!(
+            named[0].score > vague[0].score,
+            "naming an app you don't have beats a vague hit on one you do: \
+             {} vs {}",
+            named[0].score,
+            vague[0].score
+        );
+    }
+
+    /// Between an install finishing and the catalogue being refetched,
+    /// the same app is in both lists. It must produce one row, not two.
+    #[test]
+    fn an_app_that_just_became_installed_is_not_offered_twice() {
+        let p = ApplicationsProvider::new();
+        let out = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", None)],
+            &["dev.qos.sheets".to_string()],
+            OpenTarget::Beside,
+        );
+        assert!(
+            out.is_empty(),
+            "an installed app must not also be offered as available: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_matching_needle_offers_nothing_from_the_catalogue() {
+        let p = ApplicationsProvider::new();
+        let out = p.catalogue_results_for(
+            "zzzqqq",
+            vec![offered("dev.qos.sheets", "Sheets", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        assert!(out.is_empty());
+    }
+
+    /// Activating with no active workspace has to say so, in the same
+    /// words an installed app's launch uses — not fail silently while
+    /// the palette closes. Drives the real `on_open` closure.
+    #[test]
+    fn activating_with_no_workspace_reports_it_the_same_way() {
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let mut doc = AutoCommit::new();
+        // A default WorkspaceTree has no active workspace.
+        let out = p.catalogue_results_for(
+            "sheets",
+            vec![offered("dev.qos.sheets", "Sheets", None)],
+            &[],
+            OpenTarget::Beside,
+        );
+        let row = out.first().expect("a row for the offered app");
+        assert!(c.borrow().notifications().is_empty());
+        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        let st = c.borrow();
+        let n = st
+            .notifications()
+            .last()
+            .expect("activation must never be silent");
+        assert_eq!(n.title, "Couldn't open Sheets");
+        assert_eq!(n.severity, NotificationSeverity::Error);
+        assert_eq!(
+            n.body,
+            launcher::LaunchError::NoWorkspace.user_message(),
+            "the same failure gets the same words whichever list the app \
+             came from"
         );
     }
 }

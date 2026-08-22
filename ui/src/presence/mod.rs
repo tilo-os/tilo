@@ -10,7 +10,10 @@ pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from
 // their per-frame draw without depending on the shell.
-pub use render::{draw_remote_cursors, draw_remote_presence};
+pub use render::{
+    PeerCursor, PillPlacement, PillRequest, draw_peer_cursors, draw_remote_cursors,
+    draw_remote_presence, layout_peer_pills,
+};
 
 /// How long a peer's "just typed" highlight lingers before it has fully
 /// faded away. A textmarker swipe that decays over this window so a busy
@@ -24,14 +27,21 @@ pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(25
 ///
 /// The concept pins a fixed palette for four canonical ids — `me`,
 /// `alice`, `bob`, `charlie` — matching the reference mockup's
-/// `cursorColor` table. Any other id falls through to a stable FNV-1a
-/// hash → HSL so the same peer keeps the same hue everywhere they
-/// render, but two different peers are visually distinguishable from
-/// each other.
+/// `cursorColor` table. Any other id hashes onto [`PEER_PALETTE`], a
+/// closed ring whose members are far enough apart to tell apart at a
+/// glance.
+///
+/// The colour is a pure function of the id and nothing else. That is
+/// what lets two machines agree: each host paints the peers it can see,
+/// and the sets differ (everyone sees everyone but themselves), so a
+/// colour chosen from "who is here" would give the same person a
+/// different colour on every screen.
 pub fn user_color(user_id: &str) -> (u8, u8, u8) {
     // Concept-pinned palette. Matches `nirios-concept/src/data.ts`
     // USERS[*].cursorColor so the Rust render is pixel-identical to the
-    // reference mockup for these names.
+    // reference mockup for these names. Each is also a member of
+    // `PEER_PALETTE`, so a pin and a hash never land near-but-not-quite
+    // on the same colour.
     match user_id {
         "me" => (0x63, 0x66, 0xf1),      // indigo-500
         "alice" => (0xec, 0x48, 0x99),   // pink-500
@@ -45,30 +55,126 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
                 h ^= *b as u64;
                 h = h.wrapping_mul(0x100000001b3);
             }
-            let hue = (h % 360) as f32;
-            hsl_to_rgb(hue, 0.65, 0.55)
+            PEER_PALETTE[(h % PEER_PALETTE.len() as u64) as usize]
         }
     }
 }
 
-fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
-    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
-    let hh = h / 60.0;
-    let x = c * (1.0 - (hh.rem_euclid(2.0) - 1.0).abs());
-    let (r1, g1, b1) = match hh as i32 {
-        0 => (c, x, 0.0),
-        1 => (x, c, 0.0),
-        2 => (0.0, c, x),
-        3 => (0.0, x, c),
-        4 => (x, 0.0, c),
-        _ => (c, 0.0, x),
-    };
-    let m = l - c / 2.0;
-    (
-        ((r1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((g1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-        ((b1 + m) * 255.0).clamp(0.0, 255.0) as u8,
-    )
+/// Every colour a peer can be drawn in.
+///
+/// The hash used to pick a hue out of all 360, which sounds like more
+/// choice and is in practice worse: uniform sampling puts two peers a
+/// couple of degrees apart often enough to see it. `dave`, `erin` and
+/// `sara` landed on hues 87, 89 and 88 — three different people in one
+/// indistinguishable green, which reads as a rendering fault rather
+/// than as three people.
+///
+/// A closed ring trades that for an honest failure: two ids either get
+/// clearly different colours or exactly the same one, and the name on
+/// the pill is what settles an exact tie. Twelve hues spaced no closer
+/// than 26°, then twelve more offset half a step and lifted in
+/// lightness, so neighbours differ in brightness as well as hue and
+/// nothing is dark enough to sink into the desktop or pale enough to
+/// wash out on a white page.
+pub const PEER_PALETTE: [(u8, u8, u8); 24] = [
+    (0xf9, 0x73, 0x16), // orange-500 — pinned for "bob"
+    (0xdf, 0xdc, 0x3a),
+    (0x87, 0xdf, 0x3a),
+    (0x3a, 0xdf, 0x4a),
+    (0x10, 0xb9, 0x81), // emerald-500 — pinned for "charlie"
+    (0x3a, 0xce, 0xdf),
+    (0x3a, 0x84, 0xdf),
+    (0x63, 0x66, 0xf1), // indigo-500 — pinned for "me"
+    (0x89, 0x3a, 0xdf),
+    (0xdf, 0x3a, 0xdf),
+    (0xec, 0x48, 0x99), // pink-500 — pinned for "alice"
+    (0xdf, 0x3a, 0x42),
+    (0xf4, 0xcd, 0x71),
+    (0xd1, 0xf4, 0x71),
+    (0x89, 0xf4, 0x71),
+    (0x71, 0xf4, 0xa3),
+    (0x71, 0xf4, 0xe4),
+    (0x71, 0xc8, 0xf4),
+    (0x71, 0x90, 0xf4),
+    (0x90, 0x71, 0xf4),
+    (0xd3, 0x71, 0xf4),
+    (0xf4, 0x71, 0xd3),
+    (0xf4, 0x71, 0x94),
+    (0xf4, 0x89, 0x71),
+];
+
+/// Give everyone in a room a colour nobody else in it is wearing.
+///
+/// [`user_color`] alone cannot promise this. It is a hash, so two ids
+/// land on the same ring entry roughly one time in
+/// [`PEER_PALETTE`]`.len()`, and `carol` lands exactly on `alice`'s
+/// pink. One time in twenty-four sounds rare until four people are in a
+/// room, where it is closer to one time in four.
+///
+/// So the room resolves it. Everyone keeps the colour their id gives
+/// them when it is free, and whoever collides steps to the next free
+/// entry. Ids are walked in sorted order, which is what makes this
+/// agree across machines: every host in a room ends up seeing the same
+/// membership (each sees the others plus itself), so each computes the
+/// same assignment, and a person is the same colour on every screen.
+/// Sorted order also bounds the churn — a new arrival can only move
+/// someone it actually collides with, and only someone whose id sorts
+/// after its own.
+///
+/// `reserved` are colours already spoken for by an explicit roster
+/// choice; they are held back so a computed colour never lands on one.
+pub fn assign_peer_colors(
+    ids: &[&str],
+    reserved: &[(u8, u8, u8)],
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut sorted: Vec<&str> = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut taken = [false; PEER_PALETTE.len()];
+    for c in reserved {
+        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c) {
+            taken[i] = true;
+        }
+    }
+
+    let mut out = HashMap::with_capacity(sorted.len());
+    for id in sorted {
+        let natural = user_color(id);
+        let start = PEER_PALETTE
+            .iter()
+            .position(|p| *p == natural)
+            // Every colour `user_color` returns is a ring member, so this
+            // cannot fire; falling back to 0 keeps the loop total rather
+            // than panicking in a draw path if that ever stops holding.
+            .unwrap_or(0);
+        let mut slot = start;
+        for step in 0..PEER_PALETTE.len() {
+            let i = (start + step) % PEER_PALETTE.len();
+            if !taken[i] {
+                slot = i;
+                break;
+            }
+            // More people than colours: everyone past the ring's size
+            // keeps their natural entry and shares it. A name still says
+            // who is who.
+            slot = start;
+        }
+        taken[slot] = true;
+        out.insert(id.to_string(), PEER_PALETTE[slot]);
+    }
+    out
+}
+
+/// How far apart two colours are, weighted the way an eye weights them
+/// (the "redmean" approximation). Used to state, as a test rather than
+/// as a hope, that no two peers can be painted in confusable colours.
+pub fn color_distance(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    let rm = (a.0 as f32 + b.0 as f32) / 2.0;
+    let dr = a.0 as f32 - b.0 as f32;
+    let dg = a.1 as f32 - b.1 as f32;
+    let db = a.2 as f32 - b.2 as f32;
+    ((2.0 + rm / 256.0) * dr * dr + 4.0 * dg * dg + (2.0 + (255.0 - rm) / 256.0) * db * db).sqrt()
 }
 
 #[cfg(test)]
@@ -90,6 +196,149 @@ mod color_tests {
         let c = user_color("eve");
         assert_eq!(a, b, "same id must map to same color");
         assert_ne!(a, c, "different ids should map to different colors");
+    }
+
+    /// Two people in the same room must never be painted in two colours
+    /// that only a colour-picker can tell apart. Enumerated over the
+    /// whole closed set `user_color` can return, so the guarantee holds
+    /// for every id rather than for the handful anyone thought to try.
+    ///
+    /// The bar is a redmean distance of 60. For scale: the scheme this
+    /// replaced put `dave` and `sara` 4.8 apart, and `host` and `peer3`
+    /// 4.4 apart — different people rendered in the same colour.
+    #[test]
+    fn no_two_peer_colours_are_confusable() {
+        for (i, a) in PEER_PALETTE.iter().enumerate() {
+            for b in &PEER_PALETTE[i + 1..] {
+                let d = color_distance(*a, *b);
+                assert!(
+                    d >= 60.0,
+                    "#{:02x}{:02x}{:02x} and #{:02x}{:02x}{:02x} are only {d:.1} apart — \
+                     two peers wearing those read as one",
+                    a.0,
+                    a.1,
+                    a.2,
+                    b.0,
+                    b.1,
+                    b.2,
+                );
+            }
+        }
+    }
+
+    /// Every colour the pins hand out is also a ring member, so a pinned
+    /// peer and a hashed one can collide outright but never land
+    /// near-but-not-quite together — which is the case that looks broken.
+    #[test]
+    fn pinned_colours_are_ring_members() {
+        for id in ["me", "alice", "bob", "charlie"] {
+            let c = user_color(id);
+            assert!(
+                PEER_PALETTE.contains(&c),
+                "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                c.0,
+                c.1,
+                c.2,
+            );
+        }
+    }
+
+    /// A hashed id is drawn from the same closed set, so the distance
+    /// guarantee above covers real peers and not just the table.
+    #[test]
+    fn hashed_ids_land_on_the_ring() {
+        for id in ["carol", "dave", "erin", "sara", "danah", "eve", "ada", "ade"] {
+            let c = user_color(id);
+            assert!(
+                PEER_PALETTE.contains(&c),
+                "{id} is painted #{:02x}{:02x}{:02x}, which is not on the ring",
+                c.0,
+                c.1,
+                c.2,
+            );
+        }
+        // The pairs that used to be indistinguishable now are not.
+        for (a, b) in [("dave", "sara"), ("dave", "erin"), ("ada", "ade")] {
+            let (ca, cb) = (user_color(a), user_color(b));
+            assert!(
+                ca == cb || color_distance(ca, cb) >= 60.0,
+                "{a} and {b} are {:.1} apart",
+                color_distance(ca, cb),
+            );
+        }
+    }
+
+    /// The case the ring alone cannot fix: `carol` hashes onto exactly
+    /// the pink `alice` is pinned to. In a room with both, one of them
+    /// has to move.
+    #[test]
+    fn a_room_never_puts_two_people_in_one_colour() {
+        assert_eq!(
+            user_color("carol"),
+            user_color("alice"),
+            "this test is guarding a real collision; if the hash moved, \
+             pick another colliding pair rather than deleting the test",
+        );
+
+        let room = ["alice", "bob", "carol", "danah", "erin", "dana"];
+        let assigned = assign_peer_colors(&room, &[]);
+        assert_eq!(assigned.len(), room.len());
+        for (i, a) in room.iter().enumerate() {
+            for b in &room[i + 1..] {
+                assert_ne!(
+                    assigned[*a], assigned[*b],
+                    "{a} and {b} were given the same colour",
+                );
+                assert!(
+                    color_distance(assigned[*a], assigned[*b]) >= 60.0,
+                    "{a} and {b} are too close to tell apart",
+                );
+            }
+        }
+        // Whoever does not collide keeps the colour their id gives them.
+        assert_eq!(assigned["alice"], user_color("alice"));
+        assert_eq!(assigned["bob"], user_color("bob"));
+    }
+
+    /// Two machines in one room compute the same assignment, because
+    /// each sees the same membership: the other people plus itself.
+    /// Without that a person would be pink on one screen and orange on
+    /// the next.
+    #[test]
+    fn every_machine_in_a_room_agrees_on_who_is_what_colour() {
+        let room = ["alice", "bob", "carol"];
+        // What each host has: everyone else, plus itself.
+        for me in room {
+            let mut mine: Vec<&str> = room.iter().copied().filter(|u| *u != me).collect();
+            mine.push(me);
+            assert_eq!(
+                assign_peer_colors(&mine, &[]),
+                assign_peer_colors(&room, &[]),
+                "the host running as {me} disagrees with the others",
+            );
+        }
+    }
+
+    /// A colour the roster handed out explicitly is not available to be
+    /// computed onto, or an invited peer and a live one could collide.
+    #[test]
+    fn an_explicit_roster_colour_is_not_reassigned_to_someone_else() {
+        let taken = user_color("carol"); // == alice's pink
+        let assigned = assign_peer_colors(&["carol"], &[taken]);
+        assert_ne!(
+            assigned["carol"], taken,
+            "carol took a colour the roster had already spoken for",
+        );
+    }
+
+    /// Someone arriving late must not repaint the people already there
+    /// unless they actually collide with one.
+    #[test]
+    fn a_late_arrival_leaves_the_others_alone() {
+        let before = assign_peer_colors(&["alice", "bob"], &[]);
+        let after = assign_peer_colors(&["alice", "bob", "dana"], &[]);
+        assert_eq!(before["alice"], after["alice"]);
+        assert_eq!(before["bob"], after["bob"]);
     }
 
     #[test]
@@ -165,6 +414,25 @@ pub struct RemoteCursor {
     pub color: [f32; 4],
     pub position: [f32; 2], // scene-space coords
     pub label: String,
+}
+
+/// What a subscriber still has to do after
+/// [`PresenceCtx::apply_remote_presence`] has folded a frame in.
+///
+/// The presence stores are updated either way; these name the two
+/// consequences that reach past them — moving the local viewport, and
+/// answering a joiner with document state. A subscriber that holds no
+/// document (the compositor) ignores both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemotePresenceEffect {
+    /// Nothing beyond the presence stores changed.
+    None,
+    /// The peer broadcast a new view subset. A follower should
+    /// re-bind its viewport to them.
+    PeerViewChanged,
+    /// A peer arrived on a non-tab scope — possibly a late joiner, so
+    /// a document holder should reply with its full state.
+    PeerArrived,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -646,6 +914,116 @@ impl PresenceCtx {
         } else {
             self.register_presence(&key, uid);
         }
+    }
+
+    /// Fold one inbound presence frame into this context.
+    ///
+    /// This is the whole decode of a `RemotePresenceUpdate` — which
+    /// store a payload lands in, and under which scope. It lives on
+    /// `PresenceCtx` rather than on `App` because an app is not the
+    /// only thing that subscribes to presence: the compositor draws
+    /// peers over its own windows and reads the identical stream. Two
+    /// decoders would drift, and a peer painted by one and not the
+    /// other is indistinguishable on screen from a peer who is not
+    /// there.
+    ///
+    /// The returned [`RemotePresenceEffect`] names the part a bare
+    /// presence store cannot do for itself: following a peer's
+    /// viewport, and answering a late joiner with document state. A
+    /// subscriber that holds no document ignores it.
+    pub fn apply_remote_presence(
+        &mut self,
+        user_id: String,
+        key: PresenceKey,
+        payload: crate::collaboration::PresencePayload,
+    ) -> RemotePresenceEffect {
+        use crate::collaboration::PresencePayload::*;
+
+        // A View broadcast rides inside the routing key, not the payload
+        // (the subset has no `PresencePayload` variant). Recognise it here,
+        // store the peer's region/resource, and let the caller decide
+        // whether it is following them. The paired payload is inert and
+        // deliberately never reaches the match below.
+        if let Some(subset) = key.as_view() {
+            self.set_peer_view(UserId(user_id), subset);
+            return RemotePresenceEffect::PeerViewChanged;
+        }
+
+        match payload {
+            Pointer { x, y } => {
+                // Populate BOTH presence stores: `pointers` (keyed by
+                // scope, read by the shell's per-workspace overlay and by
+                // `pointer_for`) and the screen-space `remote_cursors` vec
+                // the shared `draw_remote_cursors` helper renders.
+                let uid = UserId(user_id.clone());
+                self.set_pointer(&key, uid, (x, y));
+                self.upsert_remote_cursor(user_id, [x, y], None);
+            }
+            Caret { pos } => {
+                // Feed BOTH presence stores: the in-app BlockEditor reads
+                // `carets` (set_caret); the cross-process overlay reads
+                // the `remote_caret` map (set_remote_caret).
+                let uid = UserId(user_id.clone());
+                self.set_caret(&key, uid, pos);
+                self.set_remote_caret(user_id, key, pos);
+            }
+            Selection { start, end } => {
+                let uid = UserId(user_id.clone());
+                self.set_selection(&key, uid, SelectionRange { start, end });
+                self.set_remote_selection(user_id, key, start, end);
+            }
+            Typing { start, end } => {
+                // A peer inserted `start..end` under `key`: record a fading
+                // textmarker swipe in their colour. `Instant::now()` births
+                // the mark; the render fades it over `TYPING_FADE`, and the
+                // per-frame `prune_typing` reclaims it.
+                self.record_peer_typing(
+                    UserId(user_id),
+                    key,
+                    SelectionRange { start, end },
+                    Instant::now(),
+                );
+            }
+            Arrived => {
+                let uid = UserId(user_id.clone());
+                // Register in the cross-process peer registry too.
+                self.register_peer_at(user_id, key.clone());
+                // Tab keys move the peer's dot between tabs/pages; non-Tab
+                // (app/workspace) arrivals are (possibly late) joiners, so
+                // the caller should reply with its full state to converge.
+                // (Page switches use Tab keys, never this.)
+                if matches!(key, PresenceKey::Tab { .. }) {
+                    self.set_tab_focus(&key, uid);
+                } else {
+                    self.register_presence(&key, uid);
+                    return RemotePresenceEffect::PeerArrived;
+                }
+            }
+            Left => {
+                // `Left` is broadcast on `WindowEvent::CursorLeft` —
+                // the peer's mouse pointer left their window viewport,
+                // not the peer themselves. Their caret + selection
+                // should KEEP rendering because they're still editing,
+                // they've just moved their mouse elsewhere. Wiping
+                // them via `unregister_peer` here was the
+                // "remote caret disappears a few seconds after it was
+                // placed" bug — any mouse-leave on the publisher side
+                // tore down the entire presence record on every
+                // subscriber.
+                //
+                // True peer disconnect arrives via the socket close
+                // path (broker drops the peer from its fan-out
+                // table); subscribers only need to clear pointer-
+                // related state here.
+                let uid = UserId(user_id.clone());
+                for list in self.pointers.values_mut() {
+                    list.retain(|(u, _)| u != &uid);
+                }
+                self.remove_remote_cursor(&user_id);
+                let _ = key;
+            }
+        }
+        RemotePresenceEffect::None
     }
 
     /// Drop every trace of `user_id`: remove them from every

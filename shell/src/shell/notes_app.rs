@@ -34,8 +34,9 @@ use ui::text_selection::{
 };
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
+use ui::icons::Icon;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+use ui::widget::{AppKind, AppWidget, EmptyState, IconDescriptor, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -80,6 +81,12 @@ pub struct NotesApp {
     /// draw pass laid the text out in.
     body_origin: Point,
     wrap_width: f32,
+    /// Bounds of the zero-state's call-to-action pill, resolved by the
+    /// draw pass and `Rect::ZERO` whenever the zero-state isn't showing.
+    /// Only drives the pointer cursor — the pill sits inside the tile, so
+    /// the ordinary "click anywhere to place the caret" path already
+    /// focuses the note when it is pressed.
+    empty_action_rect: Rect,
 }
 
 impl NotesApp {
@@ -97,7 +104,30 @@ impl NotesApp {
             click_count: 0,
             body_origin: Point::ZERO,
             wrap_width: 40.0,
+            empty_action_rect: Rect::ZERO,
         }
+    }
+
+    /// The ambient theme, re-pointed at the ink the **window card** takes.
+    ///
+    /// A tile's contents are painted onto the card `TileHost` draws, which
+    /// is a light surface sitting on the dark shell backdrop, so text on it
+    /// comes from the neutral ramp's dark end rather than from
+    /// `Theme::text_primary` (which is the ink for the *chrome*, and would
+    /// be near-white here). `TileHost` and the foreign-surface placeholder
+    /// pick the same two ramp slots for exactly this reason; matching them
+    /// keeps every string on the card one family, and means a future fix to
+    /// the on-card convention moves all of these together.
+    ///
+    /// Shared widgets read their colours off the theme they are handed, so
+    /// this is what gets handed to them — the alternative is each widget
+    /// growing an on-card colour parameter for one caller.
+    fn card_theme(&self, theme: &Theme) -> Theme {
+        let mut card = theme.clone();
+        card.text_primary = theme.tokens.colors.neutral[1];
+        card.text_dim = theme.tokens.colors.neutral[4];
+        card.text_tertiary = theme.tokens.colors.neutral[4];
+        card
     }
 
     /// Create a Notes tile pre-seeded with welcome text so first-boot users
@@ -205,7 +235,6 @@ impl Widget for NotesApp {
     ) {
         let tokens = &theme.tokens;
         let text_color = tokens.colors.neutral[1];
-        let dim = tokens.colors.neutral[4];
         // Caret is a *fill* state (focused-but-not-hovered), so use the
         // semantic `accent_primary` (indigo-500) accessor — the concept's
         // dominant accent — rather than the raw `accent[4]` (indigo-600)
@@ -221,49 +250,45 @@ impl Widget for NotesApp {
         let wrap_w = (self.rect.width() - PADDING * 2.0).max(40.0) as f32;
         self.wrap_width = wrap_w;
 
-        // Header row: "Notes" title + hint on the right.
-        let title_size = tokens.typography.scale.lg;
-        tr.draw_text(
-            scene,
-            "Notes",
-            title_size,
-            text_color,
-            transform * Affine::translate((content_x, content_y)),
-            None,
-        );
-        let hint = if self.focused {
-            "Type to edit  ·  Ctrl+Z to undo"
-        } else {
-            "Click to edit"
-        };
-        let (hw, _) = tr.measure(hint, tokens.typography.scale.sm, None);
-        tr.draw_text(
-            scene,
-            hint,
-            tokens.typography.scale.sm,
-            dim,
-            transform
-                * Affine::translate((
-                    self.rect.x1 - PADDING - hw as f64,
-                    content_y + (title_size - tokens.typography.scale.sm) as f64 / 2.0,
-                )),
-            None,
-        );
-
-        let body_top = content_y + title_size as f64 + 20.0;
+        // The body starts at the padding: there is no header row. The app's
+        // name is the frame's to state — it is already on the tab pill the
+        // shell draws above this tile — so a title here would be the app
+        // putting a second title bar inside the window, and a standing hint
+        // in the corner is the same thing one size down: chrome the app does
+        // not own, annotating a surface that explains itself. The zero-state
+        // below carries the "you can write here" invitation as an actual
+        // control instead.
+        let body_top = content_y;
         self.body_origin = Point::new(content_x, body_top);
 
         if self.body.text.is_empty() && !self.focused {
-            tr.draw_text(
+            // A blank note is a *designed* state, not an absence of one. The
+            // shared `EmptyState` owns that treatment for the whole fleet —
+            // hero icon in a tinted disc, a title, the dim explanation, and
+            // an accent call-to-action — so the note reads as composed
+            // rather than as a line of grey text stranded at the top of a
+            // large empty card. `paint` is its immediate-mode entry point,
+            // for canvas apps like this one that render straight to a Scene.
+            //
+            // Nothing is invented to fill the space: the note really is
+            // empty, and stays empty until the user types.
+            self.empty_action_rect = EmptyState::paint(
                 scene,
-                "Jot anything here — shared live with collaborators in the workspace.",
-                TEXT_SIZE,
-                dim,
-                transform * Affine::translate((content_x, body_top)),
-                Some(wrap_w),
-            );
+                transform,
+                tr,
+                &self.card_theme(theme),
+                self.rect,
+                Some(Icon::PenTool),
+                "This note is empty",
+                Some("Jot anything here — shared live with collaborators in the workspace."),
+                Some("Start writing"),
+                self.last_mouse,
+            )
+            .unwrap_or(Rect::ZERO);
             return;
         }
+        // Once there is text (or focus), the note is its own affordance.
+        self.empty_action_rect = Rect::ZERO;
 
         // Selection highlight (behind the text). Walk each logical line
         // and clip the selection range to it; paint one rect per line.
@@ -719,6 +744,14 @@ impl Widget for NotesApp {
         self.is_dragging
     }
 
+    /// The zero-state's call-to-action reads as a button, so it points like
+    /// one. Everywhere else the tile is a text surface and keeps the
+    /// default cursor.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        (self.empty_action_rect.area() > 0.0 && self.empty_action_rect.contains(point))
+            .then_some(winit::window::CursorIcon::Pointer)
+    }
+
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
@@ -826,6 +859,128 @@ mod tests {
             .put_object(&root, "tile", ObjType::Map)
             .expect("tile root");
         (doc, tile_root)
+    }
+
+    /// Run the real draw pass over a tile-sized rect. Nothing is rasterised —
+    /// we only care about the geometry the pass resolves — but it is the
+    /// production `Widget::draw`, not a stand-in for it.
+    fn draw_tile(app: &mut NotesApp, rect: Rect) {
+        app.rect = rect;
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// A blank note shows the shared zero-state, centred in the tile.
+    ///
+    /// It used to be a single line of dim placeholder text at the top-left
+    /// of the card with an unbounded expanse of nothing under it, plus a
+    /// loose "Click to edit" annotation in the far corner. The invitation is
+    /// now `EmptyState`'s call-to-action — a real control — and the stack it
+    /// belongs to is centred rather than stranded against the top edge.
+    #[test]
+    fn a_blank_note_paints_the_shared_zero_state_centred() {
+        let mut app = NotesApp::new();
+        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+        draw_tile(&mut app, tile);
+
+        let pill = app.empty_action_rect;
+        assert!(
+            pill.area() > 0.0,
+            "a blank note paints EmptyState, whose call-to-action resolves a rect",
+        );
+        assert!(tile.contains(pill.center()), "the pill sits inside the tile");
+        assert!(
+            (pill.center().x - tile.center().x).abs() < 1.0,
+            "the zero-state is horizontally centred, not left-aligned at the padding: \
+             pill centre {} vs tile centre {}",
+            pill.center().x,
+            tile.center().x,
+        );
+        // The pill is the last element of the stack, so it sits below the
+        // tile's midline while the stack as a whole straddles it. A
+        // top-aligned layout would put it in the upper half.
+        assert!(
+            pill.center().y > tile.center().y,
+            "the pill trails a vertically-centred stack, so it is past the midline: \
+             {} vs {}",
+            pill.center().y,
+            tile.center().y,
+        );
+        assert!(
+            pill.y1 < tile.y1,
+            "and the stack still fits inside the tile",
+        );
+    }
+
+    /// The call-to-action is wired as a control, not a decoration.
+    #[test]
+    fn the_zero_state_action_points_like_a_button() {
+        let mut app = NotesApp::new();
+        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+        draw_tile(&mut app, tile);
+        assert_eq!(
+            app.cursor_shape(app.empty_action_rect.center()),
+            Some(winit::window::CursorIcon::Pointer),
+        );
+        assert_eq!(
+            app.cursor_shape(Point::new(2.0, 2.0)),
+            None,
+            "the rest of the tile is a text surface and keeps the default cursor",
+        );
+    }
+
+    /// The zero-state is for a note with nothing in it. As soon as there is
+    /// text the note is its own affordance, and no pill is left behind to
+    /// keep claiming the pointer.
+    #[test]
+    fn a_note_with_text_paints_no_zero_state() {
+        let (mut doc, tile_root) = bind();
+        let mut app = NotesApp::with_seed("hello");
+        app.sync(&mut doc, &tile_root);
+        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+        draw_tile(&mut app, tile);
+        assert_eq!(
+            app.empty_action_rect,
+            Rect::ZERO,
+            "text in the body ⇒ no zero-state",
+        );
+        assert_eq!(app.cursor_shape(tile.center()), None);
+    }
+
+    /// Focusing a blank note drops straight into editing — the zero-state
+    /// gets out of the way rather than sitting behind the caret.
+    #[test]
+    fn focusing_a_blank_note_clears_the_zero_state() {
+        let mut app = NotesApp::new();
+        let tile = Rect::new(0.0, 0.0, 900.0, 600.0);
+        draw_tile(&mut app, tile);
+        assert!(app.empty_action_rect.area() > 0.0);
+
+        app.set_focus(true);
+        draw_tile(&mut app, tile);
+        assert_eq!(app.empty_action_rect, Rect::ZERO);
+        assert_eq!(app.cursor_shape(tile.center()), None);
+    }
+
+    /// The body starts at the tile padding. The old header row reserved a
+    /// line for a corner hint that no longer exists, which left the first
+    /// line of every note floating below an unexplained gap.
+    #[test]
+    fn body_text_starts_at_the_padding_with_no_header_gap() {
+        let (mut doc, tile_root) = bind();
+        let mut app = NotesApp::with_seed("hello");
+        app.sync(&mut doc, &tile_root);
+        let tile = Rect::new(10.0, 20.0, 910.0, 620.0);
+        draw_tile(&mut app, tile);
+        assert_eq!(app.body_origin.x, tile.x0 + PADDING);
+        assert_eq!(
+            app.body_origin.y,
+            tile.y0 + PADDING,
+            "no header row is reserved above the body",
+        );
     }
 
     #[test]

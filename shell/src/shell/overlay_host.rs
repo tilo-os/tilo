@@ -153,12 +153,6 @@ pub struct ShellOverlayHost {
     /// Last known cursor position in logical coords, for hit-testing
     /// overlay clicks (shared with the rest of the chrome).
     last_cursor: Option<Point>,
-    /// Simulated remote peer cursor. The shell is collaborative-by-default,
-    /// so we paint a deterministic fake peer ("Ada") over the desktop
-    /// until the network layer feeds real `PresenceCtx::remote_cursors`
-    /// into the widget tree — this keeps the collab chrome visible in
-    /// single-process development. Lissajous-ish path seeded from `started`.
-    started: Instant,
     /// Overview crossfade state: `overview_t` ∈ [0, 1] where 0 = desktop
     /// fully visible and 1 = overview fully visible. `overview_target` is
     /// the value `overview_t` is animating toward (latched on toggle).
@@ -753,6 +747,14 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 /// window; the gap reads as separation between canvas chrome and content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
+/// Wallpaper gutter at the far edge of a display, matching
+/// [`WHEEL_TO_STRIP_GAP_PX`] on the near edge. Without it a full-width
+/// group ended exactly on the last column of the output, so the card's
+/// right border, its rounded corners and its drop shadow all fell off the
+/// screen and the window read as cut off by the bezel rather than as a
+/// window resting on a desktop.
+const STRIP_TRAILING_GUTTER_PX: f64 = 28.0;
+
 /// One display the compositor is painting across, in its combined
 /// coordinate space. The compositor renders a single scene spanning the
 /// bounding box of every output (see `compositor::backend::Output`), so the
@@ -924,7 +926,6 @@ impl ShellOverlayHost {
             sidebar_node: None,
             chrome: None,
             last_cursor: None,
-            started: Instant::now(),
             overview_t: 0.0,
             overview_target: 0.0,
             overview_scroll_y: 0.0,
@@ -1672,7 +1673,7 @@ impl ShellOverlayHost {
             .filter(|o| o.width > 0.0)
             .map(|o| {
                 let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
-                let reserved = if hosts_chrome && self.sidebar.is_some() {
+                let leading = if hosts_chrome && self.sidebar.is_some() {
                     sidebar_width_for_viewport(o.height as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
                 } else {
                     0.0
@@ -1680,7 +1681,7 @@ impl ShellOverlayHost {
                 OutputSpan {
                     x: o.x,
                     width: o.width,
-                    usable: (o.width - reserved).max(1.0),
+                    usable: (o.width - leading - STRIP_TRAILING_GUTTER_PX).max(1.0),
                 }
             })
             .collect()
@@ -2226,6 +2227,51 @@ impl ShellOverlayHost {
     /// [`Self::harvest_pending_maximize_changes`] in shape; both run
     /// inside [`Widget::update`] every frame, but each is gated on a
     /// non-empty pending pile so quiescent frames cost a single map walk.
+    /// Give every live window group the same share of its strip, and
+    /// mirror it to the persisted tree the way a width drag does.
+    ///
+    /// A group takes about three quarters of its strip by default, so
+    /// two of them never fit on screen at once. Setting the state
+    /// tree alone does not move anything: the laid-out width lives on
+    /// the `RuntimeGroup` widget and the taffy node carries a baked
+    /// length, so the widget is the thing that has to be told.
+    ///
+    /// Returns the ids it touched.
+    pub fn set_group_widths(&mut self, permille: u16) -> Vec<u64> {
+        let mut touched: Vec<u64> = Vec::new();
+        for (_strip_id, &ptr) in self.group_row_ptrs.iter() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                g.set_width(ui::widget::WindowWidth::Fraction(permille));
+                touched.push(g.id);
+            }
+        }
+        if touched.is_empty() {
+            return touched;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let st = chrome.borrow_mut();
+            let mut tree = st.tree_mut();
+            for ws in tree.workspaces.iter_mut() {
+                for strip in ws.strips.iter_mut() {
+                    for g in strip.window_groups.iter_mut() {
+                        if touched.contains(&g.id) {
+                            g.width = crate::shell::state::WindowWidth::Fraction(permille);
+                        }
+                    }
+                }
+            }
+            for id in &touched {
+                tree.doc_set_width(*id, permille);
+            }
+        }
+        // `RuntimeGroup::set_width` flags its own style dirty; the
+        // frame loop's structure sweep is what rebuilds the taffy node
+        // whose baked length carries the old width.
+        touched
+    }
+
     fn harvest_pending_width_changes(&mut self) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -2720,6 +2766,21 @@ impl ShellOverlayHost {
         use crate::shell::launcher::LaunchEventKind;
         let mut posted = false;
         for event in events {
+            // An open that had to fetch the app first raised a notice
+            // saying so. Every one of these events settles that open —
+            // it started, or it did not — so the notice is retired by
+            // what actually happened rather than by its timer running
+            // out. `Exited` is not a settlement: by then the app has
+            // already started, and the notice is long gone.
+            if !matches!(event.kind, LaunchEventKind::Exited) {
+                if let Some(notice) = crate::shell::catalogue::take_pending_notice(&event.package_id)
+                {
+                    let mut st = chrome_handle.borrow_mut();
+                    st.dismiss_notification(notice);
+                    st.bump();
+                    posted = true;
+                }
+            }
             let (title, body) = match event.kind {
                 LaunchEventKind::Started { pid } => {
                     eprintln!("shell: launched {} (pid {pid})", event.package_id);
@@ -3631,6 +3692,21 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Whether the workspace wheel is currently summoned to the pointer.
+    ///
+    /// Read by the client-input filter alongside
+    /// [`Self::palette_visible`]: Escape is only taken from the focused
+    /// client while the shell has something up that Escape would
+    /// dismiss, and a summoned wheel is exactly that. Without it the
+    /// key would go to the app underneath and the wheel would have no
+    /// way to be dismissed from the keyboard.
+    pub fn wheel_summoned(&self) -> bool {
+        self.chrome
+            .as_ref()
+            .map(|c| c.borrow().wheel_summon().is_some())
+            .unwrap_or(false)
+    }
+
     /// Whether the last draw discovered that the layout it was handed is
     /// not the one it needs — the palette's filter band growing a row
     /// when the kind chips wrap, which only a paint can measure.
@@ -3664,6 +3740,23 @@ impl ShellOverlayHost {
                 .map(|e| (e.id.clone(), e.label.clone()))
                 .collect(),
         )
+    }
+
+    /// The rows on offer, with the subtitle each one renders under its
+    /// label.
+    ///
+    /// [`Self::palette_snapshot`] carries labels only, which is enough
+    /// to say *which* row Enter takes but not enough to say what the
+    /// row tells the user. The subtitle is where a badge, a source
+    /// marker or the word "install" would appear, so a harness
+    /// checking that an app the machine has to fetch is offered
+    /// indistinguishably from one it already has needs to read it.
+    pub fn palette_rows_detailed(&self) -> Vec<(String, String, Option<String>)> {
+        self.palette
+            .visible_entries()
+            .into_iter()
+            .map(|e| (e.id.clone(), e.label.clone(), e.description.clone()))
+            .collect()
     }
 
     /// Focus the palette's query field. The live open path
@@ -4802,29 +4895,52 @@ impl Widget for ShellOverlayHost {
             // strip's `scroll_x` so it pans in lock-step.
             //
             // group_row_ptrs only contains strips from the currently-
-            // active workspace (see `shell/mod.rs` build path), so
-            // picking the first strip's scroll_x is correct for the
-            // common single-strip case. Multi-strip workspaces aren't
-            // wired up yet; a future fix would pick the topmost
-            // visible strip, but for now any strip's scroll_x is the
-            // active workspace's pan offset.
-            let active_scroll_x: f64 = self
-                .group_row_ptrs
-                .values()
-                .next()
-                .map(|&ptr| {
-                    // SAFETY: same contract as the other group_row_ptrs
-                    // accessors — pointer captured from a `Box<GroupRow>`
-                    // we own through the content tree, host outlives
-                    // content, &mut self → unaliased read.
-                    unsafe { (&*ptr).scroll_x() }
+            // active workspace (see `shell/mod.rs` build path), but it
+            // is a HashMap, so iteration order is not the stacking
+            // order — on a multi-strip workspace "the first one" was
+            // whichever strip happened to hash first, and could differ
+            // between runs. Take the topmost strip in tree order
+            // instead, which is the one the wheel lines up beside.
+            let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
+                let st = c.borrow();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .and_then(|ws| ws.strips.first().map(|s| s.id))
+            });
+            let scroll_of = |id: Option<StripId>| -> Option<f64> {
+                let ptr = match id {
+                    Some(id) => self.group_row_ptrs.get(&id)?,
+                    None => return None,
+                };
+                // SAFETY: same contract as the other group_row_ptrs
+                // accessors — pointer captured from a `Box<GroupRow>`
+                // we own through the content tree, host outlives
+                // content, &mut self → unaliased read.
+                Some(unsafe { (&**ptr).scroll_x() })
+            };
+            let active_scroll_x: f64 = scroll_of(top_strip)
+                .or_else(|| {
+                    self.group_row_ptrs
+                        .values()
+                        .next()
+                        .map(|&ptr| unsafe { (&*ptr).scroll_x() })
                 })
                 .unwrap_or(0.0);
-            sidebar.apply_layout(
-                taffy,
-                *sidebar_child,
-                Point::new(self.rect.x0 - active_scroll_x, self.rect.y0),
-            );
+            // A summoned wheel has left the canvas: it places itself
+            // around the pointer, in screen space, so handing it the
+            // strip's pan would shift it back out from under the
+            // cursor by however far the strip happens to be scrolled.
+            let summoned = self
+                .chrome
+                .as_ref()
+                .map(|c| c.borrow().wheel_summon().is_some())
+                .unwrap_or(false);
+            let anchor_x = if summoned {
+                self.rect.x0
+            } else {
+                self.rect.x0 - active_scroll_x
+            };
+            sidebar.apply_layout(taffy, *sidebar_child, Point::new(anchor_x, self.rect.y0));
         }
         self.publish_strip_viewport();
     }
@@ -4874,13 +4990,12 @@ impl Widget for ShellOverlayHost {
             content_xform = scaled(content_scale) * content_xform;
         }
 
-        // Desktop content + simulated peer fade out as overview fades in.
+        // Desktop content + the peers on it fade out as overview fades in.
         // Skip the layer entirely at full opacity to keep the common path
         // cheap (vello push_layer clips + allocates an intermediate).
         if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
-            self.draw_demo_peer(scene, transform, text_renderer, theme);
             self.draw_real_peers(scene, transform, text_renderer, theme, presence);
         } else if content_alpha > 0.0 {
             scene.push_layer(
@@ -4892,15 +5007,13 @@ impl Widget for ShellOverlayHost {
             );
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
-            // Demo + real peers scale with the desktop so they appear to
-            // live inside the scaling viewport rather than glued to the
-            // screen.
+            // Peers scale with the desktop so they appear to live inside
+            // the scaling viewport rather than glued to the screen.
             let peer_xform = if (content_scale - 1.0).abs() > f64::EPSILON {
                 scaled(content_scale) * transform
             } else {
                 transform
             };
-            self.draw_demo_peer(scene, peer_xform, text_renderer, theme);
             self.draw_real_peers(scene, peer_xform, text_renderer, theme, presence);
             scene.pop_layer();
         }
@@ -5854,6 +5967,33 @@ impl Widget for ShellOverlayHost {
                                     return;
                                 }
                             }
+                            // Super+S — call the workspace wheel to the
+                            // pointer. The wheel is docked at the left
+                            // edge of the strip's content and pans with
+                            // it, so working out at the right-hand end
+                            // of a strip leaves it off screen; without
+                            // this you would have to scroll the whole
+                            // strip home just to glance at the workspace
+                            // list. Pressing it again, Escape, or
+                            // picking a workspace sends it back.
+                            //
+                            // Gated on Super specifically, not on the
+                            // `is_mod` alias: Ctrl+S is save in every
+                            // app that has ever had a keyboard, and the
+                            // shell grabs its chords ahead of the
+                            // focused client.
+                            "s" | "S" if super_down => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    let next = match st.wheel_summon() {
+                                        Some(_) => None,
+                                        None => self.last_cursor,
+                                    };
+                                    st.set_wheel_summon(next);
+                                    *handled = true;
+                                    return;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -5889,6 +6029,14 @@ impl Widget for ShellOverlayHost {
                 }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    // A summoned wheel is the most transient thing on
+                    // screen — it is up for one glance — so it goes
+                    // first, above even an in-flight name edit.
+                    if st.wheel_summon().is_some() {
+                        st.set_wheel_summon(None);
+                        *handled = true;
+                        return;
+                    }
                     if st.editing_workspace_name.is_some() {
                         st.editing_workspace_name = None;
                         st.bump();
@@ -7514,11 +7662,11 @@ fn build_state_group_from_widget(
                 Some(ui::widget::AppKind::Files) => AppKind::FileExplorer,
                 Some(ui::widget::AppKind::Browser) => AppKind::Browser,
                 Some(ui::widget::AppKind::Settings) => AppKind::Settings,
-                // Editor / anything else / None → carry the tab's own
-                // title as an Other name so Notes-style tabs still
-                // classify (Notes tabs come through with title "Notes"
-                // and get filed under Other("Notes")).
-                _ => AppKind::Other(desc.title.clone()),
+                // Editor / anything else / None → recover the hosted
+                // app's label from the tab's title, which is all the
+                // widget layer kept. A title the shell does not host
+                // carries through unchanged.
+                _ => AppKind::Other(crate::shell::hosted_label_for_title(&desc.title)),
             };
             Tab {
                 id: desc.id,
@@ -8827,89 +8975,23 @@ impl ShellOverlayHost {
         );
     }
 
-    /// Paint a single deterministic simulated remote cursor — a "caret +
-    /// name chip" pair — over the desktop content. Lissajous-ish motion
-    /// from a seconds-since-started clock; path stays inside the host's
-    /// rect with a 80 px margin so the peer remains visible regardless
-    /// of window size.
-    fn draw_demo_peer(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let tokens = &theme.tokens;
-        let t = self.started.elapsed().as_secs_f64();
-
-        // Keep the peer inside the visible viewport minus an 80 px margin
-        // so its label chip never clips against the edge.
-        let margin = 80.0_f64;
-        let avail_w = (self.rect.width() - margin * 2.0).max(0.0);
-        let avail_h = (self.rect.height() - margin * 2.0).max(0.0);
-        let cx = self.rect.x0 + margin + avail_w / 2.0;
-        let cy = self.rect.y0 + margin + avail_h / 2.0;
-        let px = cx + (avail_w / 2.0) * (t * 0.4).sin();
-        let py = cy + (avail_h / 2.0) * (t * 0.31).cos();
-        let apex = Point::new(px, py);
-
-        // Indigo "Ada" peer — matches the concept's pinned-color convention.
-        let peer = tokens.colors.accent[5];
-        let caret_size = 10.0_f64;
-        let chip_offset = 2.0_f64;
-        let pad_x = 6.0_f64;
-        let pad_y = 2.0_f64;
-        let label_size = tokens.typography.scale.sm;
-
-        let mut caret = vello::kurbo::BezPath::new();
-        caret.move_to(apex);
-        caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
-        caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
-        caret.close_path();
-        scene.fill(Fill::NonZero, transform, peer, None, &caret);
-
-        let label = "Ada";
-        let (tw, _th) = text_renderer.measure(label, label_size, None);
-        let chip_w = tw as f64 + pad_x * 2.0;
-        let chip_h = label_size as f64 + pad_y * 2.0;
-        let chip_x = apex.x + caret_size + chip_offset;
-        let chip_y = apex.y + caret_size + chip_offset;
-        let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-        let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &chip,
-        );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            tokens.colors.border_standard,
-            None,
-            &chip,
-        );
-        let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
-        scene.fill(Fill::NonZero, transform, peer, None, &underline);
-        text_renderer.draw_text(
-            scene,
-            label,
-            label_size,
-            tokens.colors.text_primary,
-            transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-            None,
-        );
-    }
-
     /// Paint every real peer's live pointer for the active workspace
     /// scope. Reads [`PresenceCtx::pointers`] filtered to
-    /// `PresenceKey::Workspace { id: <active> }`, which is the same key
-    /// `App::set_presence_broadcast_scope` writes when the shell runs.
-    /// Each peer gets a caret+name chip identical in shape to
-    /// `draw_demo_peer` so remote and simulated peers read the same on
-    /// screen. Colours come from `PresenceCtx::color_for` so palette
-    /// pins ("alice" → pink, "bob" → orange) survive the round-trip.
+    /// `PresenceKey::Workspace { id: <room> }` — the same key every app
+    /// publishes under, since the toolkit derives its broadcast scope
+    /// from the room the launcher stamped in as `QOS_WORKSPACE_ID`.
+    /// Each peer gets a pointer plus a name pill, drawn by the toolkit's
+    /// [`ui::presence::draw_peer_cursors`] — the same call an app makes
+    /// for the peers inside its own window, so a peer over the desktop
+    /// and a peer over an app are the same thing drawn once. Colours are
+    /// settled over the whole room by
+    /// [`ui::presence::assign_peer_colors`], with an explicit roster
+    /// colour outranking it.
+    ///
+    /// The whole set goes in one call because the names have to be
+    /// arranged against each other: two people working side by side put
+    /// their pointers a few pixels apart, and two pills at the same
+    /// offset from those two pointers are one illegible smear.
     fn draw_real_peers(
         &mut self,
         scene: &mut Scene,
@@ -8918,78 +9000,101 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let visible = self.visible_peers(presence);
+        ui::presence::draw_peer_cursors(
+            scene,
+            transform,
+            self.rect,
+            text_renderer,
+            theme,
+            &visible,
+        );
+    }
+
+    /// Exactly the peers [`Self::draw_real_peers`] is about to paint:
+    /// who they are, where they are, and what colour they are in.
+    ///
+    /// Separated from the paint so the selection can be asserted on
+    /// directly. "No peer arrived" and "a peer arrived and was dropped by
+    /// the filter" produce the same empty screen, and a test that
+    /// rebuilds the lookup key for itself proves only that it can
+    /// rebuild the key — which is how a mismatch between this filter and
+    /// what apps publish survived long enough to need a fabricated peer
+    /// covering for it.
+    pub(crate) fn visible_peers(&self, presence: &PresenceCtx) -> Vec<ui::presence::PeerCursor> {
         let Some(chrome_rc) = self.chrome.as_ref() else {
-            return;
+            return Vec::new();
         };
-        let active_id_str = format!("{}", chrome_rc.borrow().tree().active.raw());
-        let key = PresenceKey::Workspace { id: active_id_str };
+        // Scope by the workspace's **room**, not its local handle.
+        //
+        // The room is the durable identity: it is what the launcher stamps
+        // into an app as `QOS_WORKSPACE_ID`, what the toolkit addresses its
+        // collaboration to, and therefore what an app publishes presence
+        // under. The local `WorkspaceId` is a per-machine handle and
+        // differs on every peer, so looking peers up by it matched nothing
+        // an app had ever published — which is why this overlay had never
+        // drawn a real peer, and why a fabricated one was standing in for
+        // it.
+        let room = {
+            let chrome = chrome_rc.borrow();
+            let tree = chrome.tree();
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == tree.active)
+                .map(|w| w.room.to_string())
+        };
+        let Some(room) = room else {
+            return Vec::new();
+        };
+        let key = PresenceKey::Workspace { id: room };
         let Some(peers) = presence.pointers.get(&key) else {
-            return;
+            return Vec::new();
         };
-        if peers.is_empty() {
-            return;
-        }
 
-        let tokens = &theme.tokens;
-        let caret_size = 10.0_f64;
-        let chip_offset = 2.0_f64;
-        let pad_x = 6.0_f64;
-        let pad_y = 2.0_f64;
-        let label_size = tokens.typography.scale.sm;
+        // Settle the colours over everyone in the room before deciding
+        // what is on screen, and include the local user: every host in a
+        // room sees the same membership that way — the others plus
+        // itself — so every host computes the same assignment and a
+        // person is one colour on every screen. Filtering to the visible
+        // ones first would make each host compute over a different set.
+        let local = crate::shell::state::local_user_id();
+        let mut room_ids: Vec<&str> = peers.iter().map(|(u, _)| u.0.as_str()).collect();
+        room_ids.push(local.as_str());
+        let reserved: Vec<(u8, u8, u8)> = presence.color_overrides.values().copied().collect();
+        let assigned = ui::presence::assign_peer_colors(&room_ids, &reserved);
 
-        for (user, pos) in peers {
-            let apex = Point::new(pos.0 as f64, pos.1 as f64);
-            // Guard: winit delivers scaled coordinates so the pointer
-            // can, in principle, fall outside this window's rect if
-            // the broadcast came from a peer with a different viewport.
-            // Clip the paint to our content rect so we never trail a
-            // cursor into the top-bar / sidebar chrome.
-            if !self.rect.contains(apex) {
-                continue;
-            }
-            let (pr, pg, pb) = presence.color_for(user);
-            let peer = Color::from_rgb8(pr, pg, pb);
-
-            let mut caret = vello::kurbo::BezPath::new();
-            caret.move_to(apex);
-            caret.line_to((apex.x + caret_size, apex.y + caret_size * 0.4));
-            caret.line_to((apex.x + caret_size * 0.4, apex.y + caret_size));
-            caret.close_path();
-            scene.fill(Fill::NonZero, transform, peer, None, &caret);
-
-            let label = &user.0;
-            let (tw, _th) = text_renderer.measure(label, label_size, None);
-            let chip_w = tw as f64 + pad_x * 2.0;
-            let chip_h = label_size as f64 + pad_y * 2.0;
-            let chip_x = apex.x + caret_size + chip_offset;
-            let chip_y = apex.y + caret_size + chip_offset;
-            let chip_rect = Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
-            let chip = RoundedRect::from_rect(chip_rect, tokens.radii.sm as f64);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.surfaces.raised,
-                None,
-                &chip,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                tokens.colors.border_standard,
-                None,
-                &chip,
-            );
-            let underline = Rect::new(chip_rect.x0, chip_rect.y1 - 2.0, chip_rect.x1, chip_rect.y1);
-            scene.fill(Fill::NonZero, transform, peer, None, &underline);
-            text_renderer.draw_text(
-                scene,
-                label,
-                label_size,
-                tokens.colors.text_primary,
-                transform * Affine::translate((chip_rect.x0 + pad_x, chip_rect.y0 + pad_y)),
-                None,
-            );
-        }
+        peers
+            .iter()
+            .filter(|(_, pos)| {
+                // Guard: winit delivers scaled coordinates so the pointer
+                // can, in principle, fall outside this window's rect if
+                // the broadcast came from a peer with a different viewport.
+                // Clip the paint to our content rect so we never trail a
+                // cursor into the top-bar / sidebar chrome.
+                self.rect.contains(Point::new(pos.0 as f64, pos.1 as f64))
+            })
+            .map(|(user, pos)| {
+                // An explicit roster colour is a decision someone made
+                // and outranks anything computed; everyone else takes
+                // what the room settled on.
+                let (r, g, b) = presence
+                    .color_overrides
+                    .get(user)
+                    .copied()
+                    .or_else(|| assigned.get(user.0.as_str()).copied())
+                    .unwrap_or_else(|| presence.color_for(user));
+                ui::presence::PeerCursor {
+                    pos: (pos.0 as f64, pos.1 as f64),
+                    // Name the peer rather than their id when the roster
+                    // knows one. `display_name` falls back to the id, so a
+                    // peer whose session never said who was at it is still
+                    // labelled — with the handle it actually arrived
+                    // under, not a guess.
+                    label: presence.display_name(user),
+                    color: Color::from_rgb8(r, g, b),
+                }
+            })
+            .collect()
     }
 
     /// The filter band inside the search card: multi-select kind chips
@@ -10639,6 +10744,49 @@ mod overview_transition_tests {
         ShellOverlayHost::new(Box::new(Container::new()))
     }
 
+    /// A window as wide as the strip allows still has to end before the
+    /// display does. Its border, its rounded corners and its drop shadow
+    /// all live in the last few pixels of the card, so a group that
+    /// resolves flush to the output's right edge loses every one of them
+    /// and reads as clipped by the bezel instead of as a window on a
+    /// desktop. The near edge already reserves a wallpaper gutter beside
+    /// the wheel disc; this asserts the far edge reserves one too.
+    #[test]
+    fn a_full_width_window_stops_short_of_both_screen_edges() {
+        let mut h = host().with_sidebar(Box::new(Container::new()));
+        h.set_output_geometry(&[OutputGeometry {
+            x: 0.0,
+            width: 1600.0,
+            height: 900.0,
+        }]);
+
+        let spans = h.strip_output_spans();
+        assert_eq!(spans.len(), 1, "one output in, one span out");
+        let span = spans[0];
+
+        // Where the strip starts placing groups: past the wheel slot.
+        let leading = sidebar_width_for_viewport(900.0) as f64 + WHEEL_TO_STRIP_GAP_PX;
+        // The widest a group can be, and therefore where the widest one ends.
+        let widest = ui::widget::WIDTH_MAX_PERMILLE as f64 / 1000.0 * span.usable;
+        let right_edge = leading + widest;
+
+        assert!(
+            right_edge < span.x + span.width,
+            "the widest window reaches x={right_edge} on a {}px display — it \
+             has to stop short of the edge or its border and corners fall off \
+             the screen",
+            span.width,
+        );
+        // And the gap it leaves should match the one on the other side, so
+        // the window looks centred in its canvas rather than shoved right.
+        let trailing = span.x + span.width - right_edge;
+        assert!(
+            (trailing - WHEEL_TO_STRIP_GAP_PX).abs() < 1.0,
+            "trailing gutter is {trailing}px against a {WHEEL_TO_STRIP_GAP_PX}px \
+             gutter beside the wheel; they should read as the same margin",
+        );
+    }
+
     #[test]
     fn windows_label_pluralizes_correctly() {
         assert_eq!(windows_label(0), "0 windows");
@@ -11244,47 +11392,135 @@ mod workspace_slide_tests {
         );
     }
 
+    /// The room a peer publishes under, put in and read back out through
+    /// the host's own selection — not through a key the test rebuilt for
+    /// itself, which would pass even if the two disagreed.
     #[test]
-    fn real_peers_filter_picks_up_pointers_on_active_workspace_only() {
+    fn real_peers_are_picked_up_by_room_and_only_the_active_one() {
         use ui::permissions::UserId;
         let (h, chrome) = host_with_two_workspaces();
-        let active = chrome.borrow().tree().active.raw();
-        let active_key = PresenceKey::Workspace {
-            id: format!("{}", active),
+        let (here, elsewhere) = {
+            let c = chrome.borrow();
+            let tree = c.tree();
+            let active = tree.active;
+            let here = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == active)
+                .expect("an active workspace")
+                .room
+                .to_string();
+            let elsewhere = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id != active)
+                .expect("a second workspace")
+                .room
+                .to_string();
+            (here, elsewhere)
         };
-        let other_key = PresenceKey::Workspace {
-            id: format!("{}", active.wrapping_add(99)),
-        };
-        let mut presence = PresenceCtx::empty();
-        presence.set_pointer(&active_key, UserId("alice".into()), (120.0, 240.0));
-        presence.set_pointer(&other_key, UserId("bob".into()), (300.0, 400.0));
+        assert_ne!(here, elsewhere, "two workspaces must be two rooms");
 
-        // Same key-format the shell uses inside `draw_real_peers`: the
-        // active workspace id stringified. Mismatches must never match.
-        let shell_key = PresenceKey::Workspace {
-            id: format!(
-                "{}",
-                h.chrome.as_ref().unwrap().borrow().tree().active.raw()
-            ),
+        let mut presence = PresenceCtx::empty();
+        presence.set_pointer(
+            &PresenceKey::Workspace { id: here },
+            UserId("alice".into()),
+            (120.0, 240.0),
+        );
+        presence.set_pointer(
+            &PresenceKey::Workspace { id: elsewhere },
+            UserId("bob".into()),
+            (300.0, 400.0),
+        );
+
+        let visible = h.visible_peers(&presence);
+        assert_eq!(
+            visible.len(),
+            1,
+            "the peer in this room is drawn and the one in another is not, got {:?}",
+            visible.iter().map(|p| &p.label).collect::<Vec<_>>(),
+        );
+        assert_eq!(visible[0].label, "alice");
+        assert_eq!(visible[0].pos, (120.0, 240.0));
+    }
+
+    /// Two peers in the same room are both drawn, each in their own
+    /// colour. A single peer had always been enough to make the overlay
+    /// look right; several at once is the case that has to work.
+    #[test]
+    fn several_peers_in_one_room_are_all_drawn_in_distinct_colours() {
+        use ui::permissions::UserId;
+        let (h, chrome) = host_with_two_workspaces();
+        let room = {
+            let c = chrome.borrow();
+            let tree = c.tree();
+            let active = tree.active;
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == active)
+                .expect("an active workspace")
+                .room
+                .to_string()
         };
-        let matches = presence
-            .pointers
-            .get(&shell_key)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        assert_eq!(
-            matches, 1,
-            "only alice's pointer lives on the active workspace key"
-        );
-        let other_matches = presence
-            .pointers
-            .get(&other_key)
-            .map(|v| v.len())
-            .unwrap_or(0);
-        assert_eq!(
-            other_matches, 1,
-            "bob's pointer stays attributed to the other workspace (filter must drop it)"
-        );
+        let key = PresenceKey::Workspace { id: room };
+        let mut presence = PresenceCtx::empty();
+        // Two of them close enough together that a fixed-offset pill
+        // layout would have stacked their names, and two with names that
+        // differ by one letter.
+        for (who, at) in [
+            ("alice", (400.0, 300.0)),
+            ("bob", (404.0, 302.0)),
+            ("dana", (120.0, 500.0)),
+            ("danah", (700.0, 120.0)),
+        ] {
+            presence.set_pointer(&key, UserId(who.into()), at);
+        }
+
+        let visible = h.visible_peers(&presence);
+        assert_eq!(visible.len(), 4, "every peer in the room must be drawn");
+
+        for (i, a) in visible.iter().enumerate() {
+            for b in &visible[i + 1..] {
+                let (ac, bc) = (a.color.to_rgba8(), b.color.to_rgba8());
+                let d = ui::presence::color_distance((ac.r, ac.g, ac.b), (bc.r, bc.g, bc.b));
+                assert!(
+                    d >= 60.0,
+                    "{} and {} are drawn {d:.1} apart — too close to tell apart",
+                    a.label,
+                    b.label,
+                );
+            }
+        }
+
+        // And their names do not land on each other, however close their
+        // pointers are.
+        let requests: Vec<ui::presence::PillRequest> = visible
+            .iter()
+            .map(|p| ui::presence::PillRequest {
+                at: p.pos,
+                size: (60.0, 20.0),
+            })
+            .collect();
+        let placed = ui::presence::layout_peer_pills(h.rect, &requests);
+        for (i, a) in placed.iter().enumerate() {
+            for b in &placed[i + 1..] {
+                assert!(
+                    a.rect.intersect(b.rect).is_zero_area(),
+                    "two name pills overlap: {:?} and {:?}",
+                    a.rect,
+                    b.rect,
+                );
+            }
+            assert!(
+                a.rect.x0 >= h.rect.x0
+                    && a.rect.y0 >= h.rect.y0
+                    && a.rect.x1 <= h.rect.x1
+                    && a.rect.y1 <= h.rect.y1,
+                "a name pill at {:?} left the window {:?}",
+                a.rect,
+                h.rect,
+            );
+        }
     }
 
     #[test]
@@ -11777,13 +12013,6 @@ mod overlay_event_absorb_tests {
         paint(h);
     }
 
-    /// The kind chips and the scope switch moved inside the palette
-    /// card. Clicking one must still filter — and must not be taken for
-    /// a click outside the card, which is the dismissal gesture.
-    ///
-    /// Drives the production `handle_event` router against the rects the
-    /// production `draw` just cached, so the two cannot drift apart.
-    #[test]
     /// **Every filter has to be reachable at every width.**
     ///
     /// The strip used to stop painting at the first chip that did not
@@ -11973,6 +12202,12 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    /// The kind chips and the scope switch moved inside the palette
+    /// card. Clicking one must still filter — and must not be taken for
+    /// a click outside the card, which is the dismissal gesture.
+    ///
+    /// Drives the production `handle_event` router against the rects the
+    /// production `draw` just cached, so the two cannot drift apart.
     #[test]
     fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
         let mut h = build_harness();
@@ -12308,6 +12543,72 @@ mod tests {
             taffy,
             root_node: child,
         }
+    }
+
+    /// Super+S calls the wheel to wherever the pointer is, so the
+    /// workspace list is reachable from the right-hand end of a strip
+    /// without scrolling all the way back to its left edge.
+    #[test]
+    fn super_s_summons_the_wheel_to_the_pointer_and_toggles_back() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "the wheel starts docked"
+        );
+
+        let at = Point::new(1240.0, 610.0);
+        pump(&mut h, &cursor_moved_at(at), &sup);
+        assert!(
+            pump(&mut h, &key_press(Key::Character("s".into())), &sup),
+            "Super+S is handled by the shell"
+        );
+        assert_eq!(
+            h.chrome.borrow().wheel_summon(),
+            Some(at),
+            "the wheel is summoned to the pointer, not to a fixed spot"
+        );
+        assert!(
+            h.host.wheel_summoned(),
+            "the client-input filter has to see the summon so Escape reaches the shell"
+        );
+
+        // Pressing it again puts the wheel back.
+        assert!(pump(&mut h, &key_press(Key::Character("s".into())), &sup));
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "Super+S toggles the summon off"
+        );
+    }
+
+    /// Escape dismisses a summoned wheel, and takes priority over the
+    /// rest of the dismissal ladder because it is the most transient
+    /// thing the shell puts up.
+    #[test]
+    fn escape_dismisses_a_summoned_wheel_before_anything_else() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        let none = Modifiers::default();
+
+        pump(&mut h, &cursor_moved_at(Point::new(900.0, 400.0)), &sup);
+        pump(&mut h, &key_press(Key::Character("s".into())), &sup);
+        // Raise an overview too, so the test proves ordering rather
+        // than just "escape closes the only thing open".
+        {
+            let mut st = h.chrome.borrow_mut();
+            st.overlays.overview = true;
+            st.bump();
+        }
+
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &none));
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "Escape sends the wheel back to its dock"
+        );
+        assert!(
+            h.chrome.borrow().overlays.overview,
+            "and stops there — the overview behind it is untouched"
+        );
     }
 
     fn pump(h: &mut Harness, event: &WindowEvent, modifiers: &Modifiers) -> bool {

@@ -933,6 +933,7 @@ pub fn catalogue() -> Vec<Scenario> {
         workspace_switch(),
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
+        wheel_summon_at_pointer(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
@@ -1307,9 +1308,9 @@ fn room_activity_from_palette() -> Scenario {
 
 /// Repro for "apps render but can't be interacted with". Click in the
 /// middle of the Notes tile (the active tab on the default workspace)
-/// and type "hi". The pre-click snapshot shows the "Click to edit"
-/// hint. The post-type snapshot is the proof: if interaction works
-/// the hint reads "Type to edit · Ctrl+Z to undo" AND the typed text
+/// and type "hi". The pre-click snapshot shows the blank note's
+/// zero-state. The post-type snapshot is the proof: if interaction
+/// works the zero-state has given way to a caret AND the typed text
 /// appears in the body.
 fn notes_click_and_type() -> Scenario {
     Scenario {
@@ -1652,6 +1653,38 @@ fn workspace_switch_animated() -> Scenario {
 /// Drive the wheel disc via MouseWheel events over its hit area and
 /// capture frame-by-frame so the user can verify the discrete-detent
 /// click_to_spoke animation is visible (one workspace per scroll burst).
+/// Scroll the strip until the docked wheel has panned off the left
+/// edge, then call it back to the pointer with Super+S and dismiss it
+/// with Escape.
+///
+/// This is the gesture's whole reason for existing, so the capture has
+/// to show the state it is meant to rescue: the wheel genuinely gone,
+/// not merely somewhere else on screen.
+fn wheel_summon_at_pointer() -> Scenario {
+    Scenario {
+        name: "wheel_summon_at_pointer",
+        description: "Pan the strip until the wheel scrolls away, summon it back to the \
+             pointer with Super+S, then dismiss it with Escape.",
+        actions: vec![
+            Action::MoveCursor(Point::new(900.0, 500.0)),
+            Action::Snapshot("00-docked"),
+            // Pan right, carrying the wheel off the left edge with the
+            // rest of the workspace canvas.
+            Action::MouseWheel { dx: -12.0, dy: 0.0 },
+            Action::MouseWheel { dx: -12.0, dy: 0.0 },
+            Action::Snapshot("01-scrolled-away"),
+            // Call it to the pointer, out on the right where the work is.
+            Action::MoveCursor(Point::new(1180.0, 620.0)),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Snapshot("02-summoned"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Snapshot("03-dismissed"),
+        ],
+    }
+}
+
 fn wheel_scroll_workspaces() -> Scenario {
     Scenario {
         name: "wheel_scroll_workspaces",

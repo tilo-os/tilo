@@ -47,8 +47,24 @@ pub enum NeighbourMsg {
     /// the two agree.
     SyncResp { changes: Vec<Vec<u8>>, room: String },
     /// Peer's presence cursor moved within `key`'s coordinate space.
+    ///
+    /// `peer` is the publishing **session**, and that is the whole
+    /// identity of the cursor: a session republishes the pointers of
+    /// every app running under it, so one person driving two windows
+    /// is one cursor on every other host rather than two. The
+    /// per-connection ids the local broker mints never leave the host
+    /// that minted them.
+    ///
+    /// `user` is who that session says is sitting at it
+    /// ([`crate::shell::state::local_user_id`]). It is a claim by the
+    /// publisher, not something the receiver infers, and it is what a
+    /// peer's cursor is labelled with. Empty when the publisher did
+    /// not say — the receiver then shows the session handle rather
+    /// than inventing a name.
     PresenceMoved {
         peer: PeerId,
+        #[serde(default)]
+        user: String,
         key: PresenceKey,
         point: (f64, f64),
         ts: u64,
@@ -325,6 +341,7 @@ mod tests {
     fn presence_moved_round_trips() {
         round_trip(NeighbourMsg::PresenceMoved {
             peer: 42,
+            user: "bob".to_string(),
             key: "cursor".to_string(),
             point: (12.5, -3.25),
             ts: 1_700_000_000,

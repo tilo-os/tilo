@@ -234,10 +234,14 @@ pub struct InboundPresence {
     /// to a stable string id by the drainer before being stored on
     /// the `PresenceCtx::remote_cursors` row.
     pub peer: u64,
+    /// Who the publishing session says is sitting at it. Empty when it
+    /// did not say; the drainer then falls back to the session handle
+    /// rather than inventing a name.
+    pub user: String,
     /// Presence channel key (workspace, tab, widget path, …) — encoded
-    /// JSON so the wire format stays opaque to the bridge. v1 doesn't
-    /// inspect the key for routing; the chrome's drainer just attaches
-    /// it to the `RemoteCursor` row by-id.
+    /// JSON so the wire format stays opaque to the bridge. The shell's
+    /// drainer decodes it back into a `PresenceKey` so a pointer lands
+    /// on the room it was published under.
     pub key: String,
     /// Pointer position in the publisher's logical-pixel scene-space.
     pub point: (f64, f64),
@@ -375,6 +379,7 @@ impl ShellNetwork {
             .unwrap_or(0);
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
+            user: crate::shell::state::local_user_id(),
             key,
             point,
             ts,
@@ -390,10 +395,23 @@ impl ShellNetwork {
     /// Public so integration tests (and a future test-only handle in
     /// the loopback harness) can inject presence updates without going
     /// through gossipsub.
-    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
+    pub fn handle_presence_message(
+        &self,
+        peer: u64,
+        user: String,
+        key: String,
+        point: (f64, f64),
+        ts: u64,
+    ) {
+        // A session does not paint its own cursor from the network: the
+        // pointer it would draw is the one already under the user's hand.
+        if peer == self.local_peer_hash {
+            return;
+        }
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
+                user,
                 key,
                 point,
                 ts,
@@ -823,12 +841,19 @@ impl ShellNetwork {
                 // in the inbound buffer the shell's frame-tick drains.
                 if let NeighbourMsg::PresenceMoved {
                     peer: peer_hash,
+                    ref user,
                     ref key,
                     point,
                     ts,
                 } = msg
                 {
-                    self.handle_presence_message(peer_hash, key.clone(), point, ts);
+                    self.handle_presence_message(
+                        peer_hash,
+                        user.clone(),
+                        key.clone(),
+                        point,
+                        ts,
+                    );
                     continue;
                 }
                 // App-CRDT updates skip the shell-tree replica too —
@@ -1199,11 +1224,17 @@ mod tests {
                 match msg {
                     NeighbourMsg::PresenceMoved {
                         peer,
+                        user,
                         key,
                         point,
                         ts: _,
                     } => {
                         assert_eq!(peer, 0xABCDu64);
+                        // The session names who is at it, so a peer's
+                        // cursor can be labelled with a person rather
+                        // than a hashed session handle.
+                        assert_eq!(user, crate::shell::state::local_user_id());
+                        assert!(!user.is_empty());
                         assert_eq!(key, "local-cursor");
                         assert_eq!(point, (100.0, 200.0));
                     }
@@ -1217,19 +1248,61 @@ mod tests {
     #[test]
     fn handle_presence_message_buffers_for_drain() {
         // The receive-side adapter pushes to the inbound buffer that
-        // the shell's frame-tick drains. Verify that the entry round-
-        // trips with all four fields preserved so the overlay can
-        // attribute the cursor to the right peer at the right time.
+        // the shell's frame drainer folds into `PresenceCtx`. Verify
+        // that the entry round-trips with every field preserved so the
+        // overlay can attribute the cursor to the right person, in the
+        // right scope, at the right time.
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_presence_handle();
-        net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
+        net.handle_presence_message(
+            7u64,
+            "bob".into(),
+            "ws/0".into(),
+            (10.0, 20.0),
+            1_700_000_000,
+        );
         let buf = buf_handle.lock().unwrap();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 7u64);
+        assert_eq!(buf[0].user, "bob");
         assert_eq!(buf[0].key, "ws/0");
         assert_eq!(buf[0].point, (10.0, 20.0));
         assert_eq!(buf[0].ts, 1_700_000_000);
+    }
+
+    #[test]
+    fn a_session_does_not_take_its_own_presence_off_the_network() {
+        // A session republishes the pointers of every app under it, so
+        // gossip can hand its own frames back. Painting them would put
+        // a second cursor on screen chasing the one under the user's
+        // hand — and label it as a peer.
+        let tree = WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
+        let buf_handle = net.inbound_presence_handle();
+        net.handle_presence_message(
+            99u64,
+            "me".into(),
+            "ws/0".into(),
+            (10.0, 20.0),
+            1_700_000_000,
+        );
+        assert!(
+            buf_handle.lock().unwrap().is_empty(),
+            "a session's own presence must not be drained back into its overlay"
+        );
+        net.handle_presence_message(
+            7u64,
+            "bob".into(),
+            "ws/0".into(),
+            (30.0, 40.0),
+            1_700_000_001,
+        );
+        assert_eq!(
+            buf_handle.lock().unwrap().len(),
+            1,
+            "another session's presence must still arrive"
+        );
     }
 
     #[test]

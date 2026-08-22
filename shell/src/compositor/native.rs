@@ -26,6 +26,35 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
+
+use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+use crate::shell::search::visibility::CapabilityVisibility;
+
+/// Run `f` against the live chrome with a capability gate built from the
+/// active workspace.
+///
+/// The gate is what makes the action API answer *for a caller* rather
+/// than in the abstract: a resource the workspace's capability model
+/// will not let this user act on is absent from enumeration and from
+/// selection alike, so it cannot be invoked by an address the caller was
+/// never given.
+///
+/// Failing to resolve a workspace is an error rather than a fallback to
+/// "show everything". A gate that opens when it cannot find its policy
+/// is not a gate.
+fn with_action_gate<R>(
+    chrome_handle: &crate::shell::chrome_state::Chrome,
+    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
+) -> Result<R, String> {
+    let chrome = chrome_handle.borrow();
+    let tree = chrome.tree();
+    let workspace = tree
+        .active_workspace()
+        .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
+    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let gate = CapabilityVisibility::new(workspace, actor);
+    Ok(f(&chrome, &gate))
+}
 use smithay::reexports::calloop::{self, EventLoop};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -275,6 +304,13 @@ impl TestControlConn {
 /// the live tree (no caching).
 struct FrameBuilderControlState<'a> {
     fb: &'a FrameBuilder,
+    /// The live CRDT the search providers read, plus its root object.
+    ///
+    /// `None` for the construction sites that only exercise layout and
+    /// chrome (the unit tests below), which is why the action methods
+    /// refuse rather than answer when it is absent: a fixture that
+    /// cannot enumerate must not be able to report an empty surface.
+    doc: Option<(&'a AutoCommit, &'a ObjId)>,
 }
 
 impl<'a> ControlState for FrameBuilderControlState<'a> {
@@ -287,6 +323,36 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
     /// frame tick. The chrome's `tree` field is the authoritative
     /// copy (the compositor's `State.workspace_tree` is the same
     /// type and stays in sync via the shared `Chrome` cell).
+    /// The peers the overlay would paint this frame, read from the
+    /// same presence context `draw_real_peers` draws from and keyed
+    /// the same way — by room.
+    ///
+    /// A peer cursor is otherwise only assertable by looking at a
+    /// picture, and "nobody arrived" looks exactly like "somebody
+    /// arrived and was not drawn".
+    fn peers_json(&self) -> serde_json::Value {
+        let presence = self.fb.presence();
+        let rows: Vec<serde_json::Value> = presence
+            .pointers
+            .iter()
+            .flat_map(|(key, peers)| {
+                let scope = match key {
+                    ui::presence::PresenceKey::Workspace { id } => id.clone(),
+                    other => format!("{other:?}"),
+                };
+                peers.iter().map(move |(user, (x, y))| {
+                    serde_json::json!({
+                        "room": scope,
+                        "user": user.0,
+                        "x": x,
+                        "y": y,
+                    })
+                })
+            })
+            .collect();
+        serde_json::json!({ "pointers": rows })
+    }
+
     fn workspace_tree_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         // `unwrap_or(Null)` — `WorkspaceTree`'s `Serialize` impl is
@@ -312,11 +378,21 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             crate::compositor::foreign::foreign_tabs(&chrome.tree())
                 .into_iter()
                 .map(|tab| {
+                    // The rect the widget tree laid this tab into, so a
+                    // harness can aim at a window instead of guessing
+                    // where the layout put it.
+                    let placement = store.placement(tab.surface_id).map(|r| {
+                        serde_json::json!({
+                            "x": r.x0, "y": r.y0,
+                            "w": r.width(), "h": r.height(),
+                        })
+                    });
                     serde_json::json!({
                         "surface_id": tab.surface_id,
                         "app_id": tab.app_id,
                         "frame_seq": store.frame_seq(tab.surface_id),
                         "last_error": store.last_error(tab.surface_id),
+                        "rect": placement,
                     })
                 })
                 .collect();
@@ -442,6 +518,73 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         }))
     }
 
+    /// Enumerate the exported action surface through the *same*
+    /// provider registry that feeds the Ctrl+K palette.
+    ///
+    /// The palette renders these providers as rows; this renders
+    /// nothing. No scene is built, no widget is touched, no synthetic
+    /// input is generated — which is the entire claim: an action is not
+    /// a pixel, so driving the shell does not require seeing it.
+    fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {
+        let (doc, root) = self
+            .doc
+            .ok_or_else(|| "control state has no live document".to_string())?;
+        let chrome_handle = self.fb.chrome_handle();
+        // The borrow lives only for the closure. `ActionCatalog` owns its
+        // results outright (no borrow of `doc` is retained), so the
+        // catalogue outlives the guards it was built through.
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog(query, chrome, doc, root, gate)
+        })?;
+        let actions: Vec<serde_json::Value> = catalog
+            .enumerate()
+            .into_iter()
+            .map(|a| {
+                serde_json::json!({
+                    "provider": a.resource.provider,
+                    "id": a.resource.id,
+                    "kind": a.kind.label(),
+                    "title": a.title,
+                    "subtitle": a.subtitle,
+                    "score": a.score,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "query": query,
+            "count": actions.len(),
+            "actions": actions,
+        }))
+    }
+
+    /// Resolve one `(provider, id)` address against a freshly built
+    /// catalogue, reporting what it names without running it.
+    ///
+    /// Selection and invocation are deliberately separate steps: a
+    /// caller can inspect what an address resolves to before committing
+    /// to the side-effect, and an address that is unknown — or hidden by
+    /// the visibility gate — fails here, loudly, instead of becoming an
+    /// invocation that does nothing.
+    fn resolve_action(&self, provider: &str, id: &str) -> Result<serde_json::Value, String> {
+        let (doc, root) = self
+            .doc
+            .ok_or_else(|| "control state has no live document".to_string())?;
+        let chrome_handle = self.fb.chrome_handle();
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog("", chrome, doc, root, gate)
+        })?;
+        let resource = ResourceRef::new(provider, id);
+        let selected = catalog.select(&resource).ok_or_else(|| {
+            format!("no visible action addressed by ({provider}, {id}) in the current catalogue")
+        })?;
+        Ok(serde_json::json!({
+            "provider": provider,
+            "id": id,
+            "kind": selected.kind().label(),
+            "title": selected.title(),
+        }))
+    }
+
     /// Build a structured view of [`ChromeState`] for the
     /// `state_dump` response. We construct the object manually rather
     /// than `derive(Serialize)` on `ChromeState` because the chrome
@@ -545,14 +688,25 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
 /// this keystroke do next", and a socket-driven harness cannot see it
 /// any other way.
 fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
-    let (visible, query, selected, rows) = fb.host().palette_snapshot();
+    let (visible, query, selected, _) = fb.host().palette_snapshot();
     serde_json::json!({
         "visible": visible,
         "query": query,
         "selected_id": selected,
-        "rows": rows
+        // Label *and* subtitle. The subtitle is the half that says what
+        // the row will do, so a harness asserting on how an app is
+        // offered has to be able to read it — a row that grew a badge
+        // or a "not installed" marker would look identical from the
+        // label alone.
+        "rows": fb
+            .host()
+            .palette_rows_detailed()
             .into_iter()
-            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .map(|(id, label, description)| serde_json::json!({
+                "id": id,
+                "label": label,
+                "description": description,
+            }))
             .collect::<Vec<_>>(),
     })
 }
@@ -718,6 +872,11 @@ fn execute_planned_action(
                 &mut ctx.focus,
             );
         }
+        PlannedAction::SetGroupWidth { permille } => {
+            let touched = fb.host_mut().set_group_widths(*permille);
+            tracing::info!("test_control: set {} group(s) to {permille}permille", touched.len());
+            fb.with_chrome(|st| st.bump());
+        }
         PlannedAction::MouseLeftButton { pressed } => {
             let event = WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
@@ -804,6 +963,39 @@ fn execute_planned_action(
             // these into structured wire responses.
             write_snapshot_png(fb, path);
         }
+        PlannedAction::InvokeAction { provider, id } => {
+            // Re-resolve rather than carrying a handle over from
+            // dispatch: the document is mutable between planning and
+            // execution, so the catalogue the caller was shown may no
+            // longer be the catalogue that exists now. Resolving here
+            // means we either run the action the address currently
+            // names, or nothing at all.
+            let chrome_handle = fb.chrome_handle();
+            // Built through the same gate the dispatcher resolved
+            // against. Re-resolving without it would make the gate
+            // advisory: a caller who got past `resolve_action` once
+            // could keep invoking after their capability was revoked.
+            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
+                fb.host()
+                    .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+            }) {
+                Ok(catalog) => catalog,
+                Err(why) => {
+                    eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+                    return;
+                }
+            };
+            match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
+                // The `Ref` above is dropped with the block, so the
+                // provider's callback is free to borrow the chrome cell
+                // mutably — which most of them do.
+                Some(selected) => selected.invoke(&mut ctx.doc, &ctx.root_obj, &chrome_handle),
+                None => eprintln!(
+                    "nirios compositor: action ({provider}, {id}) vanished between \
+                     resolve and invoke; nothing was run"
+                ),
+            }
+        }
     }
 }
 
@@ -823,13 +1015,22 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
             let event = keyboard_input_event(winit_key, *pressed);
             lock.handle_key(winit_event_to_lock_key(&event));
         }
-        // Pointer moves/clicks, modifier sets, and snapshots: swallowed while
-        // locked. Input goes only to the lock surface.
+        // Pointer moves/clicks, modifier sets, snapshots, and action
+        // invocations: swallowed while locked. Input goes only to the lock
+        // surface.
+        //
+        // `InvokeAction` belongs in this list for the same reason a
+        // click does, and more sharply: the action API reaches chrome
+        // side-effects without needing a visible surface, so letting one
+        // through here would make the lock screen bypassable by a socket
+        // client that never has to render anything.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
-        | PlannedAction::Snapshot { .. } => {}
+        | PlannedAction::Snapshot { .. }
+        | PlannedAction::SetGroupWidth { .. }
+        | PlannedAction::InvokeAction { .. } => {}
     }
 }
 
@@ -1023,7 +1224,10 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
-                        let state = FrameBuilderControlState { fb: frame_builder };
+                        let state = FrameBuilderControlState {
+                            fb: frame_builder,
+                            doc: Some((&ctx.doc, &ctx.root_obj)),
+                        };
                         test_control::dispatch_command(&cmd, &state)
                     }
                     Err(err_resp) => (err_resp, Vec::new()),
@@ -1780,6 +1984,40 @@ pub fn run() -> ! {
     // is unlinked with the session.
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
+
+    // Read the session's own broker for pointer presence, and relay it
+    // to the room's other hosts.
+    //
+    // The compositor hosts the broker but was not otherwise a reader of
+    // it, so the pointer every app publishes reached the other apps in
+    // the room and stopped there — the overlay that draws peers over
+    // these windows never saw one. Subscribing by room is what makes a
+    // cursor that crosses from one app to another a single peer moving:
+    // presence is room-scoped, so both apps reach the same subscription.
+    //
+    // Both halves are needed, so this is only stood up when both exist.
+    // Without peer sync there is nobody to relay to or hear from, and
+    // the overlay correctly paints nothing.
+    if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
+        let rooms = {
+            let chrome = frame_builder.chrome_handle();
+            let chrome = chrome.borrow();
+            let tree = chrome.tree();
+            tree.workspaces
+                .iter()
+                .map(|w| w.room.to_string())
+                .collect::<Vec<_>>()
+        };
+        tracing::info!(
+            "collab: subscribed to {} room(s) for peer presence",
+            rooms.len()
+        );
+        frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
+            broker,
+            Arc::clone(net),
+            rooms,
+        ));
+    }
 
     // Seed the size used for fullscreen configures so an early
     // `set_fullscreen` request fills the output even before the first resize.
@@ -2650,6 +2888,31 @@ pub fn run() -> ! {
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
         }
+        // Keep the presence relay current, then fold in what peers sent.
+        //
+        // The pointer is read level-triggered from the input state
+        // rather than hooked onto motion, so every source that can move
+        // it — a real seat, a remote peer's injected input, the test
+        // control socket — is covered by one place. The room set is
+        // re-read for the same reason: a workspace joins a peer's room
+        // when an invite is accepted, and the subscription has to follow
+        // it there or the session stops hearing the room it just joined.
+        let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
+            let (cx, cy) = state.client_input.cursor();
+            relay.set_cursor(cx, cy);
+            relay.set_rooms({
+                let chrome = frame_builder.chrome_handle();
+                let chrome = chrome.borrow();
+                let tree = chrome.tree();
+                tree.workspaces
+                    .iter()
+                    .map(|w| w.room.to_string())
+                    .collect::<Vec<_>>()
+            });
+            frame_builder.pump_peer_presence()
+        } else {
+            false
+        };
         let apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         let revision = frame_builder.chrome_revision();
@@ -2666,6 +2929,7 @@ pub fn run() -> ! {
             || revision_changed
             || animating
             || apps_changed
+            || peers_moved
             || keepalive_due;
         // May a frame be shown yet? Protocol traffic, test-control
         // commands and input all wake the loop off-cadence; presenting
@@ -3482,7 +3746,7 @@ mod tests {
     #[test]
     fn state_dump_chrome_includes_overlays_field() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let chrome = state.chrome_state_json();
         let overlays = chrome
             .get("overlays")
@@ -3506,7 +3770,7 @@ mod tests {
     #[test]
     fn state_dump_workspace_tree_includes_workspaces_array() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let tree = state.workspace_tree_json();
         let workspaces = tree
             .get("workspaces")
@@ -3529,13 +3793,14 @@ mod tests {
     #[test]
     fn dispatch_state_dump_against_frame_builder_returns_state() {
         let fb = FrameBuilder::new((1600, 900));
-        let state = FrameBuilderControlState { fb: &fb };
+        let state = FrameBuilderControlState { fb: &fb, doc: None };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());
         let test_control::Response::State {
             workspace_tree,
             chrome,
+            peers: _,
         } = resp
         else {
             panic!("expected Response::State; got something else");
