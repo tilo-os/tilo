@@ -370,6 +370,21 @@ impl CrdtRoute {
         !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
     }
 
+    /// Whether this route may be stamped onto a frame leaving the
+    /// machine.
+    ///
+    /// The same test [`Self::delivers_to`] applies to the sender side,
+    /// exposed because the outbound half
+    /// ([`crate::shell::collab_outbound`]) has to make the identical
+    /// call before a publish. A route that cannot deliver locally
+    /// cannot deliver remotely either: the receiving broker rebuilds
+    /// this route from the wire fields and runs it through
+    /// `delivers_to`, so publishing an unaddressable one puts a frame
+    /// in the room that every receiver silently drops.
+    pub fn is_publishable(&self) -> bool {
+        Self::is_addressable(&self.cluster_id)
+    }
+
     /// Whether an event addressed to `self` should be delivered to a
     /// subscriber that announced `subscriber`.
     ///
