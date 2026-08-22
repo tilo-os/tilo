@@ -146,6 +146,29 @@ struct CacheFingerprint {
     status_key: StatusKey,
 }
 
+/// The three pieces the centre band's calendar strip paints, given the
+/// current local time: weekday, date, and the note that fills the slot
+/// an event would occupy.
+///
+/// No calendar source is wired to the shell, so there is no next event
+/// to name. This follows the same rule as the tray pill: paint what is
+/// actually knowable and say plainly that nothing backs the rest. The
+/// strip used to read "Next: Design Sync 15:30" — a fixed string on
+/// every machine, which anyone glancing at the screen takes for the
+/// user's own diary and anyone watching a recording takes for a
+/// scheduling feature that exists.
+///
+/// Split out as a free function so the strip's content is assertable
+/// without a paint pass; when a real calendar lands, the note is what
+/// it replaces.
+fn calendar_strip_parts(now: chrono::DateTime<Local>) -> (String, String, &'static str) {
+    (
+        now.format("%a").to_string(),
+        now.format("%-d %B").to_string(),
+        "No calendar connected",
+    )
+}
+
 /// Reduce a reading to what the tray paints. Free function so
 /// [`TopBarChrome::needs_redraw`] can key on the *chrome's* current
 /// status without first copying it onto the widget — `needs_redraw`
@@ -1227,19 +1250,10 @@ impl Widget for TopBarChrome {
                 );
             }
             CenterWidget::Calendar => {
-                // No calendar is connected to the shell yet, so there is
-                // no next event to name. Same rule the tray pill below
-                // follows: paint what is actually knowable — today's
-                // date — and say plainly that there is no source behind
-                // the event slot. A plausible-looking stand-in here
-                // ("Next: Design Sync 15:30") is read as the user's own
-                // diary by anyone looking at the screen.
-                let now = Local::now();
-                let prefix = now.format("%a").to_string();
-                let prefix = prefix.as_str();
-                let event = now.format("%-d %B").to_string();
-                let event = event.as_str();
-                let time = "No calendar connected";
+                let (weekday, date, note) = calendar_strip_parts(Local::now());
+                let prefix = weekday.as_str();
+                let event = date.as_str();
+                let time = note;
                 let size = tokens.typography.scale.sm;
                 // Concept calendar-strip tiers: prefix + time as dim Medium
                 // pieces, the event name as a Semibold primary-colour anchor.
@@ -1800,6 +1814,41 @@ impl Widget for TopBarChrome {
     /// the App a `compute_layout_with_measure` on every CursorMoved.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+#[cfg(test)]
+mod calendar_strip_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// The strip reports the day it is actually run on. The previous
+    /// implementation returned the same three strings forever, so this
+    /// is what tells the two apart.
+    #[test]
+    fn the_strip_reads_the_clock() {
+        let day = Local.with_ymd_and_hms(2026, 3, 9, 11, 0, 0).unwrap();
+        let (weekday, date, _) = calendar_strip_parts(day);
+        assert_eq!(weekday, "Mon");
+        assert_eq!(date, "9 March");
+
+        let other = Local.with_ymd_and_hms(2025, 12, 25, 11, 0, 0).unwrap();
+        let (weekday, date, _) = calendar_strip_parts(other);
+        assert_eq!(weekday, "Thu");
+        assert_eq!(date, "25 December");
+    }
+
+    /// Nothing feeds the event slot, so it says so rather than naming
+    /// a meeting nobody scheduled. Pinned by name: a stand-in that
+    /// reads as a real appointment is the defect this closes.
+    #[test]
+    fn the_event_slot_names_no_meeting() {
+        let (_, _, note) = calendar_strip_parts(Local::now());
+        assert_eq!(note, "No calendar connected");
+        assert!(
+            !note.contains("Design Sync"),
+            "the slot must not carry an invented appointment"
+        );
     }
 }
 
