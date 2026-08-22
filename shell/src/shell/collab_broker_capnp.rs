@@ -75,6 +75,7 @@ use ui::presence::PresenceKey;
 use crate::shell::collab_broker::{
     AuditEntry, BrokerChannels, CrdtRoute, PeerTable, apply_redaction_from_envelope,
 };
+use crate::shell::collab_outbound::{PeerPublisher, Transport};
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue.
 #[derive(Clone, Debug)]
@@ -168,6 +169,12 @@ pub struct CapnpBrokerState {
     /// the legacy path validates against; a signed op that comes in
     /// via capnp mutates the exact same `ChannelState`.
     broker_channels: Arc<Mutex<BrokerChannels>>,
+    /// The outbound half — the *same instance* the legacy transport
+    /// holds. Local fanout has always been shared through
+    /// [`PeerTable`]; reaching another machine was not, and a
+    /// sandboxed app dials this transport, so everything it typed
+    /// stopped at the machine boundary without saying so.
+    publisher: Arc<PeerPublisher>,
 }
 
 impl CapnpBrokerState {
@@ -178,12 +185,25 @@ impl CapnpBrokerState {
         Arc::clone(&self.broker_channels)
     }
 
-    fn new(peer_table: &Arc<PeerTable>, broker_channels: Arc<Mutex<BrokerChannels>>) -> Arc<Self> {
+    fn new(
+        peer_table: &Arc<PeerTable>,
+        broker_channels: Arc<Mutex<BrokerChannels>>,
+        publisher: Arc<PeerPublisher>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             channels: Mutex::new(HashMap::new()),
             peer_table: Arc::downgrade(peer_table),
             broker_channels,
+            publisher,
         })
+    }
+
+    /// Publish a payload this transport just fanned out locally, on
+    /// the identical route. Every capnp write path funnels through
+    /// here so "did it leave the machine" is one decision rather than
+    /// one per RPC method.
+    fn publisher(&self) -> &Arc<PeerPublisher> {
+        &self.publisher
     }
 
     /// Mint the next unified peer id. Delegates to the shared
@@ -598,6 +618,13 @@ impl channel_handle::Server for CapnpChannelHandle {
         let route = self.route();
         Promise::from_future(async move {
             let data = params.get()?.get_data()?.to_vec();
+            // Out to the room first, on the same route the local
+            // fanout below uses. This is the frame a sandboxed app
+            // sends for every keystroke; without this line it reached
+            // the other windows on this machine and nothing else.
+            state
+                .publisher()
+                .document_incremental(&route, Transport::Capnp, data.clone());
             if let Some(t) = state.peer_table.upgrade() {
                 t.fanout_to_route(&CollabEvent::CRDTIncremental { data }, peer_id, &route);
             }
@@ -699,6 +726,13 @@ fn handle_signed_op_send(
             if envelope.op_class == OpClass::Redact {
                 apply_redaction_from_envelope(&envelope, artifact, &state.broker_channels);
             }
+            // Out to the room on the same route, then to local
+            // subscribers. The receiving host validates the envelope
+            // against its own channel state before showing it to
+            // anyone — republishing is not vouching.
+            state
+                .publisher()
+                .signed_document(route, Transport::Capnp, envelope.clone());
             let event = CollabEvent::SignedCRDTIncremental {
                 envelope: Box::new(envelope),
                 from_user_id: format!("peer-{peer_id}"),
@@ -1169,10 +1203,12 @@ pub fn spawn(
     socket_path: PathBuf,
     peer_table: Arc<PeerTable>,
     broker_channels: Arc<Mutex<BrokerChannels>>,
+    publisher: Arc<PeerPublisher>,
     quit: Arc<AtomicBool>,
 ) -> std::io::Result<JoinHandle<()>> {
     let _ = std::fs::remove_file(&socket_path);
-    let state = CapnpBrokerState::new(&peer_table, broker_channels);
+    let wired = publisher.is_wired();
+    let state = CapnpBrokerState::new(&peer_table, broker_channels, publisher);
     peer_table.attach_capnp(Arc::clone(&state));
 
     // Bind on the caller's thread, before anything is detached.
@@ -1188,9 +1224,21 @@ pub fn spawn(
     let std_listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
     // tokio's reactor requires a non-blocking fd for `from_std`.
     std_listener.set_nonblocking(true)?;
+    // This is the socket sandboxed apps dial, so whether it can reach
+    // other machines is the single most useful fact about a session
+    // that is supposed to be collaborating. Say it at bind time, where
+    // it is findable, rather than leaving an empty screen to be read
+    // as "nobody is typing".
     tracing::info!(
-        "capnp broker: bound {} for native SDK access",
-        socket_path.display()
+        peer_sync = wired,
+        "capnp broker: bound {} for native SDK access ({})",
+        socket_path.display(),
+        if wired {
+            "edits from apps on this socket will reach the room"
+        } else {
+            "LOCAL ONLY — no peer network, so edits from apps on this \
+             socket stay on this machine"
+        },
     );
 
     let thread = std::thread::Builder::new()
