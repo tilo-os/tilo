@@ -36,6 +36,9 @@ pub enum CollabRequest {
         /// being dropped as malformed.
         #[serde(default)]
         record: Option<String>,
+        /// Presence handle (see `ui::collaboration::CollabRequest::Hello`).
+        #[serde(default)]
+        handle: Option<String>,
     },
     SyncCRDT {
         data: Vec<u8>,
