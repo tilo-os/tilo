@@ -3631,10 +3631,23 @@ mod tests {
         for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
             let ground = theme.tokens.colors.surfaces.base;
             let g = relative_luminance(ground);
-            // How far a body sits from the ground, in relative luminance.
-            // Fills are opaque, so this is the body's own luminance; the
-            // `abs` keeps the measure honest whichever way the lift points.
-            let lift_of = |c: vello::peniko::Color| (relative_luminance(c) - g).abs();
+            // How far a body sits from the ground, in relative luminance,
+            // measured on the composite so a translucent fill is judged by
+            // what it actually does to the surface rather than by the token
+            // it was written as. (Reading the raw colour is how the old
+            // alpha-ordering assertion managed to pass on a theme where the
+            // heavier wash moved the pill *less*.) The `abs` keeps the
+            // measure honest whichever way the lift points.
+            let lift_of = |c: vello::peniko::Color| {
+                let a = c.a() as f32 / 255.0;
+                let ch = |o: u8, gr: u8| ((o as f32) * a + (gr as f32) * (1.0 - a)).round() as u8;
+                let seen = vello::peniko::Color::from_rgb8(
+                    ch(c.r(), ground.r()),
+                    ch(c.g(), ground.g()),
+                    ch(c.b(), ground.b()),
+                );
+                (relative_luminance(seen) - g).abs()
+            };
 
             let idle = pill_appearance(&theme, false, false, false);
             let hover = pill_appearance(&theme, false, true, false);
