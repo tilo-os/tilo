@@ -541,14 +541,25 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
 /// this keystroke do next", and a socket-driven harness cannot see it
 /// any other way.
 fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
-    let (visible, query, selected, rows) = fb.host().palette_snapshot();
+    let (visible, query, selected, _) = fb.host().palette_snapshot();
     serde_json::json!({
         "visible": visible,
         "query": query,
         "selected_id": selected,
-        "rows": rows
+        // Label *and* subtitle. The subtitle is the half that says what
+        // the row will do, so a harness asserting on how an app is
+        // offered has to be able to read it — a row that grew a badge
+        // or a "not installed" marker would look identical from the
+        // label alone.
+        "rows": fb
+            .host()
+            .palette_rows_detailed()
             .into_iter()
-            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .map(|(id, label, description)| serde_json::json!({
+                "id": id,
+                "label": label,
+                "description": description,
+            }))
             .collect::<Vec<_>>(),
     })
 }
