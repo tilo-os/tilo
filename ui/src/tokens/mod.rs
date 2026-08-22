@@ -61,7 +61,7 @@ impl Tokens {
             typography,
             spacing: Spacing::default(),
             radii: Radii::default(),
-            elevation: Elevation::default(),
+            elevation: Elevation::light(),
             motion: Motion::default(),
             font_mono,
             font_size_base,
