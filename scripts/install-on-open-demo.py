@@ -689,6 +689,22 @@ def main() -> int:
                       f"{tab_png} is the first-frame placeholder, not Sheets "
                       f"({frame})")
                 print(f"  first frame: frame_seq={frame['frame_seq']}  → {tab_png}")
+
+                # With a tab in front of you the two chords stop being
+                # interchangeable, and this is where that becomes
+                # visible. On the empty workspace this run starts from,
+                # `Ctrl+K` reports `All` as well — `ActiveApp` widens
+                # when nothing is focused — so a check run only at the
+                # start cannot tell them apart. Measured after the app
+                # is up and focused, it can.
+                for chord in ("super-k", "ctrl-k"):
+                    comp.open_palette(chord)
+                    time.sleep(0.5)
+                    print(f"  with Sheets focused, {chord} → scope "
+                          f"{comp.state().get('chrome', {}).get('search_scope')}")
+                    comp.key("Escape")
+                    time.sleep(0.3)
+
                 if args.hold > 0:
                     print(f"  holding for {args.hold:.0f}s ...")
                     time.sleep(args.hold)
