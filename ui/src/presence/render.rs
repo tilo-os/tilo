@@ -613,7 +613,16 @@ pub fn draw_remote_cursors(
     theme: &Theme,
     presence: &PresenceCtx,
 ) {
-    let peers: Vec<PeerCursor> = presence.remote_cursors.iter().map(peer_of).collect();
+    // Same ownership rule as [`draw_remote_presence`]: a pointer the
+    // compositor overlay paints is not painted again here. Filtering in
+    // both is what keeps a future caller of this older helper from
+    // reintroducing the duplicate.
+    let peers: Vec<PeerCursor> = presence
+        .remote_cursors
+        .iter()
+        .filter(|c| c.painted_by_window())
+        .map(peer_of)
+        .collect();
     if peers.is_empty() {
         return;
     }
@@ -797,7 +806,21 @@ pub fn draw_remote_presence(
                     &cursor.label,
                 );
             }
-            None => on_screen.push(peer),
+            // On-screen is where the two layers collided: the
+            // compositor paints a desktop pointer from
+            // `PresenceCtx::pointers` in an overlay above this window,
+            // so painting it here too is the same person twice. Skip
+            // the ones it owns; see [`super::PointerOwner`].
+            //
+            // The off-screen mist above is deliberately *not* skipped.
+            // The overlay drops peers outside its rect rather than
+            // pointing at them, so a wayfinding band was never the
+            // thing being drawn twice, and dropping it here would lose
+            // it entirely. It belongs with the pointer, and should move
+            // to the overlay when that grows an off-screen indicator of
+            // its own.
+            None if cursor.painted_by_window() => on_screen.push(peer),
+            None => {}
         }
     }
     draw_peer_cursors(scene, transform, viewport, text_renderer, theme, &on_screen);
@@ -826,6 +849,59 @@ mod tests {
         assert!(
             red > 150 && green < 150 && blue > 70,
             "expected alice's pink pointer at center, got ({red},{green},{blue})"
+        );
+    }
+
+    /// The pixels behind "one person, one pointer".
+    ///
+    /// The same peer, at the same place, painted once when this layer
+    /// owns them and not at all when the compositor overlay does. Both
+    /// halves are asserted in one test on purpose: a filter that
+    /// dropped everything would satisfy the first assertion on its own,
+    /// and a filter that dropped nothing would satisfy the second, so
+    /// neither is worth much without the other.
+    #[test]
+    fn only_a_pointer_this_layer_owns_reaches_the_screen() {
+        use super::super::PointerOwner;
+
+        let theme = Theme::default();
+        let viewport = Rect::new(0.0, 0.0, 120.0, 120.0);
+        // Well inside the viewport, so `edge_mist_for` resolves to the
+        // on-screen branch and this is testing the dot, not the mist.
+        let at = [40.0_f32, 40.0_f32];
+
+        let paint = |owner: PointerOwner| {
+            let mut ctx = PresenceCtx::empty();
+            ctx.upsert_remote_cursor_owned("alice".into(), at, Some("Alice"), 1.0, owner);
+            let mut scene = Scene::new();
+            let mut tr = TextRenderer::new();
+            draw_remote_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                viewport,
+                &mut tr,
+                &theme,
+                &ctx,
+            );
+            let mut r = OffscreenRenderer::new(120, 120);
+            let rgba = r.render(&scene, Color::BLACK);
+            OffscreenRenderer::sample(&rgba, 120, at[0] as u32, at[1] as u32)
+        };
+
+        // Owned here: alice's pinned pink lands on the screen.
+        let (r, g, b, _) = paint(PointerOwner::Window);
+        assert!(
+            r > 150 && g < 150 && b > 70,
+            "a pointer this layer owns must be drawn; got ({r},{g},{b})"
+        );
+
+        // Owned by the compositor: nothing here, because the overlay
+        // above this window is already drawing that person.
+        let (r, g, b, _) = paint(PointerOwner::Desktop);
+        assert_eq!(
+            (r, g, b),
+            (0, 0, 0),
+            "the compositor paints this peer; painting them here too is one person twice",
         );
     }
 
