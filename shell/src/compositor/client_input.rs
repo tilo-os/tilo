@@ -1728,7 +1728,11 @@ pub fn route_input(
             let Some(code) = evdev_keycode(key) else {
                 return false;
             };
-            let overlay_open = fb.host().palette_visible();
+            // Anything the shell has up that Escape would dismiss. The
+            // summoned workspace wheel counts: it is dismissed with
+            // Escape, so the key has to reach the shell rather than the
+            // focused client while it is showing.
+            let overlay_open = fb.host().palette_visible() || fb.host().wheel_summoned();
             let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
             let forward = if pressed {
                 let forward = !shell_owns && state.client_input.keyboard_focus.is_some();

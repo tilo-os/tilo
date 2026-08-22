@@ -1,12 +1,8 @@
-//! Tests for the shell's remote-cursor mapping/overlay helpers.
-//!
-//! T24 introduces `cursor_in_bounds` and the `RemoteCursorOverlay` stub so
-//! upcoming tasks (T25 SimulatedFeed, T26 overlay draw) can compose against a
-//! stable API. T25 adds the `SimulatedFeed` that drives cursors for the demo
-//! without a real peer; subsequent tasks append their own cases.
+//! Tests for the shell's remote-cursor mapping/overlay helpers:
+//! `cursor_in_bounds` and the clipping `RemoteCursorOverlay` performs
+//! against the active tile.
 
-use shell::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed, cursor_in_bounds};
-use std::time::Duration;
+use shell::shell::remote_cursors::{RemoteCursorOverlay, cursor_in_bounds};
 use ui::presence::{PresenceCtx, RemoteCursor};
 
 #[test]
@@ -40,18 +36,6 @@ fn remote_cursor_overlay_exposes_active_tile_bounds() {
     // still assert its shape so downstream tasks can rely on construction.
     let ov = RemoteCursorOverlay::new();
     assert_eq!(ov.active_tile_bounds(), [0.0, 0.0, 0.0, 0.0]);
-}
-
-#[test]
-fn simulated_feed_moves_cursor_deterministically() {
-    let mut feed = SimulatedFeed::new_with_seed(42);
-    let mut ctx = PresenceCtx::default();
-    feed.tick(Duration::from_millis(16), &mut ctx);
-    assert_eq!(ctx.remote_cursors.len(), 1);
-    let p0 = ctx.remote_cursors[0].position;
-    feed.tick(Duration::from_millis(100), &mut ctx);
-    let p1 = ctx.remote_cursors[0].position;
-    assert!(p0 != p1, "cursor should have moved");
 }
 
 #[test]

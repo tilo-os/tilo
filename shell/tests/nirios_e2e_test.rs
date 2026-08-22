@@ -37,15 +37,35 @@ fn bootstrap_default_seeds_four_demo_tabs_in_order() {
     let strip = ws.strips.first().expect("at least one strip");
     let group = strip.window_groups.first().expect("at least one group");
     let titles: Vec<&str> = group.tabs.iter().map(|t| t.title.as_str()).collect();
-    assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Browser"]);
-    // The first (Notes) tab should be upgradeable to a live AppWidget —
-    // enforced by bootstrap using `AppPlaceholder`, not `Stub`.
-    let notes_tab = &group.tabs[0];
-    match &notes_tab.tile {
-        TileContent::AppPlaceholder { kind, .. } => {
-            assert_eq!(kind.as_str(), "Notes");
+    assert_eq!(titles, vec!["Notes", "Files", "Terminal", "Document"]);
+    // Every tab the desktop opens itself must resolve to a real app.
+    // `Stub` renders a card that says the app is coming soon, and a
+    // window the user never opened, showing an app that does not exist,
+    // is worse than not offering it — so nothing seeded here may be one.
+    for tab in &group.tabs {
+        match &tab.tile {
+            TileContent::AppPlaceholder { .. } => {}
+            other => panic!(
+                "the default workspace seeded a non-hydratable tile for the \
+                 {:?} tab: {:?}. Seed only apps the shell can actually host.",
+                tab.title, other
+            ),
         }
-        other => panic!("expected AppPlaceholder for Notes, got {:?}", other),
+    }
+    // And each one must come online as a live widget rather than falling
+    // through the hydration match into a placeholder card.
+    for tab in &group.tabs {
+        // The terminal is the one tab whose hydration can legitimately
+        // fail (no /dev/ptmx in a sandbox), and it says so in its label.
+        if tab.title == "Terminal" {
+            continue;
+        }
+        assert_eq!(
+            shell::shell::resolve_tile_shape_for_test(&tab.tile),
+            "App",
+            "the {:?} tab hydrated into a stub card instead of a real app",
+            tab.title,
+        );
     }
 }
 
@@ -544,66 +564,6 @@ fn sync_tab_presence_seeds_per_user_color_overrides_from_collaborators() {
         ui::presence::user_color("b"),
         "no-override peer must still use palette fallback",
     );
-}
-
-#[test]
-fn seed_demo_editor_presence_registers_alice_caret_and_selection() {
-    // The shell's `main.rs` calls this seeder before `app.run()` so the
-    // editor's peer-caret render has something to paint in single-process
-    // development. Guard against accidental breakage: the key must match
-    // what `EditorApp` reads, and the registered caret + selection must be
-    // retrievable by user.
-    //
-    // The key names the Editor tab's *record* as well as the body field.
-    // Each Editor tab is its own document with an `editor_body` of its
-    // own, so a caret published under the bare field name would be drawn
-    // in every Editor tab at once.
-    use shell::shell::seed_demo_editor_presence;
-    use shell::shell::state::{AppKind, TileContent, WorkspaceTree};
-    use shell::shell::tab_documents::scratch_tab_record;
-    use ui::permissions::UserId;
-    use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let editor_tab = {
-        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
-        let id = group.tabs[0].id ^ 0xEd;
-        group.tabs.push(shell::shell::state::Tab {
-            id,
-            title: "Editor".into(),
-            tile: TileContent::AppPlaceholder {
-                kind: AppKind::Other("Editor".into()),
-                label: "Editor".into(),
-            },
-        });
-        id
-    };
-
-    let mut ctx = PresenceCtx::empty();
-    seed_demo_editor_presence(&tree, &mut ctx);
-
-    let key = PresenceKey::Widget {
-        path: vec![
-            PathSegment::Field(scratch_tab_record(editor_tab).id.as_str().into()),
-            PathSegment::Field("editor_body".into()),
-        ],
-    };
-    let alice = UserId("alice".into());
-
-    assert!(
-        ctx.peers_on(&key).contains(&alice),
-        "alice should be registered as present on the editor body"
-    );
-    assert_eq!(
-        ctx.caret_for(&key, &alice),
-        Some(66),
-        "alice's caret char-index should be the seeded value"
-    );
-    let sel = ctx
-        .selection_for(&key, &alice)
-        .expect("alice should have a seeded selection");
-    assert_eq!(sel.start, 60);
-    assert_eq!(sel.end, 72);
 }
 
 #[test]

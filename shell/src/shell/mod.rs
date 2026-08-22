@@ -21,6 +21,7 @@
 
 pub mod actions;
 pub mod browser_stub;
+pub mod catalogue;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
@@ -44,6 +45,7 @@ pub mod notes_app;
 pub mod notification;
 pub mod overlay_host;
 pub mod osd;
+pub mod peer_presence;
 pub mod overview;
 pub mod peer_join_toast;
 pub mod peer_view;
@@ -195,8 +197,6 @@ impl Shell {
             ws_settings: WorkspaceSettings::new(active_ws_id),
             toasts: ToastStack::new(),
             ctx_menu: ContextMenu::new(),
-            // Pin the demo peer to `alice` so the cursor paints pink-500
-            // from the concept palette, not a seed-hashed colour.
             overview_visible: false,
             search_visible: false,
             quick_settings_visible: false,
@@ -984,8 +984,51 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
         ShellKind::FileExplorer => UiKind::Files,
         ShellKind::Browser => UiKind::Browser,
         ShellKind::Settings => UiKind::Settings,
+        // The apps the shell hosts under an `Other` label are all text
+        // editors, so they get the editor glyph. Without this they took
+        // the unknown-kind fallback below and every one of them wore a
+        // settings cog in its tab pill.
+        ShellKind::Other(s) if is_editor_label(s) => UiKind::Editor,
         ShellKind::Other(_) => UiKind::Settings,
     }
+}
+
+/// The apps the shell hosts in-process under an `AppKind::Other` label,
+/// as `(tab title, label)`.
+///
+/// The two columns exist because the tree and the widget layer identify a
+/// tab differently. The persisted tree names the app by label, which is
+/// what [`to_ui_tile`] hydrates from. The widget layer only knows the
+/// toolkit's five app kinds, so a group rebuilt out of widgets — the one
+/// a user makes by dragging a tab out into its own window — has nothing
+/// but the tab's title to recover the label from. Keeping both columns in
+/// one table is what stops those two paths from disagreeing and turning a
+/// real app back into a placeholder card.
+const HOSTED_OTHER_APPS: &[(&str, &str)] = &[
+    ("Notes", "Notes"),
+    ("Editor", "Editor"),
+    ("Document", "Word"),
+];
+
+/// Whether an `AppKind::Other` label names one of the text editors the
+/// shell hosts in-process. Read by the icon mapping so a label can never
+/// resolve to a live editor while its tab pill claims it is something
+/// else.
+fn is_editor_label(s: &str) -> bool {
+    HOSTED_OTHER_APPS
+        .iter()
+        .any(|(_, label)| label.eq_ignore_ascii_case(s))
+}
+
+/// The label that hydrates back into the app a tab titled `title` was
+/// showing. Falls through to the title itself for anything the shell does
+/// not host, which is the behaviour a foreign or unknown tab needs.
+pub(crate) fn hosted_label_for_title(title: &str) -> String {
+    HOSTED_OTHER_APPS
+        .iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case(title))
+        .map(|(_, label)| (*label).to_string())
+        .unwrap_or_else(|| title.to_string())
 }
 
 /// Test-only probe into [`to_ui_tile`]: returns `"App"` if the persisted
@@ -1048,18 +1091,18 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => UiTile::App(Box::new(FileExplorerWidget::new())),
-            // Notes and Editor placeholders resolve to the shell's CRDT-
-            // backed apps. Everything else falls through to a Stub until a
-            // dedicated widget is wired up.
+            // Notes, Editor and Word resolve to real in-process apps.
+            // Each opens on an empty document — a tab the user just
+            // opened has nothing in it yet, and prose the shell wrote
+            // would be indistinguishable from prose they wrote.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
-                let seed = "Welcome to nirios.\n\n\
-                     These notes sync live with anyone invited to this workspace — \
-                     edits replicate through the same CRDT path every widget uses.\n\n\
-                     Ctrl+Z / Ctrl+Y undo and redo across the whole shell.";
-                UiTile::App(Box::new(NotesApp::with_seed(seed)))
+                UiTile::App(Box::new(NotesApp::new()))
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
-                UiTile::App(Box::new(EditorApp::with_default_snippet()))
+                UiTile::App(Box::new(EditorApp::new()))
+            }
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
+                UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),
@@ -1447,64 +1490,49 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
     }
 }
 
-/// Seed a demo peer ("alice") with a caret + selection inside the editor
-/// body so the peer-caret draw path in [`super::editor_app::EditorApp`]
-/// has visible chrome in single-process development, even before any
-/// real network traffic arrives.
-///
-/// The caret sits roughly two rows in at char index 36 (just past the
-/// first `const` keyword in the default TSX snippet) and the selection
-/// spans a short word after it; both line up against the snippet in
-/// `editor_app::DEFAULT_SEED`. If the shell later loads a different
-/// editor body, the per-char measurement in `EditorApp::draw` handles
-/// out-of-range indices gracefully — `char_index_to_byte` clamps to
-/// `text.len()` so the caret just rides at end-of-buffer.
-pub fn seed_demo_editor_presence(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
-    use ui::permissions::UserId;
-    use ui::presence::{PathSegment, PresenceKey, SelectionRange};
-    // The key has to name the *document*, not just the field: each Editor
-    // tab is its own record with an `editor_body` of its own, so a caret
-    // published under the bare field name would be drawn in every one of
-    // them at once. Seed the first Editor tab in the tree — the one this
-    // dev aid exists to make visible.
-    let Some(tab_id) = editor_tab_ids(tree).into_iter().next() else {
-        return;
-    };
-    let record = tab_documents::scratch_tab_record(tab_id);
-    let key = PresenceKey::Widget {
-        path: vec![
-            PathSegment::Field(record.id.as_str().into()),
-            PathSegment::Field("editor_body".into()),
-        ],
-    };
-    let alice = UserId("alice".into());
-    ctx.register_presence(&key, alice.clone());
-    ctx.set_caret(&key, alice.clone(), 66); // inside line 5 of the default snippet
-    ctx.set_selection(
-        &key,
-        alice,
-        SelectionRange { start: 60, end: 72 }, // short multi-char band on the same line
-    );
-}
+#[cfg(test)]
+mod hosted_app_tests {
+    use super::*;
 
-/// Every tab in `tree` hosting the shell's Editor, in walk order.
-fn editor_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
-    let mut out = Vec::new();
-    for w in &tree.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    let is_editor = matches!(
-                        &t.tile,
-                        ShellTile::AppPlaceholder { kind: ShellKind::Other(name), .. }
-                            if name.eq_ignore_ascii_case("Editor")
-                    );
-                    if is_editor {
-                        out.push(t.id);
-                    }
-                }
-            }
+    /// Every app the shell lists as hosted has to survive the trip out
+    /// through the widget layer and back: drag a tab into its own window
+    /// and the group is rebuilt from widgets, which knows only the tab's
+    /// title. If the label that comes back is not the one the hydration
+    /// match arms name, the tab returns as a "coming soon" card — the
+    /// exact failure this table exists to prevent.
+    #[test]
+    fn every_hosted_app_round_trips_from_its_tab_title_into_a_live_app() {
+        for (title, label) in HOSTED_OTHER_APPS {
+            let recovered = hosted_label_for_title(title);
+            assert_eq!(
+                &recovered, label,
+                "a tab titled {title:?} must recover the label {label:?}",
+            );
+
+            let tile = ShellTile::AppPlaceholder {
+                kind: ShellKind::Other(recovered.clone()),
+                label: (*title).to_string(),
+            };
+            assert_eq!(
+                resolve_tile_shape_for_test(&tile),
+                "App",
+                "{title:?} hydrated into a placeholder card instead of the \
+                 app it names",
+            );
+            assert_eq!(
+                to_ui_kind(&ShellKind::Other(recovered)),
+                UiKind::Editor,
+                "{title:?} must wear an editor glyph, not the unknown-kind \
+                 settings cog",
+            );
         }
     }
-    out
+
+    /// A title the shell does not host carries through untouched, so a
+    /// foreign or future app is not silently renamed into one of ours.
+    #[test]
+    fn an_unhosted_title_is_carried_through_unchanged() {
+        assert_eq!(hosted_label_for_title("Inkscape"), "Inkscape");
+        assert_eq!(hosted_label_for_title("report.odt"), "report.odt");
+    }
 }
