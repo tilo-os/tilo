@@ -10,7 +10,10 @@ pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from
 // their per-frame draw without depending on the shell.
-pub use render::{draw_remote_cursors, draw_remote_presence};
+pub use render::{
+    PeerCursor, PillPlacement, PillRequest, draw_peer_cursors, draw_remote_cursors,
+    draw_remote_presence, layout_peer_pills,
+};
 
 /// How long a peer's "just typed" highlight lingers before it has fully
 /// faded away. A textmarker swipe that decays over this window so a busy
