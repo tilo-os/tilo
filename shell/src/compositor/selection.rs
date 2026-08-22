@@ -302,6 +302,11 @@ pub struct SelectionState {
     /// the drag. See [`ClientDndGrabHandler::started`] for why it is kept but
     /// not composited.
     pub dnd_icon: Option<WlSurface>,
+    /// A drag the compositor itself started — a file carried out of the
+    /// hosted file manager and over a client's window. `Some` from the
+    /// moment the server-side grab starts until the client finishes with
+    /// the offer or the drag is cancelled. See [`ChromeDrag`].
+    pub chrome_drag: Option<ChromeDrag>,
     /// Whether a client-initiated drag-and-drop is in flight.
     ///
     /// Read by the pointer router: while a button is held the compositor
@@ -353,8 +358,112 @@ impl SelectionState {
             focused_client: None,
             dnd_icon: None,
             dnd_active: false,
+            chrome_drag: None,
         }
     }
+}
+
+/// What a compositor-initiated drag carries.
+///
+/// Files is a widget inside the compositor, not a Wayland client, so a row
+/// dragged out of it has no `wl_data_source`. The compositor is the source
+/// instead: it offers the paths as `text/uri-list`, and — for a single file
+/// whose type it knows — the file's own bytes under their mime type. The
+/// bytes matter more than the paths: a sandboxed app cannot read a host
+/// path, but it can always read what is written into the pipe it asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChromeDrag {
+    pub paths: Vec<std::path::PathBuf>,
+    pub mime_types: Vec<String>,
+}
+
+/// The mime type a list of `file://` URIs travels as.
+pub const URI_LIST_MIME: &str = "text/uri-list";
+
+impl ChromeDrag {
+    pub fn new(paths: Vec<std::path::PathBuf>) -> Self {
+        let mut mime_types = vec![URI_LIST_MIME.to_string()];
+        if let [single] = paths.as_slice() {
+            if let Some(mime) = mime_for_path(single) {
+                mime_types.push(mime.to_string());
+            }
+        }
+        Self { paths, mime_types }
+    }
+
+    /// The `text/uri-list` body: one `file://` URI per line, CRLF-terminated
+    /// as the RFC 2483 shape requires, with the bytes a path cannot carry
+    /// verbatim percent-encoded.
+    pub fn uri_list(&self) -> String {
+        let mut out = String::new();
+        for p in &self.paths {
+            out.push_str("file://");
+            out.push_str(&percent_encode_path(&p.to_string_lossy()));
+            out.push_str("\r\n");
+        }
+        out
+    }
+
+    /// The single file whose bytes `mime` asks for, if that is what the
+    /// offer promised.
+    pub fn file_for_mime(&self, mime: &str) -> Option<&std::path::Path> {
+        if mime == URI_LIST_MIME || !self.mime_types.iter().any(|m| m == mime) {
+            return None;
+        }
+        match self.paths.as_slice() {
+            [single] => Some(single.as_path()),
+            _ => None,
+        }
+    }
+}
+
+/// The mime type of a file by extension. Only types an app can do
+/// something with as raw bytes; anything else travels as a path only.
+pub fn mime_for_path(path: &std::path::Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain",
+        _ => return None,
+    })
+}
+
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Write `bytes` into `fd` without stalling the compositor: small payloads
+/// fit the pipe buffer and go now; anything larger drains on a thread at
+/// the receiver's pace, and the thread closing the fd is the receiver's EOF.
+fn write_to_pipe(fd: OwnedFd, bytes: Vec<u8>, what: &'static str) {
+    use std::io::Write;
+    let mut file = File::from(fd);
+    if bytes.len() <= PIPE_BUFFER_BYTES {
+        if let Err(e) = file.write_all(&bytes) {
+            tracing::debug!(target: "shell::selection", error = %e, "{what} receiver went away mid-transfer");
+        }
+        return;
+    }
+    std::thread::spawn(move || {
+        if let Err(e) = file.write_all(&bytes) {
+            tracing::debug!(target: "shell::selection", error = %e, "{what} receiver went away mid-transfer");
+        }
+    });
 }
 
 /// The data-control filter: may this client see the clipboard-manager globals?
@@ -804,15 +913,56 @@ impl ClientDndGrabHandler for State {
     }
 }
 
-/// Server-initiated drag-and-drop — a drag whose *source* is compositor chrome
-/// rather than a client.
+/// Server-initiated drag-and-drop — a drag whose *source* is compositor chrome.
 ///
-/// qOS does not start those: a tab or a file dragged out of chrome is moved
-/// inside the compositor's own widget tree, never handed to a client through
-/// `wl_data_device`. The trait is required by [`DataDeviceHandler`], so the
-/// default no-op bodies are correct — no compositor-initiated grab exists to
-/// receive them.
-impl ServerDndGrabHandler for State {}
+/// The one such drag is a file carried out of the hosted file manager and
+/// over a client's window (`client_input::pump_chrome_drag` starts the grab,
+/// [`ChromeDrag`] is what it carries). A tab dragged between groups never
+/// comes here: that is moved inside the compositor's own widget tree.
+impl ServerDndGrabHandler for State {
+    fn accept(&mut self, mime_type: Option<String>, _seat: Seat<Self>) {
+        tracing::debug!(target: "shell::selection", ?mime_type, "client accepted a chrome drag mime");
+    }
+
+    fn send(&mut self, mime_type: String, fd: OwnedFd, _seat: Seat<Self>) {
+        let Some(drag) = self.selection.chrome_drag.clone() else {
+            tracing::warn!(target: "shell::selection", %mime_type, "send for a chrome drag that is not in flight");
+            return;
+        };
+        if mime_type == URI_LIST_MIME {
+            write_to_pipe(fd, drag.uri_list().into_bytes(), "uri-list");
+            return;
+        }
+        let Some(path) = drag.file_for_mime(&mime_type) else {
+            tracing::debug!(target: "shell::selection", %mime_type, "client asked for a mime the chrome drag never offered");
+            return;
+        };
+        match std::fs::read(path) {
+            Ok(bytes) => write_to_pipe(fd, bytes, "dropped file"),
+            Err(e) => tracing::warn!(
+                target: "shell::selection",
+                path = %path.display(),
+                error = %e,
+                "could not read the dropped file"
+            ),
+        }
+    }
+
+    fn dropped(&mut self, _seat: Seat<Self>) {
+        // The client may still request data; `finished` ends the drag.
+        tracing::debug!(target: "shell::selection", "chrome drag dropped");
+    }
+
+    fn cancelled(&mut self, _seat: Seat<Self>) {
+        tracing::debug!(target: "shell::selection", "chrome drag cancelled");
+        self.selection.chrome_drag = None;
+    }
+
+    fn finished(&mut self, _seat: Seat<Self>) {
+        tracing::debug!(target: "shell::selection", "chrome drag finished");
+        self.selection.chrome_drag = None;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -891,5 +1041,37 @@ mod tests {
         assert_eq!(mimes.first().map(String::as_str), Some(TEXT_MIME));
         assert!(mimes.iter().any(|m| m == "text/plain"));
         assert!(mimes.iter().any(|m| m == "UTF8_STRING"));
+    }
+
+    #[test]
+    fn a_chrome_drag_offers_a_uri_list_and_the_single_files_bytes() {
+        let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/var/workspace/Demo/my photo.png")]);
+        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string(), "image/png".to_string()]);
+        assert_eq!(drag.uri_list(), "file:///var/workspace/Demo/my%20photo.png\r\n");
+        assert_eq!(
+            drag.file_for_mime("image/png"),
+            Some(std::path::Path::new("/var/workspace/Demo/my photo.png"))
+        );
+        assert_eq!(drag.file_for_mime("image/jpeg"), None, "not offered");
+        assert_eq!(drag.file_for_mime(URI_LIST_MIME), None, "the list is not a file");
+    }
+
+    #[test]
+    fn a_multi_file_drag_is_paths_only() {
+        let drag = ChromeDrag::new(vec![
+            std::path::PathBuf::from("/a.png"),
+            std::path::PathBuf::from("/b.png"),
+        ]);
+        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
+        assert_eq!(drag.uri_list(), "file:///a.png\r\nfile:///b.png\r\n");
+        assert_eq!(drag.file_for_mime("image/png"), None);
+    }
+
+    #[test]
+    fn unknown_extensions_travel_as_paths_only() {
+        let drag = ChromeDrag::new(vec![std::path::PathBuf::from("/thing.qcow2")]);
+        assert_eq!(drag.mime_types, vec![URI_LIST_MIME.to_string()]);
+        assert_eq!(mime_for_path(std::path::Path::new("x.JPG")), Some("image/jpeg"));
+        assert_eq!(mime_for_path(std::path::Path::new("x")), None);
     }
 }
