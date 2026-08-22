@@ -251,6 +251,11 @@ pub struct TabBar {
     /// `draw_pill_inner`, which takes `&self`. Aligned 1:1 with `tabs`;
     /// `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
+    /// Tab id + screen position of a right-click awaiting a menu, drained
+    /// once by [`Self::take_context_menu`]. Same one-shot publish/drain
+    /// shape as `pending_close` / `pending_max` / `pending_search`: the
+    /// bar records the intent, the shell decides what to raise.
+    pending_context_menu: Option<(u64, Point)>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
     /// Tab whose maximize icon the pointer is currently over. Kept
@@ -401,6 +406,7 @@ impl TabBar {
             new_tab_rect: Rect::ZERO,
             title_advance: HashMap::new(),
             visible_titles: Vec::new(),
+            pending_context_menu: None,
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
@@ -1166,6 +1172,9 @@ impl TabBar {
     pub fn drag_in_flight(&self) -> bool { self.pending_drag.is_some() }
     pub fn take_reorder(&mut self) -> Option<(usize, usize)> { self.pending_reorder.take() }
     pub fn take_close(&mut self) -> Option<u64> { self.pending_close.take() }
+    /// Drain a right-click on a pill: the tab it landed on and where the
+    /// menu should be anchored. One-shot, like every other `take_*`.
+    pub fn take_context_menu(&mut self) -> Option<(u64, Point)> { self.pending_context_menu.take() }
     pub fn take_max(&mut self) -> Option<u64> { self.pending_max.take() }
     pub fn take_search(&mut self) -> Option<u64> { self.pending_search.take() }
     /// One-shot drain of a "+" click. `Some(())` means the user asked for
@@ -2112,6 +2121,21 @@ impl Widget for TabBar {
                             self.hover_drop_animated_at = None;
                         }
                     }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // Right-click on a pill raises that tab's own menu. This
+                // is the only route to close a tab that does not depend
+                // on first hovering it to make the `✕` appear, and it is
+                // where the actions that have no chord live.
+                let p = self.last_cursor;
+                if let Some(idx) = self
+                    .tab_rects
+                    .iter()
+                    .position(|r| r.area() > 0.0 && r.contains(p))
+                {
+                    self.pending_context_menu = Some((self.tabs[idx].id, p));
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
