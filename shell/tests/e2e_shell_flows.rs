@@ -1470,6 +1470,79 @@ fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     );
 }
 
+/// The overview is a switcher, so it has to finish on the keyboard.
+///
+/// Arrows walk its room list and Enter goes to the room they land on,
+/// closing the panel behind it. A surface you can open with a chord but
+/// have to finish with the mouse is not a switcher — it is a page you
+/// were shown.
+#[test]
+fn e2e_overview_arrows_select_and_enter_switches_room() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tree = WorkspaceTree::bootstrap_demo();
+    let started_on = tree.active;
+    assert!(
+        tree.workspaces.len() > 1,
+        "precondition: the fixture has somewhere else to go"
+    );
+    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+
+    let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    assert!(pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), &ctrl));
+    assert!(chrome.borrow().overlays.overview, "precondition: panel is open");
+
+    // Arrow with no modifier steps the selection off the room you are in.
+    let no_mods = Modifiers::default();
+    let handled = pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::ArrowDown)),
+        &no_mods,
+    );
+    assert!(
+        handled,
+        "the open panel must consume the arrow instead of letting the \
+         desktop underneath it scroll"
+    );
+
+    // Enter commits to the selected room and leaves.
+    let handled = pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::Enter)),
+        &no_mods,
+    );
+    assert!(handled, "Enter must be consumed by the open panel");
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "committing to a room closes the switcher"
+    );
+    assert_ne!(
+        chrome.borrow().tree().active,
+        started_on,
+        "Enter must actually go to the room the arrow selected"
+    );
+}
+
+/// Arrows are only the switcher's while the switcher is up. With the
+/// panel closed they belong to whatever is focused on the desktop.
+#[test]
+fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tree = WorkspaceTree::bootstrap_demo();
+    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    assert!(!chrome.borrow().overlays.overview);
+
+    let no_mods = Modifiers::default();
+    let handled = pump_host(
+        &mut host,
+        &key_press(Key::Named(NamedKey::ArrowDown)),
+        &no_mods,
+    );
+    assert!(
+        !handled,
+        "with no panel open the arrow must fall through to the desktop"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 6 + 7: undo / redo round-trip against a CRDT-mutating widget
 // ---------------------------------------------------------------------------
