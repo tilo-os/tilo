@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
@@ -78,7 +78,20 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 /// Shared by the golden test and the high-contrast one so both exercise
 /// the same production layout + draw path and can only disagree about the
 /// palette.
-fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> Scene {
+fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, SidebarWheelDisc) {
+    render_disc_at(theme, tr, 0.0)
+}
+
+/// One display slot, in degrees. Mirrors the widget's own step so the
+/// rotation test can ask for "half a detent" without hardcoding it.
+const SPOKE_STEP_DEG: f32 = 15.0;
+
+/// Same disc, laid out and painted at `rotation_deg` of wheel rotation.
+fn render_disc_at(
+    theme: &Theme,
+    tr: &mut TextRenderer,
+    rotation_deg: f32,
+) -> (Scene, SidebarWheelDisc) {
     let spokes = vec![
         SpokeLabel {
             text: "Home".into(),
@@ -157,10 +170,12 @@ fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> Scene {
         .expect("compute_layout");
     disc.apply_layout(&taffy, child, Point::ORIGIN);
 
+    disc.rotation_deg = rotation_deg;
+
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
     disc.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
-    scene
+    (scene, disc)
 }
 
 #[test]
@@ -170,7 +185,7 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
         return;
     };
     let mut tr = TextRenderer::new();
-    let scene = render_three_spoke_disc(&Theme::dark(), &mut tr);
+    let (scene, _disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
 
     let path = screenshots_dir().join("wheel-disc-01-baseline.png");
     let bg = Color::from_rgb8(0x02, 0x06, 0x14);
@@ -209,8 +224,17 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
         return;
     };
     let mut tr = TextRenderer::new();
-    let scene = render_three_spoke_disc(&Theme::high_contrast(), &mut tr);
+    let (scene, _disc) = render_three_spoke_disc(&Theme::high_contrast(), &mut tr);
     let rgba = renderer.render(&scene, Color::BLACK);
+    // Written out as well as sampled. The pixel probe below can only say
+    // the rim survived; whether the whole wheel is still legible under a
+    // palette that grounds every surface on pure black is a question for
+    // someone looking at it.
+    renderer.render_png(
+        &scene,
+        Color::BLACK,
+        &screenshots_dir().join("wheel-disc-03-high-contrast.png"),
+    );
 
     // A row a quarter of the way down: high enough to miss the active
     // marker's halo and the widest chip, so the only things that can paint
@@ -235,23 +259,25 @@ fn sidebar_wheel_disc_keeps_a_visible_rim_under_high_contrast() {
 
 /// Summoning lifts the disc off the strip and puts it wherever the pointer
 /// is — which is usually on top of an app, and apps are frequently bright.
-/// The rail sits at the disc's inner end, exactly where the body has faded
-/// to nothing, so a row cannot borrow contrast from the wheel behind it:
-/// it has to bring its own surface, or the shell's near-white label text
-/// lands on a near-white document.
+/// The band has to be a real surface there, or the shell's near-white
+/// labels land on a near-white document.
 ///
-/// Rendered on a white ground, a row's interior must therefore come back
-/// dark. The paired sample from the rail *between* rows must come back
-/// bright — otherwise this would pass just as happily against a disc that
-/// blacked out the whole footprint, which is the other way to fail.
+/// It also has to END. A wheel that blacks out the whole footprint passes
+/// "is it a surface" just as happily, and is the other way to fail: the
+/// disc is a slice of something large, so the app must still be plainly
+/// visible inside the band's inner arc.
+///
+/// Sample points are derived from the band the widget actually paints
+/// rather than hardcoded, so tuning the depth moves the probes with it
+/// instead of silently testing open wallpaper.
 #[test]
-fn summoned_rows_carry_their_own_surface_over_a_bright_app() {
+fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
     let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
         eprintln!("skip: no wgpu adapter available for offscreen render");
         return;
     };
     let mut tr = TextRenderer::new();
-    let scene = render_three_spoke_disc(&Theme::dark(), &mut tr);
+    let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
     let rgba = renderer.render(&scene, Color::WHITE);
 
     let path = screenshots_dir().join("wheel-disc-02-over-light.png");
@@ -262,23 +288,144 @@ fn summoned_rows_carry_their_own_surface_over_a_bright_app() {
         (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
     };
 
-    // The active row runs along the vertical middle, starting a little in
-    // from the footprint's left edge.
-    let row_y = CANVAS_H / 2;
-    let inside_row = luma(60, row_y);
+    let (r_in, r_out) = disc.band_radii();
+    let c = disc.disc_centre();
+    // The band's vertical middle, where it is at full alpha and widest.
+    let row_y = c.y.round() as u32;
+    let on_band = ((c.x + (r_in + r_out) / 2.0).round() as u32).min(CANVAS_W - 1);
+    let inside_arc = ((c.x + r_in - 24.0).round() as u32).min(CANVAS_W - 1);
+
+    let band = luma(on_band, row_y);
     assert!(
-        inside_row < 110,
-        "the active row let the bright app through (luma {inside_row}/255 at (60,{row_y})) \
-         — its near-white label has nothing to read against; see {path:?}"
+        band < 110,
+        "the band let the bright app through (luma {band}/255 at ({on_band},{row_y})) \
+         — the labels painted on it have nothing to read against; see {path:?}"
     );
 
-    // A quarter of the way down the rail sits between rows: open ground,
-    // where the app should still be plainly visible.
-    let gap_y = CANVAS_H * 3 / 8;
-    let between_rows = luma(60, gap_y);
+    let beyond = luma(inside_arc, row_y);
     assert!(
-        between_rows > 170,
-        "the rail blacked out the app between rows (luma {between_rows}/255 at (60,{gap_y})) \
-         — the disc is meant to be a sliver, not a panel; see {path:?}"
+        beyond > 170,
+        "the disc blacked out the app inside its own inner arc (luma {beyond}/255 at \
+         ({inside_arc},{row_y})) — it is meant to be a slice, not a panel; see {path:?}"
+    );
+}
+
+/// The body is ONE colour. It used to be a nine-stop radial ramp from
+/// transparent at the inner end to a peak alpha at the rim, and on screen
+/// that is a grey smear that never resolves into an object — the single
+/// thing the owner named when they asked for a flat disc.
+///
+/// Walks the band's radial run at its vertical middle and requires every
+/// sample to agree. A gradient of any consequence fails; so does a return
+/// to painting the surface as a stack of concentric strokes, which left a
+/// brighter seam wherever two translucent rings overlapped.
+///
+/// Rendered on a mid-grey ground so a translucent body has something to
+/// differ against — over black an alpha ramp reads as almost no delta at
+/// all and this would pass on a smear.
+#[test]
+fn the_band_is_filled_flat_with_a_single_colour() {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
+        eprintln!("skip: no wgpu adapter available for offscreen render");
+        return;
+    };
+    let mut tr = TextRenderer::new();
+    let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
+    let rgba = renderer.render(&scene, Color::from_rgb8(0x80, 0x80, 0x80));
+
+    let (r_in, r_out) = disc.band_radii();
+    let c = disc.disc_centre();
+    // A row a third of the way down the footprint: inside a sector, clear
+    // of the active wedge's tint at the middle and of the labels, which
+    // sit on the sector centrelines.
+    let y = (c.y - (r_out - r_in) * 0.75).round();
+    let dy = y - c.y;
+    // Stay off both edges so the rim strokes and the inner hairline are
+    // not in the sample.
+    let x_from = (c.x + ((r_in * r_in - dy * dy).max(0.0)).sqrt() + 10.0).round() as u32;
+    let x_to = (c.x + ((r_out * r_out - dy * dy).max(0.0)).sqrt() - 10.0).round() as u32;
+    assert!(
+        x_to > x_from + 20,
+        "the band is too thin at y={y} to sample: x {x_from}..{x_to}"
+    );
+
+    let y_u = y as u32;
+    let samples: Vec<u32> = (x_from..=x_to)
+        .step_by(4)
+        .map(|x| {
+            let (r, g, b, _) = OffscreenRenderer::sample(&rgba, CANVAS_W, x, y_u);
+            (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32
+        })
+        .collect();
+    let lo = *samples.iter().min().unwrap();
+    let hi = *samples.iter().max().unwrap();
+
+    // The old ramp ran from 0 to 168/255 alpha across this run, which on a
+    // mid-grey ground is a spread of well over 80 luma. A flat fill has
+    // only dithering and the sector dividers to account for.
+    assert!(
+        hi - lo <= 8,
+        "the band is shaded, not flat: luma runs {lo}..{hi} across its radial run \
+         at y={y_u} (samples {samples:?})"
+    );
+}
+
+/// The disc is a thing you spin, so its contents have to turn WITH it.
+/// The design this replaced failed exactly there: workspaces were pills
+/// in an upright column and the arc behind them was scenery, so turning
+/// the wheel slid a list and left the disc sitting still.
+///
+/// A label lying on the surface tips as its sector comes round, and that
+/// is the difference, so that is what this measures. The active label is
+/// horizontal at rest — its box is exactly as tall as the label — and a
+/// tilted one needs a taller box to hold the same text. Half a detent is
+/// also the hardest frame to look at, two sectors equally near the
+/// middle, so both renders are written out.
+#[test]
+fn spinning_the_wheel_turns_the_labels_with_it() {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
+        eprintln!("skip: no wgpu adapter available for offscreen render");
+        return;
+    };
+    let mut tr = TextRenderer::new();
+
+    let mut placed = |deg: f32, name: &str| -> Vec<Rect> {
+        let (scene, disc) = render_disc_at(&Theme::dark(), &mut tr, deg);
+        renderer.render_png(
+            &scene,
+            Color::from_rgb8(0x02, 0x06, 0x14),
+            &screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
+        );
+        disc.spoke_hit_rects.clone()
+    };
+
+    let rest = placed(0.0, "rest");
+    let half = placed(SPOKE_STEP_DEG / 2.0, "half-detent");
+
+    let active = 0usize;
+    let rest_box = rest[active];
+    let half_box = half[active];
+    assert!(
+        rest_box.area() > 0.0 && half_box.area() > 0.0,
+        "the active workspace has to be on screen in both frames: {rest_box:?} / {half_box:?}"
+    );
+
+    // Upright at rest: the box is the label, so it is far wider than tall.
+    // Tipped by half a detent: the same label needs a taller box.
+    assert!(
+        half_box.height() > rest_box.height() + 8.0,
+        "the active label did not tip with its sector — box was {:.0} px tall at rest \
+         and {:.0} px tall half a detent on. An upright label beside a turning disc \
+         is the rail this design replaced.",
+        rest_box.height(),
+        half_box.height()
+    );
+
+    // And it travelled: a positive rotation carries a sector downward.
+    let moved = half_box.center().y - rest_box.center().y;
+    assert!(
+        moved > 10.0,
+        "half a detent moved the active label by {moved:.0} px — the sectors are not \
+         turning with the disc"
     );
 }
