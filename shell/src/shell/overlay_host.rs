@@ -4064,11 +4064,14 @@ impl ShellOverlayHost {
         self.ws_settings_transition = ui::Transition::open();
     }
 
-    /// Font size the overview "Workspaces" h1 is drawn at, in logical pixels.
-    /// Exposed so the shell-chrome test can pin "header reads as large/bold"
-    /// (visual gap #12 — concept is Tailwind `text-4xl`, 36 px). This is
-    /// a method so it tracks the active theme's typography token, not a
-    /// hard-coded number.
+    /// Font size the overview sets the current room's name at, in logical
+    /// pixels.
+    ///
+    /// The panel opens by naming the room you are in, and that name is
+    /// the largest thing on the surface — it is the answer to the first
+    /// question the screen exists to answer. Exposed so the shell-chrome
+    /// test can pin "it reads as large" against a real number. A method,
+    /// not a constant, so it tracks the active theme's typography token.
     pub fn overview_header_font_size(&self, theme: &Theme) -> f32 {
         Self::overview_header_font_size_for(&theme.tokens)
     }
@@ -4144,8 +4147,7 @@ impl ShellOverlayHost {
     }
 
     fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        // Largest step in the type scale — currently 40 px, well above the
-        // 32 px floor the concept's `text-4xl` implies.
+        // Largest step in the type scale — currently 40 px.
         tokens.typography.scale.x4l
     }
 
@@ -10858,19 +10860,21 @@ impl ShellOverlayHost {
 }
 
 #[cfg(test)]
-mod overview_grid_tests {
-    //! The overview answers three questions at a glance: what workspaces
-    //! exist, what is in each one, and which one you are in. These pin the
-    //! parts of that which are geometry or data rather than pixels.
+mod overview_panel_tests {
+    //! The overview is a switcher for **rooms**: which one you are in,
+    //! who is in it with you, what leaves it, and how to get to another.
+    //! These pin the parts of that which are geometry or data rather
+    //! than pixels.
     //!
-    //! Every assertion runs against the same helpers `draw_overview` calls
-    //! — `overview_cell_rect` is the grid the cards are painted into and
-    //! the grid `hit_test_overview` clicks against, and
-    //! `window_chip_specs` is the list the tab chips are built from.
+    //! Every assertion runs against the helpers `draw_overview` itself
+    //! calls — `overview_row_rect` is where a room is painted *and* what
+    //! `hit_test_overview` clicks against, and `room_cards` is the model
+    //! the panel's every claim is read from.
 
     use super::*;
     use crate::shell::chrome_state::ChromeState;
-    use crate::shell::state::{AppKind, TileContent, WorkspaceTree};
+    use crate::shell::overview::{room_access_label, room_cards, room_shares_label};
+    use crate::shell::state::{CapOverride, Collaborator, Scope, Subject, Verb, WorkspaceTree};
     use ui::widget::Container;
 
     /// A host laid out over a desktop-sized viewport with the overview
@@ -10885,314 +10889,246 @@ mod overview_grid_tests {
         host
     }
 
-    /// The grid is about several populated cards, so it is built over
-    /// the populated fixture. `bootstrap_default` is a single empty
+    /// The panel is about several rooms, so it is built over the
+    /// populated fixture. `bootstrap_default` is a single empty
     /// workspace — a first boot invents nothing — which is the right
-    /// shape for the boot-path tests and no shape at all for a grid.
+    /// shape for the boot-path tests and no shape at all for a list.
     fn host() -> ShellOverlayHost {
         host_with(WorkspaceTree::bootstrap_demo())
     }
 
-    /// The header promised workspaces "side by side" while stacking them
-    /// down the screen. They are a grid now: neighbours in a row share a
-    /// baseline and advance along x.
-    #[test]
-    fn cards_in_a_row_share_a_baseline_and_advance_horizontally() {
-        let h = host();
-        assert!(
-            h.overview_grid_cols() >= 2,
-            "a 1600 px viewport has room for at least two columns; got {}",
-            h.overview_grid_cols()
-        );
-        let a = h.overview_cell_rect(0);
-        let b = h.overview_cell_rect(1);
-        assert!(
-            (a.y0 - b.y0).abs() < f64::EPSILON && (a.y1 - b.y1).abs() < f64::EPSILON,
-            "the first two cards must sit on one baseline; got {a:?} and {b:?}"
-        );
-        assert!(
-            b.x0 > a.x1,
-            "the second card must sit to the right of the first, not below it; \
-             got {a:?} then {b:?}"
-        );
-        assert!(
-            (b.x0 - a.x1 - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
-            "cards in a row are separated by exactly one grid gap"
-        );
+    fn ws_count(h: &ShellOverlayHost) -> usize {
+        h.chrome
+            .as_ref()
+            .map(|c| c.borrow().tree().workspaces.len())
+            .unwrap_or(0)
     }
 
-    /// The grid fills the column exactly — no card overhangs the content
-    /// measure and no unexplained gutter is left at the right edge.
+    /// The room you are in is the block at the top, not a row in the
+    /// list you could scroll away from. That is the difference between
+    /// "here is where you are" and "here is an index of rooms".
     #[test]
-    fn a_full_row_spans_the_column_exactly() {
+    fn the_room_you_are_in_is_the_pinned_block_not_a_list_row() {
         let h = host();
-        let col = h.overview_column_rect();
-        let cols = h.overview_grid_cols();
-        let first = h.overview_cell_rect(0);
-        let last = h.overview_cell_rect(cols - 1);
-        assert!(
-            (first.x0 - col.x0).abs() < 0.5,
-            "the row starts at the column's left edge"
-        );
-        assert!(
-            (last.x1 - col.x1).abs() < 0.5,
-            "the row ends at the column's right edge; got {} vs {}",
-            last.x1,
-            col.x1
-        );
-    }
-
-    /// Past the last column the grid wraps: back to the left edge, one
-    /// card height plus a gap further down.
-    #[test]
-    fn the_grid_wraps_after_the_last_column() {
-        let h = host();
-        let cols = h.overview_grid_cols();
-        let first = h.overview_cell_rect(0);
-        let wrapped = h.overview_cell_rect(cols);
-        assert!(
-            (wrapped.x0 - first.x0).abs() < 0.5,
-            "the wrapped card returns to the left edge"
-        );
-        assert!(
-            (wrapped.y0 - first.y0 - OVERVIEW_CARD_HEIGHT_PX - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
-            "the wrapped card drops exactly one row"
-        );
-    }
-
-    /// The create affordance used to be a short strip below the list,
-    /// which on a full screen meant below the fold. It is a grid cell
-    /// like any other card, in the slot right after the last workspace.
-    #[test]
-    fn the_add_tile_is_a_peer_cell_in_the_grid() {
-        let h = host();
-        let n = h.chrome.as_ref().unwrap().borrow().tree().workspaces.len();
-        let add = h.overview_add_workspace_rect_for(n);
+        let here = h.overview_here_index().expect("demo tree has an active room");
         assert_eq!(
-            add,
-            h.overview_cell_rect(n),
-            "the add tile occupies the grid slot after the last workspace"
+            h.overview_slot_of(here),
+            None,
+            "the current room occupies no list slot"
         );
-        let card = h.overview_cell_rect(0);
-        assert!(
-            (add.height() - card.height()).abs() < f64::EPSILON
-                && (add.width() - card.width()).abs() < f64::EPSILON,
-            "the add tile is the same size as a workspace card, not a \
-             short strip: card {card:?} vs add {add:?}"
-        );
-    }
-
-    /// With three workspaces and a four-wide grid everything lands in one
-    /// row, so nothing is clipped and nothing scrolls. The old vertical
-    /// list needed three row-heights for the same tree and ran off the
-    /// bottom of a 900 px screen.
-    #[test]
-    fn three_workspaces_fit_one_row_with_nothing_to_scroll() {
-        let h = host();
-        assert_eq!(
-            h.overview_grid_rows_for(3),
-            1,
-            "three workspaces plus the add tile fit one row of a four-wide grid"
-        );
-        assert_eq!(
-            h.overview_max_scroll_y(),
-            0.0,
-            "a grid that fits its band has nothing to scroll"
-        );
-        let col = h.overview_column_rect();
-        let last = h.overview_cell_rect(3);
-        assert!(
-            last.y1 <= col.y1,
-            "no card may extend past the bottom of the content column: \
-             card ends at {} , column at {}",
-            last.y1,
-            col.y1
-        );
-    }
-
-    /// Enough workspaces to overflow the band do scroll, and the draw path
-    /// is told to paint the overflow cue.
-    #[test]
-    fn an_overflowing_grid_reports_scrollable_content() {
-        let mut tree = WorkspaceTree::bootstrap_demo();
-        for i in 0..12 {
-            tree.append_empty_workspace(&format!("Extra {i}"));
+        assert_eq!(h.overview_row_rect(here), h.overview_here_rect());
+        for i in 0..ws_count(&h) {
+            if i == here {
+                continue;
+            }
+            assert!(
+                h.overview_slot_of(i).is_some(),
+                "every other room is a row you can go to"
+            );
         }
-        let h = host_with(tree);
+    }
+
+    /// Rows advance down the panel and never overlap: two rooms sharing
+    /// pixels would make one of them unclickable.
+    #[test]
+    fn room_rows_advance_downward_without_overlapping() {
+        let h = host();
+        let here = h.overview_here_index();
+        let mut prev: Option<Rect> = None;
+        for i in 0..ws_count(&h) {
+            if Some(i) == here {
+                continue;
+            }
+            let r = h.overview_row_rect(i);
+            if let Some(p) = prev {
+                assert!(
+                    r.y0 >= p.y1,
+                    "row {i} starts at {} but the row above ends at {}",
+                    r.y0,
+                    p.y1
+                );
+            }
+            prev = Some(r);
+        }
+        let add = h.overview_add_workspace_rect_for(ws_count(&h));
+        let last = prev.expect("demo tree has rooms other than the current one");
         assert!(
-            h.overview_content_height() > h.overview_viewport_height(),
-            "fifteen workspaces overflow the band"
+            add.y0 >= last.y1,
+            "\"New room\" is the slot after the last room, not on top of it"
         );
-        assert!(
-            h.overview_max_scroll_y() > 0.0,
-            "an overflowing grid must be scrollable, and paints the bottom fade"
+        assert_eq!(
+            add.width(),
+            last.width(),
+            "\"New room\" is a peer row in the same list, not a banner"
         );
     }
 
-    /// A click lands on the card the grid drew there. `hit_test_overview`
-    /// and the draw pass share one geometry oracle, so this catches a
-    /// draw/hit-test drift that a pixel diff would not.
+    /// Draw and hit-test share one geometry oracle: clicking the middle
+    /// of a room's painted rect selects that room.
     #[test]
-    fn hit_test_agrees_with_the_grid_the_cards_are_drawn_into() {
+    fn clicking_a_room_rect_hits_that_room() {
         let h = host();
-        for i in 0..3 {
-            let r = h.overview_cell_rect(i);
+        for i in 0..ws_count(&h) {
+            let r = h.overview_row_rect(i);
             assert_eq!(
                 h.hit_test_overview(r.center()),
                 Some(i),
-                "clicking the centre of card {i} must select card {i}"
+                "the centre of room {i}'s rect must hit room {i}"
             );
         }
-        // A point in the gutter between two cards belongs to neither.
-        let a = h.overview_cell_rect(0);
-        let gutter = Point::new(a.x1 + OVERVIEW_GRID_GAP_PX / 2.0, a.center().y);
+    }
+
+    /// A click outside the panel is not a room. The panel is a surface
+    /// floating over a scrim, so the scrim has to stay clickable-through
+    /// to "dismiss" rather than silently activating an edge row.
+    #[test]
+    fn clicks_outside_the_panel_hit_no_room() {
+        let h = host();
+        let panel = h.overview_panel_rect();
+        assert_eq!(h.hit_test_overview(Point::new(panel.x0 - 20.0, panel.center().y)), None);
+        assert_eq!(h.hit_test_overview(Point::new(panel.center().x, panel.y0 - 20.0)), None);
+    }
+
+    /// The panel is sized to what it says and stays on screen.
+    #[test]
+    fn the_panel_is_content_sized_and_stays_inside_the_viewport() {
+        let small = host_with(WorkspaceTree::bootstrap_default());
+        let many = host();
+        assert!(
+            many.overview_panel_rect().height() > small.overview_panel_rect().height(),
+            "more rooms means a taller panel — it is not a fixed page"
+        );
+        for h in [&small, &many] {
+            let p = h.overview_panel_rect();
+            assert!(
+                p.x0 >= h.rect.x0 && p.x1 <= h.rect.x1 && p.y0 >= h.rect.y0 && p.y1 <= h.rect.y1,
+                "panel {p:?} escapes the viewport {:?}",
+                h.rect
+            );
+        }
+    }
+
+    /// A tree with more rooms than fit is capped by the viewport and
+    /// scrolls instead of growing off-screen.
+    #[test]
+    fn a_long_room_list_is_capped_and_scrolls() {
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        for i in 0..40 {
+            tree.workspaces.push(crate::shell::state::Workspace::new(
+                WorkspaceId::new(),
+                format!("Room {i}"),
+            ));
+        }
+        let h = host_with(tree);
+        let p = h.overview_panel_rect();
+        assert!(p.y0 >= h.rect.y0 && p.y1 <= h.rect.y1, "panel stays on screen");
+        assert!(
+            h.overview_max_scroll_y() > 0.0,
+            "a list taller than its band has somewhere to scroll to"
+        );
+    }
+
+    /// Everything fitting means nothing to scroll — a panel that could
+    /// pan its content out of view for no reason would lose rooms.
+    #[test]
+    fn a_short_room_list_has_nothing_to_scroll() {
+        let h = host();
+        assert_eq!(h.overview_max_scroll_y(), 0.0);
+    }
+
+    /// Opening the panel points the selection at the room you are in, so
+    /// the first arrow press steps from *here*.
+    #[test]
+    fn opening_seeds_the_selection_from_the_room_you_are_in() {
+        let h = host();
+        assert_eq!(h.overview_selection, h.overview_here_index());
+        assert!(h.overview_selection.is_some());
+    }
+
+    /// Closing forgets it, so a later open does not resume pointing at
+    /// wherever a previous visit stopped.
+    #[test]
+    fn closing_clears_the_selection() {
+        let mut h = host();
+        h.force_overview_settled(false);
+        assert_eq!(h.overview_selection, None);
+    }
+
+    /// A room only you own reads as private, and says so on its row.
+    #[test]
+    fn a_private_room_says_so_on_its_row() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let cards = room_cards(&tree);
+        assert_eq!(cards.len(), 1);
+        assert_eq!(room_access_label(&cards[0]), "Private to you");
         assert_eq!(
-            h.hit_test_overview(gutter),
+            room_shares_label(&cards[0]),
             None,
-            "the gap between cards is not a card"
+            "a room that shares nothing shows no share count"
         );
     }
 
-    /// The header line is derived from the tree, so it cannot claim a
-    /// layout or a count the cards below it contradict. The old subtitle
-    /// was the fixed string "Your workspaces, side by side" over a
-    /// vertical stack.
+    /// The panel's people come from the room's capabilities, not from
+    /// whoever this session has happened to hear from. Showing a face on
+    /// a room states that person can reach it, which is a claim about
+    /// access.
     #[test]
-    fn the_header_summary_counts_and_names_the_current_workspace() {
-        assert_eq!(
-            overview_summary_label(3, Some("Home")),
-            "3 workspaces · you are in Home"
-        );
-        assert_eq!(
-            overview_summary_label(1, Some("Home")),
-            "1 workspace · you are in Home"
-        );
-        // No current workspace: say what is known and stop.
-        assert_eq!(overview_summary_label(2, None), "2 workspaces");
-        assert_eq!(overview_summary_label(2, Some("")), "2 workspaces");
-    }
-
-    /// The summary the draw path actually renders is the tree's own
-    /// count and active workspace, not a hardcoded one.
-    #[test]
-    fn the_rendered_summary_tracks_the_tree() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let n = tree.workspaces.len();
-        let active = tree.active_workspace().map(|w| w.name.clone()).unwrap();
-        let label = overview_summary_label(n, Some(active.as_str()));
+    fn faces_come_from_capabilities_not_from_the_collaborator_list() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        tree.workspaces[0].owner = None;
+        tree.workspaces[0].capabilities.clear();
+        tree.workspaces[0].collaborators = vec![Collaborator::new("ada", "Ada")];
         assert!(
-            label.starts_with(&format!("{n} workspace")),
-            "summary must lead with the real workspace count; got {label:?}"
+            room_cards(&tree)[0].people.is_empty(),
+            "a person with no capability here is not on this room"
         );
+
+        let room = tree.workspaces[0].id.raw().to_string();
+        tree.workspaces[0].capabilities.push(CapOverride::grant(
+            Subject::person("ada"),
+            Scope::Room(room),
+            Verb::Write,
+        ));
+        let card = &room_cards(&tree)[0];
+        assert_eq!(
+            card.people.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+            vec!["ada"],
+            "the member who holds a capability is exactly who the room shows"
+        );
+        assert_eq!(card.people[0].name, "Ada", "the roster supplies the name");
+    }
+
+    /// The panel never grows without bound as sharing does: past a few
+    /// rows the rest collapse into a count, so the block stays a summary.
+    #[test]
+    fn the_share_list_collapses_rather_than_growing_without_bound() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for i in 0..12 {
+            tree.workspaces[0].capabilities.push(CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath(format!("/var/workspace/doc{i}")),
+                Verb::Read,
+            ));
+        }
+        let card = &room_cards(&tree)[0];
+        assert_eq!(card.shares.len(), 12, "the model keeps every share");
         assert!(
-            label.ends_with(&active),
-            "summary must name the workspace the tree says is active; got {label:?}"
+            ShellOverlayHost::overview_share_rows(card) <= OVERVIEW_SHARES_MAX_ROWS + 1,
+            "the panel draws at most the cap plus one overflow line"
         );
     }
 
-    /// Each card names the windows in it, from the tabs themselves. The
-    /// old card drew one grey rectangle with four dots for exactly this
-    /// data.
+    /// A room that shares nothing still gets a line, because "nothing
+    /// leaves this room" is an answer the screen exists to give.
     #[test]
-    fn a_populated_card_names_every_window_in_tab_order() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let home = tree.active_workspace().expect("the demo tree has an active workspace");
-        let specs = overview_workspace_chip_specs(home);
-        let labels: Vec<&str> = specs.iter().map(|s| s.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            vec!["Notes", "Files", "Terminal", "Document"],
-            "the card must name the real tabs, in the order the group holds them"
-        );
-        let front: Vec<&str> = specs
-            .iter()
-            .filter(|s| s.is_front)
-            .map(|s| s.label.as_str())
-            .collect();
-        assert_eq!(
-            front,
-            vec!["Notes"],
-            "exactly the group's active tab is marked as the one in front"
-        );
-    }
-
-    /// A workspace with nothing open contributes nothing. No placeholder
-    /// window is invented to make the card look occupied.
-    #[test]
-    fn an_empty_workspace_contributes_no_windows() {
-        let tree = WorkspaceTree::bootstrap_demo();
-        let empty = tree
-            .workspaces
-            .iter()
-            .find(|w| w.strips.iter().all(|s| s.window_groups.is_empty()))
-            .expect("bootstrap seeds an empty workspace");
-        assert!(
-            overview_workspace_chip_specs(empty).is_empty(),
-            "an empty workspace must produce no window chips"
-        );
-    }
-
-    /// The glyph on a chip comes from the kind the tile declares, so a
-    /// card cannot show an app it is not hosting.
-    #[test]
-    fn a_chip_glyph_follows_the_kind_the_tile_declares() {
-        assert_eq!(app_kind_icon(&AppKind::Terminal), ui::icons::Icon::Terminal);
-        assert_eq!(app_kind_icon(&AppKind::FileExplorer), ui::icons::Icon::Folder);
-        assert_eq!(app_kind_icon(&AppKind::Browser), ui::icons::Icon::Monitor);
-        assert_eq!(app_kind_icon(&AppKind::Settings), ui::icons::Icon::Settings);
-        assert_eq!(
-            app_kind_icon(&AppKind::Other("Notes".into())),
-            ui::icons::Icon::File,
-            "an app the shell has no glyph for gets the neutral mark, not a guess"
-        );
-        // A foreign Wayland client is an external window.
-        assert_eq!(
-            tile_icon(&TileContent::Foreign {
-                app_id: "org.gimp.GIMP".into(),
-                surface_id: 7,
-            }),
-            ui::icons::Icon::Monitor
-        );
-        // Stub and placeholder tiles resolve through their kind.
-        assert_eq!(
-            tile_icon(&TileContent::Stub {
-                kind: AppKind::Terminal,
-                label: "Terminal".into(),
-            }),
-            ui::icons::Icon::Terminal
-        );
-    }
-
-    /// A narrow output drops to one column rather than shrinking cards
-    /// below the width at which they can name anything.
-    #[test]
-    fn a_narrow_viewport_drops_to_a_single_column() {
-        let mut h = host();
-        h.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
-        assert_eq!(
-            h.overview_grid_cols(),
-            1,
-            "a 420 px viewport has room for one card, not two slivers"
-        );
-        assert!(
-            h.overview_cell_width() >= 1.0,
-            "the single column still has a positive width"
-        );
-    }
-
-    /// The column count is capped, so a very wide output gets bigger
-    /// gutters rather than a row of ever-thinner cards.
-    #[test]
-    fn a_very_wide_viewport_caps_the_column_count() {
-        let mut h = host();
-        h.rect = Rect::new(0.0, 0.0, 5120.0, 1440.0);
-        assert_eq!(h.overview_grid_cols(), OVERVIEW_GRID_MAX_COLS);
-        assert!(
-            h.overview_column_rect().width() <= OVERVIEW_MAX_WIDTH_PX + 0.5,
-            "the content column stays within its maximum measure"
-        );
+    fn a_room_that_shares_nothing_still_gets_a_row() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let card = &room_cards(&tree)[0];
+        assert!(card.shares.is_empty());
+        assert_eq!(ShellOverlayHost::overview_share_rows(card), 1);
     }
 }
+
 
 #[cfg(test)]
 mod overview_transition_tests {
@@ -11246,13 +11182,6 @@ mod overview_transition_tests {
             "trailing gutter is {trailing}px against a {WHEEL_TO_STRIP_GAP_PX}px \
              gutter beside the wheel; they should read as the same margin",
         );
-    }
-
-    #[test]
-    fn windows_label_pluralizes_correctly() {
-        assert_eq!(windows_label(0), "0 windows");
-        assert_eq!(windows_label(1), "1 window");
-        assert_eq!(windows_label(2), "2 windows");
     }
 
     #[test]
