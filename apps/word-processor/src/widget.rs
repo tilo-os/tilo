@@ -12390,12 +12390,22 @@ mod history_strip_tests {
 /// under `$XDG_RUNTIME_DIR` and is named `winit-dnd-…`. Only such files are
 /// deleted after an insert — never a file the user chose.
 fn is_dnd_spool_path(path: &std::path::Path) -> bool {
-    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
+    let named_by_the_toolkit = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("winit-dnd-"));
+    if !named_by_the_toolkit {
         return false;
-    };
-    path.starts_with(runtime)
-        && path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("winit-dnd-"))
+    }
+    // The toolkit spools into the first of these it can actually write
+    // to — inside a sandbox `$XDG_RUNTIME_DIR` is set but is not always
+    // writable — so a spool file is one that sits under any of them.
+    // The name check above is what keeps this from ever matching a file
+    // the user chose.
+    ["XDG_RUNTIME_DIR", "XDG_CACHE_HOME", "HOME"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .filter(|v| !v.is_empty())
+        .any(|dir| path.starts_with(dir))
+        || path.starts_with(std::env::temp_dir())
 }
