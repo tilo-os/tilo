@@ -7,6 +7,9 @@
 //! present. The UI (the export dialog) is fully live either way; only the
 //! actual muxing is gated.
 
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
 use crate::model::Project;
 
 /// Output resolution presets. Stored as the long edge; the project's
@@ -221,6 +224,144 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     dir.join(settings.suggested_filename(&project.name))
 }
 
+/// A render running on a worker thread.
+///
+/// Export used to run inline on the UI thread — the whole encode plus a
+/// two-minute bus wait — so the window was frozen for the duration and
+/// `ExportStatus::Rendering` was constructed nowhere, leaving the dialog's
+/// progress bar as dead code. A job owns the thread, publishes progress as
+/// it encodes, and can be told to stop.
+pub struct ExportJob {
+    shared: Arc<JobState>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+/// What the worker publishes and the UI reads. Small enough to poll every
+/// frame without ceremony.
+struct JobState {
+    /// Frames written so far, and how many there are in total.
+    done: AtomicU64,
+    total: AtomicU64,
+    cancel: AtomicBool,
+    outcome: Mutex<Option<ExportStatus>>,
+}
+
+impl ExportJob {
+    /// Where the render has got to. `Rendering { progress }` while the
+    /// worker is encoding, then whatever it finished as.
+    pub fn status(&self) -> ExportStatus {
+        if let Some(done) = self.shared.outcome.lock().ok().and_then(|o| o.clone()) {
+            return done;
+        }
+        let total = self.shared.total.load(Ordering::Relaxed).max(1);
+        let done = self.shared.done.load(Ordering::Relaxed);
+        ExportStatus::Rendering { progress: (done as f64 / total as f64).clamp(0.0, 1.0) }
+    }
+
+    /// Whether the worker is still going.
+    pub fn is_running(&self) -> bool {
+        self.shared.outcome.lock().map(|o| o.is_none()).unwrap_or(false)
+    }
+
+    /// Ask the render to stop. The worker notices between frames, tears the
+    /// pipeline down and finishes as [`ExportStatus::Failed`] with a
+    /// cancelled reason — a half-written file is removed rather than left
+    /// looking like a finished render.
+    pub fn cancel(&self) {
+        self.shared.cancel.store(true, Ordering::Relaxed);
+    }
+
+    pub fn was_cancelled(&self) -> bool {
+        self.shared.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Block until the worker finishes, returning its outcome. Mostly for
+    /// tests; the UI polls [`Self::status`] instead.
+    pub fn join(mut self) -> ExportStatus {
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+        self.shared
+            .outcome
+            .lock()
+            .ok()
+            .and_then(|o| o.clone())
+            .unwrap_or_else(|| ExportStatus::Failed { reason: "export worker vanished".into() })
+    }
+}
+
+impl Drop for ExportJob {
+    fn drop(&mut self) {
+        // A dropped handle must not leave an encoder running against a file
+        // nobody is waiting for.
+        self.shared.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The message a cancelled render reports.
+pub const CANCELLED: &str = "Export cancelled";
+
+/// Start a render on a worker thread, writing to `destination`.
+///
+/// Returns immediately. Poll [`ExportJob::status`] for progress.
+pub fn start_export(
+    project: &Project,
+    settings: &ExportSettings,
+    destination: std::path::PathBuf,
+) -> ExportJob {
+    let shared = Arc::new(JobState {
+        done: AtomicU64::new(0),
+        total: AtomicU64::new(0),
+        cancel: AtomicBool::new(false),
+        outcome: Mutex::new(None),
+    });
+    // The worker owns its own copy: the UI thread keeps editing the project
+    // while the render runs, and a render must encode the timeline as it was
+    // when the user pressed Export.
+    let project = project.clone();
+    let settings = *settings;
+    let state = shared.clone();
+    let handle = std::thread::Builder::new()
+        .name("video-editor-export".into())
+        .spawn(move || {
+            let result = render(&project, &settings, &destination, &state);
+            let status = match result {
+                Ok(path) => ExportStatus::Done { path },
+                Err(reason) => ExportStatus::Failed { reason },
+            };
+            if let Ok(mut slot) = state.outcome.lock() {
+                *slot = Some(status);
+            }
+        })
+        .ok();
+    if handle.is_none() {
+        if let Ok(mut slot) = shared.outcome.lock() {
+            *slot = Some(ExportStatus::Failed {
+                reason: "could not start the export worker".into(),
+            });
+        }
+    }
+    ExportJob { shared, handle }
+}
+
+/// Run the encode. Split out so [`start_export`] reads as the threading it is.
+fn render(
+    project: &Project,
+    settings: &ExportSettings,
+    destination: &std::path::Path,
+    state: &JobState,
+) -> Result<String, String> {
+    #[cfg(feature = "gst")]
+    {
+        gst_pipeline::run(project, settings, destination, state)
+    }
+    #[cfg(not(feature = "gst"))]
+    {
+        let _ = (project, settings, destination, state);
+        Err(unavailable_reason().unwrap_or("Export is unavailable").to_string())
+    }
+}
+
 /// Why export cannot run in this build, or `None` when it can.
 ///
 /// The dialog must ask this rather than carry its own copy: a `gst` build
@@ -245,27 +386,14 @@ pub fn unavailable_reason() -> Option<&'static str> {
 /// has no encoder linked, so it is honest — an "unavailable" status, never a
 /// faked progress bar or a success for a file that was never written.
 pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatus {
-    #[cfg(feature = "gst")]
-    {
-        match gst_pipeline::run(project, settings) {
-            Ok(path) => ExportStatus::Done { path },
-            Err(e) => ExportStatus::Failed { reason: e },
-        }
-    }
-    #[cfg(not(feature = "gst"))]
-    {
-        let _ = (project, settings);
-        ExportStatus::Failed {
-            reason: unavailable_reason()
-                .unwrap_or("Export is unavailable")
-                .to_string(),
-        }
-    }
+    start_export(project, settings, output_path(settings, project)).join()
 }
 
 #[cfg(feature = "gst")]
 mod gst_pipeline {
     use super::*;
+    use std::sync::atomic::Ordering;
+
     use gstreamer as gst;
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
@@ -275,12 +403,17 @@ mod gst_pipeline {
     /// file. Blocks until the pipeline reaches EOS (or errors), then returns the
     /// written path. Any failure is surfaced verbatim — nothing claims success
     /// unless a real file was produced.
-    pub fn run(project: &Project, settings: &ExportSettings) -> Result<String, String> {
+    pub fn run(
+        project: &Project,
+        settings: &ExportSettings,
+        destination: &std::path::Path,
+        state: &super::JobState,
+    ) -> Result<String, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
 
         let (w, h) = output_dims(settings, project);
         let fps = settings.frame_rate.fps();
-        let out = output_path(settings, project);
+        let out = destination.to_path_buf();
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
@@ -319,11 +452,21 @@ mod gst_pipeline {
         // Total frames across the timeline duration at the target rate.
         let duration = project.duration().max(1.0 / fps);
         let total = (duration * fps).ceil().max(1.0) as u64;
+        state.total.store(total, Ordering::Relaxed);
         let frame_bytes = (w * h * 4) as usize;
         let ns_per_frame = (1_000_000_000.0 / fps) as u64;
         let frame_dur = gst::ClockTime::from_nseconds(ns_per_frame);
 
         for i in 0..total {
+            // Cancellation is checked between frames: the encode of one frame
+            // is short, and stopping mid-buffer would leave the muxer holding
+            // a partial sample.
+            if state.cancel.load(Ordering::Relaxed) {
+                let _ = pipeline.set_state(gst::State::Null);
+                // A half-written file must not be left looking like a render.
+                std::fs::remove_file(&out).ok();
+                return Err(super::CANCELLED.to_string());
+            }
             let t = i as f64 / fps;
             let rgba = compositor.frame(project, t, w, h, &mut sources);
             debug_assert_eq!(rgba.len(), frame_bytes);
@@ -342,6 +485,7 @@ mod gst_pipeline {
                 let _ = pipeline.set_state(gst::State::Null);
                 return Err(format!("push export frame {i}: {e:?}"));
             }
+            state.done.store(i + 1, Ordering::Relaxed);
         }
         appsrc
             .end_of_stream()
@@ -350,7 +494,21 @@ mod gst_pipeline {
         // Wait for EOS (or an error) so the muxer flushes a complete file.
         let bus = pipeline.bus().ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
-        for msg in bus.iter_timed(gst::ClockTime::from_seconds(120)) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        loop {
+            if state.cancel.load(Ordering::Relaxed) {
+                result = Err(super::CANCELLED.to_string());
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                result = Err("export timed out waiting for the muxer".to_string());
+                break;
+            }
+            // Short waits rather than one long one, so a cancel arriving
+            // while the muxer flushes is still noticed promptly.
+            let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
+                continue;
+            };
             use gst::MessageView;
             match msg.view() {
                 MessageView::Eos(_) => break,
@@ -366,6 +524,9 @@ mod gst_pipeline {
             }
         }
         let _ = pipeline.set_state(gst::State::Null);
+        if result.is_err() {
+            std::fs::remove_file(&out).ok();
+        }
         result?;
 
         // Never report success unless a real, non-empty file exists.
@@ -380,6 +541,119 @@ mod gst_pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// The progress bar used to be dead code: nothing ever constructed
+    /// `Rendering`, so the dialog showed a bar that could not move.
+    #[cfg(feature = "gst")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn a_render_reports_progress_and_finishes_where_it_was_told() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip");
+        };
+        let project = project_over(&clip, 4.0, 1.0);
+        let out = std::env::temp_dir().join(format!("qos-ve-job-{}.mp4", std::process::id()));
+        std::fs::remove_file(&out).ok();
+
+        let job = start_export(&project, &ExportSettings::default(), out.clone());
+        // The job is a handle, not a blocking call: this thread is free while
+        // the encode runs, which is the whole point of moving it off the UI.
+        let mut seen_rendering = false;
+        let mut last = 0.0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+        while job.is_running() && std::time::Instant::now() < deadline {
+            if let ExportStatus::Rendering { progress } = job.status() {
+                seen_rendering = true;
+                assert!(
+                    (0.0..=1.0).contains(&progress),
+                    "progress stays in range, got {progress}",
+                );
+                assert!(progress >= last - 1e-9, "progress never goes backwards");
+                last = progress;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(seen_rendering, "a running render reports Rendering, not a frozen dialog");
+
+        match job.join() {
+            ExportStatus::Done { path } => {
+                assert_eq!(path, out.to_string_lossy(), "it wrote where it was told to");
+                assert!(std::fs::metadata(&out).expect("the file exists").len() > 512);
+            }
+            other => panic!("the render should have finished, got {other:?}"),
+        }
+        std::fs::remove_file(&out).ok();
+    }
+
+    /// Cancel has to actually stop the encode and not leave a stub file
+    /// sitting there looking like a finished render.
+    #[cfg(feature = "gst")]
+    #[test]
+    #[serial_test::serial(video_editor_gst)]
+    fn cancelling_a_render_stops_it_and_leaves_no_file() {
+        let Some(clip) = demo_clip() else {
+            panic!("this test needs the bundled demo clip");
+        };
+        // Long enough that the cancel lands mid-encode rather than after it.
+        let project = project_over(&clip, 2.0, 20.0);
+        let out = std::env::temp_dir().join(format!("qos-ve-cancel-{}.mp4", std::process::id()));
+        std::fs::remove_file(&out).ok();
+
+        let job = start_export(
+            &project,
+            &ExportSettings { resolution: Resolution::P720, ..Default::default() },
+            out.clone(),
+        );
+        // Let it get going, then stop it.
+        let start = std::time::Instant::now();
+        while job.is_running() && start.elapsed() < std::time::Duration::from_secs(20) {
+            if matches!(job.status(), ExportStatus::Rendering { progress } if progress > 0.0) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        job.cancel();
+
+        match job.join() {
+            ExportStatus::Failed { reason } => {
+                assert_eq!(reason, CANCELLED, "a cancelled render says so plainly");
+            }
+            other => panic!("a cancelled render must not report {other:?}"),
+        }
+        assert!(
+            !out.exists(),
+            "a cancelled render leaves no half-written file behind",
+        );
+        // And it stopped well before the whole 20 seconds of timeline would
+        // have taken to encode.
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(150),
+            "cancel took {:?} — it is not being noticed between frames",
+            start.elapsed(),
+        );
+    }
+
+    #[test]
+    fn a_render_that_cannot_run_reports_it_rather_than_hanging() {
+        // With no encoder linked the job still resolves, promptly, with the
+        // same reason the dialog shows.
+        let p = Project::new("t");
+        let job = start_export(
+            &p,
+            &ExportSettings::default(),
+            std::env::temp_dir().join("qos-ve-never.mp4"),
+        );
+        let status = job.join();
+        match (unavailable_reason(), &status) {
+            (Some(reason), ExportStatus::Failed { reason: got }) => assert_eq!(reason, got),
+            (None, s) => assert!(
+                !matches!(s, ExportStatus::Failed { reason } if reason.contains("GStreamer")),
+                "a gst build must not claim export is unavailable, got {s:?}",
+            ),
+            (Some(_), other) => panic!("expected the unavailable status, got {other:?}"),
+        }
+    }
 
     #[test]
     fn the_size_estimate_matches_the_bitrate_the_encoder_is_given() {
