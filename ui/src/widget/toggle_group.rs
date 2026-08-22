@@ -29,7 +29,6 @@ use std::collections::HashMap;
 
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::widget::Widget;
 
 /// One entry in a `ToggleGroup`. Currently text-only; an icon variant
