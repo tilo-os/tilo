@@ -29,7 +29,6 @@ pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
-pub mod app_catalog;
 pub mod doc_open;
 pub mod editor_app;
 pub mod global_search;
