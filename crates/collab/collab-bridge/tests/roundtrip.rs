@@ -29,7 +29,7 @@ use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use collab_bridge::service::BridgeCollabService;
-use collab_bridge::upstream::{ContextSnapshot, DropOldest, OpEnvelope, PresenceEnvelope, ScrollbackReply, UpstreamHandle};
+use collab_bridge::upstream::{ContextSnapshot, DropOldest, OpEnvelope, OpKind, PresenceEnvelope, ScrollbackReply, UpstreamHandle};
 use collab_bridge::wire::{CollabEvent, CollabRequest, Collaborator, PresencePayload, PresenceKey};
 
 use runtime_collab::raw::collab_service;
@@ -146,13 +146,22 @@ fn handle_from_stream(stream: UnixStream) -> UpstreamHandle {
                     let _ = op_tx.send(OpEnvelope {
                         op_bytes: bytes,
                         from_user_id,
+                        kind: OpKind::Signed,
                     });
                 }
                 CollabEvent::CRDTIncremental { data } => {
-                    let _ = op_tx.send(OpEnvelope { op_bytes: data, from_user_id: String::new() });
+                    let _ = op_tx.send(OpEnvelope {
+                        op_bytes: data,
+                        from_user_id: String::new(),
+                        kind: OpKind::UnsignedIncremental,
+                    });
                 }
                 CollabEvent::CRDTUpdate { data } => {
-                    let _ = op_tx.send(OpEnvelope { op_bytes: data, from_user_id: String::new() });
+                    let _ = op_tx.send(OpEnvelope {
+                        op_bytes: data,
+                        from_user_id: String::new(),
+                        kind: OpKind::UnsignedSnapshot,
+                    });
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
                     presence_task.push(PresenceEnvelope::Cursor { user_id, x, y });
