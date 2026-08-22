@@ -3289,6 +3289,16 @@ impl VideoEditorApp {
 
     fn update_hover(&mut self, r: &Regions) {
         let p = self.last_mouse;
+        // Brighten the timeline scrollbar thumb when the pointer is on it.
+        match self.hscroll_track(r) {
+            Some(track) => {
+                let m = self.h_metrics(r);
+                self.hbar.update_hover(track, m, p);
+            }
+            None => {
+                self.hbar.set_hover(false);
+            }
+        }
         let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
         self.hover_media = if bin_visible {
             self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m)
@@ -3732,6 +3742,15 @@ impl VideoEditorApp {
         // when nothing is selected, so the empty state stays put).
         let top = r.inspector.y0 - self.inspector_scroll;
         text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, top + 14.0, TextWeight::Semibold);
+        // With more than one clip selected, say so where the count matters —
+        // every edit below applies to all of them.
+        if self.selection.len() > 1 {
+            let label = format!("{} clips selected", self.selection.len());
+            let (lw, _) = tr.measure_weighted(&label, 10.5, None, TextWeight::Medium);
+            let pillr = Rect::new(x1 - lw as f64 - 14.0, top + 4.0, x1, top + 22.0);
+            fill_rrect(scene, tf, with_alpha(c.accent[5], 0.22), pillr, 9.0);
+            text_w(scene, tr, tf, &label, 10.5, c.accent[5], pillr.x0 + 7.0, top + 8.0, TextWeight::Medium);
+        }
 
         let Some(id) = self.selected() else {
             text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
@@ -3748,7 +3767,15 @@ impl VideoEditorApp {
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
         let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
         text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
-        text(scene, tr, tf, &format!("on {track_name}"), 11.5, c.text_dim, x0 + 14.0, top + 58.0);
+        // Name the lane, and say plainly when it refuses edits — the same
+        // reason the timeline hatches it.
+        let sub = if self.selection_has_locked() {
+            format!("on {track_name} · locked")
+        } else {
+            format!("on {track_name}")
+        };
+        let sub_col = if self.selection_has_locked() { c.semantic.warning } else { c.text_dim };
+        text(scene, tr, tf, &sub, 11.5, sub_col, x0 + 14.0, top + 58.0);
 
         // Property rows.
         let mut y = top + 78.0;
@@ -3901,21 +3928,27 @@ impl VideoEditorApp {
             text_w(scene, tr, tf, name, 13.0, c.text_primary, header.x0 + 12.0, header.center().y - 8.0, TextWeight::Semibold);
             let knd = if *kind == TrackKind::Video { "VIDEO" } else { "AUDIO" };
             text(scene, tr, tf, knd, 9.0, c.text_dim, header.x0 + 12.0, header.center().y + 6.0);
-            // mute pill (clickable toggle)
+            // mute + lock pills (clickable toggles)
             let muted = track.map(|t| t.muted).unwrap_or(false);
-            let pill = self.mute_pill_rect(header);
-            let pill_hover = pill.contains(self.last_mouse);
-            let pill_bg = if muted {
-                c.semantic.danger
-            } else if pill_hover {
-                c.surface_white_10
-            } else {
-                c.neutral[3]
-            };
-            fill_rrect(scene, tf, pill_bg, pill, 4.0);
-            let (ml, mc) = if muted { ("M", Color::WHITE) } else { ("M", c.text_dim) };
-            let (mlw, _) = tr.measure(ml, 10.0, None);
-            text(scene, tr, tf, ml, 10.0, mc, pill.center().x - mlw as f64 / 2.0, pill.center().y - 6.0);
+            let locked = track.map(|t| t.locked).unwrap_or(false);
+            for (pill, on, label, on_bg) in [
+                (self.mute_pill_rect(header), muted, "M", c.semantic.danger),
+                (self.lock_pill_rect(header), locked, "L", c.semantic.warning),
+            ] {
+                let pill_hover = pill.contains(self.last_mouse);
+                let pill_bg = if on {
+                    on_bg
+                } else if pill_hover {
+                    c.surface_white_10
+                } else {
+                    c.neutral[3]
+                };
+                fill_rrect(scene, tf, pill_bg, pill, 4.0);
+                let fg = if on { Color::WHITE } else { c.text_dim };
+                let (lw, _) = tr.measure(label, 10.0, None);
+                text(scene, tr, tf, label, 10.0, fg, pill.center().x - lw as f64 / 2.0, pill.center().y - 6.0);
+            }
+            let _ = locked;
         }
 
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
@@ -3924,6 +3957,27 @@ impl VideoEditorApp {
             for clip in self.project.clips_on(*tid) {
                 self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
             }
+        }
+        // A locked lane says so across its whole width, drawn *over* its clips:
+        // they grey back under a diagonal hatch, so "my drag did nothing"
+        // always has a visible reason rather than reading as a dead app.
+        for (tid, _kind, lane) in &lanes {
+            if !self.project.track(*tid).map(|t| t.locked).unwrap_or(false) {
+                continue;
+            }
+            let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
+            fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.5), full);
+            let h = full.height();
+            let mut x = full.x0 - h;
+            while x < full.x1 {
+                stroke_line(scene, tf, with_alpha(c.text_dim, 0.16), x, full.y1, x + h, full.y0, 1.0);
+                x += 12.0;
+            }
+        }
+        // Live rubber band, over the clips it is sweeping.
+        if let Some(band) = self.marquee {
+            fill_rect(scene, tf, with_alpha(c.accent[5], 0.16), band);
+            stroke_rrect(scene, tf, c.accent[5], band, 2.0, 1.0);
         }
         scene.pop_layer();
 
@@ -3950,6 +4004,29 @@ impl VideoEditorApp {
             let label = if kind == TrackKind::Video { "+ Video" } else { "+ Audio" };
             let (lw, _) = tr.measure(label, 11.0, None);
             text(scene, tr, tf, label, 11.0, c.text_primary, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+        }
+
+        // Horizontal scrollbar, floated over the bottom of the lane area.
+        // Geometry and thumb come from the toolkit's shared scrollbar model,
+        // and the colours from the same theme tokens `DocumentViewport` reads,
+        // so this is the fleet's overlay scrollbar rather than a lookalike.
+        if let Some(track) = self.hscroll_track(r) {
+            let m = self.h_metrics(r);
+            if let Some(thumb) = self.hbar.thumb_rect(track, m) {
+                fill_rrect(
+                    scene,
+                    tf,
+                    with_alpha(c.surfaces.base, 0.55),
+                    track,
+                    SCROLLBAR_THICKNESS / 2.0,
+                );
+                let col = if self.hbar.is_active() {
+                    with_alpha(c.text_dim, 0.85)
+                } else {
+                    with_alpha(c.text_dim, 0.55)
+                };
+                fill_rrect(scene, tf, col, thumb, SCROLLBAR_THICKNESS / 2.0);
+            }
         }
     }
 
@@ -4017,13 +4094,19 @@ impl VideoEditorApp {
             let mk = triangle_corner(cr.x0, cr.y0, 12.0);
             scene.fill(Fill::NonZero, tf, with_alpha(Color::WHITE, 0.85), None, &mk);
         }
-        // selection / trim handles
-        if selected {
+        // Selection. The primary (anchor) clip — the one the inspector edits —
+        // keeps the full white outline and trim handles; the rest of a
+        // multi-selection gets a lighter outline and no handles, so it is
+        // always clear which clip a trim or a grade will land on.
+        let primary = self.selection.primary() == Some(clip.id);
+        if primary {
             stroke_rrect(scene, tf, Color::WHITE, cr, 6.0, 2.0);
             for hx in [cr.x0, cr.x1] {
                 let hrect = Rect::new(hx - 3.0, cr.y0 + 2.0, hx + 3.0, cr.y1 - 2.0);
                 fill_rrect(scene, tf, c.accent[5], hrect, 2.0);
             }
+        } else if selected {
+            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.6), cr, 6.0, 2.0);
         } else {
             stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.35), cr, 6.0, 1.0);
         }
@@ -4379,7 +4462,7 @@ mod tests {
     fn sync_seeds_and_selects() {
         let app = app_with_sample();
         assert_eq!(app.project.clips.len(), 7);
-        assert!(app.selected.is_some(), "a clip should be auto-selected");
+        assert!(app.selected().is_some(), "a clip should be auto-selected");
     }
 
     #[test]
@@ -4392,7 +4475,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(app.project.clips.is_empty(), "no fabricated clips on the live path");
         assert!(app.project.media.is_empty(), "no fabricated media on the live path");
-        assert!(app.selected.is_none(), "nothing selected in a blank project");
+        assert!(app.selected().is_none(), "nothing selected in a blank project");
     }
 
     #[test]
@@ -4526,7 +4609,7 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         // Select a clip we know spans the playhead and split there.
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
-        app.selected = Some(target);
+        app.selection.select_only(target);
         app.playhead = 12.0;
         let before = app.project.clips.len();
         app.split_selected(&mut doc);
@@ -4647,7 +4730,7 @@ mod tests {
     fn split_shortcut_mutates_the_crdt_timeline() {
         let (mut app, mut doc) = app_and_doc();
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
-        app.selected = Some(target);
+        app.selection.select_only(target);
         app.playhead = 12.0;
         let before = VideoDoc::load_project(&doc).clips.len();
         assert!(key_press(&mut app, &mut doc, "s", false), "S handled");
@@ -4665,7 +4748,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         // Select a video clip so the brightness control exists.
         let id = app.project.top_video_clip_at(5.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         app.set_filter(&mut doc, FilterField::Brightness, 0.9);
         let reloaded = VideoDoc::load_project(&doc);
         assert!((reloaded.clip(id).unwrap().filters.brightness - 0.9).abs() < 1e-9);
@@ -4679,7 +4762,7 @@ mod tests {
     fn copy_paste_shortcuts_add_an_independent_clip() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(5.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         let before = VideoDoc::load_project(&doc).clips.len();
         assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C handled");
         app.playhead = 30.0;
@@ -4687,7 +4770,7 @@ mod tests {
         let reloaded = VideoDoc::load_project(&doc);
         assert_eq!(reloaded.clips.len(), before + 1, "paste added a clip to the CRDT");
         // The pasted clip is the new selection and sits at the playhead.
-        let pasted = app.selected.unwrap();
+        let pasted = app.selected().unwrap();
         assert_ne!(pasted, id);
         assert!((reloaded.clip(pasted).unwrap().start - 30.0).abs() < 1e-9);
     }
@@ -4697,7 +4780,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         // Interview clip spans roughly [8, 20] on V1.
         let id = app.project.top_video_clip_at(12.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         // Move playhead into the clip and set the out-point there.
         app.playhead = 15.0;
         assert!(key_press(&mut app, &mut doc, "o", false), "O handled");
@@ -4732,7 +4815,7 @@ mod tests {
         let first = v1_first.id;
         // Record the next clip on the same track and its start.
         let next = app.project.clips_on(track).into_iter().find(|c| c.id != first).map(|c| (c.id, c.start));
-        app.selected = Some(first);
+        app.selection.select_only(first);
         let mods = winit::event::Modifiers::from(ModifiersState::SHIFT);
         let r = app.regions();
         // Shift+Delete ripples.
@@ -4748,7 +4831,7 @@ mod tests {
     fn nudge_arrow_moves_selected_clip_in_the_crdt() {
         let (mut app, mut doc) = app_and_doc();
         let id = app.project.top_video_clip_at(12.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         let before = VideoDoc::load_project(&doc).clip(id).unwrap().start;
         let r = app.regions();
         // Shift = one-second nudge right.
@@ -4833,6 +4916,721 @@ mod tests {
         WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
     }
 
+    // ---- modifier-aware + wheel drivers ----------------------------------
+    // Everything below goes through the same `handle_event` the live window
+    // loop calls; nothing reaches into a helper the app itself doesn't use.
+
+    fn dispatch_mods(
+        app: &mut VideoEditorApp,
+        doc: &mut AutoCommit,
+        ev: WindowEvent,
+        mods: ModifiersState,
+    ) {
+        let mut handled = false;
+        let mut focus = None;
+        let taffy = TaffyTree::<()>::new();
+        let node = NodeId::new(0);
+        app.handle_event(
+            &ev,
+            1.0,
+            &winit::event::Modifiers::from(mods),
+            doc,
+            &automerge::ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+    }
+
+    /// Press with Shift held — the multi-select gesture.
+    fn shift_press(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
+        dispatch_mods(
+            app,
+            doc,
+            WindowEvent::MouseInput {
+                device_id: fake_device_id(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+            ModifiersState::SHIFT,
+        );
+    }
+
+    fn shift_click(app: &mut VideoEditorApp, doc: &mut AutoCommit, x: f64, y: f64) {
+        move_to(app, doc, x, y);
+        shift_press(app, doc);
+        release(app, doc);
+    }
+
+    fn wheel(
+        app: &mut VideoEditorApp,
+        doc: &mut AutoCommit,
+        dx: f32,
+        dy: f32,
+        mods: ModifiersState,
+    ) {
+        dispatch_mods(
+            app,
+            doc,
+            WindowEvent::MouseWheel {
+                device_id: fake_device_id(),
+                delta: MouseScrollDelta::LineDelta(dx, dy),
+                phase: winit::event::TouchPhase::Moved,
+            },
+            mods,
+        );
+    }
+
+    /// Run the app's real `draw` pass. No GPU and no window: the Vello scene is
+    /// encoded on the CPU and dropped. Tests call it because `draw` is where
+    /// per-frame view reconciliation happens (playhead following, scroll
+    /// clamping), so skipping it would test a frame the user never sees.
+    fn render(app: &mut VideoEditorApp) {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        app.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// The lane rect of the nth track of `kind`, plus its id.
+    fn lane_of(app: &VideoEditorApp, r: &Regions, kind: TrackKind, n: usize) -> (TrackId, Rect) {
+        let (tid, _k, lane) = app
+            .lane_rects(r)
+            .into_iter()
+            .filter(|(_, k, _)| *k == kind)
+            .nth(n)
+            .expect("a lane of the requested kind");
+        (tid, lane)
+    }
+
+    /// The on-screen rect of `cid`, resolved through the same geometry the
+    /// renderer and the hit-test use.
+    fn clip_screen_rect(app: &VideoEditorApp, r: &Regions, cid: ClipId) -> Rect {
+        let clip = app.project.clip(cid).cloned().expect("clip exists");
+        let (_, _, lane) = app
+            .lane_rects(r)
+            .into_iter()
+            .find(|(tid, _, _)| *tid == clip.track)
+            .expect("the clip's lane");
+        app.clip_rect(&clip, &lane, r)
+    }
+
+    // ---- media bin: drag stays reachable, and drops land where dropped ----
+
+    #[test]
+    fn a_drag_from_the_name_band_places_a_clip_instead_of_renaming() {
+        // Regression: `clicked_before` was unbounded, so once an item had been
+        // clicked, every later press on the name band — which covers most of
+        // the row, and is exactly where you grab it — opened a rename and the
+        // bin→timeline drag became unreachable.
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (mid, row) = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .expect("a visual bin item");
+        let name = app.bin_name_rect(row);
+        // First click on the row, as a user browsing the bin would.
+        click(&mut app, &mut doc, name.center().x, name.center().y);
+        release(&mut app, &mut doc);
+        // Wait past the double-click window, into the slow-second-click window
+        // where the old code renamed unconditionally.
+        std::thread::sleep(std::time::Duration::from_millis(
+            BIN_DOUBLE_CLICK_MS as u64 + 60,
+        ));
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let before = app.project.clips_on(tid).len();
+        // Press on the name band and drag to a lane.
+        move_to(&mut app, &mut doc, name.center().x, name.center().y);
+        press(&mut app, &mut doc);
+        assert!(app.bin_drag.is_some(), "the press armed a drag, not just a rename");
+        move_to(&mut app, &mut doc, lane.x0 + 220.0, lane.center().y);
+        assert!(
+            matches!(app.bin_drag, Some(BinDrag { active: true, .. })),
+            "moving past the threshold promoted the drag",
+        );
+        assert!(app.pending_rename.is_none(), "becoming a drag cancelled the rename intent");
+        release(&mut app, &mut doc);
+        assert!(app.bin_rename.is_none(), "no rename field opened");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clips_on(tid).len(),
+            before + 1,
+            "the drag placed a clip on the drop lane in the CRDT",
+        );
+        assert_eq!(
+            app.selected().and_then(|id| reloaded.clip(id)).map(|c| c.media),
+            Some(mid),
+            "the placed clip references the dragged media",
+        );
+    }
+
+    #[test]
+    fn a_slow_second_click_on_the_name_still_renames() {
+        // The other half of the same rule: bounding the rename window must not
+        // cost the Finder-style click-pause-click rename.
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (mid, row) = app.bin_item_rects(&r)[0];
+        let name = app.bin_name_rect(row);
+        click(&mut app, &mut doc, name.center().x, name.center().y);
+        release(&mut app, &mut doc);
+        std::thread::sleep(std::time::Duration::from_millis(
+            BIN_DOUBLE_CLICK_MS as u64 + 60,
+        ));
+        // A second press that never moves.
+        move_to(&mut app, &mut doc, name.center().x, name.center().y);
+        press(&mut app, &mut doc);
+        assert_eq!(app.pending_rename, Some(mid), "the press armed a rename intent");
+        release(&mut app, &mut doc);
+        assert!(
+            matches!(app.bin_rename.as_ref().map(|(m, _)| *m), Some(m) if m == mid),
+            "releasing without moving began the inline rename",
+        );
+    }
+
+    #[test]
+    fn dropping_in_the_track_header_gutter_places_rather_than_appends() {
+        // Regression: `bin_drop_lane` required x >= lanes.x0, so a straight-down
+        // drag from the bin landed in the 128px gutter, matched no lane, and
+        // fell through to the append path at the end of the timeline.
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (mid, row) = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .expect("a visual bin item");
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let track_end = app.project.clips_on(tid).last().map(|c| c.end()).unwrap_or(0.0);
+        assert!(track_end > 1.0, "the fixture track has content to append past");
+        let before = app.project.clips_on(tid).len();
+        // Straight down from the bin row into the gutter, level with the lane.
+        let gutter_x = r.gutter.x0 + r.gutter.width() / 2.0;
+        assert!(gutter_x < r.lanes.x0, "the drop really is left of the lane area");
+        move_to(&mut app, &mut doc, row.center().x, row.center().y);
+        press(&mut app, &mut doc);
+        move_to(&mut app, &mut doc, gutter_x, lane.center().y);
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.clips_on(tid).len(), before + 1, "a clip was placed");
+        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("the placed clip");
+        assert_eq!(placed.media, mid);
+        assert!(
+            placed.start < 0.5,
+            "a gutter drop places at the start of the visible timeline, not appended at {track_end} (got {})",
+            placed.start,
+        );
+    }
+
+    // ---- horizontal timeline scroll --------------------------------------
+
+    #[test]
+    fn shift_wheel_pans_the_timeline_and_clamps_to_the_content() {
+        let (mut app, mut doc) = app_and_doc();
+        move_to(&mut app, &mut doc, 640.0, 700.0); // over the lanes
+        assert_eq!(app.scroll, 0.0, "the timeline opens at the start");
+        wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::SHIFT);
+        assert!(app.scroll > 0.0, "shift+wheel scrolled right, got {}", app.scroll);
+        let r = app.regions();
+        let max = app.max_scroll(&r);
+        // Far past the end: it stops at the content bound rather than running off.
+        for _ in 0..200 {
+            wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::SHIFT);
+        }
+        assert!(
+            (app.scroll - max).abs() < 1e-6,
+            "scrolling right clamps to max_scroll ({} vs {max})",
+            app.scroll,
+        );
+        // And back: it stops at zero.
+        for _ in 0..300 {
+            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::SHIFT);
+        }
+        assert_eq!(app.scroll, 0.0, "scrolling left clamps to the start");
+    }
+
+    #[test]
+    fn a_horizontal_wheel_pans_without_zooming() {
+        let (mut app, mut doc) = app_and_doc();
+        move_to(&mut app, &mut doc, 640.0, 700.0);
+        let zoom = app.zoom;
+        wheel(&mut app, &mut doc, -3.0, 0.0, ModifiersState::empty());
+        assert!(app.scroll > 0.0, "a horizontal wheel panned the timeline");
+        assert_eq!(app.zoom, zoom, "and left the zoom alone");
+    }
+
+    #[test]
+    fn zoomed_in_content_past_the_right_edge_becomes_reachable() {
+        // The bug this closes: with no way to write `scroll`, zooming in put
+        // everything past the viewport permanently out of reach.
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let last_end = app.project.clips.iter().map(|c| c.end()).fold(0.0_f64, f64::max);
+        move_to(&mut app, &mut doc, r.lanes.x0 + 10.0, r.lanes.center().y);
+        // Zoom right in, so the tail is far off-screen.
+        for _ in 0..12 {
+            wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::empty());
+        }
+        assert!(
+            app.time_to_x(last_end, &r.lanes) > r.lanes.x1,
+            "the timeline tail really is off the right edge after zooming",
+        );
+        for _ in 0..400 {
+            wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::SHIFT);
+        }
+        assert!(
+            app.time_to_x(last_end, &r.lanes) <= r.lanes.x1 + 1.0,
+            "panning brought the end of the timeline into view",
+        );
+    }
+
+    #[test]
+    fn dragging_the_scrollbar_thumb_scrolls_the_timeline() {
+        let (mut app, mut doc) = app_and_doc();
+        // Zoom in so the content overflows and a bar appears.
+        app.zoom = 160.0;
+        let r = app.regions();
+        let track = app.hscroll_track(&r).expect("an overflowing timeline shows a bar");
+        let thumb = app
+            .hbar
+            .thumb_rect(track, app.h_metrics(&r))
+            .expect("a thumb inside the track");
+        assert!(thumb.width() < track.width(), "the thumb is shorter than its track");
+        // Grab the thumb and drag it right.
+        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
+        press(&mut app, &mut doc);
+        assert!(matches!(app.drag, Some(Drag::Scrollbar)), "pressing the thumb began a bar drag");
+        move_to(&mut app, &mut doc, thumb.center().x + 120.0, thumb.center().y);
+        assert!(app.scroll > 0.0, "dragging the thumb scrolled the timeline");
+        let dragged = app.scroll;
+        release(&mut app, &mut doc);
+        assert!(app.drag.is_none(), "release ended the bar drag");
+        assert_eq!(app.scroll, dragged, "and left the scroll where the drag put it");
+    }
+
+    #[test]
+    fn playback_keeps_the_playhead_on_screen() {
+        let (mut app, mut doc) = app_and_doc();
+        app.zoom = 160.0; // a few seconds visible at a time
+        let r = app.regions();
+        let visible = app.visible_seconds(&r);
+        // Park the playhead well past the right edge, the way playback would.
+        app.playhead = (visible * 3.0).min(app.project.duration());
+        assert!(
+            app.time_to_x(app.playhead, &r.lanes) > r.lanes.x1,
+            "the playhead starts off the right edge",
+        );
+        // Press play through the real transport button, then render a frame.
+        let (_a, play) = app.transport_buttons(&r)[2];
+        click(&mut app, &mut doc, play.center().x, play.center().y);
+        assert!(app.playing, "the transport button started playback");
+        render(&mut app);
+        let x = app.time_to_x(app.playhead, &r.lanes);
+        assert!(
+            x >= r.lanes.x0 && x <= r.lanes.x1,
+            "the view followed the playhead into view (x={x}, lanes {}..{})",
+            r.lanes.x0,
+            r.lanes.x1,
+        );
+    }
+
+    // ---- cross-track clip move -------------------------------------------
+
+    #[test]
+    fn dragging_a_clip_onto_another_video_lane_moves_it_there_in_the_crdt() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        // Two video lanes exist in the sample project.
+        let (t0, lane0) = lane_of(&app, &r, TrackKind::Video, 0);
+        let (t1, _lane1) = lane_of(&app, &r, TrackKind::Video, 1);
+        assert_ne!(t0, t1, "the fixture has two video tracks");
+        // Grab a clip on the lower video lane and drag it up to the other one.
+        let cid = app.project.clips_on(t1).first().map(|c| c.id).expect("a clip on V-lower");
+        let cr = clip_screen_rect(&app, &r, cid);
+        move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
+        press(&mut app, &mut doc);
+        assert!(
+            matches!(app.drag, Some(Drag::ClipMove { track, .. }) if track == t1),
+            "the move started on the clip's own track",
+        );
+        move_to(&mut app, &mut doc, cr.center().x + 40.0, lane0.center().y);
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clip(cid).map(|c| c.track),
+            Some(t0),
+            "the clip changed track in the CRDT, not just on screen",
+        );
+    }
+
+    #[test]
+    fn a_video_clip_dragged_over_an_audio_lane_keeps_its_own_track() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (vid, _vlane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let (_aid, alane) = lane_of(&app, &r, TrackKind::Audio, 0);
+        let cid = app.project.clips_on(vid).first().map(|c| c.id).expect("a video clip");
+        let cr = clip_screen_rect(&app, &r, cid);
+        move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
+        press(&mut app, &mut doc);
+        move_to(&mut app, &mut doc, cr.center().x + 30.0, alane.center().y);
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clip(cid).map(|c| c.track),
+            Some(vid),
+            "a video clip refuses an audio lane and stays put",
+        );
+    }
+
+    // ---- track lock -------------------------------------------------------
+
+    #[test]
+    fn the_header_lock_pill_locks_a_track_and_blocks_its_edits() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let pill = app.lock_pill_rect(header);
+        assert!(header.contains(pill.center()), "the lock pill sits inside the track header");
+        assert!(
+            pill.x1 <= app.mute_pill_rect(header).x0,
+            "the lock pill sits clear of the mute pill",
+        );
+        // Click the pill through the real press path.
+        click(&mut app, &mut doc, pill.center().x, pill.center().y);
+        assert!(
+            VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
+            "the pill wrote the lock to the CRDT",
+        );
+        // A press on a clip of that track selects it but arms no edit drag.
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip on the track");
+        let start_before = app.project.clip(cid).unwrap().start;
+        let cr = clip_screen_rect(&app, &r, cid);
+        move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
+        press(&mut app, &mut doc);
+        assert_eq!(app.selected(), Some(cid), "a locked clip can still be selected");
+        assert!(app.drag.is_none(), "but no move/trim drag begins on a locked track");
+        move_to(&mut app, &mut doc, cr.center().x + 90.0, cr.center().y);
+        release(&mut app, &mut doc);
+        assert_eq!(
+            VideoDoc::load_project(&doc).clip(cid).map(|c| c.start),
+            Some(start_before),
+            "dragging a locked clip does not move it",
+        );
+        // Nor do the keyboard edits.
+        dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
+        assert!(
+            VideoDoc::load_project(&doc).clip(cid).is_some(),
+            "Delete does not remove a clip on a locked track",
+        );
+        dispatch(&mut app, &mut doc, char_ev("s"));
+        let after_split = VideoDoc::load_project(&doc);
+        assert_eq!(
+            after_split.clips_on(tid).len(),
+            app.project.clips_on(tid).len(),
+            "S does not split a clip on a locked track",
+        );
+        assert_eq!(
+            after_split.clip(cid).map(|c| c.start),
+            Some(start_before),
+            "and an arrow nudge leaves it alone too",
+        );
+    }
+
+    #[test]
+    fn a_locked_lane_refuses_a_bin_drop_and_the_clip_lands_elsewhere() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let pill = app.lock_pill_rect(header);
+        click(&mut app, &mut doc, pill.center().x, pill.center().y);
+        let before = app.project.clips_on(tid).len();
+        let (_mid, row) = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(m, _)| app.project.media(*m).map(|mm| mm.kind.is_visual()).unwrap_or(false))
+            .expect("a visual bin item");
+        move_to(&mut app, &mut doc, row.center().x, row.center().y);
+        press(&mut app, &mut doc);
+        move_to(&mut app, &mut doc, lane.x0 + 200.0, lane.center().y);
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clips_on(tid).len(),
+            before,
+            "nothing was added to the locked track",
+        );
+        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("it landed somewhere");
+        assert_ne!(placed.track, tid, "and it went to a track that accepts it");
+    }
+
+    // ---- multi-selection --------------------------------------------------
+
+    #[test]
+    fn shift_click_extends_the_selection_and_delete_removes_all_of_it_at_once() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let ids: Vec<ClipId> =
+            app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        assert_eq!(ids.len(), 2, "the fixture track has two clips to select");
+        let a = clip_screen_rect(&app, &r, ids[0]);
+        click(&mut app, &mut doc, a.center().x, a.center().y);
+        release(&mut app, &mut doc);
+        assert_eq!(app.selection.len(), 1, "a plain click selects exactly one");
+        let b = clip_screen_rect(&app, &r, ids[1]);
+        shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        assert_eq!(app.selection.len(), 2, "shift-click extended the selection");
+        assert!(app.selection.contains(ids[0]) && app.selection.contains(ids[1]));
+        assert_eq!(app.selected(), Some(ids[1]), "the shift-clicked clip is the new anchor");
+        // Delete both, and prove it was one undo boundary.
+        let _ = app.actions.take_committed();
+        dispatch(&mut app, &mut doc, named_ev(NamedKey::Delete));
+        let reloaded = VideoDoc::load_project(&doc);
+        assert!(reloaded.clip(ids[0]).is_none() && reloaded.clip(ids[1]).is_none(),
+            "both selected clips were deleted from the CRDT");
+        assert!(
+            app.actions.take_committed().is_some(),
+            "the multi-clip delete armed an undo boundary",
+        );
+        assert!(
+            app.actions.take_committed().is_none(),
+            "exactly one boundary for the whole selection, not one per clip",
+        );
+    }
+
+    #[test]
+    fn shift_click_a_selected_clip_removes_it_from_the_selection() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let a = clip_screen_rect(&app, &r, ids[0]);
+        click(&mut app, &mut doc, a.center().x, a.center().y);
+        release(&mut app, &mut doc);
+        let b = clip_screen_rect(&app, &r, ids[1]);
+        shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        assert_eq!(app.selection.len(), 1, "the second shift-click deselected it");
+        assert_eq!(app.selected(), Some(ids[0]), "the anchor fell back to what is left");
+    }
+
+    #[test]
+    fn a_marquee_across_empty_lane_space_selects_the_clips_it_sweeps() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let clips: Vec<ClipId> = app.project.clips_on(tid).iter().map(|c| c.id).collect();
+        assert!(clips.len() >= 2, "the fixture track has clips to sweep");
+        // Start past the end of the last clip (empty space) and sweep back left
+        // across the whole lane.
+        let last = clip_screen_rect(&app, &r, *clips.last().unwrap());
+        let start_x = (last.x1 + 30.0).min(r.lanes.x1 - 4.0);
+        move_to(&mut app, &mut doc, start_x, lane.center().y);
+        press(&mut app, &mut doc);
+        assert!(matches!(app.drag, Some(Drag::Marquee { .. })), "a press on empty lane space armed a band");
+        move_to(&mut app, &mut doc, r.lanes.x0 + 2.0, lane.center().y);
+        assert!(app.marquee.is_some(), "moving past the threshold opened the band");
+        release(&mut app, &mut doc);
+        for id in &clips {
+            assert!(app.selection.contains(*id), "the band selected every clip it crossed");
+        }
+    }
+
+    #[test]
+    fn a_click_on_empty_lane_space_still_scrubs_the_playhead() {
+        // The marquee must not cost the click-to-scrub the lanes always had.
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (_tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let x = r.lanes.x1 - 20.0;
+        let expected = app.x_to_time(x, &r.lanes).min(app.project.duration());
+        move_to(&mut app, &mut doc, x, lane.center().y);
+        press(&mut app, &mut doc);
+        release(&mut app, &mut doc);
+        assert!(app.selection.is_empty(), "clicking empty space cleared the selection");
+        assert!(
+            (app.playhead - expected).abs() < 0.2,
+            "and scrubbed the playhead there ({} vs {expected})",
+            app.playhead,
+        );
+    }
+
+    #[test]
+    fn dragging_a_multi_selection_carries_every_clip_by_the_same_delta() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let before: Vec<f64> = ids.iter().map(|id| app.project.clip(*id).unwrap().start).collect();
+        let a = clip_screen_rect(&app, &r, ids[0]);
+        click(&mut app, &mut doc, a.center().x, a.center().y);
+        release(&mut app, &mut doc);
+        let b = clip_screen_rect(&app, &r, ids[1]);
+        shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        // Grab the first one (already selected) and drag right.
+        let a = clip_screen_rect(&app, &r, ids[0]);
+        move_to(&mut app, &mut doc, a.center().x, a.center().y);
+        press(&mut app, &mut doc);
+        assert_eq!(app.selection.len(), 2, "pressing inside a multi-selection keeps it");
+        move_to(&mut app, &mut doc, a.center().x + 60.0, a.center().y);
+        release(&mut app, &mut doc);
+        let reloaded = VideoDoc::load_project(&doc);
+        let after: Vec<f64> = ids.iter().map(|id| reloaded.clip(*id).unwrap().start).collect();
+        let d0 = after[0] - before[0];
+        let d1 = after[1] - before[1];
+        assert!(d0 > 0.1, "the grabbed clip moved right ({d0})");
+        assert!(
+            (d0 - d1).abs() < 1e-6,
+            "the rest of the selection moved by the same delta ({d0} vs {d1})",
+        );
+    }
+
+    // ---- cut / duplicate / clip context menu ------------------------------
+
+    #[test]
+    fn ctrl_x_cuts_the_selection_and_ctrl_v_pastes_it_back() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let media = app.project.clip(cid).unwrap().media;
+        let cr = clip_screen_rect(&app, &r, cid);
+        click(&mut app, &mut doc, cr.center().x, cr.center().y);
+        release(&mut app, &mut doc);
+        let before = VideoDoc::load_project(&doc).clips.len();
+        assert!(key_press(&mut app, &mut doc, "x", true), "Ctrl+X is handled");
+        let cut = VideoDoc::load_project(&doc);
+        assert!(cut.clip(cid).is_none(), "Ctrl+X removed the clip from the CRDT");
+        assert_eq!(cut.clips.len(), before - 1);
+        // And it is on the clipboard, so Ctrl+V brings it back.
+        app.playhead = 1.0;
+        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V is handled");
+        let pasted = VideoDoc::load_project(&doc);
+        assert_eq!(pasted.clips.len(), before, "the cut clip pasted back");
+        let new_id = app.selected().expect("the pasted clip is selected");
+        assert_eq!(pasted.clip(new_id).map(|c| c.media), Some(media));
+    }
+
+    #[test]
+    fn ctrl_d_duplicates_the_whole_selection_on_the_same_tracks() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let ids: Vec<ClipId> = app.project.clips_on(tid).iter().take(2).map(|c| c.id).collect();
+        let a = clip_screen_rect(&app, &r, ids[0]);
+        click(&mut app, &mut doc, a.center().x, a.center().y);
+        release(&mut app, &mut doc);
+        let b = clip_screen_rect(&app, &r, ids[1]);
+        shift_click(&mut app, &mut doc, b.center().x, b.center().y);
+        let before = VideoDoc::load_project(&doc).clips_on(tid).len();
+        let _ = app.actions.take_committed();
+        assert!(key_press(&mut app, &mut doc, "d", true), "Ctrl+D is handled");
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(
+            reloaded.clips_on(tid).len(),
+            before + 2,
+            "both selected clips were duplicated onto their own track",
+        );
+        assert_eq!(app.selection.len(), 2, "the copies become the selection");
+        for id in app.selection.ids() {
+            assert!(!ids.contains(id), "the selection moved to the new clips");
+        }
+        assert!(app.actions.take_committed().is_some(), "one undo boundary for the duplicate");
+        assert!(app.actions.take_committed().is_none(), "and only one");
+    }
+
+    #[test]
+    fn right_clicking_a_clip_opens_a_menu_whose_duplicate_adds_a_clip() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cr = clip_screen_rect(&app, &r, cid);
+        move_to(&mut app, &mut doc, cr.center().x, cr.center().y);
+        right_press(&mut app, &mut doc);
+        assert!(app.bin_menu.is_open(), "right-clicking a clip opens a context menu");
+        assert!(matches!(app.menu_target, Some(MenuTarget::Clip(c)) if c == cid));
+        assert_eq!(app.selected(), Some(cid), "and re-targets the selection at it");
+        // Click the "Duplicate" row (index 2) through the real menu geometry.
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let dup_y = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(2))
+            .expect("a Duplicate row in the menu");
+        let before = VideoDoc::load_project(&doc).clips_on(tid).len();
+        move_to(&mut app, &mut doc, cx, dup_y);
+        press(&mut app, &mut doc);
+        assert_eq!(
+            VideoDoc::load_project(&doc).clips_on(tid).len(),
+            before + 1,
+            "Duplicate added a clip through the CRDT",
+        );
+        assert!(!app.bin_menu.is_open(), "the menu closed after the choice");
+    }
+
+    #[test]
+    fn the_track_menu_lock_entry_locks_the_track() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
+        right_press(&mut app, &mut doc);
+        assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
+        // "Lock track" is the second row.
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let y = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(1))
+            .expect("a Lock track row");
+        move_to(&mut app, &mut doc, cx, y);
+        press(&mut app, &mut doc);
+        assert!(
+            VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
+            "the menu entry locked the track in the CRDT",
+        );
+    }
+
+    #[test]
+    fn pasting_after_its_track_is_locked_lands_on_a_track_that_accepts_it() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        let cr = clip_screen_rect(&app, &r, cid);
+        click(&mut app, &mut doc, cr.center().x, cr.center().y);
+        release(&mut app, &mut doc);
+        assert!(key_press(&mut app, &mut doc, "c", true), "Ctrl+C is handled");
+        // Lock the source track, then paste.
+        let header = Rect::new(r.gutter.x0, lane.y0, r.gutter.x1, lane.y1);
+        let pill = app.lock_pill_rect(header);
+        click(&mut app, &mut doc, pill.center().x, pill.center().y);
+        app.playhead = 2.0;
+        assert!(key_press(&mut app, &mut doc, "v", true), "Ctrl+V is handled");
+        let reloaded = VideoDoc::load_project(&doc);
+        let new_id = app.selected().expect("something was pasted");
+        let pasted = reloaded.clip(new_id).expect("the pasted clip is in the CRDT");
+        assert_ne!(pasted.track, tid, "the paste avoided the locked track");
+        assert_eq!(
+            reloaded.track(pasted.track).map(|t| t.kind),
+            Some(TrackKind::Video),
+            "and still landed on a video track",
+        );
+    }
+
     #[test]
     fn right_click_bin_item_opens_menu_and_delete_removes_media_from_crdt() {
         let (mut app, mut doc) = app_and_doc();
@@ -4915,7 +5713,7 @@ mod tests {
             before + 1,
             "a clip was placed on the drop track in the CRDT",
         );
-        let placed = app.selected.and_then(|id| reloaded.clip(id)).expect("placed clip selected");
+        let placed = app.selected().and_then(|id| reloaded.clip(id)).expect("placed clip selected");
         assert_eq!(placed.media, mid, "the placed clip references the dragged media");
         let expected_t = app.x_to_time(drop_x, &r.lanes);
         assert!(
@@ -5027,12 +5825,13 @@ mod tests {
         right_press(&mut app, &mut doc);
         assert!(app.bin_menu.is_open(), "right-click opens the track menu");
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
-        // "Delete track" is index 3.
+        // "Delete track" is the last row, after the mute/lock toggles and the
+        // two add-track entries.
         let menu = app.bin_menu.get_rect();
         let cx = menu.center().x;
         let del_y = (0..(menu.height() as i64))
             .map(|d| menu.y0 + d as f64 + 0.5)
-            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(3))
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(6))
             .expect("a Delete track row");
         let before = VideoDoc::load_project(&doc).tracks.len();
         move_to(&mut app, &mut doc, cx, del_y);
@@ -5050,7 +5849,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         // A video clip with no effects (the market cutaway around t=23).
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         let r = app.regions();
         // The effects controls sit below the fold; scroll to reveal them.
         app.inspector_scroll = app.inspector_max_scroll(&r);
@@ -5082,7 +5881,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         // The drone clip carries two seeded effects.
         let id = app.project.top_video_clip_at(6.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         let kinds0: Vec<_> = VideoDoc::load_project(&doc)
             .clip(id)
             .unwrap()
@@ -5227,7 +6026,7 @@ mod tests {
     #[test]
     fn click_selects_a_clip_via_the_real_hit_test() {
         let (mut app, mut doc) = app_and_doc();
-        app.selected = None;
+        app.selection.clear();
         let r = app.regions();
         // The market cutaway on V1 sits around t=22.
         let clip = app.project.top_video_clip_at(22.0).unwrap().clone();
@@ -5235,7 +6034,7 @@ mod tests {
             .find(|(tid, _, _)| *tid == clip.track).unwrap();
         let cr = app.clip_rect(&clip, &lane, &r);
         click(&mut app, &mut doc, cr.center().x, cr.center().y);
-        assert_eq!(app.selected, Some(clip.id), "clicking a clip selects it");
+        assert_eq!(app.selected(), Some(clip.id), "clicking a clip selects it");
     }
 
     #[test]
@@ -5246,7 +6045,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         // Pick the market cutaway on V1 (neutral grade, fully steady at t=23).
         let id = app.project.top_video_clip_at(23.0).unwrap().id;
-        app.selected = Some(id);
+        app.selection.select_only(id);
         let before = match preview::composite(&app.project, 23.0) {
             CompositedFrame::Clip { base, .. } => base.luma(),
             _ => panic!("expected clip"),
