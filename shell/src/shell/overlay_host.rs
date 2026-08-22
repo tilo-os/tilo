@@ -4960,7 +4960,7 @@ impl Widget for ShellOverlayHost {
             content_xform = scaled(content_scale) * content_xform;
         }
 
-        // Desktop content + simulated peer fade out as overview fades in.
+        // Desktop content + the peers on it fade out as overview fades in.
         // Skip the layer entirely at full opacity to keep the common path
         // cheap (vello push_layer clips + allocates an intermediate).
         if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
