@@ -399,13 +399,23 @@ pub enum PeerSyncRequest {
     AcceptInvite(String),
 }
 
-/// A button on the connect prompt.
+/// A button on the peer-sync card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerSyncPromptButton {
     /// Submit whatever has been typed as an invite token.
     Join,
     /// Abandon the prompt.
     Cancel,
+    /// Put the minted invite token on the system clipboard.
+    ///
+    /// The token is the one thing in this flow that has to physically
+    /// travel between two machines. Without this the only way across is
+    /// to read several hundred base64 characters off one screen and
+    /// type them into another, which is not a thing anybody does
+    /// correctly twice.
+    CopyToken,
+    /// Pull an invite token off the system clipboard into the prompt.
+    PasteToken,
 }
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
@@ -1472,6 +1482,54 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Put the minted invite token on the system clipboard.
+    ///
+    /// The compositor installs its selection mirror as this process's
+    /// clipboard backend (`compositor::selection::install_host_clipboard`),
+    /// so this reaches the same `wl_data_device` selection a sandboxed
+    /// app pastes from — the token leaves the machine the same way any
+    /// other copied text does.
+    fn copy_invite_token(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let token = chrome.borrow().peer_sync_invite_token.clone();
+        let Some(token) = token else { return };
+        ui::text_selection::clipboard_copy(&token);
+        let mut st = chrome.borrow_mut();
+        st.peer_sync_status = Some("Copied — paste it on the other machine".to_string());
+        st.bump();
+    }
+
+    /// Pull an invite token off the system clipboard into the prompt.
+    ///
+    /// Replaces the field rather than appending to it: a token is one
+    /// whole value, and a paste on top of a half-typed one is a request
+    /// to use the pasted one. Whitespace goes — a token copied out of a
+    /// chat window arrives wrapped.
+    fn paste_invite_token(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        if !self.connect_prompt_open() {
+            return;
+        }
+        let pasted = ui::text_selection::clipboard_paste()
+            .map(|s| s.split_whitespace().collect::<String>())
+            .filter(|s| !s.is_empty());
+        let mut st = chrome.borrow_mut();
+        match pasted {
+            Some(token) => {
+                st.peer_sync_connect_input = Some(token);
+                st.peer_sync_status = Some("Pasted — press Enter to join".to_string());
+            }
+            None => {
+                st.peer_sync_status = Some("Nothing on the clipboard to paste".to_string());
+            }
+        }
+        st.bump();
+    }
+
     /// Route one event to the peer-sync card. Returns whether the card
     /// consumed it.
     ///
@@ -1479,8 +1537,19 @@ impl ShellOverlayHost {
     /// token contains the same characters the chrome reads as chords,
     /// so anything that leaked past would both corrupt the token and
     /// fire a shell action.
-    fn handle_peer_sync_event(&mut self, event: &WindowEvent) -> bool {
+    fn handle_peer_sync_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
         let prompt_open = self.connect_prompt_open();
+        // Ctrl (or Super, for a user whose muscle memory is a Mac) is
+        // what turns `c` and `v` from token characters into the copy and
+        // paste chords. Checked before the plain-character branch below,
+        // which would otherwise splice a literal "v" into the token the
+        // user was trying to paste over.
+        let mods = modifiers.state();
+        let chord = mods.control_key() || mods.super_key();
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -1492,6 +1561,17 @@ impl ShellOverlayHost {
                 ..
             } => {
                 match logical_key {
+                    // Copy / paste come first: they are the whole point
+                    // of the card, and `Key::Character` below would
+                    // otherwise swallow them as token text.
+                    Key::Character(s) if chord && s.eq_ignore_ascii_case("c") => {
+                        self.copy_invite_token();
+                        return true;
+                    }
+                    Key::Character(s) if chord && s.eq_ignore_ascii_case("v") => {
+                        self.paste_invite_token();
+                        return true;
+                    }
                     Key::Named(NamedKey::Escape) => {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
@@ -1516,7 +1596,9 @@ impl ShellOverlayHost {
                         }
                         return true;
                     }
-                    Key::Character(s) if prompt_open => {
+                    // `!chord` so a modified key the card has no meaning
+                    // for is swallowed rather than typed into the token.
+                    Key::Character(s) if prompt_open && !chord => {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
                             if let Some(buf) = st.peer_sync_connect_input.as_mut() {
@@ -1545,6 +1627,8 @@ impl ShellOverlayHost {
                     if rect.area() > 0.0 && rect.contains(p) {
                         match which {
                             PeerSyncPromptButton::Join => self.submit_connect_prompt(),
+                            PeerSyncPromptButton::CopyToken => self.copy_invite_token(),
+                            PeerSyncPromptButton::PasteToken => self.paste_invite_token(),
                             PeerSyncPromptButton::Cancel => {
                                 if let Some(chrome) = self.chrome.clone() {
                                     let mut st = chrome.borrow_mut();
@@ -3405,7 +3489,8 @@ impl ShellOverlayHost {
         (0..count).map(|i| self.overview_row_rect(i)).collect()
     }
 
-    /// The connect prompt's buttons, named `join` / `cancel`.
+    /// The peer-sync card's buttons, named `join` / `cancel` / `copy` /
+    /// `paste`.
     pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
         self.peer_sync_prompt_rects
             .iter()
@@ -3413,6 +3498,8 @@ impl ShellOverlayHost {
                 let name = match which {
                     PeerSyncPromptButton::Join => "join",
                     PeerSyncPromptButton::Cancel => "cancel",
+                    PeerSyncPromptButton::CopyToken => "copy",
+                    PeerSyncPromptButton::PasteToken => "paste",
                 };
                 (name, *rect)
             })
@@ -5605,7 +5692,7 @@ impl Widget for ShellOverlayHost {
         // the token prompt is up it owns the keyboard outright — a
         // token contains characters (`k`, `/`) that would otherwise be
         // read as chords by the chrome underneath.
-        if self.peer_sync_card_visible() && self.handle_peer_sync_event(event) {
+        if self.peer_sync_card_visible() && self.handle_peer_sync_event(event, modifiers) {
             *handled = true;
             return;
         }
@@ -9426,20 +9513,30 @@ impl ShellOverlayHost {
             y += body_size as f64 + 10.0;
         }
 
-        // Buttons only exist while the prompt is open — a card that is
-        // just reporting a minted token has nothing to submit.
-        if input.is_some() {
+        // Both faces of the card carry buttons, because both halves of
+        // moving a token are gestures: the issuing side has to get it
+        // onto the clipboard, the receiving side has to get it off.
+        {
+            let buttons: &[(&str, PeerSyncPromptButton)] = if input.is_some() {
+                &[
+                    ("Join", PeerSyncPromptButton::Join),
+                    ("Cancel", PeerSyncPromptButton::Cancel),
+                    ("Paste", PeerSyncPromptButton::PasteToken),
+                ]
+            } else {
+                &[("Copy", PeerSyncPromptButton::CopyToken)]
+            };
             let bh = 30.0_f64;
             let by = rect.y1 - pad - bh;
             let mut bx = rect.x1 - pad;
-            for (label, which) in [
-                ("Join", PeerSyncPromptButton::Join),
-                ("Cancel", PeerSyncPromptButton::Cancel),
-            ] {
+            for (label, which) in buttons.iter().copied() {
                 let (tw, th) = text_renderer.measure(label, body_size, None);
                 let bw = tw as f64 + 26.0;
                 let brect = Rect::new(bx - bw, by, bx, by + bh);
-                let is_primary = which == PeerSyncPromptButton::Join;
+                let is_primary = matches!(
+                    which,
+                    PeerSyncPromptButton::Join | PeerSyncPromptButton::CopyToken
+                );
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -9466,14 +9563,21 @@ impl ShellOverlayHost {
                 self.peer_sync_prompt_rects.push((which, brect));
                 bx = brect.x0 - 8.0;
             }
-        } else {
-            let hint = "Press Escape to dismiss";
+            // The chord next to the button it duplicates, so the card
+            // teaches the keyboard route rather than hiding it.
+            let hint = if input.is_some() {
+                "Ctrl+V to paste · Enter to join · Escape to dismiss"
+            } else {
+                "Ctrl+C to copy · Escape to dismiss"
+            };
+            let hint = text_renderer.elide_to_width(hint, body_size, (avail * 0.6) as f32);
             text_renderer.draw_text(
                 scene,
-                hint,
+                &hint,
                 body_size,
                 colors.text_dim,
-                transform * Affine::translate((rect.x0 + pad, y.min(rect.y1 - pad - 12.0))),
+                transform
+                    * Affine::translate((rect.x0 + pad, y.min(rect.y1 - pad - bh + 8.0))),
                 None,
             );
         }
@@ -11515,6 +11619,234 @@ mod palette_dispatch_tests {
         let mut h = host.with_chrome(ChromeState::new(WorkspaceTree::bootstrap_demo()));
         assert!(h.dispatch_palette_command("peer.invite"));
         assert_eq!(h.take_peer_sync_actions().len(), 1);
+    }
+
+    // -----------------------------------------------------------------
+    // Getting the token from the machine that minted it to the machine
+    // that needs it.
+    //
+    // A token is a few hundred opaque base64 characters. If the only
+    // way across is to read it off one screen and type it into another,
+    // the invite flow does not work — not "is inconvenient", does not
+    // work, because nobody transcribes that correctly. These prove the
+    // two halves of the crossing against the process clipboard.
+    // -----------------------------------------------------------------
+
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
+
+    fn key_event(key: Key) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = key;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    const SAMPLE_TOKEN: &str = "eyJ3b3Jrc3BhY2VfaWQiOjEsInJvb21faWQiOiJhYmMifQ";
+
+    #[test]
+    fn ctrl_c_puts_the_minted_invite_token_on_the_clipboard() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        assert!(
+            h.handle_peer_sync_event(&key_event(Key::Character("c".into())), &ctrl),
+            "the card owns Ctrl+C while it is showing a token"
+        );
+
+        assert_eq!(
+            ui::text_selection::clipboard_paste().as_deref(),
+            Some(SAMPLE_TOKEN),
+            "the token has to reach the clipboard — that is the only way it \
+             gets to the other machine without being retyped"
+        );
+        assert!(
+            chrome
+                .borrow()
+                .peer_sync_status
+                .as_deref()
+                .unwrap_or_default()
+                .to_lowercase()
+                .contains("copied"),
+            "a copy the user cannot see happen is a copy they will do twice"
+        );
+    }
+
+    #[test]
+    fn ctrl_v_fills_the_connect_prompt_from_the_clipboard() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        ui::text_selection::clipboard_copy(SAMPLE_TOKEN);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+        assert!(
+            h.handle_peer_sync_event(&key_event(Key::Character("v".into())), &ctrl),
+            "the prompt owns Ctrl+V"
+        );
+
+        assert_eq!(
+            chrome.borrow().peer_sync_connect_input.as_deref(),
+            Some(SAMPLE_TOKEN),
+            "pasting is the receiving half; without it the token still has \
+             to be typed in by hand"
+        );
+    }
+
+    /// A token copied out of a chat window arrives wrapped. The prompt
+    /// takes the token, not the line breaks around it.
+    #[test]
+    fn a_pasted_token_is_stripped_of_the_whitespace_it_travelled_with() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        ui::text_selection::clipboard_copy(&format!("  {SAMPLE_TOKEN}\n"));
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        h.handle_peer_sync_event(&key_event(Key::Character("v".into())), &ctrl);
+        assert_eq!(
+            chrome.borrow().peer_sync_connect_input.as_deref(),
+            Some(SAMPLE_TOKEN)
+        );
+    }
+
+    /// The chord must not also type its own letter. `v` is a legal
+    /// base64 character, so a paste that left one behind would corrupt
+    /// the token in a way the user could not see.
+    #[test]
+    fn the_paste_chord_does_not_also_type_a_v() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        ui::text_selection::clipboard_copy(SAMPLE_TOKEN);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        h.handle_peer_sync_event(&key_event(Key::Character("v".into())), &ctrl);
+        let got = chrome.borrow().peer_sync_connect_input.clone().unwrap();
+        assert!(
+            !got.ends_with('v') || SAMPLE_TOKEN.ends_with('v'),
+            "Ctrl+V pasted and typed: {got}"
+        );
+        assert_eq!(got, SAMPLE_TOKEN);
+    }
+
+    /// Unmodified characters still type. The chord guard must not have
+    /// cost the prompt its ability to accept a token by hand.
+    #[test]
+    fn plain_characters_still_type_into_the_prompt() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let none = Modifiers::default();
+        for c in ["a", "b", "c"] {
+            h.handle_peer_sync_event(&key_event(Key::Character(c.into())), &none);
+        }
+        assert_eq!(
+            chrome.borrow().peer_sync_connect_input.as_deref(),
+            Some("abc")
+        );
+    }
+
+    /// Both faces of the card offer the gesture as a button too, for a
+    /// user who reaches for the pointer.
+    #[test]
+    fn the_card_offers_copy_when_showing_a_token_and_paste_when_asking_for_one() {
+        let (mut h, chrome) = host_with_chrome();
+        h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(
+            names.contains(&"copy"),
+            "the issuing side must offer Copy, got {names:?}"
+        );
+
+        chrome.borrow_mut().peer_sync_invite_token = None;
+        chrome.borrow_mut().peer_sync_connect_input = Some(String::new());
+        let names = draw_and_collect_peer_sync_buttons(&mut h);
+        assert!(
+            names.contains(&"paste"),
+            "the receiving side must offer Paste, got {names:?}"
+        );
+        assert!(names.contains(&"join"), "and still Join, got {names:?}");
+    }
+
+    fn draw_and_collect_peer_sync_buttons(h: &mut ShellOverlayHost) -> Vec<&'static str> {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        h.draw_peer_sync(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        h.peer_sync_prompt_rects_for_tests()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    // -----------------------------------------------------------------
+    // An open the user is waiting on must stay acknowledged until they
+    // can see how it ended.
+    // -----------------------------------------------------------------
+
+    /// The whole defect in one test: an open that takes seconds used to
+    /// have its one piece of feedback retired the moment the launcher
+    /// process forked — several seconds before anything was on screen —
+    /// leaving the user watching an empty desktop wondering whether
+    /// their keystroke had registered. The indication belongs to the
+    /// wait, so it ends when the wait does.
+    #[test]
+    fn the_loading_indication_stands_until_the_window_is_actually_there() {
+        let (mut h, chrome) = host_with_chrome();
+        let notice = {
+            let mut st = chrome.borrow_mut();
+            st.push_notification_full(crate::shell::notification::Notification::new(
+                "Opening Ledger",
+                "Loading…",
+            ))
+        };
+        crate::shell::catalogue::note_pending_notice("dev.qos.retirefixture", notice);
+
+        assert!(
+            !h.retire_notices_for_opened_windows(),
+            "nothing has appeared yet, so nothing is settled"
+        );
+        assert!(
+            chrome.borrow().notifications().iter().any(|n| n.id == notice),
+            "the user is still waiting; the acknowledgement must still be up"
+        );
+
+        // The app's window arrives.
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                918_273,
+                Some("dev.qos.retirefixture".to_string()),
+            );
+        }
+
+        assert!(
+            h.retire_notices_for_opened_windows(),
+            "the window appearing is what settles the open"
+        );
+        assert!(
+            !chrome.borrow().notifications().iter().any(|n| n.id == notice),
+            "once the app is on screen the indication has done its job"
+        );
+    }
+
+    /// Escape still dismisses. The card gained chords; it must not have
+    /// lost the way out.
+    #[test]
+    fn escape_still_dismisses_the_card() {
+        let (mut h, chrome) = host_with_chrome();
+        chrome.borrow_mut().peer_sync_invite_token = Some(SAMPLE_TOKEN.to_string());
+        let none = Modifiers::default();
+        assert!(h.handle_peer_sync_event(&key_event(Key::Named(NamedKey::Escape)), &none));
+        assert!(chrome.borrow().peer_sync_invite_token.is_none());
     }
 }
 
