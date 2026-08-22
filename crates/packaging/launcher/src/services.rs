@@ -6,8 +6,9 @@
 //! 1. Looks up the socket per the manifest's service requirements.
 //! 2. For `required@<v>` whose socket is absent → exit 70 with a
 //!    descriptive error.
-//! 3. For `optional@<v>` whose socket is absent → log a warning,
-//!    continue.
+//! 3. For `optional@<v>` whose socket is absent — or present but
+//!    refusing connections, which is what a session that died without
+//!    unlinking leaves behind → log a warning, continue.
 //! 4. For sockets that exist → open the socket as a `UnixStream` and
 //!    take its raw fd. The descriptor reaches the app the way
 //!    descriptors normally do: `run::place_service_fds` dup2s it onto
@@ -185,10 +186,27 @@ pub fn resolve_service_binds(
             continue;
         }
 
-        let stream = UnixStream::connect(&path).map_err(|e| ServiceError::OpenFailed {
-            path: path.clone(),
-            source: e,
-        })?;
+        // A socket file that exists is not the same as a service that
+        // answers. A session that died without unlinking leaves the
+        // inode behind, and connecting to it gets ECONNREFUSED. That
+        // is the *same* condition as an absent socket as far as the
+        // app is concerned — the service is not there — so it has to
+        // be treated the same way, or a leftover file from a crash
+        // turns every subsequent launch into a failed one.
+        let stream = match UnixStream::connect(&path) {
+            Ok(stream) => stream,
+            Err(source) => {
+                if req.is_required() {
+                    return Err(ServiceError::OpenFailed { path, source });
+                }
+                tracing::warn!(
+                    "optional service `{name}` has a socket at {} that refuses connections \
+                     ({source}) — continuing without it",
+                    path.display()
+                );
+                continue;
+            }
+        };
         let host_fd = stream.into_raw_fd();
         // Clear FD_CLOEXEC so the fd survives the bwrap exec. bwrap
         // sets up the child explicitly anyway, but stripping CLOEXEC
@@ -233,6 +251,75 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    /// A socket file with nothing listening on it — exactly what a
+    /// session that exited without unlinking leaves in the services
+    /// directory. Binding and dropping the listener is what produces
+    /// it: `std`'s `UnixListener` does not remove the inode on drop.
+    fn dead_socket(root: &std::path::Path, name: &str) -> PathBuf {
+        let path = root.join(format!("{name}.sock"));
+        drop(std::os::unix::net::UnixListener::bind(&path).expect("bind the fixture socket"));
+        assert!(path.exists(), "a stale socket must still be on disk");
+        assert!(
+            UnixStream::connect(&path).is_err(),
+            "the fixture must actually refuse connections, or it proves nothing"
+        );
+        path
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn optional_service_whose_socket_refuses_is_skipped_not_fatal() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        dead_socket(&root, "collab");
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+        let out = resolve_service_binds(&svcs, false)
+            .expect("a stale optional socket must degrade, not fail the launch");
+        assert!(
+            out.is_empty(),
+            "nothing can be handed to the app for a service that does not answer"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn required_service_whose_socket_refuses_is_still_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        dead_socket(&root, "collab");
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "required@1".to_string());
+        let err = resolve_service_binds(&svcs, false)
+            .expect_err("a required service that does not answer must fail the launch");
+        assert!(matches!(err, ServiceError::OpenFailed { .. }), "got {err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_live_optional_socket_is_handed_over() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", dir.path()) };
+        let root = ensure_services_root().unwrap();
+        // Kept alive for the duration of the call, so `connect` succeeds.
+        let _listener =
+            std::os::unix::net::UnixListener::bind(root.join("collab.sock")).unwrap();
+
+        let mut svcs = BTreeMap::new();
+        svcs.insert("collab".to_string(), "optional@1".to_string());
+        let out = resolve_service_binds(&svcs, false).expect("a live socket resolves");
+        assert_eq!(out.len(), 1, "the one live service must be handed over");
+        assert_eq!(out[0].name, "collab");
+        assert_eq!(
+            out[0].child_fd, 17,
+            "the app is told to read fd 17, so that is where it must land"
+        );
+    }
+
     #[test]
     fn no_services_flag_skips_required_silently() {
         let mut svcs = BTreeMap::new();
@@ -250,6 +337,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn required_missing_returns_required_missing_error() {
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), "required@1".to_string());
