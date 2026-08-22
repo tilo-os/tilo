@@ -36,9 +36,7 @@ use gstreamer::prelude::*;
 use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
-use crate::dmabuf::{
-    ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix, DRM_FORMAT_MOD_INVALID,
-};
+use crate::dmabuf::{ColorRange, Colorimetry, DmabufImage, DmabufPlane, YuvMatrix};
 use crate::event::{MediaEvent, VideoFrame};
 use crate::frame::{Frame, FrameAcceptance, FramePayload, PlanarFormat, PlanarImage, PlaneData};
 use crate::hw::{rank_for, DecoderEntry, DecoderKind, HwPolicy, HwReport};
@@ -863,10 +861,25 @@ fn colorimetry_from_info(info: &gst_video::VideoInfo) -> Colorimetry {
 fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<DmabufImage> {
     let buffer = sample.buffer()?;
     let drm = gst_video::VideoInfoDmaDrm::from_caps(caps).ok()?;
-    let info: &gst_video::VideoInfo = &drm;
+
+    // `DMA_DRM` caps describe an opaque buffer: the `VideoInfo` inside a
+    // `VideoInfoDmaDrm` carries the *placeholder* DMA_DRM format, which has
+    // zero planes and no strides. Translating it back to the real format
+    // (NV12, P010, …) is what yields the plane count and layout — without
+    // this the frame is described as having no planes at all, and every
+    // import then fails for a reason that has nothing to do with the buffer.
+    let resolved = drm.to_video_info().ok();
+    let info: &gst_video::VideoInfo = resolved.as_ref().unwrap_or(&drm);
     let width = info.width();
     let height = info.height();
     let n_planes = info.n_planes() as usize;
+    if n_planes == 0 {
+        tracing::warn!(
+            "media: dmabuf caps {} resolved to zero planes; cannot describe the frame",
+            caps
+        );
+        return None;
+    }
 
     // Plane geometry: prefer the buffer's VideoMeta (authoritative for the
     // actual allocation), fall back to the caps-derived info.
@@ -916,7 +929,11 @@ fn dmabuf_from_sample(sample: &gst::Sample, caps: &gst::CapsRef) -> Option<Dmabu
     Some(DmabufImage {
         planes,
         fourcc: drm.fourcc(),
-        modifier: if drm.modifier() == 0 { DRM_FORMAT_MOD_INVALID } else { drm.modifier() },
+        // GStreamer reports a linear buffer as modifier 0, which is exactly
+        // DRM_FORMAT_MOD_LINEAR — keep it rather than reinterpreting it as
+        // "unstated", or a genuinely linear buffer becomes indistinguishable
+        // from one whose producer declined to say.
+        modifier: drm.modifier(),
         width,
         height,
         colorimetry: colorimetry_from_info(info),

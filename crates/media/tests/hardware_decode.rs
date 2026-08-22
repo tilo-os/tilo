@@ -133,6 +133,92 @@ mod real {
         assert!(!report.is_dmabuf());
     }
 
+    /// When a decoder that exports dmabufs is available, the frame it produces
+    /// must be described completely enough to import: the right number of
+    /// plane fds, each with a stride, plus the fourcc and modifier.
+    ///
+    /// This is the only test that exercises the dmabuf description path, and
+    /// it earns its place — `DMA_DRM` caps carry a placeholder format with
+    /// **zero** planes, so reading the plane count straight off them yields a
+    /// frame that looks valid and carries no buffers at all.
+    #[test]
+    fn a_dmabuf_frame_is_described_completely_enough_to_import() {
+        use media::{DmabufImage, HwPolicy};
+
+        let va_h264 = media::gst_backend::decoders_for("video/x-h264")
+            .into_iter()
+            .any(|d| d.kind == DecoderKind::Va);
+        if !va_h264 {
+            // Proven from the registry, not assumed. Nothing on this machine
+            // can produce a dmabuf for H.264, so there is no description to
+            // check — but say so loudly rather than passing in silence.
+            println!(
+                "no VA-API H.264 decoder registered, so no dmabuf export path exists                  for this codec here: {}",
+                registry_summary()
+            );
+            let all = media::gst_backend::available_video_decoders();
+            assert!(
+                !all.is_empty(),
+                "the registry has no video decoders at all, so this check could not                  observe anything — that is a broken environment, not a pass"
+            );
+            return;
+        }
+
+        let mut e = MediaEngine::with_config(
+            EngineConfig::gpu().silent().with_hw_policy(HwPolicy::Force(DecoderKind::Va)),
+        );
+        e.open(fixture_source());
+        let frame = decode_frame_at(&mut e, 4_000, "dmabuf description");
+        let report = e.hw_report();
+        println!("decoder: {}", report.describe());
+        println!("payload: {:?}", frame.payload);
+
+        assert_eq!(
+            report.decoder_kind,
+            Some(DecoderKind::Va),
+            "the VA decoder was forced but {:?} ran",
+            report.decoder_element
+        );
+
+        let Some(img) = frame.dmabuf() else {
+            // VA can be made to output system memory; that is a legitimate
+            // negotiation result and not a failure of the description path.
+            println!(
+                "VA-API negotiated {:?} rather than a dmabuf;                  the description path is not exercised on this run",
+                frame.payload
+            );
+            assert!(
+                frame.planar().is_some(),
+                "a hardware decoder produced neither a dmabuf nor planar output"
+            );
+            return;
+        };
+
+        let img: &DmabufImage = img;
+        println!("dmabuf: {}", img.describe());
+        assert_eq!((img.width, img.height), (1920, 1080));
+        assert_eq!(
+            img.fourcc,
+            media::dmabuf::DRM_FORMAT_NV12,
+            "H.264 4:2:0 decodes to NV12, got {}",
+            media::dmabuf::fourcc_str(img.fourcc)
+        );
+        assert_eq!(
+            img.planes.len(),
+            2,
+            "NV12 is a luma plus an interleaved chroma plane; {} plane(s) means the              DMA_DRM placeholder format was read instead of the resolved one",
+            img.planes.len()
+        );
+        for (i, p) in img.planes.iter().enumerate() {
+            assert!(p.stride >= img.width, "plane {i} stride {} is below the width", p.stride);
+            assert!(
+                media::dmabuf::dmabuf_size(&p.fd).unwrap_or(0) > 0,
+                "plane {i}'s fd is not a sizeable buffer"
+            );
+        }
+        assert!(report.is_dmabuf(), "the caps must agree that this is a dmabuf");
+    }
+
     /// One session serves both the preview and thumbnail-style requests, and
     /// a revisited time comes from the cache rather than a second decode.
     #[test]
