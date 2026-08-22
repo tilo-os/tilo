@@ -70,6 +70,21 @@ const MAX_QUEUED: usize = 64;
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
 const FRAME_TIMEOUT: Duration = Duration::from_secs(6);
 
+/// How long to let a freshly-opened pipeline preroll before seeking it.
+#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+const PREROLL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How far past the requested time a frame may sit and still count as the
+/// answer to that seek — a little over one frame at any sane rate.
+#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+const SEEK_SLOP_MS: u64 = 100;
+
+/// How far from the requested time a frame may sit and still be worth showing
+/// when the pipeline could not land on it (a keyframe-only source). Matches
+/// the window `frame_at` will reach across for a decoded neighbour.
+#[cfg_attr(not(feature = "decode"), allow(dead_code))]
+const FALLBACK_SLOP_MS: u64 = 2_000;
+
 /// How long an idle worker holds its pipeline open before retiring. Keeps a
 /// scrub responsive without pinning a decoder for a timeline nobody is using.
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
@@ -496,6 +511,81 @@ impl ThumbnailCache {
         }
     }
 
+    /// Decode `id`'s frames **synchronously**: the bin swatch at `at`, and —
+    /// when `cells` is non-zero — the filmstrip across `[in_point, out_point]`,
+    /// all through one reused pipeline.
+    ///
+    /// The live app never blocks on a decoder; this exists for the
+    /// deterministic `--shots` capture and for tests, mirroring
+    /// [`crate::waveform::WaveformCache::warm_blocking`]. A one-shot render
+    /// has no frames to spare for the pool to finish in, and racing it means
+    /// the capture shows whichever of the two won — which is how a shot ends
+    /// up with the representative gradient where the real frame belongs.
+    ///
+    /// Failure is recorded exactly as the pool records it, so a source that
+    /// cannot be decoded is written off here too rather than retried.
+    pub fn warm_blocking(
+        &mut self,
+        id: MediaId,
+        palette: u8,
+        source: &MediaSource,
+        at: f64,
+        in_point: f64,
+        out_point: f64,
+        cells: usize,
+    ) {
+        self.swatch
+            .entry(id)
+            .or_insert_with(|| Arc::new(representative(palette, THUMB_W, THUMB_H)));
+        if !source.is_decodable() || self.undecodable.contains(&id) {
+            return;
+        }
+        let want_swatch = !self.swatch.get(&id).map(|t| t.real).unwrap_or(false);
+        // Which filmstrip buckets are still unanswered.
+        let mut wanted: Vec<(u32, f64)> = Vec::new();
+        let span = (out_point - in_point).max(0.0);
+        for i in 0..cells {
+            let t = in_point + ((i as f64 + 0.5) / cells as f64) * span;
+            let bucket = bucket_of(t);
+            self.touch(id, bucket);
+            let known = self
+                .frames
+                .get(&id)
+                .and_then(|f| f.slots.get(&bucket))
+                .is_some_and(|s| !matches!(s, Slot::Pending));
+            if !known && !wanted.iter().any(|(b, _)| *b == bucket) {
+                wanted.push((bucket, t));
+            }
+        }
+        if !want_swatch && wanted.is_empty() {
+            return;
+        }
+        let Some(mut session) = Session::open(&source.abs_path) else {
+            self.write_off(id);
+            return;
+        };
+        if want_swatch {
+            match session.frame_at(at) {
+                Some(t) => {
+                    self.swatch_pending.remove(&id);
+                    self.swatch.insert(id, Arc::new(t));
+                }
+                None => {
+                    self.write_off(id);
+                    return;
+                }
+            }
+        }
+        for (bucket, t) in wanted {
+            let slot = match session.frame_at(t) {
+                Some(th) => Slot::Ready(Arc::new(th)),
+                None => Slot::Failed,
+            };
+            self.frames.entry(id).or_default().slots.insert(bucket, slot);
+        }
+        self.evict(id);
+    }
+
     /// The bin swatch for `id`, if one has been generated.
     pub fn get(&self, id: MediaId) -> Option<&Arc<Thumb>> {
         self.swatch.get(&id)
@@ -685,11 +775,39 @@ impl Session {
             return None;
         }
         engine.open(crate::media::engine_source(path));
-        Some(Session { path: path.to_path_buf(), engine, last_pts: None })
+        // Grabbing a frame drives the pipeline with `play`, and the shared
+        // engine always builds a real audio sink — so an unmuted thumbnail
+        // worker plays the clip out loud and holds an output device while it
+        // seeks. A thumbnail is a picture; it must never make a sound.
+        engine.set_muted(true);
+        engine.set_volume(0.0);
+        let mut session = Session { path: path.to_path_buf(), engine, last_pts: None };
+        session.await_preroll();
+        Some(session)
+    }
+
+    /// Let the pipeline finish coming up before anything is asked of it.
+    ///
+    /// `open` leaves the pipeline prerolling, and a seek issued into a
+    /// pipeline that has not prerolled is dropped — the sink then still holds
+    /// the preroll picture at position 0, so the first frame each worker asked
+    /// for came back as the start of the clip whatever time it wanted. The
+    /// preroll timestamp is remembered so that picture can never be mistaken
+    /// for the answer to a later seek.
+    fn await_preroll(&mut self) {
+        let deadline = Instant::now() + PREROLL_TIMEOUT;
+        while Instant::now() < deadline {
+            self.engine.poll();
+            if let Some(f) = self.engine.latest_frame() {
+                self.last_pts = Some(f.pts_ms);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Seek to `at` seconds and return the frame there, scaled to thumbnail
-    /// size. `None` only when the pipeline produced no picture at all.
+    /// size. `None` only when the pipeline produced no picture near that time.
     fn frame_at(&mut self, at: f64) -> Option<Thumb> {
         let target_ms = (at * 1000.0).max(0.0) as u64;
         self.engine.seek_ms(target_ms);
@@ -700,21 +818,38 @@ impl Session {
             self.engine.poll();
             if let Some(f) = self.engine.latest_frame() {
                 let got = (f.width, f.height, f.rgba.clone(), f.pts_ms);
-                if Some(f.pts_ms) != self.last_pts {
+                // A frame answers *this* seek only when its own timestamp says
+                // so. Accepting whatever picture happened to be on the sink
+                // hands back the preroll frame at position 0 on a
+                // freshly-opened source — every worker's first cell would show
+                // the start of the clip no matter which time it asked for.
+                let answers_seek = got.3 + SEEK_SLOP_MS >= target_ms;
+                let fresh = Some(got.3) != self.last_pts;
+                if answers_seek && fresh {
                     self.engine.pause();
                     self.last_pts = Some(got.3);
                     return Some(scaled_thumb(&got.2, got.0, got.1));
                 }
-                fallback = Some(got);
+                // Keep the closest thing seen, in case the pipeline can only
+                // land before the requested time.
+                let better = fallback
+                    .as_ref()
+                    .map(|(_, _, _, p)| got.3.abs_diff(target_ms) < p.abs_diff(target_ms))
+                    .unwrap_or(true);
+                if better {
+                    fallback = Some(got);
+                }
             }
             std::thread::sleep(Duration::from_millis(20));
         }
         self.engine.pause();
-        // The pipeline never advanced past the frame we already had. That
-        // still is a real frame of this source at (or just before) the seek
-        // point — a short clip whose whole span sits inside one GOP looks
-        // exactly like this — so return it rather than reporting a failure.
-        fallback.map(|(w, h, rgba, pts)| {
+        // The pipeline never landed on the requested time. A frame close by is
+        // still a real frame of this shot — a source that can only seek to
+        // keyframes looks exactly like this — but one from somewhere else
+        // entirely is not an answer, so report nothing and let the cell show
+        // the representative instead of the wrong picture.
+        let near = fallback.filter(|(_, _, _, pts)| pts.abs_diff(target_ms) <= FALLBACK_SLOP_MS);
+        near.map(|(w, h, rgba, pts)| {
             self.last_pts = Some(pts);
             scaled_thumb(&rgba, w, h)
         })
@@ -836,6 +971,22 @@ mod tests {
         }
         assert!(cache.is_undecodable(id), "a source that never answers is given up on");
         assert!(!cache.has_pending());
+    }
+
+    #[test]
+    fn a_blocking_warm_on_an_unhydrated_source_leaves_the_representative() {
+        // The synchronous path must be as honest as the pool: no bytes means
+        // the representative frame stays and nothing is left outstanding.
+        let mut cache = ThumbnailCache::new();
+        let id = uuid::Uuid::new_v4();
+        cache.warm_blocking(id, 2, &projected("/nope.mp4"), 1.0, 0.0, 4.0, 6);
+        let t = cache.get(id).expect("a representative frame");
+        assert!(!t.real, "nothing was decoded, and it does not pretend otherwise");
+        assert!(!cache.has_pending(), "a blocking warm leaves nothing in flight");
+        assert!(
+            !cache.is_undecodable(id),
+            "un-hydrated is not the same as undecodable — the bytes may arrive"
+        );
     }
 
     #[test]
