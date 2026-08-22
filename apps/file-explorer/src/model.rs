@@ -230,6 +230,15 @@ pub fn initial_path() -> PathBuf {
             return p;
         }
     }
+    // The user's home, which under a sandbox is *not* this process's
+    // `HOME` — that is the app's own per-package directory, and opening
+    // a file manager on it shows a folder with none of the user's files
+    // in it. `QOS_USER_HOME` is present only when a grant actually bound
+    // the real home, so preferring it can never point at a directory
+    // this process cannot read.
+    if let Some(home) = ui::sysdirs::user_home_override() {
+        return home;
+    }
     if let Some(home) = dirs::home_dir() { return home; }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
