@@ -272,7 +272,19 @@ impl Chip {
         scene.stroke(&stroke, transform, fade(border, 1.0), None, &pill);
 
         let cy = rect.center().y;
-        let mut x = rect.x0 + PAD_X;
+        // An icon-only chip centres its lead: with no label to sit beside,
+        // a glyph pinned to the left padding reads as a pill someone
+        // forgot to finish rather than as a compact action.
+        let lead_w = match lead {
+            ChipLead::None => 0.0,
+            ChipLead::Dot(_) => DOT_D,
+            ChipLead::Glyph(_) => rect.height() * 0.44,
+        };
+        let mut x = if label.is_empty() && lead_w > 0.0 {
+            rect.center().x - lead_w / 2.0
+        } else {
+            rect.x0 + PAD_X
+        };
         let lead_col = match style.tint {
             Some(t) => t,
             None => colors.text_dim,
