@@ -408,12 +408,71 @@ struct TypingMark {
     born: Instant,
 }
 
+/// Which layer paints a peer's pointer.
+///
+/// A pointer is a position on a **screen**, not a position in a
+/// document, and only one layer can place it correctly. Two can try:
+/// an app receives peer presence through the collaboration broker, and
+/// the compositor receives it over the network and paints its own
+/// overlay above every window. Both used to draw, so one person showed
+/// up as two identical dots.
+///
+/// The compositor owns it, for a reason stronger than tidiness. What
+/// travels between hosts is a **desktop** coordinate — the publishing
+/// compositor substitutes its own pointer position precisely because an
+/// app's surface-local `(40, 30)` is a different place in every window
+/// (see `quick_shell::shell::peer_presence`). An app that paints that
+/// number into its own window space is drawing a desktop position as if
+/// it were window-local: right only when the window happens to sit at
+/// the origin, wrong everywhere else. The compositor is also the only
+/// layer that spans the strip, the chrome, and the gaps between
+/// windows, so it is the only one that can keep a peer's pointer
+/// continuous as it crosses them.
+///
+/// What stays with the app is presence *inside its own content* —
+/// caret, selection, typing swipe, authorship tint. Those are
+/// positions in a document, which the compositor cannot resolve
+/// because it does not have the text. They are painted by the widgets
+/// that own the text and are untouched by this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerOwner {
+    /// This process paints it. The pointer arrived without a desktop
+    /// scope, so no compositor overlay is claiming it: the SDK/relay
+    /// dialect (which carries no [`PresenceKey`]), hand-seeded shot
+    /// fixtures, and the hosted backend's interpolated cursors — where
+    /// [`PresenceCtx::pointers`] is never populated and this layer is
+    /// the only one that can draw anything at all.
+    #[default]
+    Window,
+    /// The compositor overlay paints it, from [`PresenceCtx::pointers`]
+    /// under the same [`PresenceKey::Workspace`] scope it arrived on.
+    /// The cursor is still kept here — "follow that peer" reads it
+    /// through [`PresenceCtx::peer_pointer`] — it is simply not painted
+    /// a second time by this layer.
+    Desktop,
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteCursor {
     pub user_id: String,
     pub color: [f32; 4],
     pub position: [f32; 2], // scene-space coords
     pub label: String,
+    /// Which layer is responsible for drawing this pointer. See
+    /// [`PointerOwner`]; `Window` unless the pointer arrived under a
+    /// desktop scope.
+    pub owner: PointerOwner,
+}
+
+impl RemoteCursor {
+    /// Whether the layer that owns this process's window should paint
+    /// this pointer, as opposed to leaving it to the compositor
+    /// overlay. The single predicate every app-side painter consults,
+    /// so "who draws this" has one answer rather than one per call
+    /// site.
+    pub fn painted_by_window(&self) -> bool {
+        matches!(self.owner, PointerOwner::Window)
+    }
 }
 
 /// What a subscriber still has to do after
@@ -842,6 +901,32 @@ impl PresenceCtx {
         display_name: Option<&str>,
         alpha: f32,
     ) {
+        self.upsert_remote_cursor_owned(
+            user_id,
+            position,
+            display_name,
+            alpha,
+            PointerOwner::Window,
+        );
+    }
+
+    /// [`Self::upsert_remote_cursor_faded`] naming which layer paints
+    /// the result. Callers that know the pointer arrived on a desktop
+    /// scope pass [`PointerOwner::Desktop`] so this layer stops drawing
+    /// it and leaves it to the compositor overlay — see
+    /// [`PointerOwner`] for why that is the compositor's job.
+    ///
+    /// An upsert re-states the owner: a peer whose pointer starts
+    /// arriving on a different transport changes hands rather than
+    /// keeping whatever it was first seen as.
+    pub fn upsert_remote_cursor_owned(
+        &mut self,
+        user_id: String,
+        position: [f32; 2],
+        display_name: Option<&str>,
+        alpha: f32,
+        owner: PointerOwner,
+    ) {
         let uid = UserId(user_id.clone());
         let (r, g, b) = self.color_for(&uid);
         let color = [
@@ -864,6 +949,7 @@ impl PresenceCtx {
         {
             existing.position = position;
             existing.color = color;
+            existing.owner = owner;
             // Don't overwrite an existing friendly label with the raw id.
             if display_name.is_some() {
                 existing.label = label;
@@ -874,6 +960,7 @@ impl PresenceCtx {
                 color,
                 position,
                 label,
+                owner,
             });
         }
     }
@@ -969,9 +1056,25 @@ impl PresenceCtx {
                 // scope, read by the shell's per-workspace overlay and by
                 // `pointer_for`) and the screen-space `remote_cursors` vec
                 // the shared `draw_remote_cursors` helper renders.
+                //
+                // Which of the two gets *painted* is the point of
+                // `owner`. A pointer that arrived under a workspace
+                // scope is a position on the desktop, and the
+                // compositor overlay draws it from `pointers` above
+                // every window. Stamping it `Desktop` is what stops
+                // this layer drawing the very same peer a second time
+                // from `remote_cursors` — the two stores are one
+                // arrival, not two people. Any other scope has no
+                // overlay claiming it, so it stays this layer's to
+                // paint.
                 let uid = UserId(user_id.clone());
+                let owner = if matches!(key, PresenceKey::Workspace { .. }) {
+                    PointerOwner::Desktop
+                } else {
+                    PointerOwner::Window
+                };
                 self.set_pointer(&key, uid, (x, y));
-                self.upsert_remote_cursor(user_id, [x, y], None);
+                self.upsert_remote_cursor_owned(user_id, [x, y], None, 1.0, owner);
             }
             Caret { pos } => {
                 // Feed BOTH presence stores: the in-app BlockEditor reads
@@ -1458,6 +1561,111 @@ mod string_id_wrapper_tests {
         ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
 
         assert_eq!(ctx.remote_cursors[0].label, "Xaver");
+    }
+
+    /// One person is one pointer.
+    ///
+    /// A pointer arriving on a workspace scope lands in *both* stores
+    /// from one arrival — `pointers`, which the compositor overlay
+    /// paints, and `remote_cursors`, which "follow that peer" reads.
+    /// Two stores is correct; two painters is not. This asserts the
+    /// split on the real decode: the overlay's store has the peer, and
+    /// the window's painter declines them.
+    ///
+    /// This is the regression that hid for months behind mismatched
+    /// names. The two layers resolved a peer's identity differently, so
+    /// the duplicate rendered as two *different*-looking people and
+    /// read as two peers rather than as one drawn twice. Unifying the
+    /// names is what made it legible, and is exactly why the invariant
+    /// is pinned here instead of left to the eye.
+    #[test]
+    fn a_desktop_pointer_is_the_compositors_to_paint_and_not_this_layers() {
+        let mut ctx = PresenceCtx::empty();
+        let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+        let key = PresenceKey::Workspace { id: room.into() };
+
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key.clone(),
+            crate::collaboration::PresencePayload::Pointer { x: 120.0, y: 90.0 },
+        );
+
+        // The compositor's store has them: this is not "the peer never
+        // arrived" passing for "the peer is not drawn twice".
+        assert_eq!(
+            ctx.pointer_for(&key, &UserId("peer@77".into())),
+            Some((120.0, 90.0)),
+            "the overlay must still have a desktop pointer to paint",
+        );
+        // And the record is kept, so following the peer still lands
+        // where their cursor shows.
+        assert_eq!(ctx.peer_pointer("peer@77"), Some([120.0, 90.0]));
+
+        // But this layer does not paint it.
+        assert_eq!(ctx.remote_cursors.len(), 1, "one arrival is one record");
+        assert!(
+            !ctx.remote_cursors[0].painted_by_window(),
+            "a desktop pointer painted here as well is the same person twice",
+        );
+    }
+
+    /// The other half, so the rule above cannot be satisfied by never
+    /// painting anything. A pointer that arrived with no desktop scope
+    /// has no overlay claiming it — the SDK/relay dialect carries no
+    /// key at all, and the hosted backend never fills `pointers` — so
+    /// this layer stays the one that draws it.
+    #[test]
+    fn a_pointer_no_overlay_claims_is_still_this_layers_to_paint() {
+        let mut ctx = PresenceCtx::empty();
+
+        // The relay/SDK path: a cursor with no scope at all.
+        ctx.upsert_remote_cursor("peer@77".into(), [10.0, 20.0], None);
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "dropping this one would leave the relay dialect with no pointer at all",
+        );
+
+        // And a scoped pointer that is a position in content rather
+        // than on the desktop.
+        let widget = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        ctx.apply_remote_presence(
+            "peer@88".into(),
+            widget,
+            crate::collaboration::PresencePayload::Pointer { x: 5.0, y: 6.0 },
+        );
+        let scoped = ctx
+            .remote_cursors
+            .iter()
+            .find(|c| c.user_id == "peer@88")
+            .expect("the pointer landed");
+        assert!(
+            scoped.painted_by_window(),
+            "only a desktop scope hands a pointer to the compositor",
+        );
+    }
+
+    /// A peer that moves from the desktop transport onto an unscoped
+    /// one (or back) changes hands rather than keeping whichever owner
+    /// it was first seen with — otherwise a peer could end up owned by
+    /// a layer that has stopped receiving them, and vanish.
+    #[test]
+    fn a_pointer_that_changes_transport_changes_hands() {
+        let mut ctx = PresenceCtx::empty();
+        let key = PresenceKey::Workspace { id: "room".into() };
+        ctx.apply_remote_presence(
+            "peer@77".into(),
+            key,
+            crate::collaboration::PresencePayload::Pointer { x: 1.0, y: 2.0 },
+        );
+        assert!(!ctx.remote_cursors[0].painted_by_window());
+
+        ctx.upsert_remote_cursor("peer@77".into(), [3.0, 4.0], None);
+
+        assert_eq!(ctx.remote_cursors.len(), 1, "still one person");
+        assert!(
+            ctx.remote_cursors[0].painted_by_window(),
+            "a peer nobody else is painting must come back to this layer",
+        );
     }
 
     #[test]
