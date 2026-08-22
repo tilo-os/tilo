@@ -122,6 +122,10 @@ pub struct DesktopBackdrop {
     /// `Rect::ZERO` sentinel means "no cache yet"; any width/height
     /// mismatch against `self.rect` triggers a rebuild.
     cache_rect: Rect,
+    /// The ground colours the cached scene was baked with. `None` means
+    /// "no cache yet". Compared as bytes rather than as `Color`, which is
+    /// float-valued and has no equality worth relying on here.
+    cached_ground: Option<([u8; 4], [u8; 4])>,
 }
 
 impl DesktopBackdrop {
@@ -132,6 +136,7 @@ impl DesktopBackdrop {
             noise: build_noise_image(),
             cached: Scene::new(),
             cache_rect: Rect::ZERO,
+            cached_ground: None,
         }
     }
 
@@ -168,10 +173,16 @@ impl DesktopBackdrop {
     ///   3. If the viewport resizes, `apply_layout` updates `self.rect`;
     ///      `paint_backdrop` detects the width/height mismatch against
     ///      `self.cache_rect` and rebuilds.
-    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine) {
+    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
+        // The backdrop takes its colours from the theme, so a theme swap
+        // has to invalidate the cache as surely as a resize does -
+        // otherwise the desktop keeps painting the previous palette's
+        // ground until something else happens to resize it.
+        let ground = Self::ground_stops(theme);
+        let theme_changed = self.cached_ground != Some(ground);
+        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed || theme_changed;
 
         if !needs_rebuild {
             // Pure-translation reuse — same as `Button::draw`.
@@ -191,16 +202,45 @@ impl DesktopBackdrop {
         // on `&self`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        self.encode_backdrop(&mut local, Affine::IDENTITY);
+        self.encode_backdrop(&mut local, Affine::IDENTITY, theme);
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_rect = self.rect;
+        self.cached_ground = Some(ground);
+    }
+
+
+    /// The desktop's two gradient stops, taken from the theme rather than
+    /// pinned to one palette.
+    ///
+    /// Derived from `surfaces.base` — the theme's own ground — pulled down
+    /// toward black. Two things follow from that. The desktop lands in
+    /// whatever colour family the active theme uses, so a theme set to dark
+    /// grey produces a dark grey desktop instead of the slate blue this used
+    /// to hard-code. And the ground stays *darker than the window card*,
+    /// which is what lets a window read as sitting on the desktop rather
+    /// than dissolving into it: the card is `base` itself, so a ground of
+    /// plain `base` would leave the two identical.
+    fn ground_stops(theme: &Theme) -> ([u8; 4], [u8; 4]) {
+        let base = theme.tokens.colors.surfaces.base.to_rgba8().to_u8_array();
+        let toward_black = |f: f32| -> [u8; 4] {
+            [
+                (base[0] as f32 * f).round() as u8,
+                (base[1] as f32 * f).round() as u8,
+                (base[2] as f32 * f).round() as u8,
+                255,
+            ]
+        };
+        (toward_black(0.62), toward_black(0.30))
     }
 
     /// Pure encoder — writes the backdrop into `scene` with `transform`
     /// applied. Used by the cache-miss branch of `paint_backdrop`.
-    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine) {
-        // 1. Diagonal gradient: top-left slate-900 → bottom-right slate-950.
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
+        // 1. Diagonal gradient across the theme's own ground.
+        let (near, far) = Self::ground_stops(theme);
+        let near = Color::from_rgba8(near[0], near[1], near[2], near[3]);
+        let far = Color::from_rgba8(far[0], far[1], far[2], far[3]);
         let gradient = Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x1, self.rect.y1),
@@ -210,11 +250,11 @@ impl DesktopBackdrop {
             &[
                 ColorStop {
                     offset: 0.0,
-                    color: Color::from_rgb8(0x0f, 0x17, 0x2a).into(),
+                    color: near.into(),
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: Color::from_rgb8(0x02, 0x06, 0x17).into(),
+                    color: far.into(),
                 },
             ][..],
         );
@@ -350,7 +390,7 @@ impl Widget for DesktopBackdrop {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -365,7 +405,7 @@ impl Widget for DesktopBackdrop {
         presence: &PresenceCtx,
         permissions: &PermissionContext,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw_with_presence(
                 scene,
