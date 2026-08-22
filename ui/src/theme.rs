@@ -131,6 +131,35 @@ impl Theme {
     /// A clean, faintly-warm neutral light theme.
     pub fn light() -> Self { Self::from_tokens("Light", Tokens::light()) }
 
+    /// Ink tiers for content painted directly on the window card. Thin
+    /// forwarder to [`crate::tokens::Colors::on_card`] so a widget that
+    /// already holds a `&Theme` does not have to reach through `tokens`.
+    pub fn on_card(&self) -> crate::tokens::colors::OnCard {
+        self.tokens.colors.on_card()
+    }
+
+    /// This theme with its three text tiers re-pointed at the ink the
+    /// **window card** takes ([`Theme::on_card`]).
+    ///
+    /// Shared widgets read every colour off the theme they are handed, so a
+    /// hosted app that paints no background of its own — and therefore
+    /// renders straight onto the card — hands them this instead of the
+    /// ambient theme. That keeps `EmptyState`, `Button` and friends legible
+    /// on the card without every widget growing an on-card colour parameter
+    /// for one caller.
+    ///
+    /// On a theme whose card already matches its chrome this is a no-op
+    /// clone, which is the common case; it earns its keep on the presets
+    /// where the card sits on the other side of the light/dark line.
+    pub fn on_window_card(&self) -> Self {
+        let on = self.on_card();
+        let mut card = self.clone();
+        card.text_primary = on.ink;
+        card.text_dim = on.ink_dim;
+        card.text_tertiary = on.ink_tertiary;
+        card
+    }
+
     /// Build a theme from a compact [`PaletteSpec`]. The default typography /
     /// spacing / motion tokens come from the matching (dark or light) base;
     /// the whole colour set is expanded by [`Colors::themed`].
