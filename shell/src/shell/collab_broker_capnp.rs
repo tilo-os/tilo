@@ -2520,4 +2520,98 @@ mod tests {
         );
         drop(handle);
     }
+    /// Three kinds of frame share the op stream, and a reader can only
+    /// tell them apart if the broker says which is which.
+    ///
+    /// When it did not, the SDK decoded every frame as a postcard
+    /// `SignedOp` and `continue`d past the ones that failed — which is
+    /// every unsigned frame there is. Presence crossed, the document did
+    /// not, and a peer's caret moved over a blank page. Asserting on the
+    /// tag rather than only on the bytes is the point: the bytes always
+    /// arrived, and were thrown away on the far side of this RPC.
+    #[test]
+    fn an_unsigned_frame_reaches_a_subscriber_tagged_with_its_kind() {
+        let (json_path, capnp_path) = unique_paths("capnp-unsigned-kind");
+        let handle =
+            spawn_full(json_path.clone(), Some(capnp_path.clone()), None).expect("spawn broker");
+
+        let channel_id = CrdtRoute::record(
+            "dev.qos.words",
+            uuid::Uuid::new_v4().to_string(),
+            "/notes/a.md",
+        )
+        .channel_key();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let capnp_path_clone = capnp_path.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                // The reader is a second connection: the fanout skips
+                // the sender's own peer id, so one client talking to
+                // itself would prove nothing.
+                let (rc, _rd) = dial_capnp_for_test(capnp_path_clone.clone())
+                    .await
+                    .expect("dial reader");
+                let reader = runtime_collab::CollabClient::from_raw(rc);
+                let rch = reader
+                    .join_channel(&channel_id, b"reader")
+                    .await
+                    .expect("join reader");
+                let sub = rch.subscribe().await.expect("subscribe");
+
+                let (wc, _wd) = dial_capnp_for_test(capnp_path_clone)
+                    .await
+                    .expect("dial writer");
+                let writer = runtime_collab::CollabClient::from_raw(wc);
+                let wch = writer
+                    .join_channel(&channel_id, b"writer")
+                    .await
+                    .expect("join writer");
+
+                wch.send_unsigned_incremental(b"a-change-blob")
+                    .await
+                    .expect("send delta");
+                let delta = sub.read().await.expect("read delta");
+                wch.send_unsigned_snapshot(b"a-whole-document")
+                    .await
+                    .expect("send snapshot");
+                let snapshot = sub.read().await.expect("read snapshot");
+                let _ = tx.send((delta, snapshot));
+            });
+        });
+
+        let (delta, snapshot) = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the subscriber received both frames");
+
+        assert_eq!(
+            delta.kind,
+            runtime_collab::OpKind::UnsignedIncremental,
+            "a delta must arrive tagged as a delta; tagged as an envelope it is decoded \
+             as one, fails to decode, and is dropped without a word",
+        );
+        assert_eq!(
+            delta.op,
+            b"a-change-blob".to_vec(),
+            "the delta's bytes cross unchanged",
+        );
+        assert_eq!(
+            snapshot.kind,
+            runtime_collab::OpKind::UnsignedSnapshot,
+            "a whole document must arrive tagged as one: it is merged into the reader's \
+             document, and applying it as a delta does nothing at all",
+        );
+        assert_eq!(
+            snapshot.op,
+            b"a-whole-document".to_vec(),
+            "the document's bytes cross unchanged",
+        );
+
+        drop(handle);
+    }
 }

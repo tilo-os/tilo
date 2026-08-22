@@ -1876,6 +1876,8 @@ fn topbar_right_cluster_paints_no_avatar_on_a_first_boot() {
         !contains_color_close(&fills, (249, 115, 22), 8),
         "first-boot top bar painted Bob's cursor hue #f97316. Observed \
          solid fills: {fills:?}"
+    );
+}
 
 /// The same wiring, run the other way: a workspace nobody has joined
 /// paints no avatars at all.

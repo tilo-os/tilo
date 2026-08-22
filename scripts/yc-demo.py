@@ -59,16 +59,21 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
+import threading
+import time
+import zlib
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
-from reaper import die_with_parent
+# `reaper` lives beside the other headless drivers rather than on the
+# path, so it is imported by location — after `sys`, which the line
+# doing the importing needs.
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
+from reaper import die_with_parent, track   # noqa: E402
 
 # Set from `--keep`. Off means the kernel reaps a compositor with this
 # script, however this script dies.
 KEEP_SESSIONS = False
-import sys
-import threading
-import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -199,6 +204,21 @@ class Session:
     def collab_sock(self) -> str:
         return os.path.join(self.runtime_dir, "qos", "services", "collab.sock")
 
+    @property
+    def collab_json_sock(self) -> str:
+        """The broker's legacy JSON listener.
+
+        One broker serves both sockets (`collab_broker::spawn_full`, wired
+        at `native.rs:1788`), so a JSON connection announcing the same
+        `(app, room, record)` address a packaged app announces lands in
+        that app's channel — even though the app itself reached the same
+        broker over capnp. That is what lets this script ask a *running
+        app* for the document it holds without being able to see its
+        screen.
+        """
+        return os.path.join(self.runtime_dir, "qos", "services",
+                            "collab-json.sock")
+
     # -- lifecycle ---------------------------------------------------
 
     def start(self) -> None:
@@ -212,6 +232,21 @@ class Session:
         env.pop("WAYLAND_DISPLAY", None)
         env.pop("QUICK_COLLAB_SOCK", None)
         env.pop("QUICK_COLLAB_CAPNP_SOCK", None)
+        # One language on screen. An app reads `LC_ALL`, then `LANGUAGE`,
+        # then `LANG` (`apps/word-processor/src/i18n.rs:88`), bwrap does
+        # not clear the environment, and the machine filming this is
+        # German — so the shell chrome said "Home" and "Word Processor"
+        # in English while the toolbar under it read "Neu / Tabelle /
+        # Stile / Schriftart". Two languages in one frame reads as broken
+        # software, and every assertion in this file passed while it did:
+        # nothing here looks at a word on the screen.
+        #
+        # A real qOS install has the OS set this and cannot drift; a
+        # session nested on somebody's desktop inherits whatever they
+        # use, so the harness pins it. `LANGUAGE` is dropped rather than
+        # set, because it outranks `LANG` and is a colon-separated list
+        # that would quietly win.
+        env.pop("LANGUAGE", None)
         env.update(
             XDG_RUNTIME_DIR=self.runtime_dir,
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
@@ -226,6 +261,8 @@ class Session:
             # identities nobody at this machine can administer, into
             # somebody's live desktop. `--out` is absolutised for the
             # same reason; this is the belt to that pair of braces.
+            LC_ALL="en_US.UTF-8",
+            LANG="en_US.UTF-8",
             QOS_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
             QOS_USER_ID=self.user,
             QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
@@ -245,6 +282,15 @@ class Session:
             # not quietly an install in another.
             QOS_STORE_CONFIG_DIR=os.path.join(self.dir, "store-config"),
             QOS_STORE_CACHE_DIR=os.path.join(self.dir, "store-cache"),
+            # Makes a `ui` app name the record it checked out, on the
+            # session log. Beat 7 depends on two apps announcing the
+            # *same* address, and the only address two sessions can share
+            # here is the untitled one: a record identified by a path
+            # would be a different id on each side, because each session
+            # has a home of its own. If that beat ever reports that
+            # nobody answered, this line is what says whether the two
+            # apps were even listening on the same channel.
+            QUICK_COLLAB_DEBUG="1",
         )
         # The packaging chain, when it is on disk. Passed by path rather
         # than found on PATH so the run measures the binaries built for it.
@@ -272,6 +318,13 @@ class Session:
             start_new_session=KEEP_SESSIONS,
             preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS),
         )
+        # The kernel's PDEATHSIG covers the case nothing in userspace can
+        # (this process being SIGKILLed). The exit sweep covers the one it
+        # does not: a child that outlived an intermediate parent and was
+        # reparented. A `--keep` run is asking for survivors and gets no
+        # sweep.
+        if not KEEP_SESSIONS:
+            track(self.proc)
 
     def wait_ready(self, timeout: float = 90.0) -> None:
         deadline = time.time() + timeout
@@ -483,21 +536,57 @@ class Session:
 
     # -- launching ---------------------------------------------------
 
-    def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S) -> dict | None:
+    def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
+               search: str | None = None) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
         announces the same wayland app-id: a launch that opened nothing
         is otherwise indistinguishable from one that worked, the previous
         window still being on screen and still painting.
+
+        Two routes, and falling from one to the other is a fact about the
+        compositor rather than a preference. `actions_invoke` resolves an
+        address against a catalogue built with an **empty** query
+        (`native.rs:606`), and the applications provider answers an empty
+        query with a ranked default set rather than with all of it. On a
+        session with forty-odd apps installed most of them are therefore
+        unaddressable that way, and the refusal is `unknown_action` — the
+        same answer as "no such app", because the gate deliberately will
+        not tell a caller what it is not being shown.
+
+        So when the address is refused, the app is opened the way a
+        person opens it: the palette, its name typed, the offered row
+        activated. Same provider, same launch path, one keystroke instead
+        of none — and the route taken is printed, because "opened by
+        address" and "opened by typing its name" are different claims and
+        only one of them was true.
         """
         before = {f.get("surface_id") for f in self.foreign_frames()}
         resp = call(self.sock, {"op": "actions_invoke",
                                 "provider": APPLICATIONS, "id": app_id})
         if "err" in resp:
-            note(f"{self.name}: launching {app_id} was refused — "
-                 f"{json.dumps(resp['err'])[:160]}")
-            return None
+            code = (resp["err"] or {}).get("code")
+            if code != "unknown_action" or search is None:
+                note(f"{self.name}: launching {app_id} was refused — "
+                     f"{json.dumps(resp['err'])[:160]}")
+                return None
+            note(f"{self.name}: ({APPLICATIONS}, {app_id}) is not in the "
+                 f"catalogue an empty query builds, so it is opened from "
+                 f"the palette instead — searching {search!r}")
+            self.modifiers(logo=True)
+            self.key("k")
+            self.modifiers()
+            self.settle(0.4)
+            self.type_text(search)
+            self.settle(1.2)
+            rows = self.palette().get("rows") or []
+            if not any(app_id in json.dumps(r) for r in rows):
+                note(f"{self.name}: no palette row offers {app_id} for "
+                     f"{search!r} (rows: {[r.get('id') for r in rows][:6]})")
+                self.key("Escape")
+                return None
+            self.key("Enter")
         deadline = time.time() + timeout
         while time.time() < deadline:
             for f in self.foreign_frames():
@@ -1104,12 +1193,65 @@ def peer_id_of(s: Session) -> str:
     return "<unknown>"
 
 
+def frame_both_windows(s: Session) -> None:
+    """Give every group in the strip an even share of it.
+
+    The default is about three quarters each, which is right for reading
+    one window and wrong for filming two: the second one opens mostly
+    past the right edge, and a beat whose subject is that window shows
+    half of it. This is a camera decision, not a claim — it changes what
+    is in frame and nothing about what happened.
+    """
+    resp = s.set_group_width(500)
+    if "err" in resp:
+        note(f"{s.name}: could not even out the strip — "
+             f"{json.dumps(resp['err'])[:120]}")
+    s.settle(0.6)
+
+
+def peer_sync_card_up(s: Session) -> bool:
+    """Whether the peer-sync card is being painted over the middle of the
+    screen.
+
+    The compositor paints it whenever either field is set
+    (`overlay_host.rs:9104`), so both have to be clear before it is gone —
+    checking only the token left the connect prompt on screen.
+    """
+    ps = s.chrome()["peer_sync"]
+    return ps["invite_token"] is not None or ps["connect_input"] is not None
+
+
+def dismiss_peer_sync_card(s: Session, what: str) -> None:
+    """Close the peer-sync card, and prove it closed.
+
+    Sending Escape and moving on is what put a stale modal over the two
+    most interesting beats in a recorded run: the card sat in the middle
+    of the frame for a minute after the invite, and the word processor
+    opened behind it. Escape reaches the overlay host only when nothing
+    else has taken the key first, so the dismissal is retried and then
+    asserted — a beat filmed behind a dialog is a beat nobody can read.
+
+    It also holds a bearer credential. The token is a signed blob that
+    admits its holder to a real room, and it stays legible on screen for
+    as long as the card is up, so the frame is cleared as soon as the
+    token has been captured rather than whenever the next beat happens
+    to press a key.
+    """
+    for _ in range(4):
+        if not peer_sync_card_up(s):
+            return
+        s.key("Escape")
+        s.settle(0.4)
+    claim(f"{s.name}'s {what} card is off the screen",
+          peer_sync_card_up(s), False)
+
+
 def mint_invite(host: Session) -> str | None:
     host.run_palette_command("invite peer", expect_id="result:0")
     token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"], timeout=20)
-    # Dismiss the card: it is a modal over the middle of the screen.
-    host.key("Escape")
-    host.settle(0.3)
+    # The moment it has been read, and not one beat later: it is a modal
+    # over the middle of the screen and it is showing a live token.
+    dismiss_peer_sync_card(host, "invite")
     return token
 
 
@@ -1135,9 +1277,169 @@ def join_room(guest: Session, token: str, by_action_api: bool) -> bool:
     joined = wait_for(
         lambda: (guest.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
         timeout=15)
-    guest.key("Escape")
-    guest.settle(0.3)
+    dismiss_peer_sync_card(guest, "connect")
     return bool(joined)
+
+
+# --------------------------------------------------------------------
+# asking a running app what it holds
+# --------------------------------------------------------------------
+
+
+class DocumentReader:
+    """A late joiner that asks one session's app for its document.
+
+    Beat 7 is the only claim in this demo whose subject is a *client's*
+    insides, and the compositor has no op that reads them: `state_dump`
+    knows a foreign surface exists and painted, never what is written on
+    it. Comparing two screenshots was the previous answer, and it is not
+    an answer — a person has to look, and a run that films nothing
+    reports the same silence as a run that films everything.
+
+    So this asks the app instead, in the app's own protocol. It speaks
+    the length-prefixed JSON `CollabRequest`/`CollabEvent` the toolkit
+    speaks (`ui/src/collaboration.rs`), announces the same
+    `(app_id, cluster_id, record)` address the word processor announces,
+    and then sends the one frame every toolkit answers with its whole
+    document: `Presence { Arrived }` (`collab_broker.rs:1149`, and the
+    same handshake `qos-agent` opens with, `apps/agent/src/session.rs:72`).
+
+    What comes back is therefore **produced by the app running in that
+    session, out of the document that app is holding**. It is not the
+    wire being read back to itself: a snapshot that carries the text
+    means the far app's own document carries it, and a snapshot that
+    does not means the two documents have not converged. Both are
+    reported; neither is inferred from the other.
+    """
+
+    # The presence scope the word processor's toolkit answers on. Same
+    # constant `qos-agent` uses, for the same reason: a different scope
+    # is a different conversation and gets no reply.
+    SCOPE = "word-processor"
+
+    def __init__(self, sock_path: str, room: str, record: str | None,
+                 handle: str = "readback") -> None:
+        self.frames: list[dict] = []
+        self.err: str | None = None
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(10.0)
+        self.sock.connect(sock_path)
+        self._send({"Hello": {"app_id": WORD_PROCESSOR, "cluster_id": room,
+                              "record": record, "handle": handle}})
+        self._send({"Presence": {"key": {"Workspace": {"id": self.SCOPE}},
+                                 "payload": "Arrived"}})
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _send(self, obj: dict) -> None:
+        body = json.dumps(obj).encode()
+        self.sock.sendall(len(body).to_bytes(4, "little") + body)
+
+    def _read(self) -> None:
+        try:
+            f = self.sock.makefile("rb")
+            while True:
+                hdr = f.read(4)
+                if not hdr or len(hdr) < 4:
+                    return
+                body = f.read(int.from_bytes(hdr, "little"))
+                if not body:
+                    return
+                try:
+                    self.frames.append(json.loads(body.decode()))
+                except Exception:
+                    pass
+        except Exception as e:              # the session went away
+            self.err = str(e)
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+    # -- what arrived ------------------------------------------------
+
+    def documents(self) -> list[bytes]:
+        """Every whole-document frame an app has answered with."""
+        out = []
+        for m in list(self.frames):
+            if "CRDTUpdate" in m:
+                out.append(bytes(m["CRDTUpdate"]["data"]))
+        return out
+
+    def deltas(self) -> list[bytes]:
+        """Change frames, signed or not. Evidence of traffic, not of state."""
+        out = []
+        for m in list(self.frames):
+            if "CRDTIncremental" in m:
+                out.append(bytes(m["CRDTIncremental"]["data"]))
+            elif "SignedCRDTIncremental" in m:
+                env = m["SignedCRDTIncremental"].get("envelope") or {}
+                payload = env.get("payload")
+                if isinstance(payload, list):
+                    out.append(bytes(payload))
+        return out
+
+    def await_document(self, needle: str, timeout: float):
+        """Wait for a document frame, preferring one that carries `needle`.
+
+        Returns `(document_bytes, carries_needle)`, or `(None, False)` if
+        no app ever answered. Keeps waiting after the first snapshot
+        arrives: a late joiner can be answered before the far app has
+        applied the change being watched for, and the first frame is
+        then a true document that is simply older than the question.
+        """
+        deadline = time.time() + timeout
+        newest: bytes | None = None
+        seen: set[int] = set()          # blobs already searched, by id
+        while time.time() < deadline:
+            docs = self.documents()
+            if docs:
+                newest = docs[-1]
+            # A delta carries the text too, and does when the far app was
+            # already attached while it was typed. Both kinds are worth
+            # searching; only a document is worth reporting a size for.
+            for blob in docs + self.deltas():
+                key = hash(blob)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _carries(blob, needle):
+                    return (newest if newest is not None else blob), True
+            time.sleep(0.5)
+        return newest, False
+
+
+def _carries(blob: bytes, needle: str) -> bool:
+    """Whether an Automerge blob contains `needle` as stored text.
+
+    Automerge keeps a text object's characters as UTF-8 in a value
+    column, so a phrase spliced into a document is present in the saved
+    bytes — that is what makes this readable without an Automerge
+    binding. Columns above a size threshold are DEFLATE'd, so any span
+    that inflates is searched as well rather than being reported as an
+    absence.
+    """
+    want = needle.encode()
+    if want in blob:
+        return True
+    # Only then the compressed spans, and only the plausible ones: a
+    # zlib stream starts 0x78 followed by one of four check bytes, which
+    # takes the candidate count from "every byte" to a handful. Bounded
+    # anyway — this runs inside a polling loop, and a scan that costs
+    # more than the hop it is watching for would time the beat out
+    # itself.
+    for start in range(min(len(blob), 1 << 20)):
+        if blob[start] != 0x78 or start + 1 >= len(blob):
+            continue
+        if blob[start + 1] not in (0x01, 0x5E, 0x9C, 0xDA):
+            continue
+        try:
+            if want in zlib.decompressobj().decompress(blob[start:], 1 << 24):
+                return True
+        except zlib.error:
+            continue
+    return False
 
 
 # --------------------------------------------------------------------
@@ -1461,9 +1763,14 @@ def beat_four(ada: Session, bob: Session, agent: Session,
         claim("bob's session paints ada's cursor, under his user id",
               bool(on_bob), True)
     else:
-        gap("no cross-session pointer reached bob's presence layer in "
-            f"{SYNC_TIMEOUT_S:.0f}s — the peer table holds the room, but "
-            "a cursor is not being painted for a peer at the desktop level")
+        gap("no cursor is painted for a peer at the desktop level, and "
+            "none is expected to be: `RemoteCursorOverlay` "
+            "(shell/src/shell/remote_cursors.rs) is mounted in tests and "
+            "nowhere in the native compositor. Presence is a property of a "
+            "shared *app*, not of the strip — so the cursors this "
+            "storyboard promises are filmed in beat 7, inside the document "
+            "both of them have open, and this beat shows only that the "
+            "room itself crossed")
     bob.snapshot(os.path.join(shots, "03-bob-joined.png"))
 
     cut("ada")
@@ -1472,8 +1779,9 @@ def beat_four(ada: Session, bob: Session, agent: Session,
         claim("and ada's paints bob's, the other way",
               bool(on_ada), True)
     else:
-        gap("the same in the other direction: bob's cursor did not reach "
-            "ada's presence layer")
+        gap("the same in the other direction, for the same reason — a "
+            "desktop-level cursor overlay is not part of the native "
+            "compositor")
 
 
 def beat_five(ada: Session, registry, shots: str) -> dict | None:
@@ -1531,28 +1839,43 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
          f"an unoptimised payload; not a number to quote")
     claim("and it is installed now, on the machine that lacked it",
           WORD_PROCESSOR in set(installed_ids(ada.apps_dir)), True)
+    # A group takes about three quarters of the strip by default, so the
+    # second window opens mostly past the right edge — the strip is
+    # working exactly as designed, and the app the beat is about is half
+    # off screen while it does. Give every group an even share, so the
+    # window this beat just opened is actually in the frame that shows it.
+    frame_both_windows(ada)
     ada.snapshot(os.path.join(shots, "05-word-processor.png"))
     return painted
 
 
-def beat_six(ada: Session, bob: Session, shots: str) -> str | None:
+def beat_six(ada: Session, bob: Session, baseline: dict,
+             shots: str) -> str | None:
     banner("6.  cut to bob — the window is open for him too")
 
-    # Where bob is looking, before anything arrives. Both halves of the
-    # rule get asserted, because either alone is easy to satisfy wrongly:
-    # the window must arrive, *and* he must not be moved to it.
+    # Both halves of the rule get asserted, because either alone is easy
+    # to satisfy wrongly: the window must arrive, *and* he must not be
+    # moved to it.
+    #
+    # The baseline is taken before beat 5 opens anything, not here.
+    # Measuring "a tab ada has that bob lacks" at this point asks
+    # the question after the answer: replication is quick, and a run
+    # where the window had already crossed reported that there was
+    # nothing to watch — the success and the failure both came out as
+    # silence. What is watched instead is the tab that did not exist
+    # when the baseline was taken, which is the window beat 5 opened.
     cut("bob")
-    before_view = bob.view_state()
-    before_groups = bob.groups_here()
+    before_view = baseline["view"]
+    before_groups = baseline["groups"]
     q_tabs = set(ada.tabs_here())
-    fresh = [t for t in q_tabs if t not in set(bob.tabs_here())]
+    fresh = [t for t in q_tabs if t not in baseline["tabs"]]
     note(f"ada holds {len(q_tabs)} tab(s); bob holds "
-         f"{len(bob.tabs_here())}")
+         f"{len(bob.tabs_here())}; {len(fresh)} opened since the baseline")
 
     step("the tab ada's word processor opened, read out of bob's tree")
     if not fresh:
-        gap("ada's session had no tab bob lacked, so there was "
-            "nothing to watch cross")
+        gap("beat 5 opened no window on ada's session, so there was "
+            "nothing for this beat to watch cross")
         return None
     tid = sorted(fresh)[0]
     landed = wait_for(lambda: tid in bob.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
@@ -1581,19 +1904,32 @@ def beat_six(ada: Session, bob: Session, shots: str) -> str | None:
     return tid
 
 
-def beat_seven(ada: Session, bob: Session, shots: str) -> None:
+def beat_seven(ada: Session, bob: Session, host_ws: dict,
+               ada_wp: dict | None, shots: str) -> None:
     banner("7.  ada writes, and bob's screen is asked what it holds")
+    room = host_ws["room"]
+
+    # If beat 5 never got a word processor onto ada's machine there is
+    # nothing here to type into, and typing anyway would send the text to
+    # whatever happened to hold focus — which reads afterwards exactly
+    # like a document that failed to cross. Say which of the two it was.
+    if ada_wp is None:
+        gap("ada has no word processor open (beat 5 did not put one "
+            "there), so there was nothing for him to write in and nothing "
+            "for this beat to watch cross")
+        return
 
     step("bob opens the word processor on his own machine")
     cut("bob")
     # His machine runs its own copy and draws it locally. Nothing is
     # streamed; the two copies share one document.
-    his = bob.launch(WORD_PROCESSOR)
+    his = bob.launch(WORD_PROCESSOR, search="word processor")
     claim("bob's word processor painted", his is not None, True)
     if his is None:
         gap("bob has no word processor open, so there is no far screen "
             "to read a document back off")
         return
+    frame_both_windows(bob)
     # Both apps have to have attached to their broker and announced their
     # address before either types, or the first keystrokes go out to
     # nobody and it reads as a transport failure.
@@ -1618,34 +1954,85 @@ def beat_seven(ada: Session, bob: Session, shots: str) -> None:
         rows = (bob.peers() or {}).get("pointers") or []
         return [r for r in rows if r.get("user") == ada.user] or None
 
-    seen = wait_for(ada_present, timeout=DOC_SYNC_TIMEOUT_S)
+    seen = wait_for(ada_present, timeout=SYNC_TIMEOUT_S)
     if seen:
         claim("bob's screen carries ada while he is typing",
               bool(seen), True)
     else:
         gap("ada's presence did not reach bob's session")
-    bob.settle(6.0)
-    shot = os.path.join(shots, "08-bob-received.png")
-    bob.snapshot(shot)
-    # The document's own contents are the one claim this harness cannot
-    # make for itself. There is no op that reads a client's document back,
-    # so the evidence is the two screenshots, and saying so is the only
-    # honest thing to do with a beat whose proof is pixels.
-    gap("whether the typed text is in bob's document is not machine-"
-        f"readable from here — compare {os.path.basename(shot)} against "
-        f"07-ada-typed.png; a client's document has no readback op")
+
+    step("and his word processor is asked for the document it is holding")
+    # The beat itself, and the one claim whose subject is inside a
+    # client. Asked of bob's *app*, in the app's own protocol: a late
+    # joiner on his session's broker announces the word processor's
+    # address and sends the `Arrived` every toolkit answers with its
+    # whole document. What comes back was produced by his running app
+    # out of the document it holds, so the answer is about his screen
+    # and not about the wire.
+    #
+    # The camera stays on bob for the whole wait, so if the document
+    # converges the arrival is on film rather than described afterwards.
+    reader = None
+    doc, carried = None, False
+    try:
+        reader = DocumentReader(bob.collab_json_sock, room, record=None)
+        doc, carried = reader.await_document(TYPED_TEXT, DOC_SYNC_TIMEOUT_S)
+    except OSError as e:
+        gap(f"bob's session has no JSON broker to ask ({e}) — "
+            f"looked at {bob.collab_json_sock}")
+    finally:
+        if reader is not None:
+            reader.close()
+
+    # Which of the three outcomes this was decides how it is recorded,
+    # and the distinction is not cosmetic. A document that came back
+    # without the text is a question that was *asked and answered*: the
+    # claim is false, it counts as a failure, and it gates the exit code
+    # like every other claim here. Silence is a different thing — nothing
+    # was established either way — and that is what a GAP is for.
+    if doc is not None:
+        claim("bob's own word processor holds what ada typed",
+              carried, True)
+        if carried:
+            note(f"answered with a {len(doc)} byte document carrying "
+                 f"{TYPED_TEXT!r} — produced by his app out of the "
+                 f"document it holds, not read back off the wire")
+        else:
+            note(f"his app answered with {len(doc)} bytes and none of it "
+                 f"is {TYPED_TEXT!r}: the two apps are attached and "
+                 f"answer each other's handshake, and their documents "
+                 f"are still two documents. Presence crosses, the "
+                 f"document does not, and nothing on his screen shows "
+                 f"what ada wrote")
+    else:
+        gap(f"no app in bob's session answered the late-join handshake "
+            f"within {DOC_SYNC_TIMEOUT_S:.0f}s, so his document was never "
+            f"read back — this run establishes nothing about beat 7 in "
+            f"either direction. See {bob.log_path}")
+    bob.settle(2.0)
+    bob.snapshot(os.path.join(shots, "08-bob-received.png"))
 
 
 def beat_eight(ada: Session, shots: str) -> None:
     banner("8.  an image into the document, through the OS file chooser")
     cut("ada")
 
-    # Why this and not a drag out of Files: the drag that exists is
-    # promoted from the compositor's *own* file-manager chrome, and this
-    # session's Files is a sandboxed client — nothing in the app or in
-    # the toolkit opens a wl_data_source, so there is no drag for the
-    # compositor to promote. The chooser is the better beat anyway: it is
-    # the sandbox boundary on screen.
+    # Which of the two routes this films, decided on the code rather
+    # than on preference. The built drag is promoted from the
+    # compositor's *own* file-manager chrome; the Files on screen here is
+    # the launched `dev.qos.file-explorer`, a sandboxed Wayland client,
+    # and neither it nor the toolkit ever opens a `wl_data_source`
+    # (`grep -rn 'start_drag\|wl_data_source' apps/file-explorer/src
+    # ui/src` finds only in-process tab dragging). There is no client
+    # drag for the compositor to promote, so there is nothing to film.
+    #
+    # The chooser is the better beat anyway, and not as a consolation:
+    # the drag would show a file moving, and this shows the sandbox —
+    # the app asks, the OS chooses, and what the app is handed is bytes
+    # rather than a path it has no right to read.
+    note("filming the OS file chooser, not a drag: the launched Files is a "
+         "sandboxed client and opens no wl_data_source, so no client drag "
+         "exists for the compositor to promote")
     note("the app cannot read the folder; the OS hands it the bytes")
     photo = os.path.join(ada.home, "Demo", "photo.png")
     claim("there is an image to insert", os.path.exists(photo), True)
@@ -1669,14 +2056,31 @@ def beat_eight(ada: Session, shots: str) -> None:
     # The image control sits in the toolbar strip under the tile's top
     # edge. Swept rather than guessed once: a miss is a click on inert
     # chrome, and the chooser opening is what says it was hit.
-    for frac in (0.34, 0.40, 0.46, 0.28, 0.52, 0.58, 0.22, 0.64):
-        ada.click_at(tx + tw * frac, ty + th * 0.055)
-        ada.settle(1.1)
-        names = set(ada.target_names())
-        fresh = {n for n in names if n not in before}
-        if any("chooser" in n.lower() or "file_row" in n.lower()
-               or "portal" in n.lower() for n in fresh):
-            opened = sorted(fresh)[:8]
+    #
+    # Two dimensions, because one was not enough. The toolbar's distance
+    # from the top of the tile depends on what the app stacked above it —
+    # a tab strip, a title row — and a sweep along a single line at 5.5%
+    # crossed inert chrome on every step and concluded the control was
+    # not there. The rows are ordered nearest-first so the usual case
+    # still lands in the first few clicks.
+    #
+    # The button carries `a11y-insert-image` inside the app's own widget
+    # tree (`apps/word-processor/src/widget.rs:4231`), which is exactly
+    # the name this would use if a client's widgets were addressable from
+    # the compositor. They are not, so this stays aimed at pixels.
+    for row in (0.055, 0.085, 0.035):
+        for frac in (0.34, 0.40, 0.46, 0.28, 0.52):
+            ada.click_at(tx + tw * frac, ty + th * row)
+            # Short: a sweep that has to miss most of the time should
+            # cost the recording as little as possible while it does.
+            ada.settle(0.4)
+            names = set(ada.target_names())
+            fresh = {n for n in names if n not in before}
+            if any("chooser" in n.lower() or "file_row" in n.lower()
+                   or "portal" in n.lower() for n in fresh):
+                opened = sorted(fresh)[:8]
+                break
+        if opened:
             break
     if opened is None:
         gap("the word processor's image control was not found by sweeping "
@@ -1794,9 +2198,18 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     beat_two(ada, bob, host_ws)
     beat_three(ada, agent, host_ws)
     beat_four(ada, bob, agent, host_ws, shots)
-    beat_five(ada, registry, shots)
-    beat_six(ada, bob, shots)
-    beat_seven(ada, bob, shots)
+    # Everything bob holds and is looking at *before* the word
+    # processor exists anywhere. Beat 6 measures against this rather than
+    # against the state it finds when it starts, so "the window crossed
+    # before we looked" reads as the success it is.
+    baseline = {
+        "tabs": set(bob.tabs_here()),
+        "view": bob.view_state(),
+        "groups": bob.groups_here(),
+    }
+    wp = beat_five(ada, registry, shots)
+    beat_six(ada, bob, baseline, shots)
+    beat_seven(ada, bob, host_ws, wp, shots)
     beat_eight(ada, shots)
     beat_nine(ada, bob, agent, shots)
 
