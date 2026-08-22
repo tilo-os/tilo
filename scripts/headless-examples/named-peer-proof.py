@@ -531,14 +531,18 @@ def main() -> int:
         time.sleep(8.0)
 
         step("quinten writes, so there is a document for xaver to stand in")
-        quinten.click_at(800.0, 560.0)
+        # Inside the page, not under it. The layout bar sits below the
+        # canvas, and a click that lands there focuses chrome — so the
+        # text goes somewhere that is not the document and the run reads
+        # afterwards exactly like a document that failed to sync.
+        quinten.click_at(600.0, 380.0)
         time.sleep(1.5)
         quinten.type_text("The room knows who is in it.")
         time.sleep(3.0)
         quinten.snapshot(os.path.join(shots, "01-quinten-typed.png"))
 
         step("and xaver puts his caret in it")
-        xaver.click_at(800.0, 560.0)
+        xaver.click_at(600.0, 380.0)
         time.sleep(1.5)
         xaver.type_text(" Xaver was here.")
         time.sleep(4.0)
