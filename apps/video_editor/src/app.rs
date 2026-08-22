@@ -122,8 +122,9 @@ enum Drag {
     /// keeps the previous selection (shift held). A press that never leaves
     /// [`MARQUEE_THRESHOLD`] falls back to scrubbing on release.
     Marquee { origin: Point, additive: bool },
-    /// Dragging the timeline's horizontal scrollbar thumb.
-    Scrollbar,
+    /// Dragging a scrollbar thumb. The variant names which pane's bar, so
+    /// one drag arm serves the timeline, the inspector and the bin.
+    Scrollbar(ScrollPane),
     Opacity,
     Volume,
     Brightness,
@@ -230,6 +231,19 @@ const BIN_DOUBLE_CLICK_MS: u128 = 400;
 /// this bound a bin item, once clicked, could never be dragged again.
 const BIN_RENAME_WINDOW_MS: u128 = 2_000;
 
+/// A scrollable pane of the editor. Each owns an offset, a shared
+/// [`ui::widget::Scrollbar`] interaction model and a track rect; naming them
+/// lets one press / drag / wheel arm serve all three.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ScrollPane {
+    /// The timeline's horizontal axis (seconds).
+    Timeline,
+    /// The inspector body's vertical axis (px).
+    Inspector,
+    /// The media bin's vertical axis (px).
+    Bin,
+}
+
 /// Which inspector slider a drag is editing. Brightness/contrast/saturation
 /// share one code path; the variant disambiguates the field.
 #[derive(Clone, Copy)]
@@ -328,11 +342,15 @@ pub struct VideoEditorApp {
     playhead: f64,
     zoom: f64,  // pixels per second
     scroll: f64, // seconds at the left edge of the lane area
-    /// Shared horizontal-scrollbar interaction model (thumb geometry, thumb
-    /// drag, track paging) — the same one [`ui::widget::Scrollable`] and
-    /// [`ui::widget::DocumentViewport`] use, so the timeline's bar behaves and
-    /// looks identical to every other scroll surface in the fleet.
+    /// Shared scrollbar interaction models (thumb geometry, thumb drag, track
+    /// paging) — the same ones [`ui::widget::Scrollable`] and
+    /// [`ui::widget::DocumentViewport`] use, so every bar here behaves and
+    /// looks identical to every other scroll surface in the fleet. One per
+    /// scrollable axis: the timeline scrolls horizontally, the inspector and
+    /// the media bin vertically.
     hbar: ui::widget::Scrollbar,
+    inspector_bar: ui::widget::Scrollbar,
+    bin_bar: ui::widget::Scrollbar,
     selection: Selection,
     selected_media: Option<MediaId>,
     playing: bool,
@@ -430,6 +448,10 @@ pub struct VideoEditorApp {
     /// Vertical scroll offset of the inspector body (px), so the effects stack
     /// can grow past the pane without clipping the actions.
     inspector_scroll: f64,
+    /// Vertical scroll offset of the media bin (px). Without it a project with
+    /// more sources than fit the pane drew the rest outside it, unreachable by
+    /// any means.
+    bin_scroll: f64,
     /// Representative (or, under decode, real) thumbnail frames per source.
     thumbnails: crate::thumbnail::ThumbnailCache,
     /// Real audio waveform peaks per source, computed off-thread and cached.
@@ -484,6 +506,8 @@ impl VideoEditorApp {
             zoom: 34.0,
             scroll: 0.0,
             hbar: ui::widget::Scrollbar::horizontal(),
+            inspector_bar: ui::widget::Scrollbar::vertical(),
+            bin_bar: ui::widget::Scrollbar::vertical(),
             selection: Selection::default(),
             selected_media: None,
             playing: false,
@@ -523,6 +547,7 @@ impl VideoEditorApp {
             bin_drag: None,
             file_hovering: false,
             inspector_scroll: 0.0,
+            bin_scroll: 0.0,
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
@@ -872,17 +897,133 @@ impl VideoEditorApp {
         v.into_iter().map(|m| m.id).collect()
     }
 
+    /// Row pitch of the media bin list, and where the first row starts.
+    const BIN_ROW_H: f64 = 56.0;
+    const BIN_LIST_TOP: f64 = 40.0;
+
     fn bin_item_rects(&self, r: &Regions) -> Vec<(MediaId, Rect)> {
         let mut out = Vec::new();
-        let mut y = r.bin.y0 + 40.0;
-        let row_h = 56.0;
+        let mut y = r.bin.y0 + Self::BIN_LIST_TOP - self.bin_scroll;
         for mid in self.bin_order() {
-            let rect = Rect::new(r.bin.x0 + 8.0, y, r.bin.x1 - 8.0, y + row_h - 6.0);
+            let rect = Rect::new(r.bin.x0 + 8.0, y, r.bin.x1 - 8.0, y + Self::BIN_ROW_H - 6.0);
             out.push((mid, rect));
-            y += row_h;
+            y += Self::BIN_ROW_H;
         }
         out
     }
+
+    /// Whether the media bin is on screen: docked, or an open overlay flap.
+    fn bin_is_visible(&self, r: &Regions) -> bool {
+        !r.bin_overlay || self.bin_flap.is_open(self.bin_layout())
+    }
+
+    /// The bin's visible list viewport — everything below the header band.
+    fn bin_viewport(&self, r: &Regions) -> Rect {
+        Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1)
+    }
+
+    /// Total height the bin list wants, in px.
+    fn bin_content_height(&self) -> f64 {
+        self.project.media.len() as f64 * Self::BIN_ROW_H + (Self::BIN_LIST_TOP - 30.0) + 8.0
+    }
+
+    fn bin_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            self.bin_content_height(),
+            self.bin_viewport(r).height(),
+            self.bin_scroll,
+        )
+    }
+
+    fn bin_max_scroll(&self, r: &Regions) -> f64 {
+        self.bin_metrics(r).max_scroll()
+    }
+
+    /// The bin's vertical scrollbar track, or `None` when the list fits.
+    fn bin_scroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.bin_metrics(r).overflows() {
+            return None;
+        }
+        let v = self.bin_viewport(r);
+        let x1 = v.x1 - SCROLLBAR_INSET;
+        Some(Rect::new(
+            x1 - SCROLLBAR_THICKNESS,
+            v.y0 + SCROLLBAR_INSET,
+            x1,
+            v.y1 - SCROLLBAR_INSET,
+        ))
+    }
+
+    fn inspector_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            r.inspector.height() + self.inspector_max_scroll(r),
+            r.inspector.height(),
+            self.inspector_scroll,
+        )
+    }
+
+    /// The inspector's vertical scrollbar track, or `None` when it all fits.
+    /// Replaces a painted-only thumb that had no hit-test at all — the pane's
+    /// EFFECTS section was clipped off the bottom and unreachable.
+    fn inspector_scroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.inspector_metrics(r).overflows() {
+            return None;
+        }
+        let x1 = r.inspector.x1 - SCROLLBAR_INSET;
+        Some(Rect::new(
+            x1 - SCROLLBAR_THICKNESS,
+            r.inspector.y0 + SCROLLBAR_INSET,
+            x1,
+            r.inspector.y1 - SCROLLBAR_INSET,
+        ))
+    }
+
+    /// Track rect + metrics + current offset for one scrollable pane, so the
+    /// press / drag / hover paths do not each re-derive them.
+    fn scroll_pane(&self, pane: ScrollPane, r: &Regions) -> Option<(Rect, ui::widget::ScrollMetrics)> {
+        match pane {
+            ScrollPane::Timeline => self.hscroll_track(r).map(|t| (t, self.h_metrics(r))),
+            ScrollPane::Inspector => {
+                self.inspector_scroll_track(r).map(|t| (t, self.inspector_metrics(r)))
+            }
+            ScrollPane::Bin => self.bin_scroll_track(r).map(|t| (t, self.bin_metrics(r))),
+        }
+    }
+
+    fn scroll_bar_mut(&mut self, pane: ScrollPane) -> &mut ui::widget::Scrollbar {
+        match pane {
+            ScrollPane::Timeline => &mut self.hbar,
+            ScrollPane::Inspector => &mut self.inspector_bar,
+            ScrollPane::Bin => &mut self.bin_bar,
+        }
+    }
+
+    fn scroll_bar(&self, pane: ScrollPane) -> &ui::widget::Scrollbar {
+        match pane {
+            ScrollPane::Timeline => &self.hbar,
+            ScrollPane::Inspector => &self.inspector_bar,
+            ScrollPane::Bin => &self.bin_bar,
+        }
+    }
+
+    /// Apply an absolute offset (in the bar's own px units) to `pane`.
+    fn set_scroll_offset(&mut self, pane: ScrollPane, offset: f64, r: &Regions) {
+        match pane {
+            ScrollPane::Timeline => self.set_scroll_px(offset, r),
+            ScrollPane::Inspector => {
+                let max = self.inspector_max_scroll(r);
+                self.inspector_scroll = offset.clamp(0.0, max);
+            }
+            ScrollPane::Bin => {
+                let max = self.bin_max_scroll(r);
+                self.bin_scroll = offset.clamp(0.0, max);
+            }
+        }
+    }
+
+    /// Every pane that currently shows a bar, for the hover / press sweeps.
+    const SCROLL_PANES: [ScrollPane; 3] =
+        [ScrollPane::Inspector, ScrollPane::Bin, ScrollPane::Timeline];
 
     // ---- playback --------------------------------------------------------
     fn advance_playback(&mut self) {
@@ -1553,7 +1694,7 @@ impl VideoEditorApp {
     /// If the cursor is over a visible bin item, open its context menu there.
     fn open_bin_menu_at_cursor(&mut self, r: &Regions) -> bool {
         let p = self.last_mouse;
-        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        let bin_visible = self.bin_is_visible(r);
         if !bin_visible {
             return false;
         }
@@ -2419,6 +2560,9 @@ impl Widget for VideoEditorApp {
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
         self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
+        // Same for the bin: deleting sources shortens the list under us.
+        let bin_max = self.bin_max_scroll(&r);
+        self.bin_scroll = self.bin_scroll.clamp(0.0, bin_max);
         // Keep the playhead on screen while it is moving under its own steam,
         // and the horizontal scroll inside a timeline whose length may have
         // just changed under us (a delete, a remote edit).
@@ -2558,7 +2702,9 @@ impl Widget for VideoEditorApp {
                     if let Some(Drag::Marquee { origin, additive }) = self.drag {
                         self.release_marquee(origin, additive, &r);
                     }
-                    self.hbar.release();
+                    for pane in Self::SCROLL_PANES {
+                        self.scroll_bar_mut(pane).release();
+                    }
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
                     self.commit_drag(state);
@@ -2602,13 +2748,27 @@ impl Widget for VideoEditorApp {
                     MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
                 };
                 let shift = modifiers.state().shift_key();
-                if r.inspector.contains(self.last_mouse) {
+                let over_bin = self.bin_is_visible(&r) && r.bin.contains(self.last_mouse);
+                let over_timeline = r.timeline.contains(self.last_mouse);
+                if r.inspector.contains(self.last_mouse) && !over_bin {
                     // Scroll the inspector body (its content can exceed the pane).
                     if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
                         self.inspector_scroll = (self.inspector_scroll - dy * 28.0).clamp(0.0, max);
                         *handled = true;
                     }
+                } else if over_bin {
+                    // Scroll the media bin list.
+                    if dy.abs() > 0.0 {
+                        let max = self.bin_max_scroll(&r);
+                        self.bin_scroll = (self.bin_scroll - dy * 40.0).clamp(0.0, max);
+                        *handled = true;
+                    }
+                } else if !over_timeline {
+                    // The preview and transport have nothing to scroll. A wheel
+                    // there used to zoom the timeline, which is a control the
+                    // pointer is nowhere near; leave the event unhandled so it
+                    // reaches the host instead of moving something off-screen.
                 } else if dx.abs() > 0.0 || (shift && dy.abs() > 0.0) {
                     // A horizontal wheel, or Shift + a vertical one, pans the
                     // timeline. One notch moves a fixed slice of the visible
@@ -2836,6 +2996,11 @@ impl VideoEditorApp {
             self.press_export(state, r, p);
             return;
         }
+        // Scrollbars float over their panes, so they are hit-tested before any
+        // content underneath them.
+        if self.press_scrollbars(r, p) {
+            return;
+        }
         // Hamburger toggle (overlay layout only).
         if r.bin_overlay && r.menu_btn.contains(p) {
             self.toggle_bin();
@@ -2864,7 +3029,7 @@ impl VideoEditorApp {
         // While the bin is an open overlay, a click on the scrim (anywhere
         // outside the flap and the topbar toggle) dismisses it — matching the
         // flap kernel's scrim/Esc behaviour.
-        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        let bin_visible = self.bin_is_visible(r);
         if r.bin_overlay && bin_visible && !r.bin.contains(p) && !r.menu_btn.contains(p) {
             self.bin_flap.close();
             return;
@@ -2960,26 +3125,31 @@ impl VideoEditorApp {
             }
             return;
         }
-        // The horizontal scrollbar floats over the bottom of the lane area, so
-        // it gets first refusal on a press there.
-        if let Some(track) = self.hscroll_track(r) {
-            let m = self.h_metrics(r);
-            match self.hbar.press(track, m, p) {
-                ui::widget::PressOutcome::Thumb => {
-                    self.drag = Some(Drag::Scrollbar);
-                    return;
-                }
-                ui::widget::PressOutcome::Page(target) => {
-                    self.set_scroll_px(target, r);
-                    return;
-                }
-                ui::widget::PressOutcome::Miss => {}
-            }
-        }
         // Timeline lanes — clips, trim handles, rubber-band / scrub.
         if r.lanes.contains(p) {
             self.press_timeline(r, p, shift);
         }
+    }
+
+    /// Give every visible scrollbar first refusal on a press. Bars float over
+    /// their pane's content, so they must be hit-tested before it. Returns
+    /// `true` when one took the press.
+    fn press_scrollbars(&mut self, r: &Regions, p: Point) -> bool {
+        for pane in Self::SCROLL_PANES {
+            let Some((track, m)) = self.scroll_pane(pane, r) else { continue };
+            match self.scroll_bar_mut(pane).press(track, m, p) {
+                ui::widget::PressOutcome::Thumb => {
+                    self.drag = Some(Drag::Scrollbar(pane));
+                    return true;
+                }
+                ui::widget::PressOutcome::Page(target) => {
+                    self.set_scroll_offset(pane, target, r);
+                    return true;
+                }
+                ui::widget::PressOutcome::Miss => {}
+            }
+        }
+        false
     }
 
     /// Finish a rubber-band drag. If the band ever opened, select every clip
@@ -3256,11 +3426,10 @@ impl VideoEditorApp {
                 self.chase_playhead = true;
             }
             Drag::Scrubber => self.apply_scrubber(p, r),
-            Drag::Scrollbar => {
-                if let Some(track) = self.hscroll_track(r) {
-                    let m = self.h_metrics(r);
-                    if let Some(px) = self.hbar.drag_to(track, m, p) {
-                        self.set_scroll_px(px, r);
+            Drag::Scrollbar(pane) => {
+                if let Some((track, m)) = self.scroll_pane(pane, r) {
+                    if let Some(px) = self.scroll_bar(pane).drag_to(track, m, p) {
+                        self.set_scroll_offset(pane, px, r);
                     }
                 }
             }
@@ -3385,7 +3554,7 @@ impl VideoEditorApp {
     fn commit_drag(&mut self, doc: &mut AutoCommit) {
         let Some(drag) = self.drag else { return };
         match drag {
-            Drag::Playhead | Drag::Scrubber | Drag::Scrollbar | Drag::Marquee { .. } => {}
+            Drag::Playhead | Drag::Scrubber | Drag::Scrollbar(_) | Drag::Marquee { .. } => {}
             Drag::ClipMove { id, .. } => {
                 // The whole moved selection lands in one event, so the move —
                 // including the lane change and every clip carried along —
@@ -3459,17 +3628,18 @@ impl VideoEditorApp {
 
     fn update_hover(&mut self, r: &Regions) {
         let p = self.last_mouse;
-        // Brighten the timeline scrollbar thumb when the pointer is on it.
-        match self.hscroll_track(r) {
-            Some(track) => {
-                let m = self.h_metrics(r);
-                self.hbar.update_hover(track, m, p);
-            }
-            None => {
-                self.hbar.set_hover(false);
+        // Brighten whichever scrollbar thumb the pointer is on.
+        for pane in Self::SCROLL_PANES {
+            match self.scroll_pane(pane, r) {
+                Some((track, m)) => {
+                    self.scroll_bar_mut(pane).update_hover(track, m, p);
+                }
+                None => {
+                    self.scroll_bar_mut(pane).set_hover(false);
+                }
             }
         }
-        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        let bin_visible = self.bin_is_visible(r);
         self.hover_media = if bin_visible {
             self.bin_item_rects(r).into_iter().find(|(_, rect)| rect.contains(p)).map(|(m, _)| m)
         } else {
@@ -3643,6 +3813,7 @@ impl VideoEditorApp {
             };
             text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
         }
+        self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
     }
 
@@ -3694,7 +3865,7 @@ impl VideoEditorApp {
             Some((m, _)) => *m,
             None => return,
         };
-        let bin_visible = !r.bin_overlay || self.bin_flap.is_open(self.bin_layout());
+        let bin_visible = self.bin_is_visible(r);
         if !bin_visible {
             return;
         }
@@ -3902,17 +4073,10 @@ impl VideoEditorApp {
             fill_rect(scene, tf, with_alpha(c.surfaces.raised, 0.6), veil);
         }
         scene.pop_layer();
-        // Scroll indicator on the right edge when the content overflows the pane.
-        let max_scroll = self.inspector_max_scroll(r);
-        if max_scroll > 0.5 {
-            let content = r.inspector.height() + max_scroll;
-            let track_h = r.inspector.height() - 8.0;
-            let thumb_h = (track_h * r.inspector.height() / content).max(24.0);
-            let t = (self.inspector_scroll / max_scroll).clamp(0.0, 1.0);
-            let ty = r.inspector.y0 + 4.0 + t * (track_h - thumb_h);
-            let thumb = Rect::new(r.inspector.x1 - 5.0, ty, r.inspector.x1 - 2.0, ty + thumb_h);
-            fill_rrect(scene, tf, with_alpha(c.text_dim, 0.5), thumb, 1.5);
-        }
+        // Real, grabbable scrollbar. What stood here was a painted indicator
+        // with no hit-test, so the EFFECTS section below the fold could be
+        // seen to exist and never reached.
+        self.draw_scrollbar(scene, tf, theme, ScrollPane::Inspector, r);
     }
 
     fn draw_inspector_body(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
@@ -4188,27 +4352,33 @@ impl VideoEditorApp {
         }
 
         // Horizontal scrollbar, floated over the bottom of the lane area.
-        // Geometry and thumb come from the toolkit's shared scrollbar model,
-        // and the colours from the same theme tokens `DocumentViewport` reads,
-        // so this is the fleet's overlay scrollbar rather than a lookalike.
-        if let Some(track) = self.hscroll_track(r) {
-            let m = self.h_metrics(r);
-            if let Some(thumb) = self.hbar.thumb_rect(track, m) {
-                fill_rrect(
-                    scene,
-                    tf,
-                    with_alpha(c.surfaces.base, 0.55),
-                    track,
-                    SCROLLBAR_THICKNESS / 2.0,
-                );
-                let col = if self.hbar.is_active() {
-                    with_alpha(c.text_dim, 0.85)
-                } else {
-                    with_alpha(c.text_dim, 0.55)
-                };
-                fill_rrect(scene, tf, col, thumb, SCROLLBAR_THICKNESS / 2.0);
-            }
-        }
+        self.draw_scrollbar(scene, tf, theme, ScrollPane::Timeline, r);
+    }
+
+    /// Paint one pane's overlay scrollbar. Geometry and thumb come from the
+    /// toolkit's shared scrollbar model and the colours from the same theme
+    /// tokens `DocumentViewport` reads, so all three bars here are the fleet's
+    /// overlay scrollbar rather than three lookalikes.
+    fn draw_scrollbar(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        theme: &Theme,
+        pane: ScrollPane,
+        r: &Regions,
+    ) {
+        let c = &theme.tokens.colors;
+        let Some((track, m)) = self.scroll_pane(pane, r) else { return };
+        let bar = self.scroll_bar(pane);
+        let Some(thumb) = bar.thumb_rect(track, m) else { return };
+        let radius = SCROLLBAR_THICKNESS / 2.0;
+        fill_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), track, radius);
+        let col = if bar.is_active() {
+            with_alpha(c.text_dim, 0.85)
+        } else {
+            with_alpha(c.text_dim, 0.55)
+        };
+        fill_rrect(scene, tf, col, thumb, radius);
     }
 
     fn draw_clip(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, clip: &Clip, lane: &Rect, kind: TrackKind, r: &Regions) {
@@ -5440,7 +5610,10 @@ mod tests {
         // Grab the thumb and drag it right.
         move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
         press(&mut app, &mut doc);
-        assert!(matches!(app.drag, Some(Drag::Scrollbar)), "pressing the thumb began a bar drag");
+        assert!(
+            matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Timeline))),
+            "pressing the thumb began a bar drag",
+        );
         move_to(&mut app, &mut doc, thumb.center().x + 120.0, thumb.center().y);
         assert!(app.scroll > 0.0, "dragging the thumb scrolled the timeline");
         let dragged = app.scroll;
@@ -5835,6 +6008,155 @@ mod tests {
             VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
             "the menu entry locked the track in the CRDT",
         );
+    }
+
+    // ---- pane scrolling ---------------------------------------------------
+
+    #[test]
+    fn the_inspector_scrollbar_is_grabbable_and_reaches_the_effects_section() {
+        // Regression: the inspector painted a scroll indicator with no
+        // hit-test, so the EFFECTS block clipped off the bottom of the pane
+        // could be seen to exist and never be reached.
+        let (mut app, mut doc) = app_and_doc();
+        // Select a video clip and give it enough effects to overflow the pane.
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        app.selection.select_only(cid);
+        for k in EffectKind::ALL {
+            app.add_effect_to_selected(&mut doc, k);
+        }
+        render(&mut app);
+        let r = app.regions();
+        assert!(app.inspector_max_scroll(&r) > 0.5, "the inspector content overflows");
+        let track = app.inspector_scroll_track(&r).expect("an overflowing pane shows a bar");
+        let thumb = app
+            .inspector_bar
+            .thumb_rect(track, app.inspector_metrics(&r))
+            .expect("a thumb");
+        assert!(thumb.height() < track.height(), "the thumb is shorter than its track");
+        // Grab it and drag down.
+        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
+        press(&mut app, &mut doc);
+        assert!(
+            matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Inspector))),
+            "pressing the inspector thumb began a bar drag",
+        );
+        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y + 400.0);
+        assert!(app.inspector_scroll > 0.5, "dragging scrolled the inspector");
+        release(&mut app, &mut doc);
+        // Scrolled to the end, the Add-effect button is inside the pane.
+        app.inspector_scroll = app.inspector_max_scroll(&r);
+        let l = app.inspector_layout(&r);
+        assert!(l.valid);
+        assert!(
+            l.add_effect.y1 <= r.inspector.y1 + 0.5,
+            "the Add effect button is reachable once scrolled ({} vs pane bottom {})",
+            l.add_effect.y1,
+            r.inspector.y1,
+        );
+    }
+
+    #[test]
+    fn a_press_on_the_inspector_scrollbar_does_not_fall_through_to_a_control() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (tid, _lane) = lane_of(&app, &r, TrackKind::Video, 0);
+        let cid = app.project.clips_on(tid).first().map(|c| c.id).expect("a clip");
+        app.selection.select_only(cid);
+        for k in EffectKind::ALL {
+            app.add_effect_to_selected(&mut doc, k);
+        }
+        render(&mut app);
+        let r = app.regions();
+        let track = app.inspector_scroll_track(&r).expect("a bar");
+        // Page-click above the thumb: the bar takes it, no slider moves.
+        let opacity_before = app.project.clip(cid).unwrap().opacity;
+        move_to(&mut app, &mut doc, track.center().x, track.y1 - 2.0);
+        press(&mut app, &mut doc);
+        assert!(app.inspector_scroll > 0.0, "the track click paged the pane");
+        assert_eq!(
+            app.project.clip(cid).unwrap().opacity,
+            opacity_before,
+            "and did not also drag whatever slider was underneath",
+        );
+    }
+
+    #[test]
+    fn the_media_bin_scrolls_so_every_row_can_be_reached() {
+        // Regression: rows past the pane were drawn outside it and reachable
+        // by nothing at all.
+        let (mut app, mut doc) = app_and_doc();
+        // Import enough stills to overflow the bin.
+        for i in 0..14 {
+            let png = write_real_png(16 + i, 16);
+            app.import_one(&mut doc, &png);
+            std::fs::remove_file(&png).ok();
+        }
+        render(&mut app);
+        let r = app.regions();
+        assert!(app.bin_max_scroll(&r) > 0.5, "the bin list overflows its pane");
+        let last = *app.bin_order().last().expect("a last row");
+        let row_of = |app: &VideoEditorApp, r: &Regions, mid: MediaId| {
+            app.bin_item_rects(r).into_iter().find(|(m, _)| *m == mid).map(|(_, rect)| rect)
+        };
+        let before = row_of(&app, &r, last).expect("the last row has a rect");
+        assert!(
+            before.y1 > app.bin_viewport(&r).y1,
+            "the last row starts out below the fold",
+        );
+        // Wheel over the bin scrolls the list (it used to zoom the timeline).
+        let zoom = app.zoom;
+        move_to(&mut app, &mut doc, r.bin.center().x, r.bin.center().y);
+        for _ in 0..40 {
+            wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::empty());
+        }
+        assert_eq!(app.zoom, zoom, "a wheel over the bin does not zoom the timeline");
+        assert!(app.bin_scroll > 0.0, "it scrolls the bin instead");
+        let after = row_of(&app, &r, last).expect("the last row still has a rect");
+        assert!(
+            after.y1 <= app.bin_viewport(&r).y1 + 1.0,
+            "the last row is now inside the pane ({} vs {})",
+            after.y1,
+            app.bin_viewport(&r).y1,
+        );
+        // And it is genuinely clickable there.
+        move_to(&mut app, &mut doc, after.center().x, after.center().y);
+        press(&mut app, &mut doc);
+        release(&mut app, &mut doc);
+        assert_eq!(app.selected_media, Some(last), "the scrolled-to row selects on click");
+    }
+
+    #[test]
+    fn the_bin_scrollbar_thumb_drags_the_list() {
+        let (mut app, mut doc) = app_and_doc();
+        for i in 0..14 {
+            let png = write_real_png(16 + i, 16);
+            app.import_one(&mut doc, &png);
+            std::fs::remove_file(&png).ok();
+        }
+        render(&mut app);
+        let r = app.regions();
+        let track = app.bin_scroll_track(&r).expect("an overflowing bin shows a bar");
+        let thumb = app.bin_bar.thumb_rect(track, app.bin_metrics(&r)).expect("a thumb");
+        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y);
+        press(&mut app, &mut doc);
+        assert!(matches!(app.drag, Some(Drag::Scrollbar(ScrollPane::Bin))));
+        move_to(&mut app, &mut doc, thumb.center().x, thumb.center().y + 300.0);
+        assert!(app.bin_scroll > 0.0, "dragging the bin thumb scrolled the list");
+        release(&mut app, &mut doc);
+    }
+
+    #[test]
+    fn a_wheel_over_the_preview_does_not_move_the_timeline() {
+        let (mut app, mut doc) = app_and_doc();
+        let r = app.regions();
+        let (zoom, scroll) = (app.zoom, app.scroll);
+        move_to(&mut app, &mut doc, r.canvas.center().x, r.canvas.center().y);
+        wheel(&mut app, &mut doc, 0.0, 3.0, ModifiersState::empty());
+        wheel(&mut app, &mut doc, 0.0, -3.0, ModifiersState::empty());
+        assert_eq!(app.zoom, zoom, "the preview is not a timeline zoom surface");
+        assert_eq!(app.scroll, scroll);
     }
 
     // ---- filmstrip / import honesty --------------------------------------
