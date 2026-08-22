@@ -196,8 +196,6 @@ impl Shell {
             ws_settings: WorkspaceSettings::new(active_ws_id),
             toasts: ToastStack::new(),
             ctx_menu: ContextMenu::new(),
-            // Pin the demo peer to `alice` so the cursor paints pink-500
-            // from the concept palette, not a seed-hashed colour.
             overview_visible: false,
             search_visible: false,
             quick_settings_visible: false,
