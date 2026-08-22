@@ -69,7 +69,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::os::unix::io::{FromRawFd, OwnedFd};
+use std::os::unix::io::{AsFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex};
 
 use smithay::input::{Seat, SeatHandler};
@@ -318,14 +318,31 @@ pub struct SelectionState {
     /// `wl_data_device.enter` and nothing can ever be dropped anywhere.
     pub dnd_active: bool,
     /// What the drag in flight is carrying, as something a person can
-    /// read.
-    ///
-    /// The compositor is the only participant that can draw a drag once
-    /// it has left its source window, so it needs a name for what is
-    /// being carried. For a drag it started itself that is the file's
-    /// name; for a client's drag all it holds is the offer, so it is the
-    /// kind of thing. See [`crate::compositor::drag_feedback`].
-    pub dnd_label: Option<String>,
+    /// read. See [`crate::compositor::drag_feedback`].
+    pub dnd_label: DragLabel,
+}
+
+/// The name the compositor paints beside the pointer during a drag.
+///
+/// Shared and interior-mutable because it is answered in two stages. A
+/// drag has to be drawn from the frame it starts on, and at that moment
+/// all the compositor holds is the offer — a list of mime types — so the
+/// first answer is the kind of thing being carried. The *name* lives in
+/// the `text/uri-list` the source is offering, which arrives through a
+/// pipe and therefore on another thread, a few milliseconds later. When
+/// it lands it replaces the kind, and the next frame says `photo.png`
+/// instead of `Image`.
+#[derive(Clone, Default)]
+pub struct DragLabel(Arc<Mutex<Option<String>>>);
+
+impl DragLabel {
+    pub fn set(&self, label: Option<String>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = label;
+    }
+
+    pub fn get(&self) -> Option<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 impl std::fmt::Debug for SelectionState {
@@ -367,7 +384,7 @@ impl SelectionState {
             focused_client: None,
             dnd_icon: None,
             dnd_active: false,
-            dnd_label: None,
+            dnd_label: DragLabel::default(),
             chrome_drag: None,
         }
     }
@@ -894,6 +911,55 @@ impl ExtDataControlHandler for State {
     }
 }
 
+/// Ask a client's drag source for the name of what it is carrying.
+///
+/// The compositor holds the offer, not the file, so the only way to a
+/// name is to accept one of the source's own advertised mime types.
+/// `text/uri-list` is the one that carries names and nothing else — a
+/// few hundred bytes — so this asks for that rather than the payload,
+/// and never for a content type, which could be a large image.
+///
+/// It is the same request the eventual receiver makes, on a pipe of the
+/// compositor's own; a source may be asked for its data any number of
+/// times, so this does not consume or disturb the drop. The read happens
+/// on a thread because the client cannot answer until it next dispatches,
+/// which will not happen while this loop is blocked waiting for it.
+fn request_dragged_name(source: &WlDataSource, label: DragLabel) {
+    let (reader, writer) = match std::io::pipe() {
+        Ok(pair) => pair,
+        Err(e) => {
+            tracing::debug!(target: "shell::selection", error = %e, "no pipe for the drag's name");
+            return;
+        }
+    };
+    source.send(URI_LIST_MIME.to_string(), writer.as_fd());
+    // Our copy of the write end has to go, or the read below never sees
+    // end-of-file: the client's copy closing is not enough while this
+    // process still holds one.
+    drop(writer);
+    let _ = std::thread::Builder::new()
+        .name("qos-drag-name".into())
+        .spawn(move || {
+            use std::io::Read;
+            let mut reader = reader;
+            let mut body = Vec::new();
+            // Bounded: a URI list naming what a person just picked up is
+            // small, and a source that streams forever must not pin a
+            // thread for the life of the session.
+            if reader
+                .by_ref()
+                .take(64 * 1024)
+                .read_to_end(&mut body)
+                .is_err()
+            {
+                return;
+            }
+            if let Some(name) = crate::compositor::drag_feedback::name_from_uri_list(&body) {
+                label.set(Some(name));
+            }
+        });
+}
+
 impl ClientDndGrabHandler for State {
     fn started(&mut self, source: Option<WlDataSource>, icon: Option<WlSurface>, _seat: Seat<Self>) {
         // What the drag is carrying, for the picture the compositor
@@ -901,15 +967,26 @@ impl ClientDndGrabHandler for State {
         // available here — the payload belongs to the source and is not
         // read until a receiver asks for it — so this is the kind of
         // thing rather than its name.
-        self.selection.dnd_label = source
+        let mimes = source
             .as_ref()
             .and_then(|s| {
                 smithay::wayland::selection::data_device::with_source_metadata(s, |meta| {
-                    crate::compositor::drag_feedback::label_for_mimes(&meta.mime_types)
+                    meta.mime_types.clone()
                 })
                 .ok()
             })
-            .or_else(|| Some("1 item".to_string()));
+            .unwrap_or_default();
+        self.selection
+            .dnd_label
+            .set(Some(crate::compositor::drag_feedback::label_for_mimes(&mimes)));
+        // …and then ask for the name, which is in the URI list the source
+        // is already offering. It costs one pipe and a few hundred bytes,
+        // and it is what turns "Image" into "photo.png" on screen.
+        if let Some(source) = source.as_ref() {
+            if mimes.iter().any(|m| m == URI_LIST_MIME) {
+                request_dragged_name(source, self.selection.dnd_label.clone());
+            }
+        }
         // The drag icon is a client surface with the `dnd_icon` role. qOS does
         // not composite it: the compositor draws its own cursor and its own
         // drag feedback, and a client-supplied icon surface would be painted
@@ -934,7 +1011,7 @@ impl ClientDndGrabHandler for State {
         );
         self.selection.dnd_icon = None;
         self.selection.dnd_active = false;
-        self.selection.dnd_label = None;
+        self.selection.dnd_label.set(None);
     }
 }
 

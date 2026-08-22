@@ -1021,10 +1021,7 @@ fn execute_planned_action(
             let drag = state.as_ref().and_then(|s| {
                 (s.selection.dnd_active || s.selection.chrome_drag.is_some()).then(|| {
                     let (cx, cy) = s.client_input.cursor();
-                    (
-                        vello::kurbo::Point::new(cx, cy),
-                        s.selection.dnd_label.clone(),
-                    )
+                    (vello::kurbo::Point::new(cx, cy), s.selection.dnd_label.get())
                 })
             });
             write_snapshot_png(fb, path, drag);
@@ -3305,7 +3302,7 @@ pub fn run() -> ! {
                 // paint the thing being carried, so without this a drag
                 // across the desktop is invisible.
                 if state.selection.dnd_active || state.selection.chrome_drag.is_some() {
-                    let label = state.selection.dnd_label.clone();
+                    let label = state.selection.dnd_label.get();
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
                     drag_feedback::draw(
