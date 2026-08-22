@@ -127,7 +127,8 @@ pub const CATALOGUE: &[Capability] = &[
     },
     Capability {
         id: "heading",
-        summary: "Make the document's first line of text a level-1 heading.",
+        summary: "Give a rough draft its structure: make the first line the document's \
+                  title, and promote the section labels under it to headings.",
         actions: &["SetParagraphStyle", "RemoveBlocks"],
     },
 ];
@@ -298,6 +299,66 @@ pub fn first_image(blocks: &[Block]) -> Option<usize> {
     blocks.iter().position(|b| b.kind == "image")
 }
 
+/// What a structural pass over a rough draft would change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Structure {
+    /// The first line of text: the document's title.
+    pub title: Option<String>,
+    /// Later lines that read as section labels rather than prose.
+    pub sections: Vec<String>,
+}
+
+/// Whether `text` reads as a section label rather than a sentence: short,
+/// few words, and not punctuated like prose. Deliberately conservative —
+/// promoting a real sentence to a heading is the ugly failure here, and a
+/// missed section only leaves the draft as it already was.
+fn looks_like_a_label(text: &str) -> bool {
+    let t = text.trim();
+    if t.is_empty() || t.chars().count() > 60 {
+        return false;
+    }
+    if t.split_whitespace().count() > 8 {
+        return false;
+    }
+    !t.ends_with(['.', '?', '!', ','])
+}
+
+/// Read a rough draft's structure: the first line of text is the title, and
+/// each later short unpunctuated line that is *followed by prose* is a
+/// section heading. Requiring the following prose is what keeps a list of
+/// short lines — an address, a set of bullets — from becoming a stack of
+/// headings.
+pub fn structure(blocks: &[Block], instruction: usize) -> Structure {
+    let mut out = Structure::default();
+    let body: Vec<usize> = (0..blocks.len())
+        .filter(|&i| i != instruction)
+        .filter(|&i| blocks[i].kind != "cell")
+        .filter(|&i| !blocks[i].text.trim().is_empty())
+        .collect();
+    let Some((&first, rest)) = body.split_first() else {
+        return out;
+    };
+    out.title = Some(blocks[first].id.clone());
+
+    for (n, &i) in rest.iter().enumerate() {
+        if blocks[i].kind != "paragraph" || !looks_like_a_label(&blocks[i].text) {
+            continue;
+        }
+        // The next line of body text has to read as prose, or this is just
+        // a short line among short lines.
+        let Some(&next) = rest.get(n + 1) else {
+            continue;
+        };
+        let follows_prose = blocks[next].kind == "paragraph"
+            && !looks_like_a_label(&blocks[next].text)
+            && blocks[next].text.trim().chars().count() > blocks[i].text.trim().chars().count();
+        if follows_prose {
+            out.sections.push(blocks[i].id.clone());
+        }
+    }
+    out
+}
+
 /// The first block with visible text that is not the instruction itself.
 pub fn first_text_block(blocks: &[Block], instruction: usize) -> Option<usize> {
     blocks
@@ -326,6 +387,51 @@ mod tests {
             text: text.into(),
             attrs: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn a_structural_pass_finds_the_title_and_the_section_labels() {
+        let blocks = vec![
+            para("t", "Quarterly review"),
+            para("s1", "Revenue"),
+            para("p1", "We closed the quarter ahead of plan, with most of the gain late."),
+            para("s2", "Risks"),
+            para("p2", "Two suppliers remain single-sourced and that has not moved."),
+            para("ins", "Claude: make this a proper document"),
+        ];
+        let found = structure(&blocks, 5);
+        assert_eq!(found.title.as_deref(), Some("t"));
+        assert_eq!(found.sections, vec!["s1".to_string(), "s2".to_string()]);
+    }
+
+    #[test]
+    fn a_structural_pass_leaves_prose_and_bare_short_lines_alone() {
+        // A run of short lines with no prose under them is a list, not a
+        // stack of headings — promoting them all is the ugly failure.
+        let blocks = vec![
+            para("t", "Shopping"),
+            para("a", "Apples"),
+            para("b", "Pears"),
+            para("c", "Plums"),
+            para("ins", "Claude: make this a proper document"),
+        ];
+        let found = structure(&blocks, 4);
+        assert_eq!(found.title.as_deref(), Some("t"));
+        assert!(found.sections.is_empty(), "{:?}", found.sections);
+
+        // A sentence is never a label, however it is followed.
+        assert!(!looks_like_a_label("We closed the quarter ahead of plan."));
+        assert!(!looks_like_a_label(
+            "A line long enough to be prose even without a full stop at its end"
+        ));
+        assert!(looks_like_a_label("Revenue"));
+        assert!(looks_like_a_label("Open questions"));
+    }
+
+    #[test]
+    fn a_structural_pass_on_an_empty_draft_asks_for_nothing() {
+        let blocks = vec![para("ins", "Claude: make this a proper document")];
+        assert_eq!(structure(&blocks, 0), Structure::default());
     }
 
     #[test]
