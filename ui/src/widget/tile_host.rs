@@ -274,6 +274,11 @@ pub struct TileHost {
     /// The record scope the hosted app was last told about, so a scope is
     /// announced once per change rather than every frame.
     announced: Option<RecordId>,
+    /// Set by [`TileHost::replace_content`]; drained by
+    /// [`Widget::take_structure_dirty`]. What tells the layout pass that
+    /// this tile's node shape changed even though no hosted widget
+    /// reported anything.
+    structure_dirty: bool,
     rect: Rect,
     /// Set by the parent `WindowGroup` each frame to indicate whether
     /// this tile is the "focused" tile — the concept's
@@ -301,6 +306,7 @@ impl TileHost {
             content,
             binding: None,
             announced: None,
+            structure_dirty: false,
             rect: Rect::ZERO,
             focused: false,
             spawned_at: None,
@@ -368,6 +374,28 @@ impl TileHost {
         }
     }
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
+    /// Swap what this tile hosts, keeping the tab it belongs to.
+    ///
+    /// A tab is an open thing; what fills it can change while it stays
+    /// the same tab. The case this exists for is a window that was
+    /// announced before it existed — a card saying an app is opening,
+    /// which becomes the app — and replacing the tab instead would take
+    /// the tab away from the person looking at it and hand focus somewhere
+    /// they did not ask for.
+    ///
+    /// The record binding is deliberately kept: same tab, same document.
+    /// What is dropped is the memory of having told the *previous*
+    /// occupant which record it was on, so the new one is told too.
+    ///
+    /// Flags a structural rebuild, because the swap can change the tile's
+    /// taffy shape — an `App` contributes a child node and the card
+    /// variants are leaves, and a layout pass that kept the old shape
+    /// would index a child that is no longer there.
+    pub fn replace_content(&mut self, content: TileContent) {
+        self.content = content;
+        self.announced = None;
+        self.structure_dirty = true;
+    }
     /// What this tile is showing, read-only.
     pub fn content(&self) -> &TileContent { &self.content }
     /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
@@ -653,11 +681,16 @@ impl Widget for TileHost {
         // A hosted app widget could itself mutate its subtree (e.g. a file
         // explorer that spawns a new pane). Forward through so App can
         // rebuild the taffy tree when the inner widget reports dirty.
-        if let TileContent::App(w) = &mut self.content {
-            w.take_structure_dirty()
-        } else {
-            false
-        }
+        // Or the tile's own content was swapped under it
+        // ([`TileHost::replace_content`]), which changes the node shape
+        // this host contributes. Both are drained, not short-circuited, so
+        // an inner flag cannot be left set behind an outer one.
+        let swapped = std::mem::take(&mut self.structure_dirty);
+        let inner = match &mut self.content {
+            TileContent::App(w) => w.take_structure_dirty(),
+            _ => false,
+        };
+        swapped || inner
     }
     fn needs_animation_frame(&self) -> bool {
         // `TileHost` doesn't expose children via `children()`, so the
