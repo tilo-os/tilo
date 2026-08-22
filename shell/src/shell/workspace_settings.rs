@@ -1303,6 +1303,15 @@ pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> Cap
             edit.revoked.push(id);
         }
     }
+    // And off the roster. Revoking every capability someone holds is
+    // what removes them from the room; leaving their avatar in the
+    // top-bar stack afterwards would keep announcing a participant the
+    // owner has just shown the door. Only when a revoke actually
+    // happened — an actor without authority changes nothing, and must
+    // not be able to erase someone from the chrome by asking.
+    if !edit.revoked.is_empty() {
+        ws.collaborators.retain(|c| c.id != member.as_str());
+    }
     edit
 }
 

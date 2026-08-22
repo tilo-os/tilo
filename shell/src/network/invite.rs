@@ -36,7 +36,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 
-use crate::shell::state::{PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree};
+use crate::shell::state::{
+    Collaborator, PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree,
+};
 
 /// Signed invite issued by a workspace owner so a remote peer can dial
 /// in and replicate the tree. Round-trips through
@@ -297,6 +299,31 @@ pub fn accept_invite_into(
     }
     tree.set_room(local, room);
     tree.pin_room_authority(room, PeerOrigin::peer_base58(&token.owner_peer_id));
+    // Someone is now in this room with us, and the chrome has to say so.
+    //
+    // Pointing the workspace at the inviter's room and pinning who
+    // governs it is what makes this machine a member; it left the roster
+    // — the top-bar avatar stack, the wheel-disc presence dots, the
+    // collaborators overlay — untouched, so a session that had genuinely
+    // joined a real person showed an empty stack while a session that
+    // had joined nobody showed the seeded fakes. Exactly backwards.
+    //
+    // The inviter is recorded under their session handle rather than a
+    // name, because a name is not in the token and inventing one would
+    // be the same failure in a smaller font. What *is* in the token, and
+    // inside its signature, is the owner's libp2p peer id — so the entry
+    // is as verified as the room it joined. The first presence frame
+    // that session publishes carries the name of whoever is sitting at
+    // it, and [`WorkspaceTree::note_peer_present`] replaces this row
+    // with the named one rather than drawing a second avatar.
+    if let Ok(peer) = token.owner_peer_id.parse::<libp2p::PeerId>() {
+        let session = crate::network::behaviour::peer_liveness_handle(&peer);
+        let handle = crate::shell::state::session_handle(session);
+        tree.admit_collaborator(
+            local,
+            Collaborator::new(handle.clone(), handle).with_session(session),
+        );
+    }
     Ok(room)
 }
 
@@ -512,6 +539,81 @@ mod tests {
         );
     }
 
+    /// Accepting an invite puts the inviter on the roster.
+    ///
+    /// The chrome renders `Workspace::collaborators` — the avatar stack,
+    /// the wheel-disc presence dots, the collaborators overlay all read
+    /// it. Joining a real person's room used to leave it untouched, so a
+    /// session that had genuinely joined somebody showed nobody. The
+    /// entry is the inviter's session handle, derived from the owner
+    /// peer id that is inside the token's signature, so it is exactly as
+    /// verified as the room the invite moved us into.
+    #[test]
+    fn accepting_an_invite_puts_the_inviter_on_the_roster() {
+        let kp = Keypair::generate_ed25519();
+        let host = workspace(11);
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
+
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_id = WorkspaceId(4242);
+        guest_tree
+            .workspaces
+            .push(Workspace::test_default(guest_id, "guest"));
+        assert!(
+            guest_tree.workspaces[0].collaborators.is_empty(),
+            "the guest starts alone, or this proves nothing"
+        );
+
+        accept_invite_into(&mut guest_tree, guest_id, &token).expect("a valid invite");
+
+        let roster = &guest_tree.workspaces[0].collaborators;
+        let expected = crate::shell::state::session_handle(
+            crate::network::behaviour::peer_liveness_handle(&kp.public().to_peer_id()),
+        );
+        assert_eq!(
+            roster.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec![expected.as_str()],
+            "accepting an invite must put exactly the inviting session on \
+             the roster, under the handle the presence path will use to \
+             recognise it again"
+        );
+        assert_eq!(
+            crate::shell::state::active_workspace_peer_count(&guest_tree),
+            0,
+            "the guest's workspace is not the active one here, so the \
+             count helper must not borrow its roster"
+        );
+    }
+
+    /// Accepting twice is one peer. An invite is not a one-shot nonce —
+    /// the same token can legitimately be handed to a second guest, and
+    /// a guest can re-accept — so a roster that pushed on every accept
+    /// would stack duplicate avatars for one person.
+    #[test]
+    fn accepting_the_same_invite_twice_is_one_peer() {
+        let kp = Keypair::generate_ed25519();
+        let host = workspace(11);
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
+
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_id = WorkspaceId(4242);
+        guest_tree
+            .workspaces
+            .push(Workspace::test_default(guest_id, "guest"));
+
+        accept_invite_into(&mut guest_tree, guest_id, &token).expect("first accept");
+        // The second accept is refused by `set_room` (already in that
+        // room) but must still leave the roster with one entry.
+        let _ = accept_invite_into(&mut guest_tree, guest_id, &token);
+        assert_eq!(
+            guest_tree.workspaces[0].collaborators.len(),
+            1,
+            "one inviter is one avatar, however many times the token is \
+             accepted; got {:?}",
+            guest_tree.workspaces[0].collaborators
+        );
+    }
+
     /// A tampered token must not move anybody anywhere. Without the
     /// validate-first ordering in `accept_invite_into`, a forged room
     /// would be adopted before the signature was ever checked.
@@ -544,6 +646,13 @@ mod tests {
             Some(before),
             "a refused invite must leave the local room exactly as it was; \
              it must not have been moved to the attacker's room {attacker_room}"
+        );
+        assert!(
+            guest_tree.workspaces[0].collaborators.is_empty(),
+            "a refused invite must put nobody on the roster either — an \
+             avatar is a claim that someone is here, and this token \
+             proved nothing; got {:?}",
+            guest_tree.workspaces[0].collaborators
         );
     }
 

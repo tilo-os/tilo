@@ -8317,6 +8317,9 @@ impl ShellOverlayHost {
                 None,
             );
             let peers = overview_card_faces(ws, &tree);
+            // Same colour authority as the top-bar stack and the peer
+            // cursors: the room settles it once.
+            let face_colors = crate::shell::state::roster_colors(&ws.collaborators);
             let avatar_r = 12.0_f64;
             let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
             let avatar_y = collab_y0 + 20.0;
@@ -8334,14 +8337,14 @@ impl ShellOverlayHost {
                     .unwrap_or('?')
                     .to_ascii_uppercase()
                     .to_string();
-                // Per-identity fill (peer's own cursor colour, else the
-                // palette-pinned `user_color`) so the overview avatar matches
-                // the peer's cursor and the top-bar stack — not a single flat
-                // accent for everyone. Painted through the shared `ui::Avatar`
-                // with a slate ring, exactly like the top-bar cluster.
-                let (r, g, b) = known
-                    .and_then(|c| c.cursor_color.as_deref())
-                    .and_then(ui::presence::parse_hex_color)
+                // Per-identity fill so the overview avatar matches the
+                // peer's cursor and the top-bar stack — not a single flat
+                // accent for everyone, and not the unsettled per-id hash
+                // either. Painted through the shared `ui::Avatar` with a
+                // slate ring, exactly like the top-bar cluster.
+                let (r, g, b) = face_colors
+                    .get(user.as_str())
+                    .copied()
                     .unwrap_or_else(|| ui::presence::user_color(user));
                 ui::widget::Avatar::draw_ringed_at(
                     scene,
@@ -10568,7 +10571,18 @@ impl ShellOverlayHost {
             .map(|c| {
                 let chrome_ref = c.borrow();
                 let tree = chrome_ref.tree();
-                tree.collaborators
+                // The people in the room the user is looking at, with the
+                // tree-level roster standing in only when that workspace
+                // has none of its own — the same precedence the top bar
+                // and the wheel disc apply. Reading the tree-level list
+                // unconditionally showed one workspace's peers under
+                // another workspace's heading.
+                let roster: &[crate::shell::state::Collaborator] = match tree.active_workspace() {
+                    Some(ws) if !ws.collaborators.is_empty() => &ws.collaborators,
+                    _ => &tree.collaborators,
+                };
+                let colors = crate::shell::state::roster_colors(roster);
+                roster
                     .iter()
                     .map(|p| {
                         let initial = p
@@ -10577,13 +10591,12 @@ impl ShellOverlayHost {
                             .next()
                             .map(|c| c.to_ascii_uppercase())
                             .unwrap_or('•');
-                        // Per-identity avatar colour (cursor colour, else the
-                        // palette-pinned `user_color`) so a peer's row avatar
-                        // matches their cursor and top-bar chip.
-                        let (r, g, b) = p
-                            .cursor_color
-                            .as_deref()
-                            .and_then(ui::presence::parse_hex_color)
+                        // Per-identity avatar colour, settled over the
+                        // room, so a peer's row avatar matches their
+                        // cursor and their top-bar chip.
+                        let (r, g, b) = colors
+                            .get(&p.id)
+                            .copied()
                             .unwrap_or_else(|| ui::presence::user_color(&p.id));
                         (p.name.clone(), initial, Color::from_rgb8(r, g, b))
                     })
