@@ -1777,6 +1777,40 @@ pub fn run() -> ! {
     let collab_broker =
         spawn_session_collab_broker(&frame_builder.chrome_handle(), peer_sync.clone());
 
+    // Read the session's own broker for pointer presence, and relay it
+    // to the room's other hosts.
+    //
+    // The compositor hosts the broker but was not otherwise a reader of
+    // it, so the pointer every app publishes reached the other apps in
+    // the room and stopped there — the overlay that draws peers over
+    // these windows never saw one. Subscribing by room is what makes a
+    // cursor that crosses from one app to another a single peer moving:
+    // presence is room-scoped, so both apps reach the same subscription.
+    //
+    // Both halves are needed, so this is only stood up when both exist.
+    // Without peer sync there is nobody to relay to or hear from, and
+    // the overlay correctly paints nothing.
+    if let (Some(broker), Some(net)) = (collab_broker.as_ref(), peer_sync.as_ref()) {
+        let rooms = {
+            let chrome = frame_builder.chrome_handle();
+            let chrome = chrome.borrow();
+            let tree = chrome.tree();
+            tree.workspaces
+                .iter()
+                .map(|w| w.room.to_string())
+                .collect::<Vec<_>>()
+        };
+        tracing::info!(
+            "collab: subscribed to {} room(s) for peer presence",
+            rooms.len()
+        );
+        frame_builder.set_peer_presence(crate::shell::peer_presence::PeerPresence::attach(
+            broker,
+            Arc::clone(net),
+            rooms,
+        ));
+    }
+
     // Seed the size used for fullscreen configures so an early
     // `set_fullscreen` request fills the output even before the first resize.
     state.output_size = (initial_size.0 as i32, initial_size.1 as i32);
@@ -2642,6 +2676,31 @@ pub fn run() -> ! {
         if let Some(net) = peer_sync.as_ref() {
             net.tick();
         }
+        // Keep the presence relay current, then fold in what peers sent.
+        //
+        // The pointer is read level-triggered from the input state
+        // rather than hooked onto motion, so every source that can move
+        // it — a real seat, a remote peer's injected input, the test
+        // control socket — is covered by one place. The room set is
+        // re-read for the same reason: a workspace joins a peer's room
+        // when an invite is accepted, and the subscription has to follow
+        // it there or the session stops hearing the room it just joined.
+        let peers_moved = if let Some(relay) = frame_builder.peer_presence() {
+            let (cx, cy) = state.client_input.cursor();
+            relay.set_cursor(cx, cy);
+            relay.set_rooms({
+                let chrome = frame_builder.chrome_handle();
+                let chrome = chrome.borrow();
+                let tree = chrome.tree();
+                tree.workspaces
+                    .iter()
+                    .map(|w| w.room.to_string())
+                    .collect::<Vec<_>>()
+            });
+            frame_builder.pump_peer_presence()
+        } else {
+            false
+        };
         let apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         let revision = frame_builder.chrome_revision();
@@ -2658,6 +2717,7 @@ pub fn run() -> ! {
             || revision_changed
             || animating
             || apps_changed
+            || peers_moved
             || keepalive_due;
         // May a frame be shown yet? Protocol traffic, test-control
         // commands and input all wake the loop off-cadence; presenting
