@@ -199,6 +199,86 @@ pub struct Colors {
     pub border_white_20: Color,
 }
 
+/// How many distinct colours [`Colors::categorical`] cycles through before
+/// repeating. Six keeps neighbours 60° of hue apart, which is a plain
+/// difference at a glance rather than a shade you have to compare.
+pub const CATEGORICAL_LEN: usize = 6;
+
+impl Colors {
+    /// A categorical colour series grown from the theme's own accent.
+    ///
+    /// For things that are *different from each other* rather than
+    /// ranked — workspaces, calendars, participants, tags. Index `0` is
+    /// the accent itself; each subsequent index rotates the hue by a
+    /// full share of the colour wheel while keeping the accent's
+    /// saturation and lightness exactly.
+    ///
+    /// Holding saturation and lightness is what makes this a theme
+    /// token rather than a fixed list. A theme with a restrained blue
+    /// accent gets a restrained series; the high-contrast theme's vivid
+    /// accent gets a vivid one that still reads on pure black; a light
+    /// theme's accent keeps the series dark enough to see on paper. A
+    /// hardcoded palette can be right for at most one of those, and the
+    /// theme cannot reach it to fix the others.
+    ///
+    /// Hue is the axis that varies because it is the one that survives
+    /// every ground: two colours of equal lightness are still obviously
+    /// different colours, whereas a series built by walking a ramp's
+    /// lightness collapses into "several similar greys" the moment the
+    /// theme lowers its contrast.
+    pub fn categorical(&self, idx: usize) -> Color {
+        let base = self.accent[ACCENT_PRIMARY_IDX];
+        let (h, s, l) = rgb_to_hsl(base);
+        let turn = (idx % CATEGORICAL_LEN) as f32 / CATEGORICAL_LEN as f32;
+        hsl_to_rgb((h + turn * 360.0).rem_euclid(360.0), s, l)
+    }
+}
+
+/// sRGB → HSL, hue in degrees. Straight sRGB rather than a perceptual
+/// space: the point here is *separation*, and the cheap conversion
+/// separates hues perfectly well.
+fn rgb_to_hsl(c: Color) -> (f32, f32, f32) {
+    let (r, g, b) = (
+        c.r() as f32 / 255.0,
+        c.g() as f32 / 255.0,
+        c.b() as f32 / 255.0,
+    );
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d <= f32::EPSILON {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs()).max(f32::EPSILON);
+    let h = if max == r {
+        60.0 * (((g - b) / d) % 6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    (h.rem_euclid(360.0), s.clamp(0.0, 1.0), l)
+}
+
+/// HSL → sRGB, the inverse of [`rgb_to_hsl`].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r1, g1, b1) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let q = |v: f32| (((v + m) * 255.0).round().clamp(0.0, 255.0)) as u8;
+    Color::from_rgb8(q(r1), q(g1), q(b1))
+}
+
 /// A compact description of a full palette. Every qOS theme is expressed as
 /// one of these and expanded into a coherent [`Colors`] token set by
 /// [`Colors::themed`] — so a preset only states the ~15 colours that carry
@@ -733,5 +813,90 @@ mod tests {
         assert_eq!(rgba(c.surface_white_20), [255, 255, 255, 51], "white/20");
         assert_eq!(rgba(c.border_white_10),  [255, 255, 255, 26], "border-white/10");
         assert_eq!(rgba(c.border_white_20),  [255, 255, 255, 51], "border-white/20");
+    }
+
+    /// The series has to be *legible as different colours* in every
+    /// theme, which is the whole reason it is derived instead of fixed.
+    /// Checks the two properties that carry that: adjacent entries are
+    /// far apart in hue, and every entry keeps enough contrast against
+    /// the theme's own ground to be seen at all.
+    #[test]
+    fn categorical_series_stays_distinguishable_in_every_theme() {
+        use crate::theme::Theme;
+
+        let hue = |c: Color| super::rgb_to_hsl(c).0;
+        let rel_luma = |c: Color| {
+            let f = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * f(c.r()) + 0.7152 * f(c.g()) + 0.0722 * f(c.b())
+        };
+
+        for (name, theme) in [
+            ("dark", Theme::dark()),
+            ("light", Theme::light()),
+            ("high_contrast", Theme::high_contrast()),
+        ] {
+            let c = &theme.tokens.colors;
+            // Index 0 is the theme's own accent, untouched.
+            assert_eq!(
+                c.categorical(0),
+                c.accent[ACCENT_PRIMARY_IDX],
+                "{name}: the series must start from the theme's accent"
+            );
+            // It cycles rather than running off the end.
+            assert_eq!(
+                c.categorical(CATEGORICAL_LEN),
+                c.categorical(0),
+                "{name}: the series must wrap at CATEGORICAL_LEN"
+            );
+
+            for i in 0..CATEGORICAL_LEN {
+                let a = c.categorical(i);
+                let b = c.categorical((i + 1) % CATEGORICAL_LEN);
+                let dh = (hue(a) - hue(b)).abs();
+                let sep = dh.min(360.0 - dh);
+                assert!(
+                    sep > 40.0,
+                    "{name}: workspaces {i} and {} are only {sep:.0}° of hue apart \
+                     — adjacent sectors would read as the same colour",
+                    (i + 1) % CATEGORICAL_LEN
+                );
+
+                // Visible against the ground the theme actually paints.
+                let ground = rel_luma(c.surfaces.base);
+                let fg = rel_luma(a);
+                let contrast = (fg.max(ground) + 0.05) / (fg.min(ground) + 0.05);
+                assert!(
+                    contrast > 1.6,
+                    "{name}: workspace colour {i} has only {contrast:.2}:1 against \
+                     the base surface — it would disappear"
+                );
+            }
+        }
+    }
+
+    /// The HSL round-trip has to be tight, or a colour changes every
+    /// time it passes through the derivation.
+    #[test]
+    fn hsl_round_trips_within_one_step() {
+        for c in [
+            Color::from_rgb8(0x58, 0x91, 0xE8),
+            Color::from_rgb8(0x2F, 0x6F, 0xD6),
+            Color::from_rgb8(0, 153, 255),
+            Color::from_rgb8(0xFF, 0xFF, 0xFF),
+            Color::from_rgb8(0x10, 0x10, 0x10),
+            Color::from_rgb8(0xE2, 0xA9, 0x3C),
+        ] {
+            let (h, s, l) = super::rgb_to_hsl(c);
+            let back = super::hsl_to_rgb(h, s, l);
+            for (a, b) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
+                assert!(
+                    (a as i32 - b as i32).abs() <= 1,
+                    "round-trip drifted: {c:?} -> {back:?}"
+                );
+            }
+        }
     }
 }
