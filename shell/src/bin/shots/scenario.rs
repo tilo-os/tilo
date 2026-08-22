@@ -1324,9 +1324,9 @@ fn room_activity_from_palette() -> Scenario {
 
 /// Repro for "apps render but can't be interacted with". Click in the
 /// middle of the Notes tile (the active tab on the default workspace)
-/// and type "hi". The pre-click snapshot shows the "Click to edit"
-/// hint. The post-type snapshot is the proof: if interaction works
-/// the hint reads "Type to edit · Ctrl+Z to undo" AND the typed text
+/// and type "hi". The pre-click snapshot shows the blank note's
+/// zero-state. The post-type snapshot is the proof: if interaction
+/// works the zero-state has given way to a caret AND the typed text
 /// appears in the body.
 fn notes_click_and_type() -> Scenario {
     Scenario {
