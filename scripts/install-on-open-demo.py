@@ -356,8 +356,22 @@ def check(condition: bool, message: str) -> None:
         raise Failure(message)
 
 
-def wait_for_row(comp: Compositor, timeout: float) -> dict:
-    """Wait for a row whose id is the package, and return it.
+def find_row(pal: dict) -> dict | None:
+    """The row that would open our package, if the palette is offering one.
+
+    Palette entry ids are positional (`result:0`, `result:1`, …) — the
+    row's own identity lives in its subtitle, which is where the
+    Applications provider puts the package id. Matching on the subtitle
+    is therefore matching on what the user can actually read.
+    """
+    for row in pal.get("rows", []):
+        if PACKAGE_ID in (row.get("description") or ""):
+            return row
+    return None
+
+
+def wait_for_row(comp: Compositor, timeout: float) -> tuple[dict, dict]:
+    """Wait until the palette offers our package, and return (palette, row).
 
     The catalogue answers the palette from an in-memory cache and never
     blocks a keystroke on HTTP, so the first query after a cold start
@@ -369,9 +383,9 @@ def wait_for_row(comp: Compositor, timeout: float) -> dict:
     while time.time() < deadline:
         pal = comp.palette()
         last = pal.get("rows", [])
-        for row in last:
-            if row.get("id") == PACKAGE_ID:
-                return pal
+        row = find_row(pal)
+        if row is not None:
+            return pal, row
         # Nudge the query so the providers re-run against a now-warm
         # cache: one character back, one character forward.
         comp.key("Backspace")
@@ -580,12 +594,14 @@ def main() -> int:
 
                 comp.type_text(QUERY)
                 time.sleep(1.0)
-                pal = wait_for_row(comp, args.row_timeout)
-                row = next(r for r in pal["rows"] if r["id"] == PACKAGE_ID)
+                pal, row = wait_for_row(comp, args.row_timeout)
                 check_row_wording(row)
-                check(pal.get("selected_id") == PACKAGE_ID,
-                      f"Enter must be about to activate {PACKAGE_ID}, but the "
-                      f"selected row is {pal.get('selected_id')!r}")
+                # Enter takes the selected row, so "the row exists" is
+                # not the same claim as "Enter opens Sheets".
+                check(pal.get("selected_id") == row["id"],
+                      f"Enter must be about to activate {row['label']!r} "
+                      f"({row['id']}), but the selected row is "
+                      f"{pal.get('selected_id')!r} out of {pal.get('rows')}")
                 comp.snapshot(palette_png)
                 print(f"  palette row: {row['label']!r} / "
                       f"{row.get('description')!r}  → {palette_png}")
