@@ -324,22 +324,22 @@ pub enum NeighbourMsg {
     ///
     /// # Sent on arrival, not on every commit
     ///
-    /// The toolkit produces the frame behind this
-    /// (`ui::collaboration::CollabRequest::SyncCRDT`) on **every commit
-    /// that changes the document**, not only when a peer joins — it
-    /// feeds same-host fan-out and the undo snapshot. Republishing each
-    /// one would put a whole document on the room topic per commit:
-    /// unbounded, growing with the session, and redundant with the
-    /// delta that already carries the same edit to anyone who shares
-    /// the history.
+    /// The frame behind this (`ui::collaboration::CollabRequest::
+    /// SyncCRDT`) is not reliably a join reply: it also feeds same-host
+    /// fan-out and the undo snapshot, and whether a commit produces one
+    /// depends on the toolkit build rather than on anything visible in
+    /// the frame. Republishing whatever arrives therefore risks a whole
+    /// document on the room topic per commit — unbounded, growing with
+    /// the session, and redundant with the delta that already carries
+    /// the same edit to anyone who shares the history.
     ///
-    /// So the publish is gated on somebody actually needing one. A
-    /// peer's `PresencePayload::Arrived` passes through the local
-    /// broker's own drain, which notes it
+    /// So the publish is gated on somebody needing one. A peer's
+    /// `PresencePayload::Arrived` passes through the local broker's own
+    /// drain, which notes it
     /// ([`crate::shell::network::ShellNetwork::note_snapshot_request`]);
     /// the next whole document for that room goes out, and the ones
-    /// after it stay local until somebody else arrives. The rate is
-    /// therefore "once per peer that arrives", which is what makes a
+    /// after stay local until somebody else arrives. The rate is
+    /// therefore once per peer that arrives, which is what makes a
     /// broadcast medium acceptable for it at all — the same rare,
     /// single-shot shape [`NeighbourMsg::ScrollbackRequest`] /
     /// [`NeighbourMsg::ScrollbackResponse`] already take.
