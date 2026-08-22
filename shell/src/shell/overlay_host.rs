@@ -5455,13 +5455,16 @@ impl Widget for ShellOverlayHost {
         // the requesting app cannot draw over it, read it, or dismiss
         // it.
         if let Some(active) = self.file_picker.as_mut() {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.scrim,
-                None,
-                &self.rect,
-            );
+            // Through `fill_scrim`, at the same strength every other
+            // modal dims with. Filling with the raw token instead — as
+            // this did — paints it at full opacity, and the token is
+            // documented as opaque precisely because "the strength of
+            // the dim belongs to whatever is being lifted". The result
+            // was the black hole that comment warns about: a file dialog
+            // floating on a void, with the desktop and the very document
+            // the file was going into erased behind it, so nothing on
+            // screen said what had asked or where the file would land.
+            fill_scrim(scene, transform, self.rect, MODAL_SCRIM_ALPHA, theme);
             active.widget.set_rect(file_picker_rect(self.rect));
             active
                 .widget
@@ -10716,7 +10719,12 @@ impl ShellOverlayHost {
             // this dropdown says a name is in the room and lets the
             // reader supply "person", which is the one thing it must
             // never do on the reader's behalf.
-            if row.is_agent {
+            //
+            // Suppressed only when the label already carries the word,
+            // as the agent this OS ships does: "agent  agent" reads as
+            // a rendering fault, and the honesty the tag exists for is
+            // already served by the name itself.
+            if row.is_agent && !row.label.eq_ignore_ascii_case("agent") {
                 text_renderer.draw_text(
                     scene,
                     "agent",
