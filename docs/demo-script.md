@@ -180,6 +180,14 @@ These were verified live and are available if a beat needs them:
 
 # Things not to say
 
+- **The "Ada" cursor in any footage shot before this was written is not a
+  person.** `shell/src/shell/overlay_host.rs` painted a deterministic fake
+  peer unconditionally — "this keeps the collab chrome visible in
+  single-process development" — and nothing gated it. It is in the 57s cut at
+  `.claude/demo-artifacts/qos-demo-57s.mp4` and in every screenshot taken
+  before it was removed. Do not show that footage, and do not point at a peer
+  cursor as evidence of anything until it has been re-shot.
+
 - Not "it boots as a real OS" — no image is built.
 - Not "install is fast" — never measured.
 - Nothing about an agent being denied by policy in the same breath as an
