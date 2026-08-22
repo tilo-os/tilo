@@ -27,6 +27,7 @@ GAP and moves on; it never prints a success it did not verify.
 
     scripts/yc-demo.py
     scripts/yc-demo.py --keep
+    scripts/yc-demo.py --record            # …and write a 1920x1080 video
 
 Runs against target/debug/shell. There is no mock and no fixture path:
 if the binary is missing the script exits rather than simulating it.
@@ -42,6 +43,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -133,6 +135,16 @@ class Session:
             XDG_CONFIG_HOME=os.path.join(self.dir, "config"),
             XDG_DATA_HOME=os.path.join(self.dir, "data"),
             XDG_CACHE_HOME=os.path.join(self.dir, "cache"),
+            XDG_STATE_HOME=os.path.join(self.dir, "state"),
+            # Named outright rather than left to `dirs::config_dir()`.
+            # That helper ignores a *relative* XDG_CONFIG_HOME, so a run
+            # started with a relative --out gets no isolation from it at
+            # all and persists into the real ~/.config/qos/state.json —
+            # three demo sessions writing workspaces, owned by
+            # identities nobody at this machine can administer, into
+            # somebody's live desktop. `--out` is absolutised for the
+            # same reason; this is the belt to that pair of braces.
+            QOS_STATE_PATH=os.path.join(self.dir, "config", "state.json"),
             QOS_USER_ID=self.user,
             QOS_PEER_KEY_PATH=os.path.join(self.dir, "keys", "peer-key"),
             QOS_FS_ACL_PATH=os.path.join(self.dir, "config", "fs-capabilities.json"),
@@ -267,6 +279,448 @@ class Session:
 
 
 # --------------------------------------------------------------------
+# recording
+# --------------------------------------------------------------------
+#
+# There is no screen recorder on this machine that can see a Wayland
+# surface, and none is wanted: the compositor renders its own frames on
+# demand over the control socket, so a recording here is a real sampled
+# render of each session rather than a grab of three windows somebody
+# had to arrange first. Nothing is drawn that a session did not draw.
+#
+# The sample rate is whatever `snapshot` sustains, which is not much:
+# it re-paints the scene into a fresh offscreen surface and PNG-encodes
+# it *on the compositor's own event loop*, so the session is blocked for
+# every millisecond of it. Measured on this machine, one session alone
+# and then all three at once:
+#
+#     1280x800   ~900 ms   1.1 /s solo   0.86 /s ×3
+#      640x880   ~630 ms   1.6 /s solo   1.23 /s ×3
+#      640x400   ~450 ms   2.2 /s solo
+#
+# So this is a ~1 Hz recording however it is cut. It is written out at
+# each frame's true timestamp — the video runs in real time and is
+# simply sparse. Frames are never interpolated or invented to make it
+# look faster than it was; the only frame ever repeated is the last one
+# of a session whose track ended early, held to keep the panes in step.
+# Where the video needs to be longer, the demo is given more real time
+# to be longer in (`--record-dwell`), never more frames than it took.
+
+# The composed frame. Three panes side by side is the whole claim —
+# three sessions, all three visible at once. 1920 across three columns
+# is 640 each, so a session recorded at 640 wide tiles in at 1:1 with
+# nothing resampled, which is the difference between a readable pane
+# and a blurred one. The bands above and below it are sized from
+# whatever vertical space is left over, and carry the session's name,
+# the current beat, the current step and the claim being checked — so
+# the video explains itself with no voiceover and nothing on it is
+# decoration.
+VIDEO_W, VIDEO_H = 1920, 1080
+COLUMN_W = VIDEO_W // 3
+# The size each session is recorded at when `--record` picks for itself:
+# exactly one column wide, and short enough to leave the caption bands
+# room, so three of them tile into 1920x1080 untouched.
+RECORD_SIZE = f"{COLUMN_W}x880"
+# Vertical space the bands need between them. A pane taller than this
+# leaves gets scaled down to make room — and says so.
+BANDS_H = 200
+TOP_BAND_MAX = 68
+
+BG = "0x0B0D12"       # the shell's own backdrop, so each pane sits in it
+EDGE = "0x2A3346"
+FG = "0xE9ECF2"
+DIM = "0x93A1BC"
+PASS_C = "0x7BD88F"
+FAIL_C = "0xFF6B6B"
+GAP_C = "0xF0B849"
+
+# What the transcript's own marks look like on screen, which band they
+# sit in, and which of them supersede which: a new beat clears the step
+# under it, a new step clears the claim under that. Lower rank wins.
+MARK_STYLE = {
+    "beat": (0, "beat", 22, FG, True),
+    "step": (1, "step", 21, DIM, False),
+    "pass": (2, "claim", 19, PASS_C, False),
+    "fail": (2, "claim", 19, FAIL_C, False),
+    "gap": (2, "claim", 19, GAP_C, False),
+}
+
+# What each session is, in the video. Roles, not decoration: the whole
+# point of the third pane is that it is driven differently.
+ROLES = {
+    "quinten": "hosts the room",
+    "xaver": "joined by invite",
+    "agent": "driven only by (provider, id)",
+}
+
+FONTS_REGULAR = (
+    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/adwaita-sans-fonts/AdwaitaSans-Regular.ttf",
+    "/usr/share/fonts/google-droid-sans-fonts/DroidSans.ttf",
+)
+FONTS_BOLD = (
+    "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Bold.ttf",
+) + FONTS_REGULAR
+
+# A snapshot blocks the session it is taken from, so the capture loop
+# always yields this long between frames even when asked for "as fast as
+# possible". Without it the demo is competing with its own camera for
+# every reply, and the waits it depends on start timing out.
+MIN_CAPTURE_GAP_S = 0.15
+
+
+def _pick_font(candidates: tuple[str, ...]) -> str:
+    for path in candidates:
+        # A colon would be read as an option separator inside the filter
+        # graph, so a path carrying one is no use to us even if it exists.
+        if os.path.exists(path) and ":" not in path:
+            return path
+    raise RuntimeError(
+        "no usable font for the video labels; looked for:\n  "
+        + "\n  ".join(candidates))
+
+
+def _even(n: float) -> int:
+    """Sizes h264 can encode without the scaler quietly rounding for us."""
+    return int(n) - (int(n) % 2)
+
+
+def _one_line(text: str, limit: int = 108) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= limit else flat[: limit - 1] + "…"
+
+
+class Recorder:
+    """Timestamped frames pulled from every session while the demo runs.
+
+    Capture threads are readers: `snapshot` re-paints and writes a PNG,
+    and never enters the input path, so the agent's "no synthetic input"
+    claim is as true during a recording as without one — `input_ops` is
+    untouched by anything in here.
+    """
+
+    def __init__(self, sessions: list[Session], directory: str,
+                 interval: float, dwell: float = 0.0) -> None:
+        self.sessions = sessions
+        self.dir = directory
+        self.interval = interval
+        self.dwell_s = dwell
+        self.frames: dict[str, list[tuple[float, str]]] = {
+            s.name: [] for s in sessions}
+        self.marks: list[tuple[float, str, str]] = []
+        self.errors: list[str] = []
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        self.started_at = 0.0
+        self.stopped_at = 0.0
+
+    # -- capture -----------------------------------------------------
+
+    def start(self) -> None:
+        os.makedirs(self.dir, exist_ok=True)
+        self.started_at = time.time()
+        for s in self.sessions:
+            t = threading.Thread(target=self._capture, args=(s,),
+                                 name=f"capture-{s.name}", daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def _capture(self, s: Session) -> None:
+        directory = os.path.join(self.dir, "frames", s.name)
+        os.makedirs(directory, exist_ok=True)
+        index = 0
+        while not self._stop.is_set():
+            began = time.time()
+            rel = f"frames/{s.name}/{index:06d}.png"
+            try:
+                s.snapshot(os.path.join(self.dir, rel))
+            except Exception as exc:  # noqa: BLE001
+                # One session going quiet ends its own track and nothing
+                # else. The gap is reported and padded visibly rather
+                # than closed over.
+                self.errors.append(
+                    f"{s.name}: capture stopped after {index} frame(s): "
+                    f"{type(exc).__name__}: {exc}")
+                return
+            self.frames[s.name].append((began, rel))
+            index += 1
+            self._stop.wait(
+                max(MIN_CAPTURE_GAP_S, self.interval - (time.time() - began)))
+
+    def mark(self, kind: str, text: str) -> None:
+        """Timestamp a line of the transcript. Called from the demo
+        thread only, so the list stays in the order it reads in."""
+        self.marks.append((time.time(), kind, _one_line(text)))
+
+    def dwell(self) -> None:
+        """Hold on the moment just marked.
+
+        The one honest way to make the video longer. Every second spent
+        here is a second the demo really took, sampled like any other —
+        as against holding a frame on screen for longer than the session
+        held it, which would be inventing time the run did not have.
+        """
+        if self.dwell_s > 0:
+            time.sleep(self.dwell_s)
+
+    def stop(self) -> None:
+        self._stop.set()
+        for t in self._threads:
+            t.join(timeout=30)
+        self._threads.clear()
+        self.stopped_at = time.time()
+
+    # -- what actually happened --------------------------------------
+
+    def rate(self) -> float:
+        """Frames per second per session, as achieved."""
+        span = max(1e-6, self.stopped_at - self.started_at)
+        counts = [len(f) for f in self.frames.values()]
+        return (sum(counts) / len(counts)) / span if counts else 0.0
+
+    def report(self) -> None:
+        span = self.stopped_at - self.started_at
+        print(f"\ncaptured over {span:.1f}s of demo:")
+        for s in self.sessions:
+            n = len(self.frames[s.name])
+            print(f"  {s.name:8} {n:4d} frames  "
+                  f"{n / max(1e-6, span):.2f} frames/s")
+        for e in self.errors:
+            print(f"  ! {e}")
+
+    # -- composition -------------------------------------------------
+
+    def _window(self) -> tuple[float, float]:
+        firsts = [f[0][0] for f in self.frames.values() if f]
+        lasts = [f[-1][0] for f in self.frames.values() if f]
+        if not firsts:
+            raise RuntimeError("no frames were captured from any session")
+        return min(firsts), max(lasts)
+
+    def _concat_list(self, name: str, t_start: float, t_end: float,
+                     fps: int) -> tuple[str, float]:
+        """One session's track, on the shared timeline.
+
+        Each frame is shown from when it was taken until the next one
+        was, so the video's clock is the demo's clock. A session whose
+        track starts late or ends early holds its nearest frame to cover
+        the difference — that is the only repetition in the file, and it
+        is reported rather than hidden.
+
+        The three tracks are made to come out exactly the same length,
+        which is what lets the stack end cleanly instead of trailing a
+        dead tail while it waits for the slowest input to finish.
+        """
+        frames = self.frames[name]
+        if not frames:
+            raise RuntimeError(f"{name}: no frames to compose")
+        tick = 1.0 / fps
+        # ffmpeg's concat demuxer drops exactly one frame off the tail,
+        # so the track carries one tick more than the window it covers.
+        target = (t_end - t_start) + tick
+        spans = []
+        for i, (t, _) in enumerate(frames):
+            begins = t_start if i == 0 else t
+            ends = frames[i + 1][0] if i + 1 < len(frames) else t_end + tick
+            spans.append(max(tick, ends - begins))
+        # Clamping short gaps up to one tick can only have added time;
+        # take it back off the held tail so the total is exact.
+        drift = sum(spans) - target
+        spans[-1] = max(tick, spans[-1] - drift)
+        lines = ["ffconcat version 1.0"]
+        for (_, rel), seconds in zip(frames, spans):
+            lines.append(f"file '{rel}'")
+            lines.append(f"duration {seconds:.4f}")
+        with open(os.path.join(self.dir, f"{name}.txt"), "w") as f:
+            f.write("\n".join(lines) + "\n")
+        return f"{name}.txt", sum(spans)
+
+    def _caption(self, slug: str, text: str) -> str:
+        """Caption text goes in a file, not in the filter graph: drawtext
+        reads it verbatim, so an em-dash or an apostrophe in the
+        transcript cannot break the graph it is quoted into."""
+        directory = os.path.join(self.dir, "captions")
+        os.makedirs(directory, exist_ok=True)
+        rel = f"captions/{slug}.txt"
+        with open(os.path.join(self.dir, rel), "w") as f:
+            f.write(text)
+        return rel
+
+    def _spans(self, t_start: float, t_end: float, fps: int) -> list[tuple]:
+        """Turn the transcript marks into (kind, start, end, text) spans
+        on the video clock.
+
+        A mark stays up until something at least as important replaces
+        it: a new beat clears the step and the claim beneath it, a new
+        step clears the claim. So the frame always reads top to bottom
+        as beat, then what is being done, then what was just proven.
+
+        Marks are left where they happened. Claims in particular arrive
+        in bursts, and the ones superseded inside a single frame are
+        dropped rather than nudged along the timeline to make room —
+        a caption sliding off the moment it describes would be the one
+        thing on this video that is not when it says it is.
+        """
+        out = []
+        for i, (t, kind, text) in enumerate(self.marks):
+            rank = MARK_STYLE[kind][0]
+            nxt = next((m[0] for m in self.marks[i + 1:]
+                        if MARK_STYLE[m[1]][0] <= rank), t_end)
+            begins = max(0.0, t - t_start)
+            ends = max(begins, min(t_end, nxt) - t_start)
+            if ends - begins >= 1.0 / fps:
+                out.append((kind, begins, ends, text))
+        return out
+
+    def compose(self, out_path: str, fps: int, size: str) -> dict:
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            raise RuntimeError("ffmpeg and ffprobe are needed to compose the "
+                               "video; the frames are still on disk")
+        regular, bold = _pick_font(FONTS_REGULAR), _pick_font(FONTS_BOLD)
+        t_start, t_end = self._window()
+        # Nothing to time a video against if the demo never got going.
+        if t_end - t_start < 1.0:
+            raise RuntimeError(
+                f"only {t_end - t_start:.2f}s of capture; too little to compose")
+
+        source_w, source_h = (int(v) for v in size.lower().split("x"))
+        pane_w, pane_h = source_w, source_h
+        if pane_w > COLUMN_W or pane_h > VIDEO_H - BANDS_H:
+            k = min(COLUMN_W / source_w, (VIDEO_H - BANDS_H) / source_h)
+            pane_w, pane_h = _even(source_w * k), _even(source_h * k)
+            print(f"  {size} does not tile into {VIDEO_W}x{VIDEO_H}; panes are "
+                  f"resampled to {pane_w}x{pane_h}. Record at "
+                  f"{RECORD_SIZE} for 1:1.")
+        pane_x = (COLUMN_W - pane_w) // 2
+        # Whatever vertical space the pane leaves becomes the two bands:
+        # a shallow one over it for the title and the beat, the rest
+        # under it for the labels, the step, the claim and the footnote.
+        spare = VIDEO_H - pane_h
+        pane_y = min(TOP_BAND_MAX, spare // 3)
+        under = pane_y + pane_h
+        title_y, beat_y = 8, 38
+        label_y, step_y = under + 8, under + 40
+        claim_y, footer_y = under + 70, under + 100
+        band_y = {"beat": beat_y, "step": step_y, "claim": claim_y}
+
+        lists, lengths = [], []
+        for s in self.sessions:
+            rel, seconds = self._concat_list(s.name, t_start, t_end, fps)
+            lists.append(rel)
+            lengths.append(seconds)
+            held = t_end - self.frames[s.name][-1][0]
+            if held > 1.5 / fps:
+                print(f"  {s.name}: {len(self.frames[s.name])} frames, track "
+                      f"ends {held:.1f}s early; its last frame is held to fill "
+                      f"the gap")
+        # `shortest` below is only safe because of this: the three tracks
+        # were padded to one window, so nothing of any of them is cut.
+        if max(lengths) - min(lengths) > 1.0 / fps:
+            raise RuntimeError(
+                f"tracks came out different lengths ({lengths}); refusing to "
+                f"stack them, one would be truncated")
+
+        def text(font: str, rel: str, size_px: int, color: str, y: int,
+                 enable: str | None = None) -> str:
+            bits = [f"fontfile={font}", f"textfile={rel}", f"fontcolor={color}",
+                    f"fontsize={size_px}", "x=(w-text_w)/2", f"y={y}"]
+            if enable:
+                bits.append(f"enable='{enable}'")
+            return "drawtext=" + ":".join(bits)
+
+        parts = []
+        for i, s in enumerate(self.sessions):
+            chain = [f"fps={fps}"]
+            # No scale filter at all when the session already renders at
+            # the pane's size. Resampling a 1:1 frame would cost the
+            # legibility the size was chosen for.
+            if (pane_w, pane_h) != (source_w, source_h):
+                chain.append(f"scale={pane_w}:{pane_h}:flags=lanczos")
+            label = f"{s.name} · {ROLES[s.name]}" if s.name in ROLES else s.name
+            chain += [
+                "format=rgb24",
+                f"pad={COLUMN_W}:{VIDEO_H}:{pane_x}:{pane_y}:color={BG}",
+                f"drawbox=x={pane_x}:y={pane_y}:w={pane_w}:h={pane_h}:"
+                f"color={EDGE}:t=1",
+                text(bold, self._caption(f"name{i}", label), 20, FG, label_y),
+            ]
+            parts.append(f"[{i}:v]" + ",".join(chain) + f"[c{i}]")
+        # `shortest`: every input is the same length by construction, so
+        # this ends the stack when they end rather than letting it hold a
+        # dead tail while ffmpeg waits out the last input's EOF.
+        parts.append("[c0][c1][c2]hstack=inputs=3:shortest=1[row]")
+
+        rate = self.rate()
+        row = [
+            text(bold, self._caption(
+                "title", "qOS · three sessions, one room"), 24, FG, title_y),
+        ]
+        for i, (kind, a, b, txt) in enumerate(self._spans(t_start, t_end, fps)):
+            _, band, size_px, color, is_bold = MARK_STYLE[kind]
+            row.append(text(bold if is_bold else regular,
+                            self._caption(f"m{i:03d}", txt), size_px, color,
+                            band_y[band], f"between(t,{a:.3f},{b:.3f})"))
+        # Say on the artifact itself what it is. Someone watching a 1 Hz
+        # video should be told it is 1 Hz by the video, not find out.
+        scaling = ("at 1:1" if (pane_w, pane_h) == (source_w, source_h)
+                   else f"resampled from {source_w}x{source_h}")
+        row.append(text(regular, self._caption(
+            "footer",
+            f"every pane is that session's own renderer {scaling}, sampled "
+            f"over its control socket at {rate:.1f} frames/s · real time, "
+            f"no interpolation"), 15, DIM, footer_y))
+        row.append("format=yuv420p")
+        parts.append("[row]" + ",".join(row) + "[v]")
+
+        graph = ";".join(parts)
+        with open(os.path.join(self.dir, "filter.txt"), "w") as f:
+            f.write(graph + "\n")
+
+        cmd = ["ffmpeg", "-y", "-v", "error"]
+        for rel in lists:
+            cmd += ["-f", "concat", "-safe", "0", "-i", rel]
+        cmd += ["-filter_complex", graph, "-map", "[v]",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-r", str(fps),
+                "-movflags", "+faststart", os.path.abspath(out_path)]
+        # Relative paths throughout the graph, run from the recording
+        # directory: a run directory with a colon or a quote in its name
+        # would otherwise be read as filter syntax.
+        done = subprocess.run(cmd, cwd=self.dir, capture_output=True, text=True)
+        if done.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg failed ({done.returncode}):\n{done.stderr.strip()}")
+        return probe_video(os.path.abspath(out_path))
+
+
+def probe_video(path: str) -> dict:
+    """Read the finished file back. What ffmpeg was asked for and what it
+    wrote are different claims, and only the second one is the artifact."""
+    done = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_frames",
+         "-show_entries",
+         "stream=width,height,nb_read_frames,r_frame_rate,duration,codec_name",
+         "-of", "json", path],
+        capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {done.stderr.strip()}")
+    streams = json.loads(done.stdout).get("streams") or []
+    if not streams:
+        raise RuntimeError(f"{path} has no video stream")
+    s = streams[0]
+    return {
+        "path": path,
+        "width": int(s["width"]),
+        "height": int(s["height"]),
+        "frames": int(s["nb_read_frames"]),
+        "fps": s["r_frame_rate"],
+        "duration": float(s["duration"]),
+        "codec": s["codec_name"],
+        "bytes": os.path.getsize(path),
+    }
+
+
+# --------------------------------------------------------------------
 # transcript
 # --------------------------------------------------------------------
 
@@ -275,13 +729,25 @@ GAPS: list[str] = []
 
 RULE = "-" * 70
 
+# Set by `--record`. The transcript is the demo's narration, so when a
+# recording is running the same two calls that print a beat or a step
+# also timestamp it, and the video carries the narration it belongs to
+# rather than needing one written separately afterwards.
+RECORDER: Recorder | None = None
+
 
 def banner(title: str) -> None:
     print(f"\n{RULE}\n  {title}\n{RULE}", flush=True)
+    if RECORDER:
+        RECORDER.mark("beat", title)
+        RECORDER.dwell()
 
 
 def step(text: str) -> None:
     print(f"\n  {text}", flush=True)
+    if RECORDER:
+        RECORDER.mark("step", text)
+        RECORDER.dwell()
 
 
 def claim(description: str, actual, expected) -> None:
@@ -291,6 +757,9 @@ def claim(description: str, actual, expected) -> None:
         print(f"           expected {expected!r}", flush=True)
         print(f"           observed {actual!r}", flush=True)
         FAILURES.append(description)
+    if RECORDER:
+        RECORDER.mark("pass" if good else "fail",
+                      f"{'PASS' if good else 'FAIL'}   {description}")
 
 
 def gap(description: str) -> None:
@@ -298,6 +767,8 @@ def gap(description: str) -> None:
     be mistaken for a pass."""
     print(f"    [GAP ] {description}", flush=True)
     GAPS.append(description)
+    if RECORDER:
+        RECORDER.mark("gap", f"GAP   {description}")
 
 
 def note(text: str) -> None:
@@ -547,10 +1018,34 @@ def main() -> int:
                     help="run directory for state, logs and screenshots")
     ap.add_argument("--shell", default=os.path.join(REPO, "target", "debug", "shell"),
                     help="path to the compositor binary")
-    ap.add_argument("--size", default="1280x800", help="headless viewport")
+    ap.add_argument("--size", default=None, metavar="WxH",
+                    help="headless viewport (default 1280x800, or "
+                         f"{RECORD_SIZE} under --record)")
     ap.add_argument("--keep", action="store_true",
                     help="leave the three sessions running afterwards, so they "
                          "can be driven by hand on camera")
+    ap.add_argument("--record", nargs="?", const="", default=None, metavar="DIR",
+                    help="capture all three sessions while the demo runs and "
+                         "compose a 1920x1080 three-pane video "
+                         "(default DIR: <out>/recording)")
+    ap.add_argument("--record-size", default=RECORD_SIZE, metavar="WxH",
+                    help=f"viewport each session is recorded at (default "
+                         f"{RECORD_SIZE}): one video column wide, so three of "
+                         f"them tile into {VIDEO_W}x{VIDEO_H} with no "
+                         f"resampling. Overridden by an explicit --size.")
+    ap.add_argument("--record-interval", type=float, default=0.0, metavar="S",
+                    help="target seconds between snapshots of one session; 0 "
+                         "means as fast as the compositor sustains, which is "
+                         "about 1.2 frames/s per session at the record size")
+    ap.add_argument("--record-dwell", type=float, default=2.5, metavar="S",
+                    help="seconds to hold on each beat and step while "
+                         "recording, so the video runs long enough to read. "
+                         "Real elapsed time, really sampled — never a held "
+                         "frame standing in for one")
+    ap.add_argument("--record-fps", type=int, default=30, metavar="N",
+                    help="container frame rate of the composed video; the "
+                         "capture rate is whatever was achieved, and frames "
+                         "are held, never interpolated, to fill it")
     args = ap.parse_args()
 
     # No fallback and no fixture: this demonstration is only meaningful
@@ -560,6 +1055,17 @@ def main() -> int:
         print(f"no compositor at {args.shell}\n"
               f"build it first:  cargo build -p shell --bin shell", file=sys.stderr)
         return 2
+
+    # A recording wants the size that tiles into the video 1:1; a plain
+    # run wants a desktop-shaped viewport. An explicit --size beats both.
+    size = args.size or (args.record_size if args.record is not None
+                         else "1280x800")
+
+    # Absolute, always. A relative --out reaches the compositor as a
+    # relative XDG_CONFIG_HOME, which `dirs::config_dir()` ignores, and
+    # the three sessions then persist into the real ~/.config/qos rather
+    # than into this run.
+    args.out = os.path.abspath(args.out)
 
     # Always from a clean slate. Sessions persist their workspaces, so a
     # re-run over a previous run's state starts with rooms already joined
@@ -578,7 +1084,7 @@ def main() -> int:
         Session(name, name,
                 os.path.join(args.out, name),
                 os.path.join(runtime, f"qos-yc-{short}-{pid}.sock"),
-                args.shell, args.size,
+                args.shell, size,
                 # A private runtime dir per session, standing in for the
                 # per-user one logind would give each real login.
                 os.path.join(runtime, f"qyc-{short}{pid}"))
@@ -588,6 +1094,17 @@ def main() -> int:
 
     print(f"compositor:    {args.shell}")
     print(f"run directory: {args.out}")
+
+    global RECORDER
+    record_dir = None
+    if args.record is not None:
+        record_dir = args.record or os.path.join(args.out, "recording")
+        record_dir = os.path.abspath(record_dir)
+        os.makedirs(record_dir, exist_ok=True)
+        RECORDER = Recorder(sessions, record_dir, args.record_interval,
+                            args.record_dwell)
+        print(f"recording to:  {record_dir}")
+
     started = time.time()
     rc = 0
     try:
@@ -596,12 +1113,20 @@ def main() -> int:
         for s in sessions:
             s.wait_ready()
             print(f"{s.name} ready (pid {s.proc.pid}, user {s.user})")
+        # Only once all three answer: a track that starts before its
+        # session does is a track of a blank screen.
+        if RECORDER:
+            RECORDER.start()
         run(quinten, xaver, agent, shots)
     except Exception as exc:  # noqa: BLE001 — the report is the product
         FAILURES.append(f"{type(exc).__name__}: {exc}")
         import traceback
         traceback.print_exc()
     finally:
+        # Before teardown either way — the capture threads talk to the
+        # sessions, and `--keep` is about the sessions, not the camera.
+        if RECORDER:
+            RECORDER.stop()
         if args.keep:
             print("\n--keep: leaving the three sessions running.")
             for s in sessions:
@@ -614,6 +1139,21 @@ def main() -> int:
                     os.unlink(s.sock)
                 except FileNotFoundError:
                     pass
+
+    video = None
+    if RECORDER:
+        RECORDER.report()
+        # Composed after teardown: encoding three tracks is CPU-hungry,
+        # and the sessions have nothing left to say by now.
+        try:
+            out_video = os.path.join(record_dir, "qos-demo.mp4")
+            print(f"\ncomposing {out_video}")
+            video = RECORDER.compose(out_video, args.record_fps, size)
+        except Exception as exc:  # noqa: BLE001
+            FAILURES.append(f"recording: {type(exc).__name__}: {exc}")
+            print(f"  recording failed: {exc}", file=sys.stderr)
+        for e in RECORDER.errors:
+            FAILURES.append(f"recording: {e}")
 
     print("\n" + "=" * 70)
     print(f"elapsed: {time.time() - started:.1f}s")
@@ -629,6 +1169,14 @@ def main() -> int:
     else:
         print("every claim held.")
     print(f"screenshots: {shots}")
+    if video:
+        print(f"video:       {video['path']}")
+        print(f"             {video['width']}x{video['height']} "
+              f"{video['codec']} {video['fps']}  "
+              f"{video['duration']:.2f}s  {video['frames']} frames  "
+              f"{video['bytes'] / 1024 / 1024:.1f} MiB")
+        print(f"             captured at {RECORDER.rate():.2f} frames/s "
+              f"per session")
     return rc
 
 
