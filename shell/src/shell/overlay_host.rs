@@ -3633,7 +3633,20 @@ impl ShellOverlayHost {
             if let Ok(idx) = idx.parse::<usize>() {
                 if let Some(result) = self.search_results.get(idx).cloned() {
                     if let Some(chrome) = self.chrome.clone() {
-                        (result.on_open)(doc, root, &chrome);
+                        // The palette has no step that collects an
+                        // argument yet, so it can only offer the nullary
+                        // half of the surface. A parameterised row
+                        // reached from here refuses, and the refusal is
+                        // shown rather than swallowed: a row that does
+                        // nothing when activated, silently, is the worst
+                        // of the three possible behaviours.
+                        let args = crate::shell::search::action_api::ActionArgs::none();
+                        if let Err(err) = (result.on_open)(doc, root, &chrome, &args) {
+                            chrome.borrow_mut().push_warning_notification(
+                                format!("Can't run “{}”", result.title),
+                                err.to_string(),
+                            );
+                        }
                     }
                     self.palette_visible = false;
                     return;
