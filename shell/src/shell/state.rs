@@ -3366,13 +3366,39 @@ impl WorkspaceTree {
         // changes we did not accept, and the refused ops would stay in a
         // graph that is exported wholesale to the next peer.
         let local_salt = self.local_salt();
-        if Self::owned_contents_digest(self.room_docs.get(&room), local_salt)
-            != Self::owned_contents_digest(Some(&candidate), local_salt)
-        {
+        let before = Self::owned_contents_digest(self.room_docs.get(&room), local_salt);
+        let after = Self::owned_contents_digest(Some(&candidate), local_salt);
+        // Compared over the **intersection**: an entry of ours the batch
+        // changes the value of is a rewrite and is refused; one it merely
+        // carries that we do not have yet is not.
+        //
+        // The difference matters after a restart. Room documents are not
+        // persisted — they are re-projected from the cache — so a machine
+        // comes back with an empty one, and the first thing a guest sends
+        // is that machine's own history back to it. Comparing whole sets
+        // would read every one of those entries as an unauthorised
+        // addition and refuse the batch, for good: the heads never
+        // converge, so the same batch arrives and is refused again every
+        // interval.
+        //
+        // Nothing is lost by allowing it. This machine's next projection
+        // writes its own entries from its cache and sweeps any our-salt
+        // key the cache does not have, so an entry a peer invented under
+        // our salt survives exactly until we next export.
+        let changed_ours: Vec<&(u64, String)> = {
+            let before_by_id: std::collections::BTreeMap<u64, &String> =
+                before.iter().map(|(id, v)| (*id, v)).collect();
+            after
+                .iter()
+                .filter(|(id, v)| before_by_id.get(id).is_some_and(|prev| *prev != v))
+                .collect()
+        };
+        if !changed_ours.is_empty() {
             tracing::warn!(
                 target: "shell::state",
                 room = %room,
                 from = %from,
+                entries = changed_ours.len(),
                 "room sync refused: a peer's changes would rewrite windows \
                  this machine owns",
             );
