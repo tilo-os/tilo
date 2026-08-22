@@ -2259,7 +2259,24 @@ impl WorkspaceTree {
     /// labelled with its own handle rather than with somebody's name.
     pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
         let mut out = std::collections::BTreeMap::new();
-        for (peer, name) in self.room_peer_names_in_doc(room) {
+        // Room documents are not persisted -- they are re-projected from
+        // the cache -- so a machine that has just restarted holds none
+        // until something asks it to export. On a machine that governs
+        // the room, the cache is what the document is projected *from*,
+        // so reading it is reading the same authority rather than a
+        // weaker one, and it means a host does not show the people it
+        // invited as numbers for the first few seconds after a restart.
+        //
+        // A guest gets no such fallback. What it knows about the room is
+        // what replicated, and a guest with a name in its cache and none
+        // in the document would be one that had written a name it was
+        // not entitled to write.
+        let named = if self.governs_room(room) {
+            self.room_peer_names.get(&room).cloned().unwrap_or_default()
+        } else {
+            self.room_peer_names_in_doc(room)
+        };
+        for (peer, name) in named {
             let Ok(parsed) = peer.parse::<libp2p::PeerId>() else {
                 continue;
             };
@@ -6921,6 +6938,56 @@ mod automerge_foundation_tests {
             Some("bob"),
             "and it has to be reachable from the handle a presence frame carries",
         );
+    }
+
+    /// A host that has just restarted still knows who it invited.
+    ///
+    /// Room documents are not persisted, so a fresh process holds none
+    /// until a peer asks it to export one — and the first thing that
+    /// arrives from a peer is presence, which is precisely when the name
+    /// is needed. The name itself *is* persisted, so the answer exists;
+    /// this is about it being reachable before the first sync round.
+    #[test]
+    fn a_host_that_restarted_still_knows_who_it_invited() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let bob = peer_id(9);
+        assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &bob, "bob"));
+
+        // What a restart leaves: the cache, and no projected document.
+        host.room_docs.clear();
+
+        assert_eq!(
+            host.room_peer_labels(room).get(&handle_of(&bob)).map(String::as_str),
+            Some("bob"),
+            "the machine that governs the room is the one the document is \
+             projected from, so its cache is the same authority",
+        );
+    }
+
+    /// And a guest gets no such shortcut. What it knows about the room is
+    /// what replicated; a name in a guest's cache with none in the
+    /// document is a name that guest was not entitled to write.
+    #[test]
+    fn a_guest_reads_names_only_out_of_the_replicated_document() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let bob = peer_id(9);
+        assert!(host.name_peer(room, &"ada".to_string(), &bob, "bob"));
+        ship(&mut host, &mut guest, room, 1);
+        assert!(guest.room_peer_labels(room).contains_key(&handle_of(&bob)));
+
+        // A name the guest holds locally and the room does not.
+        guest
+            .room_peer_names
+            .entry(room)
+            .or_default()
+            .insert(peer_id(11), "Somebody Else".to_string());
+
+        let labels = guest.room_peer_labels(room);
+        assert!(
+            !labels.values().any(|n| n == "Somebody Else"),
+            "a guest must not show a name that is not in the room document",
+        );
+        assert_eq!(labels.get(&handle_of(&bob)).map(String::as_str), Some("bob"));
     }
 
     /// A peer nobody named is left as the id it arrived under. Not
