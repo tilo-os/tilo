@@ -539,6 +539,21 @@ impl TabBar {
         };
         // Per-pill drop shadow, approximating the concept's
         // `shadow-[0_8px_32px_rgba(0,0,0,0.2)]`.
+        //
+        // Cast in proportion to how much body there is to cast it. Every
+        // pill used to lay one down whether it painted anything or not,
+        // so each idle tab sat on a dark rounded smear with no surface
+        // on top of it — four soft black rings over the backdrop, which
+        // is a large part of why the row read as muddy rather than as
+        // chrome. Riding the reveal curve also means the shadow arrives
+        // and leaves with the surface instead of switching underneath it.
+        // The drag-ghost is a lifted pill by definition and keeps a full
+        // shadow regardless of the source's hover state.
+        let shadow_strength = if is_active || look.scale < 1.0 || suppress_hover {
+            1.0
+        } else {
+            self.reveal_fade(i)
+        };
         let shadow_y_offset = 6.0_f64;
         let shadow_rings: [(f64, u8); 4] = [
             (2.0, 51), // ~0.20
@@ -547,6 +562,10 @@ impl TabBar {
             (14.0, 5), // ~0.02
         ];
         for (spread, alpha) in shadow_rings {
+            let alpha = (alpha as f64 * shadow_strength).round() as u8;
+            if alpha == 0 {
+                continue;
+            }
             let shadow_rect = Rect::new(
                 r.x0 - spread,
                 r.y0 - spread + shadow_y_offset,
@@ -570,7 +589,26 @@ impl TabBar {
         // in commit f7d5a70 so the contrast is consistent across widgets.
         let shape = RoundedRect::from_rect(r, radius);
         if look.fill.a() > 0 {
-            scene.fill(vello::peniko::Fill::NonZero, pill_transform, look.fill, None, &shape);
+            // Light from above rather than a single flat wash: the fill
+            // is brightest along the pill's top edge and settles to the
+            // token value by its middle. One gradient is what separates
+            // "a rectangle of slightly lighter grey" from a surface that
+            // sits above the backdrop, and it is derived from the same
+            // `surface_white_*` token the tier table names rather than
+            // introducing a colour of its own.
+            let top = look.fill.with_alpha_factor(1.9);
+            let grad = vello::peniko::Gradient::new_linear(
+                Point::new(r.x0, r.y0),
+                Point::new(r.x0, r.y0 + r.height() * 0.8),
+            )
+            .with_extend(vello::peniko::Extend::Pad)
+            .with_stops(
+                &[
+                    vello::peniko::ColorStop { offset: 0.0, color: top.into() },
+                    vello::peniko::ColorStop { offset: 1.0, color: look.fill.into() },
+                ][..],
+            );
+            scene.fill(vello::peniko::Fill::NonZero, pill_transform, &grad, None, &shape);
         }
         if let Some(border) = look.border {
             scene.stroke(
@@ -707,7 +745,17 @@ impl TabBar {
         // also filters them out) — and on idle inactive pills, which have
         // no body for the glyph to sit inside. See
         // [`close_affordance_visible`].
+        // How far the trailing zone has opened this frame, and from it
+        // each chip's strength: full once the zone has cleared the chip
+        // by [`CHIP_FADE_PX`], fading in over the travel before that.
+        let zone = self
+            .reveal_px
+            .get(i)
+            .copied()
+            .unwrap_or_else(|| Reveal::None.reserve());
+        let chip_alpha = |threshold: f64| ((zone - threshold) / CHIP_FADE_PX).clamp(0.0, 1.0) as f32;
         if close_affordance_visible(&look, is_pinned) && self.close_rects[i].area() > 0.0 {
+            let alpha = chip_alpha(CLOSE_INSET + CLOSE_W);
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
             let (close_chip_color, close_chip_visible) = if close_hover {
@@ -727,7 +775,7 @@ impl TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    close_chip_color,
+                    close_chip_color.with_alpha_factor(alpha),
                     None,
                     &chip,
                 );
@@ -741,7 +789,14 @@ impl TabBar {
             } else {
                 text_dim
             };
-            icons::draw_icon(scene, transform, close_r, icons::Icon::X, glyph_color, 1.5);
+            icons::draw_icon(
+                scene,
+                transform,
+                close_r,
+                icons::Icon::X,
+                glyph_color.with_alpha_factor(alpha),
+                1.5,
+            );
         }
 
         // Reveal-gated action cluster (maximize + search). Each chip is
@@ -756,6 +811,7 @@ impl TabBar {
             let icon_active = text_primary;
 
             if self.max_rects[i].area() > 0.0 {
+            let alpha = chip_alpha(CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W);
             let max_r = self.max_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let max_hover = Some(i) == self.hover_max_idx;
             if max_hover {
@@ -763,7 +819,7 @@ impl TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    chip_tint,
+                    chip_tint.with_alpha_factor(alpha),
                     None,
                     &chip,
                 );
@@ -774,12 +830,13 @@ impl TabBar {
                 transform,
                 max_r,
                 icons::Icon::Maximize2,
-                outline_color,
+                outline_color.with_alpha_factor(alpha),
                 1.5,
             );
             }
 
             if self.search_rects[i].area() > 0.0 {
+            let alpha = chip_alpha(CHIP_CLUSTER_W);
             let search_r = self.search_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let search_hover = Some(i) == self.hover_search_idx;
             if search_hover {
@@ -787,7 +844,7 @@ impl TabBar {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    chip_tint,
+                    chip_tint.with_alpha_factor(alpha),
                     None,
                     &chip,
                 );
@@ -798,7 +855,7 @@ impl TabBar {
                 transform,
                 search_r,
                 icons::Icon::Search,
-                icon_color,
+                icon_color.with_alpha_factor(alpha),
                 1.5,
             );
             }
@@ -1053,6 +1110,28 @@ impl TabBar {
         let from = self.reveal_reserve(id);
         self.reveal_anim.insert(id, RevealAnim { from, to, started: Instant::now() });
         from
+    }
+
+    /// Hold every in-flight reveal curve `at` milliseconds along it.
+    ///
+    /// The curve runs on wall time, and an offscreen frame costs more
+    /// wall time than the whole curve lasts — so a capture that only
+    /// steps frames sees the endpoints and nothing in between. This is
+    /// the same escape `GroupRow::hold_shift_at` gives the make-space
+    /// slide: what gets rendered is the production `apply_layout` at the
+    /// requested point, not a mock of it. Returns whether any curve was
+    /// running to sample.
+    pub fn hold_reveal_at(&mut self, at: Duration) -> bool {
+        let mut any = false;
+        let now = Instant::now();
+        for anim in self.reveal_anim.values_mut() {
+            if (anim.from - anim.to).abs() <= f64::EPSILON {
+                continue;
+            }
+            anim.started = now.checked_sub(at).unwrap_or(now);
+            any = true;
+        }
+        any
     }
 
     /// True while any pill is still opening or closing its reveal.
@@ -1637,7 +1716,7 @@ const CLOSE_INSET: f64 = 3.0;
 /// while maximize and search are secondary and also reachable from the
 /// tab's context menu.
 const ACTION_W: f64 = 14.0;
-const ACTION_GAP: f64 = 2.0;
+const ACTION_GAP: f64 = 4.0;
 /// Leading app-glyph width and its gap to the title.
 const ICON_W: f64 = 14.0;
 const ICON_GAP: f64 = 6.0;
@@ -1676,7 +1755,18 @@ const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTI
 
 /// Breathing room between the end of a title and whatever chip sits at
 /// the pill's right end, so a full-width title never touches a glyph.
-const TITLE_CHIP_GAP: f64 = 4.0;
+///
+/// Also the runway each chip fades in over: a chip is placed the moment
+/// the trailing zone reaches it and reaches full strength once the zone
+/// has cleared it by [`CHIP_FADE_PX`], so this has to be at least that
+/// wide for a settled pill to paint its cluster at full opacity.
+const TITLE_CHIP_GAP: f64 = 10.0;
+
+/// How much further the trailing zone has to open past a chip before
+/// that chip is at full strength. Without it the three chips arrive as
+/// three hard pops at the widths that first fit them; with it they
+/// resolve out of the pill's edge as it travels.
+const CHIP_FADE_PX: f64 = 10.0;
 
 /// How wide a pill's trailing zone is, which is the same question as
 /// which controls it is showing. Width and paint are read off this one
