@@ -35,9 +35,9 @@ timestamped video, so a bad take costs nothing but running it again.
   XDG_RUNTIME_DIR is its own (it has to be: the collab broker binds
   inside it), winit is pointed at X11 rather than at the host's Wayland
   socket — DISPLAY and XAUTHORITY are absolute and survive the isolation
-  where WAYLAND_DISPLAY does not. That also makes the window addressable
-  by `wmctrl`, which is how it gets to exactly 1920x1080 without asking
-  anyone to drag a corner.
+  where WAYLAND_DISPLAY does not. It also leaves the window addressable
+  by `wmctrl` and `xdotool`, which is how it is put out of the way while
+  this sets up and brought back when the camera rolls.
 
   The frames are *not* a screen grab. They come off the same `snapshot`
   op the nine-beat recorder uses — the compositor re-renders its own
@@ -51,18 +51,17 @@ timestamped video, so a bad take costs nothing but running it again.
   legible from what the UI does — the chooser opening, the row
   highlighting, the image appearing — but there is no arrow on screen.
 
-  Why the window is sized before anything else happens
-  ----------------------------------------------------
-  The winit backend panics when the window is resized with a frame in
-  flight — `Surface::configure` finds a live `SurfaceOutput` and the
-  present thread goes down, taking the session with it. So the one resize
-  this needs (1600x900 to fullscreen 1920x1080) is done in the calmest
-  moment there is: immediately after the window maps, before an app is
-  running and before the camera exists. Your terminal is raised back over
-  it for the setup and the countdown, and the fullscreen window comes to
-  the front when the camera rolls — a raise, not a resize. Nothing
-  resizes it again; at the end the session is stopped and the window goes
-  with it.
+  Why the window is never resized
+  -------------------------------
+  The winit backend panics when its surface is reconfigured with a frame
+  in flight — `Surface::configure` finds a live `SurfaceOutput` and the
+  present thread goes down, taking the session with it. Twice, on the way
+  to this script, a run died exactly there. So nothing here resizes
+  anything: the window is *created* at 1920x1080 (`NIRIOS_WINIT_SIZE`),
+  it is shown fullscreen only to drop the title bar — which changes no
+  dimension — and it is iconified and re-raised rather than resized while
+  the rest is staged. At the end the session is stopped and the window
+  goes with it.
 
   Proving it without a person
   ---------------------------
@@ -115,8 +114,8 @@ WINDOW_TITLE = "nirios"
 # How long one unattended run will wait for a human before it gives up
 # and writes whatever it filmed.
 DEFAULT_TIMEOUT_S = 240.0
-# Held after the chooser closes, so the image arriving in the document is
-# on film rather than one frame before the camera stopped.
+# Held after the image reaches the document, so its arrival is on film
+# with room either side rather than one frame before the camera stopped.
 DEFAULT_DWELL_S = 5.0
 
 
@@ -279,6 +278,11 @@ class WindowedSession(yc.Session):
 
     #: Set by `main` before `start`, when a private bus could be raised.
     bus_address: str | None = None
+    #: `WxH` the host window is *created* at, never resized to. See
+    #: `NIRIOS_WINIT_SIZE` in `backend/winit.rs`: a resize with a frame in
+    #: flight panics the present thread, so the only safe way to record
+    #: at the video's own resolution is to open the window at it.
+    window_size: str | None = None
 
     def start(self) -> None:
         real_popen = subprocess.Popen
@@ -295,6 +299,8 @@ class WindowedSession(yc.Session):
             env.pop("WAYLAND_DISPLAY", None)
             if self.bus_address:
                 env["DBUS_SESSION_BUS_ADDRESS"] = self.bus_address
+            if self.window_size:
+                env["NIRIOS_WINIT_SIZE"] = self.window_size
             kw["env"] = env
             return real_popen(argv, **kw)
 
@@ -357,11 +363,11 @@ def active_window() -> str | None:
 def hide_window(wid: str) -> None:
     """Iconify, so the window is out of the way while this sets up.
 
-    It has to *exist* early — the one resize it needs has to happen while
-    nothing is drawing — but it does not have to be looked at. Iconified,
-    the compositor keeps running and the app still launches into it; what
-    it stops being is a window sitting on someone's desktop through a
-    setup they have no part in.
+    It has to *exist* early — the compositor opens it as it starts — but
+    it does not have to be looked at. Iconified, the compositor keeps
+    running and the app still launches into it; what it stops being is a
+    window sitting on someone's desktop through a setup they have no part
+    in. Iconifying changes no dimension, so it is not a resize.
     """
     subprocess.run(["xdotool", "windowminimize", wid], capture_output=True)
 
@@ -696,8 +702,8 @@ def main() -> int:
                     metavar="S", help="how long to wait for you")
     ap.add_argument("--dwell", type=float, default=DEFAULT_DWELL_S,
                     metavar="S",
-                    help="seconds held after the chooser closes, so the "
-                         "image landing is on film")
+                    help="seconds held after the image reaches the "
+                         "document, so its arrival is on film")
     ap.add_argument("--countdown", type=int, default=5, metavar="N",
                     help="seconds counted down before the camera rolls")
     ap.add_argument("--fps", type=int, default=30, metavar="N",
@@ -712,11 +718,11 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true",
                     help="leave the session running afterwards")
     ap.add_argument("--self-test", action="store_true",
-                    help="prove the rig with no hands: sends Ctrl+O, which "
-                         "opens the same OS chooser through the same portal "
-                         "the toolbar's image button uses, and picks a file. "
-                         "Exercises everything except the toolbar button "
-                         "itself — which is the one thing that needs you")
+                    help="prove the rig with no hands: sweeps the "
+                         "toolbar for the image button, stopping when the "
+                         "compositor's log says a dialog opened, then picks "
+                         "the file. Exercises the whole chain; only says "
+                         "nothing about how easy the button is to hit")
     args = ap.parse_args()
 
     # ---- preflight ------------------------------------------------
@@ -813,6 +819,11 @@ def main() -> int:
         shell_bin, "1600x900",
         os.path.join(runtime, f"qins{pid}"),
         home, apps_dir, tools)
+    # Opened at the video's own size, so every frame goes into the clip
+    # 1:1 and nothing is ever resampled — and so the window never has to
+    # be resized, which is what crashes this backend.
+    session.window_size = (None if args.windowed
+                           else f"{yc.VIDEO_W}x{yc.VIDEO_H}")
     yc.SESSIONS = [session]
 
     print(f"compositor:     {shell_bin}")
@@ -862,25 +873,18 @@ def main() -> int:
         print(f"  compositor up          pid {session.proc.pid}, "
               f"window {window_size(wid)}")
 
-        # The size, now, while nothing is drawing. See the module
-        # docstring: a resize with a frame in flight takes the session
-        # down, and this is the only moment where nothing can be.
+        # Fullscreen only to drop the title bar — the window was *created*
+        # at the video's size, so this changes no dimension and the
+        # backend now ignores a configure that changes nothing. Nothing
+        # here resizes anything; that is the whole point.
         if not args.windowed:
-            before = window_size(wid)
             set_fullscreen(wid, True)
-            deadline = time.time() + 10.0
-            while time.time() < deadline:
-                if window_size(wid) not in (None, before):
-                    break
-                time.sleep(0.25)
-            time.sleep(1.0)          # let the resize finish being applied
+            time.sleep(1.0)
             if session.proc.poll() is not None:
                 raise RuntimeError(
-                    "the compositor went down when its window was resized "
-                    "(the winit backend panics if a frame is in flight; see "
-                    f"{session.log_path}). Run it again, or pass --windowed "
-                    "to record without resizing at all.")
-            print(f"  sized for the video    {window_size(wid)}")
+                    "the compositor went down while its window was being "
+                    f"shown fullscreen; see {session.log_path}. --windowed "
+                    "records without touching the window at all.")
         # Out of sight for the rest of the setup. It comes back — at the
         # size it already is — when the camera rolls.
         hide_window(wid)
@@ -909,6 +913,26 @@ def main() -> int:
             raise_window(terminal)
 
         room = session.active_workspace()["room"]
+        # The app has to be able to *read* what it is handed. The portal
+        # gives a sandboxed caller a host path — the compositor says so
+        # itself at startup, "the document store cannot reach sandboxed
+        # apps" — and the word processor runs under bwrap, so without a
+        # grant the pick completes and the app then logs "could not read
+        # image ...: No such file or directory" and nothing arrives in
+        # the document. Measured, not guessed: that is exactly what
+        # happened until this line existed.
+        #
+        # Granted before the launch because the sandbox is built when the
+        # app spawns; a grant made afterwards binds nothing. It is the
+        # same production path a person's "allow" goes through
+        # (`Workspace::grant_as`), scoped to the one staged folder.
+        granted = session.grant(f"app:{yc.WORD_PROCESSOR}", f"fs:{home}",
+                                "read")
+        if "err" in granted:
+            print(f"  ! the folder grant was refused ({granted['err']}); the "
+                  f"app will not be able to read the file it is handed")
+        else:
+            print(f"  folder readable by it  {home}")
         painted = session.launch(yc.WORD_PROCESSOR, search="word")
         if painted is None:
             raise RuntimeError(
@@ -1037,9 +1061,9 @@ def main() -> int:
     print(f"outcome: {outcome}")
     if outcome == "no-click":
         print("  the file chooser never opened, so nothing was filmed but a "
-              "document sitting there. The control is the picture icon in "
-              "the toolbar, between Table and Styles; it carries no text "
-              "label, only the icon. Run it again.")
+              "document sitting there. The control is the one toolbar "
+              "button with no text on it — a small photo icon, between the "
+              "table control and the styles control. Run it again.")
         rc = 1
     elif outcome == "no-image":
         print(f"  the chooser opened but no image reached the document "
