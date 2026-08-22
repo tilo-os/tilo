@@ -694,6 +694,55 @@ fn start_egress_gate(
     }
 }
 
+/// Put every opened service socket on the fd number the app was told
+/// to look at, in the child, before `exec`.
+///
+/// This is how a descriptor actually crosses into the sandbox. bwrap
+/// forwards fds it was not asked about untouched, so an fd placed here
+/// survives the namespace setup and arrives in the app as a live
+/// connection. What does *not* work — and used to be what this did —
+/// is bwrap's `--file FD DEST`: that is a byte copy, so it blocks
+/// reading a socket the broker will never write to and the launch
+/// never reaches `exec` at all.
+///
+/// The two passes matter. Target numbers start at 17 and sources are
+/// whatever `connect` handed out, so a source *can* already be sitting
+/// on a target we have not written yet; relocating every source above
+/// the target window first means no `dup2` can clobber a descriptor
+/// still waiting to be placed.
+///
+/// Returns an error rather than continuing quietly: we are here only
+/// because the socket existed and we connected to it, so a failure at
+/// this point is a bug, not an absent service — and an app that starts
+/// with collaboration silently off is exactly the outcome worth
+/// refusing.
+///
+/// # Safety
+/// Call only from `Command::pre_exec` (post-fork, pre-exec). Uses only
+/// `fcntl` and `dup2`, both async-signal-safe; allocates nothing.
+unsafe fn place_service_fds(pairs: &mut [(RawFd, RawFd)]) -> std::io::Result<()> {
+    let Some(highest) = pairs.iter().map(|(_, dst)| *dst).max() else {
+        return Ok(());
+    };
+    let floor = highest + 1;
+    for (src, _) in pairs.iter_mut() {
+        // F_DUPFD returns the lowest free fd >= floor, i.e. clear of
+        // every target.
+        let moved = unsafe { libc::fcntl(*src, libc::F_DUPFD, floor) };
+        if moved >= 0 {
+            *src = moved;
+        }
+    }
+    for (src, dst) in pairs.iter() {
+        if unsafe { libc::dup2(*src, *dst) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // dup2 leaves the target without FD_CLOEXEC, which is what we
+        // want: it has to survive bwrap's exec and the app's.
+    }
+    Ok(())
+}
+
 pub fn run_with(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -742,7 +791,8 @@ pub fn run_with(
     let seccomp_fd: OwnedFd = stage_seccomp_blob(&seccomp_blob)?;
     const SECCOMP_CHILD_FD: i32 = 16;
 
-    // 2b. D-Bus proxy / direct-bind decision. Manifest asks for
+    // 2b. D-Bus proxy / direct-bind decision.
+ Manifest asks for
     // portals? Try to spawn xdg-dbus-proxy; on failure fall back
     // to a raw-path bind. `_dbus_guard` stays alive until we finish
     // waiting on bwrap so Drop can SIGTERM the proxy.
@@ -1072,13 +1122,11 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(p.to_string());
         }
-        // Service sockets: apps need read + write on the socket path
-        // to actually talk over them.
-        for sb in &binds {
-            let path = crate::sandbox::sandbox_service_path(&sb.name);
-            argv.push("--rw".to_string());
-            argv.push(path.display().to_string());
-        }
+        // Service sockets need no Landlock rule: the app is handed an
+        // already-connected descriptor rather than a path to
+        // `connect(2)`, so there is no filesystem access to grant. A
+        // rule for a path that does not exist inside the sandbox would
+        // only make the shim report itself partially enforced.
         // The gate socket is reached with connect(2), which is a
         // write-flavoured access on a pathname socket — a read-only
         // rule surfaces as EACCES at connect time, exactly like the
@@ -1120,12 +1168,18 @@ pub fn run_with(
     let mut cmd = Command::new(&bwrap);
     cmd.args(&argv);
 
-    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD; install
-    // Landlock; clear CLOEXEC on all the service fds we passed via
-    // --file (bwrap should keep them, but stripping CLOEXEC is belt +
-    // suspenders).
+    // pre_exec: dup the seccomp blob fd into SECCOMP_CHILD_FD, and put
+    // each service socket on the fd number the app was told to read.
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<RawFd> = resolved.iter().map(|r| r.host_fd).collect();
+    let mut service_fds: Vec<(RawFd, RawFd)> =
+        resolved.iter().map(|r| (r.host_fd, r.child_fd)).collect();
+    for r in &resolved {
+        tracing::info!(
+            service = %r.name,
+            child_fd = r.child_fd,
+            "service socket connected; handing the descriptor to the app",
+        );
+    }
     // Landlock plan: derived here so we can log it from the parent.
     // We deliberately do NOT install Landlock in `pre_exec` on the
     // bwrap process — bwrap needs broad FS access to mount and pivot
@@ -1171,12 +1225,7 @@ pub fn run_with(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            for fd in &resolved_fds {
-                let flags = libc::fcntl(*fd, libc::F_GETFD);
-                if flags != -1 {
-                    let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
+            unsafe { place_service_fds(&mut service_fds)? };
             // Landlock is NOT installed here — bwrap needs broad FS
             // access to set up the namespace. It's installed by the
             // __sandbox-exec shim after bwrap's mount setup completes.
@@ -1316,7 +1365,8 @@ pub fn run_with_captured(
     cmd.stdout(std::process::Stdio::piped());
 
     let host_seccomp_fd = seccomp_fd.as_raw_fd();
-    let resolved_fds: Vec<RawFd> = resolved.iter().map(|r| r.host_fd).collect();
+    let mut service_fds: Vec<(RawFd, RawFd)> =
+        resolved.iter().map(|r| (r.host_fd, r.child_fd)).collect();
     unsafe {
         cmd.pre_exec(move || {
             if libc::dup2(host_seccomp_fd, SECCOMP_CHILD_FD) == -1 {
@@ -1326,12 +1376,7 @@ pub fn run_with_captured(
             if flags != -1 {
                 let _ = libc::fcntl(SECCOMP_CHILD_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
             }
-            for fd in &resolved_fds {
-                let flags = libc::fcntl(*fd, libc::F_GETFD);
-                if flags != -1 {
-                    let _ = libc::fcntl(*fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
-                }
-            }
+            unsafe { place_service_fds(&mut service_fds)? };
             Ok(())
         });
     }
