@@ -60,6 +60,10 @@ const VIDEO_LANE_H: f64 = 62.0;
 const AUDIO_LANE_H: f64 = 46.0;
 const TRIM_HIT: f64 = 8.0;
 const PAD: f64 = 14.0;
+/// Overlay-scrollbar geometry, matching [`ui::widget::DocumentViewport`] so
+/// the timeline's bar is the same object the rest of the fleet shows.
+const SCROLLBAR_THICKNESS: f64 = 8.0;
+const SCROLLBAR_INSET: f64 = 3.0;
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
@@ -106,9 +110,20 @@ enum TransportAction {
 enum Drag {
     Playhead,
     Scrubber,
-    ClipMove { id: ClipId, grab_dt: f64 },
+    /// Moving the selection. `id` is the clip under the pointer (the one whose
+    /// left edge snaps); `grab_dt` is where inside it the grab landed; `track`
+    /// is the lane it should land on, re-resolved from the cursor on every
+    /// move so a vertical drag crosses tracks. Every other selected clip
+    /// follows by the same time delta.
+    ClipMove { id: ClipId, grab_dt: f64, track: TrackId },
     TrimIn { id: ClipId },
     TrimOut { id: ClipId },
+    /// Rubber-band selection from `origin` on empty lane space. `additive`
+    /// keeps the previous selection (shift held). A press that never leaves
+    /// [`MARQUEE_THRESHOLD`] falls back to scrubbing on release.
+    Marquee { origin: Point, additive: bool },
+    /// Dragging the timeline's horizontal scrollbar thumb.
+    Scrollbar,
     Opacity,
     Volume,
     Brightness,
@@ -119,6 +134,101 @@ enum Drag {
     /// Dragging the intensity slider of the effect at `idx` on the selected clip.
     EffectAmount { idx: usize },
 }
+
+/// The timeline's clip selection: an ordered set with a *primary* (anchor)
+/// clip. The primary is what the inspector edits and what a fresh click
+/// re-anchors to; every clip in the set takes part in delete / ripple-delete /
+/// copy / cut / duplicate / nudge / split, each of which lands as **one** undo
+/// boundary regardless of how many clips it touched.
+#[derive(Clone, Default, PartialEq)]
+struct Selection {
+    ids: Vec<ClipId>,
+    primary: Option<ClipId>,
+}
+
+impl Selection {
+    fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+    fn len(&self) -> usize {
+        self.ids.len()
+    }
+    /// The anchor clip — the one the inspector shows and single-clip edits act
+    /// on. `None` exactly when the selection is empty.
+    fn primary(&self) -> Option<ClipId> {
+        self.primary
+    }
+    fn contains(&self, id: ClipId) -> bool {
+        self.ids.contains(&id)
+    }
+    fn ids(&self) -> &[ClipId] {
+        &self.ids
+    }
+    fn clear(&mut self) {
+        self.ids.clear();
+        self.primary = None;
+    }
+    /// Collapse to just `id` — a plain click.
+    fn select_only(&mut self, id: ClipId) {
+        self.ids.clear();
+        self.ids.push(id);
+        self.primary = Some(id);
+    }
+    /// Add or remove `id` (shift-click). Removing the primary promotes
+    /// whatever is left so the inspector never points at nothing while clips
+    /// are still selected.
+    fn toggle(&mut self, id: ClipId) {
+        if let Some(pos) = self.ids.iter().position(|&c| c == id) {
+            self.ids.remove(pos);
+            if self.primary == Some(id) {
+                self.primary = self.ids.last().copied();
+            }
+        } else {
+            self.ids.push(id);
+            self.primary = Some(id);
+        }
+    }
+    /// Re-anchor on an already-selected clip without disturbing the set — a
+    /// plain click inside a multi-selection.
+    fn set_primary(&mut self, id: ClipId) {
+        if self.ids.contains(&id) {
+            self.primary = Some(id);
+        }
+    }
+    /// Drop every id in `gone` (clips a track / media deletion is about to
+    /// take with it), promoting the primary if it was one of them.
+    fn remove_all(&mut self, gone: &[ClipId]) {
+        self.ids.retain(|id| !gone.contains(id));
+        if self.primary.map(|id| gone.contains(&id)).unwrap_or(false) {
+            self.primary = self.ids.last().copied();
+        }
+    }
+    /// Replace the whole set (a marquee release), anchoring on the last id.
+    fn set(&mut self, ids: Vec<ClipId>) {
+        self.primary = ids.last().copied();
+        self.ids = ids;
+    }
+    /// Drop ids whose clips are gone (a remote delete, or a track deletion),
+    /// promoting the primary if it was one of them.
+    fn retain_existing(&mut self, p: &Project) {
+        self.ids.retain(|id| p.clip(*id).is_some());
+        if self.primary.map(|id| p.clip(id).is_none()).unwrap_or(false) {
+            self.primary = self.ids.last().copied();
+        }
+    }
+}
+
+/// Pointer travel (logical px) before a press on empty lane space becomes a
+/// rubber-band selection rather than a playhead scrub.
+const MARQUEE_THRESHOLD: f64 = 4.0;
+
+/// How long after a bin click a second click on the same item still counts as
+/// a double-click ("add to timeline") rather than a rename intent.
+const BIN_DOUBLE_CLICK_MS: u128 = 400;
+/// The upper edge of the deliberate slow-second-click rename window. Past it
+/// the previous click is stale and a press is just a fresh press — without
+/// this bound a bin item, once clicked, could never be dragged again.
+const BIN_RENAME_WINDOW_MS: u128 = 2_000;
 
 /// Which inspector slider a drag is editing. Brightness/contrast/saturation
 /// share one code path; the variant disambiguates the field.
@@ -179,7 +289,12 @@ pub struct VideoEditorApp {
     playhead: f64,
     zoom: f64,  // pixels per second
     scroll: f64, // seconds at the left edge of the lane area
-    selected: Option<ClipId>,
+    /// Shared horizontal-scrollbar interaction model (thumb geometry, thumb
+    /// drag, track paging) — the same one [`ui::widget::Scrollable`] and
+    /// [`ui::widget::DocumentViewport`] use, so the timeline's bar behaves and
+    /// looks identical to every other scroll surface in the fleet.
+    hbar: ui::widget::Scrollbar,
+    selection: Selection,
     selected_media: Option<MediaId>,
     playing: bool,
     // --- ui state ---
@@ -204,10 +319,22 @@ pub struct VideoEditorApp {
     #[cfg(feature = "decode")]
     preview_decoder: preview::PreviewDecoder,
     drag: Option<Drag>,
+    /// Live rubber-band rect while a [`Drag::Marquee`] is past its threshold,
+    /// so `draw` can paint it. `None` until the press actually becomes a drag.
+    marquee: Option<Rect>,
+    /// Set whenever the playhead moves on its own (playback, shuttle, a
+    /// transport button, a keyboard jump) so the next frame scrolls it back
+    /// into view. Deliberately *not* set by wheel panning: the view follows
+    /// the playhead, never fights the user's own scroll.
+    chase_playhead: bool,
     last_mouse: Point,
     hover_clip: Option<ClipId>,
     hover_media: Option<MediaId>,
     last_click_media: Option<(MediaId, Instant)>,
+    /// A bin press inside the slow-second-click rename window. The rename only
+    /// fires if the press is *released* without ever passing
+    /// [`BIN_DRAG_THRESHOLD`] — a drag always wins over a rename.
+    pending_rename: Option<MediaId>,
     seeded: bool,
     /// When true this is the hermetic `--shots`/demo build: the first sync
     /// seeds the bundled sample project into an empty document. The live app
@@ -223,9 +350,11 @@ pub struct VideoEditorApp {
     /// for the affordance == `ActionSpec` covenant test. Ctrl+Z / Ctrl+Y are
     /// handled OS-wide by the toolkit off the recorded boundary.
     actions: ui::ActionHost,
-    /// Copied clip, ready to paste at the playhead (Ctrl+C / Ctrl+V). Holds
-    /// a full clip snapshot — trim window, filters and fades come along.
-    clipboard: Option<Clip>,
+    /// Copied clips, ready to paste at the playhead (Ctrl+C / Ctrl+X / Ctrl+V).
+    /// Holds full clip snapshots — trim window, filters and fades come along —
+    /// and pasting preserves their relative offsets and lanes, so copying a
+    /// multi-clip selection round-trips as a block rather than a pile.
+    clipboard: Vec<Clip>,
     /// JKL shuttle rate: -1 reverse, 0 stop, +1..N forward speed multiplier.
     /// Repeated L speeds up, J reverses, K stops — the standard NLE shuttle.
     shuttle: f64,
@@ -291,8 +420,10 @@ const BIN_DRAG_THRESHOLD: f64 = 6.0;
 enum MenuTarget {
     /// A media-bin item: Add to timeline / Rename / Delete.
     Media(MediaId),
-    /// A timeline track header: Add video/audio track / Delete track.
+    /// A timeline track header: mute / lock / add / delete track.
     Track(TrackId),
+    /// A timeline clip: cut / copy / duplicate / split / delete.
+    Clip(ClipId),
     /// The inspector's "Add effect" picker for the selected clip.
     AddEffect,
 }
@@ -313,7 +444,8 @@ impl VideoEditorApp {
             playhead: 10.0,
             zoom: 34.0,
             scroll: 0.0,
-            selected: None,
+            hbar: ui::widget::Scrollbar::horizontal(),
+            selection: Selection::default(),
             selected_media: None,
             playing: false,
             // Dev aid: `QOS_VE_EXPORT=1` opens straight into the export
@@ -328,17 +460,20 @@ impl VideoEditorApp {
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
             drag: None,
+            marquee: None,
+            chase_playhead: false,
             last_mouse: Point::ZERO,
             hover_clip: None,
             hover_media: None,
             last_click_media: None,
+            pending_rename: None,
             seeded: false,
             seed_demo: false,
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
             actions: ui::ActionHost::new(),
-            clipboard: None,
+            clipboard: Vec::new(),
             shuttle: 0.0,
             flap_settled: false,
             bin_flap: FlapState::open_when_docked(),
@@ -489,6 +624,93 @@ impl VideoEditorApp {
         (self.scroll + (x - lanes.x0) / self.zoom).max(0.0)
     }
 
+    // ---- horizontal timeline scroll --------------------------------------
+
+    /// How many seconds fit across the lane area at the current zoom.
+    fn visible_seconds(&self, r: &Regions) -> f64 {
+        (r.lanes.width() / self.zoom.max(0.001)).max(0.0)
+    }
+
+    /// The scrollable extent in seconds: the project's content plus a screenful
+    /// of headroom past the end, so a clip can be dragged out beyond the last
+    /// one instead of hitting a wall at the final frame.
+    fn content_seconds(&self, r: &Regions) -> f64 {
+        self.project.duration() + self.visible_seconds(r) * 0.5
+    }
+
+    /// Furthest left-edge time reachable by scrolling. Zero when everything
+    /// already fits.
+    fn max_scroll(&self, r: &Regions) -> f64 {
+        (self.content_seconds(r) - self.visible_seconds(r)).max(0.0)
+    }
+
+    /// The shared scroll geometry for the timeline's horizontal axis, in
+    /// **pixels** (the units [`ui::widget::ScrollMetrics`] speaks), so the
+    /// toolkit's scrollbar model computes the same thumb every other scroll
+    /// surface gets.
+    fn h_metrics(&self, r: &Regions) -> ui::widget::ScrollMetrics {
+        ui::widget::ScrollMetrics::new(
+            self.content_seconds(r) * self.zoom,
+            r.lanes.width(),
+            self.scroll * self.zoom,
+        )
+    }
+
+    /// Keep `scroll` inside the content bounds. Called after every zoom,
+    /// scroll and project change, so the view can never strand itself past
+    /// the end of the timeline.
+    fn clamp_scroll(&mut self, r: &Regions) {
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll(r));
+    }
+
+    /// Pan by `dt` seconds (positive = later), clamped to the content.
+    fn scroll_by(&mut self, dt: f64, r: &Regions) {
+        self.scroll += dt;
+        self.clamp_scroll(r);
+    }
+
+    /// Bring `t` into view, keeping a margin at whichever edge it crossed so
+    /// the playhead is never pinned against the frame. Used to follow playback
+    /// and to chase a keyboard-moved playhead.
+    fn scroll_to_time(&mut self, t: f64, r: &Regions) {
+        let visible = self.visible_seconds(r);
+        if visible <= 0.0 {
+            return;
+        }
+        let margin = (visible * 0.1).min(1.0);
+        if t < self.scroll + margin {
+            self.scroll = t - margin;
+        } else if t > self.scroll + visible - margin {
+            // Jump a page ahead rather than creeping, so playback scrolls in
+            // readable steps instead of smearing every frame.
+            self.scroll = t - visible * 0.25;
+        }
+        self.clamp_scroll(r);
+    }
+
+    /// The horizontal scrollbar's track rect, or `None` when the timeline
+    /// content already fits. Overlaid on the bottom of the lane area, inset
+    /// like every other toolkit scroll surface.
+    fn hscroll_track(&self, r: &Regions) -> Option<Rect> {
+        if !self.h_metrics(r).overflows() {
+            return None;
+        }
+        let y1 = r.timeline.y1 - SCROLLBAR_INSET;
+        Some(Rect::new(
+            r.lanes.x0 + SCROLLBAR_INSET,
+            y1 - SCROLLBAR_THICKNESS,
+            r.lanes.x1 - SCROLLBAR_INSET,
+            y1,
+        ))
+    }
+
+    /// Set the scroll offset from a scrollbar interaction, which works in
+    /// pixels; convert back to the seconds `scroll` is measured in.
+    fn set_scroll_px(&mut self, px: f64, r: &Regions) {
+        self.scroll = px / self.zoom.max(0.001);
+        self.clamp_scroll(r);
+    }
+
     /// (track id, kind, lane rect) in display order. Lane rect spans the
     /// full lane width.
     fn lane_rects(&self, r: &Regions) -> Vec<(TrackId, TrackKind, Rect)> {
@@ -512,6 +734,12 @@ impl VideoEditorApp {
     /// The mute pill rect on a track header (shared by draw + hit-test).
     fn mute_pill_rect(&self, header: Rect) -> Rect {
         Rect::new(header.x1 - 26.0, header.center().y - 9.0, header.x1 - 8.0, header.center().y + 9.0)
+    }
+
+    /// The lock pill rect, immediately left of the mute pill.
+    fn lock_pill_rect(&self, header: Rect) -> Rect {
+        let m = self.mute_pill_rect(header);
+        Rect::new(m.x0 - 22.0, m.y0, m.x1 - 22.0, m.y1)
     }
 
     /// The two "add track" buttons in the gutter footer, if there is room below
@@ -582,6 +810,10 @@ impl VideoEditorApp {
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
         let dur = self.project.duration();
+        if self.playing || self.shuttle != 0.0 {
+            // A moving playhead pulls the view along with it.
+            self.chase_playhead = true;
+        }
         if self.playing {
             self.playhead += dt;
             if self.playhead >= dur {
@@ -631,6 +863,7 @@ impl VideoEditorApp {
         if self.playing && self.playhead >= self.project.duration() {
             self.playhead = 0.0;
         }
+        self.chase_playhead = true;
     }
 
     fn step_frame(&mut self, dir: f64) {
@@ -638,6 +871,7 @@ impl VideoEditorApp {
         self.playhead = (self.playhead + dir * step).clamp(0.0, self.project.duration());
         self.playing = false;
         self.shuttle = 0.0;
+        self.chase_playhead = true;
     }
 
     /// J/K/L shuttle. Pressing in the *same* direction doubles the rate
@@ -671,9 +905,63 @@ impl VideoEditorApp {
         }
     }
 
+    // ---- selection ------------------------------------------------------
+
+    /// The primary (anchor) selected clip — what the inspector edits.
+    fn selected(&self) -> Option<ClipId> {
+        self.selection.primary()
+    }
+
+    /// The selected clips that may actually be edited, in a deterministic
+    /// order (by start time, then id) so a multi-clip edit dispatches the same
+    /// sequence of actions on every peer. Clips on locked tracks are filtered
+    /// out here — that is the single choke point every timeline edit passes
+    /// through, so a lock cannot be routed around by a shortcut.
+    fn editable_selection(&self) -> Vec<ClipId> {
+        let mut v: Vec<(f64, ClipId)> = self
+            .selection
+            .ids()
+            .iter()
+            .filter(|id| self.project.clip_editable(**id))
+            .filter_map(|id| self.project.clip(*id).map(|c| (c.start, c.id)))
+            .collect();
+        v.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.1.cmp(&b.1))
+        });
+        v.into_iter().map(|(_, id)| id).collect()
+    }
+
+    /// True when the selection holds at least one clip that a lock forbids
+    /// editing — the cue the timeline shows instead of silently doing nothing.
+    fn selection_has_locked(&self) -> bool {
+        self.selection
+            .ids()
+            .iter()
+            .any(|id| !self.project.clip_editable(*id))
+    }
+
+    /// Select every clip on the timeline (Ctrl+A), in display order.
+    fn select_all(&mut self) {
+        let ids: Vec<ClipId> = self
+            .project
+            .display_tracks()
+            .iter()
+            .flat_map(|t| self.project.clips_on(t.id))
+            .map(|c| c.id)
+            .collect();
+        self.selection.set(ids);
+    }
+
+    /// Split every editable selected clip at the playhead. Only clips whose
+    /// span actually covers the playhead split; the rest are left alone. All
+    /// the splits dispatch inside one event, so they collapse into a single
+    /// undo boundary (see [`ui::ActionHost::dispatch`]).
     fn split_selected(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.selected else { return };
-        if let Some(rid) = self.project.split_clip(id, self.playhead) {
+        let mut right_halves = Vec::new();
+        for id in self.editable_selection() {
+            let Some(rid) = self.project.split_clip(id, self.playhead) else { continue };
             let left = self.project.clip(id).cloned();
             let right = self.project.clip(rid).cloned();
             if let (Some(left), Some(right)) = (left, right) {
@@ -683,63 +971,152 @@ impl VideoEditorApp {
                     &split_clip_action(&left, &right),
                 );
             }
-            self.selected = Some(rid);
+            right_halves.push(rid);
+        }
+        // The right-hand halves become the selection, matching the
+        // single-clip behaviour (S leaves you on the tail).
+        if !right_halves.is_empty() {
+            self.selection.set(right_halves);
         }
     }
 
+    /// Lift every editable selected clip, leaving the gaps where they were.
     fn delete_selected(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.selected else { return };
-        self.project.delete_clip(id);
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
-        self.selected = None;
+        let ids = self.editable_selection();
+        if ids.is_empty() {
+            return;
+        }
+        for id in ids {
+            self.project.delete_clip(id);
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &delete_clip_action(&id));
+        }
+        self.selection.clear();
     }
 
-    /// Delete the selected clip and close the gap, shifting later clips on
-    /// the same track left. The whole ripple — the delete plus every shifted
-    /// clip — is carried in one action, so it lands as a single undo boundary
-    /// and replays atomically on a peer.
+    /// Delete the selected clips and close the gaps, shifting later clips on
+    /// the same track left. Each ripple — the delete plus every shifted clip —
+    /// is carried in one action, and the whole selection's worth of ripples
+    /// dispatches inside one event, so it lands as a single undo boundary and
+    /// replays atomically on a peer. Deleting right-to-left keeps each
+    /// remaining clip's start valid while the earlier ones are still there.
     fn ripple_delete_selected(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.selected else { return };
-        let moved_ids = self.project.ripple_delete(id);
-        let moved: Vec<Clip> = moved_ids
-            .iter()
-            .filter_map(|m| self.project.clip(*m).cloned())
-            .collect();
-        self.actions
-            .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &ripple_delete_action(&id, &moved));
-        self.selected = None;
+        let mut ids = self.editable_selection();
+        if ids.is_empty() {
+            return;
+        }
+        ids.reverse();
+        for id in ids {
+            let moved_ids = self.project.ripple_delete(id);
+            let moved: Vec<Clip> = moved_ids
+                .iter()
+                .filter_map(|m| self.project.clip(*m).cloned())
+                .collect();
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &ripple_delete_action(&id, &moved));
+        }
+        self.selection.clear();
     }
 
-    /// Copy the selected clip to the clipboard (no CRDT change).
+    /// Copy the whole selection to the clipboard (no CRDT change). A locked
+    /// track only forbids *edits*, so its clips can still be copied.
     fn copy_selected(&mut self) {
-        if let Some(id) = self.selected {
-            self.clipboard = self.project.clip(id).cloned();
+        let ids: Vec<ClipId> = self.selection.ids().to_vec();
+        let mut clips: Vec<Clip> = ids
+            .iter()
+            .filter_map(|id| self.project.clip(*id).cloned())
+            .collect();
+        clips.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+        if !clips.is_empty() {
+            self.clipboard = clips;
         }
     }
 
-    /// Paste the clipboard clip at the playhead, on its original track.
-    /// Falls back to the selected clip's track. New clip becomes selected.
-    fn paste_clip(&mut self, doc: &mut AutoCommit) {
-        let Some(src) = self.clipboard.clone() else { return };
-        // Keep the copied clip's track if it still exists, else the
-        // currently-selected clip's track, else the first track.
-        let track = self
-            .project
-            .track(src.track)
-            .map(|t| t.id)
-            .or_else(|| self.selected.and_then(|s| self.project.clip(s)).map(|c| c.track))
-            .or_else(|| self.project.tracks.first().map(|t| t.id));
-        let Some(track) = track else { return };
-        let id = self.project.paste_clip(src, track, self.playhead);
-        self.dispatch_clip(doc, id);
-        self.selected = Some(id);
+    /// Ctrl+X: copy the selection, then lift it. Both halves happen in one
+    /// event, so the removal is one undo boundary.
+    fn cut_selected(&mut self, doc: &mut AutoCommit) {
+        self.copy_selected();
+        self.delete_selected(doc);
     }
 
-    /// Set the in-point of the selected clip to the playhead (`I`): trims
-    /// the head so the clip starts at the current frame.
+    /// Paste the clipboard at the playhead. The earliest copied clip lands on
+    /// the playhead and the rest keep their relative offsets, so a copied
+    /// block pastes as a block. Each clip goes to a *sensible* track: the one
+    /// it came from when that still exists and is unlocked, otherwise the
+    /// selected clip's track, otherwise any unlocked track of the right kind
+    /// (created if the project has none). The pasted clips become the
+    /// selection.
+    fn paste_clip(&mut self, doc: &mut AutoCommit) {
+        let src = self.clipboard.clone();
+        if src.is_empty() {
+            return;
+        }
+        let base = src
+            .iter()
+            .map(|c| c.start)
+            .fold(f64::INFINITY, f64::min);
+        let near = self.selected().and_then(|s| self.project.clip(s)).map(|c| c.track);
+        let mut pasted = Vec::new();
+        for clip in src {
+            let kind = self
+                .project
+                .media(clip.media)
+                .map(|m| if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio })
+                .unwrap_or(TrackKind::Video);
+            // The clip's own track first (that is where the user copied it
+            // from), then the current selection's track, then any unlocked
+            // track of the right kind — creating one only as a last resort.
+            let track = self
+                .project
+                .placement_track(kind, Some(clip.track))
+                .or_else(|| self.project.placement_track(kind, near))
+                .unwrap_or_else(|| self.ensure_track_of_kind(doc, kind));
+            let start = snap_to_frame((self.playhead + (clip.start - base)).max(0.0), self.project.fps);
+            let id = self.project.paste_clip(clip, track, start);
+            self.dispatch_clip(doc, id);
+            pasted.push(id);
+        }
+        if !pasted.is_empty() {
+            self.selection.set(pasted);
+        }
+    }
+
+    /// Ctrl+D: drop a copy of the selection immediately after it, on the same
+    /// tracks, and select the copies. One event → one undo boundary.
+    fn duplicate_selected(&mut self, doc: &mut AutoCommit) {
+        let ids = self.editable_selection();
+        if ids.is_empty() {
+            return;
+        }
+        let clips: Vec<Clip> = ids
+            .iter()
+            .filter_map(|id| self.project.clip(*id).cloned())
+            .collect();
+        // Offset the whole block by its own span so the copies butt up
+        // against the originals instead of overlapping them.
+        let lo = clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+        let hi = clips.iter().map(|c| c.end()).fold(0.0_f64, f64::max);
+        let offset = (hi - lo).max(crate::model::MIN_CLIP);
+        let mut copies = Vec::new();
+        for clip in clips {
+            let track = clip.track;
+            let start = snap_to_frame(clip.start + offset, self.project.fps);
+            let id = self.project.paste_clip(clip, track, start);
+            self.dispatch_clip(doc, id);
+            copies.push(id);
+        }
+        self.selection.set(copies);
+    }
+
+    /// Set the in-point of the primary selected clip to the playhead (`I`):
+    /// trims the head so the clip starts at the current frame. A single-clip
+    /// trim by nature — it acts on the anchor, and only when its track allows
+    /// edits.
     fn set_in_at_playhead(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.selected else { return };
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
         let delta = self.project.clip(id).map(|c| self.playhead - c.start).unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
@@ -748,10 +1125,13 @@ impl VideoEditorApp {
         self.dispatch_clip(doc, id);
     }
 
-    /// Set the out-point of the selected clip to the playhead (`O`): trims
-    /// the tail so the clip ends at the current frame.
+    /// Set the out-point of the primary selected clip to the playhead (`O`):
+    /// trims the tail so the clip ends at the current frame.
     fn set_out_at_playhead(&mut self, doc: &mut AutoCommit) {
-        let Some(id) = self.selected else { return };
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
         let delta = self.project.clip(id).map(|c| self.playhead - c.end()).unwrap_or(0.0);
         if delta.abs() < 1e-6 {
             return;
@@ -760,17 +1140,19 @@ impl VideoEditorApp {
         self.dispatch_clip(doc, id);
     }
 
-    /// Nudge the selected clip by `dt` seconds (arrow keys when a clip is
-    /// selected). Snaps the result to the frame grid.
+    /// Nudge every editable selected clip by `dt` seconds (arrow keys).
+    /// Snaps each result to the frame grid. One event → one undo boundary,
+    /// so a multi-clip nudge is a single Ctrl+Z.
     fn nudge_selected(&mut self, doc: &mut AutoCommit, dt: f64) {
-        let Some(id) = self.selected else { return };
-        let new_start = self
-            .project
-            .clip(id)
-            .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
-            .unwrap_or(0.0);
-        self.project.move_clip(id, new_start);
-        self.dispatch_clip(doc, id);
+        for id in self.editable_selection() {
+            let new_start = self
+                .project
+                .clip(id)
+                .map(|c| snap_to_frame((c.start + dt).max(0.0), self.project.fps))
+                .unwrap_or(0.0);
+            self.project.move_clip(id, new_start);
+            self.dispatch_clip(doc, id);
+        }
     }
 
     /// Apply `edit` to the selected clip and dispatch a whole-clip write. The
@@ -779,7 +1161,10 @@ impl VideoEditorApp {
     /// undo step. Continuous slider drags use [`Self::preview_edit`] +
     /// [`Self::commit_drag`] instead, so a drag is one action, not one a frame.
     fn edit_selected(&mut self, doc: &mut AutoCommit, edit: impl FnOnce(&mut Clip)) {
-        let Some(id) = self.selected else { return };
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
@@ -790,7 +1175,10 @@ impl VideoEditorApp {
     /// preview. No action is dispatched; the final value is committed once when
     /// the drag ends (see [`Self::commit_drag`]).
     fn preview_edit(&mut self, edit: impl FnOnce(&mut Clip)) {
-        let Some(id) = self.selected else { return };
+        let Some(id) = self.selected() else { return };
+        if !self.project.clip_editable(id) {
+            return;
+        }
         if let Some(c) = self.project.clip_mut(id) {
             edit(c);
         }
@@ -836,12 +1224,18 @@ impl VideoEditorApp {
         self.edit_selected(doc, move |c| c.palette = p);
     }
 
-    /// Return the lowest-index track of `kind`, creating one (dispatched as an
-    /// action, in the same undo boundary as the caller's edit) when the project
-    /// has none — so placing a clip from the bin works even on a blank project.
+    /// Return the lowest-index *unlocked* track of `kind`, creating one
+    /// (dispatched as an action, in the same undo boundary as the caller's
+    /// edit) when the project has none — so placing a clip from the bin works
+    /// even on a blank project, and a locked track never silently swallows a
+    /// drop.
     fn ensure_track_of_kind(&mut self, doc: &mut AutoCommit, kind: TrackKind) -> TrackId {
-        if let Some(t) =
-            self.project.tracks.iter().filter(|t| t.kind == kind).min_by_key(|t| t.index)
+        if let Some(t) = self
+            .project
+            .tracks
+            .iter()
+            .filter(|t| t.kind == kind && !t.locked)
+            .min_by_key(|t| t.index)
         {
             return t.id;
         }
@@ -885,7 +1279,7 @@ impl VideoEditorApp {
             .unwrap_or(0.0);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
-        self.selected = Some(id);
+        self.selection.select_only(id);
         Some(id)
     }
 
@@ -901,7 +1295,7 @@ impl VideoEditorApp {
         let start = snap_to_frame(start.max(0.0), self.project.fps);
         let id = self.project.add_clip(track, media, start)?;
         self.dispatch_clip(doc, id);
-        self.selected = Some(id);
+        self.selection.select_only(id);
         Some(id)
     }
 
@@ -914,29 +1308,61 @@ impl VideoEditorApp {
         if let Some(bd) = self.bin_drag.as_mut() {
             if !bd.active && bd.origin.distance(mouse) > BIN_DRAG_THRESHOLD {
                 bd.active = true;
+                // A press that becomes a drag is never a rename.
+                self.pending_rename = None;
             }
         }
     }
 
     /// The lane under the current cursor while a bin drag is live, as
     /// `(track, kind, lane rect)` — the drop target.
+    ///
+    /// Only the pointer's **y** picks the lane. Requiring `x >= lanes.x0` used
+    /// to mean a straight-down drag from a bin row — the natural gesture,
+    /// since the bin sits above the gutter — landed in the 128px track-header
+    /// gutter, missed every lane, and silently appended the clip at the end of
+    /// the timeline instead of placing it. A drop anywhere across the
+    /// timeline's width now hits the lane it is level with; the gutter simply
+    /// resolves to the leftmost visible time (see [`Self::drop_time`]).
     fn bin_drop_lane(&self, r: &Regions) -> Option<(TrackId, TrackKind, Rect)> {
         let p = self.last_mouse;
+        if p.x < r.timeline.x0 || p.x > r.timeline.x1 {
+            return None;
+        }
         self.lane_rects(r)
             .into_iter()
-            .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1 && p.x >= r.lanes.x0)
+            .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
+    }
+
+    /// The timeline time a drop at `x` means. Inside the lanes it is the time
+    /// under the pointer; over the gutter it clamps to the lane area's left
+    /// edge, i.e. the earliest visible time (0 on an unscrolled timeline).
+    fn drop_time(&self, x: f64, r: &Regions) -> f64 {
+        self.x_to_time(x.max(r.lanes.x0), &r.lanes)
     }
 
     /// Finish a bin drag: place the dragged media as a clip at the drop
-    /// position. A drop on a matching-kind lane lands at the drop time on that
-    /// track; a kind-mismatched lane (audio onto a video lane) lands at the drop
-    /// time on a matching-kind track (created if needed); a drop elsewhere on
-    /// the timeline appends to a matching track. A drop off the timeline cancels.
+    /// position. A drop on a matching-kind unlocked lane lands at the drop time
+    /// on that track; a kind-mismatched or locked lane lands at the drop time
+    /// on a matching-kind track (created if needed); a drop elsewhere on the
+    /// timeline appends to a matching track. A drop off the timeline cancels.
+    ///
+    /// A press that never became a drag ends here too: if it armed a rename
+    /// intent, this is where the rename actually begins — release-time, so a
+    /// drag that started from the same press has already cancelled it.
     fn release_bin_drag(&mut self, doc: &mut AutoCommit, r: &Regions) {
         let Some(bd) = self.bin_drag.take() else { return };
         if !bd.active {
-            return; // a plain click that never moved — nothing to place
+            // A plain click that never moved. If it landed on the name of an
+            // item clicked a moment ago, that is the Finder-style slow second
+            // click — begin the inline rename now.
+            if self.pending_rename.take() == Some(bd.media) {
+                self.begin_rename(bd.media);
+                self.last_click_media = None;
+            }
+            return;
         }
+        self.pending_rename = None;
         let p = self.last_mouse;
         let want_kind = if self.project.media(bd.media).map(|m| m.kind.is_visual()).unwrap_or(true) {
             TrackKind::Video
@@ -944,16 +1370,21 @@ impl VideoEditorApp {
             TrackKind::Audio
         };
         if let Some((tid, kind, _)) = self.bin_drop_lane(r) {
-            let t = self.x_to_time(p.x, &r.lanes);
-            if kind == want_kind {
+            let t = self.drop_time(p.x, r);
+            if kind == want_kind && !self.project.track_locked(tid) {
                 self.place_media_at(doc, bd.media, tid, t);
             } else {
-                let track = self.ensure_track_of_kind(doc, want_kind);
+                // Wrong kind, or the lane refuses edits: fall to a track that
+                // can take it, at the same drop time.
+                let track = self
+                    .project
+                    .placement_track(want_kind, None)
+                    .unwrap_or_else(|| self.ensure_track_of_kind(doc, want_kind));
                 self.place_media_at(doc, bd.media, track, t);
             }
         } else if r.timeline.contains(p) {
-            // On the timeline but not a specific lane (below the last lane, or
-            // the gutter) → append to a matching track.
+            // On the timeline but not level with any lane (below the last one)
+            // → append to a matching track.
             self.add_media_to_timeline(doc, bd.media);
         }
     }
@@ -983,8 +1414,16 @@ impl VideoEditorApp {
     }
 
     /// Open the track-header context menu for `tid` at logical point `at`.
+    /// Carries the two per-track state toggles as well as the structural
+    /// actions, so mute and lock are reachable without hunting for the pills.
     fn open_track_menu(&mut self, tid: TrackId, at: Point) {
+        let t = self.project.track(tid);
+        let muted = t.map(|t| t.muted).unwrap_or(false);
+        let locked = t.map(|t| t.locked).unwrap_or(false);
         let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action(if muted { "Unmute track" } else { "Mute track" }, || {}));
+        menu.push(MenuItem::action(if locked { "Unlock track" } else { "Lock track" }, || {}));
+        menu.push(MenuItem::separator());
         menu.push(MenuItem::action("Add video track", || {}));
         menu.push(MenuItem::action("Add audio track", || {}));
         menu.push(MenuItem::separator());
@@ -992,6 +1431,43 @@ impl VideoEditorApp {
         menu.open_at([at.x as f32, at.y as f32]);
         self.bin_menu = menu;
         self.menu_target = Some(MenuTarget::Track(tid));
+    }
+
+    /// Open the timeline clip context menu for `cid` at logical point `at`.
+    /// Mirrors the bin and track-header menus, and offers exactly the
+    /// selection-wide edits the keyboard has: cut, copy, duplicate, split,
+    /// delete and ripple delete.
+    fn open_clip_menu(&mut self, cid: ClipId, at: Point) {
+        // Right-clicking outside the current selection re-targets it, so the
+        // menu always acts on what the user just pointed at.
+        if !self.selection.contains(cid) {
+            self.selection.select_only(cid);
+        } else {
+            self.selection.set_primary(cid);
+        }
+        let mut menu = ContextMenu::new();
+        menu.push(MenuItem::action("Cut", || {}));
+        menu.push(MenuItem::action("Copy", || {}));
+        menu.push(MenuItem::action("Duplicate", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Split at playhead", || {}));
+        menu.push(MenuItem::separator());
+        menu.push(MenuItem::action("Delete", || {}));
+        menu.push(MenuItem::action("Ripple delete", || {}));
+        menu.open_at([at.x as f32, at.y as f32]);
+        self.bin_menu = menu;
+        self.menu_target = Some(MenuTarget::Clip(cid));
+    }
+
+    /// If the cursor is over a timeline clip, open its context menu there.
+    fn open_clip_menu_at_cursor(&mut self, r: &Regions) -> bool {
+        let p = self.last_mouse;
+        if !r.lanes.contains(p) {
+            return false;
+        }
+        let Some((cid, _lane)) = self.clip_at(r, p) else { return false };
+        self.open_clip_menu(cid, p);
+        true
     }
 
     /// If the cursor is over a visible bin item, open its context menu there.
@@ -1040,13 +1516,24 @@ impl VideoEditorApp {
                 _ => {}
             },
             Some(MenuTarget::Track(tid)) => match idx {
-                0 => {
+                0 => self.toggle_track_mute(doc, tid),
+                1 => self.toggle_track_lock(doc, tid),
+                3 => {
                     self.add_track(doc, TrackKind::Video);
                 }
-                1 => {
+                4 => {
                     self.add_track(doc, TrackKind::Audio);
                 }
-                3 => self.delete_track(doc, tid),
+                6 => self.delete_track(doc, tid),
+                _ => {}
+            },
+            Some(MenuTarget::Clip(_)) => match idx {
+                0 => self.cut_selected(doc),
+                1 => self.copy_selected(),
+                2 => self.duplicate_selected(doc),
+                4 => self.split_selected(doc),
+                6 => self.delete_selected(doc),
+                7 => self.ripple_delete_selected(doc),
                 _ => {}
             },
             Some(MenuTarget::AddEffect) => {
@@ -1090,11 +1577,7 @@ impl VideoEditorApp {
     fn delete_track(&mut self, doc: &mut AutoCommit, tid: TrackId) {
         let clip_ids: Vec<ClipId> =
             self.project.clips.iter().filter(|c| c.track == tid).map(|c| c.id).collect();
-        if let Some(sel) = self.selected {
-            if clip_ids.contains(&sel) {
-                self.selected = None;
-            }
-        }
+        self.selection.remove_all(&clip_ids);
         self.actions.dispatch(
             doc,
             VIDEO_EDITOR_ACTION_TYPE,
@@ -1109,6 +1592,25 @@ impl VideoEditorApp {
             next.muted = !next.muted;
             self.actions
                 .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+        }
+    }
+
+    /// Toggle a track's lock (the header pill next to mute), dispatched as an
+    /// action so it replicates and undoes like every other edit. Locking is
+    /// what [`Project::clip_editable`] reads, so the flag really does hold
+    /// every move / trim / delete / split off the track's clips.
+    fn toggle_track_lock(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+        if let Some(t) = self.project.track(tid) {
+            let mut next = t.clone();
+            next.locked = !next.locked;
+            // Reflect it in memory too so the very next press is already
+            // guarded, before the document round-trips back through `sync`.
+            let locked = next.locked;
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                t.locked = locked;
+            }
         }
     }
 
@@ -1146,11 +1648,7 @@ impl VideoEditorApp {
         let clip_ids: Vec<ClipId> =
             self.project.clips.iter().filter(|c| c.media == mid).map(|c| c.id).collect();
         // Keep the in-memory selection consistent before the reload.
-        if let Some(sel) = self.selected {
-            if clip_ids.contains(&sel) {
-                self.selected = None;
-            }
-        }
+        self.selection.remove_all(&clip_ids);
         self.actions
             .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &remove_media_action(&mid, &clip_ids));
         if self.selected_media == Some(mid) {
@@ -1295,11 +1793,28 @@ impl VideoEditorApp {
 
     fn zoom_by(&mut self, factor: f64) {
         self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
+        let r = self.regions();
+        self.clamp_scroll(&r);
+    }
+
+    /// Zoom keeping the time currently under `anchor_x` pinned to that pixel —
+    /// the wheel-over-the-timeline gesture. Outside the lane area it falls
+    /// back to anchoring on the playhead, which is what the keyboard's +/- do.
+    fn zoom_at(&mut self, factor: f64, anchor_x: f64, r: &Regions) {
+        let anchor_t = if anchor_x >= r.lanes.x0 && anchor_x <= r.lanes.x1 {
+            self.x_to_time(anchor_x, &r.lanes)
+        } else {
+            self.playhead
+        };
+        let anchor_px = (anchor_t - self.scroll) * self.zoom;
+        self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
+        self.scroll = anchor_t - anchor_px / self.zoom;
+        self.clamp_scroll(r);
     }
 
     fn inspector_layout(&self, r: &Regions) -> InspectorLayout {
         let mut l = InspectorLayout::default();
-        let Some(id) = self.selected else { return l };
+        let Some(id) = self.selected() else { return l };
         let Some(clip) = self.project.clip(id) else { return l };
         let is_video = self
             .project
@@ -1427,7 +1942,7 @@ impl VideoEditorApp {
                 // few seconds in (past its fade-in) so the inspector shows a
                 // graded clip with fades and the preview shows the grade.
                 if let Some(c) = self.project.top_video_clip_at(4.0) {
-                    self.selected = Some(c.id);
+                    self.selection.select_only(c.id);
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 4.0;
@@ -1440,7 +1955,7 @@ impl VideoEditorApp {
                 // Select the interview body clip and split it at the playhead,
                 // then select the right half — exactly what pressing S does.
                 if let Some(c) = self.project.top_video_clip_at(12.0) {
-                    self.selected = Some(c.id);
+                    self.selection.select_only(c.id);
                 }
                 self.playhead = 14.0;
                 self.split_selected(state);
@@ -1493,7 +2008,7 @@ impl VideoEditorApp {
             }
             ShotScenario::Effects => {
                 if let Some(c) = self.project.top_video_clip_at(6.0) {
-                    self.selected = Some(c.id);
+                    self.selection.select_only(c.id);
                     self.selected_media = Some(c.media);
                 }
                 self.playhead = 6.0;
@@ -1508,11 +2023,14 @@ impl VideoEditorApp {
         if self.initialised_selection || self.project.clips.is_empty() {
             return;
         }
-        self.selected = self
+        if let Some(id) = self
             .project
             .top_video_clip_at(self.playhead)
             .map(|c| c.id)
-            .or_else(|| self.project.clips.first().map(|c| c.id));
+            .or_else(|| self.project.clips.first().map(|c| c.id))
+        {
+            self.selection.select_only(id);
+        }
         self.selected_media = self.project.media.first().map(|m| m.id);
         self.initialised_selection = true;
     }
@@ -1588,12 +2106,9 @@ impl Widget for VideoEditorApp {
         // Bring in any pending / portal-picked media as real clips (this pushes
         // straight into `self.project.media` and the CRDT).
         self.drain_import(state);
-        // Drop a stale selection if the clip vanished (e.g. remote delete).
-        if let Some(id) = self.selected {
-            if self.project.clip(id).is_none() {
-                self.selected = None;
-            }
-        }
+        // Drop selected clips that vanished (e.g. a remote delete), keeping
+        // whatever is left selected rather than clearing the lot.
+        self.selection.retain_existing(&self.project);
         // Drop a rename / menu whose target media vanished (e.g. remote delete).
         if let Some((mid, _)) = &self.bin_rename {
             if self.project.media(*mid).is_none() {
@@ -1606,6 +2121,10 @@ impl Widget for VideoEditorApp {
                 self.menu_target = None;
             }
             Some(MenuTarget::Track(tid)) if self.project.track(tid).is_none() => {
+                self.bin_menu.close();
+                self.menu_target = None;
+            }
+            Some(MenuTarget::Clip(cid)) if self.project.clip(cid).is_none() => {
                 self.bin_menu.close();
                 self.menu_target = None;
             }
@@ -1735,6 +2254,13 @@ impl Widget for VideoEditorApp {
         // Keep the inspector scroll within the current selection's content.
         let max_scroll = self.inspector_max_scroll(&r);
         self.inspector_scroll = self.inspector_scroll.clamp(0.0, max_scroll);
+        // Keep the playhead on screen while it is moving under its own steam,
+        // and the horizontal scroll inside a timeline whose length may have
+        // just changed under us (a delete, a remote edit).
+        if std::mem::take(&mut self.chase_playhead) {
+            self.scroll_to_time(self.playhead, &r);
+        }
+        self.clamp_scroll(&r);
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
         // it's an overlay flap it is drawn LAST so it floats over the body
@@ -1832,7 +2358,10 @@ impl Widget for VideoEditorApp {
             ..
         } = event
         {
-            if self.open_bin_menu_at_cursor(&r) || self.open_track_menu_at_cursor(&r) {
+            if self.open_bin_menu_at_cursor(&r)
+                || self.open_track_menu_at_cursor(&r)
+                || self.open_clip_menu_at_cursor(&r)
+            {
                 *handled = true;
                 return;
             }
@@ -1846,19 +2375,27 @@ impl Widget for VideoEditorApp {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                self.handle_press(state, &r);
+                self.handle_press(state, &r, modifiers.state().shift_key());
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 if self.bin_drag.is_some() {
-                    // A bin→timeline drag drops a clip at the release position.
+                    // A bin→timeline drag drops a clip at the release position;
+                    // a bin press that never moved may instead begin a rename.
                     self.release_bin_drag(state, &r);
                     *handled = true;
                 } else if self.drag.is_some() {
+                    // A rubber band resolves to a selection; a press that never
+                    // travelled falls back to scrubbing where it landed.
+                    if let Some(Drag::Marquee { origin, additive }) = self.drag {
+                        self.release_marquee(origin, additive, &r);
+                    }
+                    self.hbar.release();
                     // Commit the drag's final position / trim / grade as one
                     // action (one undo boundary), then end the drag.
                     self.commit_drag(state);
                     self.drag = None;
+                    self.marquee = None;
                     *handled = true;
                 }
             }
@@ -1890,18 +2427,30 @@ impl Widget for VideoEditorApp {
                 *handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let dy = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => *y as f64,
-                    MouseScrollDelta::PixelDelta(p) => p.y / 40.0,
+                let (dx, dy) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (*x as f64, *y as f64),
+                    MouseScrollDelta::PixelDelta(p) => (p.x / 40.0, p.y / 40.0),
                 };
-                if dy.abs() > 0.0 {
-                    if r.inspector.contains(self.last_mouse) {
-                        // Scroll the inspector body (its content can exceed the pane).
+                let shift = modifiers.state().shift_key();
+                if r.inspector.contains(self.last_mouse) {
+                    // Scroll the inspector body (its content can exceed the pane).
+                    if dy.abs() > 0.0 {
                         let max = self.inspector_max_scroll(&r);
                         self.inspector_scroll = (self.inspector_scroll - dy * 28.0).clamp(0.0, max);
-                    } else {
-                        self.zoom_by(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 });
+                        *handled = true;
                     }
+                } else if dx.abs() > 0.0 || (shift && dy.abs() > 0.0) {
+                    // A horizontal wheel, or Shift + a vertical one, pans the
+                    // timeline. One notch moves a fixed slice of the visible
+                    // span, so panning feels the same at every zoom.
+                    let notches = if dx.abs() > 0.0 { -dx } else { -dy };
+                    let step = self.visible_seconds(&r) * 0.15;
+                    self.scroll_by(notches * step, &r);
+                    *handled = true;
+                } else if dy.abs() > 0.0 {
+                    // Plain wheel zooms, anchored on the time under the pointer
+                    // so the frame you are looking at stays put.
+                    self.zoom_at(if dy > 0.0 { 1.12 } else { 1.0 / 1.12 }, self.last_mouse.x, &r);
                     *handled = true;
                 }
             }
@@ -1976,11 +2525,11 @@ impl VideoEditorApp {
                 self.toggle_play();
                 true
             }
-            // Arrows nudge the selected clip a frame (Shift = one second); with
-            // nothing selected they step the playhead instead.
+            // Arrows nudge every selected clip a frame (Shift = one second);
+            // with nothing selected they step the playhead instead.
             Key::Named(NamedKey::ArrowLeft) => {
                 let step = if shift { 1.0 } else { frame_step(self.project.fps) };
-                if self.selected.is_some() {
+                if !self.selection.is_empty() {
                     self.nudge_selected(state, -step);
                 } else {
                     self.step_frame(if shift { -self.project.fps } else { -1.0 });
@@ -1989,7 +2538,7 @@ impl VideoEditorApp {
             }
             Key::Named(NamedKey::ArrowRight) => {
                 let step = if shift { 1.0 } else { frame_step(self.project.fps) };
-                if self.selected.is_some() {
+                if !self.selection.is_empty() {
                     self.nudge_selected(state, step);
                 } else {
                     self.step_frame(if shift { self.project.fps } else { 1.0 });
@@ -2000,12 +2549,14 @@ impl VideoEditorApp {
                 self.playhead = 0.0;
                 self.playing = false;
                 self.shuttle = 0.0;
+                self.chase_playhead = true;
                 true
             }
             Key::Named(NamedKey::End) => {
                 self.playhead = self.project.duration();
                 self.playing = false;
                 self.shuttle = 0.0;
+                self.chase_playhead = true;
                 true
             }
             // Shift+Delete ripples (closes the gap); plain Delete lifts.
@@ -2031,8 +2582,22 @@ impl VideoEditorApp {
                 self.copy_selected();
                 true
             }
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("x") => {
+                self.cut_selected(state);
+                true
+            }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
                 self.paste_clip(state);
+                true
+            }
+            // Ctrl+D drops a copy of the selection immediately after it.
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("d") => {
+                self.duplicate_selected(state);
+                true
+            }
+            // Ctrl+A selects every clip on the timeline.
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => {
+                self.select_all();
                 true
             }
             // J / K / L shuttle: J reverse, K stop, L forward. Repeated J/L
@@ -2085,7 +2650,7 @@ impl VideoEditorApp {
                 {
                     self.bin_flap.close();
                 } else {
-                    self.selected = None;
+                    self.selection.clear();
                 }
                 true
             }
@@ -2093,7 +2658,7 @@ impl VideoEditorApp {
         }
     }
 
-    fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions) {
+    fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
         // Modal owns all clicks.
@@ -2139,25 +2704,40 @@ impl VideoEditorApp {
             for (mid, rect) in self.bin_item_rects(r) {
                 if rect.contains(p) {
                     self.selected_media = Some(mid);
-                    // A prior *click* on this same item (not a programmatic
-                    // selection) gates both the double-click and the rename, so a
-                    // freshly-imported, auto-selected item is never renamed on the
-                    // first click.
-                    let clicked_before =
-                        matches!(self.last_click_media, Some((m, _)) if m == mid);
-                    let dbl = matches!(self.last_click_media, Some((m, t)) if m == mid && t.elapsed().as_millis() < 400);
+                    // How long ago this same item was last *clicked* (not
+                    // programmatically selected) — `None` for a different item
+                    // or a fresh one. Both the double-click and the rename are
+                    // gated on it, so a freshly-imported, auto-selected item is
+                    // never renamed on the first click.
+                    let since = self.last_click_media.and_then(|(m, t)| {
+                        (m == mid).then(|| t.elapsed().as_millis())
+                    });
+                    let dbl = matches!(since, Some(ms) if ms < BIN_DOUBLE_CLICK_MS);
+                    // The rename window is *bounded at both ends*: fast enough
+                    // and it is a double-click, slow enough and the earlier
+                    // click is stale and this is simply a new press. Without
+                    // the upper bound an item, once clicked, could never be
+                    // dragged to the timeline again — the name band covers
+                    // most of the row, which is exactly where you grab it.
+                    let rename_window = matches!(
+                        since,
+                        Some(ms) if (BIN_DOUBLE_CLICK_MS..BIN_RENAME_WINDOW_MS).contains(&ms)
+                    );
                     if dbl {
                         self.add_media_to_timeline(state, mid);
                         self.last_click_media = None;
-                    } else if clicked_before && self.bin_name_rect(rect).contains(p) {
-                        // A deliberate second, slower click on the name of an item
-                        // we already clicked begins an inline rename (Finder /
-                        // Files pattern).
-                        self.begin_rename(mid);
-                        self.last_click_media = None;
+                        self.pending_rename = None;
                     } else {
-                        // Arm a potential bin→timeline drag from this press.
+                        // Always arm a potential bin→timeline drag. When the
+                        // press also falls in the rename window, the rename is
+                        // only an *intent*: it fires on release if the pointer
+                        // never moved, and is cancelled the moment the press
+                        // becomes a drag (see `update_bin_drag`). A drag
+                        // therefore always wins over a rename.
                         self.bin_drag = Some(BinDrag { media: mid, origin: p, active: false });
+                        self.pending_rename = (rename_window
+                            && self.bin_name_rect(rect).contains(p))
+                        .then_some(mid);
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -2202,46 +2782,129 @@ impl VideoEditorApp {
                 if header.contains(p) {
                     if self.mute_pill_rect(header).contains(p) {
                         self.toggle_track_mute(state, tid);
+                    } else if self.lock_pill_rect(header).contains(p) {
+                        self.toggle_track_lock(state, tid);
                     }
                     return;
                 }
             }
             return;
         }
-        // Timeline lanes — clips, trim handles, empty-space scrub.
+        // The horizontal scrollbar floats over the bottom of the lane area, so
+        // it gets first refusal on a press there.
+        if let Some(track) = self.hscroll_track(r) {
+            let m = self.h_metrics(r);
+            match self.hbar.press(track, m, p) {
+                ui::widget::PressOutcome::Thumb => {
+                    self.drag = Some(Drag::Scrollbar);
+                    return;
+                }
+                ui::widget::PressOutcome::Page(target) => {
+                    self.set_scroll_px(target, r);
+                    return;
+                }
+                ui::widget::PressOutcome::Miss => {}
+            }
+        }
+        // Timeline lanes — clips, trim handles, rubber-band / scrub.
         if r.lanes.contains(p) {
-            self.press_timeline(r, p);
+            self.press_timeline(r, p, shift);
         }
     }
 
-    fn press_timeline(&mut self, r: &Regions, p: Point) {
+    /// Finish a rubber-band drag. If the band ever opened, select every clip
+    /// it touches (extending the previous selection when `additive`).
+    /// Otherwise the press was a plain click on empty space: clear the
+    /// selection and scrub the playhead there, the behaviour a bare click on
+    /// the lanes has always had.
+    fn release_marquee(&mut self, origin: Point, additive: bool, r: &Regions) {
+        let Some(band) = self.marquee else {
+            if !additive {
+                self.selection.clear();
+            }
+            self.playhead = snap_to_frame(self.x_to_time(origin.x, &r.lanes), self.project.fps)
+                .clamp(0.0, self.project.duration());
+            return;
+        };
+        let mut hits: Vec<ClipId> = if additive {
+            self.selection.ids().to_vec()
+        } else {
+            Vec::new()
+        };
+        for (tid, _kind, lane) in self.lane_rects(r) {
+            if lane.y1 < band.y0 || lane.y0 > band.y1 {
+                continue;
+            }
+            for c in self.project.clips_on(tid) {
+                let cr = self.clip_rect(c, &lane, r);
+                // Any horizontal overlap with the band counts — the lane test
+                // above already established the vertical one.
+                if cr.x1 >= band.x0 && cr.x0 <= band.x1 && !hits.contains(&c.id) {
+                    hits.push(c.id);
+                }
+            }
+        }
+        self.selection.set(hits);
+    }
+
+    /// The clip under `p`, as `(clip id, its lane rect)`. `None` over empty
+    /// lane space.
+    fn clip_at(&self, r: &Regions, p: Point) -> Option<(ClipId, Rect)> {
         for (tid, _kind, lane) in self.lane_rects(r) {
             if p.y < lane.y0 || p.y > lane.y1 {
                 continue;
             }
-            // Search clips on this lane.
-            let clip_ids: Vec<ClipId> = self.project.clips_on(tid).iter().map(|c| c.id).collect();
-            for cid in clip_ids {
-                let Some(clip) = self.project.clip(cid).cloned() else { continue };
-                let cr = self.clip_rect(&clip, &lane, r);
-                if p.x < cr.x0 - 2.0 || p.x > cr.x1 + 2.0 {
-                    continue;
+            for c in self.project.clips_on(tid) {
+                let cr = self.clip_rect(c, &lane, r);
+                if p.x >= cr.x0 - 2.0 && p.x <= cr.x1 + 2.0 {
+                    return Some((c.id, lane));
                 }
-                self.selected = Some(cid);
-                if (p.x - cr.x0).abs() <= TRIM_HIT {
-                    self.drag = Some(Drag::TrimIn { id: cid });
-                } else if (p.x - cr.x1).abs() <= TRIM_HIT {
-                    self.drag = Some(Drag::TrimOut { id: cid });
-                } else {
-                    self.drag = Some(Drag::ClipMove { id: cid, grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start });
-                }
-                return;
             }
         }
-        // Empty lane area: scrub the playhead.
-        self.drag = Some(Drag::Playhead);
-        self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
-            .clamp(0.0, self.project.duration());
+        None
+    }
+
+    /// Press inside the lane area. On a clip: select (shift extends), then arm
+    /// a trim or a move — unless its track is locked, in which case the clip
+    /// still selects (so the inspector can show it) but no edit drag begins.
+    /// On empty space: arm a rubber-band selection, which falls back to a
+    /// playhead scrub if the press never moves.
+    fn press_timeline(&mut self, r: &Regions, p: Point, shift: bool) {
+        if let Some((cid, lane)) = self.clip_at(r, p) {
+            if shift {
+                self.selection.toggle(cid);
+            } else if !self.selection.contains(cid) {
+                // Clicking a clip that is already part of a multi-selection
+                // keeps that selection, so the whole block can be dragged.
+                self.selection.select_only(cid);
+            } else {
+                self.selection.set_primary(cid);
+            }
+            let Some(clip) = self.project.clip(cid).cloned() else { return };
+            if !self.project.clip_editable(cid) || shift {
+                // A locked clip is inspectable but not draggable; a shift-click
+                // is a selection gesture, not the start of a move.
+                return;
+            }
+            let cr = self.clip_rect(&clip, &lane, r);
+            if (p.x - cr.x0).abs() <= TRIM_HIT {
+                self.drag = Some(Drag::TrimIn { id: cid });
+            } else if (p.x - cr.x1).abs() <= TRIM_HIT {
+                self.drag = Some(Drag::TrimOut { id: cid });
+            } else {
+                self.drag = Some(Drag::ClipMove {
+                    id: cid,
+                    grab_dt: self.x_to_time(p.x, &r.lanes) - clip.start,
+                    track: clip.track,
+                });
+            }
+            return;
+        }
+        // Empty lane area: a rubber band, resolved on release. A press that
+        // never travels past MARQUEE_THRESHOLD scrubs the playhead instead,
+        // so click-to-scrub still works exactly as it did.
+        self.drag = Some(Drag::Marquee { origin: p, additive: shift });
+        self.marquee = None;
     }
 
     fn press_inspector(&mut self, state: &mut AutoCommit, r: &Regions, p: Point) {
@@ -2288,7 +2951,7 @@ impl VideoEditorApp {
             }
         }
         // Fade in / out sliders (value in seconds, 0..clip-duration).
-        let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+        let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
         if let Some(track) = l.fade_in {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::FadeIn);
@@ -2405,6 +3068,7 @@ impl VideoEditorApp {
                 self.playing = false;
             }
         }
+        self.chase_playhead = true;
     }
 
     /// Track the live drag, updating **only the in-memory project** for a
@@ -2419,15 +3083,64 @@ impl VideoEditorApp {
             Drag::Playhead => {
                 self.playhead = snap_to_frame(self.x_to_time(p.x, &r.lanes), self.project.fps)
                     .clamp(0.0, self.project.duration());
+                self.chase_playhead = true;
             }
             Drag::Scrubber => self.apply_scrubber(p, r),
-            Drag::ClipMove { id, grab_dt } => {
+            Drag::Scrollbar => {
+                if let Some(track) = self.hscroll_track(r) {
+                    let m = self.h_metrics(r);
+                    if let Some(px) = self.hbar.drag_to(track, m, p) {
+                        self.set_scroll_px(px, r);
+                    }
+                }
+            }
+            Drag::Marquee { origin, .. } => {
+                if origin.distance(p) > MARQUEE_THRESHOLD {
+                    self.marquee = Some(Rect::new(
+                        origin.x.min(p.x),
+                        origin.y.min(p.y),
+                        origin.x.max(p.x),
+                        origin.y.max(p.y),
+                    ));
+                }
+            }
+            Drag::ClipMove { id, grab_dt, track } => {
                 let raw = (self.x_to_time(p.x, &r.lanes) - grab_dt).max(0.0);
-                // Snap the clip's left edge to a neighbouring edge / playhead
-                // when within a few pixels, then to the frame grid.
+                // Snap the grabbed clip's left edge to a neighbouring edge /
+                // playhead when within a few pixels, then to the frame grid.
                 let snapped = self.snap_time(raw, id);
                 let new_start = snap_to_frame(snapped, self.project.fps);
-                self.project.move_clip(id, new_start);
+                let old_start = self.project.clip(id).map(|c| c.start).unwrap_or(new_start);
+                let dt = new_start - old_start;
+                // Resolve the lane under the cursor: a vertical drag moves the
+                // clip between tracks. Only a lane that will actually accept it
+                // (right kind, unlocked) becomes the target — over anything
+                // else the clip keeps the track it already had, so the drag
+                // degrades to a pure horizontal move instead of vanishing.
+                let target = self
+                    .lane_rects(r)
+                    .into_iter()
+                    .find(|(_, _, lane)| p.y >= lane.y0 && p.y <= lane.y1)
+                    .map(|(tid, _, _)| tid)
+                    .filter(|tid| self.project.can_place(id, *tid))
+                    .unwrap_or(track);
+                // Move the grabbed clip, then carry the rest of the selection
+                // by the same time delta so a multi-clip drag stays rigid.
+                // Only the grabbed clip changes lane; the others would need a
+                // parallel lane each, which the timeline cannot promise.
+                self.project.move_clip_to(id, target, new_start);
+                if dt != 0.0 {
+                    for other in self.editable_selection() {
+                        if other == id {
+                            continue;
+                        }
+                        let s = self.project.clip(other).map(|c| c.start).unwrap_or(0.0);
+                        self.project.move_clip(other, (s + dt).max(0.0));
+                    }
+                }
+                if let Some(d) = self.drag.as_mut() {
+                    *d = Drag::ClipMove { id, grab_dt, track: target };
+                }
             }
             Drag::TrimIn { id } => {
                 let raw = self.x_to_time(p.x, &r.lanes);
@@ -2471,14 +3184,14 @@ impl VideoEditorApp {
             Drag::FadeIn => {
                 if let Some(track) = self.inspector_layout(r).fade_in {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_in = (frac * max).clamp(0.0, c.duration()));
                 }
             }
             Drag::FadeOut => {
                 if let Some(track) = self.inspector_layout(r).fade_out {
                     let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                    let max = self.selected.and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
+                    let max = self.selected().and_then(|id| self.project.clip(id)).map(|c| c.duration()).unwrap_or(0.0);
                     self.preview_edit(move |c| c.fade_out = (frac * max).clamp(0.0, c.duration()));
                 }
             }
@@ -2502,8 +3215,19 @@ impl VideoEditorApp {
     fn commit_drag(&mut self, doc: &mut AutoCommit) {
         let Some(drag) = self.drag else { return };
         match drag {
-            Drag::Playhead | Drag::Scrubber => {}
-            Drag::ClipMove { id, .. } | Drag::TrimIn { id } | Drag::TrimOut { id } => {
+            Drag::Playhead | Drag::Scrubber | Drag::Scrollbar | Drag::Marquee { .. } => {}
+            Drag::ClipMove { id, .. } => {
+                // The whole moved selection lands in one event, so the move —
+                // including the lane change and every clip carried along —
+                // is a single undo boundary.
+                self.dispatch_clip(doc, id);
+                for other in self.editable_selection() {
+                    if other != id {
+                        self.dispatch_clip(doc, other);
+                    }
+                }
+            }
+            Drag::TrimIn { id } | Drag::TrimOut { id } => {
                 self.dispatch_clip(doc, id);
             }
             Drag::Opacity
@@ -2514,7 +3238,7 @@ impl VideoEditorApp {
             | Drag::FadeIn
             | Drag::FadeOut
             | Drag::EffectAmount { .. } => {
-                if let Some(id) = self.selected {
+                if let Some(id) = self.selected() {
                     self.dispatch_clip(doc, id);
                 }
             }
@@ -2558,6 +3282,9 @@ impl VideoEditorApp {
         let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
         self.playing = false;
+        // The transport scrubber spans the whole project, so it can land the
+        // playhead anywhere — bring the timeline along.
+        self.chase_playhead = true;
     }
 
     fn update_hover(&mut self, r: &Regions) {
@@ -3006,7 +3733,7 @@ impl VideoEditorApp {
         let top = r.inspector.y0 - self.inspector_scroll;
         text_w(scene, tr, tf, "INSPECTOR", 11.0, c.text_dim, x0, top + 14.0, TextWeight::Semibold);
 
-        let Some(id) = self.selected else {
+        let Some(id) = self.selected() else {
             text(scene, tr, tf, "No clip selected", 13.0, c.text_dim, x0, top + 60.0);
             text(scene, tr, tf, "Click a clip in the timeline", 11.5, c.text_dim, x0, top + 82.0);
             return;
@@ -3233,7 +3960,7 @@ impl VideoEditorApp {
             return;
         }
         let base = clip_color(theme, clip.palette);
-        let selected = self.selected == Some(clip.id);
+        let selected = self.selection.contains(clip.id);
         let hovered = self.hover_clip == Some(clip.id);
         let body = if kind == TrackKind::Video { base } else { darken(base, 0.05) };
         let body = if hovered { lighten(body, 0.08) } else { body };
@@ -3410,19 +4137,16 @@ fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas
 /// same path shows the generated representative frame or (under decode) the real
 /// decoded frame.
 fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, dest: Rect, radius: f64) {
-    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    use vello::peniko::ImageBrush;
     let iw = thumb.width as f64;
     let ih = thumb.height as f64;
     if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
         return;
     }
-    let img = ImageData {
-        data: Blob::new(std::sync::Arc::new(thumb.rgba.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: thumb.width,
-        height: thumb.height,
-    };
+    // The thumbnail cache builds the render handle once and hands it out by
+    // reference, so painting a frame costs a clone of the handle rather than a
+    // copy of the pixels.
+    let img = thumb.image().clone();
     // Cover: scale so the frame fills the dest, cropping the overflow.
     let scale = (dest.width() / iw).max(dest.height() / ih);
     let dw = iw * scale;
