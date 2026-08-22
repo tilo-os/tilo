@@ -52,10 +52,49 @@ failures: list[str] = []
 
 
 def tool(name: str) -> pathlib.Path | None:
-    for profile in ("demo", "debug"):
-        p = REPO / "target" / profile / name
-        if p.exists():
-            return p
+    """The newest build of `name`, not the first profile that has one.
+
+    Taking `demo` whenever it exists is how a run gets driven by a build
+    from hours ago while the sources under test sit uncompiled, and a
+    stale compositor fails a replication assertion for reasons that have
+    nothing to do with replication — it simply does not contain the code.
+    The newest is the one the person running this just built.
+    """
+    found = [REPO / "target" / profile / name for profile in ("demo", "debug")]
+    found = [p for p in found if p.exists()]
+    if not found:
+        return None
+    return max(found, key=lambda p: p.stat().st_mtime)
+
+
+# The files whose behaviour this run asserts on. Named rather than
+# globbed: the whole tree is edited by other work all day, and a guard
+# that fires on any of it would be ignored within an hour, which is the
+# same as not having one. These are the ones where "the binary predates
+# the source" means this run cannot tell you anything.
+UNDER_TEST = (
+    "shell/src/shell/peer_windows.rs",
+    "shell/src/shell/state.rs",
+    "shell/src/shell/mod.rs",
+    "shell/src/compositor/tab_binding.rs",
+    "shell/src/compositor/frame.rs",
+    "shell/src/shell/launcher.rs",
+    "ui/src/widget/tile_host.rs",
+)
+
+
+def stale(binary: pathlib.Path, *sources: str) -> str | None:
+    """Whether `binary` predates any of the sources this run is about."""
+    behind = []
+    for rel in sources:
+        f = REPO / rel
+        try:
+            if f.stat().st_mtime > binary.stat().st_mtime:
+                behind.append(rel)
+        except OSError:
+            pass
+    if behind:
+        return f"{binary} predates {', '.join(behind)}"
     return None
 
 
@@ -285,6 +324,18 @@ def main() -> int:
         print(f"{payload} is older than {built} — re-copy the payload before trusting "
               f"this run")
         return 2
+
+    # And the same question about the compositor, which is the thing
+    # under test here. A run against a binary that predates the change
+    # reports the old behaviour as a failure of the new one.
+    shell_bin = tool("shell")
+    why = stale(pathlib.Path(shell_bin), *UNDER_TEST) if shell_bin else None
+    if why:
+        print(why)
+        print("rebuild before trusting this run — a binary without the change under")
+        print("test reports the old behaviour as a failure of the new one")
+        return 2
+    note(f"compositor: {shell_bin}")
 
     root = tempfile.mkdtemp(prefix="/tmp/qs-")
     shots = os.path.join(root, "shots")
