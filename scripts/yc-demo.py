@@ -1776,9 +1776,19 @@ def beat_six(ada: Session, bob: Session, shots: str) -> str | None:
 
 
 def beat_seven(ada: Session, bob: Session, host_ws: dict,
-               shots: str) -> None:
+               ada_wp: dict | None, shots: str) -> None:
     banner("7.  ada writes, and bob's screen is asked what it holds")
     room = host_ws["room"]
+
+    # If beat 5 never got a word processor onto ada's machine there is
+    # nothing here to type into, and typing anyway would send the text to
+    # whatever happened to hold focus — which reads afterwards exactly
+    # like a document that failed to cross. Say which of the two it was.
+    if ada_wp is None:
+        gap("ada has no word processor open (beat 5 did not put one "
+            "there), so there was nothing for him to write in and nothing "
+            "for this beat to watch cross")
+        return
 
     step("bob opens the word processor on his own machine")
     cut("bob")
@@ -2041,9 +2051,9 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     beat_two(ada, bob, host_ws)
     beat_three(ada, agent, host_ws)
     beat_four(ada, bob, agent, host_ws, shots)
-    beat_five(ada, registry, shots)
+    wp = beat_five(ada, registry, shots)
     beat_six(ada, bob, shots)
-    beat_seven(ada, bob, host_ws, shots)
+    beat_seven(ada, bob, host_ws, wp, shots)
     beat_eight(ada, shots)
     beat_nine(ada, bob, agent, shots)
 
