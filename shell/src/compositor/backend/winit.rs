@@ -241,11 +241,23 @@ impl WinitPresenter {
         // signal on the same tick, so those frees are deferred every frame
         // and the driver's allocations grow without bound — the nested
         // compositor climbed ~30 MB/s at idle and OOM'd within minutes.
-        // The DRM backend (`drm/paint.rs`) and the offscreen renderer both
-        // already wait here; this aligns the winit backend with them.
-        let _ = device_handle
-            .device
-            .poll(wgpu::PollType::wait_indefinitely());
+        //
+        // BOUNDED, not indefinite: a fence for a frame in flight across a
+        // system suspend/resume can simply never signal, and an indefinite
+        // wait wedges this thread forever — `inflight` never drops, the
+        // paint gate reports no capacity, and the session freezes with the
+        // process alive (observed live as "the window froze after the
+        // machine woke from sleep", 2026-08-22). One second covers any
+        // real frame; on timeout we log and carry on — the stale swapchain
+        // then surfaces as `Outdated` on the next acquire and the
+        // reconfigure path brings presentation back.
+        let waited = device_handle.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(Duration::from_secs(1)),
+        });
+        if let Err(e) = waited {
+            eprintln!("nirios compositor: frame fence wait: {e:?} — carrying on");
+        }
     }
 }
 

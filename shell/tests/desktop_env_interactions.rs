@@ -8,8 +8,8 @@
 //!   2. Whole-group reorder — grab a group's tab-bar background and drop it
 //!      at a new slot; the strip's `window_groups` order in the tree changes
 //!      to the dropped position.
-//!   3. Horizontal strip scroll — a wheel over the strip pans `scroll_x`, and
-//!      focusing an off-screen group scrolls it into view.
+//!   3. Horizontal strip travel — a bare wheel over the strip must NOT move
+//!      it (hard boundary); focusing an off-screen group slides it into view.
 //!   4. Drag-file-to-open — dropping a file resolves its MIME to an app and
 //!      splices the launch intent into the active workspace on the real
 //!      `handle_file_drop` path.
@@ -638,6 +638,12 @@ fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
     let _layout = lay_out_host(&mut host);
     // Frame two: the group now has a rect, so the pan must happen.
     host.tick_scroll_active_into_view_for_tests();
+    // The pan is eased on the snap curve, not teleported — advance the
+    // production per-frame tick past the curve's duration so the motion
+    // settles before the position is read.
+    host.group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
     let scrolled = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -765,7 +771,104 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn wheel_over_strip_pans_scroll_offset() {
+fn switching_workspace_swaps_the_rendered_strips() {
+    // Two workspaces: A (boot) with groups [100, 200]; B with groups
+    // [300, 400], group 300 carrying two tabs. The rendered strip must
+    // follow `tree.active`: after a switch the host's live rows are
+    // B's — this is what makes every window gesture (the Alt+Shift
+    // jump, clicks, focus-follow) act on the workspace the user is
+    // looking at, instead of the boot workspace forever (the
+    // "jump only works in Home" bug, 2026-08-22).
+    let (mut tree, strip_a, _) = single_strip_tree(&[100, 200]);
+    let ws_b_id = WorkspaceId::new();
+    let strip_b = StripId::new();
+    let mk_tab = |tid: u64, label: &str| Tab {
+        id: tid,
+        title: label.into(),
+        tile: TileContent::Stub {
+            kind: AppKind::Other(label.into()),
+            label: label.into(),
+        },
+    };
+    let group_300 = WindowGroup {
+        id: 300,
+        tabs: vec![mk_tab(3001, "B-first"), mk_tab(3002, "B-second")],
+        active_tab: 3001,
+        width: WindowWidth::Normal,
+        maximized: false,
+    };
+    let group_400 = WindowGroup {
+        id: 400,
+        tabs: vec![mk_tab(4001, "B-third")],
+        active_tab: 4001,
+        width: WindowWidth::Normal,
+        maximized: false,
+    };
+    let ws_b = Workspace {
+        strips: vec![Strip {
+            id: strip_b,
+            name: "Main".into(),
+            window_groups: vec![group_300, group_400],
+        }],
+        ..Workspace::test_default(ws_b_id, "Second")
+    };
+    tree.workspaces.push(ws_b);
+    tree.active_strip.insert(ws_b_id, strip_b);
+
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let _layout = lay_out_host(&mut host);
+    assert!(host.group_row_mut_for_tests(strip_a).is_some());
+    assert!(
+        host.group_row_mut_for_tests(strip_b).is_none(),
+        "precondition: only the active workspace's strips are rendered"
+    );
+
+    // Switch the active workspace the way every switch path does (tree
+    // mutation + chrome bump), then run the per-frame reconcile.
+    {
+        let st = chrome.borrow();
+        st.tree_mut().set_active(ws_b_id);
+    }
+    chrome.borrow_mut().bump();
+    assert!(
+        host.tick_workspace_content_for_tests(),
+        "an active-workspace change must rebuild the content"
+    );
+    let _layout = lay_out_host(&mut host);
+
+    let row_b = host
+        .group_row_mut_for_tests(strip_b)
+        .expect("workspace B's strip must now be the rendered one");
+    assert_eq!(row_b.group_ids(), vec![300, 400]);
+    assert!(
+        host.group_row_mut_for_tests(strip_a).is_none(),
+        "the old workspace's rows must be gone"
+    );
+    // The jump's widget-side focus write lands on the new rows.
+    assert!(
+        host.focus_window_widget(strip_b, 300, 3002),
+        "focus_window_widget must reach workspace B's rendered rows"
+    );
+    // And switching back re-renders A without leaking B's rows.
+    {
+        let st = chrome.borrow();
+        let home = st.tree().workspaces[0].id;
+        st.tree_mut().set_active(home);
+    }
+    chrome.borrow_mut().bump();
+    assert!(host.tick_workspace_content_for_tests());
+    let _layout = lay_out_host(&mut host);
+    assert!(host.group_row_mut_for_tests(strip_a).is_some());
+    assert!(host.group_row_mut_for_tests(strip_b).is_none());
+}
+
+#[test]
+fn wheel_over_strip_does_not_move_it() {
+    // Hard boundary (2026-08-22): a bare wheel never moves the strip —
+    // scrolling is for content inside a window. The view travels only
+    // through focus changes and the shell's Alt-modified wheel
+    // gestures (which route through `client_input`, not this widget
+    // path).
     let (tree, strip_id, _ids) = single_strip_tree(&[100, 200, 300, 400]);
     let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
@@ -775,8 +878,6 @@ fn wheel_over_strip_pans_scroll_offset() {
         .expect("row rect after layout");
     let before = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
 
-    // Cursor over the strip, then a downward wheel — Niri-style, the
-    // vertical wheel pans the strip horizontally to the right.
     cursor(
         &mut host,
         &layout,
@@ -794,12 +895,16 @@ fn wheel_over_strip_pans_scroll_offset() {
             phase: winit::event::TouchPhase::Moved,
         },
     );
+    // Give any (wrongly started) eased travel every chance to show
+    // itself before reading the position.
+    host.group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
 
     let after = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
-    assert!(
-        after > before,
-        "a wheel over the strip must increase its horizontal scroll offset \
-         (was {before}, now {after})",
+    assert_eq!(
+        after, before,
+        "a bare wheel over the strip must not move it",
     );
 }
 
@@ -834,6 +939,12 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
         tree.set_active_group(strip_id, last_id);
     }
     host.tick_scroll_active_into_view_for_tests();
+    // The pan is eased on the snap curve, not teleported — advance the
+    // production per-frame tick past the curve's duration so the motion
+    // settles before the position is read.
+    host.group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .tick_snap_at(std::time::Instant::now() + std::time::Duration::from_millis(400));
 
     let after = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
     assert!(
