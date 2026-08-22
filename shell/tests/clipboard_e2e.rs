@@ -1667,35 +1667,6 @@ impl Compositor {
         );
     }
 
-    /// Set the modifier state the next synthesised events carry.
-    fn modifiers(&self, alt: bool, shift: bool) {
-        let resp = self.control(serde_json::json!({
-            "op": "modifiers", "ctrl": false, "shift": shift, "alt": alt, "logo": false,
-        }));
-        assert!(resp.get("ok").is_some(), "modifiers failed: {resp:?}");
-    }
-
-    /// One wheel event, `dy` detents, through the real input path.
-    fn scroll(&self, dy: f64) {
-        let resp = self.control(serde_json::json!({"op": "scroll", "dx": 0.0, "dy": dy}));
-        assert!(resp.get("ok").is_some(), "scroll failed: {resp:?}");
-    }
-
-    /// Every named chrome target this frame, for a failure message.
-    fn target_names(&self) -> Vec<String> {
-        let resp = self.control(serde_json::json!({"op": "list_targets"}));
-        resp.get("targets")
-            .and_then(|t| t.as_array())
-            .map(|ts| ts.iter().filter_map(|t| t.get("name")?.as_str().map(String::from)).collect())
-            .unwrap_or_default()
-    }
-
-    /// Write a PNG of the current frame to `path`.
-    fn snapshot(&self, path: &Path) {
-        let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
-        assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
-    }
-
     /// A click at `(x, y)` through the real input path.
     fn click_at(&self, x: f64, y: f64) {
         self.pointer_move(x, y);
