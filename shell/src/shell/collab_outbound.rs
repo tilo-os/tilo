@@ -321,7 +321,7 @@ impl PeerPublisher {
     /// Without this a peer's caret stopped at the machine that produced
     /// it, and every collaborator looked like they were doing nothing.
     pub fn presence(&self, route: &CrdtRoute, transport: Transport, frame: Vec<u8>) -> bool {
-        let Some(sink) = self.ready(route, transport, "presence") else {
+        let Some(sink) = self.ready_quietly(route, transport, "presence") else {
             return false;
         };
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), frame);
@@ -348,18 +348,45 @@ impl PeerPublisher {
     }
 
     /// The two refusals every publish shares: no network, or a route
-    /// that addresses nobody. Both are logged; the first is throttled
-    /// to once per publisher because it is a session-long state, the
-    /// second is not because it names a specific misbehaving
-    /// connection and repeats are the signal.
+    /// that addresses nobody. Both are logged; the "no network" line is
+    /// throttled to once per publisher because it is a session-long
+    /// state, the route refusal is not, because it names a specific
+    /// misbehaving connection and repeats are the signal.
+    ///
+    /// See [`Self::ready_quietly`] for the one payload that has to opt
+    /// out of the second half of that.
     fn ready(
         &self,
         route: &CrdtRoute,
         transport: Transport,
         what: &str,
     ) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, transport, what, true)
+    }
+
+    /// [`Self::ready`] for a payload that repeats. A pointer publishes
+    /// at cursor rate, so an unaddressable route would put a warning on
+    /// every frame and bury the one that matters; a lost caret is also
+    /// cosmetic where a lost edit is not. Same gate, same decision,
+    /// logged at `debug!`.
+    fn ready_quietly(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        what: &str,
+    ) -> Option<&Arc<dyn PeerPublishSink>> {
+        self.ready_at(route, transport, what, false)
+    }
+
+    fn ready_at(
+        &self,
+        route: &CrdtRoute,
+        transport: Transport,
+        what: &str,
+        loud: bool,
+    ) -> Option<&Arc<dyn PeerPublishSink>> {
         let Some(sink) = self.sink.as_ref() else {
-            if !self.warned_no_network.swap(true, Ordering::Relaxed) {
+            if loud && !self.warned_no_network.swap(true, Ordering::Relaxed) {
                 tracing::warn!(
                     transport = transport.as_str(),
                     "collab outbound: dropping every outbound {what} — this \
@@ -375,14 +402,24 @@ impl PeerPublisher {
         // room that no receiver can place — the remote broker drops it
         // and neither side has a record of why.
         if !route.is_publishable() {
-            tracing::warn!(
-                transport = transport.as_str(),
-                app_id = %route.app_id,
-                cluster_id = %route.cluster_id,
-                "collab outbound: NOT publishing {what} — the sender's route \
-                 names no room, so it would reach nobody. An app in this state \
-                 is collaborating with itself.",
-            );
+            if loud {
+                tracing::warn!(
+                    transport = transport.as_str(),
+                    app_id = %route.app_id,
+                    cluster_id = %route.cluster_id,
+                    "collab outbound: NOT publishing {what} — the sender's \
+                     route names no room, so it would reach nobody. An app in \
+                     this state is collaborating with itself.",
+                );
+            } else {
+                tracing::debug!(
+                    transport = transport.as_str(),
+                    app_id = %route.app_id,
+                    cluster_id = %route.cluster_id,
+                    "collab outbound: not publishing {what} whose route names \
+                     no room",
+                );
+            }
             return None;
         }
         Some(sink)
