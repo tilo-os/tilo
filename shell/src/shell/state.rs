@@ -739,7 +739,34 @@ pub struct Workspace {
     pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
-    #[serde(default)]
+    /// Who is in this workspace *right now*.
+    ///
+    /// Rendered by the top-bar avatar stack, the wheel-disc presence
+    /// dots and the collaborators overlay. Every row is put here by
+    /// something asserting a person is present at this moment: an invite
+    /// this machine verified and accepted, or a presence frame that
+    /// arrived from another host in the room.
+    ///
+    /// `#[serde(skip)]` because none of that outlives the process. The
+    /// sessions are gone when the shell restarts, so a roster read back
+    /// off disk paints people who are not there — drawn identically to
+    /// people who are — and nothing can ever take those rows off again:
+    /// [`WorkspaceTree::retire_session`] is driven by departures from
+    /// the transport, which reports nothing about a session this process
+    /// never saw arrive.
+    ///
+    /// Durable membership is not this field. Who belongs to a workspace
+    /// and what they may do lives on [`Workspace::owner`] and
+    /// [`Workspace::capabilities`], both of which do persist.
+    ///
+    /// `skip_deserializing` rather than `skip`: the same derived
+    /// `Serialize` feeds the control socket's state dump
+    /// (`FrameBuilderControlState::workspace_tree_json`), which is how a
+    /// test harness observes who the shell believes is present. Dropping
+    /// the write direction too would blind that. Reading is the only
+    /// direction that can fabricate anybody, and it is the one closed
+    /// here.
+    #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Who owns this room.
     ///
@@ -1547,6 +1574,14 @@ pub struct WorkspaceTree {
     /// shell seeds entries lazily on first focus.
     #[serde(default)]
     pub active_group: HashMap<StripId, GroupId>,
+    /// Tree-level roster, used as a fallback by the chrome when the
+    /// active workspace has nobody of its own.
+    ///
+    /// `#[serde(skip)]` for the same reason as
+    /// [`Workspace::collaborators`]: it is painted by the same surfaces,
+    /// through the same fallback, so reloading it would put the same
+    /// people who are not there on the same bar.
+    #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
     /// Automerge backing doc for peer-sync. Lazily seeded — empty until
     /// a peer feeds changes via [`Self::apply_changes`] or a test
