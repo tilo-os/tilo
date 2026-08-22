@@ -414,9 +414,13 @@ def main() -> int:
         shot = os.path.join(root, "xaver-room.png")
         xaver.key("Escape")
         time.sleep(0.3)
-        # Super+K is the palette. The record row it lists is the proof
-        # rendered rather than merely reported.
-        xaver.call({"op": "key", "key": "super+k"})
+        # Super+K is the palette. The modifier is held across the
+        # keystroke the way hardware holds it — the `key` op is a
+        # press+release pair, which would drop Super before the `k`
+        # arrived.
+        xaver.call({"op": "key_down", "key": "Super"})
+        xaver.call({"op": "key", "key": "k"})
+        xaver.call({"op": "key_up", "key": "Super"})
         time.sleep(0.6)
         xaver.type_text(q_tok)
         time.sleep(1.2)
