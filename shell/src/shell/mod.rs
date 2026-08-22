@@ -983,8 +983,23 @@ fn to_ui_kind(k: &ShellKind) -> UiKind {
         ShellKind::FileExplorer => UiKind::Files,
         ShellKind::Browser => UiKind::Browser,
         ShellKind::Settings => UiKind::Settings,
+        // The apps the shell hosts under an `Other` label are all text
+        // editors, so they get the editor glyph. Without this they took
+        // the unknown-kind fallback below and every one of them wore a
+        // settings cog in its tab pill.
+        ShellKind::Other(s) if is_editor_label(s) => UiKind::Editor,
         ShellKind::Other(_) => UiKind::Settings,
     }
+}
+
+/// Whether an `AppKind::Other` label names one of the text editors the
+/// shell hosts in-process. One list, read by both the icon mapping and
+/// the tile hydration, so a label can never resolve to a live editor
+/// while its tab pill claims it is something else.
+fn is_editor_label(s: &str) -> bool {
+    s.eq_ignore_ascii_case("Notes")
+        || s.eq_ignore_ascii_case("Editor")
+        || s.eq_ignore_ascii_case("Word")
 }
 
 /// Test-only probe into [`to_ui_tile`]: returns `"App"` if the persisted
@@ -1047,18 +1062,18 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
             ShellKind::FileExplorer => UiTile::App(Box::new(FileExplorerWidget::new())),
-            // Notes and Editor placeholders resolve to the shell's CRDT-
-            // backed apps. Everything else falls through to a Stub until a
-            // dedicated widget is wired up.
+            // Notes, Editor and Word resolve to real in-process apps.
+            // Each opens on an empty document — a tab the user just
+            // opened has nothing in it yet, and prose the shell wrote
+            // would be indistinguishable from prose they wrote.
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Notes") => {
-                let seed = "Welcome to nirios.\n\n\
-                     These notes sync live with anyone invited to this workspace — \
-                     edits replicate through the same CRDT path every widget uses.\n\n\
-                     Ctrl+Z / Ctrl+Y undo and redo across the whole shell.";
-                UiTile::App(Box::new(NotesApp::with_seed(seed)))
+                UiTile::App(Box::new(NotesApp::new()))
             }
             ShellKind::Other(s) if s.eq_ignore_ascii_case("Editor") => {
-                UiTile::App(Box::new(EditorApp::with_default_snippet()))
+                UiTile::App(Box::new(EditorApp::new()))
+            }
+            ShellKind::Other(s) if s.eq_ignore_ascii_case("Word") => {
+                UiTile::App(Box::new(word_processor::WordProcessorWidget::new()))
             }
             _ => UiTile::Stub {
                 kind: to_ui_kind(kind),
