@@ -307,6 +307,74 @@ pub enum NeighbourMsg {
         /// Opaque to every hop between the two apps.
         frame: Vec<u8>,
     },
+    /// App-level CRDT **snapshot** — one document's whole state, sent
+    /// so a peer that has just joined can adopt a document it has no
+    /// history for.
+    ///
+    /// # Why a whole document ever crosses
+    ///
+    /// [`NeighbourMsg::AppCrdtIncremental`] carries a change that names
+    /// its dependencies by hash. A receiver that never saw those
+    /// dependencies cannot apply it — automerge parks it — so two apps
+    /// that each *created* a document rather than opening a shared one
+    /// exchange deltas forever without converging: the bytes arrive,
+    /// reference objects the receiving document has never seen, and
+    /// land nowhere its widgets read. Something has to carry the state
+    /// the deltas are relative to, once, and that is this variant.
+    ///
+    /// # This is an answer, not an announcement
+    ///
+    /// The toolkit emits the frame behind it
+    /// (`ui::collaboration::CollabRequest::SyncCRDT`) from exactly one
+    /// place: a peer's `PresencePayload::Arrived` reaching a process
+    /// that holds the document. A commit does **not** produce one — a
+    /// commit produces a delta. So the join is the request and this is
+    /// the reply, and the rate is "once per peer that arrives", not
+    /// "once per keystroke".
+    ///
+    /// That ordering is what makes gossip an acceptable carrier for it
+    /// at all, and it is the same shape
+    /// [`NeighbourMsg::ScrollbackRequest`] /
+    /// [`NeighbourMsg::ScrollbackResponse`] already take: rare,
+    /// single-shot, answered by whoever holds the data. It is not
+    /// addressed to the joiner, deliberately — merging a snapshot is
+    /// idempotent and commutative, so a peer that missed one earlier
+    /// converges from somebody else's copy, and the alternative
+    /// (naming a recipient) would need the *app* to say who its reply
+    /// is for.
+    ///
+    /// # Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`]
+    ///
+    /// A document has no upper bound and a gossipsub RPC does (64 KiB,
+    /// the libp2p default this shell does not raise). Publishing is
+    /// therefore refused above a cap set below that ceiling rather than
+    /// handing the transport a message it would reject — see the
+    /// constant for the arithmetic. A document past the cap does not
+    /// converge, loudly, in a log line that names the size; it does not
+    /// half-converge and it does not fail somewhere unattributable.
+    AppCrdtSnapshot {
+        /// Hashed libp2p PeerId of the publisher. Receiving shells drop
+        /// their own gossipsub echoes on it, as on every App* variant.
+        peer: PeerId,
+        /// App-id of the originating app — first component of the
+        /// routing key.
+        #[serde(default)]
+        app_id: String,
+        /// Cluster id (the room, as a uuid string). The receiving shell
+        /// refuses a room it is not in before the frame reaches any app.
+        #[serde(default)]
+        cluster_id: String,
+        /// Record id — **which document** this is the state of. A
+        /// snapshot is the one payload where getting this wrong is
+        /// unrecoverable rather than merely noisy: a whole document
+        /// merged into the wrong record cannot be un-merged, so an
+        /// unaddressed snapshot is dropped rather than guessed at.
+        #[serde(default)]
+        record_id: String,
+        /// `automerge::Automerge::save()` output for that record,
+        /// opaque to every hop between the two apps.
+        data: Vec<u8>,
+    },
     /// Phase 6: cooperative scrollback request. Broadcast over
     /// gossipsub when a peer's local broker has no in-memory
     /// scrollback for a given artifact range and the requesting app
@@ -539,6 +607,17 @@ mod tests {
             cluster_id: "00000000-0000-0000-0000-000000000000".into(),
             record_id: "file:/work/report.odt".into(),
             data: vec![0x01, 0x02, 0x03, 0x04],
+        });
+    }
+
+    #[test]
+    fn app_crdt_snapshot_round_trips() {
+        round_trip(NeighbourMsg::AppCrdtSnapshot {
+            peer: 0xABCDEF,
+            app_id: "dev.qos.word-processor".into(),
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            record_id: "file:/work/report.odt".into(),
+            data: vec![0x85, 0x6F, 0x4A, 0x83],
         });
     }
 
