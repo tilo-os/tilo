@@ -829,7 +829,10 @@ mod tests {
             .agent_members();
         assert_eq!(
             after,
-            vec![("scribe".to_string(), crate::shell::state::CapRole::Editor)],
+            vec![(
+                DEFAULT_AGENT_NAME.to_lowercase(),
+                crate::shell::state::CapRole::Editor
+            )],
             "the shipped agent is admitted under its own name, case-folded",
         );
         assert!(
