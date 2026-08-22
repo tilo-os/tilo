@@ -80,6 +80,8 @@ const DEADLINE: Duration = Duration::from_secs(25);
 struct Compositor {
     child: Child,
     runtime_dir: PathBuf,
+    /// The headless screen, `(width, height)` — what `pointer_target` scans.
+    size: (i32, i32),
     /// The public socket — what a sandboxed app gets.
     wayland_socket: PathBuf,
     /// The privileged socket — what a clipboard manager gets.
@@ -96,6 +98,19 @@ impl Compositor {
     /// harness that returns `None` here would turn a broken compositor into a
     /// skipped test.
     fn start() -> Self {
+        Self::start_with_home(None)
+    }
+
+    /// [`Self::start`], with the compositor's `HOME` pointed at `home` so the
+    /// hosted file manager opens on a directory the test prepared.
+    fn start_with_home(home: Option<&Path>) -> Self {
+        Self::start_with(home, (1280, 800))
+    }
+
+    /// [`Self::start_with_home`] on a screen of `size`. A wider screen keeps
+    /// two window groups on screen at once when one of them is the demo
+    /// group, whose tabs are laid out at their normal width.
+    fn start_with(home: Option<&Path>, size: (i32, i32)) -> Self {
         // A unix socket path is capped at `SUN_LEN` (~108 bytes), so the
         // runtime dir has to be short — `/run/user/$UID` is where a session
         // runtime dir belongs anyway, and being outside the repo keeps a
@@ -109,7 +124,11 @@ impl Compositor {
         std::fs::create_dir_all(&runtime_dir).expect("create private runtime dir");
         let control_socket = runtime_dir.join("ctl");
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_shell"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_shell"));
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let mut child = command
             .args(["--mode", "native", "--backend", "headless"])
             .env("XDG_RUNTIME_DIR", &runtime_dir)
             // The compositor loads its workspace tree, room identities and
@@ -122,12 +141,12 @@ impl Compositor {
             .env("XDG_STATE_HOME", runtime_dir.join("state"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
             .env("QOS_TEST_CONTROL", &control_socket)
-            .env("NIRIOS_HEADLESS_SIZE", "1280x800")
+            .env("NIRIOS_HEADLESS_SIZE", format!("{}x{}", size.0, size.1))
             // smithay logs its selection and drag decisions at debug, and
             // "denying drag from client without implicit grab" is the one
             // line that distinguishes a rejected drag from a delivered one
             // that went to the wrong surface.
-            .env("RUST_LOG", "warn,smithay::wayland::selection=debug,shell=debug")
+            .env("RUST_LOG", "warn,smithay::wayland::selection=debug,shell=debug,file_explorer=debug")
             // The whole point of this suite is that it cannot reach the
             // developer's session. Removing both display variables means the
             // compositor binds a fresh socket in our private runtime dir and
@@ -205,6 +224,7 @@ impl Compositor {
 
         let this = Self {
             child,
+            size,
             wayland_socket: runtime_dir.join(&found["public"]),
             privileged_socket: runtime_dir.join(&found["privileged"]),
             control_socket: PathBuf::from(&found["control"]),
@@ -573,8 +593,23 @@ impl TestClient {
     /// layout, so a change to how tiles are arranged moves the drag with them
     /// instead of silently aiming it at chrome.
     fn pointer_target(&mut self, compositor: &Compositor) -> (f64, f64) {
+        if let Some(p) = self.try_pointer_target(compositor) {
+            return p;
+        }
+        let (w, h) = compositor.size;
+        panic!(
+            "`{}` never received a pointer enter anywhere on a {w}x{h} screen, so its \
+             window is not on screen and no drag could be aimed at it.\n{}",
+            self.app_id,
+            compositor.debug_state(),
+        );
+    }
+
+    /// [`Self::pointer_target`] without the panic: `None` when this client is
+    /// not on screen right now.
+    fn try_pointer_target(&mut self, compositor: &Compositor) -> Option<(f64, f64)> {
         const STEP: i32 = 40;
-        let (w, h) = (1280, 800);
+        let (w, h) = compositor.size;
         self.state.pointer_entered = false;
         let mut y = STEP / 2;
         while y < h {
@@ -584,18 +619,13 @@ impl TestClient {
                 self.pump();
                 if self.state.pointer_entered {
                     self.step(&format!("receives pointer input at ({x}, {y})"));
-                    return (x as f64, y as f64);
+                    return Some((x as f64, y as f64));
                 }
                 x += STEP;
             }
             y += STEP;
         }
-        panic!(
-            "`{}` never received a pointer enter anywhere on a {w}x{h} screen, so its \
-             window is not on screen and no drag could be aimed at it.\n{}",
-            self.app_id,
-            compositor.debug_state(),
-        );
+        None
     }
 
     /// Attach an opaque `wl_shm` buffer of `width * height` and commit it, so
@@ -750,12 +780,20 @@ impl TestClient {
 
     /// Read the drag-and-drop offer that entered this client's surface.
     fn read_dnd(&mut self, peer: &mut TestClient) -> String {
+        let bytes = self.read_dnd_bytes(TEXT_MIME, Some(peer));
+        String::from_utf8(bytes).expect("selection bytes were not UTF-8")
+    }
+
+    /// Read the drag-and-drop offer as `mime`. `peer` is pumped while waiting
+    /// when the source is another test client; a compositor-sourced drag
+    /// needs no peer.
+    fn read_dnd_bytes(&mut self, mime: &str, peer: Option<&mut TestClient>) -> Vec<u8> {
         let offer = self.state.dnd_offer.clone().expect("a drag offer");
         let (read_fd, write_fd) = make_pipe();
-        offer.receive(TEXT_MIME.to_string(), write_fd.as_fd_ref());
+        offer.receive(mime.to_string(), write_fd.as_fd_ref());
         drop(write_fd);
         self.conn.flush().expect("flush the receive request");
-        drain(read_fd, self, Some(peer))
+        drain_bytes(read_fd, self, peer)
     }
 }
 
@@ -790,6 +828,10 @@ fn make_pipe() -> (Fd, Fd) {
 /// one process only completes if the *owner* is dispatched so it can answer the
 /// `send` request the compositor forwards to it.
 fn drain(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -> String {
+    String::from_utf8(drain_bytes(fd, reader, peer)).expect("selection bytes were not UTF-8")
+}
+
+fn drain_bytes(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -> Vec<u8> {
     use std::os::unix::io::AsRawFd;
     // SAFETY: `fd` owns the descriptor and outlives this call; `F_SETFL` is
     // total on any descriptor.
@@ -804,9 +846,7 @@ fn drain(fd: Fd, reader: &mut TestClient, peer: Option<&mut TestClient>) -> Stri
     let mut peer = peer;
     while started.elapsed() < DEADLINE {
         match file.read(&mut chunk) {
-            Ok(0) => {
-                return String::from_utf8(out).expect("selection bytes were not UTF-8");
-            }
+            Ok(0) => return out,
             Ok(n) => out.extend_from_slice(&chunk[..n]),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 reader.pump();
@@ -1027,11 +1067,19 @@ impl Dispatch<WlDataDevice, ()> for ClientState {
                 state.dnd_entered = true;
                 state.last_serial = serial;
                 if let Some(offer) = id {
-                    // Accept the text type and a copy action, or the source
-                    // will be told the drop was refused and send nothing.
-                    offer.accept(serial, Some(TEXT_MIME.to_string()));
-                    offer.set_actions(DndAction::Copy, DndAction::Copy);
                     state.dnd_offer_mimes = std::mem::take(&mut state.clipboard_offer_mimes);
+                    // Accept a type the source actually offered — the text
+                    // type when it is there, else the first one — and a copy
+                    // action, or the source will be told the drop was refused
+                    // and send nothing.
+                    let accept = state
+                        .dnd_offer_mimes
+                        .iter()
+                        .find(|m| m.as_str() == TEXT_MIME)
+                        .or_else(|| state.dnd_offer_mimes.first())
+                        .cloned();
+                    offer.accept(serial, accept);
+                    offer.set_actions(DndAction::Copy, DndAction::Copy);
                     state.dnd_offer = Some(offer);
                 }
             }
@@ -1588,4 +1636,429 @@ impl Compositor {
             self.control(serde_json::json!({"op": "pointer_button", "pressed": pressed}));
         assert!(resp.get("ok").is_some(), "pointer_button failed: {resp:?}");
     }
+
+    /// The on-screen rect `[x, y, w, h]` of a named chrome target, as the
+    /// renderer laid it out this frame. `None` when nothing is named so.
+    fn named_rect(&self, name: &str) -> Option<[f64; 4]> {
+        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        let targets = resp.get("targets")?.as_array()?;
+        targets.iter().find_map(|t| {
+            (t.get("name")?.as_str()? == name).then(|| {
+                let r = t.get("rect")?.as_array()?;
+                Some([r[0].as_f64()?, r[1].as_f64()?, r[2].as_f64()?, r[3].as_f64()?])
+            })?
+        })
+    }
+
+    /// Wait for a named chrome target to be laid out, then return its centre.
+    fn named_center(&self, name: &str) -> (f64, f64) {
+        let started = Instant::now();
+        while started.elapsed() < DEADLINE {
+            if let Some([x, y, w, h]) = self.named_rect(name) {
+                if w > 0.0 && h > 0.0 {
+                    return (x + w / 2.0, y + h / 2.0);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!(
+            "chrome never laid out a target named {name:?} (waited {DEADLINE:?}).\n{}",
+            self.debug_state()
+        );
+    }
+
+    /// Set the modifier state the next synthesised events carry.
+    fn modifiers(&self, alt: bool, shift: bool) {
+        let resp = self.control(serde_json::json!({
+            "op": "modifiers", "ctrl": false, "shift": shift, "alt": alt, "logo": false,
+        }));
+        assert!(resp.get("ok").is_some(), "modifiers failed: {resp:?}");
+    }
+
+    /// One wheel event, `dy` detents, through the real input path.
+    fn scroll(&self, dy: f64) {
+        let resp = self.control(serde_json::json!({"op": "scroll", "dx": 0.0, "dy": dy}));
+        assert!(resp.get("ok").is_some(), "scroll failed: {resp:?}");
+    }
+
+    /// Every named chrome target this frame, for a failure message.
+    fn target_names(&self) -> Vec<String> {
+        let resp = self.control(serde_json::json!({"op": "list_targets"}));
+        resp.get("targets")
+            .and_then(|t| t.as_array())
+            .map(|ts| ts.iter().filter_map(|t| t.get("name")?.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Write a PNG of the current frame to `path`.
+    fn snapshot(&self, path: &Path) {
+        let resp = self.control(serde_json::json!({"op": "snapshot", "path": path}));
+        assert!(resp.get("ok").is_some(), "snapshot failed: {resp:?}");
+    }
+
+    /// A click at `(x, y)` through the real input path.
+    fn click_at(&self, x: f64, y: f64) {
+        self.pointer_move(x, y);
+        self.pointer_button(true);
+        self.pointer_button(false);
+    }
+}
+
+/// A 1×1 transparent PNG — the smallest real image a word processor would
+/// accept from a drop.
+const TINY_PNG: [u8; 67] = [
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
+/// Whether some window group's active tab is titled "Files", read off the
+/// compositor's own state dump.
+fn files_tab_is_active(compositor: &Compositor) -> bool {
+    let dump = compositor.control(serde_json::json!({"op": "state_dump"}));
+    let mut active = false;
+    walk_json(&dump, &mut |v| {
+        let (Some(active_tab), Some(tabs)) = (v.get("active_tab"), v.get("tabs").and_then(|t| t.as_array())) else {
+            return;
+        };
+        if tabs.iter().any(|t| {
+            t.get("id") == Some(active_tab) && t.get("title").and_then(|x| x.as_str()) == Some("Files")
+        }) {
+            active = true;
+        }
+    });
+    active
+}
+
+/// Drag a file out of the hosted file manager — a widget inside the
+/// compositor, not a client — and drop it on a client's window.
+///
+/// The gesture runs through the real input path: press on the row the file
+/// manager laid out (found by name, not by coordinate), move over the
+/// client's tile, release. The compositor promotes the in-process drag to a
+/// server-side `wl_data_device` drag the moment the pointer reaches the
+/// client, which then receives enter, an offer carrying both the path list
+/// and the file's own bytes, and the drop.
+#[test]
+fn a_file_dragged_out_of_the_hosted_file_manager_drops_onto_a_client() {
+    let home = PathBuf::from(format!(
+        "/run/user/{}/qos-dnd-home-{}-{}",
+        unsafe { libc::getuid() },
+        std::process::id(),
+        next_id(),
+    ));
+    std::fs::create_dir_all(&home).expect("create the fixture home");
+    let photo = home.join("photo.png");
+    std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
+
+    let compositor = Compositor::start_with(Some(&home), (2560, 900));
+
+    compositor.place_next_window("org.qos.test.dnd-target");
+    let mut target = TestClient::new(compositor.connect(), "org.qos.test.dnd-target");
+    target.assert_is_qos_compositor();
+    target.map_window(&compositor);
+
+    // Let the strip finish making room for the new group before reading
+    // where the pills are; a pill read mid-animation is clicked where it
+    // used to be.
+    std::thread::sleep(Duration::from_millis(1000));
+    // Bring the Files tab to the front of the demo group, by its pill.
+    let files_pill = compositor.named_center("tab:Files");
+    compositor.click_at(files_pill.0, files_pill.1);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        files_tab_is_active(&compositor),
+        "clicking the Files pill at {files_pill:?} did not select the Files tab.\n{}",
+        compositor.debug_state()
+    );
+
+    // The demo group is laid out at the full output width, so with Files
+    // focused the client is off screen — and pressing in the Files tile
+    // focuses it, so the client has to be visible *while* Files is focused.
+    // Narrow the demo group with the real gesture: drag the seam handle
+    // between the two groups to the left.
+    let seam = compositor.named_center("group_resize_handle[0]");
+    compositor.pointer_move(seam.0, seam.1);
+    compositor.pointer_button(true);
+    const NARROW_BY: f64 = 1100.0;
+    for i in 1..=10 {
+        compositor.pointer_move(seam.0 - NARROW_BY * (i as f64 / 10.0), seam.1);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    compositor.pointer_button(false);
+    std::thread::sleep(Duration::from_millis(800));
+    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-after-resize.png"));
+    assert!(
+        files_tab_is_active(&compositor),
+        "the demo group must still show Files after the resize.\n{}",
+        compositor.debug_state()
+    );
+    let target_point = target.pointer_target(&compositor);
+    // The row the file manager laid out for the fixture file — aimed at
+    // its on-screen part, since the tile may extend past the left edge.
+    let row = {
+        compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-before-drag.png"));
+        let [x, y, w, h] = compositor.named_rect("file_row:photo.png").unwrap_or_else(|| {
+            panic!(
+                "the file manager laid out no row for photo.png; targets: {:?}\n{}",
+                compositor.target_names(),
+                compositor.debug_state()
+            )
+        });
+        let x0 = x.max(0.0);
+        let x1 = (x + w).min(compositor.size.0 as f64);
+        assert!(x1 > x0 + 20.0, "the photo.png row is not on screen: [{x}, {y}, {w}, {h}]");
+        ((x0 + x1) / 2.0, y + h / 2.0)
+    };
+
+    // Press on the row and carry it over to the client in small steps, so
+    // the file manager's own drag threshold is crossed before the pointer
+    // leaves its tile and the compositor sees a drag to promote.
+    compositor.pointer_move(row.0, row.1);
+    compositor.pointer_button(true);
+    const STEPS: usize = 12;
+    for i in 1..=STEPS {
+        let t = i as f64 / STEPS as f64;
+        compositor.pointer_move(
+            row.0 + (target_point.0 - row.0) * t,
+            row.1 + (target_point.1 - row.1) * t,
+        );
+        target.pump();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    compositor.snapshot(Path::new("/tmp/qos-dnd-e2e-mid-drag.png"));
+    {
+        let started = Instant::now();
+        while started.elapsed() < DEADLINE {
+            if target.state.dnd_entered && target.state.dnd_offer.is_some() {
+                break;
+            }
+            target.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            target.state.dnd_entered && target.state.dnd_offer.is_some(),
+            "the chrome drag never entered the client's surface (drag from {row:?} to {target_point:?}; \
+             file_view={:?} row_rect={:?}).\nState:\n{}\nCompositor log:\n{}",
+            compositor.named_rect("file_view"),
+            compositor.named_rect("file_row:photo.png"),
+            compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]
+                .get("files_drag")
+                .map(|v| format!("files_drag={v} handed_off={}", compositor.control(serde_json::json!({"op": "state_dump"}))["state"]["chrome"]["files_drag_handed_off"]))
+                .unwrap_or_default(),
+            compositor.recent_log(),
+        );
+    }
+    // The client accepted a mime type and an action while handling the
+    // enter; make sure those requests reached the compositor before the
+    // button is released, or the drop is refused as unaccepted — which is
+    // what the protocol says, and what a real client's event loop avoids by
+    // flushing as it goes.
+    target.roundtrip();
+    assert!(
+        target.state.dnd_offer_mimes.iter().any(|m| m == "text/uri-list"),
+        "the offer must carry the path list; offered {:?}",
+        target.state.dnd_offer_mimes
+    );
+    assert!(
+        target.state.dnd_offer_mimes.iter().any(|m| m == "image/png"),
+        "a single image is also offered as its own bytes; offered {:?}",
+        target.state.dnd_offer_mimes
+    );
+
+    compositor.pointer_button(false);
+    {
+        let started = Instant::now();
+        while started.elapsed() < DEADLINE && !target.state.dnd_dropped {
+            target.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            target.state.dnd_dropped,
+            "the client never saw the drop.\nCompositor log:\n{}",
+            compositor.recent_log()
+        );
+    }
+
+    let uris = target.read_dnd_bytes("text/uri-list", None);
+    assert_eq!(
+        String::from_utf8_lossy(&uris),
+        format!("file://{}\r\n", photo.display()),
+        "the URI list names the dragged file"
+    );
+    let bytes = target.read_dnd_bytes("image/png", None);
+    assert_eq!(bytes, TINY_PNG, "the image bytes arrive intact through the pipe");
+    target
+        .state
+        .dnd_offer
+        .as_ref()
+        .expect("offer")
+        .finish();
+    target.roundtrip();
+
+    assert!(
+        photo.exists(),
+        "a drop onto a client is a copy; the file manager must not have moved the file"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The same drag, dropped on the real word processor.
+///
+/// A live lane: it starts `target/debug/word-processor` as an unsandboxed
+/// Wayland client of the compositor under test (so it needs a GPU the app
+/// can render with) and asserts the app's own report that it inserted the
+/// image from the drop. Self-skips unless `QOS_LIVE_APP_DND=1`, the way the
+/// other live lanes do (`docs/testing-live.md`), so hermetic CI stays green.
+#[test]
+fn a_file_dragged_out_of_the_hosted_file_manager_lands_in_the_word_processor() {
+    if std::env::var_os("QOS_LIVE_APP_DND").is_none() {
+        eprintln!("skipping: set QOS_LIVE_APP_DND=1 to run the word-processor drop lane");
+        return;
+    }
+    let word_processor = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../target/debug/word-processor");
+    assert!(
+        word_processor.exists(),
+        "build it first: cargo build -p word-processor ({})",
+        word_processor.display()
+    );
+
+    let home = PathBuf::from(format!(
+        "/run/user/{}/qos-dnd-wp-{}-{}",
+        unsafe { libc::getuid() },
+        std::process::id(),
+        next_id(),
+    ));
+    std::fs::create_dir_all(&home).expect("create the fixture home");
+    let photo = home.join("photo.png");
+    std::fs::write(&photo, TINY_PNG).expect("write the fixture image");
+
+    let compositor = Compositor::start_with_home(Some(&home));
+    compositor.place_next_window("dev.qos.word-processor");
+
+    // The app connects by explicit socket path, like every client here.
+    let socket_name = compositor
+        .wayland_socket
+        .file_name()
+        .expect("socket name")
+        .to_os_string();
+    let mut app = Command::new(&word_processor)
+        .env("WAYLAND_DISPLAY", &socket_name)
+        // What the launcher exports for a packaged app; `ui` announces it
+        // as the Wayland app id, which is how the placement above is
+        // matched to this window.
+        .env("QOS_PACKAGE_ID", "dev.qos.word-processor")
+        .env("XDG_RUNTIME_DIR", &compositor.runtime_dir)
+        .env("XDG_CONFIG_HOME", compositor.runtime_dir.join("app-config"))
+        .env("XDG_DATA_HOME", compositor.runtime_dir.join("app-data"))
+        .env("XDG_CACHE_HOME", compositor.runtime_dir.join("app-cache"))
+        .env("HOME", &home)
+        .env_remove("DISPLAY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn the word processor");
+    let app_log = Arc::new(Mutex::new(Vec::<String>::new()));
+    {
+        let stderr = app.stderr.take().expect("app stderr");
+        let sink = Arc::clone(&app_log);
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                if let Ok(mut l) = sink.lock() {
+                    l.push(line);
+                }
+            }
+        });
+    }
+
+    // Wait for the app's toplevel to be adopted into the tree: the chrome
+    // names every foreign tile it lays out.
+    let started = Instant::now();
+    loop {
+        let adopted = compositor
+            .target_names()
+            .iter()
+            .any(|n| n.starts_with("foreign-surface-"));
+        if adopted {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(90),
+            "the word processor never mapped a window.\nApp log:\n{}\nCompositor log:\n{}",
+            app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
+            compositor.recent_log()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // Let it paint its first frame, so the tile has a real size.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // Same recipe as the client test: select Files, narrow the demo group
+    // by its seam handle so the app stays on screen while Files is focused.
+    let files_pill = compositor.named_center("tab:Files");
+    compositor.click_at(files_pill.0, files_pill.1);
+    std::thread::sleep(Duration::from_millis(500));
+    let seam = compositor.named_center("group_resize_handle[0]");
+    compositor.pointer_move(seam.0, seam.1);
+    compositor.pointer_button(true);
+    for i in 1..=10 {
+        compositor.pointer_move(seam.0 - 1100.0 * (i as f64 / 10.0), seam.1);
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    compositor.pointer_button(false);
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        files_tab_is_active(&compositor),
+        "the demo group must still show Files after the resize.\n{}",
+        compositor.debug_state()
+    );
+    let row = compositor.named_center("file_row:photo.png");
+
+    // The app's tile, by the name the chrome gives a foreign surface.
+    let tile_name = compositor
+        .target_names()
+        .into_iter()
+        .find(|n| n.starts_with("foreign-surface-"))
+        .expect("the word processor's tile is laid out");
+    let [tx, ty, tw, th] = compositor.named_rect(&tile_name).expect("tile rect");
+    // Drop into the page body, below the app's toolbar.
+    let (drop_x, drop_y) = (tx + tw / 2.0, ty + th * 0.6);
+
+    compositor.pointer_move(row.0, row.1);
+    compositor.pointer_button(true);
+    const STEPS: usize = 16;
+    for i in 1..=STEPS {
+        let t = i as f64 / STEPS as f64;
+        compositor.pointer_move(row.0 + (drop_x - row.0) * t, row.1 + (drop_y - row.1) * t);
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    compositor.pointer_button(false);
+
+    let started = Instant::now();
+    let inserted = loop {
+        let hit = app_log
+            .lock()
+            .map(|l| l.iter().any(|line| line.contains("word-processor: inserted image from")))
+            .unwrap_or(false);
+        if hit {
+            break true;
+        }
+        if started.elapsed() > DEADLINE {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let _ = app.kill();
+    let _ = app.wait();
+    assert!(
+        inserted,
+        "the word processor never reported inserting the dropped image.\nApp log:\n{}\nCompositor log:\n{}",
+        app_log.lock().map(|l| l.join("\n")).unwrap_or_default(),
+        compositor.recent_log()
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }
