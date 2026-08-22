@@ -262,6 +262,51 @@ pub enum NeighbourMsg {
         /// audit-log entry.
         envelope: Box<collab_types::SignedOp>,
     },
+    /// App-level presence crossing the host boundary — a peer's caret,
+    /// selection, pointer or just-typed run inside a shared document.
+    ///
+    /// The counterpart to [`NeighbourMsg::AppCrdtIncremental`], and it
+    /// has to be its own variant rather than reusing
+    /// [`NeighbourMsg::PresenceMoved`]: that one carries a point in a
+    /// named coordinate space, which is all a pointer needs and none of
+    /// what a caret needs. An app's presence is a
+    /// `ui::collaboration::PresenceKey` — a widget path, a tab, a
+    /// broadcast view — paired with a `PresencePayload` that may be a
+    /// caret offset, a selection range or an authorship run. Flattening
+    /// those into an `(x, y)` loses exactly the information the
+    /// receiving app renders.
+    ///
+    /// So the originating `CollabRequest::Presence` frame rides across
+    /// serialised and otherwise untouched, the same way the CRDT blob
+    /// does. The shell does not interpret either.
+    ///
+    /// # Routed at cluster scope, not record scope
+    ///
+    /// Deliberately carries no `record_id`. The local broker fans
+    /// presence with `CrdtRoute::to_cluster_scope` — every app in the
+    /// room is a legitimate audience for "who else is here", where a
+    /// document delta is not. Adding a record here would make remote
+    /// presence narrower than local presence, so a peer would appear in
+    /// the room to people on their own machine and be invisible to
+    /// everyone else.
+    AppPresence {
+        /// Hashed libp2p PeerId of the publisher. Receiving shells drop
+        /// their own gossipsub echoes on it, and it is what the remote
+        /// peer is attributed to once the frame reaches an app.
+        peer: PeerId,
+        /// App-id of the originating app — first half of the delivery
+        /// filter, as on the CRDT variants.
+        #[serde(default)]
+        app_id: String,
+        /// Cluster id (the room, as a uuid string) the presence belongs
+        /// to. The receiving shell refuses a room it is not in before
+        /// the frame reaches any app.
+        #[serde(default)]
+        cluster_id: String,
+        /// The originating `CollabRequest::Presence`, serde-encoded.
+        /// Opaque to every hop between the two apps.
+        frame: Vec<u8>,
+    },
     /// Phase 6: cooperative scrollback request. Broadcast over
     /// gossipsub when a peer's local broker has no in-memory
     /// scrollback for a given artifact range and the requesting app

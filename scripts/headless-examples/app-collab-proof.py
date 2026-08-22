@@ -219,6 +219,19 @@ class AppClient:
         want = bytes(blob)
         return any(bytes(d["data"]) == want for d in self.of_kind("CRDTIncremental"))
 
+    def presence(self, payload_kind: str) -> list:
+        """Received presence updates whose payload is `payload_kind`.
+
+        Matched on the payload variant rather than on arrival order: a
+        caret and an authorship run are different halves of the beat and
+        a run that carried one but not the other has to be visible as
+        such.
+        """
+        return [
+            u for u in self.of_kind("RemotePresenceUpdate")
+            if isinstance(u.get("payload"), dict) and payload_kind in u["payload"]
+        ]
+
     def kinds(self) -> list:
         return sorted({k for m in list(self.rx) for k in m})
 
@@ -307,27 +320,44 @@ def main() -> int:
         check("bob received alice's", bool(wait_for(lambda: b_app.got_blob(mine), timeout=45)))
         check("alice received bob's", bool(wait_for(lambda: a_app.got_blob(theirs), timeout=45)))
 
-        print("\n[7] presence")
-        # A caret, published exactly as the toolkit publishes one.
-        a_app.send({"Presence": {"key": {"Tab": {"id": "doc-body"}},
-                                 "payload": {"Caret": {"pos": 7}}}})
-        local = wait_for(lambda: a_control.of_kind("RemotePresenceUpdate"), timeout=20)
-        # Asserted, because it is what makes the next line mean anything:
-        # the frame is well-formed, on-route, and the broker fans it.
+        print("\n[7] presence — the half of collaboration you can see")
+        # Published exactly as `ui::App` publishes them: a caret as the
+        # insertion point moves, a selection as it widens, and a `Typing`
+        # run naming the span just inserted. That last one is what the
+        # receiver renders as "text they just wrote, in their colour"
+        # (`PresenceCtx::record_peer_typing` → `draw_peer_authorship`), so
+        # it is asserted separately rather than folded into "presence".
+        scope = {"Tab": {"id": "doc-body"}}
+        a_app.send({"Presence": {"key": scope, "payload": {"Caret": {"pos": 7}}}})
+        local = wait_for(lambda: a_control.presence("Caret"), timeout=20)
+        # Asserted first, because it is what makes the remote line mean
+        # anything: the frame is well-formed, on-route, and locally fanned.
         check("the presence frame is accepted and fanned out locally", bool(local),
               json.dumps(local[0])[:110] if local else "the broker did not fan it")
-        remote = wait_for(lambda: b_app.of_kind("RemotePresenceUpdate"), timeout=45)
-        if remote:
-            check("bob's app received alice's caret", True, "presence crosses the network")
-        else:
-            # Not a failure of this run: it is a missing bridge, and
-            # saying so here is more useful than a red line. `reader_loop`
-            # republishes `SyncIncremental` over libp2p and nothing else,
-            # so app presence never leaves the machine that produced it.
-            gap("presence does not cross between sessions — the local fan-out "
-                "carries it (asserted above) but no libp2p bridge does, so a "
-                "peer's caret, selection and authorship are invisible to the "
-                "other session")
+        check("bob's app received alice's caret",
+              bool(wait_for(lambda: b_app.presence("Caret"), timeout=45)),
+              "presence crosses the network")
+
+        a_app.send({"Presence": {"key": scope,
+                                 "payload": {"Selection": {"start": 3, "end": 11}}}})
+        check("bob's app received alice's selection",
+              bool(wait_for(lambda: b_app.presence("Selection"), timeout=45)))
+
+        a_app.send({"Presence": {"key": scope,
+                                 "payload": {"Typing": {"start": 11, "end": 18}}}})
+        got_typing = wait_for(lambda: b_app.presence("Typing"), timeout=45)
+        check("bob's app received the run alice just typed", bool(got_typing),
+              "this is what renders as authorship in the author's colour")
+
+        # Two peers must not collapse onto one identity: the colour a
+        # caret is drawn in is `user_color(user_id)`, so a shared id would
+        # paint two people the same and a name would label the wrong one.
+        if got_typing:
+            remote_uid = got_typing[0].get("user_id")
+            local_uid = local[0].get("user_id") if local else None
+            check("the remote peer is attributed to its own identity",
+                  bool(remote_uid) and remote_uid != local_uid,
+                  f"remote={remote_uid!r} local={local_uid!r}")
 
         print(f"\n        alice's control saw: {a_control.kinds()}")
         print(f"        bob's app saw:       {b_app.kinds()}")
