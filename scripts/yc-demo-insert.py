@@ -111,6 +111,11 @@ WINDOW_TITLE = "nirios"
 # after. What this script watches instead is the compositor's own log;
 # see `SessionLog`.
 
+#: Height a window manager is assumed to add above the client area. Only
+#: used where the work area cannot be read; the point is to ask for a
+#: size that will be *granted*, since anything else arrives as a resize.
+TITLE_BAR_ALLOWANCE = 48
+
 # How long one unattended run will wait for a human before it gives up
 # and writes whatever it filmed.
 DEFAULT_TIMEOUT_S = 240.0
@@ -352,6 +357,32 @@ def set_fullscreen(wid: str, on: bool) -> None:
                     "-b", f"{verb},fullscreen"], capture_output=True)
 
 
+def work_area() -> tuple[int, int] | None:
+    """The usable area of the screen, in pixels.
+
+    Not the monitor size: a desktop with a top bar reserves part of it,
+    and a window manager will *shrink* a window that asks for more —
+    which is a resize, and a resize is what kills this backend. Asking
+    for exactly what will be granted means nothing is ever resized.
+
+    Read from `_NET_WORKAREA` via `wmctrl -d`, whose line looks like
+    `0  * DG: 1920x1080  VP: 0,0  WA: 0,43 1920x1037  name`.
+    """
+    for line in _run(["wmctrl", "-d"]).splitlines():
+        m = re.search(r"WA:\s*-?\d+,-?\d+\s+(\d+)x(\d+)", line)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    # No panel to ask (a bare X server, a nested compositor). Fall back
+    # to the screen less a title bar's worth: a window manager sizes the
+    # *frame* to fit the screen, so a client that asks for the full
+    # height is granted less than it asked for — which is a resize, and
+    # resizes are what this is all avoiding.
+    m = re.match(r"(\d+)\s+(\d+)", _run(["xdotool", "getdisplaygeometry"]))
+    if m:
+        return int(m.group(1)), max(400, int(m.group(2)) - TITLE_BAR_ALLOWANCE)
+    return None
+
+
 def active_window() -> str | None:
     """Whatever window is focused right now — your terminal, when this
     starts. Kept so it can be put back in front of the fullscreen
@@ -536,7 +567,53 @@ def focus_the_app(session) -> bool:
     return True
 
 
-def self_test_click(session, log_path: str) -> None:
+#: Typed into the document during setup, so the image lands *into* a
+#: document rather than onto an empty page. A blank page behind a file
+#: dialog says nothing about where the file is going.
+#: ASCII only. The `type` op sends one key per character, and anything
+#: outside it (an em dash, a colon typed as a chord) is silently dropped
+#: — the first version of this line arrived on screen with two holes in
+#: it.
+OPENING_LINE = "Launch plan. The venue, the date, and a photo of the room."
+
+
+def seed_the_document(session) -> bool:
+    """Put a line of real text in the document before the camera rolls.
+
+    Typed through the same synthetic-input path the rest of the demo
+    uses, into the running app, during setup — so what is on screen when
+    the take starts is a document with something in it and a caret
+    waiting at the end of it.
+    """
+    if not focus_the_app(session):
+        return False
+    session.type_text(OPENING_LINE)
+    session.settle(1.0)
+    return True
+
+
+def pick_from_chooser(session, viewport: tuple[int, int] | None = None) -> None:
+    """Select `photo.png` and confirm — for the self-test only.
+
+    By keyboard, not by coordinate. The dialog handles ArrowDown/ArrowUp
+    and Enter itself (`ui/src/widget/file_picker.rs:905`), so two Downs
+    move the selection past the `Demo` folder onto the file and Enter
+    opens it — with nothing depending on arithmetic about where a row
+    landed at this particular window size, which is what a coordinate
+    version got wrong twice.
+
+    Keys reach it at all only because the chooser now captures input;
+    before that fix they went to the app behind the dialog.
+    """
+    del viewport                      # kept: callers pass one, none needed
+    for _ in range(2):
+        session.key("ArrowDown")
+        time.sleep(0.6)
+    session.key("Enter")
+
+
+def self_test_click(session, log_path: str,
+                    viewport: tuple[int, int] | None = None) -> None:
     """Stand in for the hand this script cannot supply.
 
     Aims at the toolbar's image button the only way anything can: at
@@ -545,11 +622,15 @@ def self_test_click(session, log_path: str) -> None:
     the sweep stops the moment the compositor's own log says a file
     dialog opened. Self-validating: it cannot report a hit it did not get.
 
-    The offsets come from captured frames — the toolbar row sits ~36px
-    under the tile's top edge, and the image button is the one control on
-    it that opens a file dialog, so nothing else on the row can produce a
-    false positive. Other buttons it passes over on the way are
-    formatting toggles; in a self-test that is noise, not damage.
+    The offsets come from captured frames, and they are *absolute
+    offsets from the tile's top-left corner* rather than fractions of its
+    size: the toolbar is left-aligned, so the button sits about 631px in
+    and about 36px down whether the tile is 874 or 1308 wide. Sweeping by
+    fraction — which this did first — walks straight past it the moment
+    the tile changes width. The image button is also the one control on
+    the row that opens a file dialog, so nothing else can produce a false
+    positive. Buttons it passes over on the way are formatting toggles;
+    in a self-test that is noise, not damage.
 
     It runs on a thread of its own so the watch loop is already counting
     while these arrive, exactly as it would be with a person.
@@ -568,20 +649,18 @@ def self_test_click(session, log_path: str) -> None:
         if not rect:
             return
         x0, y0, w, _h = rect
-        for dy in (36, 30, 43, 24):
-            for frac in [i / 40 for i in range(10, 33)]:
-                session.click_at(x0 + w * frac, y0 + dy)
+        for dy in (36, 32, 40, 28, 44):
+            for dx in range(600, 672, 8):
+                if dx > w:
+                    continue
+                session.click_at(x0 + dx, y0 + dy)
                 time.sleep(0.5)
                 log.read()
                 if log.OPENED in log.text:
                     # The chooser is up. Pick the file the way a person
-                    # would: the first row, then Open.
+                    # would: the row, then Open.
                     time.sleep(1.5)
-                    session.click_at(422, 237)
-                    time.sleep(0.8)
-                    session.click_at(422, 237)
-                    time.sleep(0.8)
-                    session.key("Enter")
+                    pick_from_chooser(session, viewport)
                     return
     threading.Thread(target=drive, daemon=True).start()
 
@@ -819,11 +898,16 @@ def main() -> int:
         shell_bin, "1600x900",
         os.path.join(runtime, f"qins{pid}"),
         home, apps_dir, tools)
-    # Opened at the video's own size, so every frame goes into the clip
-    # 1:1 and nothing is ever resampled — and so the window never has to
-    # be resized, which is what crashes this backend.
-    session.window_size = (None if args.windowed
-                           else f"{yc.VIDEO_W}x{yc.VIDEO_H}")
+    # Opened at the largest size the window manager will grant without
+    # shrinking it — so it is never resized, and so the frames are as
+    # close to the video's own resolution as this screen allows. Falls
+    # back to the video size where there is no work area to read (which
+    # is also the right answer on a bare X server with no panel).
+    if args.windowed:
+        session.window_size = None
+    else:
+        area = work_area() or (yc.VIDEO_W, yc.VIDEO_H)
+        session.window_size = f"{area[0]}x{area[1]}"
     yc.SESSIONS = [session]
 
     print(f"compositor:     {shell_bin}")
@@ -873,18 +957,19 @@ def main() -> int:
         print(f"  compositor up          pid {session.proc.pid}, "
               f"window {window_size(wid)}")
 
-        # Fullscreen only to drop the title bar — the window was *created*
-        # at the video's size, so this changes no dimension and the
-        # backend now ignores a configure that changes nothing. Nothing
-        # here resizes anything; that is the whole point.
-        if not args.windowed:
-            set_fullscreen(wid, True)
-            time.sleep(1.0)
-            if session.proc.poll() is not None:
-                raise RuntimeError(
-                    "the compositor went down while its window was being "
-                    f"shown fullscreen; see {session.log_path}. --windowed "
-                    "records without touching the window at all.")
+        # Deliberately no fullscreen. The window was created at the size
+        # the window manager will actually grant, so it is never resized
+        # — and a resize is the one operation that reliably kills this
+        # backend. Going fullscreen from a work-area-sized window is a
+        # real size change, and it took a run down at exactly this point.
+        #
+        # It costs nothing worth having: the recording is the
+        # compositor's own render of its scene, so the host title bar was
+        # never in a frame to begin with.
+        if session.proc.poll() is not None:
+            raise RuntimeError(
+                f"the compositor went down during startup; see "
+                f"{session.log_path}")
         # Out of sight for the rest of the setup. It comes back — at the
         # size it already is — when the camera rolls.
         hide_window(wid)
@@ -944,10 +1029,13 @@ def main() -> int:
         # group, the full width of it.
         session.set_group_width(1000)
         session.settle(0.8)
-        # Focused here, not by him: the click that focuses a window is
-        # spent doing that and never reaches the app, so without this his
-        # first click on the button would silently do nothing.
-        print(f"  document focused       {focus_the_app(session)}")
+        # Focused *and* written in, here rather than by him: the click
+        # that focuses a window is spent doing that and never reaches the
+        # app, so without this his first click on the button would
+        # silently do nothing — and an empty page behind the dialog shows
+        # nothing about where the image is going.
+        print(f"  document ready         "
+              f"{'yes' if seed_the_document(session) else 'no'}")
         print(f"  image staged           {photo}")
 
         # What the recording will actually be made of — the compositor's
@@ -982,7 +1070,7 @@ def main() -> int:
         watch.read()
         recorder.start(session.name)
         if args.self_test:
-            self_test_click(session, session.log_path)
+            self_test_click(session, session.log_path, rendered)
         # Half the image's own size: a keystroke's delta is a few hundred
         # bytes, and the image is ~100 KB, so there is nothing in between
         # for this to confuse.
