@@ -111,32 +111,58 @@ class Monitor:
             pass
 
 
+def greeter_up(serial: Path) -> bool:
+    """Has greetd reached the point where it will accept a login?
+
+    The same evidence vm.sh waits on. Typing at a fixed offset instead means
+    the keystrokes land wherever the boot happened to be that run -- which on a
+    slow boot is the kernel console, and the greeter then sits untouched for the
+    rest of the take.
+    """
+    try:
+        with open(serial, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 131072))
+            tail = fh.read().replace(b"\x00", b"")
+    except OSError:
+        return False
+    return b"Started greetd.service" in tail or b"session-c1.scope" in tail
+
+
 def run_vm(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run([str(VM), *args], cwd=REPO, check=check)
 
 
 def capture(mon: Monitor, frames_dir: Path, fps: float, seconds: float,
-            login_at: float | None, stop_on_idle: bool) -> list[tuple[float, Path | None]]:
+            login_at: float | None, auto_login: bool, serial: Path,
+            after_login: float | None) -> list[tuple[float, Path | None]]:
     """Dump frames until the time budget runs out. Returns (timestamp, path|None)."""
     interval = 1.0 / fps
     t0 = time.monotonic()
     shots: list[tuple[float, Path | None]] = []
     n = 0
     logged_in = False
+    login_t = None
 
     while True:
         now = time.monotonic()
         elapsed = now - t0
         if elapsed >= seconds:
             break
+        if login_t is not None and after_login is not None and elapsed - login_t >= after_login:
+            log(f"t+{elapsed:.1f}s: {after_login:.0f}s past the login, stopping")
+            break
 
-        if login_at is not None and not logged_in and elapsed >= login_at:
-            log(f"t+{elapsed:.1f}s: typing the login")
+        if not logged_in and (
+                (login_at is not None and elapsed >= login_at)
+                or (auto_login and greeter_up(serial))):
+            log(f"t+{elapsed:.1f}s: greeter is up, typing the login")
             # Driven through vm.sh so the greeter's own quirks (clearing the
             # remembered user first) stay in one place.
             subprocess.Popen([str(VM), "login"], cwd=REPO,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             logged_in = True
+            login_t = elapsed
 
         path = frames_dir / f"f{n:06d}.ppm"
         try:
@@ -246,6 +272,10 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=75.0)
     ap.add_argument("--login-at", type=float, default=None,
                     help="seconds into the boot to type the greeter login")
+    ap.add_argument("--login", action="store_true",
+                    help="type the login as soon as greetd reports itself up")
+    ap.add_argument("--after-login", type=float, default=None,
+                    help="stop this many seconds after the login (keeps the clip tight)")
     ap.add_argument("--disk", default=None)
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
@@ -285,7 +315,8 @@ def main() -> int:
     mon = Monitor(str(mon_path))
     log(f"recording {args.seconds:.0f}s at {args.fps:g} fps")
     try:
-        shots = capture(mon, raw, args.fps, args.seconds, args.login_at, False)
+        shots = capture(mon, raw, args.fps, args.seconds, args.login_at,
+                        args.login, run_dir / "serial.log", args.after_login)
     finally:
         mon.close()
 
