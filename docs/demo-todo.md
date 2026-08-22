@@ -1,83 +1,95 @@
 # Demo video — what is left
 
-Status read from the tree and from live runs, not from memory. Updated
-2026-08-22 evening.
+Status read from live runs and from watched frames, not from assertions.
+Updated 2026-08-22, late.
+
+## What changed today
+
+Someone finally watched the recording frame by frame instead of reading the
+harness output. Six of nine beats did not show what they claimed. Three of
+those were storyboard problems rather than bugs — a beat cannot be filmed if
+it has no on-screen surface, however well it works underneath.
+
+`scripts/demo-verify.py` is the tool that caught it: it locates a beat inside
+a finished video and pulls frames from that span. No cut ships again without
+it.
 
 ## Blocking the video
 
-**1. Beat 7 — two word processors must converge.** *In progress.*
+**1. Beat 4 — peer cursors on the desktop.** *In progress.*
 
-Presence crosses between machines and paints correctly. Documents do not:
-alice's app logs `broadcast doc delta 1135B`, bob's app logs no
-`recv CRDTIncremental` and no `recv CRDTUpdate`, ever. Both directions.
+Filmed, this beat is twenty-eight seconds of empty desktop.
+`RemoteCursorOverlay::new()` is called only in
+`shell/tests/remote_cursors_test.rs`; the compositor never mounts it. Presence
+does cross the network and does render *inside an app window* — the desktop
+layer simply has nothing drawing it.
 
-`app-collab-proof.py` passes and looks like it proves the opposite — but it
-uses synthetic JSON clients, not the packaged app, which is why this went
-unnoticed. Do not trust it for this question.
+**2. Beat 6 — a replicated window must be drawn.** *In progress.*
 
-The delivery decision is `CrdtRoute::delivers_to`
-(`shell/src/shell/collab_broker.rs:402`). Leading hypothesis: capnp
-subscribers recently gained an app id, so routes that used to match by
-falling through the cluster-scoped early return now have to match app id
-*and* record id exactly, and something disagrees. **Being measured, not
-argued** — the values at the decision point settle it.
+The assertion passes and the screen is blank. The room document carries the
+window, the peer's own tree holds it, and the peer's compositor renders
+nothing. This one is the most dangerous of the set, because green reads as
+proof.
 
-A legitimate outcome: two people each opening a *blank* document are opening
-two different records and should not converge. That would change the
-storyboard (both open the *same* document) rather than the code.
+**3. Beat 3 — inviting an agent has no on-screen surface.** *Undecided.*
 
-**2. Record the nine beats end to end.** *Scaffolded, not yet run clean.*
+The grant is real and goes through the capability model, but it happens over
+the control socket, so nothing appears. On camera the only visible artifact is
+beat 2's leftover invite card, which a viewer will read as the agent invite.
+Either give the grant a visible affordance, or fold it into beat 2 and stop
+claiming it as a separate beat.
 
-`scripts/yc-demo.py --record` has all nine beats written. Needs a full run on
-the repaired machine, then the output watched frame by frame.
+**4. Peers need names.** *In progress.*
 
-**3. Watch the result.** Not optional, and not the same as reading assertions.
-A peer's caret over an empty page passes every byte-level check and is exactly
-the failure beat 7 exists to fix. Two earlier cuts shipped with a fake peer in
-them because nobody looked.
+A caret labelled `peer@5537458103208628978` does not say who is there. Names
+come from the inviter and live in the room document beside the capability
+grant — never self-declared, which would be spoofable.
+
+**5. The word processor films in German.** *Handed to the recorder.*
+
+`apps/word-processor/src/i18n.rs:88` reads `LC_ALL`/`LANGUAGE`/`LANG`, the
+host is `de_DE`, and bwrap does not clear the environment. The shell chrome
+renders English above a German toolbar. A real qOS install sets its own
+locale; this is a nested-development artifact. Fix is `LC_ALL=en_US.UTF-8` in
+the session environment.
+
+**6. Re-shoot, then watch it.** Beats 3, 4, 6, 8 and 9 all need re-shooting
+once the above land. Watching is not optional and is not the same as reading
+assertions.
 
 ## Blocking the opening shot
 
-**4. OS boot footage.** *In progress.*
+**7. OS boot footage.** *Blocked on one manual step.*
 
-No qcow2 exists yet. `os/dev/record-boot.py` was written today. Order is
-cheapest-first: find an existing image, else dispatch CI (`build-image.yml`,
-`workflow_dispatch`), else build locally — and image builds belong in CI by
-standing instruction.
+`podman login code.sandbox.example` — the image cannot be pulled without it. The
+recorder (`os/dev/record-boot.py`) is proven against real firmware: 180
+frames, 12.0s. A CI image build is in flight; the missing `COPY` for
+`qos-identity.service` that had broken it for six days is fixed.
 
-Known constraint: QEMU `screendump` cannot read a GL surface
-(`os/dev/vm.sh:38-42`), so `--gl` and screendump capture may be mutually
-exclusive. Establish which combination works rather than assuming.
+## Settled
 
-## Not blocking, but wanted
-
-**5. Merge to main.** *Gate armed.* 149 commits. `cargo check -p shell --tests`
-runs the moment cargo frees, then main fast-forwards. CI is **inert until this
-lands** — Forgejo schedules only fire from the default branch — and main still
-carries fabricated collaborators this branch removes.
-
-**6. Time a qpkg install.** Beat 5 currently cannot claim "fast" because nobody
-has measured it. One clean session, one install, one number.
-
-## Decided, closed
-
-- **Beat 8 films the file chooser, not a drag.** Investigated: the launched
-  Files is a sandboxed Wayland client and neither it nor the toolkit opens a
-  `wl_data_source`, so there is no client drag for the compositor to promote.
-  The chooser is the better beat regardless — a drag shows a file moving, the
-  chooser shows the sandbox: the app asks, the OS chooses, the app is handed
+- **Beat 7 converges.** Two real packaged word processors. The op-stream
+  reader was discarding every unsigned frame, including the snapshot two
+  independent documents need to find each other.
+- **Beat 9 was blocked on beat 7** — the agent's edits were real and attributed
+  but only on its own screen. Convergence should carry them; re-shoot and
+  confirm rather than assuming.
+- **Beat 5 is measured**: median 6.7s keystroke to first frame, spread
+  5.0–9.5s, on a 446 MB debug package over a loopback registry. Say "a few
+  seconds", never "instant" — a viewer can time it off the recording.
+- **Beat 8 films the file chooser, not a drag.** The launched Files is a
+  sandboxed Wayland client and neither it nor the toolkit opens a
+  `wl_data_source`, so there is no client drag to promote. The chooser is the
+  better beat regardless: the app asks, the OS chooses, the app is handed
   bytes rather than a path it has no right to read.
-- **Beat 9 is `qos-agent`** — joins the document as a participant with no
-  window, edits through the word processor's own exported actions, appears in
-  the history strip and as a caret in the others' windows. Vocabulary is
-  scripted, and the honest framing is the stronger one.
 - **The fake "Ada" peer is deleted**, not gated. Any footage from before
-  2026-08-22 contains a collaborator who does not exist.
+  2026-08-22 contains a collaborator who does not exist. Three compositor logs
+  and ~40 frames from the current cut are clean.
 - **First boot is honest** — one empty workspace, no invented people,
-  workspaces, tabs or documents. Verified with before/after screenshots.
+  workspaces, tabs or documents.
 
 ## Things that must not be said
 
-- "install is fast" — not measured
-- anything about beat 7 until its proof is green
-- the peer cursor in old footage is not a person
+- that a beat works because its assertion passed
+- "install is instant" — it is a few seconds, and measurable on camera
+- that the peer cursor in old footage is a person
