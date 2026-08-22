@@ -653,16 +653,32 @@ def main() -> int:
             os.makedirs(frames_dir, exist_ok=True)
             seen: list[dict] = []
             shots: list[str] = []
-            for i in range(args.steps + 1):
-                t = i / float(args.steps)
-                mover.pointer_move(ma[0] + (mb[0] - ma[0]) * t,
-                                   ma[1] + (mb[1] - ma[1]) * t)
+
+            # Dwell inside the first app before crossing. A peer's very
+            # first pointer frame has a gossip round trip in front of it,
+            # so a walk that starts moving immediately spends its opening
+            # samples on a cursor that has not arrived yet -- and the
+            # frame nearest the first app then shows the peer at its edge
+            # rather than inside it.
+            dwell = 6
+            frame_no = 0
+            for i in range(dwell + args.steps + 1):
+                if i < dwell:
+                    # Jitter by a pixel: an identical position is not a
+                    # move, and an app with nothing to report says nothing.
+                    x, y = ma[0] + (i % 2), ma[1]
+                else:
+                    t = (i - dwell) / float(args.steps)
+                    x = ma[0] + (mb[0] - ma[0]) * t
+                    y = ma[1] + (mb[1] - ma[1]) * t
+                mover.pointer_move(x, y)
                 time.sleep(0.45)
                 pointers = watcher.peers()
                 if pointers:
-                    seen.append(dict(pointers[0], step=i))
+                    seen.append(dict(pointers[0], step=frame_no))
                 shots.append(watcher.snapshot(
-                    os.path.join(frames_dir, f"frame-{i:03d}.png")))
+                    os.path.join(frames_dir, f"frame-{frame_no:03d}.png")))
+                frame_no += 1
 
             claim("the watcher saw a peer at all", bool(seen), True)
             if seen:
@@ -687,6 +703,19 @@ def main() -> int:
                     shutil.copyfile(src, dst)
                     note(f"wrote {dst}  (peer at {p['x']:.0f},{p['y']:.0f})")
             note(f"{len(shots)} frames in {frames_dir}")
+            # A still cannot show movement. Encode the frames the
+            # watcher actually took into one clip.
+            video = os.path.join(out, "peer-cursor-crossing.h264")
+            enc = subprocess.run(
+                ["ffmpeg", "-y", "-framerate", "4", "-pattern_type", "glob",
+                 "-i", os.path.join(frames_dir, "frame-*.png"),
+                 "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
+                 "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2", video],
+                capture_output=True)
+            if enc.returncode == 0:
+                note(f"wrote {video}")
+            else:
+                note("ffmpeg failed: " + enc.stderr.decode()[-300:])
 
     finally:
         if not args.keep:
