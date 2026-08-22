@@ -658,7 +658,7 @@ pub use segmented::{
 mod text;        pub use text::Text;
 mod spacer;      pub use spacer::Spacer;
 mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
-mod slider;      pub use slider::Slider;
+mod slider;      pub use slider::{Slider, SliderFace};
 mod text_input;  pub use text_input::TextInput;
 pub mod code_editor; pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color};
 mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};

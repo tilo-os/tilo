@@ -8,7 +8,7 @@
 //! root
 //! ├── "project" (Map)  name / fps / width / height
 //! ├── "media"   (Map keyed by MediaId)  → { name,kind,duration,w,h,fps,palette }
-//! ├── "tracks"  (Map keyed by TrackId)  → { name,kind,index,muted,locked }
+//! ├── "tracks"  (Map keyed by TrackId)  → { name,kind,index,muted,locked,solo }
 //! └── "clips"   (Map keyed by ClipId)   → { track,media,start,in,out,opacity,
 //!                                            volume,transition,palette }
 //! ```
@@ -137,6 +137,7 @@ impl VideoDoc {
         let _ = doc.put(&obj, "index", t.index as i64);
         let _ = doc.put(&obj, "muted", t.muted);
         let _ = doc.put(&obj, "locked", t.locked);
+        let _ = doc.put(&obj, "solo", t.solo);
     }
 
     pub fn upsert_clip(doc: &mut AutoCommit, c: &Clip) {
@@ -259,6 +260,9 @@ impl VideoDoc {
                     index: Self::get_i64(doc, &obj, "index").unwrap_or(0) as u32,
                     muted: Self::get_bool(doc, &obj, "muted"),
                     locked: Self::get_bool(doc, &obj, "locked"),
+                    // Absent in documents written before solo existed, which
+                    // `get_bool` reads as false — the right default.
+                    solo: Self::get_bool(doc, &obj, "solo"),
                 });
             }
         }
@@ -360,7 +364,7 @@ pub fn sample_project() -> Project {
         kind,
         index,
         muted: false,
-        locked: false,
+        locked: false, solo: false,
     };
     let v1 = mk_track("V1", TrackKind::Video, 1);
     let v2 = mk_track("V2", TrackKind::Video, 2);

@@ -854,6 +854,12 @@ impl VideoEditorApp {
         Rect::new(m.x0 - 22.0, m.y0, m.x1 - 22.0, m.y1)
     }
 
+    /// The solo pill rect, immediately left of the lock pill.
+    fn solo_pill_rect(&self, header: Rect) -> Rect {
+        let l = self.lock_pill_rect(header);
+        Rect::new(l.x0 - 22.0, l.y0, l.x1 - 22.0, l.y1)
+    }
+
     /// The two "add track" buttons in the gutter footer, if there is room below
     /// the last lane: `(kind, rect)` for a Video and an Audio add.
     fn add_track_buttons(&self, r: &Regions) -> Vec<(TrackKind, Rect)> {
@@ -1500,7 +1506,7 @@ impl VideoEditorApp {
             kind,
             index,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let id = track.id;
         self.actions
@@ -1665,8 +1671,10 @@ impl VideoEditorApp {
         let t = self.project.track(tid);
         let muted = t.map(|t| t.muted).unwrap_or(false);
         let locked = t.map(|t| t.locked).unwrap_or(false);
+        let solo = t.map(|t| t.solo).unwrap_or(false);
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action(if muted { "Unmute track" } else { "Mute track" }, || {}));
+        menu.push(MenuItem::action(if solo { "Unsolo track" } else { "Solo track" }, || {}));
         menu.push(MenuItem::action(if locked { "Unlock track" } else { "Lock track" }, || {}));
         menu.push(MenuItem::separator());
         menu.push(MenuItem::action("Add video track", || {}));
@@ -1762,14 +1770,15 @@ impl VideoEditorApp {
             },
             Some(MenuTarget::Track(tid)) => match idx {
                 0 => self.toggle_track_mute(doc, tid),
-                1 => self.toggle_track_lock(doc, tid),
-                3 => {
+                1 => self.toggle_track_solo(doc, tid),
+                2 => self.toggle_track_lock(doc, tid),
+                4 => {
                     self.add_track(doc, TrackKind::Video);
                 }
-                4 => {
+                5 => {
                     self.add_track(doc, TrackKind::Audio);
                 }
-                6 => self.delete_track(doc, tid),
+                7 => self.delete_track(doc, tid),
                 _ => {}
             },
             Some(MenuTarget::Clip(_)) => match idx {
@@ -1809,7 +1818,7 @@ impl VideoEditorApp {
             kind,
             index,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let id = track.id;
         self.actions
@@ -1835,8 +1844,28 @@ impl VideoEditorApp {
         if let Some(t) = self.project.track(tid) {
             let mut next = t.clone();
             next.muted = !next.muted;
+            let muted = next.muted;
             self.actions
                 .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                t.muted = muted;
+            }
+        }
+    }
+
+    /// Toggle a track's solo, dispatched as an action. Wired exactly like
+    /// mute: the flag lives on the track, replicates, and undoes the same way.
+    /// [`Project::track_audible`] is where the two combine.
+    fn toggle_track_solo(&mut self, doc: &mut AutoCommit, tid: TrackId) {
+        if let Some(t) = self.project.track(tid) {
+            let mut next = t.clone();
+            next.solo = !next.solo;
+            let solo = next.solo;
+            self.actions
+                .dispatch(doc, VIDEO_EDITOR_ACTION_TYPE, &upsert_track_action(&next));
+            if let Some(t) = self.project.tracks.iter_mut().find(|t| t.id == tid) {
+                t.solo = solo;
+            }
         }
     }
 
@@ -2154,10 +2183,14 @@ impl VideoEditorApp {
     /// Sub-rects of one effect row: `(reorder-up, reorder-down, slider, remove)`.
     fn effect_row_parts(row: Rect) -> (Rect, Rect, Rect, Rect) {
         let cy = row.center().y;
-        let up = Rect::new(row.x0, cy - 9.0, row.x0 + 16.0, cy + 9.0);
-        let down = Rect::new(row.x0 + 18.0, cy - 9.0, row.x0 + 34.0, cy + 9.0);
-        let remove = Rect::new(row.x1 - 20.0, cy - 9.0, row.x1, cy + 9.0);
-        let slider = Rect::new(row.x1 - 92.0, cy - 4.0, row.x1 - 28.0, cy + 4.0);
+        // 22px tall targets — the row is 24px, so this is as close to the
+        // toolkit's minimum as the row allows, and a real improvement on the
+        // 16x18 boxes these were.
+        let h = 11.0;
+        let up = Rect::new(row.x0, cy - h, row.x0 + 22.0, cy + h);
+        let down = Rect::new(row.x0 + 23.0, cy - h, row.x0 + 45.0, cy + h);
+        let remove = Rect::new(row.x1 - 22.0, cy - h, row.x1, cy + h);
+        let slider = Rect::new(row.x1 - 96.0, cy - 4.0, row.x1 - 30.0, cy + 4.0);
         (up, down, slider, remove)
     }
 
@@ -2613,8 +2646,11 @@ impl Widget for VideoEditorApp {
         if r.bin_overlay {
             // Dimming scrim, then the bin sliding in on top of it.
             if r.scrim.width() > 0.0 {
-                let a = self.bin_flap.reveal() * 0.5;
-                fill_rect(scene, transform, with_alpha(Color::BLACK, a), r.scrim);
+                // The themed scrim token, the same one the export modal
+                // uses — raw black over a light theme reads as a hole.
+                let a = self.bin_flap.reveal();
+                let scrim = theme.tokens.colors.surfaces.scrim;
+                fill_rect(scene, transform, with_alpha(scrim, a * scrim.components[3] as f64), r.scrim);
             }
             if self.bin_flap.reveal() > 0.001 {
                 self.draw_bin(scene, transform, tr, theme, &r);
@@ -3148,6 +3184,8 @@ impl VideoEditorApp {
                         self.toggle_track_mute(state, tid);
                     } else if self.lock_pill_rect(header).contains(p) {
                         self.toggle_track_lock(state, tid);
+                    } else if self.solo_pill_rect(header).contains(p) {
+                        self.toggle_track_solo(state, tid);
                     }
                     return;
                 }
@@ -3715,9 +3753,9 @@ impl VideoEditorApp {
         // width itself — and it carried the project *name*, which belongs to
         // the window title the OS draws. The technical meta now lives in the
         // transport, beside the timecode it belongs with.
-        draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false);
-        draw_button(scene, tf, tr, theme, r.split_btn, "Split (S)", false);
-        draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true);
+        draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false, r.import_btn.contains(self.last_mouse));
+        draw_button(scene, tf, tr, theme, r.split_btn, "Split (S)", false, r.split_btn.contains(self.last_mouse));
+        draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true, r.export_btn.contains(self.last_mouse));
     }
 
     /// Three-bar hamburger that summons the collapsed media bin. Highlights
@@ -3737,7 +3775,7 @@ impl VideoEditorApp {
             c.neutral[3]
         };
         fill_rrect(scene, tf, bg, rect, 7.0);
-        let bar = if open { Color::WHITE } else { c.text_primary };
+        let bar = if open { on_fill(theme, bg).1 } else { c.text_primary };
         let bx0 = rect.x0 + 7.0;
         let bx1 = rect.x1 - 7.0;
         for i in 0..3 {
@@ -3774,13 +3812,7 @@ impl VideoEditorApp {
             let (w1, _) = tr.measure(line1, 14.0, None);
             text(scene, tr, tf, line1, 14.0, c.text_primary, cx - w1 as f64 / 2.0, cy);
             if let Some(btn) = self.empty_bin_import_rect(r) {
-                draw_button(scene, tf, tr, theme, btn, "Import media", true);
-            }
-            // Show the last import status (how many clips landed, or why the
-            // portal round-trip failed) — never a fake success.
-            if let Some(notice) = &self.import_notice {
-                let (nw, _) = tr.measure(notice, 10.5, None);
-                text(scene, tr, tf, notice, 10.5, c.text_dim, cx - nw as f64 / 2.0, r.bin.y0 + 200.0);
+                draw_button(scene, tf, tr, theme, btn, "Import media", true, btn.contains(self.last_mouse));
             }
         }
         for (mid, rect) in self.bin_item_rects(r) {
@@ -3830,7 +3862,12 @@ impl VideoEditorApp {
             let tx = thumb.x1 + 12.0;
             let renaming = self.bin_rename.as_ref().map(|(id, _)| *id) == Some(mid);
             if !renaming {
-                text_w(scene, tr, tf, &elide(&m.name, 22), 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
+                // Pixel-accurate elision: a character budget cuts "IMG_0001.MOV"
+                // and "Wwwwwwwwwwww.mov" at the same place though one is half
+                // again as wide.
+                let avail = (rect.x1 - 8.0 - tx) as f32;
+                let shown = elide_w(&m.name, avail, tr);
+                text_w(scene, tr, tf, &shown, 13.0, c.text_primary, tx, rect.y0 + 10.0, TextWeight::Medium);
             }
             let sub = match m.kind {
                 MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
@@ -3840,6 +3877,37 @@ impl VideoEditorApp {
         }
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
+        // Last import outcome, pinned to the foot of the pane. It used to be
+        // drawn only inside the empty-bin branch, so once the bin held
+        // anything at all every import error was silent — six sites wrote it
+        // and one read it. Errors tint danger; a plain count stays quiet.
+        if let Some(notice) = &self.import_notice {
+            let failed = self.import_notice_is_error();
+            let strip = Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1);
+            let tint = if failed { c.semantic.danger } else { c.accent[5] };
+            fill_rect(scene, tf, with_alpha(tint, 0.16), strip);
+            stroke_line(scene, tf, with_alpha(tint, 0.5), strip.x0, strip.y0, strip.x1, strip.y0, 1.0);
+            let col = if failed { c.semantic.danger } else { c.text_primary };
+            let shown = elide_w(notice, (strip.width() - 24.0) as f32, tr);
+            let baseline = text_baseline(strip, 11.0, tr);
+            text(scene, tr, tf, &shown, 11.0, col, strip.x0 + 12.0, baseline);
+        }
+    }
+
+    /// Whether the standing import notice reports a failure (so it is tinted
+    /// as one). A refusal always names the file and carries the probe's
+    /// reason; the success and progress lines never contain "not" / "n't".
+    fn import_notice_is_error(&self) -> bool {
+        self.import_notice
+            .as_deref()
+            .map(|n| {
+                n.contains("could not")
+                    || n.contains("couldn't")
+                    || n.contains("is not")
+                    || n.contains("No media")
+                    || n.contains("is empty")
+            })
+            .unwrap_or(false)
     }
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
@@ -3867,11 +3935,14 @@ impl VideoEditorApp {
         if let Some(m) = self.project.media(bd.media) {
             let (w, h) = (154.0, 30.0);
             let gr = Rect::new(p.x + 12.0, p.y - h / 2.0, p.x + 12.0 + w, p.y + h / 2.0);
-            fill_rrect(scene, tf, with_alpha(clip_color(theme, m.palette), 0.92), gr, 6.0);
-            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.9), gr, 6.0, 1.0);
+            let ghost_fill = clip_color(theme, m.palette);
+            fill_rrect(scene, tf, with_alpha(ghost_fill, 0.92), gr, 6.0);
+            stroke_rrect(scene, tf, with_alpha(c.border_focus, 0.9), gr, 6.0, 1.0);
+            let ghost_label = elide_w(&m.name, (gr.width() - 20.0) as f32, tr);
+            let ghost_y = text_baseline(gr, 12.0, tr);
             text_w(
-                scene, tr, tf, &elide(&m.name, 20), 12.0, Color::WHITE,
-                gr.x0 + 10.0, gr.center().y - 8.0, TextWeight::Medium,
+                scene, tr, tf, &ghost_label, 12.0, on_fill(theme, ghost_fill).1,
+                gr.x0 + 10.0, ghost_y, TextWeight::Medium,
             );
         }
     }
@@ -4025,7 +4096,7 @@ impl VideoEditorApp {
             let hovered = rect.contains(self.last_mouse);
             let bg = if is_play { c.accent[5] } else if hovered { c.surface_white_10 } else { c.neutral[3] };
             scene.fill(Fill::NonZero, tf, bg, None, &Circle::new(rect.center(), rect.width() / 2.0));
-            let col = if is_play { Color::WHITE } else { c.text_primary };
+            let col = if is_play { on_fill(theme, bg).1 } else { c.text_primary };
             self.draw_transport_icon(scene, tf, action, rect.center(), col);
         }
         // Timecode readout.
@@ -4057,7 +4128,9 @@ impl VideoEditorApp {
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
         let filled = Rect::new(scrub.x0, scrub.y0, scrub.x0 + scrub.width() * frac, scrub.y1);
         fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-        scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, scrub.center().y), 6.0));
+        let knob = Circle::new(Point::new(filled.x1, scrub.center().y), 6.0);
+        scene.fill(Fill::NonZero, tf, c.surfaces.raised, None, &knob);
+        scene.stroke(&Stroke::new(1.5), tf, c.border_focus, None, &knob);
         if self.playing {
             text(scene, tr, tf, "PLAYING", 10.0, c.semantic.success, scrub.x0, scrub.y0 - 16.0);
         }
@@ -4079,39 +4152,44 @@ impl VideoEditorApp {
                     scene.fill(Fill::NonZero, tf, col, None, &p);
                 }
             }
+            // Step-by-frame is a *double* chevron with no bar. Jump-to-end is
+            // a single chevron against a bar. They used to differ by one pixel
+            // of bar position and read as the same button twice.
             TransportAction::StepBack => {
-                let mut p = BezPath::new();
-                p.move_to((ctr.x + s, ctr.y - s));
-                p.line_to((ctr.x - 2.0, ctr.y));
-                p.line_to((ctr.x + s, ctr.y + s));
-                p.close_path();
-                scene.fill(Fill::NonZero, tf, col, None, &p);
-                fill_rect(scene, tf, col, Rect::new(ctr.x - 6.0, ctr.y - s, ctr.x - 4.0, ctr.y + s));
+                for dx in [1.0, 7.0] {
+                    let mut p = BezPath::new();
+                    p.move_to((ctr.x - dx + s, ctr.y - s));
+                    p.line_to((ctr.x - dx, ctr.y));
+                    p.line_to((ctr.x - dx + s, ctr.y + s));
+                    p.close_path();
+                    scene.fill(Fill::NonZero, tf, col, None, &p);
+                }
             }
             TransportAction::StepFwd => {
-                let mut p = BezPath::new();
-                p.move_to((ctr.x - s, ctr.y - s));
-                p.line_to((ctr.x + 2.0, ctr.y));
-                p.line_to((ctr.x - s, ctr.y + s));
-                p.close_path();
-                scene.fill(Fill::NonZero, tf, col, None, &p);
-                fill_rect(scene, tf, col, Rect::new(ctr.x + 4.0, ctr.y - s, ctr.x + 6.0, ctr.y + s));
+                for dx in [1.0, 7.0] {
+                    let mut p = BezPath::new();
+                    p.move_to((ctr.x + dx - s, ctr.y - s));
+                    p.line_to((ctr.x + dx, ctr.y));
+                    p.line_to((ctr.x + dx - s, ctr.y + s));
+                    p.close_path();
+                    scene.fill(Fill::NonZero, tf, col, None, &p);
+                }
             }
             TransportAction::ToStart => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 5.0, ctr.y + s));
+                fill_rect(scene, tf, col, Rect::new(ctr.x - 7.0, ctr.y - s, ctr.x - 4.5, ctr.y + s));
                 let mut p = BezPath::new();
-                p.move_to((ctr.x + 6.0, ctr.y - s));
+                p.move_to((ctr.x + 7.0, ctr.y - s));
                 p.line_to((ctr.x - 3.0, ctr.y));
-                p.line_to((ctr.x + 6.0, ctr.y + s));
+                p.line_to((ctr.x + 7.0, ctr.y + s));
                 p.close_path();
                 scene.fill(Fill::NonZero, tf, col, None, &p);
             }
             TransportAction::ToEnd => {
-                fill_rect(scene, tf, col, Rect::new(ctr.x + 5.0, ctr.y - s, ctr.x + 7.0, ctr.y + s));
+                fill_rect(scene, tf, col, Rect::new(ctr.x + 4.5, ctr.y - s, ctr.x + 7.0, ctr.y + s));
                 let mut p = BezPath::new();
-                p.move_to((ctr.x - 6.0, ctr.y - s));
+                p.move_to((ctr.x - 7.0, ctr.y - s));
                 p.line_to((ctr.x + 3.0, ctr.y));
-                p.line_to((ctr.x - 6.0, ctr.y + s));
+                p.line_to((ctr.x - 7.0, ctr.y + s));
                 p.close_path();
                 scene.fill(Fill::NonZero, tf, col, None, &p);
             }
@@ -4180,7 +4258,8 @@ impl VideoEditorApp {
         let tag = Rect::new(x0, top + 36.0, x0 + 6.0, top + 64.0);
         fill_rrect(scene, tf, clip_color(theme, clip.palette), tag, 3.0);
         let name = media.as_ref().map(|m| m.name.clone()).unwrap_or_else(|| "clip".into());
-        text_w(scene, tr, tf, &elide(&name, 26), 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
+        let shown_name = elide_w(&name, (x1 - x0 - 14.0) as f32, tr);
+        text_w(scene, tr, tf, &shown_name, 15.0, c.text_primary, x0 + 14.0, top + 38.0, TextWeight::Semibold);
         // Name the lane, and say plainly when it refuses edits — the same
         // reason the timeline hatches it.
         let sub = if self.selection_has_locked() {
@@ -4205,69 +4284,71 @@ impl VideoEditorApp {
         prop(scene, tr, "Source Out", &timecode(clip.out_point, fps), y);
 
         let l = self.inspector_layout(r);
-        // Opacity / Volume slider.
-        if let Some(track) = l.opacity {
-            text(scene, tr, tf, "Opacity", 12.0, c.text_dim, x0, track.y0 - 20.0);
-            let pct = format!("{:.0}%", clip.opacity * 100.0);
-            let (pw, _) = tr.measure(&pct, 12.0, None);
-            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, clip.opacity);
-        }
-        if let Some(track) = l.volume {
-            text(scene, tr, tf, "Volume", 12.0, c.text_dim, x0, track.y0 - 20.0);
-            let pct = format!("{:.0}%", clip.volume * 100.0);
-            let (pw, _) = tr.measure(&pct, 12.0, None);
-            text(scene, tr, tf, &pct, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, clip.volume);
-        }
-        // Colour-grade sliders (video only). The right-hand readout shows
-        // the multiplier (0.5 slider == 1.0×, the identity).
-        let grade = |scene: &mut Scene, tr: &mut TextRenderer, track: Option<Rect>, label: &str, v: f64| {
-            if let Some(track) = track {
-                text(scene, tr, tf, label, 12.0, c.text_dim, x0, track.y0 - 20.0);
-                let mult = format!("{:.2}×", Filters::gain(v));
-                let (pw, _) = tr.measure(&mult, 12.0, None);
-                text(scene, tr, tf, &mult, 12.0, c.text_primary, x1 - pw as f64, track.y0 - 20.0);
-                draw_track(scene, tf, theme, track, v);
-            }
+        // Every slider row: a label, a right-aligned readout measured like all
+        // the others, and the shared slider face carrying hover / drag state.
+        let row = |scene: &mut Scene,
+                       tr: &mut TextRenderer,
+                       track: Option<Rect>,
+                       label: &str,
+                       readout: String,
+                       v: f64,
+                       size: f32,
+                       drag: bool| {
+            let Some(track) = track else { return };
+            text(scene, tr, tf, label, size, c.text_dim, track.x0, track.y0 - 20.0);
+            let (pw, _) = tr.measure(&readout, size, None);
+            text(scene, tr, tf, &readout, size, c.text_primary, track.x1 - pw as f64, track.y0 - 20.0);
+            draw_track(scene, tf, theme, track, v, hit_slider(track, self.last_mouse), drag);
         };
-        grade(scene, tr, l.brightness, "Brightness", clip.filters.brightness);
-        grade(scene, tr, l.contrast, "Contrast", clip.filters.contrast);
-        grade(scene, tr, l.saturation, "Saturation", clip.filters.saturation);
-        // Fade in / out (seconds). Two half-width tracks share a row.
+        let dragging = |d: Option<Drag>, want: Drag| d == Some(want);
+        row(scene, tr, l.opacity, "Opacity", format!("{:.0}%", clip.opacity * 100.0),
+            clip.opacity, 12.0, dragging(self.drag, Drag::Opacity));
+        row(scene, tr, l.volume, "Volume", format!("{:.0}%", clip.volume * 100.0),
+            clip.volume, 12.0, dragging(self.drag, Drag::Volume));
+        // Colour-grade rows. The readout shows the multiplier (0.5 == 1.00×,
+        // the identity).
+        for (track, label, v, d) in [
+            (l.brightness, "Brightness", clip.filters.brightness, Drag::Brightness),
+            (l.contrast, "Contrast", clip.filters.contrast, Drag::Contrast),
+            (l.saturation, "Saturation", clip.filters.saturation, Drag::Saturation),
+        ] {
+            row(scene, tr, track, label, format!("{:.2}×", Filters::gain(v)), v, 12.0,
+                dragging(self.drag, d));
+        }
+        // Fade in / out (seconds). Two half-width tracks share a row; their
+        // readouts right-align by measurement like every other row, rather
+        // than by a magic inset that only fitted one string.
         let cd = clip.duration().max(1e-6);
-        if let Some(track) = l.fade_in {
-            text(scene, tr, tf, "Fade In", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
-            let v = format!("{:.1}s", clip.fade_in);
-            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, (clip.fade_in / cd).clamp(0.0, 1.0));
-        }
-        if let Some(track) = l.fade_out {
-            text(scene, tr, tf, "Fade Out", 11.0, c.text_dim, track.x0, track.y0 - 20.0);
-            let v = format!("{:.1}s", clip.fade_out);
-            text(scene, tr, tf, &v, 11.0, c.text_primary, track.x1 - 30.0, track.y0 - 20.0);
-            draw_track(scene, tf, theme, track, (clip.fade_out / cd).clamp(0.0, 1.0));
-        }
-        // Transition segmented control.
+        row(scene, tr, l.fade_in, "Fade In", format!("{:.1}s", clip.fade_in),
+            (clip.fade_in / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeIn));
+        row(scene, tr, l.fade_out, "Fade Out", format!("{:.1}s", clip.fade_out),
+            (clip.fade_out / cd).clamp(0.0, 1.0), 11.0, dragging(self.drag, Drag::FadeOut));
+        // Transition segmented control, through the shared painter.
         if !l.transitions.is_empty() {
             text(scene, tr, tf, "Transition", 12.0, c.text_dim, x0, l.transition_y - 20.0);
-            for (t, rect) in &l.transitions {
-                let on = clip.transition == *t;
-                let bg = if on { c.accent[5] } else { c.neutral[3] };
-                fill_rrect(scene, tf, bg, *rect, 5.0);
-                let col = if on { Color::WHITE } else { c.text_dim };
-                let lab = t.label();
-                let (lw, _) = tr.measure(lab, 10.0, None);
-                text(scene, tr, tf, lab, 10.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 6.0);
-            }
+            let rects: Vec<Rect> = l.transitions.iter().map(|(_, r)| *r).collect();
+            let labels: Vec<&str> = l.transitions.iter().map(|(t, _)| t.label()).collect();
+            let sel = l
+                .transitions
+                .iter()
+                .position(|(t, _)| *t == clip.transition)
+                .unwrap_or(0);
+            draw_segmented(scene, tf, tr, theme, &rects, &labels, sel, self.last_mouse);
         }
-        // Color swatches.
+        // Colour swatches.
         if !l.colors.is_empty() {
             text(scene, tr, tf, "Label", 12.0, c.text_dim, x0, l.colors_y - 20.0);
             for (pal, rect) in &l.colors {
-                fill_rrect(scene, tf, clip_color(theme, *pal), *rect, 6.0);
+                let sw = clip_color(theme, *pal);
+                fill_rrect(scene, tf, sw, *rect, 6.0);
+                if rect.contains(self.last_mouse) && clip.palette != *pal {
+                    stroke_rrect(scene, tf, with_alpha(c.text_primary, 0.5), *rect, 6.0, 1.5);
+                }
                 if clip.palette == *pal {
-                    stroke_rrect(scene, tf, Color::WHITE, *rect, 6.0, 2.0);
+                    // The selection ring has to read against whichever colour
+                    // it rings, so it comes from the focus token rather than
+                    // a hardcoded white that vanishes on the pale swatches.
+                    stroke_rrect(scene, tf, c.border_focus, rect.inset(1.5), 7.0, 2.0);
                 }
             }
         }
@@ -4278,19 +4359,51 @@ impl VideoEditorApp {
             let Some(e) = clip.effects.get(i) else { continue };
             let (up, down, slider, remove) = Self::effect_row_parts(*row);
             fill_rrect(scene, tf, c.surface_white_5, *row, 6.0);
-            // Reorder arrows (dim at the ends where they're inert).
-            let up_col = if i > 0 { c.text_primary } else { c.text_dim };
-            let down_col = if i + 1 < clip.effects.len() { c.text_primary } else { c.text_dim };
-            let (uw, _) = tr.measure("▲", 9.0, None);
-            text(scene, tr, tf, "▲", 9.0, up_col, up.center().x - uw as f64 / 2.0, up.center().y - 6.0);
-            text(scene, tr, tf, "▼", 9.0, down_col, down.center().x - uw as f64 / 2.0, down.center().y - 6.0);
+            // Reorder / remove: real icons on hover-lit hit targets, sized to
+            // the pointer rather than to the glyph. These were raw Unicode
+            // arrows in 16x18px boxes with no hover state at all.
+            let last = i + 1 == clip.effects.len();
+            for (rect, icon, enabled) in [
+                (up, ui::icons::Icon::ChevronUp, i > 0),
+                (down, ui::icons::Icon::ChevronDown, !last),
+            ] {
+                if enabled && rect.contains(self.last_mouse) {
+                    fill_rrect(scene, tf, c.overlay_medium, rect, 4.0);
+                }
+                let col = if enabled { c.text_primary } else { c.text_tertiary };
+                let g = 12.0;
+                let box_ = Rect::new(
+                    rect.center().x - g / 2.0,
+                    rect.center().y - g / 2.0,
+                    rect.center().x + g / 2.0,
+                    rect.center().y + g / 2.0,
+                );
+                ui::icons::draw_icon(scene, tf, box_, icon, col, ui::icons::LUCIDE_DEFAULT_STROKE_PX);
+            }
             // Name.
-            text_w(scene, tr, tf, e.kind.label(), 12.0, c.text_primary, down.x1 + 8.0, row.center().y - 8.0, TextWeight::Medium);
+            let name_y = text_baseline(*row, 12.0, tr);
+            text_w(scene, tr, tf, e.kind.label(), 12.0, c.text_primary, down.x1 + 8.0, name_y, TextWeight::Medium);
             // Intensity slider.
-            draw_track(scene, tf, theme, slider, e.amount);
+            draw_track(
+                scene, tf, theme, slider, e.amount,
+                hit_slider(slider, self.last_mouse),
+                self.drag == Some(Drag::EffectAmount { idx: i }),
+            );
             // Remove.
-            let (xw, _) = tr.measure("✕", 11.0, None);
-            text(scene, tr, tf, "✕", 11.0, c.semantic.danger, remove.center().x - xw as f64 / 2.0, remove.center().y - 7.0);
+            if remove.contains(self.last_mouse) {
+                fill_rrect(scene, tf, with_alpha(c.semantic.danger, 0.18), remove, 4.0);
+            }
+            let g = 12.0;
+            let xbox = Rect::new(
+                remove.center().x - g / 2.0,
+                remove.center().y - g / 2.0,
+                remove.center().x + g / 2.0,
+                remove.center().y + g / 2.0,
+            );
+            ui::icons::draw_icon(
+                scene, tf, xbox, ui::icons::Icon::X, c.semantic.danger,
+                ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
         }
         // Add-effect button.
         let add_hover = l.add_effect.contains(self.last_mouse);
@@ -4300,8 +4413,8 @@ impl VideoEditorApp {
         }
 
         if l.valid {
-            draw_button(scene, tf, tr, theme, l.split, "Split", false);
-            draw_button(scene, tf, tr, theme, l.delete, "Delete", false);
+            draw_button(scene, tf, tr, theme, l.split, "Split", false, l.split.contains(self.last_mouse));
+            draw_danger_button(scene, tf, tr, theme, l.delete, "Delete", l.delete.contains(self.last_mouse));
         }
     }
 
@@ -4345,9 +4458,11 @@ impl VideoEditorApp {
             // mute + lock pills (clickable toggles)
             let muted = track.map(|t| t.muted).unwrap_or(false);
             let locked = track.map(|t| t.locked).unwrap_or(false);
+            let solo = track.map(|t| t.solo).unwrap_or(false);
             for (pill, on, label, on_bg) in [
                 (self.mute_pill_rect(header), muted, "M", c.semantic.danger),
                 (self.lock_pill_rect(header), locked, "L", c.semantic.warning),
+                (self.solo_pill_rect(header), solo, "S", c.semantic.info),
             ] {
                 let pill_hover = pill.contains(self.last_mouse);
                 let pill_bg = if on {
@@ -4357,10 +4472,11 @@ impl VideoEditorApp {
                 } else {
                     c.neutral[3]
                 };
+                let (pill_bg, on_fg) = on_fill(theme, pill_bg);
                 fill_rrect(scene, tf, pill_bg, pill, 4.0);
-                let fg = if on { Color::WHITE } else { c.text_dim };
-                let (lw, _) = tr.measure(label, 10.0, None);
-                text(scene, tr, tf, label, 10.0, fg, pill.center().x - lw as f64 / 2.0, pill.center().y - 6.0);
+                let fg = if on { on_fg } else { c.text_dim };
+                let at = text_centre(pill, label, 10.0, TextWeight::Regular, tr);
+                text(scene, tr, tf, label, 10.0, fg, at.x, at.y);
             }
             let _ = locked;
         }
@@ -4371,6 +4487,16 @@ impl VideoEditorApp {
             for clip in self.project.clips_on(*tid) {
                 self.draw_clip(scene, tf, tr, theme, clip, lane, *kind, r);
             }
+        }
+        // A lane that will not be heard or seen — muted, or not soloed while
+        // something else of its kind is — greys back, so the pill state is
+        // legible from the clips themselves and not only from the header.
+        for (tid, _kind, lane) in &lanes {
+            if self.project.track_audible(*tid) {
+                continue;
+            }
+            let full = Rect::new(r.lanes.x0, lane.y0, r.lanes.x1, lane.y1);
+            fill_rect(scene, tf, with_alpha(c.surfaces.base, 0.45), full);
         }
         // A locked lane says so across its whole width, drawn *over* its clips:
         // they grey back under a diagonal hatch, so "my drag did nothing"
@@ -4391,7 +4517,7 @@ impl VideoEditorApp {
         // Live rubber band, over the clips it is sweeping.
         if let Some(band) = self.marquee {
             fill_rect(scene, tf, with_alpha(c.accent[5], 0.24), band);
-            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.85), band, 2.0, 1.5);
+            stroke_rrect(scene, tf, c.border_focus, band, 2.0, 1.5);
         }
         scene.pop_layer();
 
@@ -4408,7 +4534,7 @@ impl VideoEditorApp {
         let tagx = (px + 6.0).min(r.ruler.x1 - tw as f64 - 8.0).max(r.ruler.x0);
         let tagrect = Rect::new(tagx - 3.0, r.ruler.y0 + 2.0, tagx + tw as f64 + 5.0, r.ruler.y0 + 16.0);
         fill_rrect(scene, tf, c.accent[5], tagrect, 3.0);
-        text_w(scene, tr, tf, &tag, 10.0, Color::WHITE, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
+        text_w(scene, tr, tf, &tag, 10.0, on_fill(theme, c.accent[5]).1, tagx, r.ruler.y0 + 3.0, TextWeight::Bold);
 
         // Add-track buttons in the gutter footer.
         for (kind, rect) in self.add_track_buttons(r) {
@@ -4416,8 +4542,8 @@ impl VideoEditorApp {
             fill_rrect(scene, tf, if hover { c.surface_white_10 } else { c.neutral[3] }, rect, 6.0);
             stroke_rrect(scene, tf, c.border_standard, rect, 6.0, 1.0);
             let label = if kind == TrackKind::Video { "+ Video" } else { "+ Audio" };
-            let (lw, _) = tr.measure(label, 11.0, None);
-            text(scene, tr, tf, label, 11.0, c.text_primary, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
+            let at = text_centre(rect, label, 11.0, TextWeight::Regular, tr);
+            text(scene, tr, tf, label, 11.0, c.text_primary, at.x, at.y);
         }
 
         // Horizontal scrollbar, floated over the bottom of the lane area.
@@ -4527,12 +4653,16 @@ impl VideoEditorApp {
         let avail = (cr.width() - 10.0).max(4.0) as f32;
         if cr.width() > 30.0 {
             let shown = elide_w(&label, avail, tr);
-            text_w(scene, tr, tf, &shown, 11.0, with_alpha(Color::WHITE, 0.95), cr.x0 + 5.0, cr.y0 + 3.0, TextWeight::Medium);
+            // The name sits on the clip's header strip, whose colour comes
+            // from the user's chosen label — so the text colour has to be
+            // resolved against it rather than assumed white.
+            let (_, name_col) = on_fill(theme, darken(base, 0.3));
+            text_w(scene, tr, tf, &shown, 11.0, name_col, cr.x0 + 5.0, cr.y0 + 3.0, TextWeight::Medium);
         }
         // transition marker at head
         if clip.transition != Transition::None && cr.width() > 16.0 {
             let mk = triangle_corner(cr.x0, cr.y0, 12.0);
-            scene.fill(Fill::NonZero, tf, with_alpha(Color::WHITE, 0.85), None, &mk);
+            scene.fill(Fill::NonZero, tf, with_alpha(on_fill(theme, base).1, 0.85), None, &mk);
         }
         // Selection. The primary (anchor) clip — the one the inspector edits —
         // keeps the full white outline and trim handles; the rest of a
@@ -4540,15 +4670,15 @@ impl VideoEditorApp {
         // always clear which clip a trim or a grade will land on.
         let primary = self.selection.primary() == Some(clip.id);
         if primary {
-            stroke_rrect(scene, tf, Color::WHITE, cr, 6.0, 2.0);
+            stroke_rrect(scene, tf, c.border_focus, cr, 6.0, 2.0);
             for hx in [cr.x0, cr.x1] {
                 let hrect = Rect::new(hx - 3.0, cr.y0 + 2.0, hx + 3.0, cr.y1 - 2.0);
                 fill_rrect(scene, tf, c.accent[5], hrect, 2.0);
             }
         } else if selected {
-            stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.6), cr, 6.0, 2.0);
+            stroke_rrect(scene, tf, with_alpha(c.border_focus, 0.6), cr, 6.0, 2.0);
         } else {
-            stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.35), cr, 6.0, 1.0);
+            stroke_rrect(scene, tf, with_alpha(c.surfaces.base, 0.55), cr, 6.0, 1.0);
         }
     }
 
@@ -4571,7 +4701,7 @@ impl VideoEditorApp {
             for (name, rect, on) in items {
                 let bg = if *on { c.accent[5] } else { c.neutral[3] };
                 fill_rrect(scene, tf, bg, *rect, 6.0);
-                let col = if *on { Color::WHITE } else { c.text_dim };
+                let col = if *on { on_fill(theme, c.accent[5]).1 } else { c.text_dim };
                 let (lw, _) = tr.measure(name, 12.0, None);
                 text(scene, tr, tf, name, 12.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 7.0);
             }
@@ -4606,14 +4736,40 @@ impl VideoEditorApp {
                 text(scene, tr, tf, "Export isn't available yet — video encoding is coming soon.", 10.5, c.text_dim, x0, card.y1 - 68.0);
             }
         }
-        draw_button(scene, tf, tr, theme, l.cancel, "Close", false);
-        draw_button(scene, tf, tr, theme, l.confirm, "Export", true);
+        draw_button(scene, tf, tr, theme, l.cancel, "Close", false, l.cancel.contains(self.last_mouse));
+        draw_button(scene, tf, tr, theme, l.confirm, "Export", true, l.confirm.contains(self.last_mouse));
     }
 }
 
 // ==========================================================================
 // Free drawing utilities
 // ==========================================================================
+/// A label colour guaranteed legible on `fill`, and the (possibly deepened)
+/// fill to paint under it — the toolkit's own contrast rule, so a clip name on
+/// an amber body reads in light and dark alike. Replaces the bare
+/// `Color::WHITE` this file used on every coloured surface, which was chosen
+/// for one palette and was already weak on the pale ones.
+fn on_fill(theme: &Theme, fill: Color) -> (Color, Color) {
+    theme.tokens.colors.legible_fill(fill, Color::WHITE)
+}
+
+/// The `y` to pass to [`text`] so one line of `size` sits vertically centred
+/// in `rect`, measured from the font's real line height.
+///
+/// Replaces the hand-tuned `center().y - 8.0` / `- 6.0` / `- 7.0` constants
+/// this file used to carry at every call site, which were each correct for
+/// exactly one font size and drifted the moment one changed.
+fn text_baseline(rect: Rect, size: f32, tr: &mut TextRenderer) -> f64 {
+    let (_, h) = tr.measure("Hg", size, None);
+    rect.center().y - h as f64 / 2.0
+}
+
+/// Top-left corner for `s` drawn centred both ways inside `rect`.
+fn text_centre(rect: Rect, s: &str, size: f32, weight: TextWeight, tr: &mut TextRenderer) -> Point {
+    let (w, h) = tr.measure_weighted(s, size, None, weight);
+    Point::new(rect.center().x - w as f64 / 2.0, rect.center().y - h as f64 / 2.0)
+}
+
 /// Cell width and count for a filmstrip drawn across `inner`. Shared by the
 /// request pass and the draw pass so the two never disagree about how many
 /// frames a strip needs — a mismatch would request frames at times the strip
@@ -4726,27 +4882,94 @@ fn text_w(scene: &mut Scene, tr: &mut TextRenderer, tf: Affine, s: &str, size: f
     tr.draw_text_weighted(scene, s, size, color, tf * Affine::translate((x, y)), None, weight);
 }
 
-fn draw_button(scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, primary: bool) {
-    let c = &theme.tokens.colors;
-    let bg = if primary { c.accent[5] } else { c.neutral[3] };
-    fill_rrect(scene, tf, bg, rect, 7.0);
-    if !primary {
-        stroke_rrect(scene, tf, c.border_standard, rect, 7.0, 1.0);
-    }
-    let col = if primary { Color::WHITE } else { c.text_primary };
-    let (lw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Medium);
-    text_w(scene, tr, tf, label, 13.0, col, rect.center().x - lw as f64 / 2.0, rect.center().y - 8.0, TextWeight::Medium);
+/// A themed button face. Delegates to the toolkit's shared
+/// [`ui::widget::Button::paint`], which is provided exactly for canvas apps
+/// that own their own hit-testing — so these buttons get the fleet's fill,
+/// border, hover, press and disabled treatment instead of a local
+/// approximation that had no hover state at all.
+fn draw_button(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    primary: bool,
+    hovered: bool,
+) {
+    use ui::widget::{Button, ButtonFace, ButtonStyle};
+    let face = ButtonFace::new(rect, label)
+        .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral })
+        .radius(7.0)
+        .text_size(13.0)
+        .hovered(hovered);
+    Button::paint(scene, tf, tr, theme, &face);
 }
 
-/// Draw an inspector slider track + fill + knob for a 0..1 value.
-fn draw_track(scene: &mut Scene, tf: Affine, theme: &Theme, track: Rect, value: f64) {
-    let c = &theme.tokens.colors;
-    fill_rrect(scene, tf, c.neutral[3], track, 4.0);
-    let v = value.clamp(0.0, 1.0);
-    let filled = Rect::new(track.x0, track.y0, track.x0 + track.width() * v, track.y1);
-    fill_rrect(scene, tf, c.accent[5], filled, 4.0);
-    scene.fill(Fill::NonZero, tf, Color::WHITE, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
-    scene.stroke(&Stroke::new(1.0), tf, c.border_standard, None, &Circle::new(Point::new(filled.x1, track.center().y), 7.0));
+/// A danger-styled button face (the inspector's Delete).
+fn draw_danger_button(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    label: &str,
+    hovered: bool,
+) {
+    use ui::widget::{Button, ButtonFace, ButtonStyle};
+    let face = ButtonFace::new(rect, label)
+        .style(ButtonStyle::Danger)
+        .radius(7.0)
+        .text_size(13.0)
+        .hovered(hovered);
+    Button::paint(scene, tf, tr, theme, &face);
+}
+
+/// Draw an inspector slider for a 0..1 value, through the toolkit's shared
+/// [`ui::widget::Slider::paint`]. The knob was a bare white circle here, which
+/// is invisible on a light theme; the shared face carries the fleet's track,
+/// fill, knob, hover, press and focus treatment instead.
+///
+/// `track` is the 9px band the inspector lays out; the face wants a taller box
+/// to centre its knob in, so it is grown symmetrically about the same centre —
+/// the hit-test in `hit_slider` already allows that much slop.
+fn draw_track(
+    scene: &mut Scene,
+    tf: Affine,
+    theme: &Theme,
+    track: Rect,
+    value: f64,
+    hovered: bool,
+    dragging: bool,
+) {
+    let cy = track.center().y;
+    let box_rect = Rect::new(track.x0 - 5.0, cy - 11.0, track.x1 + 5.0, cy + 11.0);
+    let face = ui::widget::SliderFace::new(box_rect, value)
+        .hovered(hovered)
+        .dragging(dragging);
+    ui::widget::Slider::paint(scene, tf, theme, &face);
+}
+
+/// Draw a segmented control over caller-owned rects through the toolkit's
+/// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
+/// export dialog's option groups look like every other segmented control in
+/// the fleet — including a hover state, which the local painter had none of.
+fn draw_segmented(
+    scene: &mut Scene,
+    tf: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    segments: &[Rect],
+    labels: &[&str],
+    selected: usize,
+    cursor: Point,
+) {
+    let hovered = segments.iter().position(|r| r.contains(cursor));
+    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
+        .hovered(hovered)
+        .radius(6.0)
+        .text_size(11.5);
+    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
 }
 
 fn hit_slider(track: Rect, p: Point) -> bool {
@@ -4861,6 +5084,7 @@ fn draw_flat_signal(scene: &mut Scene, tf: Affine, area: Rect, color: Color) {
     );
 }
 
+
 /// Fit a w:h aspect rect centered inside `area`.
 fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
     if area.width() <= 0.0 || area.height() <= 0.0 {
@@ -4876,16 +5100,6 @@ fn fit_aspect(area: Rect, w: f64, h: f64) -> Rect {
     let cx = area.center().x;
     let cy = area.center().y;
     Rect::new(cx - rw / 2.0, cy - rh / 2.0, cx + rw / 2.0, cy + rh / 2.0)
-}
-
-fn elide(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-        out.push('…');
-        out
-    }
 }
 
 fn elide_w(s: &str, max_px: f32, tr: &mut TextRenderer) -> String {
@@ -5386,6 +5600,29 @@ mod tests {
         ev.repeat = false;
         ev.text = None;
         WindowEvent::KeyboardInput { device_id: fake_device_id(), event: ev, is_synthetic: false }
+    }
+
+    /// Click the open context-menu row whose label is `label`, through the
+    /// menu's real geometry. Addressing rows by label rather than by index
+    /// means adding an entry cannot silently retarget a test at its neighbour.
+    fn click_menu_item(app: &mut VideoEditorApp, doc: &mut AutoCommit, label: &str) {
+        let idx = app
+            .bin_menu
+            .items()
+            .iter()
+            .position(|i| i.label() == Some(label))
+            .unwrap_or_else(|| {
+                let have: Vec<&str> = app.bin_menu.items().iter().filter_map(|i| i.label()).collect();
+                panic!("no menu row labelled {label:?}; menu has {have:?}")
+            });
+        let menu = app.bin_menu.get_rect();
+        let cx = menu.center().x;
+        let y = (0..(menu.height() as i64))
+            .map(|d| menu.y0 + d as f64 + 0.5)
+            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(idx))
+            .unwrap_or_else(|| panic!("row {label:?} has no hit area"));
+        move_to(app, doc, cx, y);
+        press(app, doc);
     }
 
     // ---- modifier-aware + wheel drivers ----------------------------------
@@ -6037,16 +6274,8 @@ mod tests {
         assert!(app.bin_menu.is_open(), "right-clicking a clip opens a context menu");
         assert!(matches!(app.menu_target, Some(MenuTarget::Clip(c)) if c == cid));
         assert_eq!(app.selected(), Some(cid), "and re-targets the selection at it");
-        // Click the "Duplicate" row (index 2) through the real menu geometry.
-        let menu = app.bin_menu.get_rect();
-        let cx = menu.center().x;
-        let dup_y = (0..(menu.height() as i64))
-            .map(|d| menu.y0 + d as f64 + 0.5)
-            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(2))
-            .expect("a Duplicate row in the menu");
         let before = VideoDoc::load_project(&doc).clips_on(tid).len();
-        move_to(&mut app, &mut doc, cx, dup_y);
-        press(&mut app, &mut doc);
+        click_menu_item(&mut app, &mut doc, "Duplicate");
         assert_eq!(
             VideoDoc::load_project(&doc).clips_on(tid).len(),
             before + 1,
@@ -6064,15 +6293,7 @@ mod tests {
         move_to(&mut app, &mut doc, header.x0 + 20.0, header.center().y);
         right_press(&mut app, &mut doc);
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
-        // "Lock track" is the second row.
-        let menu = app.bin_menu.get_rect();
-        let cx = menu.center().x;
-        let y = (0..(menu.height() as i64))
-            .map(|d| menu.y0 + d as f64 + 0.5)
-            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(1))
-            .expect("a Lock track row");
-        move_to(&mut app, &mut doc, cx, y);
-        press(&mut app, &mut doc);
+        click_menu_item(&mut app, &mut doc, "Lock track");
         assert!(
             VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
             "the menu entry locked the track in the CRDT",
@@ -6516,16 +6737,8 @@ mod tests {
         assert!(app.bin_menu.is_open(), "right-click opens the bin context menu");
         assert!(matches!(app.menu_target, Some(MenuTarget::Media(m)) if m == mid));
 
-        // Locate the "Delete" row (index 3) and click it through the real menu.
-        let menu = app.bin_menu.get_rect();
-        let cx = menu.center().x;
-        let del_y = (0..(menu.height() as i64))
-            .map(|d| menu.y0 + d as f64 + 0.5)
-            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(3))
-            .expect("a Delete row in the menu");
         let before = VideoDoc::load_project(&doc).media.len();
-        move_to(&mut app, &mut doc, cx, del_y);
-        press(&mut app, &mut doc);
+        click_menu_item(&mut app, &mut doc, "Delete");
         let after = VideoDoc::load_project(&doc);
         assert_eq!(after.media.len(), before - 1, "Delete removed the media from the CRDT");
         assert!(after.media(mid).is_none(), "the deleted source is gone");
@@ -6699,17 +6912,8 @@ mod tests {
         right_press(&mut app, &mut doc);
         assert!(app.bin_menu.is_open(), "right-click opens the track menu");
         assert!(matches!(app.menu_target, Some(MenuTarget::Track(t)) if t == tid));
-        // "Delete track" is the last row, after the mute/lock toggles and the
-        // two add-track entries.
-        let menu = app.bin_menu.get_rect();
-        let cx = menu.center().x;
-        let del_y = (0..(menu.height() as i64))
-            .map(|d| menu.y0 + d as f64 + 0.5)
-            .find(|&y| app.bin_menu.item_at([cx, y]) == Some(6))
-            .expect("a Delete track row");
         let before = VideoDoc::load_project(&doc).tracks.len();
-        move_to(&mut app, &mut doc, cx, del_y);
-        press(&mut app, &mut doc);
+        click_menu_item(&mut app, &mut doc, "Delete track");
         let after = VideoDoc::load_project(&doc);
         assert_eq!(after.tracks.len(), before - 1, "the track was removed from the CRDT");
         assert!(after.track(tid).is_none());

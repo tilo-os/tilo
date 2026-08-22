@@ -295,6 +295,11 @@ pub struct Track {
     pub index: u32,
     pub muted: bool,
     pub locked: bool,
+    /// Solo: while any track is soloed, only soloed tracks of that kind are
+    /// heard/seen. Defaults false, and `#[serde(default)]` so a project
+    /// written before solo existed still loads.
+    #[serde(default)]
+    pub solo: bool,
 }
 
 /// A placed clip: a reference to media, positioned on a track, sourcing a
@@ -571,6 +576,35 @@ impl Project {
             .unwrap_or(TrackKind::Video)
     }
 
+    /// Whether any track of `kind` is soloed. While one is, the others of that
+    /// kind are silenced/hidden — the standard NLE rule, scoped per kind so
+    /// soloing a video track does not mute the audio bed.
+    pub fn any_solo(&self, kind: TrackKind) -> bool {
+        self.tracks.iter().any(|t| t.kind == kind && t.solo)
+    }
+
+    /// Whether `track` should be heard (audio) or drawn (video) right now.
+    ///
+    /// This is the single query the preview, the audio path and the export
+    /// renderer should ask — mute and solo interact, and duplicating the rule
+    /// is how they drift apart. Solo wins: while anything of that kind is
+    /// soloed, a non-soloed track is silent even if it is not muted, and a
+    /// soloed track is heard even if it is also muted (soloing is the louder
+    /// statement of intent, and the mute flag is preserved for when solo is
+    /// released).
+    pub fn track_audible(&self, track: TrackId) -> bool {
+        let Some(t) = self.track(track) else { return false };
+        if self.any_solo(t.kind) {
+            return t.solo;
+        }
+        !t.muted
+    }
+
+    /// [`Self::track_audible`] for the track a clip sits on.
+    pub fn clip_audible(&self, id: ClipId) -> bool {
+        self.clip(id).map(|c| self.track_audible(c.track)).unwrap_or(false)
+    }
+
     /// Whether `track` refuses edits. A missing track counts as locked: there
     /// is nothing there to edit.
     pub fn track_locked(&self, track: TrackId) -> bool {
@@ -729,7 +763,7 @@ mod tests {
             kind: TrackKind::Video,
             index: 1,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let tid = t.id;
         p.tracks.push(t);
@@ -807,7 +841,7 @@ mod tests {
             kind: TrackKind::Video,
             index: 2,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let t2id = t2.id;
         p.tracks.push(t2);
@@ -831,7 +865,7 @@ mod tests {
                 kind,
                 index,
                 muted: false,
-                locked: false,
+                locked: false, solo: false,
             });
         }
         let order: Vec<&str> =
@@ -956,7 +990,7 @@ mod tests {
             kind: TrackKind::Video,
             index: 2,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let a1 = Track {
             id: Uuid::new_v4(),
@@ -964,7 +998,7 @@ mod tests {
             kind: TrackKind::Audio,
             index: 1,
             muted: false,
-            locked: false,
+            locked: false, solo: false,
         };
         let (v, a) = (v2.id, a1.id);
         p.tracks.push(v2);
@@ -1034,6 +1068,50 @@ mod tests {
             t.locked = true;
         }
         assert_eq!(p.placement_track(TrackKind::Video, Some(v1)), None);
+    }
+
+    #[test]
+    fn mute_silences_a_track_and_solo_overrides_it() {
+        let (mut p, _m, v1, _cid) = project_with_clip();
+        let (v2, a1) = extra_tracks(&mut p);
+        // Nothing muted or soloed: everything plays.
+        assert!(p.track_audible(v1) && p.track_audible(v2) && p.track_audible(a1));
+        // Mute one.
+        p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+        assert!(!p.track_audible(v1), "a muted track is silent");
+        assert!(p.track_audible(v2), "its neighbours are not");
+        // Solo the other video track: the muted one stays silent, and so does
+        // every other video track — but the audio bed is untouched, because
+        // solo is scoped per kind.
+        p.tracks.iter_mut().find(|t| t.id == v2).unwrap().solo = true;
+        assert!(p.any_solo(TrackKind::Video));
+        assert!(!p.any_solo(TrackKind::Audio));
+        assert!(p.track_audible(v2), "the soloed track plays");
+        assert!(!p.track_audible(v1), "a non-soloed track of that kind does not");
+        assert!(p.track_audible(a1), "audio is unaffected by a video solo");
+    }
+
+    #[test]
+    fn solo_wins_over_mute_on_the_same_track() {
+        let (mut p, _m, v1, _cid) = project_with_clip();
+        {
+            let t = p.tracks.iter_mut().find(|t| t.id == v1).unwrap();
+            t.muted = true;
+            t.solo = true;
+        }
+        assert!(
+            p.track_audible(v1),
+            "soloing a muted track plays it, and keeps the mute flag for when solo is released",
+        );
+        assert!(p.track(v1).unwrap().muted, "the mute flag is preserved");
+    }
+
+    #[test]
+    fn clip_audible_follows_its_track() {
+        let (mut p, _m, v1, cid) = project_with_clip();
+        assert!(p.clip_audible(cid));
+        p.tracks.iter_mut().find(|t| t.id == v1).unwrap().muted = true;
+        assert!(!p.clip_audible(cid));
     }
 
     #[test]
