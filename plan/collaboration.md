@@ -208,6 +208,50 @@ of one that has not, and vice versa, because those are not the same document.
 Apps that have not adopted records keep the `(app, room)` addressing they always
 had.
 
+### Meeting a document you have no history for
+
+Two people who each *start* the same app hold two automerge documents
+with nothing in common. A delta names its dependencies by hash (§4), so
+one sent between them refers to changes the receiver has never seen and
+automerge parks it: presence crosses, the caret moves, and the page
+stays blank. Something has to carry the state the deltas are relative
+to, once.
+
+That frame is `CollabRequest::SyncCRDT` — a whole document — and it
+crosses the peer wire as `NeighbourMsg::AppCrdtSnapshot`, routed by the
+same `(app_id, cluster_id, record_id)` triple as a delta and admitted by
+the same room check.
+
+**It is an answer, not an announcement.** The toolkit emits it from one
+place: a peer's `PresencePayload::Arrived` reaching a process that holds
+the document. A commit produces a delta and never a snapshot. So the
+join is the request, this is the reply, and the rate is once per peer
+that arrives rather than once per keystroke — the same rare, single-shot
+shape as `ScrollbackRequest`/`ScrollbackResponse`, which is what makes a
+broadcast medium tolerable for it at all.
+
+It is deliberately **not** addressed to the joiner. Merging a snapshot
+is idempotent and commutative, so a peer that missed one converges from
+somebody else's copy; addressing it would need the *app* to name a
+recipient and would buy nothing but a narrower path to the same state.
+
+**Bounded, and honest about the bound.** A document has no upper size
+and a gossipsub RPC has one — 64 KiB, the libp2p default this shell does
+not raise. `publish_app_crdt_snapshot` refuses above
+`MAX_APP_SNAPSHOT_BYTES` (48 KiB, leaving the envelope and gossipsub's
+own framing room under that ceiling) rather than handing the transport a
+message it would reject. A document past the cap does not converge, in a
+`warn` line naming the size; it does not half-converge, and it does not
+fail somewhere unattributable.
+
+Raising the ceiling would move that failure rather than remove it, and
+would do it on a medium where every peer in the room pays for every
+byte. Past the cap the right carrier is a direct peer-to-peer stream —
+the substrate already exists in `shell/src/network/surface_stream.rs`,
+which video frames use for exactly the same two reasons: they are large,
+and they concern one peer rather than the room. Wiring a snapshot onto
+it is the next thing to build here.
+
 ### Legacy / foreign Wayland clients
 
 For non-collaboration-aware Wayland clients (anything bound through the per-workspace bridge socket):
