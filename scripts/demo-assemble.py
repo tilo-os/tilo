@@ -130,7 +130,11 @@ def main() -> int:
 
         listing = tmp / "parts.txt"
         listing.write_text("".join(f"file '{p.name}'\n" for p in parts), encoding="utf-8")
-        out = pathlib.Path(args.out)
+        # Absolute: the concat runs with cwd set to the temp directory so
+        # the listing can name its parts relatively, and a relative output
+        # path would be written there — or, as happened, fail to open at
+        # all because its parent does not exist from in there.
+        out = pathlib.Path(args.out).resolve()
         out.parent.mkdir(parents=True, exist_ok=True)
         r = subprocess.run(
             ["ffmpeg", "-v", "error", "-f", "concat", "-safe", "0",
