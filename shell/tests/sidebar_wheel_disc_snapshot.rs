@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
 use shell::shell::sidebar_wheel_disc::{SidebarWheelDisc, SpokeLabel};
@@ -79,6 +79,19 @@ fn try_new_renderer(w: u32, h: u32) -> Option<OffscreenRenderer> {
 /// the same production layout + draw path and can only disagree about the
 /// palette.
 fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, SidebarWheelDisc) {
+    render_disc_at(theme, tr, 0.0)
+}
+
+/// One display slot, in degrees. Mirrors the widget's own step so the
+/// rotation test can ask for "half a detent" without hardcoding it.
+const SPOKE_STEP_DEG: f32 = 15.0;
+
+/// Same disc, laid out and painted at `rotation_deg` of wheel rotation.
+fn render_disc_at(
+    theme: &Theme,
+    tr: &mut TextRenderer,
+    rotation_deg: f32,
+) -> (Scene, SidebarWheelDisc) {
     let spokes = vec![
         SpokeLabel {
             text: "Home".into(),
@@ -156,6 +169,8 @@ fn render_three_spoke_disc(theme: &Theme, tr: &mut TextRenderer) -> (Scene, Side
         )
         .expect("compute_layout");
     disc.apply_layout(&taffy, child, Point::ORIGIN);
+
+    disc.rotation_deg = rotation_deg;
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
@@ -352,5 +367,65 @@ fn the_band_is_filled_flat_with_a_single_colour() {
         hi - lo <= 8,
         "the band is shaded, not flat: luma runs {lo}..{hi} across its radial run \
          at y={y_u} (samples {samples:?})"
+    );
+}
+
+/// The disc is a thing you spin, so its contents have to turn WITH it.
+/// The design this replaced failed exactly there: workspaces were pills
+/// in an upright column and the arc behind them was scenery, so turning
+/// the wheel slid a list and left the disc sitting still.
+///
+/// A label lying on the surface tips as its sector comes round, and that
+/// is the difference, so that is what this measures. The active label is
+/// horizontal at rest — its box is exactly as tall as the label — and a
+/// tilted one needs a taller box to hold the same text. Half a detent is
+/// also the hardest frame to look at, two sectors equally near the
+/// middle, so both renders are written out.
+#[test]
+fn spinning_the_wheel_turns_the_labels_with_it() {
+    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
+        eprintln!("skip: no wgpu adapter available for offscreen render");
+        return;
+    };
+    let mut tr = TextRenderer::new();
+
+    let mut placed = |deg: f32, name: &str| -> Vec<Rect> {
+        let (scene, disc) = render_disc_at(&Theme::dark(), &mut tr, deg);
+        renderer.render_png(
+            &scene,
+            Color::from_rgb8(0x02, 0x06, 0x14),
+            &screenshots_dir().join(format!("wheel-disc-04-{name}.png")),
+        );
+        disc.spoke_hit_rects.clone()
+    };
+
+    let rest = placed(0.0, "rest");
+    let half = placed(SPOKE_STEP_DEG / 2.0, "half-detent");
+
+    let active = 0usize;
+    let rest_box = rest[active];
+    let half_box = half[active];
+    assert!(
+        rest_box.area() > 0.0 && half_box.area() > 0.0,
+        "the active workspace has to be on screen in both frames: {rest_box:?} / {half_box:?}"
+    );
+
+    // Upright at rest: the box is the label, so it is far wider than tall.
+    // Tipped by half a detent: the same label needs a taller box.
+    assert!(
+        half_box.height() > rest_box.height() + 8.0,
+        "the active label did not tip with its sector — box was {:.0} px tall at rest \
+         and {:.0} px tall half a detent on. An upright label beside a turning disc \
+         is the rail this design replaced.",
+        rest_box.height(),
+        half_box.height()
+    );
+
+    // And it travelled: a positive rotation carries a sector downward.
+    let moved = half_box.center().y - rest_box.center().y;
+    assert!(
+        moved > 10.0,
+        "half a detent moved the active label by {moved:.0} px — the sectors are not \
+         turning with the disc"
     );
 }
