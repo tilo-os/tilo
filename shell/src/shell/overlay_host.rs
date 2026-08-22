@@ -8953,9 +8953,10 @@ impl ShellOverlayHost {
     /// Each peer gets a pointer plus a name pill, drawn by the toolkit's
     /// [`ui::presence::draw_peer_cursors`] — the same call an app makes
     /// for the peers inside its own window, so a peer over the desktop
-    /// and a peer over an app are the same thing drawn once. Colours come
-    /// from `PresenceCtx::color_for` so palette pins ("alice" → pink,
-    /// "bob" → orange) survive the round-trip.
+    /// and a peer over an app are the same thing drawn once. Colours are
+    /// settled over the whole room by
+    /// [`ui::presence::assign_peer_colors`], with an explicit roster
+    /// colour outranking it.
     ///
     /// The whole set goes in one call because the names have to be
     /// arranged against each other: two people working side by side put
