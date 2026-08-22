@@ -792,6 +792,85 @@ mod tests {
         );
     }
 
+    /// What arrived has to be *announceable*, not just present.
+    ///
+    /// The guest's tree holding a peer's changes is what every existing
+    /// assertion here checks, and it is not the same as the guest
+    /// seeing them: the shell splices its widget tree only when the
+    /// chrome revision moves, and this ingest runs on the network
+    /// thread, which cannot touch the chrome. So the tree leaves a mark
+    /// the frame loop reads instead. Without it a replicated window sat
+    /// in the guest's tree — readable, assertable, provably there — and
+    /// his screen stayed empty, which is a failure that passes every
+    /// byte-level test in this file.
+    #[test]
+    fn a_round_that_lands_content_is_announced_to_the_frame_loop() {
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let room_a = host_tree.room_of(a).expect("room A");
+
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_ws = guest_tree.append_empty_workspace("Placeholder");
+        assert!(guest_tree.set_room(guest_ws, room_a), "the guest joins room A");
+
+        let tree_a = host_tree.shared();
+        let tree_b = guest_tree.shared();
+        tree_a.write().sync_room_doc(room_a);
+
+        let before = tree_b.read().room_epoch();
+
+        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a.clone())));
+        let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(2, tree_b.clone())));
+        let mut hub = Hub::new();
+        hub.attach(Box::new(ArcReplica(rep_a.clone())));
+        hub.attach(Box::new(ArcReplica(rep_b.clone())));
+        sync_round(&mut hub, &rep_b, &[&rep_a]);
+
+        // Precondition: the round actually delivered something. Without
+        // this the epoch assertion below could pass vacuously on a
+        // round that carried nothing.
+        assert_eq!(
+            tree_a.write().room_heads(room_a),
+            tree_b.write().room_heads(room_a),
+            "the round must have delivered the room document"
+        );
+        assert!(
+            tree_b.read().room_epoch() > before,
+            "content landed in the guest's tree but nothing told the frame              loop to rebuild, so it would never be drawn"
+        );
+    }
+
+    /// And a round that delivered nothing must not claim otherwise —
+    /// an epoch that ticks on every quiet sync would repaint the whole
+    /// shell at gossip rate and make the signal useless.
+    #[test]
+    fn a_round_that_lands_nothing_is_not_announced() {
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let room_a = host_tree.room_of(a).expect("room A");
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_ws = guest_tree.append_empty_workspace("Placeholder");
+        assert!(guest_tree.set_room(guest_ws, room_a));
+
+        let tree_a = host_tree.shared();
+        let tree_b = guest_tree.shared();
+        tree_a.write().sync_room_doc(room_a);
+
+        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a.clone())));
+        let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(2, tree_b.clone())));
+        let mut hub = Hub::new();
+        hub.attach(Box::new(ArcReplica(rep_a.clone())));
+        hub.attach(Box::new(ArcReplica(rep_b.clone())));
+        sync_round(&mut hub, &rep_b, &[&rep_a]);
+        let settled = tree_b.read().room_epoch();
+
+        // Nothing changed on either side; sync again.
+        sync_round(&mut hub, &rep_b, &[&rep_a]);
+        assert_eq!(
+            tree_b.read().room_epoch(),
+            settled,
+            "a sync round that carried no change must not announce one"
+        );
+    }
+
     #[test]
     fn drain_outgoing_returns_fifo_and_clears() {
         let tree = WorkspaceTree::default().shared();
