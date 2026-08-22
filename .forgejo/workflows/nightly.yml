@@ -211,7 +211,7 @@ jobs:
         run: |
           echo "### sccache" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          sccache --show-stats 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          { sccache --show-stats 2>&1 || echo "sccache unavailable"; } | tee -a "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "### cache sizes" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
