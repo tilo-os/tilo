@@ -64,6 +64,13 @@ const PAD: f64 = 14.0;
 /// the timeline's bar is the same object the rest of the fleet shows.
 const SCROLLBAR_THICKNESS: f64 = 8.0;
 const SCROLLBAR_INSET: f64 = 3.0;
+/// Below this (logical px, either axis) the letterboxed preview canvas has no
+/// room to show a frame and the pane says so instead.
+const MIN_CANVAS: f64 = 48.0;
+/// Below this the transport has no room for a scrubber and draws none.
+const MIN_SCRUBBER_W: f64 = 90.0;
+/// Above this a longer bar buys no precision and just looks stretched.
+const MAX_SCRUBBER_W: f64 = 560.0;
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
@@ -882,8 +889,25 @@ impl VideoEditorApp {
         ]
     }
 
+    /// The transport scrubber's track. `Rect::ZERO` when the transport is too
+    /// narrow to hold one — below roughly a 500px window the old unclamped
+    /// arithmetic produced an *inverted* rect (x0 > x1) and drew the knob
+    /// outside its own track. Capped at [`MAX_SCRUBBER_W`] so a very wide
+    /// window does not stretch a 6px knob across three thousand pixels of bar.
     fn scrubber_rect(&self, r: &Regions) -> Rect {
-        Rect::new(r.transport.x0 + 220.0, r.transport.y0 + 38.0, r.transport.x1 - 16.0, r.transport.y0 + 46.0)
+        let left = r.transport.x0 + 220.0;
+        let right = r.transport.x1 - 16.0;
+        if right - left < MIN_SCRUBBER_W {
+            return Rect::ZERO;
+        }
+        let w = (right - left).min(MAX_SCRUBBER_W);
+        let y0 = r.transport.y0 + 38.0;
+        Rect::new(left, y0, left + w, y0 + 8.0)
+    }
+
+    /// Whether the transport currently has room for a scrubber.
+    fn has_scrubber(&self, r: &Regions) -> bool {
+        self.scrubber_rect(r).width() > 1.0
     }
 
     /// Media for the bin in a stable, meaningful order: visual media
@@ -2145,8 +2169,10 @@ impl VideoEditorApp {
     }
 
     fn export_layout(&self, r: &Regions) -> ExportLayout {
-        let card_w = 460.0;
-        let card_h = 360.0;
+        // Clamp to the window: a fixed 460x360 hung off both edges of a small
+        // one, putting the Cancel and Export buttons outside the surface.
+        let card_w = 460.0_f64.min(self.rect.width() - 32.0).max(240.0);
+        let card_h = 360.0_f64.min(self.rect.height() - 32.0).max(200.0);
         let cx = (r.timeline.x0 + r.timeline.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         let card = Rect::new(cx - card_w / 2.0, cy - card_h / 2.0, cx + card_w / 2.0, cy + card_h / 2.0);
@@ -3092,7 +3118,10 @@ impl VideoEditorApp {
             }
         }
         let scrub = self.scrubber_rect(r);
-        if scrub.contains(p) || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0) {
+        if self.has_scrubber(r)
+            && (scrub.contains(p)
+                || (p.x >= scrub.x0 && p.x <= scrub.x1 && (p.y - scrub.center().y).abs() < 14.0))
+        {
             self.drag = Some(Drag::Scrubber);
             self.apply_scrubber(p, r);
             return;
@@ -3618,6 +3647,9 @@ impl VideoEditorApp {
 
     fn apply_scrubber(&mut self, p: Point, r: &Regions) {
         let scrub = self.scrubber_rect(r);
+        if scrub.width() <= 1.0 {
+            return;
+        }
         let frac = ((p.x - scrub.x0) / scrub.width()).clamp(0.0, 1.0);
         self.playhead = (frac * self.project.duration()).clamp(0.0, self.project.duration());
         self.playing = false;
@@ -3678,20 +3710,13 @@ impl VideoEditorApp {
         if r.bin_overlay {
             self.draw_hamburger(scene, tf, theme, r.menu_btn);
         }
-        // Project meta, centered-ish.
-        let meta = format!(
-            "{}   ·   {}×{}   ·   {:.0} fps   ·   {}",
-            self.project.name,
-            self.project.width,
-            self.project.height,
-            self.project.fps,
-            timecode(self.project.duration(), self.project.fps),
-        );
-        let (mw, _) = tr.measure(&meta, 13.0, None);
-        text(scene, tr, tf, &meta, 13.0, c.text_dim, (self.rect.x0 + self.rect.x1) / 2.0 - mw as f64 / 2.0, r.topbar.y0 + 17.0);
-        // Buttons.
+        // No project meta here. It used to be centred across the topbar, where
+        // it collided with these buttons at 720px — the `--narrow` capture
+        // width itself — and it carried the project *name*, which belongs to
+        // the window title the OS draws. The technical meta now lives in the
+        // transport, beside the timecode it belongs with.
         draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false);
-        draw_button(scene, tf, tr, theme, r.split_btn, "Split  (S)", false);
+        draw_button(scene, tf, tr, theme, r.split_btn, "Split (S)", false);
         draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true);
     }
 
@@ -3887,8 +3912,34 @@ impl VideoEditorApp {
     fn draw_preview(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
         let c = &theme.tokens.colors;
         fill_rect(scene, tf, c.surfaces.base, r.preview);
-        // Canvas backdrop (letterbox black).
         let canvas = r.canvas;
+        // A short window crushes the letterboxed canvas to a few pixels. There
+        // is nothing to show at that size, and the HUD and safe-area guide
+        // drawn at fixed offsets would land outside it; say so instead.
+        if canvas.width() < MIN_CANVAS || canvas.height() < MIN_CANVAS {
+            let msg = "Not enough room for the preview";
+            let (w, _) = tr.measure(msg, 11.5, None);
+            let area = Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0);
+            if area.height() > 16.0 {
+                text(
+                    scene, tr, tf, msg, 11.5, c.text_dim,
+                    area.center().x - w as f64 / 2.0,
+                    area.center().y - 7.0,
+                );
+            }
+            return;
+        }
+        // Everything below is clipped to the preview pane, so an overlay drawn
+        // at a fixed offset from the canvas can never bleed into the bin, the
+        // inspector or the transport.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.preview.x0, r.preview.y0, r.preview.x1, r.transport.y0),
+        );
+        // Canvas backdrop (letterbox black).
         fill_rect(scene, tf, Color::BLACK, canvas);
         // The composited frame is computed once, here, by the preview module —
         // the same colour-grade + fade math the (gated) decode path and export
@@ -3962,6 +4013,7 @@ impl VideoEditorApp {
         text(scene, tr, tf, badge, 9.5, badge_col, canvas.x0 + 10.0, canvas.y1 - 18.0);
         // Safe-area guide.
         stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
+        scene.pop_layer();
     }
 
     fn draw_transport(&self, scene: &mut Scene, tf: Affine, tr: &mut TextRenderer, theme: &Theme, r: &Regions) {
@@ -3981,9 +4033,26 @@ impl VideoEditorApp {
         text_w(scene, tr, tf, &big, 18.0, c.text_primary, r.transport.x0 + 220.0, r.transport.y0 + 8.0, TextWeight::Bold);
         let total = format!("/  {}", timecode(self.project.duration(), self.project.fps));
         let (bw, _) = tr.measure_weighted(&big, 18.0, None, TextWeight::Bold);
-        text(scene, tr, tf, &total, 13.0, c.text_dim, r.transport.x0 + 224.0 + bw as f64, r.transport.y0 + 13.0);
+        let total_x = r.transport.x0 + 224.0 + bw as f64;
+        let (tw, _) = tr.measure(&total, 13.0, None);
+        text(scene, tr, tf, &total, 13.0, c.text_dim, total_x, r.transport.y0 + 13.0);
+        // Project format, right-aligned in the transport — the app's own
+        // content area, rather than the OS's title slot. Dropped entirely when
+        // the transport is too narrow to hold it clear of the timecode.
+        let meta = format!(
+            "{}×{} · {:.0} fps",
+            self.project.width, self.project.height, self.project.fps
+        );
+        let (mw, _) = tr.measure(&meta, 11.5, None);
+        let meta_x = r.transport.x1 - 16.0 - mw as f64;
+        if meta_x > total_x + tw as f64 + 16.0 {
+            text(scene, tr, tf, &meta, 11.5, c.text_dim, meta_x, r.transport.y0 + 14.0);
+        }
         // Scrubber.
         let scrub = self.scrubber_rect(r);
+        if scrub.width() <= 1.0 {
+            return;
+        }
         fill_rrect(scene, tf, c.neutral[3], scrub, 4.0);
         let frac = (self.playhead / self.project.duration()).clamp(0.0, 1.0);
         let filled = Rect::new(scrub.x0, scrub.y0, scrub.x0 + scrub.width() * frac, scrub.y1);
@@ -6008,6 +6077,155 @@ mod tests {
             VideoDoc::load_project(&doc).track(tid).map(|t| t.locked).unwrap_or(false),
             "the menu entry locked the track in the CRDT",
         );
+    }
+
+    // ---- responsive geometry ---------------------------------------------
+
+    /// The app laid out at an arbitrary window size, synced to the sample.
+    fn app_sized(w: f64, h: f64) -> (VideoEditorApp, AutoCommit) {
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, w, h);
+        app.sync(&mut doc, &automerge::ROOT);
+        (app, doc)
+    }
+
+    /// Window sizes worth proving, from the narrow capture width up.
+    const SIZES: [(f64, f64); 8] = [
+        (420.0, 560.0),
+        (500.0, 640.0),
+        (620.0, 700.0),
+        (720.0, 820.0),
+        (900.0, 700.0),
+        (1280.0, 800.0),
+        (1920.0, 1080.0),
+        (3440.0, 1440.0),
+    ];
+
+    #[test]
+    fn no_region_is_inverted_at_any_window_size() {
+        for (w, h) in SIZES {
+            let (app, _doc) = app_sized(w, h);
+            let r = app.regions();
+            for (name, rect) in [
+                ("topbar", r.topbar),
+                ("preview", r.preview),
+                ("canvas", r.canvas),
+                ("transport", r.transport),
+                ("inspector", r.inspector),
+                ("timeline", r.timeline),
+                ("ruler", r.ruler),
+                ("gutter", r.gutter),
+                ("lanes", r.lanes),
+            ] {
+                assert!(
+                    rect.x1 >= rect.x0 && rect.y1 >= rect.y0,
+                    "{name} is inverted at {w}x{h}: {rect:?}",
+                );
+            }
+            let scrub = app.scrubber_rect(&r);
+            assert!(
+                scrub.x1 >= scrub.x0 && scrub.y1 >= scrub.y0,
+                "the scrubber is inverted at {w}x{h}: {scrub:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_scrubber_knob_stays_inside_its_track_at_every_size() {
+        // Regression: below roughly 500px the track went inverted and the knob
+        // drew outside it; above about 2000px it stretched edge to edge.
+        for (w, h) in SIZES {
+            let (mut app, _doc) = app_sized(w, h);
+            let r = app.regions();
+            let scrub = app.scrubber_rect(&r);
+            if !app.has_scrubber(&r) {
+                assert_eq!(scrub, Rect::ZERO, "a transport with no room draws no scrubber");
+                continue;
+            }
+            assert!(
+                scrub.width() <= MAX_SCRUBBER_W + 1.0,
+                "the scrubber is capped at {w}x{h} (got {})",
+                scrub.width(),
+            );
+            assert!(scrub.x1 <= r.transport.x1, "and stays inside the transport");
+            for frac in [0.0, 0.5, 1.0] {
+                app.playhead = frac * app.project.duration();
+                let knob_x = scrub.x0 + scrub.width() * frac;
+                assert!(
+                    knob_x >= scrub.x0 - 0.001 && knob_x <= scrub.x1 + 0.001,
+                    "the knob is inside the track at {w}x{h}, frac {frac}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_export_dialog_stays_inside_the_window() {
+        // Regression: a fixed 460x360 card hung off both edges of a small
+        // window, putting Cancel and Export outside the surface.
+        for (w, h) in SIZES {
+            let (mut app, _doc) = app_sized(w, h);
+            app.show_export = true;
+            let r = app.regions();
+            let l = app.export_layout(&r);
+            assert!(
+                l.card.x0 >= app.rect.x0 && l.card.x1 <= app.rect.x1,
+                "the export card fits horizontally at {w}x{h}: {:?}",
+                l.card,
+            );
+            assert!(
+                l.card.y0 >= app.rect.y0 && l.card.y1 <= app.rect.y1,
+                "the export card fits vertically at {w}x{h}: {:?}",
+                l.card,
+            );
+            for (name, btn) in [("cancel", l.cancel), ("confirm", l.confirm)] {
+                assert!(
+                    btn.x0 >= app.rect.x0 && btn.x1 <= app.rect.x1
+                        && btn.y0 >= app.rect.y0 && btn.y1 <= app.rect.y1,
+                    "the {name} button is on screen at {w}x{h}: {btn:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_topbar_buttons_never_collide_with_other_topbar_content() {
+        // The centred project-meta string used to run under these buttons at
+        // 720px — the narrow capture width itself. It now lives in the
+        // transport, so the topbar holds only the hamburger and the buttons.
+        for (w, h) in SIZES {
+            let (app, _doc) = app_sized(w, h);
+            let r = app.regions();
+            let btns = [r.import_btn, r.split_btn, r.export_btn];
+            for (i, a) in btns.iter().enumerate() {
+                for b in btns.iter().skip(i + 1) {
+                    assert!(
+                        a.x1 <= b.x0 || b.x1 <= a.x0,
+                        "topbar buttons overlap at {w}x{h}: {a:?} vs {b:?}",
+                    );
+                }
+                if r.menu_btn.width() > 0.0 {
+                    assert!(
+                        r.menu_btn.x1 <= a.x0,
+                        "the hamburger clears the buttons at {w}x{h}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_window_size_renders_without_panicking() {
+        // The draw pass is where clip layers must balance and where a crushed
+        // canvas would otherwise put a HUD outside its pane.
+        for (w, h) in SIZES {
+            let (mut app, _doc) = app_sized(w, h);
+            render(&mut app);
+            app.show_export = true;
+            render(&mut app);
+        }
     }
 
     // ---- pane scrolling ---------------------------------------------------
