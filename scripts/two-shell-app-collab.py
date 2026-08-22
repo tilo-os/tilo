@@ -302,8 +302,20 @@ class Session:
         first window half off the left edge. The direction of a wheel
         step is settled by taking one and looking, rather than assumed.
         """
+        # Park the pointer somewhere no window covers first. A wheel
+        # event over a window belongs to that window -- the app eats it
+        # and the strip never moves, which looks exactly like a strip
+        # that has run out of scroll.
+        def empty_spot() -> tuple[float, float]:
+            rects = [s["rect"] for s in self.surfaces() if s.get("rect")]
+            for x in (width - 20, 20, width / 2):
+                if all(not (r["x"] <= x <= r["x"] + r["w"]) for r in rects):
+                    return (x, 458.0)
+            return (width - 20, 40.0)
+
         step = 3.0
         for _ in range(tries):
+            self.pointer_move(*empty_spot())
             span = self.window_span()
             if span is None:
                 return False
