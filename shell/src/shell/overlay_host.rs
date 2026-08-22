@@ -11637,13 +11637,6 @@ mod overlay_event_absorb_tests {
         paint(h);
     }
 
-    /// The kind chips and the scope switch moved inside the palette
-    /// card. Clicking one must still filter — and must not be taken for
-    /// a click outside the card, which is the dismissal gesture.
-    ///
-    /// Drives the production `handle_event` router against the rects the
-    /// production `draw` just cached, so the two cannot drift apart.
-    #[test]
     /// **Every filter has to be reachable at every width.**
     ///
     /// The strip used to stop painting at the first chip that did not
@@ -11833,6 +11826,12 @@ mod overlay_event_absorb_tests {
         }
     }
 
+    /// The kind chips and the scope switch moved inside the palette
+    /// card. Clicking one must still filter — and must not be taken for
+    /// a click outside the card, which is the dismissal gesture.
+    ///
+    /// Drives the production `handle_event` router against the rects the
+    /// production `draw` just cached, so the two cannot drift apart.
     #[test]
     fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
         let mut h = build_harness();
