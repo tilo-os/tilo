@@ -1012,18 +1012,53 @@ impl ShellNetwork {
         let addr = self
             .dial_addr()
             .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
-        let tree = replica.tree.read();
-        let ws = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == local)
-            .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
-        crate::network::invite::make_invite_token(&self.keypair, ws, &addr, expiry_seconds_from_now)
-            .map_err(|e| e.to_string())
+        let (token, room) = {
+            let replica = self
+                .replica
+                .lock()
+                .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+            let tree = replica.tree.read();
+            let ws = tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == local)
+                .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
+            let token = crate::network::invite::make_invite_token(
+                &self.keypair,
+                ws,
+                &addr,
+                expiry_seconds_from_now,
+            )
+            .map_err(|e| e.to_string())?;
+            (token, ws.room)
+        };
+
+        // Nobody invites the inviter.
+        //
+        // Names reach a guest's screen from the room document, written
+        // by the room's authority and refused from anyone else. Every
+        // peer in the room is named by whoever invited them — except
+        // the person who did the inviting, who therefore showed up on
+        // their guests' screens as an id while everybody else had a
+        // name.
+        //
+        // This closes that without inventing anything. The name is the
+        // identity this machine is configured with, and it is written
+        // by the room's own authority onto the same replicated,
+        // authority-checked channel every other name travels on — so a
+        // guest checks it exactly the way it checks the others, and
+        // cannot forge it. Self-declared, but declared by the one
+        // party a guest already has to trust about this room.
+        //
+        // Best effort: a machine that does not administer the room has
+        // its write refused, and the host stays an id rather than the
+        // invite failing over a label.
+        if let Ok(replica) = self.replica.lock() {
+            let me = crate::shell::state::local_user_id();
+            let peer = self.local_peer_id.to_base58();
+            replica.tree.write().name_peer(room, &me, &peer, &me);
+        }
+        Ok(token)
     }
 
     /// Accept an invite token into `local`, then immediately ask the
