@@ -161,6 +161,13 @@ def main() -> None:
         "QOS_TEST_CONTROL": str(ctl),
         "NIRIOS_HEADLESS_SIZE": "1600x900",
         "RUST_LOG": "warn,shell=info",
+        # The sandbox does not clear the environment, so the host locale
+        # reaches the app and a de_DE machine renders the word processor's
+        # chrome in German. Any frame this writes could end up as footage,
+        # and half-translated chrome reads as broken software.
+        "LC_ALL": "en_US.UTF-8",
+        "LANG": "en_US.UTF-8",
+        "LANGUAGE": "en_US",
     })
     procs = []
     try:
