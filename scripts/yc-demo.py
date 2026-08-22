@@ -59,6 +59,13 @@ import shutil
 import signal
 import socket
 import subprocess
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "headless-examples"))
+from reaper import die_with_parent
+
+# Set from `--keep`. Off means the kernel reaps a compositor with this
+# script, however this script dies.
+KEEP_SESSIONS = False
 import sys
 import threading
 import time
@@ -109,8 +116,12 @@ SYNC_TIMEOUT_S = 25.0
 # gossip, drain on the far side, apply, paint. Given its own budget so a
 # slow hop is not reported as a failure to converge.
 DOC_SYNC_TIMEOUT_S = 60.0
-# An app launch is a sandbox spawn plus a first frame.
-LAUNCH_TIMEOUT_S = 90.0
+# An app launch is a sandbox spawn, a Wayland connection, a toolkit
+# starting up and a first frame. Generous because none of that is qOS
+# being slow when the machine is busy: at a load average near a hundred
+# this has been measured past two minutes, and a launch reported as
+# failed because the harness gave up is the worst kind of wrong answer.
+LAUNCH_TIMEOUT_S = 240.0
 # What one `snapshot` is allowed to block its session for. Deliberately
 # far above what it costs: the op re-renders and encodes on the
 # compositor's own loop, and on a machine that is busy compiling
@@ -246,12 +257,20 @@ class Session:
             [self.binary, "--mode", "native", "--backend", "headless",
              "--enable-peer-sync"],
             cwd=REPO, env=env, stdout=self._log, stderr=subprocess.STDOUT,
-            # Its own session, so `--keep` actually keeps: otherwise the
-            # children share this process's group and die with it the
-            # moment the script returns, which made "left running" a
-            # message printed about three processes that were already
-            # gone. `stop()` still reaches them by pid.
-            start_new_session=True,
+            # `--keep` genuinely keeps: without a session of its own a
+            # child dies with this process's group the moment the script
+            # returns, which made "left running" a message printed about
+            # three processes that were already gone.
+            #
+            # Every other run asks the kernel to kill the child when this
+            # process dies. `atexit` cannot cover that: a harness that
+            # hangs is stopped with SIGKILL, and nothing in userspace runs
+            # afterwards. Eleven compositors were once found still
+            # spinning at 80% CPU each, the oldest 47 minutes after the
+            # run that spawned it — most of a machine, held by runs that
+            # had already been abandoned.
+            start_new_session=KEEP_SESSIONS,
+            preexec_fn=die_with_parent(enabled=not KEEP_SESSIONS),
         )
 
     def wait_ready(self, timeout: float = 90.0) -> None:
@@ -1840,6 +1859,11 @@ def main() -> int:
                          "capture rate is whatever was achieved, and frames "
                          "are held, never interpolated, to fill it")
     args = ap.parse_args()
+
+    # The spawn site reads this: only a run that means to leave sessions
+    # behind detaches them from this process's fate.
+    global KEEP_SESSIONS
+    KEEP_SESSIONS = args.keep
 
     # No fallback and no fixture: this demonstration is only meaningful
     # against the real compositor, so a missing binary is an exit, never
