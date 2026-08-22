@@ -3560,13 +3560,14 @@ mod tests {
         // press handler hit-tests against it, and it's `Rect::ZERO`
         // until the first draw pass runs.
         let _ = fb.paint();
-        // Find the wheel disc rect by its opt-in `test_id`. We then
-        // approximate the plus slot's position: it's a 28 px disc
-        // centred on the visible footprint, 8 px below the visible
-        // arc's bottom tip (see `sidebar_wheel_disc::draw`). Rather
-        // than re-derive that arithmetic, click slightly below the
-        // wheel's centre — close enough to land inside the plus rect
-        // on the bootstrap layout.
+        // Find the wheel disc rect by its opt-in `test_id`, then search
+        // it for the affordance rather than re-deriving where `draw`
+        // puts it. Sweeping only the footprint's vertical centre-line
+        // was enough while the plus slot sat on that line; it is not a
+        // property of the design, and the sweep silently stopped
+        // crossing the affordance when the slot became the tail row of
+        // the rail column. Scanning the whole footprint asserts the
+        // same thing about a layout the test does not have to know.
         let registry = fb.widget_registry();
         let wheel_rect = registry
             .get("wheel_disc")
@@ -3575,38 +3576,42 @@ mod tests {
 
         let initial_count = fb.chrome().tree().workspaces.len();
 
-        // Walk down the wheel rect's vertical axis in 4 px increments
-        // until a click lands on the plus slot (adds a workspace).
-        // The plus slot is near the bottom of the wheel disc; this
-        // sweep avoids hard-coding the exact y the wheel's `draw`
-        // pass uses internally.
+        // Sweep the footprint from the bottom up in 4 px rows, 8 px
+        // across, clicking until one lands on the affordance. Clicks
+        // that miss are harmless here: a press on the rim starts a drag
+        // that a release with no motion snaps straight back, and a press
+        // on a workspace row switches workspace — neither creates one,
+        // so only the affordance can satisfy the assertion.
         let mut ctx = TestControlCtx::new();
-        let cx = (wheel_rect.x0 + wheel_rect.x1) / 2.0;
         let mut found = false;
-        let mut y = wheel_rect.y0 + 8.0;
-        while y < wheel_rect.y1 {
-            execute_planned_action(&PlannedAction::CursorMoved { x: cx, y }, &mut fb, &mut ctx);
-            execute_planned_action(
-                &PlannedAction::MouseLeftButton { pressed: true },
-                &mut fb,
-                &mut ctx,
-            );
-            execute_planned_action(
-                &PlannedAction::MouseLeftButton { pressed: false },
-                &mut fb,
-                &mut ctx,
-            );
-            if fb.chrome().tree().workspaces.len() > initial_count {
-                found = true;
-                break;
+        let mut y = wheel_rect.y1 - 4.0;
+        'sweep: while y > wheel_rect.y0 {
+            let mut x = wheel_rect.x0 + 4.0;
+            while x < wheel_rect.x1 {
+                execute_planned_action(&PlannedAction::CursorMoved { x, y }, &mut fb, &mut ctx);
+                execute_planned_action(
+                    &PlannedAction::MouseLeftButton { pressed: true },
+                    &mut fb,
+                    &mut ctx,
+                );
+                execute_planned_action(
+                    &PlannedAction::MouseLeftButton { pressed: false },
+                    &mut fb,
+                    &mut ctx,
+                );
+                if fb.chrome().tree().workspaces.len() > initial_count {
+                    found = true;
+                    break 'sweep;
+                }
+                x += 8.0;
             }
-            y += 4.0;
+            y -= 4.0;
         }
         assert!(
             found,
-            "sweep of clicks down the wheel disc's vertical axis \
-             should hit the plus slot and grow the workspace count \
-             from {initial_count}"
+            "sweep of clicks across the wheel disc's footprint should hit the \
+             add-workspace affordance and grow the workspace count from \
+             {initial_count}"
         );
     }
 
