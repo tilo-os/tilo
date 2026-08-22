@@ -1106,13 +1106,13 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(p.to_string());
         }
-        // Service sockets: apps need read + write on the socket path
-        // to actually talk over them.
-        for sb in &binds {
-            let path = crate::sandbox::sandbox_service_path(&sb.name);
-            argv.push("--rw".to_string());
-            argv.push(path.display().to_string());
-        }
+        // Service sockets get no Landlock rule, deliberately. They
+        // reach the app as already-connected descriptors dup2'd into
+        // place by `place_service_fds`, so nothing under
+        // `/run/qos/services` is ever mounted and no open() is ever
+        // performed on one — a path rule here would name a file that
+        // does not exist and be skipped every launch.
+        //
         // The gate socket is reached with connect(2), which is a
         // write-flavoured access on a pathname socket — a read-only
         // rule surfaces as EACCES at connect time, exactly like the
