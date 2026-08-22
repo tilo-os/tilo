@@ -519,21 +519,57 @@ class Session:
 
     # -- launching ---------------------------------------------------
 
-    def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S) -> dict | None:
+    def launch(self, app_id: str, timeout: float = LAUNCH_TIMEOUT_S,
+               search: str | None = None) -> dict | None:
         """Start an app by its id and wait for it to present a frame.
 
         The surfaces that already existed are excluded, because every app
         announces the same wayland app-id: a launch that opened nothing
         is otherwise indistinguishable from one that worked, the previous
         window still being on screen and still painting.
+
+        Two routes, and falling from one to the other is a fact about the
+        compositor rather than a preference. `actions_invoke` resolves an
+        address against a catalogue built with an **empty** query
+        (`native.rs:606`), and the applications provider answers an empty
+        query with a ranked default set rather than with all of it. On a
+        session with forty-odd apps installed most of them are therefore
+        unaddressable that way, and the refusal is `unknown_action` — the
+        same answer as "no such app", because the gate deliberately will
+        not tell a caller what it is not being shown.
+
+        So when the address is refused, the app is opened the way a
+        person opens it: the palette, its name typed, the offered row
+        activated. Same provider, same launch path, one keystroke instead
+        of none — and the route taken is printed, because "opened by
+        address" and "opened by typing its name" are different claims and
+        only one of them was true.
         """
         before = {f.get("surface_id") for f in self.foreign_frames()}
         resp = call(self.sock, {"op": "actions_invoke",
                                 "provider": APPLICATIONS, "id": app_id})
         if "err" in resp:
-            note(f"{self.name}: launching {app_id} was refused — "
-                 f"{json.dumps(resp['err'])[:160]}")
-            return None
+            code = (resp["err"] or {}).get("code")
+            if code != "unknown_action" or search is None:
+                note(f"{self.name}: launching {app_id} was refused — "
+                     f"{json.dumps(resp['err'])[:160]}")
+                return None
+            note(f"{self.name}: ({APPLICATIONS}, {app_id}) is not in the "
+                 f"catalogue an empty query builds, so it is opened from "
+                 f"the palette instead — searching {search!r}")
+            self.modifiers(logo=True)
+            self.key("k")
+            self.modifiers()
+            self.settle(0.4)
+            self.type_text(search)
+            self.settle(1.2)
+            rows = self.palette().get("rows") or []
+            if not any(app_id in json.dumps(r) for r in rows):
+                note(f"{self.name}: no palette row offers {app_id} for "
+                     f"{search!r} (rows: {[r.get('id') for r in rows][:6]})")
+                self.key("Escape")
+                return None
+            self.key("Enter")
         deadline = time.time() + timeout
         while time.time() < deadline:
             for f in self.foreign_frames():
@@ -1738,24 +1774,33 @@ def beat_five(ada: Session, registry, shots: str) -> dict | None:
     return painted
 
 
-def beat_six(ada: Session, bob: Session, shots: str) -> str | None:
+def beat_six(ada: Session, bob: Session, baseline: dict,
+             shots: str) -> str | None:
     banner("6.  cut to bob — the window is open for him too")
 
-    # Where bob is looking, before anything arrives. Both halves of the
-    # rule get asserted, because either alone is easy to satisfy wrongly:
-    # the window must arrive, *and* he must not be moved to it.
+    # Both halves of the rule get asserted, because either alone is easy
+    # to satisfy wrongly: the window must arrive, *and* he must not be
+    # moved to it.
+    #
+    # The baseline is taken before beat 5 opens anything, not here.
+    # Measuring "a tab ada has that bob lacks" at this point asks
+    # the question after the answer: replication is quick, and a run
+    # where the window had already crossed reported that there was
+    # nothing to watch — the success and the failure both came out as
+    # silence. What is watched instead is the tab that did not exist
+    # when the baseline was taken, which is the window beat 5 opened.
     cut("bob")
-    before_view = bob.view_state()
-    before_groups = bob.groups_here()
+    before_view = baseline["view"]
+    before_groups = baseline["groups"]
     q_tabs = set(ada.tabs_here())
-    fresh = [t for t in q_tabs if t not in set(bob.tabs_here())]
+    fresh = [t for t in q_tabs if t not in baseline["tabs"]]
     note(f"ada holds {len(q_tabs)} tab(s); bob holds "
-         f"{len(bob.tabs_here())}")
+         f"{len(bob.tabs_here())}; {len(fresh)} opened since the baseline")
 
     step("the tab ada's word processor opened, read out of bob's tree")
     if not fresh:
-        gap("ada's session had no tab bob lacked, so there was "
-            "nothing to watch cross")
+        gap("beat 5 opened no window on ada's session, so there was "
+            "nothing for this beat to watch cross")
         return None
     tid = sorted(fresh)[0]
     landed = wait_for(lambda: tid in bob.tabs_here(), timeout=DOC_SYNC_TIMEOUT_S)
@@ -1803,7 +1848,7 @@ def beat_seven(ada: Session, bob: Session, host_ws: dict,
     cut("bob")
     # His machine runs its own copy and draws it locally. Nothing is
     # streamed; the two copies share one document.
-    his = bob.launch(WORD_PROCESSOR)
+    his = bob.launch(WORD_PROCESSOR, search="word processor")
     claim("bob's word processor painted", his is not None, True)
     if his is None:
         gap("bob has no word processor open, so there is no far screen "
@@ -1935,14 +1980,29 @@ def beat_eight(ada: Session, shots: str) -> None:
     # The image control sits in the toolbar strip under the tile's top
     # edge. Swept rather than guessed once: a miss is a click on inert
     # chrome, and the chooser opening is what says it was hit.
-    for frac in (0.34, 0.40, 0.46, 0.28, 0.52, 0.58, 0.22, 0.64):
-        ada.click_at(tx + tw * frac, ty + th * 0.055)
-        ada.settle(1.1)
-        names = set(ada.target_names())
-        fresh = {n for n in names if n not in before}
-        if any("chooser" in n.lower() or "file_row" in n.lower()
-               or "portal" in n.lower() for n in fresh):
-            opened = sorted(fresh)[:8]
+    #
+    # Two dimensions, because one was not enough. The toolbar's distance
+    # from the top of the tile depends on what the app stacked above it —
+    # a tab strip, a title row — and a sweep along a single line at 5.5%
+    # crossed inert chrome on every step and concluded the control was
+    # not there. The rows are ordered nearest-first so the usual case
+    # still lands in the first few clicks.
+    #
+    # The button carries `a11y-insert-image` inside the app's own widget
+    # tree (`apps/word-processor/src/widget.rs:4231`), which is exactly
+    # the name this would use if a client's widgets were addressable from
+    # the compositor. They are not, so this stays aimed at pixels.
+    for row in (0.055, 0.085, 0.035, 0.115):
+        for frac in (0.34, 0.40, 0.46, 0.28, 0.52, 0.58):
+            ada.click_at(tx + tw * frac, ty + th * row)
+            ada.settle(0.7)
+            names = set(ada.target_names())
+            fresh = {n for n in names if n not in before}
+            if any("chooser" in n.lower() or "file_row" in n.lower()
+                   or "portal" in n.lower() for n in fresh):
+                opened = sorted(fresh)[:8]
+                break
+        if opened:
             break
     if opened is None:
         gap("the word processor's image control was not found by sweeping "
@@ -2060,8 +2120,17 @@ def run(ada: Session, bob: Session, agent: Session, shots: str,
     beat_two(ada, bob, host_ws)
     beat_three(ada, agent, host_ws)
     beat_four(ada, bob, agent, host_ws, shots)
+    # Everything bob holds and is looking at *before* the word
+    # processor exists anywhere. Beat 6 measures against this rather than
+    # against the state it finds when it starts, so "the window crossed
+    # before we looked" reads as the success it is.
+    baseline = {
+        "tabs": set(bob.tabs_here()),
+        "view": bob.view_state(),
+        "groups": bob.groups_here(),
+    }
     wp = beat_five(ada, registry, shots)
-    beat_six(ada, bob, shots)
+    beat_six(ada, bob, baseline, shots)
     beat_seven(ada, bob, host_ws, wp, shots)
     beat_eight(ada, shots)
     beat_nine(ada, bob, agent, shots)
