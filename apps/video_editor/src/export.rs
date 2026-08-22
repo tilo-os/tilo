@@ -55,11 +55,15 @@ pub enum Container {
 
 impl Container {
     pub const ALL: [Container; 3] = [Container::Mp4, Container::WebM, Container::Mov];
+    /// What the encoder actually produces — not what the container is
+    /// capable of. WebM here is VP8 and MOV is H.264, because that is what
+    /// [`encode_chain`] plugs; naming VP9 or ProRes would be telling the
+    /// user they are getting a codec this pipeline never writes.
     pub fn label(self) -> &'static str {
         match self {
             Container::Mp4 => "MP4 / H.264",
-            Container::WebM => "WebM / VP9",
-            Container::Mov => "MOV / ProRes",
+            Container::WebM => "WebM / VP8",
+            Container::Mov => "MOV / H.264",
         }
     }
     pub fn extension(self) -> &'static str {
@@ -115,13 +119,15 @@ impl Default for ExportSettings {
 }
 
 impl ExportSettings {
-    /// Estimated output size in megabytes for a `duration`-second project,
-    /// video bitrate only plus a flat audio allowance. Shown live in the
-    /// dialog as the user flips presets.
+    /// Estimated output size in megabytes for a `duration`-second project.
+    ///
+    /// Video only, because video is all the pipeline encodes — there is no
+    /// audio track in the output, so charging the estimate for one would
+    /// quote the user a size for something they are not getting. The
+    /// figure is honest for the same reason the bitrate is real: the
+    /// encoder is told to hit [`Resolution::target_mbps`].
     pub fn estimated_mb(&self, duration: f64) -> f64 {
-        let video_mbits = self.resolution.target_mbps() * duration;
-        let audio_mbits = 0.256 * duration; // ~256 kbps stereo
-        (video_mbits + audio_mbits) / 8.0
+        self.resolution.target_mbps() * duration / 8.0
     }
 
     pub fn suggested_filename(&self, project: &str) -> String {
@@ -158,6 +164,17 @@ pub fn encode_chain(container: Container) -> (&'static str, Option<&'static str>
     }
 }
 
+/// The encoder property that carries a target bitrate in bits per second.
+/// Both encoders default far below any of the presets — openh264enc sits at
+/// 128 kbps — so without setting this the size estimate in the dialog would
+/// be describing a bitrate nothing was ever asked to hit.
+fn bitrate_property(container: Container) -> &'static str {
+    match container {
+        Container::Mp4 | Container::Mov => "bitrate",
+        Container::WebM => "target-bitrate",
+    }
+}
+
 /// Build the `gst-launch`-style pipeline description the export runs: a raw
 /// RGBA `appsrc` (fed the composited frames) through `videoconvert`, the
 /// container's encode chain, and a `filesink`. Pure, so the exact graph is
@@ -166,10 +183,12 @@ pub fn pipeline_desc(settings: &ExportSettings, w: u32, h: u32, out: &str) -> St
     let (enc, parse, mux) = encode_chain(settings.container);
     let fps = settings.frame_rate.fps() as u32;
     let parse = parse.map(|p| format!("{p} ! ")).unwrap_or_default();
+    let bitrate = (settings.resolution.target_mbps() * 1_000_000.0) as u64;
+    let bitrate_prop = bitrate_property(settings.container);
     format!(
         "appsrc name=qos_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
-         ! videoconvert ! {enc} ! {parse}{mux} ! filesink location={out}"
+         ! videoconvert ! {enc} {bitrate_prop}={bitrate} ! {parse}{mux} ! filesink location={out}"
     )
 }
 
@@ -202,6 +221,22 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
     dir.join(settings.suggested_filename(&project.name))
 }
 
+/// Why export cannot run in this build, or `None` when it can.
+///
+/// The dialog must ask this rather than carry its own copy: a `gst` build
+/// exports for real, and telling the user encoding is "coming soon" beside
+/// a working Export button is simply false.
+pub fn unavailable_reason() -> Option<&'static str> {
+    #[cfg(feature = "gst")]
+    {
+        None
+    }
+    #[cfg(not(feature = "gst"))]
+    {
+        Some("Export needs the GStreamer build (`--features gst`)")
+    }
+}
+
 /// Kick off an export. Returns the status the dialog should show next.
 ///
 /// With `--features gst` this runs a real GStreamer pipeline — a raw-RGBA
@@ -221,7 +256,9 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
     {
         let _ = (project, settings);
         ExportStatus::Failed {
-            reason: "Export needs the GStreamer build (`--features gst`)".to_string(),
+            reason: unavailable_reason()
+                .unwrap_or("Export is unavailable")
+                .to_string(),
         }
     }
 }
@@ -419,11 +456,6 @@ mod gst_decode {
             Self { uris, pools: HashMap::new(), broken: HashMap::new() }
         }
 
-        /// How many of the project's media this export can actually decode.
-        pub fn decodable(&self) -> usize {
-            self.uris.len()
-        }
-
         /// The decoded picture for `media` at `source_time` seconds.
         pub fn frame(&mut self, media: MediaId, source_time: f64) -> Option<CpuFrame> {
             if self.broken.contains_key(&media) {
@@ -586,6 +618,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_size_estimate_matches_the_bitrate_the_encoder_is_given() {
+        // The estimate is only honest if it describes the encode that
+        // actually runs.
+        for container in Container::ALL {
+            for resolution in Resolution::ALL {
+                let s = ExportSettings { resolution, container, ..Default::default() };
+                let d = pipeline_desc(&s, 1920, 1080, "/tmp/o");
+                let bps = (resolution.target_mbps() * 1_000_000.0) as u64;
+                assert!(
+                    d.contains(&format!("={bps} !")),
+                    "{container:?} at {} must encode at the quoted {bps} bps: {d}",
+                    resolution.label(),
+                );
+                // 10s at that bitrate, in megabytes, video only.
+                let want = resolution.target_mbps() * 10.0 / 8.0;
+                assert!(
+                    (s.estimated_mb(10.0) - want).abs() < 1e-9,
+                    "the estimate quotes exactly the encoded bitrate, nothing more",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_label_names_the_codec_the_pipeline_produces() {
+        // Every choice in the dialog has to name what the user will get.
+        for container in Container::ALL {
+            let (enc, _, _) = encode_chain(container);
+            let label = container.label().to_lowercase();
+            let codec = match enc {
+                "openh264enc" => "h.264",
+                "vp8enc" => "vp8",
+                other => panic!("unlabelled encoder {other}"),
+            };
+            assert!(
+                label.contains(codec),
+                "{container:?} is labelled {:?} but encodes with {enc}",
+                container.label(),
+            );
+        }
+    }
+
+    #[test]
+    fn availability_agrees_with_what_export_actually_does() {
+        let p = Project::new("t");
+        let s = ExportSettings::default();
+        match (unavailable_reason(), begin_export(&p, &s)) {
+            // No encoder linked: the reason given to the dialog is the same
+            // one the attempt fails with.
+            (Some(reason), ExportStatus::Failed { reason: got }) => {
+                assert_eq!(reason, got, "the dialog and the attempt must say the same thing");
+            }
+            // An encoder is linked, so nothing may claim otherwise. The
+            // empty project has no clips but still renders a black frame.
+            (None, status) => assert!(
+                !matches!(&status, ExportStatus::Failed { reason } if reason.contains("GStreamer")),
+                "a gst build must not report export unavailable, got {status:?}",
+            ),
+            (Some(reason), other) => {
+                panic!("export claims to be unavailable ({reason}) yet returned {other:?}")
+            }
+        }
+    }
+
+    #[test]
     fn size_estimate_scales_with_resolution() {
         let d = 60.0;
         let p720 = ExportSettings { resolution: Resolution::P720, ..Default::default() }
@@ -627,12 +724,20 @@ mod tests {
         assert!(d.contains("appsrc name=qos_src"), "an appsrc feeds real frames: {d}");
         assert!(d.contains("format=RGBA,width=1920,height=1080"), "caps match the frames: {d}");
         assert!(d.contains("openh264enc"), "H.264 encoder: {d}");
+        assert!(
+            d.contains("openh264enc bitrate=16000000"),
+            "the encoder is told to hit the bitrate the size estimate quotes: {d}",
+        );
         assert!(d.contains("h264parse ! mp4mux"), "parsed + MP4-muxed: {d}");
         assert!(d.contains("filesink location=/tmp/out.mp4"), "writes a real file: {d}");
 
         let webm = ExportSettings { container: Container::WebM, ..Default::default() };
         let dw = pipeline_desc(&webm, 640, 360, "/tmp/o.webm");
         assert!(dw.contains("vp8enc") && dw.contains("webmmux"), "VP8/WebM chain: {dw}");
+        assert!(
+            dw.contains("vp8enc target-bitrate="),
+            "VP8 takes its bitrate under a different property name: {dw}",
+        );
         assert!(!dw.contains("h264parse"), "no h264parse for WebM: {dw}");
 
         let mov = ExportSettings { container: Container::Mov, ..Default::default() };
@@ -657,6 +762,7 @@ mod tests {
     // compiled under `--features gst`; the encoder/mux plugins must be present.
     #[cfg(feature = "gst")]
     #[test]
+    #[serial_test::serial(video_editor_gst)]
     fn real_export_writes_a_playable_mp4() {
         use crate::model::{MediaItem, MediaKind, Track, TrackKind};
         use uuid::Uuid;
@@ -839,6 +945,7 @@ mod tests {
     /// like the representative fill the palette would have produced.
     #[cfg(feature = "gst")]
     #[test]
+    #[serial_test::serial(video_editor_gst)]
     fn the_export_encodes_the_source_footage() {
         let Some(clip) = demo_clip() else {
             panic!(
@@ -908,6 +1015,7 @@ mod tests {
     /// touched a decoded pixel. Prove it reaches the encoded footage.
     #[cfg(feature = "gst")]
     #[test]
+    #[serial_test::serial(video_editor_gst)]
     fn the_grade_changes_the_encoded_footage() {
         let Some(clip) = demo_clip() else {
             panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
@@ -954,8 +1062,8 @@ mod tests {
             let probe = project_over(path, 0.0, 1.0);
             let mut d = super::gst_decode::MediaDecoders::new(&probe);
             let f = d.frame(probe.media[0].id, 0.3).expect("decode graded export");
-            let mut spread = 0.0;
-            let mut n = 0.0;
+            let mut spread = 0.0f64;
+            let mut n = 0.0f64;
             for px in f.rgba.chunks(4) {
                 let (r, g, bl) = (px[0] as f64, px[1] as f64, px[2] as f64);
                 spread += (r - g).abs() + (g - bl).abs();
@@ -979,13 +1087,18 @@ mod tests {
     /// Every transition must reach the encoded file as its own picture.
     #[cfg(feature = "gst")]
     #[test]
+    #[serial_test::serial(video_editor_gst)]
     fn transitions_reach_the_encoded_file_as_distinct_pictures() {
         use crate::model::Transition;
         let Some(clip) = demo_clip() else {
             panic!("this test needs the bundled demo clip; see the_export_encodes_the_source_footage");
         };
-        // Two clips cut from far-apart parts of the source, so the outgoing
-        // and incoming pictures are plainly different.
+        // Two clips over one source, the incoming one inverted so the two
+        // pictures are unmistakably different whatever the footage does.
+        // Cutting two moments out of the same clip is not enough on its
+        // own: the bundled demo is a screen recording that barely moves,
+        // so two instants of it are the same picture, and then every
+        // arrangement of them — dissolve, wipe, anything — looks alike.
         let build = |kind: Transition| {
             let mut p = project_over(&clip, 2.0, 1.0);
             let track = p.tracks[0].id;
@@ -996,6 +1109,10 @@ mod tests {
                 c.in_point = 40.0;
                 c.out_point = 41.0;
                 c.transition = kind;
+                c.effects = vec![crate::model::ClipEffect {
+                    kind: crate::model::EffectKind::Invert,
+                    amount: 1.0,
+                }];
             }
             p
         };
@@ -1020,6 +1137,36 @@ mod tests {
             grids.push((kind, luma_grid(&out, at, 12)));
             std::fs::remove_file(&out).ok();
         }
+
+        // A wipe is geometry: halfway across, one side of the ENCODED frame
+        // is the incoming clip and the other is still the outgoing one. A
+        // dissolve mixes the two evenly everywhere, so it must NOT show
+        // that split. This is what tells the two apart even when their
+        // whole-frame averages agree.
+        let half_split = |g: &[f64]| {
+            let n = 12;
+            let mean_of = |cols: std::ops::Range<usize>| {
+                let mut sum = 0.0;
+                let mut count = 0.0;
+                for row in 0..n {
+                    for col in cols.clone() {
+                        sum += g[row * n + col];
+                        count += 1.0;
+                    }
+                }
+                sum / count
+            };
+            // Skip the feathered middle columns.
+            (mean_of(0..5) - mean_of(7..12)).abs()
+        };
+        let wipe_split = half_split(&grids.iter().find(|(k, _)| *k == Transition::Wipe).unwrap().1);
+        let dissolve_split =
+            half_split(&grids.iter().find(|(k, _)| *k == Transition::CrossDissolve).unwrap().1);
+        assert!(
+            wipe_split > dissolve_split + 0.1,
+            "the encoded wipe must split the frame left/right ({wipe_split:.3}) far more \
+             than an even dissolve does ({dissolve_split:.3})",
+        );
 
         for i in 0..grids.len() {
             for j in (i + 1)..grids.len() {
