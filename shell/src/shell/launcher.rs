@@ -1007,6 +1007,17 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
     ));
 }
 
+/// Forget every launch this session has recorded.
+///
+/// For tests that need the *fallback* name resolution under test rather
+/// than a name a neighbouring test happened to remember — the table is
+/// process-wide and append-only, so a test asserting on what happens
+/// when nothing is known has to say so.
+#[cfg(test)]
+pub(crate) fn clear_launched_for_test() {
+    LAUNCHED.lock().expect("LAUNCHED poisoned").clear();
+}
+
 /// Display name for a Wayland `app_id`, if this session launched the
 /// package it belongs to.
 ///
@@ -1028,6 +1039,20 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
             .find(|(_, identities, _)| identities_match(identities, app_id))
         {
             return Some(display_name.clone());
+        }
+    }
+    // Not something this session launched, but possibly something this
+    // machine *has*. A package's manifest states its name, and that name
+    // is the app's name no matter who started it — a window that arrived
+    // from a previous session, from the CLI, or from another launcher is
+    // still Files. Without this the label fell through to the raw
+    // app-id, which is how a tab came to read `word-processor`.
+    if let Ok(apps) = installed_apps() {
+        if let Some(app) = apps
+            .iter()
+            .find(|a| app_id_matches_package(app_id, &a.package_id))
+        {
+            return Some(app.display_name.clone());
         }
     }
     // Not something this session launched. It may still be a host
