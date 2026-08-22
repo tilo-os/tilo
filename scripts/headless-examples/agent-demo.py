@@ -6,7 +6,7 @@ The demo's agent beat (plan/yc-demo.md, beat 6), driven end to end:
   1. a headless compositor with a private runtime dir (its own broker,
      Wayland socket and control socket);
   2. the real word processor opened on `brief.md` — a heading, three
-     bullets, and the line `Scribe: turn the bullets into a table` — as a
+     bullets, and the line `Claude: turn the bullets into a table` — as a
      Wayland client in the compositor's first workspace (room);
   3. `qos-agent` joining that room and that record, receiving the document
      from the word processor, carrying out the instruction with the word
@@ -29,7 +29,7 @@ not find anything; name the file explicitly.
 
 Snapshots land in /tmp/agent-demo-{01-before,02-during,03-after}.png; the
 middle one is taken while the agent is pacing its edits, so its caret pill
-("Scribe") is on screen. Exits non-zero on any failed step.
+("Claude") is on screen. Exits non-zero on any failed step.
 """
 import argparse
 import json
@@ -54,7 +54,7 @@ BRIEF = """# Launch plan
 - Date - 3 Sep
 - Budget - 1200
 
-Scribe: turn the bullets into a table
+Claude: turn the bullets into a table
 """
 
 
@@ -189,7 +189,7 @@ def main() -> None:
         # The agent: same room, same record, its own name.
         record = f"file:{brief.resolve()}"
         argv = [str(BIN / "qos-agent"), "--socket", str(broker), "--workspace", room,
-                "--record", record, "--name", "Scribe", "--once", "--pace-ms", "600"]
+                "--record", record, "--name", "Claude", "--once", "--pace-ms", "600"]
         if args.no_model:
             argv.append("--no-model")
         agent = subprocess.Popen(
@@ -198,7 +198,16 @@ def main() -> None:
             preexec_fn=die_with_parent(),
         )
         procs.append(track(agent))
-        time.sleep(2.0)
+
+        # The middle frame is meant to catch the agent mid-edit, with its
+        # caret pill on screen. Choosing takes a few seconds on a live run,
+        # so wait for the first edit instead of sleeping a fixed 2s — that
+        # photographed the pause before the work rather than the work.
+        def editing():
+            return agent_log.exists() and "applied" in agent_log.read_text(errors="replace")
+
+        wait_for(editing, 60, "the agent's first edit", agent_log, wp_log)
+        time.sleep(0.4)
         control(ctl, {"op": "snapshot", "path": f"{args.snapshot_prefix}-02-during.png"})
         try:
             code = agent.wait(timeout=60)
@@ -212,8 +221,10 @@ def main() -> None:
 
         # Which path chose the action. The agent logs this per instruction;
         # requiring it here is what keeps a fallback run from being written
-        # up as a live one.
-        decided = re.search(r"decided_by=(\w+).*?\blive=(\w+)", log)
+        # up as a live one. The log is colourised and quotes its string
+        # values, so strip the escapes and allow the quotes.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", log)
+        decided = re.search(r'decided_by="?(\w+)"?.*?\blive=(\w+)', plain)
         if not decided:
             fail("the agent did not report how it chose", agent_log)
         route, live = decided.group(1), decided.group(2) == "true"
@@ -246,7 +257,7 @@ def main() -> None:
 
         def saved():
             text = brief.read_text()
-            return text if "|" in text and "Scribe:" not in text else None
+            return text if "|" in text and "Claude:" not in text else None
 
         text = wait_for(saved, 20, "the saved file to contain the table", wp_log, agent_log)
         print("--- brief.md after ---\n" + text.strip())

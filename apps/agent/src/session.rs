@@ -51,9 +51,30 @@ pub struct Session {
     handled: HashSet<String>,
     /// Decides which exported action answers an instruction.
     chooser: Chooser,
+    /// When the agent last asked the room for the document. It asks again
+    /// until it has one: an app that was still opening its file when the
+    /// agent arrived never saw the first ask, and the agent would then wait
+    /// for a reply that is never coming. On a loaded machine that is the
+    /// difference between the beat happening and the beat hanging.
+    asked_at: Instant,
     /// How the last instruction was decided. The record that keeps a run on
     /// the fallback from being indistinguishable from a live one afterwards.
     last_route: Option<Route>,
+}
+
+/// How often the agent asks again while it still has no document.
+const REASK_EVERY: Duration = Duration::from_millis(750);
+
+/// Ask the room for the document: peers already in it answer an `Arrived`
+/// with their full state. Safe to repeat — a second copy of a document the
+/// agent already holds merges to the same thing.
+fn ask_for_document(link: &mut Link) -> Result<()> {
+    link.send(&CollabRequest::Presence {
+        key: PresenceKey::Workspace {
+            id: "word-processor".to_string(),
+        },
+        payload: PresencePayload::Arrived,
+    })
 }
 
 /// How the word processor keys a caret: the block's own presence key.
@@ -82,12 +103,7 @@ impl Session {
         })?;
         // The late-join handshake: every peer in the room answers an
         // `Arrived` with its full document.
-        link.send(&CollabRequest::Presence {
-            key: PresenceKey::Workspace {
-                id: "word-processor".to_string(),
-            },
-            payload: PresencePayload::Arrived,
-        })?;
+        ask_for_document(&mut link)?;
         tracing::info!(
             socket = %path.display(),
             app = %cfg.app_id,
@@ -117,6 +133,7 @@ impl Session {
             handled: HashSet::new(),
             chooser,
             last_route: None,
+            asked_at: Instant::now(),
         })
     }
 
@@ -153,6 +170,14 @@ impl Session {
     /// asks. Returns whether an instruction was carried out.
     fn step(&mut self, wait: Duration) -> Result<bool> {
         let mut changed = false;
+        // Still empty-handed: ask again. An app that was still opening its
+        // file when the agent arrived never saw the first ask, and nothing
+        // else would ever prompt a reply.
+        if self.editor.is_none() && self.asked_at.elapsed() >= REASK_EVERY {
+            ask_for_document(&mut self.link)?;
+            self.asked_at = Instant::now();
+            tracing::debug!("asked the room for the document again");
+        }
         match self.link.recv(wait)? {
             Some(CollabEvent::CRDTUpdate { data }) => {
                 match self.editor.as_mut() {
@@ -295,18 +320,32 @@ impl Session {
         Ok(())
     }
 
-    /// The first line becomes a level-1 heading; the instruction goes away.
+    /// A structural pass over a rough draft: the first line becomes the
+    /// title, each section label under it becomes a heading, and the
+    /// instruction goes away. One `SetParagraphStyle` per level, so the
+    /// sections land together rather than one flicker at a time.
     fn make_heading(&mut self, blocks: &[Block], at: usize) -> Result<()> {
         let ins_id = blocks[at].id.clone();
-        let Some(first) = plan::first_text_block(blocks, at) else {
+        let found = plan::structure(blocks, at);
+        let Some(title_id) = found.title else {
             return self.edit(&ins_id, wp::remove_blocks_action(vec![ins_id.clone()]));
         };
-        let first_id = blocks[first].id.clone();
         self.edit(
-            &first_id,
-            wp::set_paragraph_style_action(vec![first_id.clone()], "heading", Some(1), None),
+            &title_id,
+            wp::set_paragraph_style_action(vec![title_id.clone()], "heading", Some(1), None),
         )?;
-        self.edit(&first_id, wp::remove_blocks_action(vec![ins_id]))?;
+        if !found.sections.is_empty() {
+            let anchor = found.sections[0].clone();
+            self.edit(
+                &anchor,
+                wp::set_paragraph_style_action(found.sections.clone(), "heading", Some(2), None),
+            )?;
+        }
+        tracing::info!(
+            sections = found.sections.len(),
+            "made the draft a document"
+        );
+        self.edit(&title_id, wp::remove_blocks_action(vec![ins_id]))?;
         Ok(())
     }
 
