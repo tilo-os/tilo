@@ -6,7 +6,7 @@
 //! current state, and from then on holds a live replica of the document.
 //! It never sees a pixel and never touches a pointer. When the document
 //! contains an instruction addressed to it — a paragraph that starts with
-//! its name, `Scribe: turn the bullets into a table` — it edits the
+//! its name, `Claude: turn the bullets into a table` — it edits the
 //! document with the word processor's own exported actions, under its own
 //! actor, so every change is attributed to it in the history strip and its
 //! caret shows up in the other participants' windows while it works.
