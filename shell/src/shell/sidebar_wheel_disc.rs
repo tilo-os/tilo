@@ -21,35 +21,42 @@
 //! that they existed. The plate and the specks also read as two unrelated
 //! kinds of object rather than one set in two states.
 //!
-//! The current design is a **rail**:
-//! - The **body** is a translucent band hugging the rim that falls off
-//!   inward, painted as one radial gradient inside a group that a single
-//!   mask fades out top and bottom. Nothing has a hard edge on any side,
-//!   which is what lets the disc be a sliver: the rim enters through the
-//!   top of the footprint and leaves through the bottom without ever
-//!   meeting itself on screen.
-//! - Two **rim strokes** — a soft wide one reading as light on a bevel,
-//!   and a hairline that gives the edge a definite position — plus a
-//!   shadow following the arc just outside it.
-//! - Each workspace is a **row**: a marker where it sits on the rim, and
-//!   a chip in the rail column carrying its glyph and name. Rows share a
-//!   left edge and end just short of their own markers, so the column is
-//!   flush left and its right edge traces the rim. The active row is the
-//!   same chip one size step larger, tinted with its workspace's colour.
-//! - Rows are placed at the **nearest signed offset** from the active
-//!   workspace, so the ring wraps and the rail is balanced above and
-//!   below it.
-//! - A row narrows as its marker rides the rim inward; the chip
-//!   truncates, and below a floor the row drops its name and keeps its
-//!   marker. A name clipped by the footprint's edge would say less than
-//!   the dot does.
-//! - The **tail row** closes the rail: same column, same pill, dashed and
-//!   empty. That is the add-workspace affordance, and it takes its
-//!   meaning from the list it sits in rather than from a spot on the
-//!   disc. A position on the wheel would belong too, but it would rotate
-//!   out of reach.
-//! - Everything the disc paints is faded on the same vertical curve, so
-//!   rows dissolve exactly where the body beneath them does.
+//! The current design is a **segmented disc** — the thing you spin:
+//! - The **body** is a flat annular band: one uniform fill of the
+//!   theme's glass surface between a crisp inner arc and the rim.
+//!   No radial ramp, no concentric strokes, no shading. The previous
+//!   form graded the body from transparent at its inner end to a peak
+//!   alpha at the rim, which spread a grey smear across half the slot
+//!   and never resolved into an object.
+//! - Because the band has a real **inner arc** rather than fading out,
+//!   the disc has a silhouette: two concentric edges, parallel, running
+//!   off the top and bottom of the slot. That is what reads as a slice
+//!   of something very large. The inner radius is placed so the inner
+//!   arc is tangent to the footprint's left edge at the steepest angle
+//!   still on screen, which is the deepest band that never gets cut by
+//!   a straight vertical line.
+//! - The band is divided into **sectors**, one per 15° display slot,
+//!   by radial hairlines. The sectors are what turn: spinning sweeps
+//!   the dividers, the tints and the labels through the slot together,
+//!   so the object visibly rotates rather than having things slide
+//!   along a fixed curve.
+//! - Display slots tile the whole visible sweep and **cycle** through
+//!   the workspaces (the concept's 24 slots for 6 workspaces), so
+//!   there is never a stretch of unsegmented disc rotating past.
+//! - Each sector carries its workspace's glyph and name on a chip laid
+//!   **on the disc**, rotated to its own sector so it lies flat on the
+//!   surface. Every chip sits at the same radius and is the same width,
+//!   so they form a ring; when the wheel turns, the labels tip with it.
+//! - The **active** sector is filled with its workspace's colour, its
+//!   two dividers brighten, and its chip is the same chip one size step
+//!   larger and tinted. One family of things in two states.
+//! - Rim, inner arc and sector dividers are all hairlines derived from
+//!   the theme's foreground, in the same translucent-fill + lit-edge +
+//!   soft-shadow language the window decorations use, so the disc and
+//!   the window chrome read as one system.
+//! - Everything is faded on one vertical curve at the very top and
+//!   bottom of the footprint, so the band runs off the slot rather than
+//!   ending on a straight cut.
 //!
 //! The active workspace *identity* changes when the snap completes, not
 //! when the angle passes — the write-back semantics are unchanged.
@@ -113,7 +120,7 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
 use winit::event::WindowEvent;
 
@@ -325,12 +332,18 @@ impl WheelCacheFp {
 pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.34;
 
 /// Fractional vertical inset applied at both the top and bottom of the
-/// taffy-allocated slot so the wheel disc occupies roughly 10%–90% of
-/// the available height. The overlay host allocates the full sidebar
-/// slot height to the disc's taffy node; we trim it here so the
-/// visible disc footprint reads as deliberately inset from the topbar
-/// and floor rather than running edge-to-edge.
-pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.10;
+/// taffy-allocated slot. The overlay host allocates the full sidebar
+/// slot height to the disc's taffy node; we trim it here so the visible
+/// footprint reads as deliberately inset from the topbar and floor
+/// rather than running edge-to-edge.
+///
+/// It also buys the band its depth. The band has to bend back toward the
+/// disc's centre to stay inside a tall, narrow slot, so height and depth
+/// trade off directly: at the previous 0.10 the footprint was 3.7 times
+/// taller than it was wide on a 900-px display and the band came out at
+/// 129 px, too shallow to hold a workspace name without truncating it.
+/// 0.16 costs 15% of the disc's height and returns a fifth more depth.
+pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.16;
 
 /// Concept's `DRAG_FACTOR` from `App.tsx:41` — degrees of rotation per
 /// pixel of vertical drag.
@@ -387,53 +400,89 @@ const WHEEL_DETENT_PX: f32 = 48.0;
 /// gestures, short enough that an obvious pause feels deliberate.
 const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 
-/// Peak alpha of the disc body where it meets the rim. The body is a
-/// translucent scrim, so this is what decides whether the wheel reads as
-/// a solid object over a bright app or as a smear over a dark desktop.
-const BODY_PEAK_ALPHA: f32 = 168.0;
-
 /// Where the disc's vertical fade reaches full strength, as a fraction of
 /// the footprint's height (mirrored at the bottom). Everything the disc
-/// paints — body, rim, shadow, and the rail's rows — is faded on this
-/// curve, so the whole object dissolves together instead of some parts
-/// out-living others.
-const FADE_IN_STOP: f32 = 0.22;
+/// paints is faded on this curve, so the whole object dissolves together
+/// instead of some parts out-living others.
+///
+/// It was 0.22 — nearly half the footprint's height was a ramp, which is
+/// most of why the body read as a graded smear rather than as a surface.
+/// At 0.13 the band is flat across the three quarters of its run you
+/// actually look at and only dissolves where it leaves the slot. It also
+/// has to stay above `1 - BAND_TANGENT_FRACTION` so the tail the inner
+/// arc gets clipped in is already fading by the time the clip bites.
+const FADE_IN_STOP: f32 = 0.13;
 
 /// How far past the footprint's right edge the rim's shadow is allowed to
 /// reach. The disc's paint group is clipped this much wider so the shadow
 /// can sit outside the rim and still be faded with everything else.
 const RIM_SHADOW_REACH: f64 = 26.0;
 
-/// Left inset of the rail column — where every row's chip starts. Rows
-/// share this edge so the set reads as one list rather than as labels
-/// scattered along a curve.
-const RAIL_INSET: f64 = 14.0;
+/// Clear space between the footprint's left edge and the band's inner
+/// arc at its closest approach. Keeps the arc off the edge so the band
+/// visibly ends on its own curve rather than on the clip.
+const BAND_LEFT_INSET: f64 = 12.0;
 
-/// Clear space between a row's chip and its own marker on the rim. Small
-/// enough that proximity does the tying — a row and the marker it stops
-/// short of are obviously one thing — and large enough that the chip's
-/// end never crowds the marker's halo.
-const RAIL_LEADER_GAP: f64 = 16.0;
+/// How far down the footprint the band's inner arc is allowed to come
+/// closest to the left edge, as a fraction of half the footprint height.
+///
+/// The band's depth and the height it spans trade off against each other:
+/// the arc has to bend back toward the centre to stay inside a tall,
+/// narrow slot, and every pixel of height costs depth. Sizing the band so
+/// the arc passes exactly through the footprint's corners spends the
+/// whole budget on height and leaves the band too shallow to carry a
+/// workspace name — at 1600x900 it came out at 109 px, which truncated
+/// "Research" to "Res…".
+///
+/// Pulling the tangent point in buys that depth back. Past it the arc
+/// does drift into the clip, but only across the last few per cent of
+/// the footprint, where [`FADE_IN_STOP`] has already taken the band well
+/// down on its way to nothing — so the cut has almost nothing to cut.
+/// The two constants have to be read together: the clip begins at
+/// `(1 - BAND_TANGENT_FRACTION) / 2` of the footprint's height, and that
+/// has to stay a small fraction of `FADE_IN_STOP`.
+/// `band_clip_starts_where_the_fade_has_already_taken_hold` pins it.
+const BAND_TANGENT_FRACTION: f64 = 0.93;
 
-/// Narrowest a row's chip may get before the row gives up its name and
-/// shows only its marker. Below this even a truncated workspace name is
-/// an ellipsis and a letter, which says less than the dot does.
-const RAIL_MIN_CHIP_W: f64 = 58.0;
+/// Clearance between the rim and the outer end of a sector's label, and
+/// between the inner arc and the label's inner end. The two together set
+/// the chip's width, which is the same for every sector because the band
+/// has a constant radial depth — so the labels form a ring rather than a
+/// ragged column.
+const LABEL_RIM_GAP: f64 = 12.0;
+const LABEL_INNER_INSET: f64 = 12.0;
 
-/// Height of an inactive row's chip; the active row's is
-/// [`RAIL_ROW_H_ACTIVE`]. One step apart, so the set reads as one family
-/// of things in two states rather than as two kinds of object.
-const RAIL_ROW_H: f64 = 26.0;
+/// Narrowest a sector's chip may get before the sector shows no label at
+/// all. Below this even a truncated name is an ellipsis and a letter,
+/// which says less than the empty sector does.
+const LABEL_MIN_W: f64 = 62.0;
 
-/// Height of the active row's chip. See [`RAIL_ROW_H`].
-const RAIL_ROW_H_ACTIVE: f64 = 32.0;
+/// Height of an inactive sector's chip; the active sector's is
+/// [`SECTOR_CHIP_H_ACTIVE`]. One step apart, so the set reads as one
+/// family of things in two states rather than as two kinds of object.
+const SECTOR_CHIP_H: f64 = 32.0;
 
-/// Vertical band at the bottom of the footprint that the add-workspace row
-/// is centred in, measured from the footprint's edge. Workspace rows give
-/// that row a wide berth, so the tail of the rail is clear however far the
-/// wheel has been turned — a marker crowding the affordance is what drove
-/// it off the rim in the first place.
-const RAIL_TAIL_BAND: f64 = 74.0;
+/// Height of the active sector's chip. See [`SECTOR_CHIP_H`].
+const SECTOR_CHIP_H_ACTIVE: f64 = 44.0;
+
+/// Fill strength of the active sector's wedge, as a factor on the
+/// workspace's own colour. Enough that the wedge is unmistakably the lit
+/// one, quiet enough that the name on top of it stays the brightest thing
+/// in the sector.
+const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
+
+
+/// Diameter of the add-workspace button, and how far down the band it
+/// sits as a fraction of half the footprint's height. Sector labels that
+/// would collide with it are dropped, so the affordance is never covered
+/// however far the wheel has been turned.
+const ADD_BUTTON_D: f64 = 34.0;
+const ADD_BAND_FRACTION: f64 = 0.78;
+
+/// Angular slop past the last on-screen degree that sectors are still
+/// built for. Cheap insurance that a divider or a tint never stops short
+/// of the footprint's corner.
+const SWEEP_SLOP_DEG: f64 = 8.0;
 
 /// Per-spoke palette. Maps a workspace's *index* in the tree to one of
 /// six concept colours (`pink-500`, `blue-500`, `amber-500`,
@@ -653,6 +702,52 @@ impl SidebarWheelDisc {
     }
 }
 
+/// How many display slots either side of the active one the sector fan
+/// has to run to cover `sweep` radians, plus one so a sector entering the
+/// footprint is already drawn when its leading divider appears.
+///
+/// Returning 0 for a gap of half a turn or more is the single-workspace
+/// case: `spoke_gap_deg` widens to 360° there so the wheel cannot scroll
+/// past its only entry, and one slot is the whole disc.
+fn slot_reach(sweep_rad: f64, gap_deg: f64) -> i32 {
+    if gap_deg >= 180.0 {
+        0
+    } else {
+        (sweep_rad.to_degrees() / gap_deg).ceil() as i32 + 1
+    }
+}
+
+/// Point on the circle of radius `r` about `c` at `angle` radians,
+/// measured from due-east and increasing downward (screen coordinates).
+fn polar(c: Point, r: f64, angle: f64) -> Point {
+    Point::new(c.x + r * angle.cos(), c.y + r * angle.sin())
+}
+
+/// Closed path for the slice of ring between radii `r_in`/`r_out` and
+/// angles `a0`/`a1`.
+///
+/// The arcs are walked as polylines rather than built from `kurbo::Arc`
+/// so the two ends join into ONE closed subpath — a shape with a single
+/// winding, which is what lets it be filled flat with no seam where the
+/// two boundaries meet. Step count is chosen so the chord error stays
+/// far below a pixel at the radii this widget uses: the sweep is at most
+/// a few tens of degrees, so 96 steps put the sagitta under 0.05 px even
+/// on a 2000-px disc.
+fn annular_segment(c: Point, r_in: f64, r_out: f64, a0: f64, a1: f64) -> BezPath {
+    const STEPS: usize = 96;
+    let mut path = BezPath::new();
+    let span = a1 - a0;
+    path.move_to(polar(c, r_out, a0));
+    for i in 1..=STEPS {
+        path.line_to(polar(c, r_out, a0 + span * (i as f64 / STEPS as f64)));
+    }
+    for i in 0..=STEPS {
+        path.line_to(polar(c, r_in, a1 - span * (i as f64 / STEPS as f64)));
+    }
+    path.close_path();
+    path
+}
+
 /// Map a workspace label to its lucide glyph. Mirrors `WORKSPACES` in
 /// `radial-workspace-switcher/src/App.tsx` for the concept's six ids,
 /// then extends the table with `Home` — the one workspace
@@ -866,99 +961,83 @@ impl Widget for SidebarWheelDisc {
         let cx = c.x;
         let cy = c.y;
 
-        // ---- Pass 1: the disc surface -----------------------------------
-        // Body, rim and the shadow that lifts the wheel off whatever is
+        // ---- Geometry ---------------------------------------------------
+        // The visible object is an annular BAND, not a whole disc: a
+        // constant-depth ring between an inner arc and the rim. The
+        // depth is the largest that keeps the inner arc inside the
+        // footprint everywhere it is on screen — place it any deeper
+        // and the arc runs out through the footprint's left edge and
+        // the band ends on a straight vertical cut instead of a curve.
+        //
+        // `theta_lim` is where the rim itself leaves through the top and
+        // bottom edges; at exactly that angle the inner arc is tangent
+        // to the left edge, and both are inside the vertical fade by
+        // then anyway.
+        let half_h = self.rect.height() / 2.0;
+        let r_out = radius;
+        // The inner arc has to clear the footprint's left edge over its
+        // OWN sweep, which runs further than the rim's: the rim exits
+        // through the top and bottom edges at `theta_lim`, but the inner
+        // arc is still climbing at that angle and only reaches the same
+        // height further round. Sizing the band off `theta_lim` therefore
+        // let the arc drift left of the edge for the last quarter of its
+        // run, where the clip turned it into a straight vertical cut with
+        // the vertical fade nowhere near it yet.
+        //
+        // `sqrt(d^2 + half_h^2)` is the radius whose arc passes exactly
+        // through the footprint's two left-hand corners, so the band is
+        // as deep as it can be while ending on a curve everywhere.
+        let d_left = (self.rect.x0 - cx + BAND_LEFT_INSET).max(1.0);
+        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
+        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
+            .sqrt()
+            .clamp(4.0, r_out - 12.0);
+        // Sectors are built a little past the last on-screen degree so a
+        // divider never stops short of the footprint's corner. The band's
+        // reach is set by its INNER arc, which is still climbing where the
+        // rim has already left through the top and bottom edges.
+        let sweep = (half_h / r_in).clamp(0.0, 1.0).asin() + SWEEP_SLOP_DEG.to_radians();
+
+        // ---- Pass 1: the band -------------------------------------------
+        // Body, edges and the shadow that lifts the wheel off whatever is
         // behind it are ONE isolated group. Everything inside paints at
         // full strength; a single mask at the end fades the whole group
         // out towards the top and bottom of the footprint.
         //
-        // The fade is what lets the disc be a sliver. The footprint is far
-        // taller than the slice of circle that would close inside it, so
-        // the rim enters through the top edge and leaves through the
-        // bottom one — it never meets itself on screen. Any hard clip
-        // would therefore end the body on a straight horizontal cut in
-        // open wallpaper, which instantly reads as a bug. By the time the
-        // clip bites there is nothing left to cut.
+        // The fade is what lets the band be a slice. The footprint is far
+        // taller than the piece of ring that would close inside it, so the
+        // band enters through the top edge and leaves through the bottom
+        // one — it never meets itself on screen. Any hard clip would
+        // therefore end it on a straight horizontal cut in open wallpaper,
+        // which instantly reads as a bug. By the time the clip bites there
+        // is nothing left to cut.
         //
-        // Masking the group once, instead of pushing the fade into every
-        // brush, is what allows the body to be a single smooth gradient.
-        // The previous form painted 96 concentric translucent strokes to
-        // approximate the falloff, each carrying the vertical fade as its
-        // own brush; where two translucent strokes overlap their alphas
-        // composite, so every step left a brighter seam and the surface
-        // read as a stack of rings — barely visible against the desktop,
-        // unmistakable once the disc was summoned over a light app.
-        //
-        // The horizontal clip IS load-bearing: the disc's centre lies
-        // `radius * (1 - VISIBLE)` to the left of the footprint, so an
-        // unclipped body fill floods everything left of the rim — the
-        // entire desktop, once the disc is summoned out to the pointer.
+        // The horizontal clip IS load-bearing: an unclipped ring would
+        // sweep back around off-screen-left and reappear nowhere useful.
         // It runs a little past the footprint's right edge so the rim's
         // outward shadow has somewhere to land.
-        let body_hue = colors.surfaces.overlay;
-        // Rim and lip are "light catching an edge", so they track the
-        // theme's foreground rather than a hardcoded white — otherwise the
-        // wheel is a white-on-white scratch under the light theme and
-        // loses its only structural line under high contrast.
+        //
+        // The fill is FLAT. One colour, the theme's own glass surface —
+        // the same token the modal surfaces use, so the wheel is made of
+        // the same material as the rest of the chrome. The body used to
+        // be a nine-stop radial ramp from transparent to a peak alpha at
+        // the rim; on screen that is a grey smear that never resolves
+        // into an object, and it is the single thing that made the disc
+        // look unfinished.
+        let body_hue = colors.surfaces.glass;
+        // Edges are "light catching a rim", so they track the theme's
+        // foreground rather than a hardcoded white — otherwise the wheel
+        // is a white-on-white scratch under the light theme and loses its
+        // only structural line under high contrast, where the white-tinted
+        // border tokens collapse to near-invisible.
         let edge_hue = colors.text_primary;
+        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
         let group_clip = Rect::new(
             self.rect.x0,
             self.rect.y0,
             self.rect.x1 + RIM_SHADOW_REACH,
             self.rect.y1,
         );
-
-        // How far inward the body reaches. The falloff has to be finished
-        // BEFORE the footprint's left edge, or the clip cuts the body off
-        // mid-alpha and leaves a straight vertical wall down the middle of
-        // whatever the disc is floating over — which is exactly what the
-        // summoned disc showed against a light app.
-        let depth = (self.rect.width() * 0.85).min(radius - 2.0);
-        let inner = ((radius - depth) / radius) as f32;
-
-        // Alpha along the radius, sampled off `f^2.4` so the surface reads
-        // as curving away from the light rather than as a flat ramp. Nine
-        // stops of a smooth curve: a gradient interpolates continuously
-        // between them, so there is no seam to see at any step.
-        //
-        // The ramp is anchored with an explicit transparent stop at offset
-        // 0 rather than relying on `Extend::Pad` to hold everything inside
-        // the first stop at zero. Left to the pad, the falloff spread over
-        // the whole radius instead of the band near the rim, so the body
-        // still had visible alpha at the footprint's left edge — the exact
-        // hard cut the depth is chosen to avoid.
-        let transparent = Color::from_rgba8(body_hue.r(), body_hue.g(), body_hue.b(), 0);
-        let mut body_stops: Vec<ColorStop> = Vec::with_capacity(11);
-        body_stops.push(ColorStop { offset: 0.0, color: transparent.into() });
-        body_stops.push(ColorStop { offset: inner, color: transparent.into() });
-        for i in 1..=8 {
-            let f = i as f32 / 8.0;
-            let a = (BODY_PEAK_ALPHA * f.powf(2.4)) as u8;
-            body_stops.push(ColorStop {
-                offset: inner + (1.0 - inner) * f,
-                color: Color::from_rgba8(body_hue.r(), body_hue.g(), body_hue.b(), a).into(),
-            });
-        }
-        let body_grad = Gradient::new_radial((cx, cy), radius as f32)
-            .with_extend(Extend::Pad)
-            .with_stops(&body_stops[..]);
-
-        // A brighter lip just inside the rim — light catching the edge.
-        let lip_inner = ((radius - 46.0).max(1.0) / radius) as f32;
-        let edge_clear = Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 0);
-        let lip_grad = Gradient::new_radial((cx, cy), radius as f32)
-            .with_extend(Extend::Pad)
-            .with_stops(
-                &[
-                    ColorStop { offset: 0.0, color: edge_clear.into() },
-                    ColorStop { offset: lip_inner, color: edge_clear.into() },
-                    ColorStop {
-                        offset: 1.0,
-                        color: Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 24)
-                            .into(),
-                    },
-                ][..],
-            );
 
         // Vertical fade, used as the group's mask. White because only its
         // alpha channel is read (`DestIn` keeps the backdrop where the
@@ -984,15 +1063,10 @@ impl Widget for SidebarWheelDisc {
             transform,
             &group_clip,
         );
-        let rim = Circle::new((cx, cy), radius);
-        scene.fill(Fill::NonZero, transform, &body_grad, None, &rim);
-        scene.fill(Fill::NonZero, transform, &lip_grad, None, &rim);
 
-        // Shadow just OUTSIDE the rim, so it follows the arc. It used to be
-        // three straight vertical bands pinned to the footprint's right
-        // edge, which ruled a hard vertical line down the desktop wherever
-        // the rim had curved away from that edge — and, being painted
-        // outside the clip, it had hard ends at the top and bottom too.
+        // Shadow just OUTSIDE the rim, so it follows the arc — the same
+        // soft multi-ring falloff the window-decoration pills use, bent
+        // around a circle. Painted first so the band sits on top of it.
         for &(offset, width, alpha) in &[(2.5_f64, 5.0_f64, 44u8), (7.5, 6.0, 20), (14.0, 9.0, 8)] {
             scene.stroke(
                 &Stroke::new(width),
@@ -1003,87 +1077,55 @@ impl Widget for SidebarWheelDisc {
             );
         }
 
-        // The rim itself. Two strokes: a soft wide one that reads as light
-        // catching a bevel, and a crisp hairline that gives the edge a
-        // definite position. One 2 px stroke at low alpha was too faint to
-        // say "this is an object" — against the wallpaper grid it read as
-        // a stray scratch rather than as the boundary of the wheel.
-        scene.stroke(
-            &Stroke::new(5.0),
-            transform,
-            Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 26),
-            None,
-            &rim,
-        );
-        scene.stroke(
-            &Stroke::new(1.5),
-            transform,
-            Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), 140),
-            None,
-            &rim,
-        );
+        // The band itself: one flat fill.
+        let band = annular_segment(c, r_in, r_out, -sweep, sweep);
+        scene.fill(Fill::NonZero, transform, body_hue, None, &band);
 
-        // Fade the whole surface out, top and bottom, in one pass.
-        scene.push_layer(
-            Fill::NonZero,
-            BlendMode::new(Mix::Normal, Compose::DestIn),
-            1.0,
-            transform,
-            &group_clip,
-        );
-        scene.fill(Fill::NonZero, transform, &vfade, None, &group_clip);
-        scene.pop_layer();
-        scene.pop_layer();
-
-        // ---- Pass 2: the workspace rail ---------------------------------
-        // One row per workspace: a marker where that workspace sits on the
-        // rim, a chip in the rail column carrying its glyph and name, and
-        // a leader hairline tying the two together.
+        // ---- Pass 2: the sectors ----------------------------------------
+        // Display slots tile the whole visible sweep at a fixed angular
+        // step and CYCLE through the workspaces, exactly as the concept's
+        // 24 slots did for its 6 workspaces. Indexing slots off the
+        // workspace list instead left a stretch of unsegmented band
+        // rotating through whenever there were fewer workspaces than the
+        // sweep has room for — a wheel with a bald patch.
         //
-        // The rail is what makes this a switcher rather than a position
-        // indicator. Inactive workspaces used to be unlabelled specks, so
-        // you could see THAT there were neighbours but not WHAT they were
-        // — which is most of what you open a switcher to find out. And the
-        // active workspace's big outlined name plate next to those specks
-        // read as two unrelated kinds of object rather than as one set in
-        // two states. Every row is now the same pill with the same
-        // anatomy, one size step apart, the active one carrying its
-        // workspace's colour.
-        //
-        // Chips share a left edge and stop short of their own markers,
-        // rather than hanging off them. The rim's x sweeps by hundreds of
-        // pixels between the middle of the footprint and its ends, so
-        // right-aligning to the markers would leave the column ragged —
-        // and the inner half of the footprint, which was empty dark
-        // surface with nothing in it, is exactly the space the names need.
-        //
-        // A row narrows as its marker rides the rim inward. `Chip::draw_at`
-        // truncates the name to the width it is given, and below
-        // `RAIL_MIN_CHIP_W` the row drops its chip and shows only its
-        // marker: an ellipsis and one letter says less than the dot does,
-        // and a name clipped by the footprint's edge would say less still.
+        // Every sector is drawn on the band and rotates with it. That is
+        // the whole design: the dividers, the active tint and the labels
+        // all sweep together, so what you see turning is the object, not
+        // a set of markers sliding along a fixed curve.
         self.spoke_hit_rects.clear();
         self.spoke_hit_rects.resize(self.spokes.len(), Rect::ZERO);
+        // Which slot won each workspace's hit rect, by absolute angle —
+        // a workspace can appear more than once in the sweep when there
+        // are very few of them, and a click should go to the one nearest
+        // the middle of the slot rather than to whichever was drawn last.
+        let mut hit_claim = vec![f64::INFINITY; self.spokes.len()];
 
-        let half_h = self.rect.height() / 2.0;
-        let rail_x = self.rect.x0 + RAIL_INSET;
-        // The tail row's box is fixed, and settled before any workspace row
-        // is placed, so rows can be kept out of it. Reserving the band on
-        // one side only made the rail lopsided: a row above the middle got
-        // a name where its mirror below did not.
-        let plus_h = RAIL_ROW_H;
-        let plus_cy = (cy + (half_h - RAIL_TAIL_BAND).max(0.0) + RAIL_TAIL_BAND / 2.0)
-            .min(self.rect.y1 - plus_h / 2.0 - 6.0);
-        let plus_w = plus_h * 1.85;
-        self.plus_rect = Rect::new(
-            rail_x,
-            plus_cy - plus_h / 2.0,
-            rail_x + plus_w,
-            plus_cy + plus_h / 2.0,
+        // The add-workspace button's box is settled before any sector is
+        // placed, so labels can be kept out of it.
+        // Placed by how far down the band it sits rather than by how far
+        // up from the footprint's floor: the floor is inside the vertical
+        // fade, and a button pinned to it ended up hanging under the band
+        // on bare wallpaper — the exact complaint that moved this
+        // affordance twice before.
+        let add_cy = cy + half_h * ADD_BAND_FRACTION;
+        let add_dy = add_cy - cy;
+        // Tucked against the band's INNER arc rather than floating in the
+        // middle of it. Labels run the band's full radial depth, so a
+        // button parked mid-band sits squarely in the path of whichever
+        // one sweeps over it, and the sector that loses its name is the
+        // one thing a switcher cannot afford to drop. At the inner edge
+        // the two rarely meet at all.
+        let add_span_in = (r_in * r_in - add_dy * add_dy).max(0.0).sqrt();
+        let add_cx = cx + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
+        self.plus_rect = Rect::from_center_size(
+            Point::new(add_cx, add_cy),
+            (ADD_BUTTON_D, ADD_BUTTON_D),
         );
-        // The same curve the disc's surface is masked with, so a row
-        // dissolves exactly where the body beneath it does instead of
-        // out-living it and ending up a crisp pill on bare wallpaper.
+
+        // The same curve the band is masked with, so a label dissolves
+        // exactly where the surface beneath it does instead of out-living
+        // it and ending up a crisp pill on bare wallpaper.
         let row_fade = |y: f64| -> f32 {
             let h = self.rect.height();
             if h <= 0.0 {
@@ -1098,216 +1140,230 @@ impl Widget for SidebarWheelDisc {
                 1.0
             }
         };
-        // Plate under a rail row, in the chrome's own popover surface. See
-        // the call site for why the rows cannot rely on the disc body
-        // behind them for contrast.
-        let seat_hue = colors.surfaces.overlay;
-        let seat_row = |scene: &mut Scene, transform: Affine, r: Rect, fade: f32| {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgba8(
-                    seat_hue.r(),
-                    seat_hue.g(),
-                    seat_hue.b(),
-                    (214.0 * fade.clamp(0.0, 1.0)) as u8,
-                ),
-                None,
-                &RoundedRect::from_rect(r, r.height() / 2.0),
-            );
-        };
 
         if !self.spokes.is_empty() {
             let n = self.spokes.len();
             let n_i = n as i32;
-            // Visible angular band: ±70° from due-east. The actual visible
-            // arc is narrower; a few degrees of slop just avoids painting
-            // markers outside the footprint.
-            let visible_band_deg = 70.0_f32;
-            let gap = self.spoke_gap_deg();
+            let gap = self.spoke_gap_deg() as f64;
+            let rot = self.visual_rotation_deg() as f64;
+            let slots = slot_reach(sweep, gap);
 
-            for i in 0..n {
-                // Copied out so the row can write its own hit rect back
-                // without holding a borrow on `self.spokes`.
-                let label = self.spokes[i].text.clone();
-                let ws_id = self.spokes[i].workspace_id;
-                let icon = self.spoke_icon(i);
-
-                // Nearest signed offset, so the ring wraps around the
-                // active workspace and the rail is balanced above and
-                // below it. The raw index difference put every other
-                // workspace on ONE side: with three workspaces and the
-                // first one active, the entire upper arc was empty and the
-                // other two stacked below — a ring drawn as a queue.
-                let raw = i as i32 - self.active_idx as i32;
-                let virt_offset = ((raw + n_i / 2).rem_euclid(n_i)) - n_i / 2;
-                let angle_deg = self.visual_rotation_deg() + virt_offset as f32 * gap;
-                let is_active = i == self.active_idx;
-                let a = ((angle_deg % 360.0) + 360.0) % 360.0;
-                let in_band = a < visible_band_deg || a > 360.0 - visible_band_deg;
-                if !in_band {
+            for k in -slots..=slots {
+                let mid_deg = rot + k as f64 * gap;
+                let mid = mid_deg.to_radians();
+                let a0 = mid - (gap / 2.0).to_radians();
+                let a1 = mid + (gap / 2.0).to_radians();
+                // Wholly outside the sweep — nothing of this sector can
+                // land inside the footprint.
+                if a0 > sweep || a1 < -sweep {
                     continue;
                 }
+                let idx = ((self.active_idx as i32 + k).rem_euclid(n_i)) as usize;
+                let is_active = k == 0;
+                let base = self.spoke_color(idx);
 
-                let angle_rad = (angle_deg as f64).to_radians();
-                let marker_x = cx + radius * angle_rad.cos();
-                let marker_y = cy + radius * angle_rad.sin();
-                let marker_p = Point::new(marker_x, marker_y);
-                let fade_a = row_fade(marker_y);
+                // Active sector: the wedge itself is lit in the
+                // workspace's colour. This is what replaces the old
+                // name-plate — the *sector* is the selection, so the
+                // thing that turns is also the thing that shows state.
+                if is_active {
+                    let wedge = annular_segment(c, r_in, r_out, a0, a1);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        base.with_alpha_factor(ACTIVE_WEDGE_ALPHA),
+                        None,
+                        &wedge,
+                    );
+                }
+
+                // Leading divider. Each sector draws only its own lower
+                // bound, so adjacent sectors share one line rather than
+                // stacking two translucent strokes into a brighter seam.
+                let div_a = if is_active { 96 } else { 40 };
+                scene.stroke(
+                    &Stroke::new(1.0),
+                    transform,
+                    edge(div_a),
+                    None,
+                    &Line::new(polar(c, r_in, a0), polar(c, r_out, a0)),
+                );
+                // The active sector also owns its upper bound, so the lit
+                // wedge is bracketed by two bright lines instead of one.
+                if is_active {
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        edge(96),
+                        None,
+                        &Line::new(polar(c, r_in, a1), polar(c, r_out, a1)),
+                    );
+                }
+            }
+        }
+
+        // Inner arc and rim — the band's two lit edges. Same translucent
+        // fill + hairline-edge language as the window-decoration pills:
+        // a soft wide stroke reading as light on a bevel, then a crisp
+        // hairline that gives the edge a definite position.
+        let rim = Circle::new((cx, cy), r_out);
+        scene.stroke(&Stroke::new(5.0), transform, edge(26), None, &rim);
+        scene.stroke(&Stroke::new(1.5), transform, edge(140), None, &rim);
+        // A 1-px-inset hairline just inside the rim, the disc's version of
+        // the active pill's inner glow.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            edge(46),
+            None,
+            &Circle::new((cx, cy), r_out - 2.5),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            edge(74),
+            None,
+            &Circle::new((cx, cy), r_in),
+        );
+
+        // Fade the whole surface out, top and bottom, in one pass.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::new(Mix::Normal, Compose::DestIn),
+            1.0,
+            transform,
+            &group_clip,
+        );
+        scene.fill(Fill::NonZero, transform, &vfade, None, &group_clip);
+        scene.pop_layer();
+        scene.pop_layer();
+
+        // ---- Pass 3: the sector labels ----------------------------------
+        // Each label is a chip laid ON the disc: built in the sector's own
+        // frame (a horizontal box on the due-east radius) and then rotated
+        // about the disc's centre to its sector. Every chip is therefore
+        // at the same radius and the same width — a ring of labels that
+        // tips with the wheel.
+        //
+        // Rotating the label with its sector is the point. An upright
+        // label beside a turning disc reads as a list that happens to sit
+        // near a curve; a label that tips reads as paint on the surface.
+        let chip_x1 = cx + r_out - LABEL_RIM_GAP;
+        let chip_x0 = cx + r_in + LABEL_INNER_INSET;
+        let chip_w = chip_x1 - chip_x0;
+        if !self.spokes.is_empty() && chip_w >= LABEL_MIN_W {
+            let n = self.spokes.len();
+            let n_i = n as i32;
+            let gap = self.spoke_gap_deg() as f64;
+            let rot = self.visual_rotation_deg() as f64;
+            let slots = slot_reach(sweep, gap);
+
+            for k in -slots..=slots {
+                let mid_deg = rot + k as f64 * gap;
+                let mid = mid_deg.to_radians();
+                if mid.abs() > sweep {
+                    continue;
+                }
+                let idx = ((self.active_idx as i32 + k).rem_euclid(n_i)) as usize;
+                let is_active = k == 0;
+                // Where the sector's centreline meets the rim — the
+                // label's own y, and what the vertical fade is sampled at.
+                let anchor = polar(c, r_out, mid);
+                let fade_a = row_fade(anchor.y);
                 if fade_a <= 0.02 {
                     continue;
                 }
-                // The rim leaves the footprint through the left edge at
-                // steep angles. Markers ride the rim and are painted
-                // outside the body's clip, so without this a tall-and-thin
-                // slot would drop marker dots onto the open desktop.
-                if marker_x < self.rect.x0 {
+
+                let row_h = if is_active { SECTOR_CHIP_H_ACTIVE } else { SECTOR_CHIP_H };
+                let chip = Rect::new(chip_x0, cy - row_h / 2.0, chip_x1, cy + row_h / 2.0);
+                let rotate = Affine::rotate_about(mid, c);
+
+                // Where the chip actually lands once rotated. Used for the
+                // click target and to keep labels off the add button.
+                let placed = rotate.transform_rect_bbox(chip);
+                // Does this label actually run into the add button?
+                //
+                // Answered in the label's OWN frame — the button's centre
+                // rotated back onto the due-east radius, tested against
+                // the unrotated chip grown by the button's radius. The
+                // axis-aligned bounding box of a rotated chip is far
+                // bigger than the chip: at 15° a 160-px label's box picks
+                // up 30 px of empty corner at each end, which was enough
+                // to report a clash with a button the label passes 30 px
+                // clear of, and cost the bottom sector its name.
+                let local = rotate.inverse() * self.plus_rect.center();
+                let reach = ADD_BUTTON_D / 2.0 + 4.0;
+                let clash = local.x >= chip.x0 - reach
+                    && local.x <= chip.x1 + reach
+                    && local.y >= chip.y0 - reach
+                    && local.y <= chip.y1 + reach;
+                if clash {
                     continue;
                 }
-                let base = self.spoke_color(i);
-                let dim = |c: Color, f: f32| c.with_alpha_factor(f * fade_a);
 
-                let marker_r = if is_active { 10.0_f64 } else { 7.0 };
-                if is_active {
-                    // Soft halo — concentric translucent circles in the
-                    // workspace colour fading outward, so the active
-                    // marker is the visual anchor of the whole rail.
-                    for &(r_halo, alpha) in &[(28.0_f64, 0.07_f32), (20.0, 0.12), (13.0, 0.20)] {
-                        scene.fill(
-                            Fill::NonZero,
-                            transform,
-                            dim(base, alpha),
-                            None,
-                            &Circle::new(marker_p, r_halo),
-                        );
-                    }
-                    // A crisp ring separating the coloured core from the
-                    // halo, so the marker holds its shape on a bright
-                    // backdrop as well as a dark one.
-                    scene.stroke(
-                        &Stroke::new(1.2),
-                        transform,
-                        dim(edge_hue, 0.36),
-                        None,
-                        &Circle::new(marker_p, marker_r),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        dim(base, 1.0),
-                        None,
-                        &Circle::new(marker_p, 8.0),
-                    );
-                } else {
-                    // Same marker, quieter: the workspace's own colour on
-                    // a dark seat so it stays legible wherever on the body
-                    // it lands, and so the rim previews the identity you
-                    // are rotating toward.
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        dim(Color::from_rgba8(0, 0, 0, 90), 1.0),
-                        None,
-                        &Circle::new(marker_p, marker_r),
-                    );
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        dim(base, 0.65),
-                        None,
-                        &Circle::new(marker_p, 5.0),
-                    );
-                }
-
-                // Generous-but-bounded click target on the marker itself.
-                let hit_half = 14.0_f64;
-                let mut row_hit = Rect::new(
-                    marker_x - hit_half,
-                    marker_y - hit_half,
-                    marker_x + hit_half,
-                    marker_y + hit_half,
-                );
-
-                // The row's chip. It runs from the rail's left edge to just
-                // short of its own marker, so the column is flush on the
-                // left and its right edge traces the rim — the rail bends
-                // with the wheel it belongs to.
+                // The sector is the container, so the label does not
+                // bring a pill of its own — a pill inside a lit wedge is a
+                // box inside a box, and it was the pill that made the old
+                // rail read as a list parked next to a curve.
                 //
-                // Sizing the chip to the name instead left a long bare
-                // leader line between a short name and its marker, which
-                // read as a rule ruled across the disc rather than as a
-                // tie between two things.
-                let row_h = if is_active { RAIL_ROW_H_ACTIVE } else { RAIL_ROW_H };
-                let chip = Rect::new(
-                    rail_x,
-                    marker_y - row_h / 2.0,
-                    marker_x - marker_r - RAIL_LEADER_GAP,
-                    marker_y + row_h / 2.0,
-                );
-                let clears_tail = chip.y0 > self.plus_rect.y1 + 8.0
-                    || chip.y1 < self.plus_rect.y0 - 8.0
-                    || chip.x0 > self.plus_rect.x1;
-                if chip.width() >= RAIL_MIN_CHIP_W && clears_tail {
-                    // The row brings its own surface. A chip's own fill is
-                    // a translucent veneer meant to sit on a themed panel,
-                    // and the rail's inner end is exactly where the body
-                    // has faded to nothing — so when the disc is summoned
-                    // over a bright app, the rows would be near-white text
-                    // on a near-white document. Seating each row on the
-                    // chrome's own popover surface makes the contrast a
-                    // property of the theme rather than of whatever the
-                    // wheel happens to be floating over.
-                    seat_row(scene, transform, chip, fade_a);
-                    let lead = ChipLead::Glyph(icon);
-                    let style = if is_active {
-                        ChipStyle::tinted(base)
-                    } else {
-                        ChipStyle::quiet()
-                    };
-                    Chip::draw_at(
-                        scene,
-                        transform,
-                        chip,
-                        &label,
-                        lead,
-                        style.with_alpha(fade_a),
-                        theme,
-                        text_renderer,
-                    );
-                    // The whole row is the click target: a press on a
-                    // readable name switches to that workspace, which is
-                    // the entire point of showing the name.
-                    row_hit = row_hit.union(chip);
+                // The active label is the theme's primary text and a
+                // size step larger; the rest take its secondary text.
+                // Colouring the active label with its workspace's own hue
+                // put it on a wedge of that same hue, which is the worst
+                // place for it — the identity is already carried by the
+                // wedge, and the name's only job there is to be the most
+                // legible thing in the sector.
+                let style = if is_active {
+                    ChipStyle::bare(None)
+                } else {
+                    // Quiet, but how quiet is the palette's call, not
+                    // ours. Dimming the primary text colour by a fixed
+                    // factor is exactly wrong under high contrast, where
+                    // the whole point is that nothing fades: that palette
+                    // deliberately puts `text_dim` at near-white so
+                    // secondary copy still clears AAA on black.
+                    ChipStyle::bare(Some(colors.text_dim))
                 }
-                self.spoke_hit_rects[i] = row_hit;
+                .with_alpha(fade_a);
+                Chip::draw_at(
+                    scene,
+                    transform * rotate,
+                    chip,
+                    &self.spokes[idx].text,
+                    ChipLead::Glyph(self.spoke_icon(idx)),
+                    style,
+                    theme,
+                    text_renderer,
+                );
 
-                // Per-spoke presence dots: small coloured chips sitting
-                // INSIDE the rim (toward the disc centre) at the marker's
-                // angle. Keeps them attached visually without being
-                // eclipsed by the marker itself.
-                if let Some(ws_id) = ws_id {
+                // Nearest slot wins the workspace's click target.
+                if mid.abs() < hit_claim[idx] {
+                    hit_claim[idx] = mid.abs();
+                    self.spoke_hit_rects[idx] = placed;
+                }
+
+                // Per-sector presence dots, seated just inside the rim at
+                // the sector's angle so they ride the surface with it.
+                if let Some(ws_id) = self.spokes[idx].workspace_id {
                     let key = PresenceKey::Workspace {
                         id: format!("{}", ws_id),
                     };
                     let peers = presence.peers_on(&key);
                     if !peers.is_empty() {
                         let peer_count = peers.len().min(3);
-                        let radial_offset = if is_active { -16.0_f64 } else { -12.0_f64 };
-                        let dot_base_x = cx + (radius + radial_offset) * angle_rad.cos();
-                        let dot_base_y = cy + (radius + radial_offset) * angle_rad.sin();
-                        let perp_x = -angle_rad.sin();
-                        let perp_y = angle_rad.cos();
-                        let spacing = 7.0_f64;
+                        let dot_r = r_out - LABEL_RIM_GAP / 2.0;
+                        let spacing = 7.0_f64 / dot_r;
                         let centre_bias = (peer_count as f64 - 1.0) / 2.0;
                         for (kk, user) in peers.iter().take(peer_count).enumerate() {
                             let off = (kk as f64 - centre_bias) * spacing;
                             let (rr, gg, bb) = presence.color_for(user);
-                            // Per-spoke presence dot = empty-initials
-                            // `ui::Avatar` chip in the peer's own colour, so the
-                            // dot matches the cursor and the other avatar sites.
-                            let dcx = dot_base_x + perp_x * off;
-                            let dcy = dot_base_y + perp_y * off;
-                            let dot_rect = Rect::new(dcx - 3.0, dcy - 3.0, dcx + 3.0, dcy + 3.0);
+                            // Per-sector presence dot = empty-initials
+                            // `ui::Avatar` chip in the peer's own colour, so
+                            // the dot matches the cursor and the other
+                            // avatar sites.
+                            let p = polar(c, dot_r, mid + off);
+                            let dot_rect =
+                                Rect::new(p.x - 3.0, p.y - 3.0, p.x + 3.0, p.y + 3.0);
                             ui::widget::Avatar::draw_at(
                                 scene,
                                 transform,
@@ -1323,51 +1379,39 @@ impl Widget for SidebarWheelDisc {
             }
         }
 
-        // ---- Pass 3: the add-workspace row ------------------------------
-        // The tail of the rail: the same column and the same pill as every
-        // workspace row, dashed and empty instead of filled — the next row
-        // of the list, waiting to be one.
-        //
-        // It was a lone circle on the open body before, moved twice and
-        // belonging nowhere either time: off the rim because it came
-        // within a few pixels of the lowest marker, then off toward the
-        // screen edge, where it floated on bare wallpaper with nothing to
-        // sit on. The fix is not a better spot for a free-floating button
-        // but a row in the list it appends to — it inherits its meaning
-        // from the column it is in. Putting it ON the wheel would give it
-        // the same belonging, but it would rotate out of reach; a fixed
-        // row at the tail belongs without moving, and no workspace row
-        // paints a chip in the band it occupies, so nothing ever collides
-        // with it however far the wheel has been turned.
-        // A dashed stem down from the band the rows occupy, so the gap
-        // between the last name and the tail still reads as one column
-        // rather than as two unrelated things.
-        let stem_x = rail_x + plus_w / 2.0;
-        let stem_top = cy + (half_h - RAIL_TAIL_BAND).max(0.0);
-        if self.plus_rect.y0 - stem_top > 2.0 {
-            scene.stroke(
-                &Stroke::new(1.0).with_dashes(0.0, [3.0, 4.0]),
-                transform,
-                colors.text_tertiary.with_alpha_factor(0.5),
-                None,
-                &Line::new(
-                    Point::new(stem_x, stem_top),
-                    Point::new(stem_x, self.plus_rect.y0),
-                ),
-            );
-        }
-        seat_row(scene, transform, self.plus_rect, 1.0);
-        Chip::draw_at(
+        // ---- Pass 4: the add-workspace button ---------------------------
+        // A round glass button seated on the band at the bottom of the
+        // footprint, in the same material as the rim: translucent fill,
+        // hairline edge. It does NOT rotate, and that is deliberate — it
+        // is not a workspace, it is the control that makes one, so a spot
+        // on the wheel would carry it out of reach every time the wheel
+        // turned. It sits on the band rather than floating on bare
+        // wallpaper, which is what the flat fill buys: there is now a real
+        // surface underneath it everywhere it can land.
+        let add_fade = row_fade(self.plus_rect.center().y).max(0.55);
+        let add_circle = Circle::new(self.plus_rect.center(), ADD_BUTTON_D / 2.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            body_hue.with_alpha_factor(add_fade),
+            None,
+            &add_circle,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            edge((74.0 * add_fade) as u8),
+            None,
+            &add_circle,
+        );
+        let glyph = Rect::from_center_size(self.plus_rect.center(), (15.0, 15.0));
+        Icon::Plus.draw_with_stroke(
             scene,
             transform,
-            self.plus_rect,
-            "",
-            ChipLead::Glyph(Icon::Plus),
-            ChipStyle::ghost(),
-            theme,
-            text_renderer,
+            glyph,
+            colors.text_primary.with_alpha_factor(0.72 * add_fade),
+            1.6,
         );
-
         // End of cache build — splice the freshly-encoded local scene
         // into the caller's `out_scene` with the host transform, then
         // restore `self.cached_scene` and record the fingerprint so
@@ -1772,6 +1816,33 @@ impl SidebarWheelDisc {
         }
     }
 
+    /// The band the disc paints, as `(inner_radius, outer_radius)` about
+    /// [`SidebarWheelDisc::disc_centre`].
+    ///
+    /// The visible object is a constant-depth ring, not a whole disc, and
+    /// the inner radius is derived rather than configured — see
+    /// [`BAND_TANGENT_FRACTION`]. Exposed so callers that need to know
+    /// where the surface actually is (the snapshot tests sample it) do not
+    /// have to re-derive the expression and drift out of step with it.
+    pub fn band_radii(&self) -> (f64, f64) {
+        let radius = self.diameter_px / 2.0;
+        let c = self.center();
+        let half_h = self.rect.height() / 2.0;
+        let d_left = (self.rect.x0 - c.x + BAND_LEFT_INSET).max(1.0);
+        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
+        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
+            .sqrt()
+            .clamp(4.0, radius - 12.0);
+        (r_in, radius)
+    }
+
+    /// The disc's logical centre. It sits well off-screen to the left of
+    /// the footprint — that is what makes the visible arc a slice of
+    /// something large rather than a small circle in a column.
+    pub fn disc_centre(&self) -> Point {
+        self.center()
+    }
+
     /// Test helper: pins the post-`apply_layout` rect for tests that
     /// assert on the clamped position rather than a transient cache.
     #[cfg(test)]
@@ -1928,37 +1999,37 @@ mod tests {
         Rect::new(0.0, 40.0, 234.0, 830.0)
     }
 
-    /// A switcher exists to say what you would be switching TO. Neighbours
-    /// were unlabelled specks, so you could see that other workspaces
-    /// existed but not which ones — and the click target proves the row is
-    /// really there, because it is grown from the painted chip.
+    /// A switcher exists to say what you would be switching TO. Every
+    /// sector on screen carries its workspace's name, and the click target
+    /// is grown from the label that was actually painted — so a hit rect
+    /// wide enough to hold a name is proof the name is there.
     #[test]
     fn visible_neighbours_carry_a_name_not_just_a_speck() {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
 
-        // A bare marker's hit box is 28 px square; a row's spans the rail.
-        let bare_marker_w = 28.0;
         let named: Vec<usize> = (0..d.spokes.len())
             .filter(|i| {
-                *i != d.active_idx && d.spoke_hit_rects[*i].width() > bare_marker_w * 1.5
+                *i != d.active_idx
+                    && d.spoke_hit_rects[*i].width().max(d.spoke_hit_rects[*i].height())
+                        >= LABEL_MIN_W
             })
             .collect();
         assert!(
             !named.is_empty(),
-            "no neighbour got a named row: hit rects {:?}",
+            "no neighbour got a named sector: hit rects {:?}",
             d.spoke_hit_rects
         );
     }
 
-    /// The wheel is a ring, so the rail has to be balanced around the
+    /// The wheel is a ring, so the sectors have to be balanced around the
     /// workspace you are on. Offsetting by the raw index difference put
     /// every other workspace on ONE side: with three workspaces and the
     /// first one active, the whole upper arc was empty and the other two
     /// stacked below it.
     #[test]
-    fn the_rail_wraps_around_the_active_workspace() {
+    fn sectors_wrap_around_the_active_workspace() {
         let mut d = mk(&["Home", "Research", "Design"]);
         layout_into_slot(&mut d, live_slot());
         paint(&mut d);
@@ -1981,14 +2052,24 @@ mod tests {
         );
     }
 
-    /// The add-workspace row closes the rail, so nothing may ever land on
-    /// top of it — a marker crowding it is what drove the affordance off
-    /// the rim and then off the disc entirely. Sweeping the rotation
-    /// covers the positions rows pass through between detents, not just
-    /// the ones they rest at.
+    /// The add-workspace button does not rotate, so a sector label sweeps
+    /// past it on every turn of the wheel. The button has to stay usable
+    /// throughout — a control the wheel can bury is what drove this
+    /// affordance off the rim and then off the disc entirely.
+    ///
+    /// Drives the real press path at every position a label passes
+    /// through between detents, rather than comparing rectangles: the
+    /// press handler resolves the button before it resolves a sector, and
+    /// that ordering is the thing that has to hold.
     #[test]
-    fn the_add_row_is_never_covered_by_a_workspace_row() {
-        let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"]);
+    fn the_add_button_stays_pressable_at_every_rotation() {
+        use crate::shell::chrome_state::ChromeState;
+        use crate::shell::state::WorkspaceTree;
+
+        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
+        let before = chrome.borrow().tree().workspaces.len();
+        let mut d = mk(&["Home", "Research", "Design", "Marketing", "Analytics"])
+            .with_chrome(chrome.clone());
         layout_into_slot(&mut d, live_slot());
 
         for step in 0..72 {
@@ -1996,21 +2077,141 @@ mod tests {
             paint(&mut d);
             assert!(
                 d.plus_rect.area() > 0.0,
-                "the tail row is placed at every rotation"
+                "the add button is placed at {}°",
+                d.rotation_deg
             );
-            for (i, row) in d.spoke_hit_rects.iter().enumerate() {
-                if row.area() <= 0.0 {
-                    continue;
-                }
-                let hit = row.intersect(d.plus_rect);
-                assert!(
-                    hit.width() <= 0.0 || hit.height() <= 0.0,
-                    "workspace row {i} covers the add row at {}°: row {row:?} tail {:?}",
-                    d.rotation_deg,
-                    d.plus_rect
-                );
-            }
+
+            let expected = before + step + 1;
+            let p = d.plus_rect.center();
+            pump(&mut d, cursor_event(p.x, p.y));
+            assert!(
+                pump(&mut d, press_event()),
+                "a press on the add button at {}° was not handled — a label \
+                 sweeping over it has taken the press",
+                d.rotation_deg
+            );
+            assert_eq!(
+                chrome.borrow().tree().workspaces.len(),
+                expected,
+                "the press at {}° did not create a workspace",
+                d.rotation_deg
+            );
+            pump(&mut d, release_event());
         }
+    }
+
+    /// The add button has to sit ON the band, at every rotation. Pinned to
+    /// the footprint's floor it hung underneath, on bare wallpaper, which
+    /// is what moved this affordance twice before — the fix was a surface
+    /// to sit on, not another spot to float in.
+    #[test]
+    fn the_add_button_sits_on_the_band() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+
+        for step in 0..24 {
+            d.rotation_deg = step as f32 * 15.0;
+            paint(&mut d);
+            let (r_in, r_out) = d.band_radii();
+            let c = d.disc_centre();
+            let p = d.plus_rect.center();
+            let dist = ((p.x - c.x).powi(2) + (p.y - c.y).powi(2)).sqrt();
+            assert!(
+                dist > r_in && dist < r_out,
+                "the add button is off the band at {}°: {dist:.0} px from the centre, \
+                 band runs {r_in:.0}..{r_out:.0}",
+                d.rotation_deg
+            );
+            assert!(
+                d.rect.contains(p),
+                "the add button left the footprint at {}°: {:?} not in {:?}",
+                d.rotation_deg,
+                p,
+                d.rect
+            );
+        }
+    }
+
+    /// A label may only be withheld when it genuinely has nowhere to go.
+    /// The collision test used to run on the axis-aligned bounding box of
+    /// the rotated label, which at 15° picks up 30 px of empty corner at
+    /// each end — enough to report a clash with a button the label passes
+    /// well clear of, so the bottom sector silently lost its name.
+    #[test]
+    fn a_sector_keeps_its_name_when_it_only_passes_near_the_add_button() {
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, live_slot());
+        paint(&mut d);
+
+        let named = d
+            .spoke_hit_rects
+            .iter()
+            .filter(|r| r.area() > 0.0)
+            .count();
+        assert_eq!(
+            named,
+            d.spokes.len(),
+            "a workspace lost its label with the wheel at rest: {:?}",
+            d.spoke_hit_rects
+        );
+    }
+
+    /// The band's inner arc bends back toward the disc's centre faster
+    /// than the footprint's left edge does, so past a point it leaves
+    /// through that edge and the clip turns the curve into a straight
+    /// vertical cut. That is survivable only while the vertical fade has
+    /// already taken the band down — a crisp cut through a surface at full
+    /// strength is the "someone drew a box" failure the curve exists to
+    /// avoid.
+    ///
+    /// Asserts on the two production constants that decide it rather than
+    /// on a rendered pixel, because the relationship is what has to hold:
+    /// change either one alone and this fails.
+    #[test]
+    fn band_clip_starts_where_the_fade_has_already_taken_hold() {
+        // Fraction of the footprint's height between its edge and the
+        // point the inner arc starts being clipped.
+        let clip_at = (1.0 - BAND_TANGENT_FRACTION) / 2.0;
+        // The fade ramps linearly from 0 at the edge to 1 at FADE_IN_STOP.
+        let alpha_at_clip = clip_at / FADE_IN_STOP as f64;
+        assert!(
+            alpha_at_clip <= 0.35,
+            "the band gets clipped while still at {:.0}% alpha — the cut \
+             will read as a straight edge sliced through the surface. \
+             Raise BAND_TANGENT_FRACTION ({BAND_TANGENT_FRACTION}) or \
+             FADE_IN_STOP ({FADE_IN_STOP}).",
+            alpha_at_clip * 100.0
+        );
+    }
+
+    /// Display slots have to cover the whole visible sweep, not just the
+    /// workspaces. Indexing sectors off the workspace list left a stretch
+    /// of unsegmented band rotating through whenever there were fewer
+    /// workspaces than the sweep had room for — a wheel with a bald patch,
+    /// which is the one thing that stops it reading as a wheel.
+    #[test]
+    fn sector_slots_cover_the_whole_sweep() {
+        for sweep_deg in [20.0_f64, 31.0, 38.0, 44.0] {
+            let reach = slot_reach(sweep_deg.to_radians(), SPOKE_ANGLE_STEP_DEG as f64);
+            // The fan runs from `-reach` to `+reach` slots, and each slot
+            // spans half a gap either side of its centreline.
+            let covered = reach as f64 * SPOKE_ANGLE_STEP_DEG as f64
+                + SPOKE_ANGLE_STEP_DEG as f64 / 2.0;
+            assert!(
+                covered >= sweep_deg,
+                "at a {sweep_deg}° sweep the fan only reaches {covered}° — \
+                 the rest of the band has no sector on it"
+            );
+        }
+    }
+
+    /// A one-workspace disc is the degenerate case: `spoke_gap_deg` widens
+    /// to a full turn so the wheel cannot scroll past its only entry, and
+    /// the fan must collapse to that single slot rather than tiling copies
+    /// of it around the band.
+    #[test]
+    fn a_single_workspace_gets_exactly_one_slot() {
+        assert_eq!(slot_reach(40.0_f64.to_radians(), 360.0), 0);
     }
 
     /// Dragging the rim has to keep asking for frames. The rotation is
@@ -2055,11 +2256,16 @@ mod tests {
     #[test]
     fn panning_the_strip_reports_dirty_and_moves_the_click_targets() {
         let mut d = mk(&["Home", "Research", "Design"]);
+        // Click targets are grown from the labels, and a label only paints
+        // where the band is deep enough to hold one — so this has to run
+        // on the slot the live shell hands the disc, not on the
+        // full-diameter rect `mk` pins for the pure-geometry tests.
+        layout_into_slot(&mut d, live_slot());
         paint(&mut d);
         let before: Vec<Rect> = d.spoke_hit_rects.clone();
         assert!(
             before.iter().any(|r| r.area() > 0.0),
-            "the paint populated at least one marker hit rect"
+            "the paint populated at least one label hit rect"
         );
 
         // What the host does on a pan: same slot, shifted origin.
@@ -2077,7 +2283,7 @@ mod tests {
             }
             assert!(
                 (now.x0 - (was.x0 + shift)).abs() < 1.5,
-                "marker {i} click target must travel with the disc: was x0={}, now x0={}, \
+                "label {i} click target must travel with the disc: was x0={}, now x0={}, \
                  expected ~{}",
                 was.x0,
                 now.x0,
