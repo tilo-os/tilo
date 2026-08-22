@@ -66,8 +66,8 @@ use collab_types::{
     ArtifactId, OpClass, RedactedMarker, SignedOp, ValidationError, validate_inbound_op,
 };
 use runtime_collab::raw::{
-    channel_handle, collab_service, context_stream, cursor_stream, presence_event, presence_handle,
-    presence_payload, presence_stream, scrollback_batch, stream,
+    OpKind, channel_handle, collab_service, context_stream, cursor_stream, presence_event,
+    presence_handle, presence_payload, presence_stream, scrollback_batch, stream,
 };
 use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use ui::presence::PresenceKey;
@@ -78,10 +78,18 @@ use crate::shell::collab_broker::{
 use crate::shell::network::ShellNetwork;
 
 /// Envelope pushed onto an [`OpStreamServer`]'s queue.
+///
+/// `kind` is what makes the queue readable. Three kinds of frame
+/// share it — a signed envelope, a delta, a whole document — and a
+/// reader cannot tell them apart from the bytes. Untagged, the only
+/// available reading was "assume signed", which discarded every
+/// unsigned frame in silence: an app received its peer's keystrokes
+/// and dropped them one hop from the screen.
 #[derive(Clone, Debug)]
 struct OpEnvelope {
     op_bytes: Vec<u8>,
     from_user_id: String,
+    kind: OpKind,
 }
 
 /// Envelope pushed onto a [`PresenceStreamServer`]'s queue. Carries
@@ -222,6 +230,14 @@ impl CapnpBrokerState {
             );
             return;
         }
+        tracing::info!(
+            target: "qos_collab_probe",
+            app = %route.app_id,
+            cluster = %route.cluster_id,
+            record = %route.record_id,
+            bytes = data.len(),
+            "PROBE publish_incremental -> peers",
+        );
         net.publish_app_crdt_incremental(
             route.app_id.clone(),
             route.cluster_id.clone(),
@@ -252,6 +268,14 @@ impl CapnpBrokerState {
             );
             return;
         }
+        tracing::info!(
+            target: "qos_collab_probe",
+            app = %route.app_id,
+            cluster = %route.cluster_id,
+            record = %route.record_id,
+            bytes = data.len(),
+            "PROBE publish_snapshot -> peers",
+        );
         net.publish_app_crdt_snapshot(
             route.app_id.clone(),
             route.cluster_id.clone(),
@@ -321,6 +345,13 @@ impl CapnpBrokerState {
         };
         let addressed = route.channel_key();
         let room_wide = route.record_id.is_empty();
+        tracing::info!(
+            target: "qos_collab_probe",
+            addressed = %addressed,
+            room_wide,
+            registered = ?all_channels.keys().collect::<Vec<_>>(),
+            "PROBE capnp fanout: addressed key vs registered channels",
+        );
         let channels = all_channels
             .iter_mut()
             .filter(|(k, _)| {
@@ -354,6 +385,7 @@ impl CapnpBrokerState {
                 let env = OpEnvelope {
                     op_bytes,
                     from_user_id: from_user_id.clone(),
+                    kind: OpKind::Signed,
                 };
                 for subs in channels {
                     subs.op.retain(|s| {
@@ -365,15 +397,27 @@ impl CapnpBrokerState {
                 }
             }
             CollabEvent::CRDTIncremental { data } | CollabEvent::CRDTUpdate { data } => {
-                // Legacy unsigned frames get an empty `from_user_id`
-                // — the broker never learned who wrote them (the
-                // JSON dialect stripped attribution on those two
-                // variants long before this transport arrived).
-                // Explicit empty string documented here so a reader
-                // does not mistake it for a bug.
+                // Unsigned frames get an empty `from_user_id` — the
+                // broker never learned who wrote them (the JSON
+                // dialect stripped attribution on those two variants
+                // long before this transport arrived). Explicit empty
+                // string documented here so a reader does not mistake
+                // it for a bug.
+                //
+                // The two variants share a payload type and nothing
+                // else: a delta is applied on top of what the reader
+                // holds, a whole document is merged into it. Tagging
+                // which one this is, rather than handing over bare
+                // bytes, is the difference between a peer's edit
+                // arriving and a peer's edit being dropped.
+                let kind = match event {
+                    CollabEvent::CRDTUpdate { .. } => OpKind::UnsignedSnapshot,
+                    _ => OpKind::UnsignedIncremental,
+                };
                 let env = OpEnvelope {
                     op_bytes: data.clone(),
                     from_user_id: String::new(),
+                    kind,
                 };
                 for subs in channels {
                     subs.op.retain(|s| {
@@ -585,6 +629,12 @@ impl collab_service::Server for CapnpCollabService {
             // to enforce that the field is present and decodable.
             let _identity = reader.get_identity()?;
 
+            tracing::info!(
+                target: "qos_collab_probe",
+                channel = %channel_id,
+                peer_id,
+                "PROBE join_channel",
+            );
             state.ensure_channel(&channel_id);
 
             let handle = CapnpChannelHandle {
@@ -1168,6 +1218,7 @@ impl stream::Server for OpStreamServer {
             let mut r = results.get();
             r.set_op(&env.op_bytes);
             r.set_from_user_id(&env.from_user_id);
+            r.set_kind(env.kind);
             Ok(())
         })
     }

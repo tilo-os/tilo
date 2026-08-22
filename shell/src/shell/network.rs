@@ -566,16 +566,34 @@ impl ShellNetwork {
     /// direction.
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            tracing::info!(
+                target: "qos_collab_probe",
+                cluster = %cluster_id,
+                "PROBE is_in_room=false (not a uuid)",
+            );
             return false;
         };
         if room.is_nil() {
+            tracing::info!(
+                target: "qos_collab_probe",
+                cluster = %cluster_id,
+                "PROBE is_in_room=false (nil)",
+            );
             return false;
         }
         let Ok(replica) = self.replica.lock() else {
             return false;
         };
-        let in_room = replica.tree.read().rooms().contains(&room);
+        let known = replica.tree.read().rooms();
+        let in_room = known.contains(&room);
         drop(replica);
+        tracing::info!(
+            target: "qos_collab_probe",
+            cluster = %cluster_id,
+            in_room,
+            known = ?known.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            "PROBE is_in_room",
+        );
         in_room
     }
 
@@ -1140,6 +1158,16 @@ impl ShellNetwork {
                     ref data,
                 } = msg
                 {
+                    tracing::info!(
+                        target: "qos_collab_probe",
+                        from = peer_hash,
+                        me = self.local_peer_hash,
+                        app = %app_id,
+                        cluster = %cluster_id,
+                        record = %record_id,
+                        bytes = data.len(),
+                        "PROBE gossip recv AppCrdtIncremental",
+                    );
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
                         self.handle_app_crdt_message(
                             peer_hash,
@@ -1166,6 +1194,16 @@ impl ShellNetwork {
                     ref data,
                 } = msg
                 {
+                    tracing::info!(
+                        target: "qos_collab_probe",
+                        from = peer_hash,
+                        me = self.local_peer_hash,
+                        app = %app_id,
+                        cluster = %cluster_id,
+                        record = %record_id,
+                        bytes = data.len(),
+                        "PROBE gossip recv AppCrdtSnapshot",
+                    );
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
                         self.handle_app_crdt_snapshot_message(
                             peer_hash,
