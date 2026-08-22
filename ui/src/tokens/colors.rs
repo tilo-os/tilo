@@ -238,7 +238,7 @@ impl Colors {
         // `window_card` override.)
         let window_card = p.window_card.unwrap_or(if p.dark { p.base } else { Color::WHITE });
         let window_card_border = if p.dark {
-            Color::from_rgba8(255, 255, 255, 82)
+            Color::from_rgba8(255, 255, 255, 51)
         } else {
             Color::from_rgba8(0, 0, 0, 30)
         };
