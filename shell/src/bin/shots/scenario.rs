@@ -1168,16 +1168,9 @@ fn new_tab_from_the_plus_chip() -> Scenario {
 // The strip itself: several real apps along it, and the pan across them.
 // =====================================================================
 
-/// Lines of wheel delta per pan step. One `LineDelta` is 30 px in
-/// `GroupRow::handle_event`, so this is 60 px of travel per step — small
-/// enough that a recording reads as a pan rather than a cut.
-const PAN_STEP_LINES: f32 = 2.0;
-
-/// Pan steps in each direction. 16 × 60 px ≈ 960 px, which is a little
-/// under the overflow four half-width windows produce on a 1600 px
-/// desktop — so the pan runs the length of the strip without stranding
-/// it in the empty canvas past the last window.
-const PAN_STEPS: usize = 16;
+/// Frames to let the eased focus travel settle before a snapshot — the
+/// snap curve is 200 ms of real wall time, and a frame sleeps 16 ms.
+const PAN_SETTLE_FRAMES: u32 = 16;
 
 /// Window width the strip is held at, in per-mille of the display's
 /// usable width. Half a screen each puts two windows in view with a
@@ -1193,7 +1186,7 @@ const HALF_WIDTH_PERMILLE: u16 = 500;
 /// "waiting for first frame" card until a real client attaches a buffer,
 /// and every hosted-app scenario has one window in the strip. So this
 /// one opens Notes, Files, Terminal and Editor — each drawing its own
-/// content in-process — as four separate windows, then wheels the strip
+/// content in-process — as four separate windows, then travels focus
 /// across them and back.
 ///
 /// Each app is opened with the previous one selected and alone in its
@@ -1252,37 +1245,27 @@ fn strip_scroll_across_apps() -> Scenario {
         Action::Wait(4),
         Action::Snapshot("04-four-windows"),
         // Back to the first window, which pans the strip home the way
-        // focus always does — the starting position for the pan.
+        // focus always does — the starting position for the travel.
         Action::SelectGroup(Some(0)),
         Action::Wait(6),
         Action::Snapshot("05-strip-at-rest"),
-        // Park the cursor over the strip — `GroupRow` gates its wheel
-        // handler on the cursor being inside the row, and a `MouseWheel`
-        // event carries no position of its own.
-        Action::MoveCursor(Point::new(900.0, 520.0)),
     ];
-    // Pan forward, then back. Each step is its own action so recording
-    // mode encodes a frame per step: the strip's position is where the
-    // wheel left it, so the motion survives the harness spending far
-    // more wall time per frame than a real one costs.
-    for _ in 0..PAN_STEPS {
-        actions.push(Action::MouseWheel {
-            dx: -PAN_STEP_LINES,
-            dy: 0.0,
-        });
-    }
+    // Travel the strip by focus, the only sanctioned view motion: a
+    // bare wheel deliberately does NOT move the strip (hard boundary,
+    // 2026-08-22 — scrolling is for content inside a window). Focusing
+    // the far window slides the whole strip across on the eased snap
+    // curve, exactly what the Alt+Shift wheel jump produces live.
+    actions.push(Action::SelectGroup(Some(3)));
+    // Let the eased travel settle on its target before reading it.
+    actions.push(Action::Wait(PAN_SETTLE_FRAMES));
     actions.push(Action::Snapshot("06-panned-right"));
-    for _ in 0..PAN_STEPS {
-        actions.push(Action::MouseWheel {
-            dx: PAN_STEP_LINES,
-            dy: 0.0,
-        });
-    }
+    actions.push(Action::SelectGroup(Some(0)));
+    actions.push(Action::Wait(PAN_SETTLE_FRAMES));
     actions.push(Action::Snapshot("07-panned-back"));
     Scenario {
         name: "strip_scroll_across_apps",
         description: "Open Notes, Files, Terminal and Editor as four windows along the strip, \
-                      then wheel the strip across them and back.",
+                      then travel focus across them and back.",
         actions,
     }
 }
@@ -2077,10 +2060,10 @@ mod tests {
         }
     }
 
-    /// And it has to actually pan: the strip holds more than fits, the
-    /// wheel moves it off its resting position, and wheeling back returns
-    /// it home. Read off the live `GroupRow` the production wheel handler
-    /// writes to.
+    /// And it has to actually travel: the strip holds more than fits,
+    /// focusing the far window carries it off its resting position, and
+    /// focusing the first one returns it home. Read off the live
+    /// `GroupRow` the focus-follow reconciler writes to.
     #[test]
     fn strip_scroll_scenario_pans_the_strip_and_back() {
         let mut d = ShellDriver::new((1600, 900));
@@ -2108,13 +2091,13 @@ mod tests {
         let (panned_x, _) = at("06-panned-right");
         assert!(
             panned_x > 600.0,
-            "wheeling {PAN_STEPS} steps of {PAN_STEP_LINES} lines must carry the strip \
-             most of the way along it (scroll_x = {panned_x})"
+            "focusing the far window must carry the strip most of the way \
+             along it (scroll_x = {panned_x})"
         );
         let (back_x, _) = at("07-panned-back");
         assert!(
             back_x < 1.0,
-            "wheeling the same distance back returns the strip home (scroll_x = {back_x})"
+            "focusing the first window again returns the strip home (scroll_x = {back_x})"
         );
     }
 

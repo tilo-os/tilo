@@ -746,6 +746,94 @@ mod tests {
         assert!(!scene.encoding().is_empty());
     }
 
+    /// The top bar's workspace chevrons follow the *live* active
+    /// workspace, not the one the bar was built on.
+    ///
+    /// The bar refreshes `workspace_index` in `Widget::update` when the
+    /// chrome revision bumps, and the host reaches it through the
+    /// `Stack` → `Column` it sits in. When those containers swallowed
+    /// `update`, the bar never re-synced: the up-chevron stayed painted
+    /// as disabled on every workspace, even with one above. Drives the
+    /// real per-frame path (`pump_apps` → paint) and reads the chevron
+    /// state the way a scenario would — by whether the `_enabled` name
+    /// resolves in the registry.
+    #[test]
+    fn topbar_workspace_chevrons_track_the_live_active_workspace() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut frame = |fb: &mut FrameBuilder| {
+            fb.pump_apps(&mut doc, &root);
+            fb.relayout();
+            let _ = fb.paint();
+            fb.widget_registry()
+        };
+
+        let reg = frame(&mut fb);
+        assert!(
+            reg.contains_key("topbar_workspace_up"),
+            "the up-chevron click target is always published"
+        );
+        assert!(
+            !reg.contains_key("topbar_workspace_up_enabled"),
+            "booted on the first workspace: nothing above it, up must read disabled"
+        );
+        let booted_with_more_below = fb.chrome().tree().workspaces.len() > 1;
+        assert_eq!(
+            reg.contains_key("topbar_workspace_down_enabled"),
+            booted_with_more_below,
+            "down reads enabled exactly when a workspace follows the active one"
+        );
+
+        // A new workspace is appended last and made active, so the one
+        // we booted on is now above us: up must go live, down must not.
+        fb.with_chrome(|st| {
+            st.add_workspace("second");
+        });
+        let reg = frame(&mut fb);
+        assert!(
+            reg.contains_key("topbar_workspace_up_enabled"),
+            "after switching to a later workspace the up-chevron must read enabled"
+        );
+        assert!(
+            !reg.contains_key("topbar_workspace_down_enabled"),
+            "on the last workspace the down-chevron must read disabled"
+        );
+
+        // One step back up: still below the boot workspace, so both
+        // chevrons are live — the bar must track each switch, not just
+        // the first one after it was built.
+        fb.with_chrome(|st| {
+            assert!(st.switch_workspace(-1));
+        });
+        let reg = frame(&mut fb);
+        let idx = |fb: &FrameBuilder| {
+            let tree = fb.chrome().tree().clone();
+            tree.workspaces
+                .iter()
+                .position(|w| w.id == tree.active)
+                .expect("active workspace is in the tree")
+        };
+        assert!(idx(&fb) > 0, "one step up from the last workspace cannot be the first");
+        assert!(
+            reg.contains_key("topbar_workspace_down_enabled"),
+            "with the new workspace below, the down-chevron must read enabled"
+        );
+
+        // All the way back to the top: up goes dark, down stays live.
+        fb.with_chrome(|st| while st.switch_workspace(-1) {});
+        let reg = frame(&mut fb);
+        assert_eq!(idx(&fb), 0);
+        assert!(
+            !reg.contains_key("topbar_workspace_up_enabled"),
+            "back on the first workspace the up-chevron must read disabled again"
+        );
+        assert!(
+            reg.contains_key("topbar_workspace_down_enabled"),
+            "with a workspace below, the down-chevron must read enabled"
+        );
+    }
+
     /// Look up a widget's rect in a `widget_registry` snapshot by its *last*
     /// path segment (`.../TopBarChrome[0]` → `TopBarChrome`). The registry
     /// keys are full paths, so an exact-key lookup on a nested widget would
