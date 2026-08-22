@@ -99,7 +99,10 @@ def main() -> int:
     ap.add_argument("--out", default=None)
     ap.add_argument("--keep", action="store_true")
     ap.add_argument("--size", default="1280x800")
-    ap.add_argument("--frame-timeout", type=float, default=420.0,
+    ap.add_argument("--host-app", action="store_true",
+                    help="give the watching session an app too (it does not "
+                         "need one to see its peers)")
+    ap.add_argument("--frame-timeout", type=float, default=900.0,
                     help="seconds to wait for every app's first real frame")
     ap.add_argument("--shell-bin", default=os.path.join(REPO, "target/debug/shell"))
     args = ap.parse_args()
@@ -224,8 +227,15 @@ def main() -> int:
             up = [k for k, v in (s.chrome().get("overlays") or {}).items() if v is True]
             claim(f"{s.name} has no overlay covering its windows", up, [])
 
-        step("3", f"launch a real {args.app} into each session")
-        for s in sessions:
+        step("3", f"launch a real {args.app} into each guest's session")
+        # Only the guests need an application. A session republishes a
+        # pointer when one of *its* apps reports one, so an app is what
+        # makes a guest visible; the host is only watching, and every
+        # process it does not have to start is a debug-build shader
+        # compile it does not have to wait through. Pass --host-app to
+        # give the host one too.
+        app_sessions = sessions if args.host_app else guests
+        for s in app_sessions:
             s.launch_app(args.app, s.user, room, doc, out)
         # Wait on all of them against one deadline rather than each in
         # turn against its own. Three debug builds compiling shaders on
@@ -233,16 +243,16 @@ def main() -> int:
         # timeout charges the first session for everyone else's start-up
         # and reports "never painted" for an app that was seconds away.
         deadline = time.time() + args.frame_timeout
-        pending = list(sessions)
+        pending = list(app_sessions)
         while pending and time.time() < deadline:
             pending = [s for s in pending
                        if not any(f.get("frame_seq", 0) > 0 for f in s.surfaces())]
             if pending:
                 time.sleep(2.0)
-        for s in sessions:
+        for s in app_sessions:
             painted = any(f.get("frame_seq", 0) > 0 for f in s.surfaces())
             claim(f"{s.name}'s app painted a real frame", painted, True)
-        if any(s in pending for s in sessions):
+        if pending:
             raise RuntimeError(
                 f"an app never painted within {args.frame_timeout}s; see the logs in {out}")
 
