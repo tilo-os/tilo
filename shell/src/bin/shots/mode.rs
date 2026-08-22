@@ -330,9 +330,17 @@ pub mod window {
         let root = build_nirios_root(&tree);
         let mut app = App::new(state, root);
         sync_tab_presence_from_tree(&tree, app.presence_ctx_mut());
-        app.set_presence_broadcast_scope(Some(PresenceKey::Workspace {
-            id: format!("{}", tree.active.0),
-        }));
+        // The room, not the local workspace id: the id is a per-machine
+        // handle, so a pointer published under it is addressed to a scope
+        // no other machine has. Same key the overlay reads peers by.
+        if let Some(room) = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .map(|w| w.room.to_string())
+        {
+            app.set_presence_broadcast_scope(Some(PresenceKey::Workspace { id: room }));
+        }
         app.run();
     }
 }
