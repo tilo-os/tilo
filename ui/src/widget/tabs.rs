@@ -231,6 +231,26 @@ pub struct TabBar {
     /// behind by the pill walk, so it always sits immediately after the
     /// last pill regardless of pinning or title lengths.
     new_tab_rect: Rect,
+    /// Shaped width of each tab's title, keyed by tab id, alongside the
+    /// title and text size it was measured at so a rename or a theme
+    /// change invalidates rather than silently reusing a stale advance.
+    ///
+    /// `apply_layout` has no [`TextRenderer`] — the pill walk runs off
+    /// taffy's output, and taffy's measure hook cannot help because it
+    /// is asked for a size before the bar knows the width it has to fit
+    /// into. So the shaped width is recorded in `draw`, which measures
+    /// the title anyway, and read back on the next layout pass. The
+    /// first frame of a new title falls back to a per-character
+    /// estimate; the fit clamp in `apply_layout` is pure geometry and
+    /// holds either way, so an unmeasured title can be mis-sized but
+    /// never overflows its group.
+    title_advance: HashMap<u64, (String, f32, f64)>,
+    /// Per-pill title as it will be painted this frame — elided when the
+    /// pill is too narrow for the whole thing. Rebuilt at the top of
+    /// `draw` (the only pass with a [`TextRenderer`]) and read by
+    /// `draw_pill_inner`, which takes `&self`. Aligned 1:1 with `tabs`;
+    /// `None` for a pinned, icon-only pill.
+    visible_titles: Vec<Option<String>>,
     hover_idx: Option<usize>,
     hover_close_idx: Option<usize>,
     /// Tab whose maximize icon the pointer is currently over. Kept
@@ -379,6 +399,8 @@ impl TabBar {
             max_rects: Vec::new(),
             search_rects: Vec::new(),
             new_tab_rect: Rect::ZERO,
+            title_advance: HashMap::new(),
+            visible_titles: Vec::new(),
             hover_idx: None,
             hover_close_idx: None,
             hover_max_idx: None,
@@ -581,10 +603,19 @@ impl TabBar {
             // same relative distance no matter where the pill is painted.
             let close_x_visual = self.close_rects[i].x0 + dx;
             let clip_r = Rect::new(r.x0, r.y0, close_x_visual - 2.0, r.y1);
+            // `visible_titles` carries the elided form, so the clip is
+            // now a backstop rather than the truncation mechanism: the
+            // string handed to the renderer already fits, and the reader
+            // sees an ellipsis instead of a glyph sliced down the middle.
+            let label = self
+                .visible_titles
+                .get(i)
+                .and_then(|s| s.as_deref())
+                .unwrap_or(t.title.as_str());
             scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &clip_r);
             tr.draw_text_weighted(
                 scene,
-                &t.title,
+                label,
                 text_size,
                 text_color,
                 transform * Affine::translate((title_x, title_y)),
@@ -863,6 +894,73 @@ impl TabBar {
             1.0
         }
     }
+    /// Width the pill at data index `i` wants, ignoring the bar it has to
+    /// fit into: leading pad, the app glyph when the tab carries one, the
+    /// title at its shaped width, and the trailing chip cluster.
+    ///
+    /// Uses the advance recorded by the last `draw` when there is one and
+    /// the per-character estimate otherwise — see [`Self::title_advance`].
+    fn natural_pill_width(&self, i: usize) -> f64 {
+        let t = &self.tabs[i];
+        if self.pinned_ids.contains(&t.id) {
+            // Compact icon-only pill — close / max / search glyphs are
+            // suppressed for pinned tabs (see `draw_pill_inner` and the
+            // press hit-tests in `handle_event`).
+            return PINNED_W;
+        }
+        let title_w = self
+            .title_advance
+            .get(&t.id)
+            .filter(|(title, _, _)| title == &t.title)
+            .map(|(_, _, w)| *w)
+            .unwrap_or_else(|| t.title.chars().count() as f64 * APPROX_CHAR_W);
+        let lead = if t.app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 };
+        (PILL_PAD_X + lead + title_w + CHIP_CLUSTER_W).max(PILL_MIN_PX)
+    }
+
+    /// Horizontal span a pill's title may occupy, given the pill's rect.
+    /// Runs from the leading pad (past the app glyph, when there is one)
+    /// to the left edge of the trailing chip cluster.
+    fn title_zone(&self, i: usize, r: Rect) -> (f64, f64) {
+        let lead = if self.tabs[i].app_kind.is_some() { ICON_W + ICON_GAP } else { 0.0 };
+        let x0 = r.x0 + PILL_PAD_X + lead;
+        let x1 = r.x1 - CHIP_CLUSTER_W;
+        (x0, x1.max(x0))
+    }
+
+    /// The title string `draw` actually renders for the pill at data
+    /// index `i` — the tab's title, elided with an ellipsis when the pill
+    /// is too narrow to show it whole.
+    ///
+    /// A pill can be narrower than its title whenever the group is too
+    /// narrow for every tab at its natural width, which is the ordinary
+    /// case once a strip holds several groups side by side. Eliding here
+    /// keeps the truncation legible and inside the pill; the previous
+    /// clip-rect alone sliced the last glyph in half and gave the reader
+    /// no signal that anything had been cut.
+    ///
+    /// Returns `None` for a pinned pill, which renders icon-only.
+    pub fn visible_title(&mut self, i: usize, tr: &mut TextRenderer, theme: &Theme) -> Option<String> {
+        let t = self.tabs.get(i)?;
+        if self.pinned_ids.contains(&t.id) {
+            return None;
+        }
+        let size = theme.tokens.typography.scale.sm;
+        let title = t.title.clone();
+        let id = t.id;
+        // Record the shaped advance for the next layout pass while we are
+        // here — `apply_layout` has no text renderer of its own.
+        let (full_w, _) = tr.measure_weighted(&title, size, None, TextWeight::Semibold);
+        self.title_advance.insert(id, (title.clone(), size, full_w as f64));
+        let r = *self.tab_rects.get(i)?;
+        let (zx0, zx1) = self.title_zone(i, r);
+        let budget = (zx1 - zx0) as f32;
+        if full_w <= budget {
+            return Some(title);
+        }
+        Some(tr.elide_to_width_weighted(&title, size, budget, TextWeight::Semibold))
+    }
+
     pub fn tabs(&self) -> &[TabDescriptor] { &self.tabs }
     pub fn tabs_mut(&mut self) -> &mut Vec<TabDescriptor> { &mut self.tabs }
     pub fn active_id(&self) -> u64 { self.active_id }
@@ -1306,6 +1404,112 @@ pub const TAB_PILL_INSET_Y: f64 = 6.0;
 /// reads as part of the pill row rather than a bolted-on toolbar button.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
+/// Horizontal gap between adjacent pills.
+const PILL_GAP: f64 = 6.0;
+/// Leading padding before a pill's icon / title.
+const PILL_PAD_X: f64 = 12.0;
+/// Close-chip width, and its inset from the pill's right edge.
+const CLOSE_W: f64 = 18.0;
+const CLOSE_INSET: f64 = 4.0;
+/// Width of each hover-reveal action chip (maximize, search) and the gap
+/// between chips in the cluster.
+const ACTION_W: f64 = 16.0;
+const ACTION_GAP: f64 = 2.0;
+/// Leading app-glyph width and its gap to the title.
+const ICON_W: f64 = 14.0;
+const ICON_GAP: f64 = 6.0;
+/// Compact width for a pinned, icon-only pill.
+const PINNED_W: f64 = 28.0;
+/// Natural-width floor for an unpinned pill.
+const PILL_MIN_PX: f64 = 96.0;
+/// Narrowest a pill may be squeezed to when the group cannot fit every
+/// pill at its natural width. Below this the pill can no longer host a
+/// legible fragment of its title alongside the close chip, so squeezing
+/// further would be worse than eliding harder.
+const PILL_SQUEEZE_FLOOR_PX: f64 = 54.0;
+
+/// Trailing reserve on every unpinned pill: the close chip plus the two
+/// hover-reveal chips (maximize, search) that sit to its left.
+///
+/// Reserved on every pill whether or not the chips are painted this
+/// frame, because they appear on hover and a pill that grew to make room
+/// for them would shove every pill to its right sideways under the
+/// pointer. See [`close_affordance_visible`] for the paint rule.
+const CHIP_CLUSTER_W: f64 = CLOSE_INSET + CLOSE_W + ACTION_GAP + ACTION_W + ACTION_GAP + ACTION_W;
+
+/// Fallback per-character advance for a title that has not been shaped
+/// yet. Only ever used for the first frame a title is on screen — `draw`
+/// records the real advance into [`TabBar::title_advance`] and the next
+/// layout pass uses that instead.
+const APPROX_CHAR_W: f64 = 7.0;
+
+/// Size a row of pills so it fits inside `avail`, given each pill's
+/// natural width and whether it is pinned.
+///
+/// A window group takes a fixed share of its strip, so its tab strip has
+/// a hard right edge with the next group immediately beyond it. Sizing
+/// pills purely from their content and writing them out at a running x
+/// therefore overflows as soon as the titles outrun the group — and
+/// because the strip's clip is at the row rather than the group, the tail
+/// pills paint on top of the group standing next to it. The demo's
+/// deliberately narrow groups hit this constantly; a default-width group
+/// takes about three quarters of its strip and hides it.
+///
+/// Squeezing runs in three stages so the pills that can give up space do
+/// it first:
+///
+/// 1. Everything fits — hand back the natural widths untouched.
+/// 2. Shrink the unpinned pills proportionally, no further than
+///    [`PILL_SQUEEZE_FLOOR_PX`]. Pinned pills are already at their
+///    minimum, so taking from them buys almost nothing and costs the
+///    row its icon anchors.
+/// 3. Still over (many tabs in a very narrow group): scale every pill,
+///    pinned included, by whatever factor closes the gap. Ugly, but a
+///    legible sliver inside the group beats a well-proportioned pill
+///    painted across its neighbour.
+fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
+    let n = natural.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let gaps = PILL_GAP * (n - 1) as f64;
+    let budget = (avail - gaps).max(0.0);
+    let total: f64 = natural.iter().sum();
+    if total <= budget {
+        return natural.to_vec();
+    }
+
+    let mut out = natural.to_vec();
+    let pinned_total: f64 = natural
+        .iter()
+        .zip(pinned)
+        .filter(|(_, p)| **p)
+        .map(|(w, _)| *w)
+        .sum();
+    let flexible_total = total - pinned_total;
+    if flexible_total > 0.0 {
+        let flexible_budget = (budget - pinned_total).max(0.0);
+        let scale = (flexible_budget / flexible_total).clamp(0.0, 1.0);
+        for (w, is_pinned) in out.iter_mut().zip(pinned) {
+            if !*is_pinned {
+                *w = (*w * scale).max(PILL_SQUEEZE_FLOOR_PX);
+            }
+        }
+    }
+
+    // The floor above can push the row back over the budget when there
+    // are more tabs than floors that fit. Uniform scale is the only
+    // remaining lever, and it is guaranteed to land inside `avail`.
+    let squeezed: f64 = out.iter().sum();
+    if squeezed > budget && squeezed > 0.0 {
+        let scale = budget / squeezed;
+        for w in out.iter_mut() {
+            *w *= scale;
+        }
+    }
+    out
+}
+
 impl Widget for TabBar {
     fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
@@ -1335,20 +1539,11 @@ impl Widget for TabBar {
         self.close_rects.resize(self.tabs.len(), Rect::ZERO);
         self.max_rects.resize(self.tabs.len(), Rect::ZERO);
         self.search_rects.resize(self.tabs.len(), Rect::ZERO);
-        let gap = 6.0_f64;
-        let pad_x = 12.0_f64;
-        let close_w = 18.0_f64;
-        let max_w = 16.0_f64;
-        let search_w = 16.0_f64;
-        let close_inset = 4.0_f64;
-        // Leading-icon width reserved on every pill that carries an
-        // `app_kind`. Mirrors the concept's `<FileCode2 className="w-4
-        // h-4" />` glyph at the start of each tab.
-        let icon_w = 14.0_f64;
-        let icon_gap = 6.0_f64;
-        // Compact width for pinned pills. Icon-only, ~28 px so the row
-        // can fit several pinned tabs without crowding the unpinned ones.
-        let pinned_w = 28.0_f64;
+        let gap = PILL_GAP;
+        let close_w = CLOSE_W;
+        let max_w = ACTION_W;
+        let search_w = ACTION_W;
+        let close_inset = CLOSE_INSET;
         let pill_y0 = self.rect.y0 + TAB_PILL_INSET_Y;
         let pill_y1 = self.rect.y1 - TAB_PILL_INSET_Y;
         // Visual-slot → data-index mapping: pinned data-indices first
@@ -1365,29 +1560,32 @@ impl Widget for TabBar {
                 visual_order.push(i);
             }
         }
+        // Natural width per visual slot, then the fit pass that keeps the
+        // whole row inside this group's bar.
+        let natural: Vec<f64> = visual_order
+            .iter()
+            .map(|&i| self.natural_pill_width(i))
+            .collect();
+        let widths = fit_pill_widths(
+            &natural,
+            &visual_order
+                .iter()
+                .map(|&i| self.pinned_ids.contains(&self.tabs[i].id))
+                .collect::<Vec<bool>>(),
+            self.rect.width(),
+        );
+
         let mut x = self.rect.x0;
-        for &i in &visual_order {
-            let t = &self.tabs[i];
-            let is_pinned = self.pinned_ids.contains(&t.id);
-            let w = if is_pinned {
-                // Compact icon-only pill — close / max / search glyphs
-                // are suppressed for pinned tabs (see `draw_pill_inner`
-                // and the press hit-tests in `handle_event`).
-                pinned_w
-            } else {
-                let approx_char_w = 7.0_f64;
-                let title_w = t.title.chars().count() as f64 * approx_char_w;
-                // Reserve room for the close glyph + both hover-reveal
-                // icons (search, maximize) so pills don't resize when
-                // you hover them. Tabs with a typed `app_kind` also
-                // reserve `icon_w + icon_gap` on the leading edge for
-                // the per-app glyph.
-                let lead_icon_reserve =
-                    if t.app_kind.is_some() { icon_w + icon_gap } else { 0.0 };
-                (title_w + pad_x * 2.0 + close_w + max_w + search_w + lead_icon_reserve)
-                    .max(96.0)
-            };
-            let r = Rect::new(x, pill_y0, x + w, pill_y1);
+        for (slot, &i) in visual_order.iter().enumerate() {
+            let is_pinned = self.pinned_ids.contains(&self.tabs[i].id);
+            let w = widths[slot];
+            // Hard stop at the bar's right edge. `fit_pill_widths` has
+            // already sized the row to fit, so this only ever absorbs
+            // float drift — but it is what makes "a pill never paints
+            // over the group next door" true by construction rather than
+            // by the arithmetic above happening to be exact.
+            let x1 = (x + w).min(self.rect.x1);
+            let r = Rect::new(x, pill_y0, x1.max(x), pill_y1);
             // Pinned pills suppress the close / max / search action
             // rects entirely — the press handler skips them, and `draw`
             // checks `is_pinned` before painting the close chip + glyph.
@@ -1409,7 +1607,7 @@ impl Widget for TabBar {
             self.close_rects[i] = close;
             self.max_rects[i] = max_rect;
             self.search_rects[i] = search_rect;
-            x += w + gap;
+            x = r.x1 + gap;
         }
         // Trailing "+" chip. `x` is the strip's write head, so the chip
         // lands immediately after the last pill however the pills were
@@ -1434,6 +1632,13 @@ impl Widget for TabBar {
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
+        // Shape every title once, up front: this is the only pass that
+        // holds a `TextRenderer`, and it both records the advance the
+        // next `apply_layout` sizes pills from and produces the elided
+        // string each pill actually paints.
+        self.visible_titles = (0..self.tabs.len())
+            .map(|i| self.visible_title(i, tr, theme))
+            .collect();
         // Per-pill styling constants (radius, colors) live in
         // `draw_pill_inner` — this top-level draw is purely the
         // per-frame timeline: layout spring, insert fade, source dim,
@@ -4247,5 +4452,153 @@ mod tests {
         b.set_active(3); // "C"
         let node = Widget::accessibility(&b).unwrap();
         assert_eq!(node.value.as_deref(), Some("C"), "value tracks the active tab");
+    }
+
+    /// Lay a bar out inside a container of exactly `width` logical px —
+    /// the shape a window group imposes on its tab strip. `MAX_CONTENT`
+    /// (used by the older layout tests) gives the bar unbounded width,
+    /// which is precisely the case that cannot show an overflow.
+    fn lay_out_at_width(b: &mut TabBar, width: f64) {
+        use crate::theme::Theme;
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Style};
+
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = b.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: taffy::Size {
+                        width: Dimension::length(width as f32),
+                        height: Dimension::length(TAB_BAR_HEIGHT as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(width as f32),
+                    height: AvailableSpace::Definite(TAB_BAR_HEIGHT as f32),
+                },
+            )
+            .unwrap();
+        b.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    /// A window group narrow enough that several fit on one strip must
+    /// keep its tab pills inside its own bar.
+    ///
+    /// Pills were sized purely from their content and written out at a
+    /// running x with no reference to the bar's right edge, so a group
+    /// whose titles outran its width painted its tail pills — body,
+    /// title and close chip — on top of the group standing next to it.
+    /// The strip's clip is at the row, not the group, so nothing
+    /// downstream caught it.
+    #[test]
+    fn pills_stay_inside_the_bar_when_the_group_is_narrow() {
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "Files"),
+                TabDescriptor::new(3, "Terminal"),
+                TabDescriptor::new(4, "Browser"),
+            ],
+            1,
+        );
+        let width = 380.0;
+        lay_out_at_width(&mut b, width);
+
+        let bar_rect = b.bar_rect();
+        assert_eq!(bar_rect.width(), width, "harness must impose the group width");
+        for (i, r) in b.tab_rects().iter().enumerate() {
+            assert!(
+                r.x1 <= bar_rect.x1 + 0.5,
+                "pill {i} ({}) ends at {} — past the group's right edge at {}; \
+                 it would paint over the neighbouring group",
+                b.tabs()[i].title,
+                r.x1,
+                bar_rect.x1,
+            );
+        }
+    }
+
+    /// Every action chip must land inside the bar too. The close chip is
+    /// inset from its pill's right edge, so a pill that only just
+    /// overflows still throws a stray `✕` into the gap between groups —
+    /// which is what the artefact looked like on screen.
+    #[test]
+    fn close_chips_stay_inside_the_bar_when_the_group_is_narrow() {
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "file-explorer"),
+                TabDescriptor::new(3, "Terminal"),
+            ],
+            1,
+        );
+        let width = 360.0;
+        lay_out_at_width(&mut b, width);
+
+        let bar_rect = b.bar_rect();
+        for (i, r) in b.close_rects().iter().enumerate() {
+            if r.area() == 0.0 {
+                continue; // pinned pills carry no close rect
+            }
+            assert!(
+                r.x1 <= bar_rect.x1 + 0.5,
+                "close chip {i} ends at {} — past the group's right edge at {}",
+                r.x1,
+                bar_rect.x1,
+            );
+        }
+    }
+
+    /// A pill too narrow for its title truncates with an ellipsis rather
+    /// than being sliced mid-glyph by the clip rect. `visible_title`
+    /// is the function `draw` renders through, so this asserts the text
+    /// that actually reaches the scene.
+    #[test]
+    fn a_title_that_does_not_fit_is_elided_not_sliced() {
+        let mut tr = TextRenderer::new();
+        let theme = crate::theme::Theme::dark();
+        let mut b = TabBar::new(
+            "g1",
+            vec![
+                TabDescriptor::new(1, "Notes"),
+                TabDescriptor::new(2, "file-explorer"),
+                TabDescriptor::new(3, "Terminal"),
+            ],
+            1,
+        );
+        lay_out_at_width(&mut b, 340.0);
+
+        let long = b
+            .visible_title(1, &mut tr, &theme)
+            .expect("the long pill has a title to render");
+        assert!(
+            long.ends_with('\u{2026}'),
+            "a title that outruns its pill must carry an ellipsis, got {long:?}",
+        );
+        assert!(
+            "file-explorer".starts_with(long.trim_end_matches('\u{2026}')),
+            "the elided title must be a prefix of the real one, got {long:?}",
+        );
+
+        // And a title that does fit is left exactly alone.
+        let mut roomy = TabBar::new("g2", vec![TabDescriptor::new(1, "Notes")], 1);
+        lay_out_at_width(&mut roomy, 600.0);
+        assert_eq!(
+            roomy.visible_title(0, &mut tr, &theme).as_deref(),
+            Some("Notes"),
+            "a title with room to spare must not be touched",
+        );
     }
 }
