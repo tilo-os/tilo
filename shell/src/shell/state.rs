@@ -4598,6 +4598,154 @@ mod bootstrap_default_tests {
         );
     }
 
+    /// The same person arriving twice is one avatar. Presence republishes
+    /// at ~30 Hz, so an admission that pushed rather than upserted would
+    /// grow the stack by thirty entries a second.
+    #[test]
+    fn admitting_the_same_person_twice_is_one_row() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ws = tree.active;
+        assert!(tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
+        assert!(!tree.admit_collaborator(ws, Collaborator::new("alice", "Alice")));
+        assert_eq!(tree.active_workspace().unwrap().collaborators.len(), 1);
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+    }
+
+    /// A room is addressed by its durable identity, not by this
+    /// machine's local handle for it: the presence frames that build the
+    /// roster carry the room, and every peer numbers its workspaces
+    /// differently.
+    #[test]
+    fn a_peer_is_admitted_to_the_workspace_that_addresses_the_room() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.active_workspace().unwrap().room;
+        assert!(tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob")));
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+
+        // A room this machine is not in has no workspace to admit into.
+        assert!(!tree.admit_collaborator_in_room(RoomId::new(), Collaborator::new("eve", "Eve")));
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+    }
+
+    /// A session announces itself before it can say who is at it: the
+    /// invite establishes the far end, the first presence frame names
+    /// the person. Both describe one peer, so the named row replaces the
+    /// handle row instead of doubling the stack.
+    #[test]
+    fn a_named_presence_frame_replaces_the_session_handle_row() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ws = tree.active;
+        let room = tree.active_workspace().unwrap().room;
+        let peer = 0x2a_u64;
+        let handle = session_handle(peer);
+        assert!(tree.admit_collaborator(ws, Collaborator::new(handle.clone(), handle.clone())));
+
+        assert!(tree.note_peer_present(room, peer, "alice"));
+        let roster = &tree.active_workspace().unwrap().collaborators;
+        assert_eq!(
+            roster.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            vec!["alice"],
+            "the session that joined and the session that just said \
+             'alice is at me' are the same peer; got {roster:?}"
+        );
+        // And repeating it is idempotent.
+        assert!(!tree.note_peer_present(room, peer, "alice"));
+        assert_eq!(tree.active_workspace().unwrap().collaborators.len(), 1);
+    }
+
+    /// A publisher that names nobody keeps its handle. Inventing a name
+    /// for an unnamed session is the same class of fabrication as
+    /// seeding the roster.
+    #[test]
+    fn an_unnamed_session_stays_under_its_handle() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.active_workspace().unwrap().room;
+        assert!(tree.note_peer_present(room, 0x2a, ""));
+        let roster = &tree.active_workspace().unwrap().collaborators;
+        assert_eq!(roster.len(), 1);
+        assert_eq!(roster[0].id, "p000000000000002a");
+        assert_eq!(roster[0].name, "p000000000000002a");
+    }
+
+    /// Leaving has to be expressible, or the roster only ever grows and
+    /// says five people are here of a room four of them left.
+    #[test]
+    fn a_peer_can_be_taken_off_the_roster() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.active_workspace().unwrap().room;
+        tree.admit_collaborator_in_room(room, Collaborator::new("alice", "Alice"));
+        tree.admit_collaborator_in_room(room, Collaborator::new("bob", "Bob"));
+        assert_eq!(active_workspace_peer_count(&tree), 2);
+
+        assert!(tree.retire_collaborator_in_room(room, "alice"));
+        assert_eq!(active_workspace_peer_count(&tree), 1);
+        assert!(
+            !tree.retire_collaborator_in_room(room, "alice"),
+            "retiring someone already gone changes nothing"
+        );
+        assert!(tree.retire_collaborator_in_room(room, "bob"));
+        assert_eq!(
+            active_workspace_peer_count(&tree),
+            0,
+            "a room everyone left shows nobody"
+        );
+    }
+
+    /// Roster avatars and peer cursors have to be the same colour for
+    /// the same person. They are drawn by different code in different
+    /// files; this pins them to one answer.
+    #[test]
+    fn roster_colours_match_what_the_room_settles_for_cursors() {
+        let roster = vec![
+            Collaborator::new("alice", "Alice"),
+            Collaborator::new("bob", "Bob"),
+            Collaborator::new("carol", "Carol"),
+        ];
+        let mine = roster_colors(&roster);
+
+        // What the cursor overlay computes for the same room: everyone
+        // in it, the local user included.
+        let local = local_user_id();
+        let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
+        ids.push(local.as_str());
+        let cursors = ui::presence::assign_peer_colors(&ids, &[]);
+
+        for c in &roster {
+            assert_eq!(
+                mine.get(&c.id),
+                cursors.get(c.id.as_str()),
+                "{}'s avatar and cursor must be the same colour",
+                c.id
+            );
+        }
+        // `carol` hashes onto `alice`'s pinned pink; the room has to
+        // have moved one of them, or two people are one colour.
+        assert_ne!(
+            mine.get("alice"),
+            mine.get("carol"),
+            "two people in one room must not be painted the same colour"
+        );
+    }
+
+    /// An explicit roster colour is a decision someone made, and it
+    /// outranks the assignment — and is held back from it, so nobody
+    /// else is computed onto it.
+    #[test]
+    fn an_explicit_roster_colour_wins_and_is_not_reused() {
+        let pink = (0xec, 0x48, 0x99);
+        let roster = vec![
+            Collaborator::new("bob", "Bob").with_cursor_color("#ec4899"),
+            Collaborator::new("alice", "Alice"),
+        ];
+        let colors = roster_colors(&roster);
+        assert_eq!(colors.get("bob"), Some(&pink), "bob asked for pink");
+        assert_ne!(
+            colors.get("alice"),
+            Some(&pink),
+            "alice's pinned pink is taken, so the room must move her"
+        );
+    }
+
     /// A machine that has just been installed has had nobody join it, so
     /// every roster the first-boot tree hands the chrome is empty.
     ///
