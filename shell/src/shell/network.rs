@@ -234,10 +234,14 @@ pub struct InboundPresence {
     /// to a stable string id by the drainer before being stored on
     /// the `PresenceCtx::remote_cursors` row.
     pub peer: u64,
+    /// Who the publishing session says is sitting at it. Empty when it
+    /// did not say; the drainer then falls back to the session handle
+    /// rather than inventing a name.
+    pub user: String,
     /// Presence channel key (workspace, tab, widget path, …) — encoded
-    /// JSON so the wire format stays opaque to the bridge. v1 doesn't
-    /// inspect the key for routing; the chrome's drainer just attaches
-    /// it to the `RemoteCursor` row by-id.
+    /// JSON so the wire format stays opaque to the bridge. The shell's
+    /// drainer decodes it back into a `PresenceKey` so a pointer lands
+    /// on the room it was published under.
     pub key: String,
     /// Pointer position in the publisher's logical-pixel scene-space.
     pub point: (f64, f64),
@@ -375,6 +379,7 @@ impl ShellNetwork {
             .unwrap_or(0);
         let msg = NeighbourMsg::PresenceMoved {
             peer: self.local_peer_id_hash(),
+            user: crate::shell::state::local_user_id(),
             key,
             point,
             ts,
@@ -390,10 +395,23 @@ impl ShellNetwork {
     /// Public so integration tests (and a future test-only handle in
     /// the loopback harness) can inject presence updates without going
     /// through gossipsub.
-    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
+    pub fn handle_presence_message(
+        &self,
+        peer: u64,
+        user: String,
+        key: String,
+        point: (f64, f64),
+        ts: u64,
+    ) {
+        // A session does not paint its own cursor from the network: the
+        // pointer it would draw is the one already under the user's hand.
+        if peer == self.local_peer_hash {
+            return;
+        }
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
+                user,
                 key,
                 point,
                 ts,
@@ -823,12 +841,19 @@ impl ShellNetwork {
                 // in the inbound buffer the shell's frame-tick drains.
                 if let NeighbourMsg::PresenceMoved {
                     peer: peer_hash,
+                    ref user,
                     ref key,
                     point,
                     ts,
                 } = msg
                 {
-                    self.handle_presence_message(peer_hash, key.clone(), point, ts);
+                    self.handle_presence_message(
+                        peer_hash,
+                        user.clone(),
+                        key.clone(),
+                        point,
+                        ts,
+                    );
                     continue;
                 }
                 // App-CRDT updates skip the shell-tree replica too —
