@@ -27,7 +27,34 @@ use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 
-use crate::shell::search::action_api::{AllVisible, ResourceRef};
+use crate::shell::search::action_api::{ActionVisibility, ResourceRef};
+use crate::shell::search::visibility::CapabilityVisibility;
+
+/// Run `f` against the live chrome with a capability gate built from the
+/// active workspace.
+///
+/// The gate is what makes the action API answer *for a caller* rather
+/// than in the abstract: a resource the workspace's capability model
+/// will not let this user act on is absent from enumeration and from
+/// selection alike, so it cannot be invoked by an address the caller was
+/// never given.
+///
+/// Failing to resolve a workspace is an error rather than a fallback to
+/// "show everything". A gate that opens when it cannot find its policy
+/// is not a gate.
+fn with_action_gate<R>(
+    chrome_handle: &crate::shell::chrome_state::Chrome,
+    f: impl FnOnce(&crate::shell::chrome_state::ChromeState, &dyn ActionVisibility) -> R,
+) -> Result<R, String> {
+    let chrome = chrome_handle.borrow();
+    let tree = chrome.tree();
+    let workspace = tree
+        .active_workspace()
+        .ok_or_else(|| "no active workspace to resolve capabilities against".to_string())?;
+    let actor = workspace.actor_for_person(&chrome.local_user_id);
+    let gate = CapabilityVisibility::new(workspace, actor);
+    Ok(f(&chrome, &gate))
+}
 use smithay::reexports::calloop::{self, EventLoop};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
@@ -463,16 +490,12 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
         let chrome_handle = self.fb.chrome_handle();
-        // Scope the `Ref` so it is released before anything downstream
-        // can want the cell mutably. `ActionCatalog` owns its results
-        // outright (no borrow of `doc` is retained), so nothing here
-        // outlives this block.
-        let catalog = {
-            let chrome = chrome_handle.borrow();
-            self.fb
-                .host()
-                .action_catalog(query, &chrome, doc, root, &AllVisible)
-        };
+        // The borrow lives only for the closure. `ActionCatalog` owns its
+        // results outright (no borrow of `doc` is retained), so the
+        // catalogue outlives the guards it was built through.
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog(query, chrome, doc, root, gate)
+        })?;
         let actions: Vec<serde_json::Value> = catalog
             .enumerate()
             .into_iter()
@@ -507,12 +530,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             .doc
             .ok_or_else(|| "control state has no live document".to_string())?;
         let chrome_handle = self.fb.chrome_handle();
-        let catalog = {
-            let chrome = chrome_handle.borrow();
-            self.fb
-                .host()
-                .action_catalog("", &chrome, doc, root, &AllVisible)
-        };
+        let catalog = with_action_gate(&chrome_handle, |chrome, gate| {
+            self.fb.host().action_catalog("", chrome, doc, root, gate)
+        })?;
         let resource = ResourceRef::new(provider, id);
         let selected = catalog.select(&resource).ok_or_else(|| {
             format!("no visible action addressed by ({provider}, {id}) in the current catalogue")
@@ -891,10 +911,19 @@ fn execute_planned_action(
             // means we either run the action the address currently
             // names, or nothing at all.
             let chrome_handle = fb.chrome_handle();
-            let catalog = {
-                let chrome = chrome_handle.borrow();
+            // Built through the same gate the dispatcher resolved
+            // against. Re-resolving without it would make the gate
+            // advisory: a caller who got past `resolve_action` once
+            // could keep invoking after their capability was revoked.
+            let catalog = match with_action_gate(&chrome_handle, |chrome, gate| {
                 fb.host()
-                    .action_catalog("", &chrome, &ctx.doc, &ctx.root_obj, &AllVisible)
+                    .action_catalog("", chrome, &ctx.doc, &ctx.root_obj, gate)
+            }) {
+                Ok(catalog) => catalog,
+                Err(why) => {
+                    eprintln!("nirios compositor: cannot invoke ({provider}, {id}): {why}");
+                    return;
+                }
             };
             match catalog.select(&ResourceRef::new(provider.as_str(), id.as_str())) {
                 // The `Ref` above is dropped with the block, so the
