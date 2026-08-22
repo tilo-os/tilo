@@ -1388,6 +1388,90 @@ impl Workspace {
             .collect()
     }
 
+    /// The role an *agent* holds in this room.
+    ///
+    /// Same derivation as [`Self::role_of`] — the role is the verb on
+    /// the membership capability — with the owner short-circuit
+    /// deliberately absent: an agent is never the owner of a room. It
+    /// holds exactly what somebody granted it, which is what makes
+    /// revoking that capability the whole of taking it back out.
+    pub fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
+        let room = self.id.raw().to_string();
+        let now = Some(now_unix());
+        let mut best: Option<Verb> = None;
+        let mut blocked = false;
+        for c in &self.capabilities {
+            let subject_matches = matches!(
+                &c.subject,
+                Subject::Principal(Principal::Agent(a)) if a == agent
+            );
+            if !subject_matches || !c.is_live_at(now) {
+                continue;
+            }
+            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
+                || matches!(c.scope, Scope::Workspace);
+            if !covers_room {
+                continue;
+            }
+            match c.effect {
+                Effect::Grant => {
+                    best = Some(match best {
+                        Some(prev) if prev.implies(c.verb) => prev,
+                        _ => c.verb,
+                    })
+                }
+                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
+                Effect::Restrict => {}
+            }
+        }
+        if blocked {
+            return Some(CapRole::Denied);
+        }
+        best.map(|v| match v {
+            Verb::Admin => CapRole::Owner,
+            Verb::Write => CapRole::Editor,
+            Verb::Comment => CapRole::Commenter,
+            Verb::Read | Verb::Invite => CapRole::Viewer,
+        })
+    }
+
+    /// The agents that hold membership in this room.
+    ///
+    /// The counterpart to [`Self::roster`], and deliberately a *second*
+    /// list rather than more rows in the first. Both are room
+    /// membership and both are built the same way, but an agent is not
+    /// a person: presenting the two in one undifferentiated list is
+    /// exactly how a caller ends up telling a user that somebody is in
+    /// their room when nobody is. Anything rendering these must say
+    /// which list a row came from.
+    ///
+    /// An agent appears here only while it holds a live room-scoped
+    /// `Grant`, so an entry is evidence that a grant happened and
+    /// revoking the capability removes it.
+    pub fn agent_members(&self) -> Vec<(String, CapRole)> {
+        let room = self.id.raw().to_string();
+        let now = Some(now_unix());
+        let mut seen: Vec<String> = Vec::new();
+        for c in &self.capabilities {
+            if !c.is_live_at(now) || c.effect != Effect::Grant {
+                continue;
+            }
+            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
+                || matches!(c.scope, Scope::Workspace);
+            if !covers_room {
+                continue;
+            }
+            if let Subject::Principal(Principal::Agent(a)) = &c.subject
+                && !seen.contains(a)
+            {
+                seen.push(a.clone());
+            }
+        }
+        seen.into_iter()
+            .filter_map(|a| self.role_of_agent(&a).map(|r| (a, r)))
+            .collect()
+    }
+
     /// The share list for one resource: the people who hold a
     /// capability naming *this* resource specifically.
     ///
@@ -1670,6 +1754,31 @@ pub struct WorkspaceTree {
     /// whoever answered first.
     #[serde(default)]
     pub room_authority: HashMap<RoomId, RoomAuthority>,
+    /// What each peer in a room is **called**, as libp2p `PeerId`
+    /// (base58) → display name.
+    ///
+    /// A peer id says a machine is here; it does not say who is here.
+    /// The name that answers that has to come from somewhere, and the
+    /// only source that is not spoofable is the person who invited
+    /// them: a peer that announced its own name could announce any
+    /// name, next to a caret editing a document the room's capabilities
+    /// gate. So this is written by the **inviter** and keyed by the
+    /// peer id they invited, and it replicates as part of the room's
+    /// governance — the same authenticated, replicated channel the
+    /// capability list travels on, refused by
+    /// [`Self::apply_room_changes`] from anyone but the room's
+    /// authority.
+    ///
+    /// The peer id stays the identity; this is a label on it. A peer
+    /// with no entry keeps its id as its label rather than acquiring an
+    /// invented one — see [`Self::room_peer_labels`].
+    ///
+    /// Persisted, for the same reason [`Self::room_authority`] is: the
+    /// invite that established the name is long gone by the next boot,
+    /// and a host that forgot would show the people it invited as
+    /// numbers again.
+    #[serde(default)]
+    pub room_peer_names: HashMap<RoomId, std::collections::BTreeMap<String, String>>,
     /// Which records each room this machine is in holds, as record id →
     /// record kind. The shell's mirror of the room indexes, kept here so
     /// the replication path can project it.
@@ -1756,6 +1865,7 @@ impl Default for WorkspaceTree {
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             room_authority: HashMap::new(),
+            room_peer_names: HashMap::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
             room_share_floor: HashMap::new(),
@@ -2074,6 +2184,93 @@ impl WorkspaceTree {
         self.room_authority(room) == RoomAuthority::Local
     }
 
+    /// Name the peer `peer_id` (base58 libp2p `PeerId`) `name` in
+    /// `room`, as `actor`.
+    ///
+    /// The act that turns "a machine is here" into "a person is here".
+    /// It is deliberately the **inviter's** act and not the invitee's:
+    /// a peer that told the room its own name could tell it any name,
+    /// and that name renders next to a caret inside a document whose
+    /// access this room's capabilities gate. So the name is a label the
+    /// room's administrator attaches to a peer id, replicated as part
+    /// of the room's governance, and the peer id remains the identity.
+    ///
+    /// Refused unless this machine governs `room` and `actor` may
+    /// administer it -- the same two conditions a capability grant
+    /// needs, because this is the same kind of statement. Returns
+    /// whether the name was recorded.
+    ///
+    /// An empty `name` un-names the peer, which is how a wrong label is
+    /// taken back: the key is dropped from the room document and the
+    /// peer falls back to being shown as its id.
+    pub fn name_peer(&mut self, room: RoomId, actor: &UserId, peer_id: &str, name: &str) -> bool {
+        let peer_id = peer_id.trim();
+        if room.is_nil() || peer_id.is_empty() {
+            return false;
+        }
+        // A peer id this machine cannot parse is not a peer id. Storing
+        // it would put a key in the room document that no presence
+        // frame can ever match, which reads later as "the name did not
+        // replicate" rather than "the name was never addressed to
+        // anyone".
+        if peer_id.parse::<libp2p::PeerId>().is_err() {
+            return false;
+        }
+        if !self.governs_room(room) {
+            return false;
+        }
+        let Some(ws) = self.workspace_in_room(room) else {
+            return false;
+        };
+        if !ws.may_administer(actor) {
+            return false;
+        }
+        let name = name.trim();
+        let entry = self.room_peer_names.entry(room).or_default();
+        let changed = if name.is_empty() {
+            entry.remove(peer_id).is_some()
+        } else {
+            entry.insert(peer_id.to_string(), name.to_string()).as_deref() != Some(name)
+        };
+        if entry.is_empty() {
+            self.room_peer_names.remove(&room);
+        }
+        if changed {
+            self.sync_room_doc(room);
+            self.flush_to_disk();
+        }
+        true
+    }
+
+    /// The names `room` carries, keyed by the peer **handle** the
+    /// presence path speaks in rather than by base58 peer id.
+    ///
+    /// Presence frames identify their sender by
+    /// [`crate::network::behaviour::peer_liveness_handle`] -- a digest
+    /// of the peer id, not the peer id itself -- so a lookup from a
+    /// caret back to a name has to cross that gap. It is crossed here,
+    /// by hashing the names the room document holds, so the document
+    /// keeps storing the real identity: a room that recorded only the
+    /// digest would have no way to check a name against the peer it
+    /// belongs to, and a digest is not something to build an identity
+    /// on.
+    ///
+    /// A peer with no entry is simply absent, which is what leaves it
+    /// labelled with its own handle rather than with somebody's name.
+    pub fn room_peer_labels(&self, room: RoomId) -> std::collections::BTreeMap<u64, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for (peer, name) in self.room_peer_names_in_doc(room) {
+            let Ok(parsed) = peer.parse::<libp2p::PeerId>() else {
+                continue;
+            };
+            out.insert(
+                crate::network::behaviour::peer_liveness_handle(&parsed),
+                name,
+            );
+        }
+        out
+    }
+
     /// Record that `room`'s governance is written by `peer` and nobody
     /// else.
     ///
@@ -2160,6 +2357,8 @@ impl WorkspaceTree {
         let name = ws.name.clone();
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let peer_names: std::collections::BTreeMap<String, String> =
+            self.room_peer_names.get(&room).cloned().unwrap_or_default();
         let held: std::collections::BTreeMap<String, String> =
             self.room_records_held.get(&room).cloned().unwrap_or_default();
         let strips: Vec<Strip> = ws.strips.clone();
@@ -2270,6 +2469,7 @@ impl WorkspaceTree {
                 let _ = doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
             }
         }
+        Self::project_peer_names(doc, &peer_names);
         let _ = qdoc::history::commit_stamped(doc);
         // Nothing reads a room document through patches — every value
         // above is read back with `doc.get` — so the patch log is pure
@@ -2279,6 +2479,99 @@ impl WorkspaceTree {
         // in sort order. A guest merging its host's room document died
         // on that. Drop the log at every point one could accumulate.
         doc.reset_diff_cursor();
+    }
+
+    /// Key the room document stores its peers' names under.
+    const ROOM_PEERS_KEY: &'static str = "peers";
+
+    /// Project "who the peers in this room are" into the room document,
+    /// as `PeerId` (base58) -> display name.
+    ///
+    /// Called only from the governing branch of [`Self::sync_room_doc`],
+    /// beside the capability list and for the same reason: a name shown
+    /// next to a caret is a claim about who is editing, and a claim a
+    /// peer makes about itself is worth nothing. One writer -- the
+    /// room's authority -- so there is nothing for last-writer-wins to
+    /// arbitrate and no way for a guest to rename itself or anybody
+    /// else.
+    ///
+    /// A name removed from the cache is deleted from the map rather than
+    /// left behind, so un-naming a peer reaches the peers that already
+    /// hold the name -- the same rule the capability sweep follows, and
+    /// for the same reason.
+    fn project_peer_names(
+        doc: &mut AutoCommit,
+        names: &std::collections::BTreeMap<String, String>,
+    ) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        let peers_id = match doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
+            Some((_, id)) => id,
+            None => {
+                // Nothing to say and nothing said before: do not mint an
+                // empty map, so a room nobody has named anyone in
+                // produces no change at all.
+                if names.is_empty() {
+                    return;
+                }
+                match doc.put_object(&ROOT, Self::ROOM_PEERS_KEY, ObjType::Map) {
+                    Ok(id) => id,
+                    Err(err) => {
+                        tracing::error!(?err, "room doc: peers map");
+                        return;
+                    }
+                }
+            }
+        };
+        let stale: Vec<String> = doc
+            .keys(&peers_id)
+            .filter(|k| !names.contains_key(k.as_str()))
+            .collect();
+        for key in stale {
+            let _ = doc.delete(&peers_id, key.as_str());
+        }
+        for (peer, name) in names {
+            let unchanged = matches!(
+                doc.get(&peers_id, peer).ok().flatten(),
+                Some((Value::Scalar(s), _))
+                    if matches!(s.as_ref(), ScalarValue::Str(v) if v.as_str() == name)
+            );
+            if !unchanged {
+                let _ = doc.put(&peers_id, peer, name.clone());
+            }
+        }
+    }
+
+    /// Every name the room document carries, as `PeerId` (base58) ->
+    /// display name.
+    ///
+    /// Read from the **document**, not from [`Self::room_peer_names`],
+    /// so a guest and the host answer this the same way: the host
+    /// projects its cache into the document and reads it back out, and
+    /// the guest reads what replicated. One source, and it is the
+    /// authenticated one.
+    pub fn room_peer_names_in_doc(
+        &self,
+        room: RoomId,
+    ) -> std::collections::BTreeMap<String, String> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let mut out = std::collections::BTreeMap::new();
+        let Some(doc) = self.room_docs.get(&room) else {
+            return out;
+        };
+        let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() else {
+            return out;
+        };
+        let keys: Vec<String> = doc.keys(&peers_id).collect();
+        for key in keys {
+            if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
+                && let ScalarValue::Str(v) = s.as_ref()
+                && !v.as_str().is_empty()
+            {
+                out.insert(key, v.to_string());
+            }
+        }
+        out
     }
 
     /// Key the room document stores the room's window contents under.
@@ -3148,10 +3441,18 @@ impl WorkspaceTree {
     /// could be applied to the wrong room entirely.
     fn governance_of(
         doc: Option<&AutoCommit>,
-    ) -> (Option<String>, std::collections::BTreeMap<String, Vec<u8>>) {
+    ) -> (
+        Option<String>,
+        std::collections::BTreeMap<String, Vec<u8>>,
+        std::collections::BTreeMap<String, String>,
+    ) {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
         let Some(doc) = doc else {
-            return (None, std::collections::BTreeMap::new());
+            return (
+                None,
+                std::collections::BTreeMap::new(),
+                std::collections::BTreeMap::new(),
+            );
         };
         let owner = match doc.get(&ROOT, "owner").ok().flatten() {
             Some((Value::Scalar(s), _)) => match s.as_ref() {
@@ -3171,7 +3472,25 @@ impl WorkspaceTree {
                 }
             }
         }
-        (owner, caps)
+        // Who the room says its peers are, folded in beside the
+        // capability list because it is the same kind of claim: a
+        // statement the room's authority makes about somebody else.
+        // Left out of this comparison it would be the one governance
+        // key a guest could write, and the label over a caret editing a
+        // shared document is exactly the thing an impostor would want
+        // to choose.
+        let mut peers = std::collections::BTreeMap::new();
+        if let Some((_, peers_id)) = doc.get(&ROOT, Self::ROOM_PEERS_KEY).ok().flatten() {
+            let keys: Vec<String> = doc.keys(&peers_id).collect();
+            for key in keys {
+                if let Some((Value::Scalar(s), _)) = doc.get(&peers_id, &key).ok().flatten()
+                    && let ScalarValue::Str(v) = s.as_ref()
+                {
+                    peers.insert(key, v.to_string());
+                }
+            }
+        }
+        (owner, caps, peers)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -6561,6 +6880,195 @@ mod automerge_foundation_tests {
         (owner, caps)
     }
 
+    /// A real base58 peer id, derived the way a running session's is —
+    /// from a keypair — so the tests below exercise the same parse the
+    /// production path does rather than a string that merely looks like
+    /// a peer id.
+    fn peer_id(seed: u8) -> String {
+        libp2p::identity::Keypair::ed25519_from_bytes([seed; 32])
+            .expect("32 bytes is a keypair")
+            .public()
+            .to_peer_id()
+            .to_base58()
+    }
+
+    /// The handle presence frames identify `peer` by.
+    fn handle_of(peer: &str) -> u64 {
+        crate::network::behaviour::peer_liveness_handle(
+            &peer.parse::<libp2p::PeerId>().expect("a peer id"),
+        )
+    }
+
+    /// The demo beat this exists for: a peer the inviter named is shown
+    /// under that name, addressed by the handle a caret arrives under.
+    #[test]
+    fn the_inviter_names_a_peer_and_the_room_answers_to_its_handle() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let xaver = peer_id(9);
+
+        assert!(
+            host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver"),
+            "the room's administrator may name a peer in it",
+        );
+
+        assert_eq!(
+            host.room_peer_names_in_doc(room).get(&xaver).map(String::as_str),
+            Some("Xaver"),
+            "the name has to be in the room document, which is what replicates",
+        );
+        assert_eq!(
+            host.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            Some("Xaver"),
+            "and it has to be reachable from the handle a presence frame carries",
+        );
+    }
+
+    /// A peer nobody named is left as the id it arrived under. Not
+    /// blank, and not a person who does not exist: an unnamed caret is
+    /// honest, an invented name is not.
+    #[test]
+    fn a_peer_the_room_has_not_named_gets_no_label_at_all() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let named = peer_id(9);
+        let stranger = peer_id(10);
+        assert!(host.name_peer(room, &ROOM_OWNER.to_string(), &named, "Xaver"));
+
+        let labels = host.room_peer_labels(room);
+        assert!(
+            !labels.contains_key(&handle_of(&stranger)),
+            "a peer nobody named must have no label, so the caret keeps its id",
+        );
+        assert_eq!(
+            labels.len(),
+            1,
+            "naming one peer must not manufacture a label for any other",
+        );
+    }
+
+    /// The name is a fact about the room, so it travels with the room —
+    /// to a peer that never wrote it and cannot have made it up.
+    #[test]
+    fn the_name_the_inviter_gave_reaches_a_peer_that_did_not_write_it() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let xaver = peer_id(9);
+        // `two_in_a_room` makes the host the owner of its own workspace;
+        // it is the machine that minted the room, so it governs it.
+        assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+
+        ship(&mut host, &mut guest, room, 1);
+
+        assert_eq!(
+            guest.room_peer_names_in_doc(room).get(&xaver).map(String::as_str),
+            Some("Xaver"),
+            "a guest reads names out of the replicated room document",
+        );
+        assert_eq!(
+            guest.room_peer_labels(room).get(&handle_of(&xaver)).map(String::as_str),
+            Some("Xaver"),
+        );
+    }
+
+    /// Taking a wrong name back has to reach the peers that already hold
+    /// it, or a mislabelled caret is mislabelled forever.
+    #[test]
+    fn un_naming_a_peer_reaches_the_peer_that_held_the_name() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        let xaver = peer_id(9);
+        assert!(host.name_peer(room, &"quinten".to_string(), &xaver, "Xaver"));
+        ship(&mut host, &mut guest, room, 1);
+        assert!(guest.room_peer_names_in_doc(room).contains_key(&xaver));
+
+        assert!(
+            host.name_peer(room, &"quinten".to_string(), &xaver, ""),
+            "an empty name un-names the peer",
+        );
+        ship(&mut host, &mut guest, room, 1);
+
+        assert!(
+            !guest.room_peer_names_in_doc(room).contains_key(&xaver),
+            "the retraction has to replicate, not just the name",
+        );
+    }
+
+    /// The whole reason the name lives in governance. A guest that could
+    /// write this map could put any name it liked over any caret in the
+    /// room, including over a document the room's capabilities gate.
+    #[test]
+    fn a_guest_cannot_name_a_peer_in_the_room_it_joined() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let xaver = peer_id(9);
+        host.name_peer(room, &ROOM_OWNER.to_string(), &xaver, "Xaver");
+        host.sync_room_doc(room);
+
+        // A guest whose own state says it governs the room, projecting
+        // a peers map that renames the host's invitee.
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room));
+        guest.room_authority.insert(room, RoomAuthority::Local);
+        {
+            let ws = guest
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's own workspace");
+            ws.set_owner(ROOM_GUEST.to_string());
+        }
+        assert!(guest.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Quinten"));
+        let claim = guest
+            .export_room_changes_since(room, &[])
+            .expect("the guest is in the room it exports");
+
+        host.apply_room_changes(room, &claim, &PeerOrigin::hub(2))
+            .expect("well-formed change blobs parse");
+
+        assert_eq!(
+            host.room_peer_names_in_doc(room).get(&xaver).map(String::as_str),
+            Some("Xaver"),
+            "a guest must not be able to rename anyone in a room it joined",
+        );
+    }
+
+    /// Naming somebody is a governance act, so it needs the same
+    /// authority a grant needs — on the machine and on the person.
+    #[test]
+    fn naming_a_peer_needs_authority_over_the_room() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        let xaver = peer_id(9);
+
+        assert!(
+            !host.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
+            "somebody who does not administer the room may not name in it",
+        );
+        assert!(
+            host.room_peer_names_in_doc(room).is_empty(),
+            "a refused naming must write nothing",
+        );
+
+        // And a machine that does not govern the room may not either,
+        // however its own workspace reads.
+        let mut joiner = WorkspaceTree::default();
+        let joiner_ws = joiner.append_empty_workspace("Mine");
+        assert!(joiner.set_room(joiner_ws, room));
+        joiner.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
+        assert!(
+            !joiner.name_peer(room, &ROOM_GUEST.to_string(), &xaver, "Xaver"),
+            "a machine that joined the room does not get to name its peers",
+        );
+    }
+
+    /// A key that is not a peer id names nobody. Storing one would put a
+    /// row in the room document that no presence frame can ever match,
+    /// which reads later as a name that failed to replicate rather than
+    /// as a name that was never addressed to anyone.
+    #[test]
+    fn a_name_has_to_be_attached_to_a_real_peer_id() {
+        let (mut host, _ws, room) = host_owning_a_room();
+        assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "xaver", "Xaver"));
+        assert!(!host.name_peer(room, &ROOM_OWNER.to_string(), "", "Xaver"));
+        assert!(host.room_peer_names_in_doc(room).is_empty());
+    }
+
     /// The reported hole. A guest projects its own cache into a room it
     /// was invited to; the room's owner and capability list on the
     /// **host** must be exactly what the host granted.
@@ -8113,5 +8621,125 @@ mod next_id_seed_tests {
              range and must be ignored)",
             next
         );
+    }
+}
+
+/// An agent is admitted to a room the same way anybody is — by the room
+/// recording a capability naming it — and that capability is the only
+/// thing that puts it in the room.
+///
+/// These assert on the production readers, because the failure worth
+/// catching is not "the vector has an element": it is a roster that
+/// shows somebody who was never admitted, or hides somebody who was.
+#[cfg(test)]
+mod agent_membership {
+    use super::*;
+
+    fn room() -> Workspace {
+        let mut ws = Workspace::test_default(WorkspaceId::new(), "Demo");
+        ws.set_owner("quinten");
+        ws
+    }
+
+    /// The floor, and the one that matters most: a room nobody has
+    /// admitted an agent to has no agents in it. A default agent, a
+    /// placeholder, or a row that appears because the feature exists
+    /// would all show up here.
+    #[test]
+    fn a_room_with_no_grant_has_no_agents() {
+        assert!(room().agent_members().is_empty());
+    }
+
+    #[test]
+    fn a_room_grant_admits_the_agent_and_a_revoke_removes_it() {
+        let mut ws = room();
+        let id = ws
+            .grant_as(
+                &"quinten".to_string(),
+                CapOverride::membership(
+                    Subject::agent("scribe"),
+                    ws.id.raw().to_string(),
+                    Verb::Write,
+                ),
+            )
+            .expect("the owner may administer the room");
+
+        assert_eq!(
+            ws.agent_members(),
+            vec![("scribe".to_string(), CapRole::Editor)],
+            "the verb on the membership capability is the role",
+        );
+        assert_eq!(ws.role_of_agent("scribe"), Some(CapRole::Editor));
+
+        assert!(ws.revoke_as(&"quinten".to_string(), &id));
+        assert!(
+            ws.agent_members().is_empty(),
+            "revoking the capability is the whole of taking the agent out",
+        );
+        assert_eq!(ws.role_of_agent("scribe"), None);
+    }
+
+    /// The two lists are disjoint. A person in the roster must never
+    /// arrive in the agent list, and an agent must never arrive in the
+    /// roster — that second one is the OS claiming a person is present
+    /// when none is.
+    #[test]
+    fn people_and_agents_do_not_leak_into_each_others_lists() {
+        let mut ws = room();
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::membership(Subject::person("xaver"), ws.id.raw().to_string(), Verb::Write),
+        )
+        .expect("owner grants");
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::membership(Subject::agent("scribe"), ws.id.raw().to_string(), Verb::Write),
+        )
+        .expect("owner grants");
+
+        let people: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
+        assert!(people.contains(&"xaver".to_string()));
+        assert!(
+            !people.contains(&"scribe".to_string()),
+            "an agent must not be listed as a person: {people:?}",
+        );
+
+        let agents: Vec<String> = ws.agent_members().into_iter().map(|(a, _)| a).collect();
+        assert_eq!(agents, vec!["scribe".to_string()]);
+    }
+
+    /// An agent that holds a capability on one *app* and nothing else is
+    /// not a member — the same rule that keeps a person who was shared
+    /// one file out of the roster. Without this an agent granted access
+    /// to a single document would be presented as being in the room.
+    #[test]
+    fn a_grant_on_one_app_is_not_membership() {
+        let mut ws = room();
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::grant(
+                Subject::agent("scribe"),
+                Scope::App("dev.qos.word-processor".into()),
+                Verb::Write,
+            ),
+        )
+        .expect("owner grants");
+        assert!(
+            ws.agent_members().is_empty(),
+            "a scope naming one app is a share, not membership",
+        );
+    }
+
+    /// An expired capability is not a quieter membership, it is none.
+    #[test]
+    fn an_expired_grant_admits_nobody() {
+        let mut ws = room();
+        ws.grant_as(
+            &"quinten".to_string(),
+            CapOverride::membership(Subject::agent("scribe"), ws.id.raw().to_string(), Verb::Write)
+                .with_expiry(1),
+        )
+        .expect("owner grants");
+        assert!(ws.agent_members().is_empty());
     }
 }

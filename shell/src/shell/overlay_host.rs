@@ -14128,3 +14128,63 @@ mod peer_cursor_tests {
         );
     }
 }
+
+/// The collaborators dropdown lists people and agents together, and says
+/// which is which.
+///
+/// The property under test is not "the vector has two entries" — it is
+/// that an agent can only get onto that list by having been granted
+/// membership, and that once there it is never mistaken for a person.
+#[cfg(test)]
+mod roster_rows {
+    use super::collaborator_roster_rows;
+    use crate::shell::state::{
+        CapOverride, Collaborator, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
+    };
+
+    fn tree_with_room() -> WorkspaceTree {
+        let mut tree = WorkspaceTree::default();
+        let id = WorkspaceId::new();
+        let mut ws = Workspace::test_default(id, "Demo");
+        ws.set_owner("quinten");
+        tree.workspaces.push(ws);
+        tree.active = id;
+        tree
+    }
+
+    #[test]
+    fn an_ungranted_room_contributes_no_agent_row() {
+        let mut tree = tree_with_room();
+        tree.collaborators.push(Collaborator::new("xaver", "Xaver"));
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 1, "only the peer is here: {rows:?}");
+        assert!(!rows[0].is_agent);
+        assert_eq!(rows[0].label, "Xaver");
+    }
+
+    #[test]
+    fn a_granted_agent_is_listed_beside_the_peer_and_tagged() {
+        let mut tree = tree_with_room();
+        tree.collaborators.push(Collaborator::new("xaver", "Xaver"));
+        {
+            let ws = tree.active_workspace_mut().expect("fixture has a room");
+            let room = ws.id.raw().to_string();
+            ws.grant_as(
+                &"quinten".to_string(),
+                CapOverride::membership(Subject::agent("scribe"), room, Verb::Write),
+            )
+            .expect("the owner may admit an agent");
+        }
+
+        let rows = collaborator_roster_rows(&tree);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].label, "Xaver");
+        assert!(!rows[0].is_agent, "a peer must never be tagged as an agent");
+        assert_eq!(rows[1].label, "scribe");
+        assert!(
+            rows[1].is_agent,
+            "an agent listed without its tag is the OS reporting a person",
+        );
+        assert_eq!(rows[1].initial, 'S');
+    }
+}
