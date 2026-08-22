@@ -934,6 +934,7 @@ pub fn catalogue() -> Vec<Scenario> {
         workspace_switch_animated(),
         wheel_scroll_workspaces(),
         wheel_summon_at_pointer(),
+        overview_transition(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
@@ -1718,6 +1719,42 @@ fn workspace_switch_animated() -> Scenario {
                 frames: 18,
                 gap_frames: 1,
             },
+        ],
+    }
+}
+
+/// Open the overview with the keyboard chord, hold on it, then leave
+/// with Escape — capturing every frame of the crossfade in both
+/// directions.
+///
+/// The transition is two-phase (the desktop shrinks out before the grid
+/// zooms in, and the reverse on the way back), which a still cannot
+/// show at all. `OVERVIEW_TRANSITION_MS` is 400 ms, so 26 frames at
+/// ~16 ms covers a full leg plus a little settle either side.
+fn overview_transition() -> Scenario {
+    Scenario {
+        name: "overview_transition",
+        description: "Open the workspace overview with Super+Tab and leave with Esc, \
+             capturing every frame of the crossfade both ways.",
+        actions: vec![
+            Action::MoveCursor(Point::new(900.0, 500.0)),
+            Action::Snapshot("00-desktop"),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Named(NamedKey::Tab)),
+            Action::SnapshotSequence {
+                prefix: "01-enter",
+                frames: 26,
+                gap_frames: 1,
+            },
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Snapshot("02-overview"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::SnapshotSequence {
+                prefix: "03-leave",
+                frames: 26,
+                gap_frames: 1,
+            },
+            Action::Snapshot("04-desktop"),
         ],
     }
 }
