@@ -38,11 +38,18 @@ A different mechanism, and the more interesting one: an agent is not a peer.
 It is a capability principal (`agent:<id>`) granted through the permission
 model, and it reaches the document as a broker client.
 
-## 4 · Both join — you see their cursors ✅
+## 4 · Both join — you see their cursors ❌ NOT ON SCREEN
 
-Real presence across machines: caret, pointer, selection and the run a peer
-just typed, each in that peer's colour with their name. Proven by a screenshot
-taken from the *receiving* machine, the peer labelled by its own id.
+Presence genuinely crosses the network, and inside an app window a peer's
+caret and pointer render correctly — that much was proven from the receiving
+machine, the peer labelled by its own id.
+
+**The desktop layer draws nothing.** `RemoteCursorOverlay::new()` is called
+only in `shell/tests/remote_cursors_test.rs`; the compositor never mounts it.
+Filmed, this beat is twenty-eight seconds of empty desktop.
+
+This entry said ✅ until someone watched the frames instead of the
+assertions.
 
 ## 5 · Search "word processor" → not installed → installs → opens ✅
 
@@ -58,7 +65,7 @@ most of it is the package's size, not the mechanism. So say "a few seconds",
 never "instant" — a viewer can time this one off the recording.
 Re-measure with `scripts/headless-examples/install-open-timing.py`.
 
-## 6 · Cut to bob — the window opens there too ✅
+## 6 · Cut to bob — the window opens there too ❌ ASSERTION GREEN, SCREEN BLANK
 
 A workspace is shared, so its windows are shared. The room document carries
 that room's strips, groups and tabs, each entry written only by the peer that
@@ -67,6 +74,13 @@ owns it.
 What does **not** travel is view state — focus, scroll, active tab. bob sees
 the window arrive without his own view moving, asserted on the same object in
 the same run.
+
+**But it is not drawn.** The screenshot taken at the instant the script
+declares success shows an empty desktop. The room document carries the window,
+bob's tree holds it, and his compositor renders nothing. This is the exact
+failure the whole verification pass exists to catch — an assertion that goes
+green while the screen stays blank is worse than one that fails, because it
+reads as proof.
 
 ## 7 · ada's writing appears on bob's screen ⏳
 
