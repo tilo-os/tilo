@@ -195,8 +195,21 @@ class Session:
                     out[str(group.get("id"))] = {
                         "active_tab": group.get("active_tab"),
                         "tabs": [t.get("title") for t in group.get("tabs", [])],
+                        "tab_ids": [str(t.get("id")) for t in group.get("tabs", [])],
                         "strip": str(strip.get("id")),
                     }
+        return out
+
+    def tabs_here(self) -> dict:
+        """Every tab in the workspace this session is in, by tab id.
+
+        Ids are salted per peer, so a tab that appears under the *same*
+        id on two machines is the same window, not a lookalike.
+        """
+        out = {}
+        for gid, g in self.groups_here().items():
+            for t in g["tab_ids"]:
+                out[t] = {"group": gid, "strip": g["strip"]}
         return out
 
     def view_state(self) -> dict:
@@ -422,24 +435,28 @@ def main() -> int:
               bool(before_view["active_group"]),
               f"focused group {before_view['active_group']}")
 
-        q_before = set(ada.groups_here())
+        q_before = set(ada.tabs_here())
         opened = ada.invoke(ACTIONS, "window.new.terminal")
         check("ada opened a window", "err" not in opened,
               json.dumps(opened.get("err", {}))[:120])
-        new_group = wait_for(
-            lambda: (set(ada.groups_here()) - q_before) or None, timeout=20)
-        if not check("ada's own session shows the new window", bool(new_group)):
+        # Keyed on the *tab*, not the group: the placement rule tabs into
+        # the focused group when it is already tabbed, so a new window
+        # does not always mean a new group.
+        fresh = wait_for(lambda: (set(ada.tabs_here()) - q_before) or None,
+                         timeout=20)
+        if not check("ada's own session shows the new window", bool(fresh)):
             return 1
-        gid = sorted(new_group)[0]
+        tid = sorted(fresh)[0]
 
         # The claim. Read back from bob, by the id ada minted.
-        landed = wait_for(lambda: gid in bob.groups_here(), timeout=60)
+        landed = wait_for(lambda: tid in bob.tabs_here(), timeout=60)
         check("the window ada opened is open for bob too", bool(landed),
-              f"group {gid}" if landed else "NOT REPLICATED after 60s")
+              f"tab {tid}" if landed else "NOT REPLICATED after 60s")
         if landed:
-            check("and it arrived with what is in it",
-                  bool(bob.groups_here()[gid]["tabs"]),
-                  json.dumps(bob.groups_here()[gid]["tabs"]))
+            where = bob.tabs_here()[tid]
+            titles = bob.groups_here()[where["group"]]["tabs"]
+            check("and it arrived with what is in it", bool(titles),
+                  json.dumps(titles))
 
         # …and the view did not follow.
         after_view = bob.view_state()
@@ -453,24 +470,28 @@ def main() -> int:
               after_view["active_group"] == before_view["active_group"])
         for g, was in before_groups.items():
             if g in after_groups:
-                check(f"the tab in front of bob in group {g[:8]}… did not change",
+                check(f"the tab in front of bob in group {g[:6]}… did not change",
                       after_groups[g]["active_tab"] == was["active_tab"],
                       f'{was["active_tab"]} -> {after_groups[g]["active_tab"]}')
-        focused = {str(v) for v in (after_view["active_group"] or {}).values()}
-        check("and bob is still focused on his own window, not the new one",
-              gid not in focused,
-              f"focused {sorted(focused)}, arrived {gid}")
+        # The arriving window is not what he is looking at: his focused
+        # group is unchanged above, and it is his own.
+        if landed:
+            arrived_in = bob.tabs_here()[tid]["group"]
+            focused = {str(v) for v in (after_view["active_group"] or {}).values()}
+            check("bob is still looking at his own window, not the new one",
+                  arrived_in not in focused,
+                  f"arrived in {arrived_in[:6]}…, focused {sorted(f[:6] for f in focused)}")
 
         print("\n[7b] and the other direction")
-        x_before = set(bob.groups_here())
+        x_before = set(bob.tabs_here())
         bob.invoke(ACTIONS, "window.new.terminal")
-        x_new = wait_for(lambda: (set(bob.groups_here()) - x_before) or None,
+        x_new = wait_for(lambda: (set(bob.tabs_here()) - x_before) or None,
                          timeout=20)
         if check("bob opened a window", bool(x_new)):
-            xgid = sorted(x_new)[0]
+            xtid = sorted(x_new)[0]
             check("the window bob opened is open for ada too",
-                  bool(wait_for(lambda: xgid in ada.groups_here(), timeout=60)),
-                  f"group {xgid}")
+                  bool(wait_for(lambda: xtid in ada.tabs_here(), timeout=60)),
+                  f"tab {xtid}")
 
         print("\n[8] a picture of bob's session with ada's document in it")
         shot = os.path.join(root, "bob-room.png")
