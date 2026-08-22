@@ -38,6 +38,20 @@ use ui::collaboration::{CollabEvent, CollabRequest};
 
 // ---------- frame helpers ----------
 
+/// How long to wait for something the contract says must happen.
+///
+/// A backstop, not a pacing device. Every wait below it is satisfied in
+/// microseconds on an idle machine, so this costs the suite nothing —
+/// it only stops the harness giving up on a broker that is merely
+/// descheduled. Half a second sounds generous until two dozen of these
+/// run at once and a `ScrollbackBatch` that was on its way is reported
+/// as one that never came.
+///
+/// Waits that assert something *does not* happen deliberately keep
+/// their own short deadlines: there the wait is the measurement, and
+/// lengthening it would only slow the suite down.
+const REPLY_BACKSTOP: Duration = Duration::from_secs(10);
+
 fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
     let bytes = serde_json::to_vec(v).expect("serialize");
     let len = (bytes.len() as u32).to_le_bytes();
@@ -145,7 +159,7 @@ fn test_cluster() -> uuid::Uuid {
 /// by the announced `(app_id, cluster_id)` pair. A send that races
 /// another client's `Hello` would reach nobody.
 fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     while Instant::now() < deadline {
         if handle.announced_peer_count() >= n {
             return;
@@ -153,13 +167,13 @@ fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!(
-        "only {} of {n} clients announced a route within 2s",
+        "only {} of {n} clients announced a route within {REPLY_BACKSTOP:?}",
         handle.announced_peer_count()
     );
 }
 
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     loop {
         match UnixStream::connect(socket) {
             Ok(s) => return s,
@@ -248,7 +262,7 @@ fn peer_can_fetch_recent_scrollback() {
     }
     // Drain the observer's fan-out so the subsequent batch read is
     // unambiguous.
-    let fanned = drain_until_signed(&mut observer, 5, Duration::from_secs(10));
+    let fanned = drain_until_signed(&mut observer, 5, REPLY_BACKSTOP);
     let signed_count = fanned
         .iter()
         .filter(|e| matches!(e, CollabEvent::SignedCRDTIncremental { .. }))
@@ -265,7 +279,7 @@ fn peer_can_fetch_recent_scrollback() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
+    let event = read_event(&mut observer, REPLY_BACKSTOP)
         .expect("observer must receive ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch {
@@ -326,7 +340,7 @@ fn empty_scrollback_returns_exhausted_true() {
             max: 10,
         },
     );
-    let event = read_event(&mut peer, Duration::from_millis(500))
+    let event = read_event(&mut peer, REPLY_BACKSTOP)
         .expect("must receive an empty ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
@@ -386,7 +400,7 @@ fn scrollback_paging_respects_max() {
             },
         );
     }
-    let _drained = drain_until_signed(&mut observer, 10, Duration::from_secs(10));
+    let _drained = drain_until_signed(&mut observer, 10, REPLY_BACKSTOP);
 
     write_frame(
         &mut observer,
@@ -396,7 +410,7 @@ fn scrollback_paging_respects_max() {
             max: 3,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -467,8 +481,8 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
     // half-written the checkpoint is rejected and every assertion after
     // it fails for a reason that has nothing to do with compaction, so
     // wait for the ops rather than for the socket to go quiet.
-    let _drained = drain_until_signed(&mut observer, 5, Duration::from_secs(10));
-    let _drained = drain_until_signed(&mut owner, 5, Duration::from_secs(10));
+    let _drained = drain_until_signed(&mut observer, 5, REPLY_BACKSTOP);
+    let _drained = drain_until_signed(&mut owner, 5, REPLY_BACKSTOP);
 
     // Owner publishes a Compaction checkpoint covering ops 1..=3.
     // The prefix hash must match what the broker's local log holds.
@@ -496,8 +510,8 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
     );
     // Drain the fan-out of the compaction op itself so the next read
     // sees only the scrollback reply.
-    let _ = drain_until_signed(&mut observer, 1, Duration::from_secs(10));
-    let _ = drain_until_signed(&mut editor, 1, Duration::from_secs(10));
+    let _ = drain_until_signed(&mut observer, 1, REPLY_BACKSTOP);
+    let _ = drain_until_signed(&mut editor, 1, REPLY_BACKSTOP);
 
     // The observer asks for scrollback covering the evicted range.
     write_frame(
@@ -508,7 +522,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(
@@ -530,7 +544,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
+    let event = read_event(&mut observer, REPLY_BACKSTOP).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -681,7 +695,7 @@ fn cooperative_scrollback_round_trip() {
             max: 10,
         },
     );
-    let first = read_event(&mut app, Duration::from_millis(500))
+    let first = read_event(&mut app, REPLY_BACKSTOP)
         .expect("first ScrollbackBatch (local empty)");
     match first {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
@@ -722,7 +736,7 @@ fn cooperative_scrollback_round_trip() {
     // The drain thread is on a 100 ms cadence. Poll the app socket
     // with generous timeout for the follow-up ScrollbackBatch.
     let mut got: Option<CollabEvent> = None;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     while Instant::now() < deadline {
         if let Some(ev) = read_event(&mut app, Duration::from_millis(200)) {
             if matches!(ev, CollabEvent::ScrollbackBatch { .. }) {
@@ -802,7 +816,7 @@ fn cooperative_request_published_when_local_empty() {
             max: 10,
         },
     );
-    let reply = read_event(&mut app, Duration::from_millis(500))
+    let reply = read_event(&mut app, REPLY_BACKSTOP)
         .expect("local broker still replies even when forwarding to network");
     match reply {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
@@ -901,7 +915,7 @@ fn cooperative_responder_answers_when_log_has_match() {
     let handle_req = net.inbound_scrollback_request_handle();
     net.handle_scrollback_request_message(123u64, artifact, 10, 50);
     // Drain wakes every 100 ms.
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + REPLY_BACKSTOP;
     let mut drained = false;
     while Instant::now() < deadline {
         if handle_req.lock().unwrap().is_empty() {
