@@ -99,6 +99,16 @@ pub enum Action {
     Modifiers(ModifiersState),
     /// Step animation `n` frames (~16 ms each).
     Wait(u32),
+    /// Re-run layout without stepping the clock.
+    ///
+    /// A tab title's shaped width is recorded during `draw` and consumed
+    /// by the *next* `apply_layout` — the layout pass holds no text
+    /// renderer — so a title's first frame on screen is sized from a
+    /// per-character estimate. A capture taken before that second pass
+    /// therefore shows an estimate-sized row rather than the settled
+    /// one. `Wait` paints but does not lay out again, so this is what a
+    /// scenario reaches for before snapshotting a resting row.
+    Relayout,
     /// Capture: render to PNG (offscreen mode) or dump state JSON
     /// (headless mode). Window mode treats this as a no-op (you can
     /// see it).
@@ -156,6 +166,20 @@ pub enum Action {
     /// This asks the strip for a specific point on the curve instead —
     /// what gets rendered is the production `draw` at that point.
     SampleMakeSpace {
+        prefix: &'static str,
+        /// Milliseconds into the curve.
+        at_ms: &'static [u64],
+    },
+    /// Sample a tab pill's reveal curve at fixed points and capture each
+    /// as `prefix-<ms>`.
+    ///
+    /// An offscreen frame costs more wall time than the curve lasts, so
+    /// stepping frames only ever catches its endpoints — the pill is
+    /// shut in one capture and wide open in the next. This asks the bar
+    /// to hold the curve at a chosen point instead; what gets rendered
+    /// is the production `apply_layout` there. Same escape
+    /// [`Action::SampleMakeSpace`] gives the make-space slide.
+    SampleTabReveal {
         prefix: &'static str,
         /// Milliseconds into the curve.
         at_ms: &'static [u64],
@@ -311,6 +335,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
         },
         Action::Drag { from, to, steps } => driver.drag(*from, *to, *steps),
         Action::MouseWheel { dx, dy } => driver.mouse_wheel(*dx, *dy),
+        Action::Relayout => driver.relayout(),
         Action::MoveCursor(p) => driver.move_cursor(*p),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
@@ -458,6 +483,38 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 }
                 st.bump();
             });
+        }
+        Action::SampleTabReveal { prefix, at_ms } => {
+            // Lay out once so the hover that preceded this has latched a
+            // curve, then freeze it before a render's worth of wall time
+            // can retire it.
+            driver.relayout();
+            let strips: Vec<_> = {
+                let st = driver.chrome();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .map(|ws| ws.strips.iter().map(|s| s.id).collect())
+                    .unwrap_or_default()
+            };
+            for ms in at_ms.iter() {
+                let mut any = false;
+                for sid in &strips {
+                    if let Some(row) = driver.host_mut().group_row_mut_for_tests(*sid) {
+                        for g in row.groups.iter_mut() {
+                            any |= g
+                                .bar_mut_for_tests()
+                                .hold_reveal_at(std::time::Duration::from_millis(*ms));
+                        }
+                    }
+                }
+                if !any {
+                    eprintln!("scenario: no tab reveal in flight to sample at {ms} ms");
+                }
+                driver.relayout();
+                let name: &'static str =
+                    Box::leak(format!("{prefix}-{ms:03}ms").into_boxed_str());
+                sink.capture(driver, name);
+            }
         }
         Action::SampleMakeSpace { prefix, at_ms } => {
             // Splice the new window into the widget tree, then lay out —
@@ -1291,10 +1348,9 @@ fn strip_scroll_across_apps() -> Scenario {
 /// shape a group's tab strip has the least room in.
 const THIRD_WIDTH_PERMILLE: u16 = 333;
 
-/// Frames between samples of the pill's reveal curve. The curve runs on
-/// wall time inside the host and an offscreen frame costs more than one
-/// tick, so a single tick between captures is what actually walks it.
-const REVEAL_SAMPLE_TICK: u32 = 1;
+/// Points along the pill's 180 ms reveal curve worth looking at. Dense
+/// at the start, where the ease-out does most of its travelling.
+const REVEAL_SAMPLES: &[u64] = &[0, 20, 40, 60, 90, 130, 180];
 
 /// Hovering a tab pill: it opens to make room for its control cluster
 /// rather than revealing the chips inside width it was already holding.
@@ -1313,29 +1369,21 @@ fn tab_pill_reveal() -> Scenario {
         actions: vec![
             Action::SelectGroup(Some(0)),
             Action::Wait(4),
+            Action::Relayout,
             Action::Snapshot("01-idle"),
             Action::MoveCursorNamed("tab:Files"),
-            Action::Snapshot("02-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("03-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("04-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("05-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("06-opening"),
+            Action::SampleTabReveal { prefix: "02-opening", at_ms: REVEAL_SAMPLES },
             Action::Wait(12),
-            Action::Snapshot("07-open"),
+            Action::Snapshot("03-open"),
             // Off the bar entirely: the pill closes again, and its body
-            // has to stay under the chips for the whole shrink.
-            Action::MoveCursor(Point::new(20.0, 600.0)),
-            Action::Snapshot("08-closing"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("09-closing"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("10-closing"),
+            // has to stay under the chips for the whole shrink. Park in
+            // the middle of the window card — the wheel disc down the
+            // left edge reacts to a pointer near it, which would move
+            // the whole strip and confuse what this is measuring.
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::SampleTabReveal { prefix: "04-closing", at_ms: REVEAL_SAMPLES },
             Action::Wait(12),
-            Action::Snapshot("11-idle-again"),
+            Action::Snapshot("05-idle-again"),
         ],
     }
 }
@@ -1371,20 +1419,22 @@ fn tab_pill_reveal_narrow() -> Scenario {
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::AddHostedTab { app: "Settings", title: "Settings" },
             Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::AddHostedTab { app: "Browser", title: "Browser" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::AddHostedTab { app: "Notes", title: "Document" },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
             Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
             Action::Wait(4),
+            Action::Relayout,
             Action::Snapshot("01-idle"),
             Action::MoveCursorNamed("tab:Editor"),
-            Action::Snapshot("02-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("03-opening"),
-            Action::Wait(REVEAL_SAMPLE_TICK),
-            Action::Snapshot("04-opening"),
+            Action::SampleTabReveal { prefix: "02-opening", at_ms: REVEAL_SAMPLES },
             Action::Wait(12),
-            Action::Snapshot("05-open"),
-            Action::MoveCursor(Point::new(20.0, 600.0)),
+            Action::Snapshot("03-open"),
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::SampleTabReveal { prefix: "04-closing", at_ms: REVEAL_SAMPLES },
             Action::Wait(12),
-            Action::Snapshot("06-idle-again"),
+            Action::Snapshot("05-idle-again"),
         ],
     }
 }
