@@ -384,7 +384,6 @@ fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 pub struct InputRowLayout {
     pub icon_rect: Rect,
     pub input_rect: Rect,
-    pub kbd_chip_rect: Rect,
 }
 
 /// Live state while the palette is collecting a free-text argument for a
@@ -1139,17 +1138,15 @@ impl CommandPalette {
         24.0
     }
 
-    /// Splits the input row into three sub-rects: a leading 24 px icon
-    /// slot (lucide `Search`), the input field, and a trailing 56 px
-    /// kbd-chip slot (`⌘K`). Both flanking slots are inset 12 px from
-    /// the row edge, with another 12 px gap before/after the input.
+    /// Splits the input row into two sub-rects: a leading 24 px icon slot
+    /// (lucide `Search`) and the input field, which runs from there to the
+    /// row's trailing inset.
     ///
-    /// Concept ref: `GlobalSearch.tsx:138-153` — leading magnifier glyph
-    /// + input + trailing `⌘K` kbd pill.
+    /// The row used to reserve a trailing 56 px slot for a `Ctrl+K` kbd
+    /// pill. That chip is gone (see `draw`), so the width it held now goes
+    /// to the query — a long search string elides ~66 px later than it did.
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
         const ICON_W: f64 = 24.0;
-        // Wide enough for the 6-character `Ctrl+K` binding.
-        const CHIP_W: f64 = 56.0;
         const EDGE: f64 = 12.0;
         const GAP: f64 = 10.0;
         let cy = (row.y0 + row.y1) / 2.0;
@@ -1160,27 +1157,13 @@ impl CommandPalette {
             row.x0 + EDGE + ICON_W,
             icon_y0 + ICON_W,
         );
-        let chip_h = 20.0_f64.min(row.height() - 8.0).max(14.0);
-        let chip_y0 = cy - chip_h / 2.0;
-        let kbd_chip_rect = Rect::new(
-            row.x1 - EDGE - CHIP_W,
-            chip_y0,
-            row.x1 - EDGE,
-            chip_y0 + chip_h,
-        );
-        // The text slot runs between the two, *inside* the same field —
-        // the icon and the chip are ornaments on one control, not two
-        // more controls flanking a boxed input.
-        let input_rect = Rect::new(
-            icon_rect.x1 + GAP,
-            row.y0,
-            kbd_chip_rect.x0 - GAP,
-            row.y1,
-        );
+        // The text slot runs from the glyph to the trailing inset, *inside*
+        // the same field — the icon is an ornament on one control, not a
+        // second control flanking a boxed input.
+        let input_rect = Rect::new(icon_rect.x1 + GAP, row.y0, row.x1 - EDGE, row.y1);
         InputRowLayout {
             icon_rect,
             input_rect,
-            kbd_chip_rect,
         }
     }
 
@@ -1970,39 +1953,19 @@ impl Widget for CommandPalette {
             1.5,
         );
 
-        // Trailing kbd chip, inside the field.
-        let chip_shape = RoundedRect::from_rect(layout.kbd_chip_rect, 5.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.surface_white_5,
-            None,
-            &chip_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_white_10,
-            None,
-            &chip_shape,
-        );
-        let chip_text = "Ctrl+K";
-        let chip_text_size = (theme.tokens.typography.scale.xs).max(9.0);
-        let (cw, ch) = text_renderer.measure(chip_text, chip_text_size, None);
-        text_renderer.draw_text(
-            scene,
-            chip_text,
-            chip_text_size,
-            colors.text_dim,
-            transform
-                * Affine::translate((
-                    (layout.kbd_chip_rect.x0 + layout.kbd_chip_rect.x1) / 2.0
-                        - cw as f64 / 2.0,
-                    (layout.kbd_chip_rect.y0 + layout.kbd_chip_rect.y1) / 2.0
-                        - ch as f64 / 2.0,
-                )),
-            None,
-        );
+        // No shortcut chip here. A kbd chip is an *invitation* — it tells
+        // you the chord that reaches a thing you have not reached yet — so
+        // it belongs on the collapsed affordance an app shows in its own
+        // chrome (`SearchField` in launcher mode), and it is noise inside
+        // the surface it opens: by the time this row is on screen the user
+        // has already pressed the key. It could not even be honest here,
+        // because two chords open this palette at two different scopes
+        // (Super+K workspace-wide, Ctrl+K scoped to the active app) and a
+        // single label has to misname one of them. What scope the palette
+        // is actually in is stated properly by the scope chips in the
+        // filter strip below, and the keys that do something *now* are in
+        // the footer (Navigate / Open / Close). The row's full trailing
+        // width goes to the query instead.
 
         // Query text inside the field. While collecting an argument the
         // slot shows the entry's prompt (dim) followed by the editable
@@ -2416,31 +2379,39 @@ mod tests {
         );
     }
 
+    /// The prompt row is a leading glyph and then the query, all the way to
+    /// the trailing inset.
+    ///
+    /// It used to hold back 56 px + a 10 px gap for a `Ctrl+K` kbd pill —
+    /// a chip that named a chord for opening a palette that was, by the
+    /// time you could read it, already open, and that could not be honest
+    /// anyway with two chords bound at two different scopes. Removing it
+    /// gives that width to the query, so this pins the row's trailing edge:
+    /// nothing may reserve a slot there again without this failing.
     #[test]
-    fn input_row_layout_reserves_leading_icon_and_kbd_chip() {
+    fn input_row_layout_gives_the_query_the_full_trailing_width() {
+        const ROW_W: f64 = 640.0;
+        const EDGE: f64 = 12.0;
         let palette = CommandPalette::new();
-        let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, 640.0, 56.0));
+        let layout = palette.compute_input_layout(Rect::new(0.0, 0.0, ROW_W, 56.0));
         assert!(
             layout.icon_rect.width() >= 24.0 && layout.icon_rect.width() <= 40.0,
             "leading icon slot must be 24..=40 px wide; got {}",
             layout.icon_rect.width()
         );
         assert!(
-            layout.kbd_chip_rect.width() >= 48.0,
-            "Cmd+K chip needs at least 48 px; got {}",
-            layout.kbd_chip_rect.width()
-        );
-        assert!(
-            layout.kbd_chip_rect.x1 < 640.0,
-            "kbd chip must be inside the row"
-        );
-        assert!(
             layout.input_rect.x0 > layout.icon_rect.x1,
             "input must start after the icon"
         );
         assert!(
-            layout.input_rect.x1 < layout.kbd_chip_rect.x0,
-            "input must end before the kbd chip"
+            layout.input_rect.x1 <= ROW_W - EDGE,
+            "input must stay inside the row's trailing inset"
+        );
+        assert_eq!(
+            ROW_W - layout.input_rect.x1,
+            EDGE,
+            "the query runs to the trailing inset — no reserved chip slot \
+             between it and the row edge",
         );
     }
 
