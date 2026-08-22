@@ -81,9 +81,26 @@ impl VideoDoc {
         }
     }
 
-    /// True if no project has been seeded into this document yet.
+    /// Whether the map at `key` exists **and** holds at least one entry.
+    /// A map that was created but never written to is not content.
+    fn has_entries(doc: &AutoCommit, key: &str) -> bool {
+        match doc.get(&ROOT, key) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => doc.length(&id) > 0,
+            _ => false,
+        }
+    }
+
+    /// True when this document carries no editor content at all.
+    ///
+    /// Emptiness spans **every** map an editing session writes, not just
+    /// `project`: importing media writes only the `media` map, and a document
+    /// holding imported clips is plainly not empty even before a project map
+    /// exists. Keying on `project` alone reported such a document empty, which
+    /// let a demo seed overwrite real imported media.
     pub fn is_empty(doc: &AutoCommit) -> bool {
-        !matches!(doc.get(&ROOT, "project"), Ok(Some((Value::Object(ObjType::Map), _))))
+        !["project", "media", "tracks", "clips"]
+            .iter()
+            .any(|k| Self::has_entries(doc, k))
     }
 
     // --- writers ---------------------------------------------------------
@@ -413,6 +430,50 @@ pub fn sample_project() -> Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_document_holding_only_imported_media_is_not_empty() {
+        // Import writes the `media` map and nothing else. A document in that
+        // state holds real user content, so it must never report empty — that
+        // is what let a demo seed run over an imported clip.
+        let mut doc = AutoCommit::new();
+        assert!(VideoDoc::is_empty(&doc), "a fresh document is empty");
+        VideoDoc::upsert_media(
+            &mut doc,
+            &MediaItem {
+                id: Uuid::new_v4(),
+                name: "Imported.mp4".into(),
+                kind: MediaKind::Video,
+                duration: 12.0,
+                width: 1920,
+                height: 1080,
+                fps: 25.0,
+                palette: 0,
+                path: "media/Imported.mp4".into(),
+                hydration: Hydration::Local,
+            },
+        );
+        assert!(
+            !VideoDoc::is_empty(&doc),
+            "a document with imported media is not empty"
+        );
+        // The project map is still absent — emptiness no longer keys on it alone.
+        assert!(
+            !matches!(doc.get(&ROOT, "project"), Ok(Some((Value::Object(ObjType::Map), _)))),
+            "import wrote no project map"
+        );
+    }
+
+    #[test]
+    fn an_untouched_map_is_not_content() {
+        // `map()` materialises an empty map as a side effect of any read-modify
+        // helper; an empty map is structure, not content, so the document is
+        // still empty.
+        let mut doc = AutoCommit::new();
+        let _ = VideoDoc::map(&mut doc, "media");
+        let _ = VideoDoc::map(&mut doc, "project");
+        assert!(VideoDoc::is_empty(&doc), "empty maps carry no content");
+    }
 
     #[test]
     fn sample_round_trips_through_doc() {
