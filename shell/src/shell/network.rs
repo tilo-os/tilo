@@ -32,6 +32,56 @@ use crate::shell::state::WorkspaceTreeHandle;
 /// without per-workspace negotiation.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
+/// Largest app-document snapshot this shell will put on the gossip
+/// topic, in bytes.
+///
+/// # Where the number comes from
+///
+/// libp2p gossipsub caps one RPC at 64 KiB and
+/// [`crate::network::behaviour::NiriosBehaviour::new`] does not raise
+/// it, so a larger publish is rejected by the transport rather than
+/// truncated.
+///
+/// The budget is far tighter than that ceiling suggests, because the
+/// actor serialises a [`NeighbourMsg`] with `serde_json`
+/// (`crate::network::actor`), and serde_json writes a `Vec<u8>` as an
+/// array of decimal numbers — up to four characters (`"255,"`) per
+/// byte. A snapshot therefore costs up to **4x its size** on the wire,
+/// and the naive "64 KiB minus a little" reading of the limit is wrong
+/// by a factor of four. `snapshot_at_the_cap_fits_a_gossipsub_rpc`
+/// pins this against worst-case bytes rather than against the
+/// arithmetic in this comment, which is how the earlier figure here was
+/// caught.
+///
+/// So: 14 KiB of document expands to at most 56 KiB of JSON, leaving
+/// ~9 KiB for the envelope — the variant tag, the room uuid, a record
+/// id that may be a full path, and gossipsub's own protobuf framing
+/// (topic, signature, author key, sequence number).
+///
+/// Moving the publish path to the `postcard` encoding that
+/// `crate::network::protocol`'s own round-trip tests already use would
+/// make the payload roughly 1:1 and raise this to ~60 KiB. That is a
+/// wire-format change every peer has to agree on, so it is a decision
+/// to take deliberately rather than a constant to edit.
+///
+/// # Why a cap rather than a bigger pipe
+///
+/// A document has no upper bound, so no ceiling makes this correct in
+/// general — raising the gossipsub limit would move the failure, not
+/// remove it, and would do so on a **broadcast** medium where every
+/// peer in the room pays for every byte. The bounded case is worth
+/// having anyway because it is the common one: a document that fits is
+/// a document that converges, immediately, over transport that already
+/// exists.
+///
+/// Past this size the right carrier is a direct peer-to-peer stream
+/// rather than gossip — the substrate for one is already in
+/// [`crate::network::surface_stream`], which video frames use for the
+/// same reason (they are large, and they concern one peer rather than
+/// the room). Wiring a snapshot onto it is the follow-up this constant
+/// marks the boundary of.
+pub const MAX_APP_SNAPSHOT_BYTES: usize = 14 * 1024;
+
 /// Default on-disk path of the machine's device key, from which the
 /// shell derives its libp2p identity. The FUSE mount reads the same
 /// file, so one device has one identity rather than one per subsystem.
@@ -128,6 +178,24 @@ pub struct ShellNetwork {
     /// to locally-connected apps. See
     /// [`Self::inbound_app_crdt_signed_handle`].
     inbound_app_crdt_signed: Arc<Mutex<Vec<InboundAppCrdtSigned>>>,
+    /// Received app-presence frames awaiting fan-out to local apps.
+    /// See [`Self::inbound_app_presence_handle`].
+    inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
+    /// Received app-CRDT *snapshots* awaiting fan-out to local apps.
+    /// Separate from [`Self::inbound_app_crdt`] because the two are
+    /// not interchangeable on delivery: an increment is applied to a
+    /// document that already holds its history, a snapshot *is* that
+    /// history, and the receiving app folds them in by different calls.
+    /// See [`Self::inbound_app_crdt_snapshot_handle`].
+    inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    /// Rooms with an outstanding request for somebody's whole
+    /// document, keyed by cluster id.
+    ///
+    /// A room is entered here when a peer announces it has arrived, and
+    /// removed when a snapshot is published for it. See
+    /// [`Self::note_snapshot_request`] for why the pairing lives here
+    /// rather than in the frame.
+    snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -165,6 +233,27 @@ pub struct InboundAppCrdt {
     /// the receiving app's `CollaborationManager` as a
     /// `CollabEvent::CRDTIncremental`.
     pub data: Vec<u8>,
+}
+
+/// One received app-presence frame, queued by [`ShellNetwork::tick`]
+/// for the `collab_broker` drainer to fan out to local apps.
+///
+/// Carries no record id: presence is fanned at cluster scope, so the
+/// room and the app are the whole delivery filter. See
+/// [`crate::network::protocol::NeighbourMsg::AppPresence`].
+#[derive(Debug, Clone)]
+pub struct InboundAppPresence {
+    /// Hashed libp2p peer id of the publisher. Unlike the CRDT queues
+    /// this one is load-bearing rather than advisory: it becomes the
+    /// `user_id` the receiving app attributes the caret to, and so the
+    /// colour it is drawn in.
+    pub peer: u64,
+    /// Originating app id; first half of the delivery filter.
+    pub app_id: String,
+    /// Originating cluster id (the room); second half.
+    pub cluster_id: String,
+    /// The serialised `CollabRequest::Presence`, opaque here.
+    pub frame: Vec<u8>,
 }
 
 /// One received *signed* app-CRDT envelope, queued by
@@ -334,6 +423,9 @@ impl ShellNetwork {
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+            inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+            snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -474,16 +566,34 @@ impl ShellNetwork {
     /// direction.
     fn is_in_room(&self, cluster_id: &str) -> bool {
         let Some(room) = crate::shell::state::RoomId::parse(cluster_id) else {
+            tracing::info!(
+                target: "qos_collab_probe",
+                cluster = %cluster_id,
+                "PROBE is_in_room=false (not a uuid)",
+            );
             return false;
         };
         if room.is_nil() {
+            tracing::info!(
+                target: "qos_collab_probe",
+                cluster = %cluster_id,
+                "PROBE is_in_room=false (nil)",
+            );
             return false;
         }
         let Ok(replica) = self.replica.lock() else {
             return false;
         };
-        let in_room = replica.tree.read().rooms().contains(&room);
+        let known = replica.tree.read().rooms();
+        let in_room = known.contains(&room);
         drop(replica);
+        tracing::info!(
+            target: "qos_collab_probe",
+            cluster = %cluster_id,
+            in_room,
+            known = ?known.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+            "PROBE is_in_room",
+        );
         in_room
     }
 
@@ -560,6 +670,184 @@ impl ShellNetwork {
                 cluster_id,
                 record_id,
                 envelope: Box::new(envelope),
+            });
+        }
+    }
+
+    /// Publish an app's presence frame to the peers in its room.
+    ///
+    /// The counterpart to [`Self::publish_app_crdt_incremental`], and
+    /// the reason a peer's caret is visible on another machine at all:
+    /// the broker's local fan-out reaches apps on *this* host, and
+    /// without this the frame stopped there.
+    ///
+    /// `frame` is the serialised `CollabRequest::Presence`, passed
+    /// through untouched. Presence is best-effort — a dropped caret
+    /// update is corrected by the next one — so a full command channel
+    /// is swallowed rather than surfaced, exactly as the pointer path
+    /// upstream does.
+    pub fn publish_app_presence(&self, app_id: String, cluster_id: String, frame: Vec<u8>) {
+        let msg = NeighbourMsg::AppPresence {
+            peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
+            frame,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Shared handle to the inbound app-presence buffer, drained by the
+    /// broker and fanned to local apps as `RemotePresenceUpdate`.
+    pub fn inbound_app_presence_handle(&self) -> Arc<Mutex<Vec<InboundAppPresence>>> {
+        Arc::clone(&self.inbound_app_presence)
+    }
+
+    /// Adapter: queue a received `AppPresence`. Public so integration
+    /// tests can inject one without standing up gossipsub. Mirrors
+    /// [`Self::handle_app_crdt_message`].
+    pub fn handle_app_presence_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        frame: Vec<u8>,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_presence.lock() {
+            buf.push(InboundAppPresence {
+                peer,
+                app_id,
+                cluster_id,
+                frame,
+            });
+        }
+    }
+
+    /// Publish a `NeighbourMsg::AppCrdtSnapshot` — one document's whole
+    /// state — to the workspace topic, so a peer that has just joined
+    /// can adopt a document it holds no history for.
+    ///
+    /// Refuses above [`MAX_APP_SNAPSHOT_BYTES`] instead of handing
+    /// gossipsub a message it would reject. Both transports (the JSON
+    /// reader loop and the capnp bridge) reach the wire through this
+    /// one function, so the cap is enforced once rather than at each
+    /// caller.
+    ///
+    /// A refusal is logged at `warn` with the size and the room,
+    /// because the user-visible consequence — this document does not
+    /// converge — has no other symptom. Silence here would look
+    /// exactly like a document that simply had nothing to send.
+    pub fn publish_app_crdt_snapshot(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        if !self.take_snapshot_request(&cluster_id) {
+            tracing::trace!(
+                app = %app_id,
+                room = %cluster_id,
+                "shell_network: nobody is waiting for a whole document; the delta carries this edit",
+            );
+            return;
+        }
+        if data.len() > MAX_APP_SNAPSHOT_BYTES {
+            tracing::warn!(
+                bytes = data.len(),
+                cap = MAX_APP_SNAPSHOT_BYTES,
+                app = %app_id,
+                room = %cluster_id,
+                record = %record_id,
+                "shell_network: refusing to publish an app snapshot over the gossip cap; this document will not converge for peers that lack its history",
+            );
+            return;
+        }
+        let msg = NeighbourMsg::AppCrdtSnapshot {
+            peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
+            record_id,
+            data,
+        };
+        let _ = self.cmd_tx.try_send(NetCmd::Publish {
+            ws: self.active_ws_for_publish(),
+            msg,
+        });
+    }
+
+    /// Record that somebody in `cluster_id` needs a whole document.
+    ///
+    /// Called when a peer announces its arrival. Arrival is the only
+    /// thing that makes a snapshot worth its size on a broadcast topic:
+    /// a peer that already shares history is served by the deltas, and
+    /// a peer that does not cannot use them at all.
+    ///
+    /// # Why the pairing is reconstructed here
+    ///
+    /// `CollabRequest::SyncCRDT` is not reliably a join reply. It is one
+    /// when the toolkit answers an `Arrived`, and it is also what an app
+    /// sends to feed same-host fan-out and the undo snapshot — whether a
+    /// commit produces one is a property of the toolkit build, not
+    /// something visible in the frame. Republishing whatever arrives
+    /// therefore risks a whole document on the room topic per commit:
+    /// unbounded, growing with the session, and redundant with the delta
+    /// that already carries the same edit to anyone who shares the
+    /// history.
+    ///
+    /// The broker cannot tell those apart by looking, but it does see
+    /// the *request* — a peer's `Arrived` passes through its own drain on
+    /// the way to local apps. So the arrival arms the room and the next
+    /// whole document for it goes out. Which one that turns out to be
+    /// does not matter: any full state serves a peer that has none, so
+    /// consuming the arming on a commit's snapshot answers the join just
+    /// as well as replying to it directly.
+    ///
+    /// Gating here rather than trusting the sender is what keeps the
+    /// rate bounded no matter which way the toolkit sends.
+    pub fn note_snapshot_request(&self, cluster_id: &str) {
+        if cluster_id.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.snapshot_requests.lock() {
+            pending.insert(cluster_id.to_string());
+        }
+    }
+
+    /// Take the outstanding snapshot request for `cluster_id`, if any.
+    fn take_snapshot_request(&self, cluster_id: &str) -> bool {
+        match self.snapshot_requests.lock() {
+            Ok(mut pending) => pending.remove(cluster_id),
+            Err(_) => false,
+        }
+    }
+
+    /// Shared handle to the inbound app-snapshot buffer, drained by the
+    /// broker and fanned to local apps as `CollabEvent::CRDTUpdate`.
+    pub fn inbound_app_crdt_snapshot_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdt>>> {
+        Arc::clone(&self.inbound_app_crdt_snapshot)
+    }
+
+    /// Adapter: queue a received `AppCrdtSnapshot`. Public so tests can
+    /// inject one without standing up gossipsub. Mirrors
+    /// [`Self::handle_app_crdt_message`].
+    pub fn handle_app_crdt_snapshot_message(
+        &self,
+        peer: u64,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
+        if let Ok(mut buf) = self.inbound_app_crdt_snapshot.lock() {
+            buf.push(InboundAppCrdt {
+                peer,
+                app_id,
+                cluster_id,
+                record_id,
+                data,
             });
         }
     }
@@ -883,8 +1171,54 @@ impl ShellNetwork {
                     ref data,
                 } = msg
                 {
+                    tracing::info!(
+                        target: "qos_collab_probe",
+                        from = peer_hash,
+                        me = self.local_peer_hash,
+                        app = %app_id,
+                        cluster = %cluster_id,
+                        record = %record_id,
+                        bytes = data.len(),
+                        "PROBE gossip recv AppCrdtIncremental",
+                    );
                     if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
                         self.handle_app_crdt_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            record_id.clone(),
+                            data.clone(),
+                        );
+                    }
+                    continue;
+                }
+                // A whole document, sent because a peer joined and
+                // has no history to apply deltas against. Same two
+                // gates the increment gets, and they matter more here
+                // rather than less: an increment landing in the wrong
+                // document is noise the widgets ignore, a whole
+                // document merged into the wrong one cannot be taken
+                // back out.
+                if let NeighbourMsg::AppCrdtSnapshot {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref record_id,
+                    ref data,
+                } = msg
+                {
+                    tracing::info!(
+                        target: "qos_collab_probe",
+                        from = peer_hash,
+                        me = self.local_peer_hash,
+                        app = %app_id,
+                        cluster = %cluster_id,
+                        record = %record_id,
+                        bytes = data.len(),
+                        "PROBE gossip recv AppCrdtSnapshot",
+                    );
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_app_crdt_snapshot_message(
                             peer_hash,
                             app_id.clone(),
                             cluster_id.clone(),
@@ -913,6 +1247,28 @@ impl ShellNetwork {
                             cluster_id.clone(),
                             record_id.clone(),
                             (**envelope).clone(),
+                        );
+                    }
+                    continue;
+                }
+                // App presence — a peer's caret, selection or authorship
+                // inside a shared document. Same two gates the CRDT
+                // variants get, and for the same reasons: our own
+                // gossipsub echo is not a peer, and a room we are not in
+                // does not get to put a cursor on our screen.
+                if let NeighbourMsg::AppPresence {
+                    peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
+                    ref frame,
+                } = msg
+                {
+                    if peer_hash != self.local_peer_hash && self.is_in_room(cluster_id) {
+                        self.handle_app_presence_message(
+                            peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
+                            frame.clone(),
                         );
                     }
                     continue;
@@ -1008,6 +1364,9 @@ pub(crate) fn shell_network_for_test(
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+        inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+        snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1022,7 +1381,7 @@ mod tests {
     fn shell_network_spawns_with_default_keypair() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // `cmd_tx` capacity is the actor's bounded-channel size; just
         // assert it's nonzero so we know the channel was constructed.
@@ -1035,7 +1394,7 @@ mod tests {
     fn tick_with_no_events_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let key_path = tmp.path().join("peer-key");
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
@@ -1225,7 +1584,7 @@ mod tests {
         // into a `NetCmd::Publish { msg: PresenceMoved }` on the actor
         // command channel. Uses the test-only constructor so we own the
         // receiver and can drain commands without spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xABCDu64);
         net.publish_presence("local-cursor".into(), (100.0, 200.0));
         let cmd = cmd_rx
@@ -1259,13 +1618,200 @@ mod tests {
     }
 
     #[test]
+    fn publish_app_crdt_snapshot_wraps_the_whole_document() {
+        // The frame that makes a peer's freshly-created document adopt
+        // somebody else's. The record has to survive the wrap for the
+        // same reason it does on an increment, and more so: a whole
+        // document merged into the wrong record cannot be un-merged.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+
+        // Nobody has arrived, so this document's state is carried by the
+        // deltas and has no business on a broadcast topic.
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0xAA, 0xBB, 0xCC],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a snapshot nobody asked for must not be published",
+        );
+
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0xAA, 0xBB, 0xCC],
+        );
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("publish_app_crdt_snapshot must enqueue a NetCmd");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::AppCrdtSnapshot {
+                        peer,
+                        app_id,
+                        cluster_id,
+                        record_id,
+                        data,
+                    } => {
+                        assert_eq!(peer, 0xCAFEu64);
+                        assert_eq!(app_id, "dev.qos.word-processor");
+                        assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        assert_eq!(record_id, "file:/work/report.odt");
+                        assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
+                    }
+                    other => panic!("expected AppCrdtSnapshot, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_oversized_snapshot_is_refused_rather_than_handed_to_gossipsub() {
+        // gossipsub caps an RPC at 64 KiB and rejects anything larger,
+        // so publishing a document past the cap would fail inside the
+        // transport with nothing at this layer knowing it had. Refusing
+        // here is what turns "this document silently never converges"
+        // into a log line naming the size.
+        //
+        // Asserted on the queue rather than on the log: the observable
+        // consequence is that nothing goes out.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            String::new(),
+            vec![0u8; MAX_APP_SNAPSHOT_BYTES + 1],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a snapshot past the cap must not be queued for publish",
+        );
+
+        // Exactly at the cap still goes out — the boundary belongs to
+        // the documents that fit, not to the ones that don't.
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            String::new(),
+            vec![0u8; MAX_APP_SNAPSHOT_BYTES],
+        );
+        assert!(
+            cmd_rx.try_recv().is_ok(),
+            "a snapshot exactly at the cap must still publish",
+        );
+    }
+
+    #[test]
+    fn one_arrival_releases_one_document_and_no_more() {
+        // The toolkit sends a whole document on every commit that
+        // changes it, and the delta alongside already carries the edit
+        // to anyone who shares the history. Republishing each one would
+        // put an unbounded payload on the room topic per commit, so the
+        // arming is one-shot: a peer arrives, one document goes out, and
+        // the commits after it stay local until somebody else arrives.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let room = "00000000-0000-0000-0000-000000000000";
+
+        net.note_snapshot_request(room);
+        for _ in 0..4 {
+            net.publish_app_crdt_snapshot(
+                "dev.qos.word-processor".into(),
+                room.into(),
+                String::new(),
+                vec![0xAA],
+            );
+        }
+        assert!(cmd_rx.try_recv().is_ok(), "the arrival releases one document");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "the commits after it must not each broadcast the document again",
+        );
+
+        // A different room's arrival does not release this one's.
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            room.into(),
+            String::new(),
+            vec![0xAA],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "an arrival in another room must not release this room's document",
+        );
+    }
+
+    #[test]
+    fn snapshot_at_the_cap_fits_a_gossipsub_rpc() {
+        // The cap is only worth anything if a message built at it
+        // actually fits the transport, and the arithmetic is not the
+        // obvious one: the actor publishes with `serde_json`, which
+        // writes a `Vec<u8>` as decimal numbers, so every byte costs up
+        // to four characters. An earlier version of this constant was
+        // set as though the cost were 1:1 and would have been rejected
+        // by gossipsub for any document near it.
+        //
+        // Worst case on both axes: bytes that each need three digits,
+        // and a record id the length of a real path.
+        let msg = NeighbourMsg::AppCrdtSnapshot {
+            peer: u64::MAX,
+            app_id: "dev.qos.word-processor".into(),
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            record_id: "file:".to_string() + &"a".repeat(4096),
+            data: vec![0xFFu8; MAX_APP_SNAPSHOT_BYTES],
+        };
+        let encoded = serde_json::to_vec(&msg).expect("encode");
+        assert!(
+            encoded.len() < 65536,
+            "a snapshot at the cap must still fit a gossipsub RPC; got {} bytes",
+            encoded.len(),
+        );
+    }
+
+    #[test]
+    fn handle_app_crdt_snapshot_message_buffers_for_drain() {
+        // The receive-side adapter the broker's drainer reads. Every
+        // component of the routing triple has to round-trip, because
+        // the drainer rebuilds the route from exactly these fields.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
+        let buf_handle = net.inbound_app_crdt_snapshot_handle();
+        net.handle_app_crdt_snapshot_message(
+            7u64,
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0x01, 0x02],
+        );
+        let buf = buf_handle.lock().unwrap();
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].peer, 7u64);
+        assert_eq!(buf[0].app_id, "dev.qos.word-processor");
+        assert_eq!(buf[0].cluster_id, "00000000-0000-0000-0000-000000000000");
+        assert_eq!(buf[0].record_id, "file:/work/report.odt");
+        assert_eq!(buf[0].data, vec![0x01, 0x02]);
+    }
+
+    #[test]
     fn handle_presence_message_buffers_for_drain() {
         // The receive-side adapter pushes to the inbound buffer that
         // the shell's frame drainer folds into `PresenceCtx`. Verify
         // that the entry round-trips with every field preserved so the
         // overlay can attribute the cursor to the right person, in the
         // right scope, at the right time.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_presence_handle();
         net.handle_presence_message(
@@ -1325,7 +1871,7 @@ mod tests {
         // Verify the wrapping is correct (peer id stamped, payload
         // round-trips verbatim, default workspace topic) without
         // spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
         net.publish_app_crdt_incremental(
             "terminal".into(),
@@ -1368,7 +1914,7 @@ mod tests {
         // The inbound receive-side adapter pushes onto the buffer
         // the broker's drainer reads from. Verify all four fields
         // round-trip so the local fan-out can attribute payloads.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_handle();
         net.handle_app_crdt_message(
@@ -1431,7 +1977,7 @@ mod tests {
         // `NeighbourMsg::AppCrdtIncrementalSigned`. Verify the wrapping
         // is correct (peer id stamped, envelope round-trips verbatim,
         // default workspace topic) without spinning up libp2p.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let envelope = make_envelope(7);
         net.publish_app_crdt_signed(
@@ -1476,7 +2022,7 @@ mod tests {
         // drainer reads from. Verify the entry preserves the peer hash,
         // the route the drainer delivers against, and the envelope
         // verbatim.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_signed_handle();
         let envelope = make_envelope(13);
@@ -1502,7 +2048,7 @@ mod tests {
         // contract is asserted explicitly so per-workspace routing
         // (Phase 3 follow-up) gets a tripping test rather than a
         // silent behaviour change.
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         assert_eq!(net.active_ws_for_publish(), DEFAULT_WS_TOPIC);
     }
@@ -1510,7 +2056,7 @@ mod tests {
     #[test]
     fn publish_scrollback_request_emits_a_publish_command() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xDEAD_u64);
         let artifact = ArtifactId::new();
         net.publish_scrollback_request(artifact, 100, 25);
@@ -1542,7 +2088,7 @@ mod tests {
     #[test]
     fn handle_scrollback_request_message_buffers_for_drain() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_request_handle();
         let artifact = ArtifactId::new();
@@ -1558,7 +2104,7 @@ mod tests {
     #[test]
     fn handle_scrollback_response_message_buffers_for_drain() {
         use collab_types::ArtifactId;
-        let tree = WorkspaceTree::bootstrap_default().shared();
+        let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let handle = net.inbound_scrollback_response_handle();
         let artifact = ArtifactId::new();

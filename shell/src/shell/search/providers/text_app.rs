@@ -11,8 +11,6 @@
 //! matches, and only a query that appears solely in the body comes back
 //! empty.
 
-use std::rc::Rc;
-
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::tab_documents::tab_body;
 use crate::shell::search::{ResourceKind, SearchContext, SearchResult};
@@ -89,17 +87,17 @@ pub fn query_text_app(
                         continue;
                     };
                     let (workspace_id, strip_id, group_id, tab_id) = (w.id, s.id, g.id, t.id);
-                    out.push(SearchResult {
-                        kind: kind.clone(),
-                        provider_id: provider_id.to_string(),
-                        id: format!("{tab_id}"),
-                        title: t.title.clone(),
-                        subtitle: snippet,
+                    out.push(SearchResult::nullary(
+                        kind.clone(),
+                        provider_id,
+                        format!("{tab_id}"),
+                        t.title.clone(),
+                        snippet,
                         score,
-                        on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                        move |_doc, _root, chrome: &Chrome| {
                             focus_tab(chrome, workspace_id, strip_id, group_id, tab_id);
-                        }),
-                    });
+                        },
+                    ));
                 }
             }
         }

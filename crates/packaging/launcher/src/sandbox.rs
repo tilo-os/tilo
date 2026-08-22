@@ -618,19 +618,22 @@ pub fn build_bwrap_argv_for_entry(
         argv.push(SANDBOX_IDENTITY_PATH.to_string());
     }
 
-    // Service fds: the app receives an already-connected descriptor
-    // and finds it by number, via `QOS_SVC_<NAME>_FD`.
+    // Service sockets reach the app as inherited descriptors, not as
+    // bwrap arguments. The launcher dup2s each connected socket onto
+    // its `child_fd` (and clears CLOEXEC) in `pre_exec` — see
+    // `run::place_service_fds` — and a descriptor left open across
+    // `exec` keeps its number through bwrap and through the
+    // `__sandbox-exec` re-exec, so the number published here in
+    // `QOS_SVC_<NAME>_FD` is the number the app finds.
     //
-    // There is deliberately **no bwrap argument** here. bwrap's
-    // `--file FD DEST` is a *copy*, not a descriptor pass: it reads FD
-    // to EOF and writes the bytes into a regular file at DEST. Handing
-    // it a connected socket makes it block on a `read` that the broker
-    // will never answer — the launch hangs before `exec`, and an app
-    // that declares `collab` never starts at all. The descriptor gets
-    // to the child by inheritance instead (see
-    // `run::place_service_fds`, which dup2s each one onto its
-    // `child_fd` before exec); bwrap passes inherited fds through
-    // untouched.
+    // There is deliberately **no bwrap flag** for this. `--file FD
+    // DEST` is the one that looks right and is not: it *copies FD's
+    // contents* into a regular file at DEST, so pointing it at a
+    // connected socket makes bwrap block on a read for an EOF the
+    // broker never sends. The launch hangs before `exec`, an app that
+    // declares `collab` never starts at all, and the only symptom is
+    // an app that never appears. Nothing here may name a live socket
+    // to bwrap.
     for sb in service_binds {
         argv.push("--setenv".to_string());
         argv.push(svc_env_var(&sb.name));
@@ -748,11 +751,6 @@ pub struct ServiceBind {
     pub host_fd: i32,
     /// Child-side fd number (the slot the app will see).
     pub child_fd: i32,
-}
-
-/// The path inside the sandbox that the service socket fd is mounted at.
-pub fn sandbox_service_path(name: &str) -> PathBuf {
-    PathBuf::from("/run/qos/services").join(format!("{name}.sock"))
 }
 
 /// The env var name the entrypoint reads to find an opened service fd.
@@ -1613,10 +1611,13 @@ mod tests {
             child_fd: 17,
         }];
         let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &binds, None, None, &CapabilityPlan::empty());
-        // --setenv QOS_SVC_COLLAB_FD 17 — the number the app opens.
-        argv.windows(3)
-            .position(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17")
-            .expect("service env var");
+        // --setenv QOS_SVC_COLLAB_FD 17 — the number the app reads. The
+        // descriptor itself is dup2'd onto it in `run::place_service_fds`.
+        assert!(
+            argv.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "QOS_SVC_COLLAB_FD" && w[2] == "17"),
+            "the app must be told which descriptor its service is on: {argv:?}"
+        );
     }
 
     /// bwrap's `--file FD DEST` reads FD to EOF and writes the bytes
@@ -1661,8 +1662,15 @@ mod tests {
                 );
             }
         }
+        // Nothing emits `--file` at all any more, so the strongest
+        // available statement is the flat one: not on these fds, not on
+        // any fd a later change might route through here.
         assert!(
-            !argv.iter().any(|a| a == "/run/qos/services/collab.sock"),
+            !argv.iter().any(|a| a == "--file"),
+            "a service socket must never be handed to bwrap as a file: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.ends_with("/qos/services/collab.sock")),
             "the service socket has no in-sandbox path any more; the app \
              gets a descriptor: {argv:?}",
         );

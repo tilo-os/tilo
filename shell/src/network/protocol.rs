@@ -262,6 +262,125 @@ pub enum NeighbourMsg {
         /// audit-log entry.
         envelope: Box<collab_types::SignedOp>,
     },
+    /// App-level presence crossing the host boundary — a peer's caret,
+    /// selection, pointer or just-typed run inside a shared document.
+    ///
+    /// The counterpart to [`NeighbourMsg::AppCrdtIncremental`], and it
+    /// has to be its own variant rather than reusing
+    /// [`NeighbourMsg::PresenceMoved`]: that one carries a point in a
+    /// named coordinate space, which is all a pointer needs and none of
+    /// what a caret needs. An app's presence is a
+    /// `ui::collaboration::PresenceKey` — a widget path, a tab, a
+    /// broadcast view — paired with a `PresencePayload` that may be a
+    /// caret offset, a selection range or an authorship run. Flattening
+    /// those into an `(x, y)` loses exactly the information the
+    /// receiving app renders.
+    ///
+    /// So the originating `CollabRequest::Presence` frame rides across
+    /// serialised and otherwise untouched, the same way the CRDT blob
+    /// does. The shell does not interpret either.
+    ///
+    /// # Routed at cluster scope, not record scope
+    ///
+    /// Deliberately carries no `record_id`. The local broker fans
+    /// presence with `CrdtRoute::to_cluster_scope` — every app in the
+    /// room is a legitimate audience for "who else is here", where a
+    /// document delta is not. Adding a record here would make remote
+    /// presence narrower than local presence, so a peer would appear in
+    /// the room to people on their own machine and be invisible to
+    /// everyone else.
+    AppPresence {
+        /// Hashed libp2p PeerId of the publisher. Receiving shells drop
+        /// their own gossipsub echoes on it, and it is what the remote
+        /// peer is attributed to once the frame reaches an app.
+        peer: PeerId,
+        /// App-id of the originating app — first half of the delivery
+        /// filter, as on the CRDT variants.
+        #[serde(default)]
+        app_id: String,
+        /// Cluster id (the room, as a uuid string) the presence belongs
+        /// to. The receiving shell refuses a room it is not in before
+        /// the frame reaches any app.
+        #[serde(default)]
+        cluster_id: String,
+        /// The originating `CollabRequest::Presence`, serde-encoded.
+        /// Opaque to every hop between the two apps.
+        frame: Vec<u8>,
+    },
+    /// App-level CRDT **snapshot** — one document's whole state, sent
+    /// so a peer that has just joined can adopt a document it has no
+    /// history for.
+    ///
+    /// # Why a whole document ever crosses
+    ///
+    /// [`NeighbourMsg::AppCrdtIncremental`] carries a change that names
+    /// its dependencies by hash. A receiver that never saw those
+    /// dependencies cannot apply it — automerge parks it — so two apps
+    /// that each *created* a document rather than opening a shared one
+    /// exchange deltas forever without converging: the bytes arrive,
+    /// reference objects the receiving document has never seen, and
+    /// land nowhere its widgets read. Something has to carry the state
+    /// the deltas are relative to, once, and that is this variant.
+    ///
+    /// # Sent on arrival, not on every commit
+    ///
+    /// The frame behind this (`ui::collaboration::CollabRequest::
+    /// SyncCRDT`) is not reliably a join reply: it also feeds same-host
+    /// fan-out and the undo snapshot, and whether a commit produces one
+    /// depends on the toolkit build rather than on anything visible in
+    /// the frame. Republishing whatever arrives therefore risks a whole
+    /// document on the room topic per commit — unbounded, growing with
+    /// the session, and redundant with the delta that already carries
+    /// the same edit to anyone who shares the history.
+    ///
+    /// So the publish is gated on somebody needing one. A peer's
+    /// `PresencePayload::Arrived` passes through the local broker's own
+    /// drain, which notes it
+    /// ([`crate::shell::network::ShellNetwork::note_snapshot_request`]);
+    /// the next whole document for that room goes out, and the ones
+    /// after stay local until somebody else arrives. The rate is
+    /// therefore once per peer that arrives, which is what makes a
+    /// broadcast medium acceptable for it at all — the same rare,
+    /// single-shot shape [`NeighbourMsg::ScrollbackRequest`] /
+    /// [`NeighbourMsg::ScrollbackResponse`] already take.
+    ///
+    /// It is not addressed to the joiner, deliberately: merging is
+    /// idempotent and commutative, so a peer that missed one converges
+    /// from somebody else's copy, and naming a recipient would need the
+    /// *app* to say who its reply is for.
+    ///
+    /// # Bounded by [`crate::shell::network::MAX_APP_SNAPSHOT_BYTES`]
+    ///
+    /// A document has no upper bound and a gossipsub RPC does (64 KiB,
+    /// the libp2p default this shell does not raise). Publishing is
+    /// therefore refused above a cap set below that ceiling rather than
+    /// handing the transport a message it would reject — see the
+    /// constant for the arithmetic. A document past the cap does not
+    /// converge, loudly, in a log line that names the size; it does not
+    /// half-converge and it does not fail somewhere unattributable.
+    AppCrdtSnapshot {
+        /// Hashed libp2p PeerId of the publisher. Receiving shells drop
+        /// their own gossipsub echoes on it, as on every App* variant.
+        peer: PeerId,
+        /// App-id of the originating app — first component of the
+        /// routing key.
+        #[serde(default)]
+        app_id: String,
+        /// Cluster id (the room, as a uuid string). The receiving shell
+        /// refuses a room it is not in before the frame reaches any app.
+        #[serde(default)]
+        cluster_id: String,
+        /// Record id — **which document** this is the state of. A
+        /// snapshot is the one payload where getting this wrong is
+        /// unrecoverable rather than merely noisy: a whole document
+        /// merged into the wrong record cannot be un-merged, so an
+        /// unaddressed snapshot is dropped rather than guessed at.
+        #[serde(default)]
+        record_id: String,
+        /// `automerge::Automerge::save()` output for that record,
+        /// opaque to every hop between the two apps.
+        data: Vec<u8>,
+    },
     /// Phase 6: cooperative scrollback request. Broadcast over
     /// gossipsub when a peer's local broker has no in-memory
     /// scrollback for a given artifact range and the requesting app
@@ -494,6 +613,17 @@ mod tests {
             cluster_id: "00000000-0000-0000-0000-000000000000".into(),
             record_id: "file:/work/report.odt".into(),
             data: vec![0x01, 0x02, 0x03, 0x04],
+        });
+    }
+
+    #[test]
+    fn app_crdt_snapshot_round_trips() {
+        round_trip(NeighbourMsg::AppCrdtSnapshot {
+            peer: 0xABCDEF,
+            app_id: "dev.qos.word-processor".into(),
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            record_id: "file:/work/report.odt".into(),
+            data: vec![0x85, 0x6F, 0x4A, 0x83],
         });
     }
 

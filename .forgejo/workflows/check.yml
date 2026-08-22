@@ -36,6 +36,7 @@ jobs:
             mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
             pipewire-devel \
             ffmpeg-free-devel libva-devel \
+            gstreamer1-devel gstreamer1-plugins-base-devel \
             openssl-devel sqlite-devel zlib-ng-compat-devel \
             fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
             nasm \
@@ -53,11 +54,25 @@ jobs:
       # The browser is in here too: its WPE WebKit engine sits behind the
       # non-default `wpe` feature, so the default build is hermetic and needs
       # no native WebKit stack.
+      #
+      # GStreamer is NOT hermetic any more, despite the comment in Cargo.toml
+      # that says the dev stack is never needed here. Two crates now enable it
+      # from their default features — `camera` (default = ["live-capture"]) and
+      # `video_editor` (default = ["decode"] -> media/decode) — so a plain
+      # `cargo check --workspace` wants gstreamer-1.0, and every run of this job
+      # has failed on the missing .pc file since those defaults changed. The
+      # headers are installed above; the alternative, taking those features back
+      # off by default, is a product decision rather than a CI one.
+      #
+      # --locked: a fresh resolve of this tree pulls a pre-release ed25519-dalek
+      # stack through iroh that does not compile, and it fails inside a
+      # dependency rather than anywhere this repo touches. --locked makes an
+      # out-of-date lockfile say so instead.
       - name: cargo check --workspace (every app + crate must compile)
         env:
           RUSTC_WRAPPER: sccache
           CARGO_BUILD_JOBS: "4"
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
       - name: cargo test --workspace
         env:
@@ -70,4 +85,4 @@ jobs:
           # debuginfo (no effect on pass/fail) — full coverage, bounded RAM.
           CARGO_BUILD_JOBS: "4"
           CARGO_PROFILE_TEST_DEBUG: "0"
-        run: cargo test --workspace --no-fail-fast
+        run: cargo test --workspace --locked --no-fail-fast
