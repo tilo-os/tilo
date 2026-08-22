@@ -801,6 +801,9 @@ const MODAL_OPEN_ANIM_MS: u64 = 220;
 /// Height of the "Room activity" row at the foot of the collaborator
 /// dropdown, including the separator above it.
 const COLLAB_FOOTER_H: f64 = 40.0;
+/// Height reserved for the broker-unavailable line when the dropdown
+/// also has participants to list beneath it.
+const COLLAB_WARNING_H: f64 = 24.0;
 
 pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 
@@ -4118,10 +4121,19 @@ impl ShellOverlayHost {
             .map(|c| collaborator_roster_rows(&c.borrow().tree()).len())
             .unwrap_or(0);
         let rows = members.max(1) as f64;
+        // Room for the broker warning when there is one *and* rows under
+        // it — with no rows the warning sits in the space the empty-state
+        // line would have used.
+        let warning = self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().collab_unavailable.is_some())
+            && members > 0;
+        let warning_h = if warning { COLLAB_WARNING_H } else { 0.0 };
         // + COLLAB_FOOTER_H for the "Room activity" row: the dropdown answers
         // "who is in this room", and "what has happened in this room" is the
         // question you ask next.
-        let popover_h: f64 = 48.0 + rows * 36.0 + 16.0 + COLLAB_FOOTER_H;
+        let popover_h: f64 = 48.0 + warning_h + rows * 36.0 + 16.0 + COLLAB_FOOTER_H;
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
         Rect::new(
@@ -10630,35 +10642,53 @@ impl ShellOverlayHost {
             .map(|c| collaborator_roster_rows(&c.borrow().tree()))
             .unwrap_or_default();
 
-        if rows.is_empty() {
-            // "No peers connected" is true of a working session nobody
-            // has joined and of a session with no collaboration at all,
-            // and those need different words: the first is waiting, the
-            // second is broken and the user is the only one who can act
-            // on it. Saying the reassuring one for both is how a session
-            // with its broker down looked healthy.
-            let unavailable = self
-                .chrome
-                .as_ref()
-                .and_then(|c| c.borrow().collab_unavailable.clone());
-            let (message, tint) = match &unavailable {
-                Some(reason) => (reason.as_str(), colors.semantic.danger),
-                None => ("No peers connected", colors.text_dim),
-            };
+        // A broken session has to say so whether or not it has anybody to
+        // list, and the two cases were not the same bug. With no rows,
+        // "No peers connected" is true of a working session nobody has
+        // joined *and* of a session with no collaboration at all, and
+        // saying the reassuring one for both is how a session with its
+        // broker down looked healthy. With rows, it is worse: an agent
+        // holds its membership by capability, so a grant made earlier
+        // still lists it after the broker has died — a participant on
+        // screen that cannot participate. So the warning is drawn above
+        // whatever is listed, never instead of it.
+        let unavailable = self
+            .chrome
+            .as_ref()
+            .and_then(|c| c.borrow().collab_unavailable.clone());
+        if let Some(reason) = &unavailable {
             text_renderer.draw_text(
                 scene,
-                message,
+                reason,
                 tokens.typography.scale.sm,
-                tint,
+                colors.semantic.danger,
                 transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
                 None,
             );
+        }
+
+        if rows.is_empty() {
+            if unavailable.is_none() {
+                text_renderer.draw_text(
+                    scene,
+                    "No peers connected",
+                    tokens.typography.scale.sm,
+                    colors.text_dim,
+                    transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
+                    None,
+                );
+            }
             self.draw_collaborators_footer(scene, transform, text_renderer, theme);
             return;
         }
 
+        let list_top = if unavailable.is_some() {
+            rect.y0 + 48.0 + COLLAB_WARNING_H
+        } else {
+            rect.y0 + 48.0
+        };
         for (i, row) in rows.iter().enumerate() {
-            let row_y = rect.y0 + 48.0 + i as f64 * 36.0;
+            let row_y = list_top + i as f64 * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
             // Row avatar = shared `ui::Avatar` chip (r = 11) in that
             // identity's own colour, matching the top-bar stack and the
@@ -14059,10 +14089,24 @@ mod peer_cursor_tests {
 
     /// The key the collaboration layer publishes a workspace's pointers
     /// under, and the one `draw_real_peers` looks them up by.
+    /// The key an app in this workspace actually publishes presence
+    /// under — the workspace's **room**, read off the tree rather than
+    /// spelled out here.
+    ///
+    /// It used to be `tree.active.raw()`, the local workspace handle,
+    /// which is a different string from the one `visible_peers` looks
+    /// up. So the helper below reported zero for every input, real peer
+    /// included — which fails the one test that is supposed to catch
+    /// exactly that, and quietly makes the two no-peer assertions pass
+    /// for the wrong reason.
     fn active_key(tree: &WorkspaceTree) -> PresenceKey {
-        PresenceKey::Workspace {
-            id: format!("{}", tree.active.raw()),
-        }
+        let room = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .map(|w| w.room.to_string())
+            .expect("the seed has an active workspace");
+        PresenceKey::Workspace { id: room }
     }
 
     /// Draw the peer layer for `presence` and report how many draw
