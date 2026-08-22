@@ -15,6 +15,24 @@
 
 use std::path::{Path, PathBuf};
 
+/// The user's real home, when this process is confined and has been
+/// granted it.
+///
+/// Set by the launcher (`crates/packaging/launcher/src/sandbox.rs`) only
+/// when the capability plan bound a path containing it — so its presence
+/// means "you can read this", not merely "this is where it would be".
+/// Absent for an unconfined process, whose `HOME` is already the user's.
+pub fn user_home_override() -> Option<PathBuf> {
+    let raw = std::env::var_os("QOS_USER_HOME")?;
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw);
+    // A path that is not there is not an answer. Falling through to
+    // `HOME` is better than opening on a directory that does not exist.
+    path.is_dir().then_some(path)
+}
+
 /// One of the standard XDG user directories, independent of its localized
 /// name. An app keys an icon / label / persisted identity off the *kind* so it
 /// survives localization (a German *Bilder* is still [`UserDir::Pictures`]).
@@ -78,6 +96,15 @@ impl UserDirs {
     /// `dirs` crate honours `~/.config/user-dirs.dirs`, so on a German desktop
     /// `documents` resolves to `~/Dokumente`, `pictures` to `~/Bilder`, etc.
     pub fn from_system() -> Self {
+        // A confined app's `HOME` is its own per-app directory, so
+        // `dirs::home_dir()` answers with a folder that has none of the
+        // user's files in it. `QOS_USER_HOME` is set by the launcher only
+        // when a capability has actually bound the user's home, so when
+        // it is present it names a directory this process can really
+        // read, and the standard folders resolve underneath it.
+        if let Some(home) = user_home_override() {
+            return Self::under(home);
+        }
         Self {
             home: dirs::home_dir(),
             desktop: dirs::desktop_dir(),
@@ -86,6 +113,31 @@ impl UserDirs {
             music: dirs::audio_dir(),
             pictures: dirs::picture_dir(),
             videos: dirs::video_dir(),
+        }
+    }
+
+    /// The standard folders under an explicit `home`.
+    ///
+    /// Used when the user's home is not this process's `HOME`. The names
+    /// are the conventional English ones rather than the localized ones:
+    /// `user-dirs.dirs` lives in the user's own config directory, which a
+    /// confined app cannot read, so a localized name cannot be resolved
+    /// here. A folder is only listed if it exists, so a German home
+    /// contributes its real folders through [`Self::content_places`]
+    /// rather than a wrong English guess.
+    fn under(home: PathBuf) -> Self {
+        let sub = |name: &str| {
+            let p = home.join(name);
+            p.is_dir().then_some(p)
+        };
+        Self {
+            desktop: sub("Desktop"),
+            documents: sub("Documents"),
+            downloads: sub("Downloads"),
+            music: sub("Music"),
+            pictures: sub("Pictures"),
+            videos: sub("Videos"),
+            home: Some(home),
         }
     }
 

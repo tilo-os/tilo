@@ -780,6 +780,44 @@ pub fn push_capability_binds(argv: &mut Vec<String>, capabilities: &CapabilityPl
     }
 }
 
+/// Tell the app where the **user's** home is, when a capability actually
+/// binds it.
+///
+/// Inside the sandbox `HOME` is the app's own directory — one per room,
+/// per package, with every `XDG_*` pointed inside it (see
+/// `crate::appdir`). That is right, and it has a consequence: an app
+/// asking the platform "where is home?" is answered with a directory
+/// that has nothing of the user's in it. For most apps that is the whole
+/// point. For one whose job *is* the user's files it means opening on an
+/// empty folder and reporting, accurately and uselessly, zero items.
+///
+/// So the real home is passed separately — and only when the capability
+/// plan has bound a path that contains it. Deriving it from the binds
+/// rather than from the manifest is what keeps it honest: the variable
+/// cannot name a directory the app is unable to read, because the same
+/// grant that sets it is the one that mounted it. An app that was
+/// granted nothing does not see the variable at all, and can tell that
+/// it has been given nothing rather than guessing.
+///
+/// Returns the path exported, if any.
+pub fn push_user_home(argv: &mut Vec<String>, capabilities: &CapabilityPlan) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| !h.as_os_str().is_empty())?;
+    let bound = capabilities
+        .ro_paths
+        .iter()
+        .chain(capabilities.rw_paths.iter())
+        .any(|granted| home.starts_with(granted));
+    if !bound {
+        return None;
+    }
+    argv.push("--setenv".to_string());
+    argv.push("QOS_USER_HOME".to_string());
+    argv.push(home.display().to_string());
+    Some(home)
+}
+
 fn push_bind(argv: &mut Vec<String>, kind: &str, src: &Path, dst: &Path) {
     argv.push(kind.to_string());
     argv.push(src.display().to_string());
