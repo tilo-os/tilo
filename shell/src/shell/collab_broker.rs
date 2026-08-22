@@ -2135,6 +2135,92 @@ mod tests {
 
     #[test]
     #[serial_test::serial(collab_broker)]
+    fn a_room_subscription_hears_every_app_in_the_room_as_one_stream() {
+        // The property the compositor's peer cursors rest on.
+        //
+        // Presence is widened to cluster scope on the way out, so a
+        // subscription that names a room hears every app in it. Two
+        // different apps pointing inside one room reach one
+        // subscriber, which is what makes a cursor crossing from one
+        // to the other a single peer moving rather than a second peer
+        // appearing. A third app in a different room must not be
+        // heard at all, or "who is here" would leak between rooms.
+        let socket_path = temp_sock("room-sub");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let other_room = "3f2b1c00-0000-4000-8000-0000000000ff";
+        let heard: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink_heard = Arc::clone(&heard);
+        let _sub = handle.subscribe_rooms(
+            vec![TEST_CLUSTER.to_string()],
+            Box::new(move |event, route| {
+                if let CollabEvent::RemotePresenceUpdate { payload, .. } = event {
+                    if let ui::collaboration::PresencePayload::Pointer { x, .. } = payload {
+                        sink_heard
+                            .lock()
+                            .unwrap()
+                            .push((route.cluster_id.clone(), format!("{x}")));
+                    }
+                }
+            }),
+        );
+
+        let mut files = connect_manager_as(&socket_path, "dev.qos.file-explorer", TEST_CLUSTER);
+        let mut words = connect_manager_as(&socket_path, "dev.qos.word-processor", TEST_CLUSTER);
+        let mut elsewhere = connect_manager_as(&socket_path, "dev.qos.word-processor", other_room);
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+
+        let key = PresenceKey::Workspace {
+            id: TEST_CLUSTER.into(),
+        };
+        files.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 1.0, y: 1.0 },
+        });
+        words.send(CollabRequest::Presence {
+            key: key.clone(),
+            payload: ui::collaboration::PresencePayload::Pointer { x: 2.0, y: 2.0 },
+        });
+        elsewhere.send(CollabRequest::Presence {
+            key: PresenceKey::Workspace {
+                id: other_room.into(),
+            },
+            payload: ui::collaboration::PresencePayload::Pointer { x: 3.0, y: 3.0 },
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < deadline && heard.lock().unwrap().len() < 2 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Give the third frame the same chance to arrive as the two
+        // that should — otherwise "it did not leak" only says "it was
+        // slower", and the test would pass on a race it never ran.
+        std::thread::sleep(Duration::from_millis(150));
+
+        let got = heard.lock().unwrap().clone();
+        let xs: Vec<&str> = got.iter().map(|(_, x)| x.as_str()).collect();
+        assert!(
+            xs.contains(&"1") && xs.contains(&"2"),
+            "both apps in the room should reach one subscription, got {got:?}"
+        );
+        assert!(
+            !xs.contains(&"3"),
+            "an app in another room must not reach it, got {got:?}"
+        );
+        assert!(
+            got.iter().all(|(room, _)| room == TEST_CLUSTER),
+            "every frame should be delivered on the room it was published in, got {got:?}"
+        );
+
+        drop(files);
+        drop(words);
+        drop(elsewhere);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
     fn broker_fans_out_to_three_peers() {
         // Phase 1 acceptance test: prove N=3 fan-out, not just N=2.
         // Mirrors `ui/tests/real_socket_two_peer.rs` but exercises the
