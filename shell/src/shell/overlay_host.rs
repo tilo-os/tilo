@@ -10971,8 +10971,12 @@ mod overview_grid_tests {
         host
     }
 
+    /// The grid is about several populated cards, so it is built over
+    /// the populated fixture. `bootstrap_default` is a single empty
+    /// workspace — a first boot invents nothing — which is the right
+    /// shape for the boot-path tests and no shape at all for a grid.
     fn host() -> ShellOverlayHost {
-        host_with(WorkspaceTree::bootstrap_default())
+        host_with(WorkspaceTree::bootstrap_demo())
     }
 
     /// The header promised workspaces "side by side" while stacking them
@@ -11096,7 +11100,7 @@ mod overview_grid_tests {
     /// is told to paint the overflow cue.
     #[test]
     fn an_overflowing_grid_reports_scrollable_content() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         for i in 0..12 {
             tree.append_empty_workspace(&format!("Extra {i}"));
         }
@@ -11158,7 +11162,7 @@ mod overview_grid_tests {
     /// count and active workspace, not a hardcoded one.
     #[test]
     fn the_rendered_summary_tracks_the_tree() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let n = tree.workspaces.len();
         let active = tree.active_workspace().map(|w| w.name.clone()).unwrap();
         let label = overview_summary_label(n, Some(active.as_str()));
@@ -11177,8 +11181,8 @@ mod overview_grid_tests {
     /// data.
     #[test]
     fn a_populated_card_names_every_window_in_tab_order() {
-        let tree = WorkspaceTree::bootstrap_default();
-        let home = tree.active_workspace().expect("bootstrap seeds an active workspace");
+        let tree = WorkspaceTree::bootstrap_demo();
+        let home = tree.active_workspace().expect("the demo tree has an active workspace");
         let specs = overview_workspace_chip_specs(home);
         let labels: Vec<&str> = specs.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(
@@ -11202,7 +11206,7 @@ mod overview_grid_tests {
     /// window is invented to make the card look occupied.
     #[test]
     fn an_empty_workspace_contributes_no_windows() {
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         let empty = tree
             .workspaces
             .iter()
@@ -14512,9 +14516,20 @@ mod peer_cursor_tests {
     /// The key the collaboration layer publishes a workspace's pointers
     /// under, and the one `draw_real_peers` looks them up by.
     fn active_key(tree: &WorkspaceTree) -> PresenceKey {
-        PresenceKey::Workspace {
-            id: format!("{}", tree.active.raw()),
-        }
+        // The **room**, not the local `WorkspaceId`. The room is what
+        // the launcher stamps into an app as `QOS_WORKSPACE_ID` and
+        // therefore what an app publishes presence under, and it is
+        // what `visible_peers` looks up by. Naming the local handle
+        // here wrote a key nobody reads: the two no-peer assertions
+        // stayed green on a lookup that could never match, and only
+        // this module's one positive test could tell.
+        let room = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .map(|w| w.room.to_string())
+            .expect("the seed has an active workspace");
+        PresenceKey::Workspace { id: room }
     }
 
     /// Draw the peer layer for `presence` and report how many draw
