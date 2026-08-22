@@ -202,6 +202,23 @@ impl TubeApp {
         }
     }
 
+    /// An instance with no catalogue and no network.
+    ///
+    /// [`Self::new`] starts from the bundled `sample` catalogue, which is
+    /// review/`--shots` material — invented channels, invented view counts.
+    /// Anything that is not a shot or a test wants this instead: Home
+    /// renders its "Nothing to show yet" empty state rather than a
+    /// fabricated trending feed, and nothing is fetched.
+    ///
+    /// This is what [`crate::app_root`] hands a host that embeds Tube
+    /// without opting into live data.
+    pub fn empty() -> Self {
+        Self {
+            model: TubeModel::default(),
+            ..Self::new()
+        }
+    }
+
     /// Opt this instance into live data. The live binary calls this; the
     /// `--shots`/offscreen renderer and the interaction tests do not, so they
     /// stay fully offline and deterministic. When online, the first `sync`
