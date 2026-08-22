@@ -317,11 +317,12 @@ pub fn accept_invite_into(
     // it, and [`WorkspaceTree::note_peer_present`] replaces this row
     // with the named one rather than drawing a second avatar.
     if let Ok(peer) = token.owner_peer_id.parse::<libp2p::PeerId>() {
-        let handle =
-            crate::shell::state::session_handle(crate::network::behaviour::peer_liveness_handle(
-                &peer,
-            ));
-        tree.admit_collaborator(local, Collaborator::new(handle.clone(), handle));
+        let session = crate::network::behaviour::peer_liveness_handle(&peer);
+        let handle = crate::shell::state::session_handle(session);
+        tree.admit_collaborator(
+            local,
+            Collaborator::new(handle.clone(), handle).with_session(session),
+        );
     }
     Ok(room)
 }
