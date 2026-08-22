@@ -65,7 +65,9 @@ pub fn app_root() -> Box<dyn Widget> {
 /// `--shots` variant for a NARROW viewport: the navigation rail is collapsed
 /// to an overlay flap and forced open so the still frame captures the
 /// summoned rail + dimming scrim. Pair with a sub-breakpoint `--viewport`
-/// width. Identical to [`app_root`] apart from that one shots-only flag.
+/// width. Unlike [`app_root`] this starts from `TubeApp::new`, so it carries
+/// the bundled sample catalogue — a shot of an empty grid would show nothing
+/// about the rail. Shots-only for that reason.
 pub fn app_root_narrow_shot() -> Box<dyn Widget> {
     Box::new(TubeApp::new().with_open_sidebar_shot())
 }
