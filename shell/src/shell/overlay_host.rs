@@ -13949,11 +13949,23 @@ mod peer_cursor_tests {
         tree
     }
 
+    /// The key the collaboration layer publishes a workspace's pointers
+    /// under, and the one `draw_real_peers` looks them up by.
+    fn active_key(tree: &WorkspaceTree) -> PresenceKey {
+        PresenceKey::Workspace {
+            id: format!("{}", tree.active.raw()),
+        }
+    }
+
     /// Draw the peer layer for `presence` and report how many draw
     /// commands it emitted. Zero means nothing was painted.
-    fn peer_draw_ops(presence: &PresenceCtx) -> usize {
-        let tree = one_group_seed();
-        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    ///
+    /// Takes the tree the caller built its `presence` keys against —
+    /// `one_group_seed` mints a fresh `WorkspaceId` per call, so a
+    /// helper that seeded its own would look up a key nobody wrote and
+    /// report zero for every input, real peer included.
+    fn peer_draw_ops(tree: &WorkspaceTree, presence: &PresenceCtx) -> usize {
+        let (mut host, _chrome) = build_nirios_overlay_host_with_chrome(tree);
         host.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let theme = Theme::dark();
         let mut tr = ui::text_render::TextRenderer::new();
@@ -13967,8 +13979,9 @@ mod peer_cursor_tests {
     /// of a solo desktop cannot show a collaborator.
     #[test]
     fn a_solo_session_paints_no_peer() {
+        let tree = one_group_seed();
         assert_eq!(
-            peer_draw_ops(&PresenceCtx::default()),
+            peer_draw_ops(&tree, &PresenceCtx::default()),
             0,
             "an empty roster must paint nothing"
         );
@@ -13980,31 +13993,29 @@ mod peer_cursor_tests {
     fn an_empty_pointer_list_paints_no_peer() {
         let tree = one_group_seed();
         let mut presence = PresenceCtx::default();
-        presence.pointers.insert(
-            PresenceKey::Workspace {
-                id: format!("{}", tree.active.raw()),
-            },
-            vec![],
+        presence.pointers.insert(active_key(&tree), vec![]);
+        assert_eq!(
+            peer_draw_ops(&tree, &presence),
+            0,
+            "an empty list is not a peer"
         );
-        assert_eq!(peer_draw_ops(&presence), 0, "an empty list is not a peer");
     }
 
-    /// The other half: removing the stand-in must not have disturbed
-    /// the real path. A peer published into `PresenceCtx::pointers`
-    /// under the active workspace key — the key the collaboration
-    /// layer writes — still gets painted.
+    /// The other half, and the one that keeps the first two honest: if
+    /// this fails the helper is reporting zero for everything and the
+    /// no-peer assertions above prove nothing. A peer published into
+    /// `PresenceCtx::pointers` under the active workspace key — the key
+    /// the collaboration layer writes — still gets painted.
     #[test]
     fn a_real_peer_is_still_painted() {
         let tree = one_group_seed();
         let mut presence = PresenceCtx::default();
         presence.pointers.insert(
-            PresenceKey::Workspace {
-                id: format!("{}", tree.active.raw()),
-            },
+            active_key(&tree),
             vec![(UserId("alice".into()), (400.0, 300.0))],
         );
         assert!(
-            peer_draw_ops(&presence) > 0,
+            peer_draw_ops(&tree, &presence) > 0,
             "a connected peer must still draw a cursor"
         );
     }
