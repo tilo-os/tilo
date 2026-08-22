@@ -167,7 +167,12 @@ class Session:
         self.log_path = os.path.join(self.dir, "shell.log")
         self.log = open(self.log_path, "w")
         self.proc = subprocess.Popen(
-            [str(SHELL), "--backend", "headless", "--enable-peer-sync"],
+            # `--mode native` is not optional here: it is the smithay
+            # compositor, and therefore the only mode a Wayland client
+            # can attach to. The hosted mode draws the same chrome with
+            # no socket for an app to reach.
+            [str(SHELL), "--mode", "native", "--backend", "headless",
+             "--enable-peer-sync"],
             env=env, stdout=self.log, stderr=subprocess.STDOUT,
             preexec_fn=die_with_parent(),
         )
@@ -467,7 +472,7 @@ def main() -> int:
     root = tempfile.mkdtemp(prefix="qos-named-")
     # Sockets live somewhere short: `sun_path` is 108 bytes and both the
     # control socket and the Wayland socket hang off these directories.
-    runtime_root = tempfile.mkdtemp(prefix="/tmp/qs-")
+    runtime_root = tempfile.mkdtemp(prefix="qs-", dir="/tmp")
     shots = os.path.abspath(args.out) if args.out else os.path.join(root, "shots")
     os.makedirs(shots, exist_ok=True)
     print(f"\nrun directory: {root}\nscreenshots:   {shots}")
