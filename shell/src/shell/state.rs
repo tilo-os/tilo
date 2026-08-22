@@ -6455,7 +6455,13 @@ mod bootstrap_tests {
     /// all of them.
     #[test]
     fn a_departure_sweeps_every_room_the_session_was_in() {
+        // Two rooms, because one cannot tell a sweep from a hit — and
+        // both empty, because the assertion below is that *nobody* is
+        // left, which the populated fixture's seeded people would
+        // satisfy or fail for reasons that have nothing to do with a
+        // departure. A first boot is one room, so the second is added.
         let mut tree = WorkspaceTree::bootstrap_default();
+        tree.append_empty_workspace("Second");
         let rooms: Vec<RoomId> = tree.workspaces.iter().map(|w| w.room).collect();
         assert!(rooms.len() >= 2, "need two rooms to tell a sweep from a hit");
         let peer = 0x33_u64;
