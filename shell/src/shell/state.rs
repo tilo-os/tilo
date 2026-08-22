@@ -2091,6 +2091,17 @@ impl WorkspaceTree {
                 existing.role_id = who.role_id;
                 changed = true;
             }
+            // Which live session this person is here through. A row can
+            // reach the roster without one — read back off disk, or from
+            // a fixture — and such a row is invisible to
+            // `retire_session`, so it would stay on the bar through every
+            // departure the transport ever reports. The arriving row is
+            // the one that knows, so it wins, on the same rule as the
+            // fields above.
+            if who.session.is_some() && existing.session != who.session {
+                existing.session = who.session;
+                changed = true;
+            }
             return changed;
         }
         roster.push(who);
@@ -4787,6 +4798,57 @@ mod bootstrap_default_tests {
                 ws.collaborators
             );
         }
+    }
+
+    /// A person already on the roster who then publishes presence has to
+    /// become retirable, not merely renamed.
+    ///
+    /// Every roster row that arrives without a session is a row no
+    /// departure can name: `retire_session` matches on
+    /// [`Collaborator::session`], so a row holding `None` survives every
+    /// departure the transport will ever report. That is reachable
+    /// without any exotic sequence — a roster read back off disk has
+    /// `None` on every row, because `session` describes a live
+    /// connection and cannot be persisted meaningfully.
+    ///
+    /// So the upsert has to learn the session the same way it learns a
+    /// name: the arriving row knows it, the existing row does not, and
+    /// what the newcomer knows wins.
+    #[test]
+    fn a_presence_frame_teaches_an_existing_row_which_session_it_is() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let room = tree.active_workspace().unwrap().room;
+        let peer = 0x44_u64;
+
+        // A row that got here without a session — what a persisted
+        // roster looks like after a restart.
+        assert!(tree.admit_collaborator_in_room(room, Collaborator::new("erin", "Erin")));
+        assert_eq!(
+            tree.active_workspace().unwrap().collaborators[0].session,
+            None,
+            "fixture precondition: the row starts with no session"
+        );
+
+        // Erin publishes presence from a live session.
+        tree.note_peer_present(room, peer, "erin");
+        assert_eq!(
+            tree.active_workspace().unwrap().collaborators.len(),
+            1,
+            "the same person is one row, not two"
+        );
+
+        // That session going quiet must take her off the bar.
+        assert!(
+            tree.retire_session(peer),
+            "a row that has published presence must be retirable by the \
+             session it published from; otherwise the avatar stays on the \
+             bar for the rest of the session"
+        );
+        assert!(
+            tree.active_workspace().unwrap().collaborators.is_empty(),
+            "got {:?}",
+            tree.active_workspace().unwrap().collaborators
+        );
     }
 
     /// Roster avatars and peer cursors have to be the same colour for
