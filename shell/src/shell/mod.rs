@@ -1491,68 +1491,6 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
     }
 }
 
-/// Seed a demo peer ("alice") with a caret + selection inside the editor
-/// body so the peer-caret draw path in [`super::editor_app::EditorApp`]
-/// has visible chrome in single-process development, even before any
-/// real network traffic arrives.
-///
-/// The caret sits roughly two rows in at char index 36 (just past the
-/// first `const` keyword in the default TSX snippet) and the selection
-/// spans a short word after it; both line up against the snippet in
-/// `editor_app::DEFAULT_SEED`. If the shell later loads a different
-/// editor body, the per-char measurement in `EditorApp::draw` handles
-/// out-of-range indices gracefully — `char_index_to_byte` clamps to
-/// `text.len()` so the caret just rides at end-of-buffer.
-pub fn seed_demo_editor_presence(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
-    use ui::permissions::UserId;
-    use ui::presence::{PathSegment, PresenceKey, SelectionRange};
-    // The key has to name the *document*, not just the field: each Editor
-    // tab is its own record with an `editor_body` of its own, so a caret
-    // published under the bare field name would be drawn in every one of
-    // them at once. Seed the first Editor tab in the tree — the one this
-    // dev aid exists to make visible.
-    let Some(tab_id) = editor_tab_ids(tree).into_iter().next() else {
-        return;
-    };
-    let record = tab_documents::scratch_tab_record(tab_id);
-    let key = PresenceKey::Widget {
-        path: vec![
-            PathSegment::Field(record.id.as_str().into()),
-            PathSegment::Field("editor_body".into()),
-        ],
-    };
-    let alice = UserId("alice".into());
-    ctx.register_presence(&key, alice.clone());
-    ctx.set_caret(&key, alice.clone(), 66); // inside line 5 of the default snippet
-    ctx.set_selection(
-        &key,
-        alice,
-        SelectionRange { start: 60, end: 72 }, // short multi-char band on the same line
-    );
-}
-
-/// Every tab in `tree` hosting the shell's Editor, in walk order.
-fn editor_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
-    let mut out = Vec::new();
-    for w in &tree.workspaces {
-        for s in &w.strips {
-            for g in &s.window_groups {
-                for t in &g.tabs {
-                    let is_editor = matches!(
-                        &t.tile,
-                        ShellTile::AppPlaceholder { kind: ShellKind::Other(name), .. }
-                            if name.eq_ignore_ascii_case("Editor")
-                    );
-                    if is_editor {
-                        out.push(t.id);
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod hosted_app_tests {
     use super::*;
