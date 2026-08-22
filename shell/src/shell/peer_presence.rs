@@ -137,30 +137,144 @@ impl PeerPresence {
             };
             std::mem::take(&mut *buf)
         };
-        let mut any = false;
-        for entry in drained {
-            let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
-                continue;
-            };
-            // Label the cursor with who the publishing session says is
-            // at it. When it says nothing, fall back to the session
-            // handle rather than inventing a name — an unlabelled peer
-            // is honest, a wrong label is not.
-            let user = if entry.user.is_empty() {
-                format!("p{:016x}", entry.peer)
-            } else {
-                entry.user.clone()
-            };
-            presence.apply_remote_presence(
-                user,
-                key,
-                PresencePayload::Pointer {
-                    x: entry.point.0 as f32,
-                    y: entry.point.1 as f32,
-                },
-            );
-            any = true;
+        fold_inbound(drained, presence)
+    }
+}
+
+/// Fold inbound presence into `presence`, returning whether anything
+/// landed. Split out from [`PeerPresence::pump`] so the fold can be
+/// driven without standing a network up; `pump` does nothing else.
+pub fn fold_inbound(
+    entries: Vec<crate::shell::network::InboundPresence>,
+    presence: &mut PresenceCtx,
+) -> bool {
+    let mut any = false;
+    for entry in entries {
+        let Ok(key) = serde_json::from_str::<PresenceKey>(&entry.key) else {
+            continue;
+        };
+        // Label the cursor with who the publishing session says is at
+        // it. When it says nothing, fall back to the session handle
+        // rather than inventing a name — an unlabelled peer is honest,
+        // a wrong label is not.
+        let user = if entry.user.is_empty() {
+            format!("p{:016x}", entry.peer)
+        } else {
+            entry.user.clone()
+        };
+        presence.apply_remote_presence(
+            user,
+            key,
+            PresencePayload::Pointer {
+                x: entry.point.0 as f32,
+                y: entry.point.1 as f32,
+            },
+        );
+        any = true;
+    }
+    any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::network::InboundPresence;
+    use ui::permissions::UserId;
+
+    fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
+        InboundPresence {
+            peer,
+            user: user.into(),
+            key: serde_json::to_string(&PresenceKey::Workspace { id: room.into() })
+                .expect("a workspace key serialises"),
+            point: at,
+            ts: 0,
         }
-        any
+    }
+
+    #[test]
+    fn a_peer_lands_on_the_room_the_overlay_reads() {
+        // The overlay looks pointers up by room, because the room is
+        // what an app publishes under. A frame that landed anywhere
+        // else would be held and never drawn.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        assert!(fold_inbound(
+            vec![arrived("bob", 7, room, (120.0, 240.0))],
+            &mut presence
+        ));
+
+        let key = PresenceKey::Workspace { id: room.into() };
+        let peers = presence
+            .pointers
+            .get(&key)
+            .expect("the pointer should be filed under the room");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].0, UserId("bob".into()));
+        assert_eq!(peers[0].1, (120.0, 240.0));
+    }
+
+    #[test]
+    fn one_session_stays_one_peer_across_two_apps() {
+        // A person with two windows open publishes from two processes.
+        // What reaches another host is the session, so the two moves
+        // are one cursor travelling — not two cursors sitting where
+        // each app last saw it.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(
+            vec![
+                arrived("bob", 7, room, (100.0, 100.0)),
+                arrived("bob", 7, room, (600.0, 300.0)),
+            ],
+            &mut presence,
+        );
+
+        let key = PresenceKey::Workspace { id: room.into() };
+        let peers = presence.pointers.get(&key).expect("a pointer");
+        assert_eq!(
+            peers.len(),
+            1,
+            "one person driving two apps must be one peer, got {peers:?}"
+        );
+        assert_eq!(
+            peers[0].1,
+            (600.0, 300.0),
+            "and their cursor must be where they last pointed"
+        );
+    }
+
+    #[test]
+    fn two_rooms_do_not_share_peers() {
+        let here = "3f2b1c00-0000-4000-8000-000000000001";
+        let there = "3f2b1c00-0000-4000-8000-0000000000ff";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(
+            vec![
+                arrived("bob", 7, here, (10.0, 10.0)),
+                arrived("carol", 8, there, (20.0, 20.0)),
+            ],
+            &mut presence,
+        );
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: here.into() })
+            .expect("a pointer in this room");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].0, UserId("bob".into()));
+    }
+
+    #[test]
+    fn a_session_that_names_nobody_is_labelled_with_its_handle() {
+        // Falling back to the session handle keeps the caret labelled
+        // without inventing a person who did not announce themselves.
+        let room = "3f2b1c00-0000-4000-8000-000000000001";
+        let mut presence = PresenceCtx::default();
+        fold_inbound(vec![arrived("", 0x2a, room, (5.0, 5.0))], &mut presence);
+        let peers = presence
+            .pointers
+            .get(&PresenceKey::Workspace { id: room.into() })
+            .expect("a pointer");
+        assert_eq!(peers[0].0, UserId("p000000000000002a".into()));
     }
 }
