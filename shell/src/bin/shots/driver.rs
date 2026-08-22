@@ -57,6 +57,13 @@ impl ShellDriver {
     }
 
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
+        // Boot adopts every ownerless workspace before the session ever
+        // paints (`compositor::hosted`), so a room you made is a room
+        // you own. A harness that skipped it rendered surfaces reporting
+        // "no members" for rooms that on a real machine are yours —
+        // a state no user has ever seen.
+        let mut tree = tree;
+        tree.adopt_ownerless_workspaces(&shell::shell::state::local_user_id());
         Self {
             fb: FrameBuilder::with_tree(tree, viewport),
             state: AutoCommit::new(),
@@ -382,30 +389,18 @@ impl ShellDriver {
         }
     }
 
-    /// Put the rooms in the state a real machine's are in.
-    ///
-    /// Production adopts every ownerless workspace at boot
-    /// (`adopt_ownerless_workspaces`), so on a live system a room you
-    /// made is a room you own — which is what makes "Private to you"
-    /// the true default rather than "No members". A scene that skipped
-    /// the adoption rendered a state no user ever sees.
-    ///
-    /// With `shared`, it goes on to record what an accepted invite and
-    /// a couple of shares would have recorded: memberships in this room
-    /// and in Research (whose peers are already present, so their faces
-    /// are backed by a capability rather than by hearsay), and two
-    /// resources handed to named people.
-    fn seed_rooms(&mut self, shared: bool) {
+    /// Record what an accepted invite and a couple of shares would have
+    /// recorded: memberships in this room and in Research (whose peers
+    /// are already present, so their faces are backed by a capability
+    /// rather than by hearsay), and two resources handed to named
+    /// people.
+    fn seed_shared_room(&mut self) {
         use shell::shell::state::{CapOverride, Scope, Subject, Verb};
         let handle = self.chrome_handle();
         let owner = handle.borrow().local_user_id.clone();
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
-            if !shared {
-                return;
-            }
             let ws_id = tree.active;
             let room = ws_id.raw().to_string();
             for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
@@ -522,14 +517,13 @@ impl ShellDriver {
         match name {
             "desktop" => {}
             "overview" => {
-                self.seed_rooms(false);
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
             }
             // The same panel with the room actually shared: members on
             // this room and on Research, and two resources handed out.
             "overview-shared" => {
-                self.seed_rooms(true);
+                self.seed_shared_room();
                 self.with_chrome(|st| st.overlays.overview = true);
                 self.fb.host_mut().force_overview_settled(true);
             }
