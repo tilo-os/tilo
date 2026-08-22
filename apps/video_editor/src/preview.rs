@@ -26,7 +26,9 @@
 //! representative gradient and (eventually) a real shader, so the grade you
 //! see in the offline preview matches the graded export.
 
-use crate::model::{Clip, ClipEffect, EffectKind, Filters, MediaId, Project, Transition};
+use crate::model::{
+    Clip, ClipEffect, ClipId, EffectKind, Filters, MediaId, Project, Track, TrackKind, Transition,
+};
 
 /// A normalised RGB triple in 0..1. Render-agnostic so the math is testable
 /// without a GPU.
@@ -389,6 +391,199 @@ fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
         a.g + (b.g - a.g) * t,
         a.b + (b.b - a.b) * t,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Layer plan — what the GPU compositor actually draws.
+// ---------------------------------------------------------------------------
+
+/// How long an edit-point transition runs, in seconds.
+///
+/// A constant because [`Clip`] carries no per-transition length yet; a
+/// `transition_duration: f64` field on `Clip` would make this a real
+/// per-clip property and this constant its default. Clamped per clip to
+/// the clip's own length so a very short clip cannot transition for
+/// longer than it exists.
+pub const TRANSITION_SECS: f64 = 0.6;
+
+/// Which way a [`Transition::Wipe`] travels across the frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WipeDir {
+    LeftToRight,
+    RightToLeft,
+    TopToBottom,
+    BottomToTop,
+}
+
+impl WipeDir {
+    /// Index the shader switches on.
+    pub fn index(self) -> u32 {
+        match self {
+            WipeDir::LeftToRight => 0,
+            WipeDir::RightToLeft => 1,
+            WipeDir::TopToBottom => 2,
+            WipeDir::BottomToTop => 3,
+        }
+    }
+}
+
+/// A geometric reveal: the incoming layer is drawn only where the wipe
+/// edge has already passed, with a soft (feathered) boundary.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wipe {
+    pub dir: WipeDir,
+    /// 0 = nothing revealed, 1 = fully revealed.
+    pub progress: f64,
+    /// Half-width of the feathered edge, as a fraction of the frame.
+    pub softness: f64,
+}
+
+/// One picture in the composite stack: a source sampled at a point in
+/// time, graded, effected, and blended over everything beneath it.
+///
+/// A transition is *not* a special case here — it is expressed as the
+/// alpha (and optional [`Wipe`] mask) of the incoming layer plus, where
+/// the outgoing clip is needed, an extra layer beneath it. That is what
+/// makes a dissolve sample both clips: the A side is a real layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layer {
+    pub clip: ClipId,
+    pub media: MediaId,
+    /// Seconds into the source media this layer samples.
+    pub source_time: f64,
+    /// Palette slot, used for the representative fill when no source
+    /// texture resolves (hermetic `--shots`, un-hydrated bytes).
+    pub palette: u8,
+    pub filters: Filters,
+    pub effects: Vec<ClipEffect>,
+    /// Uniform coverage in 0..1: fade envelope × clip opacity ×
+    /// transition weight.
+    pub alpha: f64,
+    /// Geometric mask, when this layer is wiping in.
+    pub wipe: Option<Wipe>,
+}
+
+/// The transition active on `clip` at `playhead`, as (kind, progress in
+/// 0..1). `None` once the transition has run out, or for a hard cut.
+pub fn active_transition(clip: &Clip, playhead: f64) -> Option<(Transition, f64)> {
+    if clip.transition == Transition::None {
+        return None;
+    }
+    let dur = TRANSITION_SECS.min(clip.duration());
+    if dur <= 1e-9 {
+        return None;
+    }
+    let into = playhead - clip.start;
+    if !(0.0..dur).contains(&into) {
+        return None;
+    }
+    Some((clip.transition, (into / dur).clamp(0.0, 1.0)))
+}
+
+fn layer_for(clip: &Clip, source_time: f64, alpha: f64, wipe: Option<Wipe>) -> Layer {
+    Layer {
+        clip: clip.id,
+        media: clip.media,
+        source_time,
+        palette: clip.palette,
+        filters: clip.filters,
+        effects: clip.effects.clone(),
+        alpha: alpha.clamp(0.0, 1.0),
+        wipe,
+    }
+}
+
+/// Where the outgoing clip is sampled during a transition. When the cut
+/// abuts (A ends exactly where B starts) the playhead is already past
+/// A's out-point, so A holds on its last frame; when the clips overlap,
+/// A keeps playing.
+fn outgoing_source_time(a: &Clip, playhead: f64) -> f64 {
+    let raw = a.in_point + (playhead - a.start);
+    raw.clamp(a.in_point, a.out_point.max(a.in_point))
+}
+
+/// Build the composite stack at `playhead`: every visible clip on every
+/// visible video track, ordered **bottom → top** (V1 beneath V2), each
+/// with its own grade, effect chain and blend weight.
+///
+/// Pure: no decoding, no GPU, no I/O — so the whole layering, envelope
+/// and transition model is unit-testable without a device.
+pub fn plan_layers(project: &Project, playhead: f64) -> Vec<Layer> {
+    let mut video: Vec<&Track> = project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Video && !t.muted)
+        .collect();
+    // Bottom → top: V1 (index 1) is drawn first, V2 over it. `locked` is
+    // an editing lock, not a visibility one, so it never hides a layer.
+    video.sort_by(|a, b| a.index.cmp(&b.index));
+
+    let mut out = Vec::new();
+    for track in video {
+        plan_track(project, track, playhead, &mut out);
+    }
+    out
+}
+
+fn plan_track(project: &Project, track: &Track, playhead: f64, out: &mut Vec<Layer>) {
+    let clips = project.clips_on(track.id);
+    // A predecessor drawn *by* a transition must not also be drawn as an
+    // ordinary layer, or a dip-to-black would be painted over at full
+    // strength by its own A side.
+    let mut claimed: Vec<ClipId> = Vec::new();
+    for (i, c) in clips.iter().enumerate() {
+        if i > 0 && c.covers(playhead) && active_transition(c, playhead).is_some() {
+            claimed.push(clips[i - 1].id);
+        }
+    }
+
+    for (i, c) in clips.iter().enumerate() {
+        if !c.covers(playhead) || claimed.contains(&c.id) {
+            continue;
+        }
+        let base = (c.envelope(playhead) * c.opacity).clamp(0.0, 1.0);
+        let t_in = source_time_for(c, playhead);
+        let prev = i.checked_sub(1).map(|j| clips[j]);
+        let Some((kind, t)) = active_transition(c, playhead) else {
+            out.push(layer_for(c, t_in, base, None));
+            continue;
+        };
+        // The A side, sampled where the outgoing clip is at this instant.
+        let a_layer = |alpha: f64| {
+            prev.map(|a| layer_for(a, outgoing_source_time(a, playhead), alpha, None))
+        };
+        match kind {
+            // mix(black, B, t) — nothing beneath, so B simply rises out
+            // of the letterbox black.
+            Transition::FadeIn => out.push(layer_for(c, t_in, base * t, None)),
+            // mix(A, B, t) — both clips are sampled, B fades up over A.
+            Transition::CrossDissolve => {
+                out.extend(a_layer(1.0));
+                out.push(layer_for(c, t_in, base * t, None));
+            }
+            // A → black → B: A dims away over the first half, B rises
+            // out of black over the second.
+            Transition::DipToBlack => {
+                if t < 0.5 {
+                    out.extend(a_layer(1.0 - 2.0 * t));
+                } else {
+                    out.push(layer_for(c, t_in, base * (2.0 * t - 1.0), None));
+                }
+            }
+            // Real geometry: B is revealed behind a travelling soft edge,
+            // with A intact everywhere the edge has not reached.
+            Transition::Wipe => {
+                out.extend(a_layer(1.0));
+                out.push(layer_for(
+                    c,
+                    t_in,
+                    base,
+                    Some(Wipe { dir: WipeDir::LeftToRight, progress: t, softness: 0.06 }),
+                ));
+            }
+            Transition::None => out.push(layer_for(c, t_in, base, None)),
+        }
+    }
 }
 
 #[cfg(test)]
