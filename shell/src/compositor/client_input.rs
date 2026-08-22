@@ -2542,6 +2542,74 @@ mod tests {
         }
     }
 
+    /// The portal's file chooser is modal, so it must hold input while
+    /// it is up.
+    ///
+    /// The same failure as the peer-sync card above, found the same way
+    /// and worth pinning for the same reason: the dialog was painted
+    /// full-screen over a scrim while `chrome_captures_input` said
+    /// nothing was up, so every click in it hit-tested straight through
+    /// to the app underneath. An app could ask for a file, the dialog
+    /// would appear, and neither a row nor Open nor Escape could be
+    /// reached with a mouse or a keyboard — the chooser was a picture of
+    /// a chooser.
+    ///
+    /// Asserted on `chrome_captures_input` itself, with the dialog
+    /// mounted the way the compositor mounts one (a request through the
+    /// portal's own queue, drained by `pump_file_picker`), so this
+    /// cannot pass against a dialog that production would never raise.
+    #[test]
+    fn the_file_chooser_takes_input_from_a_focused_client() {
+        use crate::portal::FilePickerSpawner as _;
+
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+        assert!(
+            !chrome_captures_input(&fb),
+            "nothing is up yet, so a client should still own the pointer"
+        );
+
+        let queue = crate::portal::FilePickerQueue::new();
+        let prompts = crate::portal::PromptQueueHandle::new(
+            crate::portal::PromptResolver::AutoAllow,
+        );
+        fb.host_mut().set_portal_queues(prompts, queue.clone());
+
+        let workspace = fb
+            .chrome()
+            .tree()
+            .active_workspace()
+            .map(|ws| ws.id)
+            .expect("a fresh FrameBuilder has an active workspace");
+        let (reply, _parked) = tokio::sync::oneshot::channel();
+        queue.spawn(crate::portal::FilePickerRequest {
+            caller: crate::portal::PortalCaller::new(workspace, "dev.qos.tests"),
+            title: "Insert image".into(),
+            save: false,
+            multiple: false,
+            accept_label: None,
+            current_name: None,
+            filters: Vec::new(),
+            reply,
+        });
+        assert!(
+            fb.host_mut().pump_file_picker(),
+            "the queued request should have mounted a dialog"
+        );
+        assert!(
+            fb.host().file_picker().is_some(),
+            "the dialog is what the predicate below is about"
+        );
+        let _ = fb.paint_settled();
+
+        assert!(
+            chrome_captures_input(&fb),
+            "with the portal's file chooser up the chrome must hold input — \
+             otherwise the clicks meant for it go to the client behind it and \
+             the dialog cannot be used at all"
+        );
+    }
+
     /// a regression in the tree→widget resync or in
     /// `ShellOverlayHost::active_tile_rect` fails here.
     #[test]
