@@ -128,18 +128,28 @@ class Session:
     """One compositor, isolated except for the runtime bundle store."""
 
     def __init__(self, root: pathlib.Path, shell: pathlib.Path, tools: dict,
-                 store_config: pathlib.Path, runtime_bundles: pathlib.Path):
+                 store_config: pathlib.Path, runtime_bundles: pathlib.Path,
+                 short_root: pathlib.Path):
+        # The session root is on real storage, and that is a
+        # measurement decision rather than tidiness. `/tmp` here is a
+        # 16 GB tmpfs, so an install root under it unpacks 446 MB into
+        # RAM and reports a verify-and-unpack time no disk can match.
+        # `scripts/yc-demo.py` puts its session dirs under `--out`, on
+        # the filesystem the repo lives on, so this does too.
         self.dir = root
         self.dir.mkdir(parents=True, exist_ok=True)
-        # AF_UNIX paths are capped near 108 bytes; a long root fails the
-        # compositor's own bind and looks like a startup hang.
-        self.sock = str(self.dir / "c.sock")
+        # Only the sockets go somewhere short: AF_UNIX paths are capped
+        # near 108 bytes, and a long root fails the compositor's own
+        # bind in a way that looks like a startup hang. They are a few
+        # bytes each, so where they live cannot move a timing.
+        short_root.mkdir(parents=True, exist_ok=True)
+        self.sock = str(short_root / "c.sock")
         self.apps_dir = self.dir / "apps"
         self.store_cache = self.dir / "store-cache"
         self.staging = self.store_cache / "staged-qpkg"
         for d in (self.apps_dir, self.store_cache):
             d.mkdir(parents=True, exist_ok=True)
-        runtime = self.dir / "run"
+        runtime = short_root / "run"
         runtime.mkdir(mode=0o700, exist_ok=True)
         home = self.dir / "home"
         home.mkdir(exist_ok=True)
@@ -525,6 +535,29 @@ def breakdown(tools: dict, store_config: pathlib.Path, base_url: str,
 
 # ---------------------------------------------------------------------
 
+def filesystem_of(path: pathlib.Path) -> str:
+    """The filesystem `path` lands on, longest mountpoint wins.
+
+    Reported because it moves the answer: unpacking 446 MB onto a
+    tmpfs is a RAM write and reads a second faster than the disk the
+    demo machine actually has.
+    """
+    best = ("", "unknown")
+    try:
+        target = str(path.resolve())
+        for line in pathlib.Path("/proc/mounts").read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            mount, fstype = parts[1], parts[2]
+            if (target == mount or target.startswith(mount.rstrip("/") + "/")) \
+                    and len(mount) > len(best[0]):
+                best = (mount, fstype)
+    except OSError:
+        pass
+    return best[1]
+
+
 def spread(values: list[float]) -> str:
     if len(values) == 1:
         return f"{values[0]:.2f}s"
@@ -610,6 +643,8 @@ def main() -> int:
     for var, path in sorted(tools.items()):
         print(f"{var:22s} {path}")
     print(f"runtime bundles: {runtime_bundles}")
+    print(f"install root:    {args.out / 'sessions'}  "
+          f"({filesystem_of(args.out)})")
     print(f"load average before the run: "
           f"{', '.join(f'{v:.2f}' for v in os.getloadavg())}")
 
@@ -631,8 +666,11 @@ def main() -> int:
         print()
 
         for i in range(1, args.runs + 1):
-            root = pathlib.Path(tempfile.mkdtemp(prefix="/tmp/qs-"))
-            s = Session(root, shell, tools, store_config, runtime_bundles)
+            root = args.out / "sessions" / f"run-{i}"
+            shutil.rmtree(root, ignore_errors=True)
+            short_root = pathlib.Path(tempfile.mkdtemp(prefix="/tmp/qs-"))
+            s = Session(root, shell, tools, store_config, runtime_bundles,
+                        short_root)
             try:
                 if not s.wait_up():
                     print(f"run {i}: compositor did not start; "
@@ -652,6 +690,7 @@ def main() -> int:
                 return 1
             finally:
                 s.stop()
+                shutil.rmtree(short_root, ignore_errors=True)
                 if not args.keep:
                     shutil.rmtree(root, ignore_errors=True)
                 else:
