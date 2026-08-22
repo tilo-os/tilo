@@ -199,6 +199,16 @@ pub enum Command {
     /// only happens on a release that arrives after the pointer has moved
     /// over another client. These two ops decompose that.
     PointerMove { x: f64, y: f64 },
+    /// Give every window group in the active strip the same share of
+    /// it, in permille.
+    ///
+    /// A group takes about three quarters of its strip by default, so
+    /// two of them never fit on screen at once and the second is
+    /// scrolled off. A harness that needs to see two apps side by side
+    /// — a peer's cursor crossing from one to the other is the case —
+    /// has no other way to compose that scene. Drives the same
+    /// `WindowWidth::Fraction` + doc mirror a width drag does.
+    SetGroupWidth { permille: u16 },
     /// Press or release the left pointer button at the current position.
     PointerButton { pressed: bool },
     /// Copy `text` from **in-process chrome**, through the same
@@ -334,6 +344,11 @@ pub trait ControlState {
     /// fixtures stay terse.
     fn peers_json(&self) -> serde_json::Value {
         serde_json::Value::Null
+    }
+    /// Give every window group in the active strip the same share of
+    /// it. Default impl refuses, so mock fixtures need not implement it.
+    fn set_group_widths(&self, _permille: u16) -> Result<serde_json::Value, String> {
+        Err("this control state cannot resize groups".into())
     }
     /// Per-surface frame ground truth: what the compositor itself knows
     /// about whether each foreign toplevel has ever presented.
@@ -763,6 +778,10 @@ pub fn dispatch_command<S: ControlState>(
         Command::PointerMove { x, y } => (
             Response::Ok { frame: 0 },
             vec![PlannedAction::CursorMoved { x: *x, y: *y }],
+        ),
+        Command::SetGroupWidth { permille } => (
+            answer_or_err(state.set_group_widths(*permille), "set_width_refused"),
+            Vec::new(),
         ),
         Command::PointerButton { pressed } => (
             Response::Ok { frame: 0 },
