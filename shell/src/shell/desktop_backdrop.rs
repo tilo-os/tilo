@@ -2,8 +2,8 @@
 //! all shell content.
 //!
 //! Matches `nirios-concept/src/components/DesktopView.tsx:210-217`:
-//!   1. Linear gradient top-left → bottom-right, slate-900 (#0f172a) to
-//!      slate-950 (#020617).
+//!   1. Linear gradient top-left → bottom-right between the theme's two
+//!      ground surfaces, settled toward neutral (see [`ground_stops`]).
 //!   2. 24×24 px grid of 1px lines at `rgba(128, 128, 128, 0.07)`.
 //!   3. A tiled 64×64 noise overlay at low opacity that breaks banding on
 //!      the gradient. The concept uses `bg-[url('noise.svg')] opacity-20
@@ -37,6 +37,12 @@ use winit::event::{Modifiers, WindowEvent};
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
+
+/// How far the desktop ground is drained toward neutral. High enough
+/// that the desktop reads as dark rather than as blue, short of 1.0 so
+/// the theme still tints its own ground rather than every theme
+/// grounding on the same grey.
+const GROUND_NEUTRALITY: f32 = 0.72;
 
 /// Edge length (in pixels) of the tileable noise texture.
 const NOISE_SIZE: u32 = 64;
@@ -122,6 +128,44 @@ pub struct DesktopBackdrop {
     /// `Rect::ZERO` sentinel means "no cache yet"; any width/height
     /// mismatch against `self.rect` triggers a rebuild.
     cache_rect: Rect,
+    /// The ground stops the cache was baked with. The backdrop is no
+    /// longer a pure function of size once its colours come from the
+    /// theme, so a theme switch has to invalidate the cache the same way
+    /// a resize does — otherwise the desktop keeps the old palette until
+    /// the next window resize.
+    cache_stops: Option<(Color, Color)>,
+}
+
+/// The desktop's two ground stops, taken from the theme and settled
+/// toward neutral.
+///
+/// The ground is the largest and quietest surface in the system: it is
+/// most of what the eye sees, and everything meaningful is painted on
+/// top of it. The theme's surface family is tuned for panels and cards
+/// that sit *against* content, and at desktop scale its tint stops being
+/// a hue and becomes the colour of the machine — qOS read as "a blue
+/// desktop" rather than as a dark one. Pulling the theme's own grounds
+/// and easing them toward their luminance keeps every theme's identity
+/// (a light theme still grounds light, high contrast still grounds
+/// black) while letting content, not the wallpaper, carry the colour.
+fn ground_stops(theme: &Theme) -> (Color, Color) {
+    let c = &theme.tokens.colors;
+    (
+        settle_toward_neutral(c.surfaces.base, GROUND_NEUTRALITY),
+        settle_toward_neutral(c.surfaces.scrim, GROUND_NEUTRALITY),
+    )
+}
+
+/// Mix `color` toward its own perceived luminance by `amount` in
+/// `0.0..=1.0`. At 0 the colour is untouched; at 1 it is fully grey at
+/// the same brightness, so the result never lightens or darkens the
+/// surface it replaces — it only drains the tint.
+fn settle_toward_neutral(color: Color, amount: f32) -> Color {
+    let [r, g, b, a] = color.to_rgba8().to_u8_array();
+    let luma = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    let k = amount.clamp(0.0, 1.0);
+    let mix = |v: u8| (v as f32 + (luma - v as f32) * k).round().clamp(0.0, 255.0) as u8;
+    Color::from_rgba8(mix(r), mix(g), mix(b), a)
 }
 
 impl DesktopBackdrop {
@@ -132,6 +176,7 @@ impl DesktopBackdrop {
             noise: build_noise_image(),
             cached: Scene::new(),
             cache_rect: Rect::ZERO,
+            cache_stops: None,
         }
     }
 
@@ -168,10 +213,12 @@ impl DesktopBackdrop {
     ///   3. If the viewport resizes, `apply_layout` updates `self.rect`;
     ///      `paint_backdrop` detects the width/height mismatch against
     ///      `self.cache_rect` and rebuilds.
-    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine) {
+    fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
+        let stops = ground_stops(theme);
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
-        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed;
+        let theme_changed = self.cache_stops != Some(stops);
+        let needs_rebuild = self.cache_rect == Rect::ZERO || size_changed || theme_changed;
 
         if !needs_rebuild {
             // Pure-translation reuse — same as `Button::draw`.
@@ -191,16 +238,17 @@ impl DesktopBackdrop {
         // on `&self`.
         let mut local = std::mem::take(&mut self.cached);
         local.reset();
-        self.encode_backdrop(&mut local, Affine::IDENTITY);
+        self.encode_backdrop(&mut local, Affine::IDENTITY, stops);
         out_scene.append(&local, Some(out_transform));
         self.cached = local;
         self.cache_rect = self.rect;
+        self.cache_stops = Some(stops);
     }
 
     /// Pure encoder — writes the backdrop into `scene` with `transform`
     /// applied. Used by the cache-miss branch of `paint_backdrop`.
-    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine) {
-        // 1. Diagonal gradient: top-left slate-900 → bottom-right slate-950.
+    fn encode_backdrop(&self, scene: &mut Scene, transform: Affine, stops: (Color, Color)) {
+        // 1. Diagonal gradient across the theme's two ground surfaces.
         let gradient = Gradient::new_linear(
             Point::new(self.rect.x0, self.rect.y0),
             Point::new(self.rect.x1, self.rect.y1),
@@ -210,11 +258,11 @@ impl DesktopBackdrop {
             &[
                 ColorStop {
                     offset: 0.0,
-                    color: Color::from_rgb8(0x0f, 0x17, 0x2a).into(),
+                    color: stops.0.into(),
                 },
                 ColorStop {
                     offset: 1.0,
-                    color: Color::from_rgb8(0x02, 0x06, 0x17).into(),
+                    color: stops.1.into(),
                 },
             ][..],
         );
@@ -350,7 +398,7 @@ impl Widget for DesktopBackdrop {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -365,7 +413,7 @@ impl Widget for DesktopBackdrop {
         presence: &PresenceCtx,
         permissions: &PermissionContext,
     ) {
-        self.paint_backdrop(scene, transform);
+        self.paint_backdrop(scene, transform, theme);
         if let Some(child) = &mut self.child {
             child.draw_with_presence(
                 scene,
