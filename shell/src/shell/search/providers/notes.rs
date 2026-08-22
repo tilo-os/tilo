@@ -168,9 +168,11 @@ mod tests {
         );
     }
 
-    /// The reported bug in the words it was reported in: the shell's
-    /// first-boot note reads "Welcome to nirios." and `nir` matches
-    /// nothing else about the tab — not its title, not its label. The
+    /// The reported bug in the words it was reported in, against the note
+    /// body that was reported with. (The shell no longer seeds that text
+    /// on first boot — a note opens empty — so the body is written here
+    /// rather than assumed.) `nir` matches nothing else about the tab —
+    /// not its title, not its label. The
     /// provider looked for the body under a per-tab map keyed by the tab
     /// id, a shape the tile wiring never creates, so this found nothing.
     #[test]

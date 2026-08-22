@@ -147,17 +147,20 @@ pub struct QuickSettings {
 
 impl QuickSettings {
     /// Construct a popover rooted at `QsLevel::Root`. Brightness and volume
-    /// initialise to 50%; the power profile defaults to `Balanced`; demo
-    /// connection labels are populated so the rendered sub-lines aren't
-    /// blank in the bootstrap state.
+    /// initialise to 50%; the power profile defaults to `Balanced`.
+    ///
+    /// Both connection labels start unset, and read "Not connected" until
+    /// something actually reports a connection. Seeding them kept the
+    /// sub-lines from rendering blank by naming a network and a headset
+    /// the machine had never seen.
     pub fn new() -> Self {
         Self {
             brightness: 50.0,
             volume: 50.0,
             nav_stack: vec![QsLevel::Root],
             power_profile: PowerProfile::Balanced,
-            wifi_ssid: Some("Home_Network".to_string()),
-            bluetooth_device: Some("AirPods Pro".to_string()),
+            wifi_ssid: None,
+            bluetooth_device: None,
         }
     }
 
@@ -256,6 +259,21 @@ mod tests {
         assert_eq!(q.power_profile, PowerProfile::Saver);
         q.cycle_power_profile();
         assert_eq!(q.power_profile, PowerProfile::Balanced);
+    }
+
+    #[test]
+    fn new_names_no_connection_it_has_not_seen() {
+        let q = QuickSettings::new();
+        assert_eq!(
+            q.wifi_ssid, None,
+            "a fresh popover must not name a network the machine has not joined"
+        );
+        assert_eq!(
+            q.bluetooth_device, None,
+            "a fresh popover must not name a device the machine has not paired"
+        );
+        assert_eq!(q.wifi_connection_label(true), "Not connected");
+        assert_eq!(q.bluetooth_connection_label(true), "Not connected");
     }
 
     #[test]

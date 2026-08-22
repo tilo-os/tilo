@@ -330,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_single_window_selection_opens_beside_it() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -343,7 +343,7 @@ mod tests {
 
     #[test]
     fn a_tab_selection_inside_a_tabbed_group_opens_in_that_group() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 3, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn no_selection_lands_at_the_visible_seam() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn no_selection_and_no_visible_seam_takes_the_next_seam_rightwards() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn a_lone_full_width_window_puts_the_next_one_after_it() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -411,7 +411,7 @@ mod tests {
     /// windows along.
     #[test]
     fn a_border_exactly_on_the_screen_edge_is_not_a_space_you_can_see() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -426,7 +426,7 @@ mod tests {
 
     #[test]
     fn panning_past_the_last_window_still_lands_at_the_end() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -489,7 +489,7 @@ mod tests {
     #[serial_test::serial]
     fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -519,7 +519,7 @@ mod tests {
     #[serial_test::serial]
     fn a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -550,7 +550,7 @@ mod tests {
     #[serial_test::serial]
     fn a_launch_beside_a_lone_selected_window_lands_right_of_it() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -580,7 +580,7 @@ mod tests {
     #[serial_test::serial]
     fn a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam() {
         crate::shell::launcher::clear_pending_placements();
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 3, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn a_viewport_for_another_strip_is_ignored() {
-        let mut tree = WorkspaceTree::bootstrap_default();
+        let mut tree = WorkspaceTree::bootstrap_demo();
         let ids = strip_of(&mut tree, &[1, 1, 1]);
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);

@@ -38,6 +38,7 @@ use std::rc::Rc;
 use automerge::{AutoCommit, ObjId};
 
 use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
+use action_api::{ActionArgs, ActionError, ActionParam};
 
 /// One well-known category a result can belong to. This is the domain
 /// vocabulary the chip strip and grouping use — providers pick from it
@@ -156,7 +157,19 @@ impl ResourceKind {
 /// uses. `Rc<dyn OpenFn>` (not `Arc`) because the whole shell UI is
 /// single-threaded — providers with heavy backends can still spawn
 /// worker threads inside their `query` implementation.
-pub type OpenFn = dyn Fn(&mut AutoCommit, &ObjId, &Chrome);
+///
+/// The callback also receives the [`ActionArgs`] the invocation carried,
+/// already bound against [`SearchResult::params`]. A row that declares
+/// no parameters ignores it — one signature covers both, so a
+/// parameterised action is an ordinary row that happens to want a value
+/// rather than a second kind of thing with a second dispatch path.
+///
+/// It returns a [`Result`] because an action can be addressed correctly
+/// and still have nothing to act on. "It ran" and "there was nothing
+/// here" are different answers and a caller that cannot see the screen
+/// has no other way to tell them apart.
+pub type OpenFn =
+    dyn Fn(&mut AutoCommit, &ObjId, &Chrome, &ActionArgs) -> Result<(), ActionError>;
 
 /// One row the palette will render.
 ///
@@ -176,7 +189,75 @@ pub struct SearchResult {
     /// creator handle.
     pub subtitle: Option<String>,
     pub score: i32,
+    /// What an invocation must carry. Empty for the nullary majority,
+    /// which is why every existing provider builds a row without naming
+    /// it (see [`SearchResult::nullary`]).
+    pub params: Vec<ActionParam>,
     pub on_open: Rc<OpenFn>,
+}
+
+impl SearchResult {
+    /// Build a row whose invocation takes no arguments.
+    ///
+    /// Most rows are this: opening a note, launching an app, toggling an
+    /// overlay. The constructor exists so those providers state what they
+    /// *are* — nullary — instead of repeating `params: Vec::new()` and
+    /// an ignored argument binding at every construction site.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nullary(
+        kind: ResourceKind,
+        provider_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: Option<String>,
+        score: i32,
+        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            provider_id: provider_id.into(),
+            id: id.into(),
+            title: title.into(),
+            subtitle,
+            score,
+            params: Vec::new(),
+            on_open: Rc::new(move |doc, root, chrome, _args| {
+                on_open(doc, root, chrome);
+                Ok(())
+            }),
+        }
+    }
+
+    /// [`SearchResult::nullary`] for a row that can refuse.
+    ///
+    /// Taking no arguments and always succeeding are separate
+    /// properties, and rows that launch something have the first
+    /// without the second: the package can be missing, the sandbox can
+    /// decline, there can be no display to open onto. Those rows need
+    /// to say so, and a caller driving the palette over the control
+    /// socket has no other way to find out — it cannot see the
+    /// notification the on-screen user gets.
+    #[allow(clippy::too_many_arguments)]
+    pub fn nullary_fallible(
+        kind: ResourceKind,
+        provider_id: impl Into<String>,
+        id: impl Into<String>,
+        title: impl Into<String>,
+        subtitle: Option<String>,
+        score: i32,
+        on_open: impl Fn(&mut AutoCommit, &ObjId, &Chrome) -> Result<(), ActionError> + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            provider_id: provider_id.into(),
+            id: id.into(),
+            title: title.into(),
+            subtitle,
+            score,
+            params: Vec::new(),
+            on_open: Rc::new(move |doc, root, chrome, _args| on_open(doc, root, chrome)),
+        }
+    }
 }
 
 impl std::fmt::Debug for SearchResult {
@@ -188,6 +269,7 @@ impl std::fmt::Debug for SearchResult {
             .field("title", &self.title)
             .field("subtitle", &self.subtitle)
             .field("score", &self.score)
+            .field("params", &self.params)
             .finish_non_exhaustive()
     }
 }
@@ -551,15 +633,7 @@ mod tests {
         title: &str,
         score: i32,
     ) -> SearchResult {
-        SearchResult {
-            kind,
-            provider_id: provider.to_string(),
-            id: id.to_string(),
-            title: title.to_string(),
-            subtitle: None,
-            score,
-            on_open: Rc::new(|_, _, _| {}),
-        }
+        SearchResult::nullary(kind, provider, id, title, None, score, |_, _, _| {})
     }
 
     fn mk_chrome() -> crate::shell::chrome_state::Chrome {

@@ -655,10 +655,11 @@ impl SidebarWheelDisc {
 
 /// Map a workspace label to its lucide glyph. Mirrors `WORKSPACES` in
 /// `radial-workspace-switcher/src/App.tsx` for the concept's six ids,
-/// then extends the table with the labels seeded by
-/// `WorkspaceTree::bootstrap_default` (`Home` / `Research`) so the live
-/// shell's first-boot spokes paint a recognisable glyph instead of
-/// falling through to the generic `Layers` default. Inputs are expected
+/// then extends the table with `Home` — the one workspace
+/// `WorkspaceTree::bootstrap_default` starts a machine with — and
+/// `Research`, so a first-boot spoke and the demo tree's spokes paint a
+/// recognisable glyph instead of falling through to the generic `Layers`
+/// default. Inputs are expected
 /// to already be lower-cased by the caller; matches are exact ASCII so
 /// upstream label-rename ripples here as a missed default. `dev` and
 /// `development` both resolve to `Code` (the concept's id is `dev` but
@@ -672,8 +673,8 @@ fn spoke_icon_for_label(label: &str) -> Icon {
         "analytics" => Icon::BarChart,
         "concept" => Icon::Layers,
         "settings" => Icon::Settings,
-        // Default-tree labels seeded by `WorkspaceTree::bootstrap_default`.
-        // `Home` paints lucide's house glyph; `Research` borrows the
+        // `Home` is the first-boot workspace; `Research` comes from the
+        // demo tree. `Home` paints lucide's house glyph; `Research` borrows the
         // magnifier (Lucide's `search`) since it's the closest semantic
         // match in the existing icon set.
         "home" => Icon::Home,
@@ -2206,7 +2207,7 @@ mod tests {
     }
 
     /// Default workspace labels (`Home` / `Research` / `Design`) seeded
-    /// by `WorkspaceTree::bootstrap_default` must each map to a
+    /// by `WorkspaceTree::bootstrap_demo` must each map to a
     /// distinctive lucide glyph rather than falling through to the
     /// generic `Layers` default. Without this guard `Home` and
     /// `Research` both painted the layered-stripes glyph in
@@ -2368,16 +2369,16 @@ mod tests {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTree;
 
-        // Seed a 3-workspace tree. `bootstrap_default` already seeds
+        // Seed a 3-workspace tree. `bootstrap_demo` already seeds
         // Home / Research / Design — three workspaces in a known order
         // matching the spoke layout — so no additional appends are needed.
-        let tree = WorkspaceTree::bootstrap_default();
+        let tree = WorkspaceTree::bootstrap_demo();
         assert_eq!(tree.workspaces.len(), 3);
         let ws_ids: Vec<_> = tree.workspaces.iter().map(|w| w.id).collect();
         let initial_active = tree.active;
         assert_eq!(
             initial_active, ws_ids[0],
-            "bootstrap_default should leave active = ws_ids[0]"
+            "bootstrap_demo should leave active = ws_ids[0]"
         );
 
         // Wire up chrome + disc. Spokes carry the workspace ids so the
@@ -2550,8 +2551,10 @@ mod tests {
         use crate::shell::chrome_state::ChromeState;
         use crate::shell::state::WorkspaceTree;
 
-        // Minimal tree — `bootstrap_default` gives one workspace, which
-        // is enough to assert the plus-press grows the count.
+        // Deliberately the first-boot tree: one empty workspace. That is
+        // the state in which the "+" matters most — it is the only way a
+        // fresh machine grows a second workspace, so it has to work from
+        // exactly one spoke, not just from a populated disc.
         let tree = WorkspaceTree::bootstrap_default();
         let initial_count = tree.workspaces.len();
         let initial_active = tree.active;
