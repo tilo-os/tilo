@@ -944,6 +944,7 @@ pub fn catalogue() -> Vec<Scenario> {
         window_open_at_visible_seam(),
         window_open_at_next_seam_rightwards(),
         strip_scroll_across_apps(),
+        narrow_groups_side_by_side(),
         new_tab_from_the_plus_chip(),
         status_tray_states(),
         media_key_osd(),
@@ -1267,6 +1268,77 @@ fn strip_scroll_across_apps() -> Scenario {
         description: "Open Notes, Files, Terminal and Editor as four windows along the strip, \
                       then travel focus across them and back.",
         actions,
+    }
+}
+
+/// Window width, per-mille of the display's usable width, that puts three
+/// windows on screen at once. A third of the strip each is the shape a
+/// demo takes when it wants several apps visible together, and it is the
+/// shape a group's tab strip has the least room in.
+const THIRD_WIDTH_PERMILLE: u16 = 333;
+
+/// Several narrow windows side by side, one of them carrying more tabs
+/// than it has room for.
+///
+/// The default group takes about three quarters of its strip, so two
+/// never fit on screen and a group's tab strip is never actually short of
+/// width. Narrow the groups until three fit — the configuration anything
+/// showing off the strip uses — and the tab row is suddenly the tightest
+/// thing on screen: titles have to elide, and every pill has to stay
+/// inside its own group rather than painting over the one beside it.
+fn narrow_groups_side_by_side() -> Scenario {
+    Scenario {
+        name: "narrow_groups_side_by_side",
+        description: "Three windows at a third of the strip each, the first \
+                      carrying more tabs than fit — the configuration where \
+                      tab pills run out of room.",
+        actions: vec![
+            // Boot hands us one four-tab group; cut it to a lone window
+            // so the next app lands in a column of its own rather than
+            // as another tab.
+            Action::LoneWindow(0),
+            Action::SelectGroup(Some(0)),
+            Action::Wait(4),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(2),
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(1)),
+            Action::Wait(4),
+            Action::Snapshot("01-two-groups"),
+            Action::OpenHostedWindow {
+                app: "Terminal",
+                title: "Terminal",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::SelectGroup(Some(2)),
+            Action::Wait(4),
+            Action::Snapshot("02-three-groups"),
+            // Now crowd the first group. Three pills in a third-width
+            // group is past what the row can show at natural width, so
+            // this is the frame where the fit and the elision have to do
+            // their job.
+            Action::SelectGroup(Some(0)),
+            Action::Wait(2),
+            Action::AddHostedTab {
+                app: "Editor",
+                title: "Editor",
+            },
+            Action::Wait(4),
+            Action::AddHostedTab {
+                app: "Notes",
+                title: "Shipping notes for the demo",
+            },
+            Action::Wait(6),
+            Action::SetWindowWidths(THIRD_WIDTH_PERMILLE),
+            Action::Wait(6),
+            Action::Snapshot("03-crowded-narrow-group"),
+        ],
     }
 }
 
