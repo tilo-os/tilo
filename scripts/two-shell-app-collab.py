@@ -481,6 +481,18 @@ def main() -> int:
             claim("both sessions are in one room",
                   peer.active_workspace()["room"], host.active_workspace()["room"])
 
+            # Dismiss the invite panel now, while the chrome still has
+            # keyboard focus. Once an app is clicked into, Escape goes to
+            # the app and the panel stays up -- covering the middle of the
+            # screen, which is exactly where a peer's cursor lands.
+            for s in sessions:
+                s.key("Escape")
+            time.sleep(0.5)
+            for s in sessions:
+                overlays = s.chrome().get("overlays") or {}
+                up = [k for k, v in overlays.items() if v is True]
+                claim(f"{s.name} has no overlay covering its windows", up, [])
+
         room = host.active_workspace()["room"]
         note(f"room = {room}")
 
@@ -557,11 +569,6 @@ def main() -> int:
             if not (a and b):
                 raise RuntimeError("no window rects; see foreign_frames")
             note(f"{args.app} centre={a}  {second} centre={b}")
-            # The invite panel is still up on the host from step 2, and
-            # it covers the windows the peer's cursor crosses.
-            for s, _ in targets:
-                s.key("Escape")
-            time.sleep(0.5)
             # Aim at the mover's own copy of the same two windows: it is
             # the mover's pointer that has to be inside an app for the
             # app to publish at all.
