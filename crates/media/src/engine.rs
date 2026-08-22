@@ -77,6 +77,20 @@ impl EngineConfig {
         self.volume = 0.0;
         self
     }
+
+    /// Decode in software regardless of what hardware is present. The escape
+    /// hatch for a driver that misbehaves, and what the fallback path is
+    /// tested through.
+    pub fn software_only(mut self) -> Self {
+        self.hw_policy = HwPolicy::Off;
+        self
+    }
+
+    /// Force one decoder family to the top of autoplugging.
+    pub fn with_hw_policy(mut self, policy: HwPolicy) -> Self {
+        self.hw_policy = policy;
+        self
+    }
 }
 
 /// Placeholder stream length for the synthesized fallback when nothing better
@@ -137,7 +151,9 @@ impl MediaEngine {
     pub fn with_config(config: EngineConfig) -> Self {
         #[cfg(feature = "decode")]
         {
-            if let Some(gst) = crate::gst_backend::GstState::new(config.acceptance) {
+            if let Some(gst) =
+                crate::gst_backend::GstState::new(config.acceptance, config.hw_policy)
+            {
                 return Self {
                     backend: Backend::Gst(gst),
                     source: None,
@@ -268,17 +284,18 @@ impl MediaEngine {
     /// arrives on the preroll path and the audio sink is never started, so
     /// scrubbing is silent.
     pub fn seek_ms(&mut self, ms: u64) {
-        self.seek_with(ms, SeekMode::Accurate);
+        let _ = self.seek_with(ms, SeekMode::Accurate);
     }
 
     /// Seek at an explicit precision. [`SeekMode::Keyframe`] is the cheap,
     /// coarse option for a fast drag where landing within a GOP is acceptable;
     /// [`SeekMode::Accurate`] is the default everywhere else.
-    pub fn seek_with(&mut self, ms: u64, mode: SeekMode) {
+    pub fn seek_with(&mut self, ms: u64, mode: SeekMode) -> bool {
         match &mut self.backend {
             Backend::Synth(s) => {
                 let _ = mode;
-                s.seek(ms)
+                s.seek(ms);
+                true
             }
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.seek(ms, mode),
@@ -293,22 +310,24 @@ impl MediaEngine {
     /// or settling a scrub before a screenshot. An interactive preview should
     /// keep using `seek_ms` + [`Self::poll`] and stay non-blocking.
     pub fn seek_and_wait(&mut self, ms: u64, timeout: std::time::Duration) -> bool {
-        self.seek_with(ms, SeekMode::Accurate);
         let deadline = Instant::now() + timeout;
+        // A pipeline that has not finished prerolling refuses seeks, so the
+        // request has to be repeated until it is taken. Waiting on a seek that
+        // was never accepted is the difference between "the frame is coming"
+        // and hanging for the whole timeout.
+        let mut accepted = self.seek_with(ms, SeekMode::Accurate);
         loop {
             #[cfg(feature = "decode")]
             if let Backend::Gst(g) = &mut self.backend {
-                // A flushing seek is asynchronous: the new preroll only exists
+                // A flushing seek is asynchronous: the new preroll exists only
                 // once the state change completes.
                 g.wait_settled(std::time::Duration::from_millis(50));
             }
+            if !accepted {
+                accepted = self.seek_with(ms, SeekMode::Accurate);
+            }
             self.poll();
-            let landed = match &self.backend {
-                Backend::Synth(s) => s.latest.is_some(),
-                #[cfg(feature = "decode")]
-                Backend::Gst(g) => g.latest().is_some(),
-            };
-            if landed {
+            if accepted && self.frame_is_current() {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -404,6 +423,21 @@ impl MediaEngine {
             Backend::Synth(s) => s.latest.as_ref(),
             #[cfg(feature = "decode")]
             Backend::Gst(g) => g.latest_frame(),
+        }
+    }
+
+    /// Whether the held picture belongs to the most recent seek, rather than
+    /// to the position before it.
+    ///
+    /// A scrub keeps painting the previous frame while the next one decodes,
+    /// so "a frame exists" is not the same question as "the frame for where
+    /// the playhead is now has arrived". A preview uses this to know whether
+    /// what it is showing is current.
+    pub fn frame_is_current(&self) -> bool {
+        match &self.backend {
+            Backend::Synth(s) => s.latest.is_some(),
+            #[cfg(feature = "decode")]
+            Backend::Gst(g) => g.latest().is_some() && g.frame_is_post_seek(),
         }
     }
 
