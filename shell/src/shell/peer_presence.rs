@@ -34,13 +34,34 @@
 //!   changes and the position keeps tracking, so peers see one
 //!   continuous cursor.
 //!
+//! **The desktop itself.** The republish above only fires while a
+//! local app is publishing a pointer, so it says "someone is pointing
+//! inside a shared app in this room" and nothing else. A room whose
+//! members have not opened anything yet has no app publishing, so no
+//! session ever put its cursor on the wire — which is why two people
+//! could join the same room, move their mice, and watch an empty
+//! desktop. The pointer is on the desktop long before it is over an
+//! app, and it stays on the desktop as it crosses the strip and the
+//! chrome between windows.
+//!
+//! [`PeerPresence::publish_local_cursor`] closes that: it is driven
+//! level-triggered from the frame loop, so the session publishes where
+//! its own pointer is whether or not anything is running in front of
+//! it. [`should_publish_cursor`] is the gate — a move goes out at most
+//! every [`MIN_PUBLISH_GAP`], and a pointer that has stopped is
+//! restated every [`CURSOR_KEEPALIVE`] so somebody who joins the room
+//! afterwards sees the people already in it rather than an empty
+//! desktop until one of them twitches.
+//!
 //! **Inbound.** [`PeerPresence::pump`] drains what arrived from other
 //! hosts and folds it in through
 //! [`ui::presence::PresenceCtx::apply_remote_presence`] — the same
 //! decode an app runs — so a peer painted by the compositor and a peer
 //! painted inside an app are the same peer, arrived by the same route.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::{PresenceCtx, PresenceKey};
@@ -61,6 +82,57 @@ pub struct PeerPresence {
     inbound: Arc<Mutex<Vec<crate::shell::network::InboundPresence>>>,
     /// Kept alive for the session, and re-pointed as rooms change.
     subscription: Arc<RoomSubscription>,
+    /// The rooms this session is in, mirrored from [`Self::set_rooms`].
+    /// The subscription owns its own copy for delivery; this one is
+    /// what [`Self::publish_local_cursor`] addresses the desktop
+    /// pointer to, and it has to be readable without going back
+    /// through the broker.
+    rooms: Mutex<Vec<String>>,
+    /// What this session last put on the wire, per room: where the
+    /// pointer was and when it was said. Read by
+    /// [`should_publish_cursor`] to decide whether to say it again.
+    last_published: Mutex<HashMap<String, ((f64, f64), Instant)>>,
+    /// Where the desktop pointer goes out. The app-driven republish
+    /// captures its own clone in the sink closure; this is the same
+    /// network, held so the frame loop can publish without one.
+    net: Arc<ShellNetwork>,
+}
+
+/// Smallest gap between two pointer publishes for the same room —
+/// ~30 Hz, matching the rate the toolkit throttles an app's pointer to
+/// so a desktop cursor and an in-app cursor cost the same on the wire.
+pub const MIN_PUBLISH_GAP: Duration = Duration::from_millis(33);
+
+/// How long a stationary pointer goes unmentioned before the session
+/// restates it. Presence is gossip: a host that joins the room after
+/// somebody stopped moving has never heard where they are, and would
+/// show an empty desktop until they moved again.
+pub const CURSOR_KEEPALIVE: Duration = Duration::from_millis(1000);
+
+/// Should this session put its pointer on the wire again?
+///
+/// `last` is what it last published for this room and when. Pure so
+/// the decision can be asserted on directly: the difference between
+/// "throttled" and "never published at all" is invisible on screen,
+/// and it is exactly the difference this gate exists to get right.
+pub fn should_publish_cursor(
+    last: Option<((f64, f64), Instant)>,
+    at: (f64, f64),
+    now: Instant,
+    min_gap: Duration,
+    keepalive: Duration,
+) -> bool {
+    let Some((was, when)) = last else {
+        // Never said anything about this room. Say it, so a peer who
+        // is already listening sees this session arrive.
+        return true;
+    };
+    let elapsed = now.saturating_duration_since(when);
+    if was == at {
+        // Standing still: restate it rarely, for whoever joined since.
+        return elapsed >= keepalive;
+    }
+    elapsed >= min_gap
 }
 
 impl PeerPresence {
@@ -69,6 +141,8 @@ impl PeerPresence {
     pub fn attach(broker: &BrokerHandle, net: Arc<ShellNetwork>, rooms: Vec<String>) -> Self {
         let cursor = Arc::new(Mutex::new((0.0_f64, 0.0_f64)));
         let inbound = net.inbound_presence_handle();
+        let rooms_mirror = rooms.clone();
+        let net_for_desktop = Arc::clone(&net);
 
         let sink_cursor = Arc::clone(&cursor);
         let subscription = broker.subscribe_rooms(
@@ -110,6 +184,9 @@ impl PeerPresence {
             cursor,
             inbound,
             subscription,
+            rooms: Mutex::new(rooms_mirror),
+            last_published: Mutex::new(HashMap::new()),
+            net: net_for_desktop,
         }
     }
 
@@ -117,7 +194,69 @@ impl PeerPresence {
     /// Called whenever the workspace set changes — a new workspace,
     /// or one that just joined a peer's room by invite.
     pub fn set_rooms(&self, rooms: Vec<String>) {
+        if let Ok(mut g) = self.rooms.lock() {
+            // Forget what was published to a room this session has
+            // left, so rejoining it re-announces rather than staying
+            // silent behind a keepalive from the previous visit.
+            if let Ok(mut last) = self.last_published.lock() {
+                last.retain(|room, _| rooms.iter().any(|r| r == room));
+            }
+            *g = rooms.clone();
+        }
         self.subscription.set_rooms(rooms);
+    }
+
+    /// Put this session's own pointer on the wire, for every room it
+    /// is in. Returns whether anything went out.
+    ///
+    /// This is the desktop's publisher, and it is deliberately
+    /// level-triggered rather than hooked onto motion: the frame loop
+    /// already reads the pointer from the input state on every pass, so
+    /// one call there covers every source that can move it — a real
+    /// seat, a peer's injected input, the test control socket — and
+    /// covers it whether or not an app happens to be running.
+    pub fn publish_local_cursor(&self) -> bool {
+        self.publish_local_cursor_at(Instant::now())
+    }
+
+    /// [`Self::publish_local_cursor`] with the clock supplied, so the
+    /// throttle and the keepalive can be exercised without sleeping.
+    pub fn publish_local_cursor_at(&self, now: Instant) -> bool {
+        let at = *self
+            .cursor
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let rooms = match self.rooms.lock() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let mut last = self
+            .last_published
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut sent = false;
+        for room in rooms {
+            if room.is_empty() {
+                continue;
+            }
+            if !should_publish_cursor(
+                last.get(&room).copied(),
+                at,
+                now,
+                MIN_PUBLISH_GAP,
+                CURSOR_KEEPALIVE,
+            ) {
+                continue;
+            }
+            let key = PresenceKey::Workspace { id: room.clone() };
+            let Ok(key_str) = serde_json::to_string(&key) else {
+                continue;
+            };
+            self.net.publish_presence(key_str, at);
+            last.insert(room, (at, now));
+            sent = true;
+        }
+        sent
     }
 
     /// Record where this session's pointer is, in scene space.
@@ -180,6 +319,78 @@ mod tests {
     use super::*;
     use crate::shell::network::InboundPresence;
     use ui::permissions::UserId;
+
+    #[test]
+    fn a_session_that_has_said_nothing_speaks() {
+        // The empty desktop this exists for. Nothing has published,
+        // so the first pass must put the pointer on the wire — a
+        // throttle that swallowed it would leave a peer looking at
+        // nothing until the mouse happened to move again.
+        assert!(should_publish_cursor(
+            None,
+            (10.0, 10.0),
+            Instant::now(),
+            MIN_PUBLISH_GAP,
+            CURSOR_KEEPALIVE,
+        ));
+    }
+
+    #[test]
+    fn a_move_inside_the_gap_is_held() {
+        let t0 = Instant::now();
+        assert!(
+            !should_publish_cursor(
+                Some(((10.0, 10.0), t0)),
+                (11.0, 10.0),
+                t0 + Duration::from_millis(5),
+                MIN_PUBLISH_GAP,
+                CURSOR_KEEPALIVE,
+            ),
+            "a pointer moving at frame rate must not put every sample on the wire"
+        );
+    }
+
+    #[test]
+    fn a_move_past_the_gap_goes_out() {
+        let t0 = Instant::now();
+        assert!(should_publish_cursor(
+            Some(((10.0, 10.0), t0)),
+            (400.0, 300.0),
+            t0 + MIN_PUBLISH_GAP,
+            MIN_PUBLISH_GAP,
+            CURSOR_KEEPALIVE,
+        ));
+    }
+
+    #[test]
+    fn a_pointer_that_stopped_is_restated_for_whoever_joined_since() {
+        // Presence is gossip, so a host that joins after somebody
+        // stopped moving never heard where they are. Standing still
+        // must not mean going silent, or the newcomer sees an empty
+        // desktop until an existing member twitches.
+        let t0 = Instant::now();
+        let at = (10.0, 10.0);
+        assert!(
+            !should_publish_cursor(
+                Some((at, t0)),
+                at,
+                t0 + Duration::from_millis(200),
+                MIN_PUBLISH_GAP,
+                CURSOR_KEEPALIVE,
+            ),
+            "a still pointer must not republish at frame rate"
+        );
+        assert!(
+            should_publish_cursor(
+                Some((at, t0)),
+                at,
+                t0 + CURSOR_KEEPALIVE,
+                MIN_PUBLISH_GAP,
+                CURSOR_KEEPALIVE,
+            ),
+            "but it must be restated once the keepalive is due"
+        );
+    }
 
     fn arrived(user: &str, peer: u64, room: &str, at: (f64, f64)) -> InboundPresence {
         InboundPresence {
