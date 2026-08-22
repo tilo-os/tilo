@@ -89,6 +89,11 @@ fn the_agent_turns_bullets_into_a_table_on_the_peers_replica() {
         name: "Scribe".into(),
         pace: Duration::from_millis(10),
         once: true,
+        // This test proves the relay and the edit path, not the decision, so
+        // it pins the choice to the keyword vocabulary: no network, no key,
+        // and the same answer every run.
+        model: false,
+        model_timeout: Duration::from_secs(1),
     };
     let agent = std::thread::spawn(move || {
         let mut s = Session::connect(cfg).expect("agent connects");

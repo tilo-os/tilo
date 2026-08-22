@@ -37,6 +37,15 @@ struct Cli {
     /// Exit after the first instruction has been carried out.
     #[arg(long)]
     once: bool,
+    /// Decide by keyword only, without asking a model. The run is then
+    /// reproducible and needs no network — and says so in its log.
+    #[arg(long)]
+    no_model: bool,
+    /// How long a model may take to choose before the keyword vocabulary
+    /// decides instead. Short on purpose: an instruction must never wait on
+    /// the network.
+    #[arg(long, default_value_t = 6000)]
+    model_timeout_ms: u64,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -56,6 +65,8 @@ fn main() -> anyhow::Result<()> {
         name: cli.name,
         pace: Duration::from_millis(cli.pace_ms),
         once: cli.once,
+        model: !cli.no_model,
+        model_timeout: Duration::from_millis(cli.model_timeout_ms),
     };
     let mut session = Session::connect(cfg)?;
     session.run()
