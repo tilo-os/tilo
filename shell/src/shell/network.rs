@@ -171,6 +171,14 @@ pub struct ShellNetwork {
     /// history, and the receiving app folds them in by different calls.
     /// See [`Self::inbound_app_crdt_snapshot_handle`].
     inbound_app_crdt_snapshot: Arc<Mutex<Vec<InboundAppCrdt>>>,
+    /// Rooms with an outstanding request for somebody's whole
+    /// document, keyed by cluster id.
+    ///
+    /// A room is entered here when a peer announces it has arrived, and
+    /// removed when a snapshot is published for it. See
+    /// [`Self::note_snapshot_request`] for why the pairing lives here
+    /// rather than in the frame.
+    snapshot_requests: Arc<Mutex<std::collections::HashSet<String>>>,
     /// Phase 6 buffer of inbound cooperative-scrollback *requests*.
     /// The broker's drainer reads these, consults its local op log,
     /// and (if it has any matching ops) publishes a corresponding
@@ -400,6 +408,7 @@ impl ShellNetwork {
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+            snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         })
@@ -702,6 +711,14 @@ impl ShellNetwork {
         record_id: String,
         data: Vec<u8>,
     ) {
+        if !self.take_snapshot_request(&cluster_id) {
+            tracing::trace!(
+                app = %app_id,
+                room = %cluster_id,
+                "shell_network: nobody is waiting for a whole document; the delta carries this edit",
+            );
+            return;
+        }
         if data.len() > MAX_APP_SNAPSHOT_BYTES {
             tracing::warn!(
                 bytes = data.len(),
@@ -724,6 +741,47 @@ impl ShellNetwork {
             ws: self.active_ws_for_publish(),
             msg,
         });
+    }
+
+    /// Record that somebody in `cluster_id` needs a whole document.
+    ///
+    /// Called when a peer announces its arrival. Arrival is the only
+    /// thing that makes a snapshot worth its size on a broadcast topic:
+    /// a peer that already shares history is served by the deltas, and
+    /// a peer that does not cannot use them at all.
+    ///
+    /// # Why the pairing is reconstructed here
+    ///
+    /// The toolkit sends `CollabRequest::SyncCRDT` from two places that
+    /// are identical by the time they reach this layer — once in reply
+    /// to a peer arriving, and once on **every commit that changes the
+    /// document**, where it feeds same-host fan-out and the undo
+    /// snapshot. Publishing both would put a whole document on the room
+    /// topic per commit: unbounded, growing with the session, and
+    /// redundant with the delta that already carries the same edit.
+    ///
+    /// The broker cannot tell the two apart from the frame, but it does
+    /// see the request — a peer's `Arrived` passes through its own drain
+    /// on the way to local apps. So the arrival arms the room and the
+    /// next snapshot for it goes out. Which snapshot that turns out to
+    /// be does not matter: any full state of the document serves a peer
+    /// that has none, so consuming the arming on a commit's snapshot
+    /// answers the join just as well as replying to it directly.
+    pub fn note_snapshot_request(&self, cluster_id: &str) {
+        if cluster_id.is_empty() {
+            return;
+        }
+        if let Ok(mut pending) = self.snapshot_requests.lock() {
+            pending.insert(cluster_id.to_string());
+        }
+    }
+
+    /// Take the outstanding snapshot request for `cluster_id`, if any.
+    fn take_snapshot_request(&self, cluster_id: &str) -> bool {
+        match self.snapshot_requests.lock() {
+            Ok(mut pending) => pending.remove(cluster_id),
+            Err(_) => false,
+        }
     }
 
     /// Shared handle to the inbound app-snapshot buffer, drained by the
@@ -1235,6 +1293,7 @@ pub(crate) fn shell_network_for_test(
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_snapshot: Arc::new(Mutex::new(Vec::new())),
+        snapshot_requests: Arc::new(Mutex::new(std::collections::HashSet::new())),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
     };
@@ -1493,6 +1552,21 @@ mod tests {
         // document merged into the wrong record cannot be un-merged.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+
+        // Nobody has arrived, so this document's state is carried by the
+        // deltas and has no business on a broadcast topic.
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/report.odt".into(),
+            vec![0xAA, 0xBB, 0xCC],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a snapshot nobody asked for must not be published",
+        );
+
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1538,6 +1612,7 @@ mod tests {
         // consequence is that nothing goes out.
         let tree = WorkspaceTree::bootstrap_demo().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1551,6 +1626,7 @@ mod tests {
 
         // Exactly at the cap still goes out — the boundary belongs to
         // the documents that fit, not to the ones that don't.
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000000");
         net.publish_app_crdt_snapshot(
             "dev.qos.word-processor".into(),
             "00000000-0000-0000-0000-000000000000".into(),
@@ -1560,6 +1636,47 @@ mod tests {
         assert!(
             cmd_rx.try_recv().is_ok(),
             "a snapshot exactly at the cap must still publish",
+        );
+    }
+
+    #[test]
+    fn one_arrival_releases_one_document_and_no_more() {
+        // The toolkit sends a whole document on every commit that
+        // changes it, and the delta alongside already carries the edit
+        // to anyone who shares the history. Republishing each one would
+        // put an unbounded payload on the room topic per commit, so the
+        // arming is one-shot: a peer arrives, one document goes out, and
+        // the commits after it stay local until somebody else arrives.
+        let tree = WorkspaceTree::bootstrap_demo().shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree, 0xCAFEu64);
+        let room = "00000000-0000-0000-0000-000000000000";
+
+        net.note_snapshot_request(room);
+        for _ in 0..4 {
+            net.publish_app_crdt_snapshot(
+                "dev.qos.word-processor".into(),
+                room.into(),
+                String::new(),
+                vec![0xAA],
+            );
+        }
+        assert!(cmd_rx.try_recv().is_ok(), "the arrival releases one document");
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "the commits after it must not each broadcast the document again",
+        );
+
+        // A different room's arrival does not release this one's.
+        net.note_snapshot_request("00000000-0000-0000-0000-000000000001");
+        net.publish_app_crdt_snapshot(
+            "dev.qos.word-processor".into(),
+            room.into(),
+            String::new(),
+            vec![0xAA],
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "an arrival in another room must not release this room's document",
         );
     }
 

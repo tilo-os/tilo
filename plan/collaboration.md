@@ -222,13 +222,26 @@ crosses the peer wire as `NeighbourMsg::AppCrdtSnapshot`, routed by the
 same `(app_id, cluster_id, record_id)` triple as a delta and admitted by
 the same room check.
 
-**It is an answer, not an announcement.** The toolkit emits it from one
-place: a peer's `PresencePayload::Arrived` reaching a process that holds
-the document. A commit produces a delta and never a snapshot. So the
-join is the request, this is the reply, and the rate is once per peer
-that arrives rather than once per keystroke — the same rare, single-shot
-shape as `ScrollbackRequest`/`ScrollbackResponse`, which is what makes a
-broadcast medium tolerable for it at all.
+**It goes out on arrival, not on every commit.** The toolkit produces a
+`SyncCRDT` on *every commit that changes the document* — it feeds
+same-host fan-out and the undo snapshot — so republishing each one would
+put a whole document on the room topic per commit: unbounded, growing
+with the session, and redundant with the delta that already carries the
+same edit to anyone who shares the history.
+
+The publish is therefore gated on somebody needing one. A peer's
+`Arrived` passes through the local broker's own drain on its way to
+local apps, so the broker sees the request even though the frame that
+answers it is indistinguishable from a commit's: the arrival arms the
+room (`ShellNetwork::note_snapshot_request`), the next whole document
+for it goes out, and the ones after stay local until somebody else
+arrives. Which snapshot is released does not matter — any full state
+serves a peer that has none.
+
+That makes the rate once per peer that arrives rather than once per
+keystroke, the same rare, single-shot shape as
+`ScrollbackRequest`/`ScrollbackResponse`, and it is what makes a
+broadcast medium tolerable for this at all.
 
 It is deliberately **not** addressed to the joiner. Merging a snapshot
 is idempotent and commutative, so a peer that missed one converges from
