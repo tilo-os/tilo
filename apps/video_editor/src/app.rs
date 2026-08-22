@@ -10,7 +10,7 @@
 //! undoable; only ephemeral *view* state (playhead, zoom, selection) is
 //! held in widget fields, matching the toolkit's per-peer-view convention.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -71,6 +71,21 @@ const MIN_CANVAS: f64 = 48.0;
 const MIN_SCRUBBER_W: f64 = 90.0;
 /// Above this a longer bar buys no precision and just looks stretched.
 const MAX_SCRUBBER_W: f64 = 560.0;
+/// How dark the overlay-bin scrim gets at full reveal. The editor behind it
+/// must stay readable — the scrim says "the bin has the input now", it is not
+/// a curtain. Deliberately a number here rather than the alpha of
+/// `surfaces.scrim`: that token is opaque in every theme.
+const SCRIM_ALPHA: f64 = 0.55;
+
+/// What the editor says, in plain words, when a source's bytes are not on this
+/// device — the reference replicated but the content has not been hydrated
+/// from the FUSE (or the file is gone). One string so the bin row, the clip
+/// and the preview never disagree about what they are disclosing.
+const MEDIA_NOT_LOCAL: &str = "Not on this device";
+/// The same claim for a pane too narrow to hold the full phrase (the media
+/// bin is a fixed 268px column). Shorter, never vaguer.
+const MEDIA_NOT_LOCAL_SHORT: &str = "Not on device";
+
 /// Below this allocated width the media bin stops being a docked pane and
 /// collapses into an overlay flap summoned by the topbar hamburger. Above it
 /// the bin is docked beside the editor (the wide desktop layout).
@@ -479,6 +494,13 @@ pub struct VideoEditorApp {
     /// Compute waveforms synchronously (so a single-frame `--shots`/demo render
     /// captures them). The live app leaves this off and computes off-thread.
     warm_waveforms_sync: bool,
+    /// Sources whose bytes are **not** on this device — the media reference
+    /// replicated fine but [`Hydration::Projected`](crate::media::Hydration)
+    /// says the content has not been fetched from the FUSE (or the file is
+    /// gone). Refreshed in `sync` from the same `source()` resolution the
+    /// thumbnail and waveform passes already do, so the disclosure costs no
+    /// extra stat and never runs in `draw`.
+    projected_media: HashSet<MediaId>,
 }
 
 /// A drag that started on a media-bin item and is heading for the timeline.
@@ -574,6 +596,7 @@ impl VideoEditorApp {
             thumbnails: crate::thumbnail::ThumbnailCache::new(),
             waveforms: crate::waveform::WaveformCache::new(),
             warm_waveforms_sync: false,
+            projected_media: HashSet::new(),
         }
     }
 
@@ -930,6 +953,12 @@ impl VideoEditorApp {
     /// Whether the transport currently has room for a scrubber.
     fn has_scrubber(&self, r: &Regions) -> bool {
         self.scrubber_rect(r).width() > 1.0
+    }
+
+    /// Whether this source's bytes are absent from this device. Read from the
+    /// set `sync` resolves, so a `draw` pass never touches the filesystem.
+    fn media_is_projected(&self, mid: MediaId) -> bool {
+        self.projected_media.contains(&mid)
     }
 
     /// Media for the bin in a stable, meaningful order: visual media
@@ -2614,6 +2643,18 @@ impl Widget for VideoEditorApp {
             }
         }
         self.ensure_initial_selection();
+        // Resolve which sources actually have bytes here. The reference always
+        // replicates; the content is fetched lazily, so a project opened on a
+        // second peer legitimately holds media this device has never seen. The
+        // editor must say that in words rather than drawing a stand-in picture
+        // and leaving the user to guess.
+        self.projected_media = self
+            .project
+            .media
+            .iter()
+            .filter(|m| !m.source().hydration.is_local())
+            .map(|m| m.id)
+            .collect();
         // Keep audio waveforms current: drain completed background computes, then
         // request (off-thread) or warm (synchronous, for --shots) each source.
         self.waveforms.drain();
@@ -2762,11 +2803,15 @@ impl Widget for VideoEditorApp {
         if r.bin_overlay {
             // Dimming scrim, then the bin sliding in on top of it.
             if r.scrim.width() > 0.0 {
-                // The themed scrim token, the same one the export modal
-                // uses — raw black over a light theme reads as a hole.
-                let a = self.bin_flap.reveal();
+                // The themed scrim token gives the hue (raw black over a light
+                // theme reads as a hole); the *strength* is ours. The token is
+                // built with `from_rgb8`/`mix8`, so its own alpha is 1.0 in
+                // every theme — multiplying by it dimmed nothing and painted an
+                // opaque slab over the preview, transport, inspector and
+                // timeline, leaving a narrow window looking like a black void.
+                let a = self.bin_flap.reveal() * SCRIM_ALPHA;
                 let scrim = theme.tokens.colors.surfaces.scrim;
-                fill_rect(scene, transform, with_alpha(scrim, a * scrim.components[3] as f64), r.scrim);
+                fill_rect(scene, transform, with_alpha(scrim, a), r.scrim);
             }
             if self.bin_flap.reveal() > 0.001 {
                 self.draw_bin(scene, transform, tr, theme, &r);
@@ -4162,7 +4207,44 @@ impl VideoEditorApp {
                 MediaKind::Audio => format!("Audio · {}", clock(m.duration)),
                 _ => format!("{}p · {}", m.height, clock(m.duration)),
             };
-            text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
+            // Bytes absent from this device. The row still shows the metadata
+            // the CRDT replicated (that part is real), and says plainly that
+            // the picture beside it is a stand-in for footage that is not here.
+            // The chip shares the sub-line: where both do not fit, availability
+            // wins and the resolution/duration is dropped, because a user who
+            // cannot play the clip does not need to know its height first.
+            let projected = self.media_is_projected(mid);
+            let (sw, _) = tr.measure(&sub, 11.0, None);
+            let right = rect.x1 - 8.0;
+            // Longest wording that fits, rather than one that fits nowhere and
+            // elides to "Not on this devi…". Beside the metadata when there is
+            // room; in its place when there is not.
+            let chip = projected
+                .then(|| {
+                    [
+                        (tx + sw as f64 + 8.0, MEDIA_NOT_LOCAL),
+                        (tx + sw as f64 + 8.0, MEDIA_NOT_LOCAL_SHORT),
+                        (tx, MEDIA_NOT_LOCAL),
+                        (tx, MEDIA_NOT_LOCAL_SHORT),
+                    ]
+                    .into_iter()
+                    .find(|(x0, label)| {
+                        x0 + tr.measure(label, 10.5, None).0 as f64 + 14.0 <= right
+                    })
+                })
+                .flatten();
+            // The metadata line survives unless the chip had to take its place.
+            if chip.map(|(x0, _)| x0 > tx).unwrap_or(true) {
+                text(scene, tr, tf, &sub, 11.0, c.text_dim, tx, rect.y0 + 30.0);
+            }
+            if let Some((cx0, label)) = chip {
+                let w = tr.measure(label, 10.5, None).0 as f64 + 14.0;
+                let chip = Rect::new(cx0, rect.y0 + 28.0, cx0 + w, rect.y0 + 45.0);
+                fill_rrect(scene, tf, with_alpha(c.semantic.warning, 0.20), chip, 4.0);
+                stroke_rrect(scene, tf, with_alpha(c.semantic.warning, 0.65), chip, 4.0, 1.0);
+                let baseline = text_baseline(chip, 10.5, tr);
+                text(scene, tr, tf, label, 10.5, c.semantic.warning, chip.x0 + 7.0, baseline);
+            }
         }
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Bin, r);
         scene.pop_layer();
@@ -4337,18 +4419,30 @@ impl VideoEditorApp {
         let res = format!("{}×{}", self.project.width, self.project.height);
         let (rw, _) = tr.measure(&res, 12.0, None);
         text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
-        // Decode-mode badge so the gated-vs-real state is legible in a shot:
-        // LIVE when a real decoded frame is on the canvas, DECODE when the
-        // pipeline is compiled but has no hydrated frame, PREVIEW otherwise.
-        let badge = if showed_real {
-            "LIVE"
-        } else if cfg!(feature = "decode") {
-            "DECODE"
-        } else {
-            "PREVIEW"
-        };
-        let badge_col = if showed_real { c.semantic.success } else { with_alpha(Color::WHITE, 0.45) };
-        text(scene, tr, tf, badge, 9.5, badge_col, canvas.x0 + 10.0, canvas.y1 - 18.0);
+        // The clip under the playhead has no bytes on this device: say so on the
+        // canvas, because the picture behind this line is a stand-in generated
+        // from metadata, not the user's footage.
+        if let Some(clip) = self.project.top_video_clip_at(self.playhead) {
+            if self.media_is_projected(clip.media) {
+                let msg = MEDIA_NOT_LOCAL;
+                let (mw, _) = tr.measure_weighted(msg, 12.0, None, TextWeight::Semibold);
+                let pad = 8.0;
+                let chip = Rect::new(
+                    canvas.x0 + 10.0,
+                    canvas.y1 - 32.0,
+                    canvas.x0 + 10.0 + mw as f64 + pad * 2.0,
+                    canvas.y1 - 10.0,
+                );
+                fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.62), chip, 5.0);
+                stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.35), chip, 5.0, 1.0);
+                let baseline = text_baseline(chip, 12.0, tr);
+                text_w(
+                    scene, tr, tf, msg, 12.0, Color::WHITE,
+                    chip.x0 + pad, baseline,
+                    TextWeight::Semibold,
+                );
+            }
+        }
         // Safe-area guide.
         stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
         scene.pop_layer();
@@ -4954,6 +5048,28 @@ impl VideoEditorApp {
                 }
             }
         }
+        // Bytes absent from this device: hatch the body so the clip cannot be
+        // mistaken for one whose footage is here, and name the reason when the
+        // clip is wide enough to hold the words.
+        if self.media_is_projected(clip.media) {
+            hatch_rect(scene, tf, with_alpha(c.semantic.warning, 0.30), cr, 7.0);
+            if cr.width() > 118.0 && inner.height() > 14.0 {
+                let (mw, mh) = tr.measure(MEDIA_NOT_LOCAL, 10.0, None);
+                let pill = Rect::new(
+                    inner.center().x - mw as f64 / 2.0 - 6.0,
+                    inner.center().y - mh as f64 / 2.0 - 2.0,
+                    inner.center().x + mw as f64 / 2.0 + 6.0,
+                    inner.center().y + mh as f64 / 2.0 + 2.0,
+                );
+                fill_rrect(scene, tf, with_alpha(Color::BLACK, 0.55), pill, 4.0);
+                text(
+                    scene, tr, tf, MEDIA_NOT_LOCAL, 10.0,
+                    with_alpha(Color::WHITE, 0.95),
+                    pill.x0 + 6.0,
+                    pill.y0 + 2.0,
+                );
+            }
+        }
         // name label
         let label = self.project.media(clip.media).map(|m| m.name.clone()).unwrap_or_default();
         let avail = (cr.width() - 10.0).max(4.0) as f32;
@@ -5176,6 +5292,39 @@ fn blit_thumb(scene: &mut Scene, tf: Affine, thumb: &crate::thumbnail::Thumb, de
 fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
     scene.fill(Fill::NonZero, tf, color, None, &rect);
 }
+/// Diagonal hatching clipped to `rect`, for a surface whose content is a
+/// stand-in rather than the real thing. Hatching (not a flat tint) so the
+/// state survives a colour-blind reading and a greyscale screenshot.
+fn hatch_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
+    if rect.width() <= 1.0 || rect.height() <= 1.0 {
+        return;
+    }
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        tf,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    let step = 9.0;
+    let stroke = Stroke::new(2.0);
+    let mut x = rect.x0 - rect.height();
+    while x < rect.x1 {
+        scene.stroke(
+            &stroke,
+            tf,
+            color,
+            None,
+            &Line::new(
+                Point::new(x, rect.y1),
+                Point::new(x + rect.height(), rect.y0),
+            ),
+        );
+        x += step;
+    }
+    scene.pop_layer();
+}
+
 fn fill_rrect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect, radius: f64) {
     scene.fill(Fill::NonZero, tf, color, None, &RoundedRect::from_rect(rect, radius));
 }
@@ -5500,6 +5649,60 @@ mod tests {
             .join(format!("qos-ve-import-app-{}-{}.png", std::process::id(), w));
         std::fs::write(&f, &png).unwrap();
         f
+    }
+
+    /// A source whose bytes are not on this device must SAY so — the editor
+    /// still draws a picture for it (composited from metadata), and without a
+    /// disclosure that stand-in is indistinguishable from the real footage.
+    #[test]
+    fn media_whose_bytes_are_absent_is_disclosed_in_the_bin() {
+        // Its own file: `write_real_png` keys its temp name on the width, and
+        // this test deletes the file, which would pull it out from under any
+        // sibling test that happened to pick the same size.
+        let src = write_real_png(640, 360);
+        let f = std::env::temp_dir()
+            .join(format!("qos-ve-absent-{}.png", std::process::id()));
+        std::fs::copy(&src, &f).unwrap();
+        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        let mid = app.project.media.first().expect("import landed").id;
+        assert!(
+            !app.media_is_projected(mid),
+            "a file that is on disk must not be reported as absent",
+        );
+        let present = render_pixels(&mut app, 1280, 800, &Theme::dark());
+
+        // Take the bytes away — the CRDT reference survives, the content does
+        // not. This is the ordinary state of a project opened on a second peer.
+        std::fs::remove_file(&f).unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            app.media_is_projected(mid),
+            "a reference with no local bytes must be reported as absent",
+        );
+        let absent = render_pixels(&mut app, 1280, 800, &Theme::dark());
+
+        // …and that state has to reach the pixels, not just a field.
+        let r = app.regions();
+        let row = app
+            .bin_item_rects(&r)
+            .into_iter()
+            .find(|(m, _)| *m == mid)
+            .expect("the source has a bin row")
+            .1;
+        let changed = (row.y0 as u32..row.y1 as u32)
+            .flat_map(|y| (row.x0 as u32..row.x1 as u32).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                let i = ((y * 1280 + x) * 4) as usize;
+                present.get(i..i + 3) != absent.get(i..i + 3)
+            })
+            .count();
+        assert!(
+            changed > 200,
+            "the bin row must visibly disclose absent media; only {changed} pixels changed",
+        );
     }
 
     #[test]
@@ -6808,12 +7011,94 @@ mod tests {
     #[test]
     fn every_window_size_renders_without_panicking() {
         // The draw pass is where clip layers must balance and where a crushed
-        // canvas would otherwise put a HUD outside its pane.
+        // canvas would otherwise put a HUD outside its pane. This proves only
+        // the absence of a panic — which is NOT proof the frame is usable; see
+        // `the_open_overlay_bin_leaves_the_editor_behind_it_visible` for the
+        // test that looks at the pixels.
         for (w, h) in SIZES {
             let (mut app, _doc) = app_sized(w, h);
             render(&mut app);
             app.show_export = true;
             render(&mut app);
+        }
+    }
+
+    /// Rasterise one frame of `app` at `w`×`h` in `theme` and hand back RGBA.
+    /// The real GPU path the app ships on — a machine that cannot rasterise
+    /// cannot observe this property, so `new` panicking there is the correct
+    /// outcome rather than a silent skip.
+    fn render_pixels(app: &mut VideoEditorApp, w: u32, h: u32, theme: &Theme) -> Vec<u8> {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        app.rect = Rect::new(0.0, 0.0, w as f64, h as f64);
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &PresenceCtx::empty());
+        ui::offscreen::OffscreenRenderer::new(w, h).render_rgba(&scene)
+    }
+
+    /// How many visually distinct colours a rect of a rendered frame contains,
+    /// quantised to 4 bits per channel so antialiasing noise does not count as
+    /// variety. A pane covered by an opaque slab returns 1.
+    fn region_colours(rgba: &[u8], fw: u32, fh: u32, rect: Rect) -> usize {
+        let x0 = rect.x0.max(0.0) as u32;
+        let y0 = rect.y0.max(0.0) as u32;
+        let x1 = (rect.x1 as u32).min(fw);
+        let y1 = (rect.y1 as u32).min(fh);
+        let mut seen = HashSet::new();
+        let mut y = y0;
+        while y < y1 {
+            let mut x = x0;
+            while x < x1 {
+                let i = ((y * fw + x) * 4) as usize;
+                if i + 2 < rgba.len() {
+                    seen.insert((rgba[i] >> 4, rgba[i + 1] >> 4, rgba[i + 2] >> 4));
+                }
+                x += 2;
+            }
+            y += 2;
+        }
+        seen.len()
+    }
+
+    /// The overlay media bin dims the editor behind it; it must never erase it.
+    ///
+    /// Regression: the scrim scaled its alpha by `surfaces.scrim.components[3]`,
+    /// meaning to honour a token-carried translucency — but every theme builds
+    /// that token opaque, so the multiply was a no-op and a fully-revealed flap
+    /// painted a 100%-opaque slab from the topbar to the bottom of the window.
+    /// The preview, transport, inspector and timeline all still drew, underneath
+    /// it, and every window size "rendered without panicking".
+    #[test]
+    fn the_open_overlay_bin_leaves_the_editor_behind_it_visible() {
+        for theme in [Theme::dark(), Theme::light()] {
+            for (w, h) in [(420.0_f64, 560.0_f64), (620.0, 700.0), (720.0, 820.0)] {
+                let (mut app, _doc) = app_sized(w, h);
+                app.bin_flap.snap(true);
+                app.flap_settled = true;
+                let r = app.regions();
+                assert!(r.bin_overlay, "{w}x{h} must be the overlay layout");
+                assert!(r.scrim.width() > 0.0, "an open overlay bin paints a scrim");
+                let px = render_pixels(&mut app, w as u32, h as u32, &theme);
+                // Sample the editor strictly to the right of the bin flap, so
+                // what we measure is the region the scrim covers and the bin
+                // does not.
+                let right = |rect: Rect| {
+                    Rect::new(rect.x0.max(r.bin.x1 + 4.0), rect.y0, rect.x1, rect.y1)
+                };
+                for (name, rect) in [
+                    ("preview", right(r.preview)),
+                    ("inspector", right(r.inspector)),
+                    ("timeline", right(r.timeline)),
+                ] {
+                    if rect.width() < 8.0 || rect.height() < 8.0 {
+                        continue; // genuinely no room at this size
+                    }
+                    let colours = region_colours(&px, w as u32, h as u32, rect);
+                    assert!(
+                        colours > 2,
+                        "{w}x{h}: the {name} is a flat slab behind the open bin                          ({colours} distinct colours) — the scrim erased it",
+                    );
+                }
+            }
         }
     }
 
