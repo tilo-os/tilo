@@ -1367,6 +1367,23 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
                     Ok(cmd) => {
+                        // Settle layout before anything reads a rect.
+                        //
+                        // The relayout after an action (below) covers a
+                        // tree the *socket* changed. It does not cover a
+                        // tree a **client** changed: a window mapping,
+                        // closing or resizing rearranges the strip
+                        // without any command being sent, and until the
+                        // next paint every widget still reports the rect
+                        // it had before. A caller that asked where a
+                        // window is between those two moments was told
+                        // where it used to be — off-screen, or the
+                        // position of the only tile there used to be.
+                        //
+                        // So layout is settled per command rather than
+                        // per action. It is idempotent and costs far
+                        // less than the round-trip that asked for it.
+                        frame_builder.relayout();
                         let state = FrameBuilderControlState {
                             fb: frame_builder,
                             doc: Some((&ctx.doc, &ctx.root_obj)),
