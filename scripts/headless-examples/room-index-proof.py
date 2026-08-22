@@ -195,8 +195,21 @@ class Session:
                     out[str(group.get("id"))] = {
                         "active_tab": group.get("active_tab"),
                         "tabs": [t.get("title") for t in group.get("tabs", [])],
+                        "tab_ids": [str(t.get("id")) for t in group.get("tabs", [])],
                         "strip": str(strip.get("id")),
                     }
+        return out
+
+    def tabs_here(self) -> dict:
+        """Every tab in the workspace this session is in, by tab id.
+
+        Ids are salted per peer, so a tab that appears under the *same*
+        id on two machines is the same window, not a lookalike.
+        """
+        out = {}
+        for gid, g in self.groups_here().items():
+            for t in g["tab_ids"]:
+                out[t] = {"group": gid, "strip": g["strip"]}
         return out
 
     def view_state(self) -> dict:
@@ -422,24 +435,28 @@ def main() -> int:
               bool(before_view["active_group"]),
               f"focused group {before_view['active_group']}")
 
-        q_before = set(quinten.groups_here())
+        q_before = set(quinten.tabs_here())
         opened = quinten.invoke(ACTIONS, "window.new.terminal")
         check("quinten opened a window", "err" not in opened,
               json.dumps(opened.get("err", {}))[:120])
-        new_group = wait_for(
-            lambda: (set(quinten.groups_here()) - q_before) or None, timeout=20)
-        if not check("quinten's own session shows the new window", bool(new_group)):
+        # Keyed on the *tab*, not the group: the placement rule tabs into
+        # the focused group when it is already tabbed, so a new window
+        # does not always mean a new group.
+        fresh = wait_for(lambda: (set(quinten.tabs_here()) - q_before) or None,
+                         timeout=20)
+        if not check("quinten's own session shows the new window", bool(fresh)):
             return 1
-        gid = sorted(new_group)[0]
+        tid = sorted(fresh)[0]
 
         # The claim. Read back from xaver, by the id quinten minted.
-        landed = wait_for(lambda: gid in xaver.groups_here(), timeout=60)
+        landed = wait_for(lambda: tid in xaver.tabs_here(), timeout=60)
         check("the window quinten opened is open for xaver too", bool(landed),
-              f"group {gid}" if landed else "NOT REPLICATED after 60s")
+              f"tab {tid}" if landed else "NOT REPLICATED after 60s")
         if landed:
-            check("and it arrived with what is in it",
-                  bool(xaver.groups_here()[gid]["tabs"]),
-                  json.dumps(xaver.groups_here()[gid]["tabs"]))
+            where = xaver.tabs_here()[tid]
+            titles = xaver.groups_here()[where["group"]]["tabs"]
+            check("and it arrived with what is in it", bool(titles),
+                  json.dumps(titles))
 
         # …and the view did not follow.
         after_view = xaver.view_state()
@@ -453,24 +470,28 @@ def main() -> int:
               after_view["active_group"] == before_view["active_group"])
         for g, was in before_groups.items():
             if g in after_groups:
-                check(f"the tab in front of xaver in group {g[:8]}… did not change",
+                check(f"the tab in front of xaver in group {g[:6]}… did not change",
                       after_groups[g]["active_tab"] == was["active_tab"],
                       f'{was["active_tab"]} -> {after_groups[g]["active_tab"]}')
-        focused = {str(v) for v in (after_view["active_group"] or {}).values()}
-        check("and xaver is still focused on his own window, not the new one",
-              gid not in focused,
-              f"focused {sorted(focused)}, arrived {gid}")
+        # The arriving window is not what he is looking at: his focused
+        # group is unchanged above, and it is his own.
+        if landed:
+            arrived_in = xaver.tabs_here()[tid]["group"]
+            focused = {str(v) for v in (after_view["active_group"] or {}).values()}
+            check("xaver is still looking at his own window, not the new one",
+                  arrived_in not in focused,
+                  f"arrived in {arrived_in[:6]}…, focused {sorted(f[:6] for f in focused)}")
 
         print("\n[7b] and the other direction")
-        x_before = set(xaver.groups_here())
+        x_before = set(xaver.tabs_here())
         xaver.invoke(ACTIONS, "window.new.terminal")
-        x_new = wait_for(lambda: (set(xaver.groups_here()) - x_before) or None,
+        x_new = wait_for(lambda: (set(xaver.tabs_here()) - x_before) or None,
                          timeout=20)
         if check("xaver opened a window", bool(x_new)):
-            xgid = sorted(x_new)[0]
+            xtid = sorted(x_new)[0]
             check("the window xaver opened is open for quinten too",
-                  bool(wait_for(lambda: xgid in quinten.groups_here(), timeout=60)),
-                  f"group {xgid}")
+                  bool(wait_for(lambda: xtid in quinten.tabs_here(), timeout=60)),
+                  f"tab {xtid}")
 
         print("\n[8] a picture of xaver's session with quinten's document in it")
         shot = os.path.join(root, "xaver-room.png")
