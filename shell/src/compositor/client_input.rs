@@ -1844,8 +1844,10 @@ pub fn pump_chrome_drag(state: &mut State, fb: &FrameBuilder) {
     };
     // This drag's file names are known, so the picture the compositor
     // draws over the desktop can say which file rather than which kind.
-    state.selection.dnd_label =
-        Some(crate::compositor::drag_feedback::label_for_paths(&drag.paths));
+    state
+        .selection
+        .dnd_label
+        .set(Some(crate::compositor::drag_feedback::label_for_paths(&drag.paths)));
     state.selection.chrome_drag = Some(drag);
     let serial = mint_serial(state);
     let location = SmithayPoint::from(state.client_input.cursor);

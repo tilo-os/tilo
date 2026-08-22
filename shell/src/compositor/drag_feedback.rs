@@ -148,6 +148,54 @@ pub fn label_for_mimes(mimes: &[String]) -> String {
     }
 }
 
+/// The name to show for a `text/uri-list` body: the first entry's file
+/// name, or "N items" when it names several.
+///
+/// Percent-escapes are undone, so a file with a space in its name shows
+/// the name the user gave it rather than the one a URI had to spell.
+/// `None` when the body names nothing usable, which leaves whatever the
+/// mime types already said in place rather than blanking the chip.
+pub fn name_from_uri_list(body: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(body);
+    let entries: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect();
+    if entries.len() > 1 {
+        return Some(format!("{} items", entries.len()));
+    }
+    let first = entries.first()?;
+    let path = first.strip_prefix("file://").unwrap_or(first);
+    // Drop a `file://host/path` authority, then take the last segment.
+    let path = match path.find('/') {
+        Some(0) => path,
+        Some(i) => &path[i..],
+        None => path,
+    };
+    let last = path.rsplit('/').find(|s| !s.is_empty())?;
+    let name = percent_decode(last);
+    (!name.is_empty()).then_some(name)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// A readable name for a set of paths the compositor itself is carrying.
 pub fn label_for_paths(paths: &[std::path::PathBuf]) -> String {
     match paths {
@@ -180,6 +228,33 @@ mod tests {
         assert_eq!(label_for_mimes(&["text/uri-list".into()]), "Text");
         assert_eq!(label_for_mimes(&[]), "1 item");
         assert_eq!(label_for_mimes(&["x-special/gnome".into()]), "1 item");
+    }
+
+    /// The name a client's drag is carrying comes out of the URI list it
+    /// already offers — which is the whole reason the chip can say
+    /// `photo.png` rather than `Image`.
+    #[test]
+    fn a_uri_list_yields_the_file_name() {
+        assert_eq!(
+            name_from_uri_list(b"file:///home/me/photo.png\r\n").as_deref(),
+            Some("photo.png")
+        );
+        assert_eq!(
+            name_from_uri_list(b"file:///home/me/my%20photo%231.png\r\n").as_deref(),
+            Some("my photo#1.png"),
+            "a name a URI had to escape shows as the user wrote it"
+        );
+        assert_eq!(
+            name_from_uri_list(b"file://localhost/tmp/scan.jpg\r\n").as_deref(),
+            Some("scan.jpg"),
+            "an authority is not part of the name"
+        );
+        assert_eq!(
+            name_from_uri_list(b"# comment\r\nfile:///a.png\r\nfile:///b.png\r\n").as_deref(),
+            Some("2 items")
+        );
+        assert_eq!(name_from_uri_list(b""), None, "nothing usable leaves the chip alone");
+        assert_eq!(name_from_uri_list(b"# only a comment\r\n"), None);
     }
 
     /// A drag the compositor owns knows the real name, and should use it.
