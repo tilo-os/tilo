@@ -327,6 +327,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         // it eases between consecutive samples and fades a peer's cursor
         // out once they go quiet. See `shell::shell::cursor_interp`.
         let mut cursors = crate::shell::cursor_interp::CursorInterpolator::new();
+        let tree_for_roster = tree_handle.clone();
         app.set_frame_tick(move |presence_ctx| {
             // Pump the actor→replica event channel first so any
             // `PresenceMoved` events that arrived since the last
@@ -342,9 +343,23 @@ pub fn run_with_full_options(opts: HostedOptions) {
             };
             let now = std::time::Instant::now();
             for entry in drained {
+                // A frame addressed to a room is this session learning
+                // that a named person is in it. Putting them on that
+                // room's roster is what the avatar stack, the wheel-disc
+                // dots and the collaborators overlay render; dropping
+                // the name here (as this did) left every one of them
+                // with no way to know anybody had arrived.
+                if let Ok(ui::presence::PresenceKey::Workspace { id }) =
+                    serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
+                    && let Some(room) = crate::shell::state::RoomId::parse(&id)
+                {
+                    tree_for_roster
+                        .write()
+                        .note_peer_present(room, entry.peer, &entry.user);
+                }
                 cursors.push_sample(
-                    &format!("p{:016x}", entry.peer),
-                    "",
+                    &crate::shell::state::session_handle(entry.peer),
+                    &entry.user,
                     [entry.point.0 as f32, entry.point.1 as f32],
                     now,
                 );
