@@ -648,6 +648,16 @@ def main() -> int:
             # app to publish at all.
             ma = mover.window_centre(APPS[args.app]["package"]) or a
             mb = mover.window_centre(APPS[second]["package"]) or b
+            note(f"mover has them at {ma} and {mb}")
+            # A pointer is published in the publisher's own scene space,
+            # and two sessions do not share a viewport: they lay their
+            # own strips out and scroll them independently. A peer's
+            # cursor only lands over the window the peer is actually in
+            # when both sides agree where that window is, so say plainly
+            # whether they do rather than letting a mismatch read as a
+            # cursor pointing at the wrong app.
+            agree = abs(ma[0] - a[0]) < 40 and abs(mb[0] - b[0]) < 40
+            claim("both sessions have the windows in the same place", agree, True)
 
             frames_dir = os.path.join(out, "crossing")
             os.makedirs(frames_dir, exist_ok=True)
