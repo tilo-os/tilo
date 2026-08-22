@@ -221,16 +221,11 @@ impl Widget for NotesApp {
         let wrap_w = (self.rect.width() - PADDING * 2.0).max(40.0) as f32;
         self.wrap_width = wrap_w;
 
-        // Header row: "Notes" title + hint on the right.
+        // Header row: the hint alone, right-aligned. The app's name is the
+        // frame's to state — it is already on the tab pill the shell draws
+        // above this tile — so repeating it here would be the app putting a
+        // second title bar inside the window.
         let title_size = tokens.typography.scale.lg;
-        tr.draw_text(
-            scene,
-            "Notes",
-            title_size,
-            text_color,
-            transform * Affine::translate((content_x, content_y)),
-            None,
-        );
         let hint = if self.focused {
             "Type to edit  ·  Ctrl+Z to undo"
         } else {

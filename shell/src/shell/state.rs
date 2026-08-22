@@ -3773,9 +3773,10 @@ impl WorkspaceTree {
         let tab_notes = next_id();
         let tab_files = next_id();
         let tab_terminal = next_id();
-        let tab_browser = next_id();
-        // First (Home) workspace seeds the demo Notes/Files/Terminal/Browser
-        // tabs at `WindowWidth::Wide` so the rendered white card fills more
+        let tab_word = next_id();
+        // The first (Home) workspace opens the four apps the shell hosts
+        // in-process — Notes, Files, Terminal and the word processor — at
+        // `WindowWidth::Wide` so the rendered card fills more
         // than half the viewport on a 1600 px-wide first-run desktop —
         // matches `WindowFrame.tsx`'s "fill the container" behaviour.
         let home = Workspace {
@@ -3813,11 +3814,11 @@ impl WorkspaceTree {
                             },
                         },
                         Tab {
-                            id: tab_browser,
-                            title: "Browser".into(),
-                            tile: TileContent::Stub {
-                                kind: AppKind::Browser,
-                                label: "Browser".into(),
+                            id: tab_word,
+                            title: "Document".into(),
+                            tile: TileContent::AppPlaceholder {
+                                kind: AppKind::Other("Word".into()),
+                                label: "Document".into(),
                             },
                         },
                     ],
