@@ -39,6 +39,13 @@ gstreamer = { workspace = true, optional = true }
 media = { path = "../../crates/media" }
 gstreamer-app = { version = "0.24", optional = true }
 
+# The GStreamer encode/decode tests stand up real pipelines. openh264 is
+# pure C and misbehaves when several encoders are built at once in one
+# process, so every test that encodes or decodes shares a `serial` group
+# rather than relying on the caller passing --test-threads=1.
+[dev-dependencies]
+serial_test.workspace = true
+
 [features]
 # The preview canvas decoding real frames is the editor's core, so `decode`
 # ships on by default: the preview decodes the real frame of the clip under the
