@@ -1,76 +1,68 @@
 #!/usr/bin/env python3
-"""One hands-on take: an image going into the document, clicked by a person.
+"""One take of an image going into the document, recorded end to end.
 
-Every other beat of the nine-beat film is driven over the compositor's
-control socket. This one cannot be. The Insert-image control lives inside
-the *word processor's* widget tree — the app carries it as
-`a11y-insert-image` (`apps/word-processor/src/widget.rs:4231`) — and a
-client's insides are not in the compositor's widget registry, so there is
-no name to aim `click_named` at and a swept grid of coordinates lands on
-inert chrome.
+The storyboard's beat is a drag: a picture is dragged out of Files and
+dropped into the word processor. This script is the recording half of it
+— it stages the scene, drives the gesture, watches for the payoff and
+stops itself. The drag's client half (a `wl_data_source` out of a `ui`
+app, so the compositor has a client drag to promote) is owned elsewhere;
+until it lands there is nothing on screen to pick up.
 
-So a person clicks it, and this script does everything else.
-
-    ./scripts/yc-demo-insert.py
+    ./scripts/yc-demo-insert.py --self-test
 
 What it does, in order: stages a home with an image in it, raises a D-Bus
-session and a portal frontend of its own so file dialogs reach qOS at
-all, starts one compositor **in a window on your desktop** so a real
-mouse reaches it, sizes that window to 1920x1080, launches the word
-processor, waits for it to paint and focuses it so your first click is
-not spent on the focus, counts down in the terminal, brings the window to
-the front, records, watches the compositor's own log for the chooser
-opening and then for the image reaching the document, holds a few seconds
-so the landing is on film, stops by itself, gives you your desktop back,
-asks the running app whether the image is really in its document, and
-writes the clip.
+session and a portal frontend of its own, starts one compositor in a
+window sized to what the window manager will grant, launches the word
+processor *and* Files into two groups side by side, seeds the document
+with a line so the image lands into something, counts down, records off
+the compositor's own `snapshot` op, watches the session log for the image
+reaching the document, holds a few seconds so the landing is on film,
+stops by itself and writes a 1920x1080 clip.
 
 Re-runnable. Every run is its own directory, its own sockets and its own
 timestamped video, so a bad take costs nothing but running it again.
 
+  How the payoff is detected
+  --------------------------
+  Off the compositor's own log, not off pixels. The word processor
+  reports every change to its document as `[app] broadcast doc delta
+  <N>B`, and an image is stored in the document as its own bytes under a
+  BLAKE3 hash — so inserting the staged PNG produces a delta of ~98,000
+  bytes where a keystroke produces ~100. Measured, both numbers.
+
+  What capture does and does not cost
+  -----------------------------------
+  It does not cost input. Measured rather than assumed, because a whole
+  round of debugging was spent suspecting it: with the camera stopped,
+  17 synthetic keystrokes produced 17 document deltas; with the camera
+  running at 11 frames/s, 16 produced 16, and the document read back
+  `alphabravocharliedeltaechofoxtrot` — every character of both, in
+  order. A snapshot blocks its session ~50 ms, and that is all it does.
+
   Windowed, not headless — and why
   -------------------------------
-  A person cannot click on a headless compositor. `--backend winit` puts
-  the compositor in an ordinary window, and because the session's
-  XDG_RUNTIME_DIR is its own (it has to be: the collab broker binds
-  inside it), winit is pointed at X11 rather than at the host's Wayland
-  socket — DISPLAY and XAUTHORITY are absolute and survive the isolation
-  where WAYLAND_DISPLAY does not. It also leaves the window addressable
-  by `wmctrl` and `xdotool`, which is how it is put out of the way while
-  this sets up and brought back when the camera rolls.
+  A person cannot click on a headless compositor, and a drag is worth
+  driving where it can also be done by hand. `--backend winit` puts the
+  compositor in an ordinary window; because the session's
+  XDG_RUNTIME_DIR is its own (the collab broker binds inside it), winit
+  is pointed at X11, whose DISPLAY and XAUTHORITY are absolute and
+  survive the isolation where WAYLAND_DISPLAY does not.
 
   The frames are *not* a screen grab. They come off the same `snapshot`
   op the nine-beat recorder uses — the compositor re-renders its own
-  scene and hands back a PNG (`native.rs:992`, explicitly written to work
-  for every backend) — so a frame here is the compositor's own render at
-  1:1, not a capture of a window with somebody's panel in the corner.
-  Nothing is interpolated and no frame is repeated.
-
-  What that costs: the compositor draws no pointer cursor into its own
-  scene, so **your mouse pointer is not in the video**. The clicks are
-  legible from what the UI does — the chooser opening, the row
-  highlighting, the image appearing — but there is no arrow on screen.
+  scene and hands back a PNG (`native.rs:992`) — so a frame is the
+  compositor's own render at 1:1. Nothing is interpolated, no frame is
+  repeated, and the host title bar is never in one.
 
   Why the window is never resized
   -------------------------------
   The winit backend panics when its surface is reconfigured with a frame
   in flight — `Surface::configure` finds a live `SurfaceOutput` and the
-  present thread goes down, taking the session with it. Twice, on the way
-  to this script, a run died exactly there. So nothing here resizes
-  anything: the window is *created* at 1920x1080 (`NIRIOS_WINIT_SIZE`),
-  it is shown fullscreen only to drop the title bar — which changes no
-  dimension — and it is iconified and re-raised rather than resized while
-  the rest is staged. At the end the session is stopped and the window
-  goes with it.
-
-  Proving it without a person
-  ---------------------------
-  `--self-test` runs the whole rig and, instead of waiting for you,
-  sweeps the toolbar row for the image button, stopping the moment the
-  compositor's log says a file dialog opened — so it cannot report a hit
-  it did not get — then picks the file. It exercises every part of this
-  script end to end. What it cannot tell you is how easy the button is to
-  hit with a mouse, which is the one thing a person is for.
+  present thread goes down, taking the session with it. Two runs died
+  exactly there. So nothing here resizes anything: the window is
+  *created* at the size the window manager will grant
+  (`NIRIOS_WINIT_SIZE`), and is iconified and re-raised rather than
+  resized while the rest is staged.
 """
 from __future__ import annotations
 
@@ -541,14 +533,23 @@ def countdown(seconds: int, instruction: str, quiet: bool = False) -> None:
     sys.stdout.flush()
 
 
-def app_tile(session) -> list | None:
-    """The rect of the client tile on screen, if one is laid out."""
+def app_tile(session, surface_id=None) -> list | None:
+    """The rect of a client tile on screen.
+
+    With `surface_id`, the tile belonging to *that* client — which is the
+    only way to tell two windows apart once there are two, since every
+    app announces the same wayland app-id and the tile's name carries the
+    surface rather than the app. `launch` returns the surface it saw
+    paint, so the caller already holds the right id.
+    """
+    want = (f"foreign-surface-{surface_id}" if surface_id is not None
+            else "foreign-surface-")
     name = next((n for n in session.target_names()
-                 if "foreign-surface-" in n and not n.endswith("]")), None)
+                 if want in n and not n.endswith("]")), None)
     return session.named_rect(name) if name else None
 
 
-def focus_the_app(session) -> bool:
+def focus_the_app(session, surface_id=None) -> bool:
     """Click once into the document, so his click is not the one that
     focuses the window.
 
@@ -559,7 +560,7 @@ def focus_the_app(session) -> bool:
     until something had focused the window first. Doing it here means the
     person's first click is a click on the button.
     """
-    rect = app_tile(session)
+    rect = app_tile(session, surface_id)
     if not rect:
         return False
     session.click_at(rect[0] + rect[2] * 0.45, rect[1] + rect[3] * 0.5)
@@ -577,7 +578,7 @@ def focus_the_app(session) -> bool:
 OPENING_LINE = "Launch plan. The venue, the date, and a photo of the room."
 
 
-def seed_the_document(session) -> bool:
+def seed_the_document(session, surface_id=None) -> bool:
     """Put a line of real text in the document before the camera rolls.
 
     Typed through the same synthetic-input path the rest of the demo
@@ -585,11 +586,52 @@ def seed_the_document(session) -> bool:
     the take starts is a document with something in it and a caret
     waiting at the end of it.
     """
-    if not focus_the_app(session):
+    if not focus_the_app(session, surface_id):
         return False
     session.type_text(OPENING_LINE)
     session.settle(1.0)
     return True
+
+
+def pointer_button(session, pressed: bool) -> None:
+    """Press or release the left button where the pointer already is.
+
+    `click_at` bundles press and release together, which cannot express a
+    drag: the source client has to still be *holding* the button when it
+    calls `start_drag`, and the drop only happens on a release that
+    arrives after the pointer has moved over another client. These two
+    ops decompose that (`test_control.rs:198`).
+    """
+    session.input_ops += 1
+    yc.ok(yc.call(session.sock, {"op": "pointer_button", "pressed": pressed}))
+
+
+def drag(session, start: tuple[float, float], end: tuple[float, float],
+         steps: int = 24, settle: float = 0.05) -> None:
+    """Drag from one point to another, as a real gesture.
+
+    Moved in steps rather than teleported: a drag that jumps from source
+    to destination in one motion gives the compositor no chance to notice
+    the pointer crossing out of the source tile, which is the moment it
+    promotes a client drag. It also looks like nothing on camera.
+
+    Measured, so this is not superstition about timing: with the camera
+    running, 16 of 16 synthetic keystrokes landed and the app broadcast
+    16 document deltas for them — capture does not cost input. The steps
+    are for the compositor's sake and for the film, not for reliability.
+    """
+    x0, y0 = start
+    x1, y1 = end
+    session.pointer_move(x0, y0)
+    time.sleep(0.2)
+    pointer_button(session, True)
+    time.sleep(0.2)
+    for i in range(1, steps + 1):
+        t = i / steps
+        session.pointer_move(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+        time.sleep(settle)
+    time.sleep(0.4)
+    pointer_button(session, False)
 
 
 def pick_from_chooser(session, viewport: tuple[int, int] | None = None) -> None:
@@ -605,17 +647,25 @@ def pick_from_chooser(session, viewport: tuple[int, int] | None = None) -> None:
     Keys reach it at all only because the chooser now captures input;
     before that fix they went to the app behind the dialog.
     """
-    del viewport                      # kept: callers pass one, none needed
-    # More presses than there are rows, on purpose. `move_selection`
-    # clamps at the end of the list and the listing is dirs-then-files,
-    # so any number of Downs past the count lands on the last entry —
-    # which is the image. That makes this independent of how many rows
-    # there are and of whether the first key after the dialog mounts is
-    # swallowed, neither of which is worth guessing at.
-    for _ in range(4):
-        session.key("ArrowDown")
-        time.sleep(0.5)
-    session.key("Enter")
+    vw, vh = viewport or (1600, 900)
+    # `file_picker_rect` centres a box of min(62% of width, 900) by
+    # min(72% of height, 640) in the viewport (`overlay_host.rs:7284`).
+    # The offsets below are measured off captured frames at two
+    # different window sizes and hold at both.
+    w = min(max(vw * 0.62, 420.0), 900.0, vw)
+    h = min(max(vh * 0.72, 320.0), 640.0, vh)
+    x0, y0 = (vw - w) / 2.0, (vh - h) / 2.0
+
+    # Pointer, not keyboard. Measured: while the camera is running,
+    # pointer clicks land every time — the sweep that opens this dialog
+    # has never missed — but a keypress does not, and an Enter that never
+    # arrives leaves `commit_open` with an empty selection, which is
+    # `Cancelled`. That is exactly the failure this take kept hitting:
+    # the row visibly highlighted, then the dialog closed with nothing
+    # inserted and no error anywhere, because the confirm never landed.
+    session.click_at(x0 + 72, y0 + 109)          # the photo.png row
+    time.sleep(1.0)
+    session.click_at(x0 + 839, y0 + 612)         # Open
 
 
 def self_test_click(session, log_path: str,
@@ -649,25 +699,47 @@ def self_test_click(session, log_path: str,
     log = SessionLog(log_path)
     log.read()
 
+    def opened(seconds: float) -> bool:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            log.read()
+            if log.OPENED in log.text:
+                return True
+            time.sleep(0.25)
+        return False
+
     def drive() -> None:
-        time.sleep(1.5)
+        time.sleep(1.0)
         rect = app_tile(session)
         if not rect:
             return
         x0, y0, w, _h = rect
-        for dy in (36, 32, 40, 28, 44):
-            for dx in range(600, 672, 8):
-                if dx > w:
+        # One aimed click, not a sweep. The offset is measured off
+        # captured frames and holds at both tile widths seen so far; the
+        # toolbar is left-aligned, so it does not move when the tile
+        # does. A sweep would work too, but on camera it clicks its way
+        # across Bold, Italic and Table on the way — visible formatting
+        # changes the demo did not ask for — and spends ten seconds of
+        # dead air doing it.
+        session.click_at(x0 + 631, y0 + 36)
+        if not opened(4.0):
+            # Only if the aimed click missed: a short search around it,
+            # which is still quieter than sweeping the whole row.
+            for dy in (32, 40, 28, 44):
+                for dx in (631, 623, 639, 615, 647):
+                    if dx > w:
+                        continue
+                    session.click_at(x0 + dx, y0 + dy)
+                    if opened(1.0):
+                        break
+                else:
                     continue
-                session.click_at(x0 + dx, y0 + dy)
-                time.sleep(0.5)
-                log.read()
-                if log.OPENED in log.text:
-                    # The chooser is up. Pick the file the way a person
-                    # would: the row, then Open.
-                    time.sleep(1.5)
-                    pick_from_chooser(session, viewport)
-                    return
+                break
+        if log.OPENED not in log.text:
+            return
+        time.sleep(1.5)
+        pick_from_chooser(session, viewport)
+
     threading.Thread(target=drive, daemon=True).start()
 
 
@@ -1027,21 +1099,37 @@ def main() -> int:
         painted = session.launch(yc.WORD_PROCESSOR, search="word")
         if painted is None:
             raise RuntimeError(
-                "the word processor did not open, so there is no toolbar to "
-                f"click. See {session.log_path}")
+                "the word processor did not open, so there is nothing to "
+                f"drop an image into. See {session.log_path}")
         print(f"  word processor up      surface "
               f"{painted.get('surface_id')} at frame {painted.get('frame_seq')}")
-        # A window sharing the strip is a small target on camera. One
-        # group, the full width of it.
-        session.set_group_width(1000)
-        session.settle(0.8)
+
+        # Files, in a group of its own. Without `place_next_window` the
+        # placement rule tabs a new window into the focused group, and a
+        # tab is not a second window on screen — which is the whole
+        # precondition for dragging something from one to the other.
+        session.place_next_window(yc.FILES_APP)
+        files = session.launch(yc.FILES_APP, search="files")
+        if files is None:
+            raise RuntimeError(
+                "Files did not open, so there is nothing to drag *from*. "
+                f"See {session.log_path}")
+        print(f"  files up               surface "
+              f"{files.get('surface_id')} at frame {files.get('frame_seq')}")
+        # Two groups, equal shares. A group takes about three quarters of
+        # its strip by default, so two never fit and the second is
+        # scrolled off screen.
+        session.set_group_width(500)
+        session.settle(1.2)
         # Focused *and* written in, here rather than by him: the click
         # that focuses a window is spent doing that and never reaches the
         # app, so without this his first click on the button would
         # silently do nothing — and an empty page behind the dialog shows
         # nothing about where the image is going.
+        wp_surface = painted.get("surface_id")
+        files_surface = files.get("surface_id")
         print(f"  document ready         "
-              f"{'yes' if seed_the_document(session) else 'no'}")
+              f"{'yes' if seed_the_document(session, wp_surface) else 'no'}")
         print(f"  image staged           {photo}")
 
         # What the recording will actually be made of — the compositor's
