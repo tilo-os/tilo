@@ -895,7 +895,8 @@ mod tests {
         fb.pump_apps(&mut doc, &root);
         assert!(
             fb.chrome_revision() > before,
-            "a peer's change landed in the tree and nothing told the shell to              rebuild, so it would never be drawn"
+            "a peer's change landed in the tree and nothing told the shell \
+             to rebuild, so it would never be drawn"
         );
     }
 
