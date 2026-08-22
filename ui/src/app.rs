@@ -581,6 +581,32 @@ impl App {
         app.text_scale = Self::text_scale_env().unwrap_or(1.0);
         app.ui_scale = Self::ui_scale_env().unwrap_or(1.0);
         app.rebuild_theme();
+
+        // Publish presence by default, scoped to the room this process
+        // collaborates in.
+        //
+        // This used to be the app's job, and the setter's own documentation
+        // says the shell calls it — but the shell cannot reach into another
+        // process's `App`, so for every sandboxed app the responsibility
+        // fell to its author, and almost none of them took it. An app that
+        // never set a scope did not merely hide its cursor: the scope is
+        // also what sends `Arrived`, the request that makes peers already
+        // holding the document reply with it. So those apps never announced
+        // themselves and never caught up on anything written before they
+        // opened, silently and with nothing logged.
+        //
+        // The room comes from `local_cluster_id`, the same value the
+        // collaboration address is built from, so presence and documents
+        // cannot end up in different rooms. With no room in the
+        // environment there is no scope and nothing is published — the
+        // nil cluster addresses nobody.
+        //
+        // `set_presence_broadcast_scope(None)` remains the opt-out for the
+        // cases that genuinely should not publish: teardown, and a surface
+        // that is not a participant.
+        if let Some(scope) = PresenceKey::for_local_workspace() {
+            app.set_presence_broadcast_scope(Some(scope));
+        }
         app
     }
 
@@ -1638,6 +1664,14 @@ impl App {
                     }
                 }
                 CollabEvent::CRDTIncremental { data } => {
+                    // The live-edit path: every keystroke a peer makes arrives
+                    // here. It is the one inbound variant that used to log
+                    // nothing, which made "did the edit cross?" unanswerable
+                    // from a debug run — the two ends looked identical whether
+                    // the delta was dropped in transit or applied silently.
+                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                        eprintln!("[app] recv CRDTIncremental {}B", data.len());
+                    }
                     let _ = self.state.load_incremental(&data);
                     self.needs_sync = true;
                     self.layout_dirty = true;
@@ -1833,116 +1867,34 @@ impl App {
         self.focus_trap_active = trap_active;
     }
 
+    /// Fold one inbound `RemotePresenceUpdate` into this app.
+    ///
+    /// The decode itself lives on [`crate::presence::PresenceCtx`] so
+    /// the compositor — which subscribes to the same stream to paint
+    /// peers over its windows — reads presence exactly the way an app
+    /// does. What stays here is the part only a document holder can
+    /// do: follow a peer's viewport, and answer a late joiner with
+    /// full state.
     fn apply_remote_presence(
         &mut self,
         user_id: String,
         key: crate::presence::PresenceKey,
         payload: crate::collaboration::PresencePayload,
     ) {
-        use crate::collaboration::PresencePayload::*;
-        use crate::permissions::UserId;
-
-        // A View broadcast rides inside the routing key, not the payload
-        // (the subset has no `PresencePayload` variant). Recognise it here,
-        // store the peer's region/resource, and — if we're following them —
-        // move the local viewport to match. The paired payload is inert and
-        // deliberately never reaches the match below.
-        if let Some(subset) = key.as_view() {
-            self.presence_ctx
-                .set_peer_view(UserId(user_id), subset);
-            self.apply_follow();
-            return;
-        }
-
-        match payload {
-            Pointer { x, y } => {
-                // Populate BOTH presence stores: `pointers` (keyed by
-                // scope, read by the shell's per-workspace overlay and by
-                // `pointer_for`) and the screen-space `remote_cursors` vec
-                // the shared `draw_remote_cursors` helper renders. Only the
-                // latter is painted by the App, so there's no double-draw.
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_pointer(&key, uid, (x, y));
-                self.presence_ctx
-                    .upsert_remote_cursor(user_id, [x, y], None);
-            }
-            Caret { pos } => {
-                // Feed BOTH presence stores: the in-app BlockEditor reads
-                // `carets` (set_caret); the cross-process overlay reads
-                // the `remote_caret` map (set_remote_caret).
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_caret(&key, uid, pos);
-                self.presence_ctx.set_remote_caret(user_id, key, pos);
-            }
-            Selection { start, end } => {
-                let uid = UserId(user_id.clone());
-                self.presence_ctx.set_selection(
-                    &key,
-                    uid,
-                    crate::presence::SelectionRange { start, end },
-                );
-                self.presence_ctx
-                    .set_remote_selection(user_id, key, start, end);
-            }
-            Typing { start, end } => {
-                // A peer inserted `start..end` under `key`: record a fading
-                // textmarker swipe in their colour. `Instant::now()` births
-                // the mark; the render fades it over `TYPING_FADE`, and the
-                // per-frame `prune_typing` reclaims it.
-                self.presence_ctx.record_peer_typing(
-                    crate::permissions::UserId(user_id),
-                    key,
-                    crate::presence::SelectionRange { start, end },
-                    Instant::now(),
-                );
-            }
-            Arrived => {
-                let uid = UserId(user_id.clone());
-                // Register in #280's cross-process peer registry too.
-                self.presence_ctx
-                    .register_peer_at(user_id.clone(), key.clone());
-                // Tab keys move the peer's dot between tabs/pages; non-Tab
-                // (app/workspace) arrivals are (possibly late) joiners, so
-                // reply with our full state to converge. The broker fans
-                // this to all peers; an already-synced peer merges it
-                // idempotently. (Page switches use Tab keys, never this.)
-                if matches!(key, crate::presence::PresenceKey::Tab { .. }) {
-                    self.presence_ctx.set_tab_focus(&key, uid);
-                } else {
-                    self.presence_ctx.register_presence(&key, uid);
-                    let data = self.state.save();
-                    if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
-                        eprintln!(
-                            "[app] recv Arrived; replying full state {}B",
-                            data.len()
-                        );
-                    }
-                    self.collab_manager
-                        .send(crate::collaboration::CollabRequest::SyncCRDT { data });
+        use crate::presence::RemotePresenceEffect;
+        match self
+            .presence_ctx
+            .apply_remote_presence(user_id, key, payload)
+        {
+            RemotePresenceEffect::None => {}
+            RemotePresenceEffect::PeerViewChanged => self.apply_follow(),
+            RemotePresenceEffect::PeerArrived => {
+                let data = self.state.save();
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!("[app] recv Arrived; replying full state {}B", data.len());
                 }
-            }
-            Left => {
-                // `Left` is broadcast on `WindowEvent::CursorLeft` —
-                // the peer's mouse pointer left their window viewport,
-                // not the peer themselves. Their caret + selection
-                // should KEEP rendering because they're still editing,
-                // they've just moved their mouse elsewhere. Wiping
-                // them via `unregister_peer` here was the
-                // "remote caret disappears a few seconds after it was
-                // placed" bug — any mouse-leave on the publisher side
-                // tore down the entire presence record on every
-                // subscriber.
-                //
-                // True peer disconnect arrives via the socket close
-                // path (broker drops the peer from its fan-out
-                // table); subscribers only need to clear pointer-
-                // related state here.
-                let uid = UserId(user_id.clone());
-                for list in self.presence_ctx.pointers.values_mut() {
-                    list.retain(|(u, _)| u != &uid);
-                }
-                self.presence_ctx.remove_remote_cursor(&user_id);
-                let _ = key;
+                self.collab_manager
+                    .send(crate::collaboration::CollabRequest::SyncCRDT { data });
             }
         }
     }
@@ -1995,10 +1947,28 @@ impl App {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
         });
 
-        // Broadcast CRDT state — only when the commit produced a real change.
+        // Ship the commit as an incremental delta, not the whole document.
+        //
+        // Serialising the entire document per committed edit is a cost
+        // proportional to its size on every keystroke, which is what a long
+        // document feels as typing lag. The skip above spared the events that
+        // change nothing; the edits that *do* change something are the ones a
+        // person is making while they watch.
+        //
+        // It also silently disabled the incremental path: `AutoCommit::save`
+        // advances the save cursor to the current heads, so the
+        // `broadcast_doc_delta` later in the same idle tick found
+        // `save_incremental` empty and sent nothing. Every app that marks its
+        // edits with `needs_commit` — which is every editor — was therefore
+        // syncing by whole-document snapshot and never by delta.
+        //
+        // Undo and redo are safe on this path: `UndoLog::apply_inverse` writes
+        // the inverse into the document as new changes, so a delta carries
+        // them like any other edit. A peer that has *not* seen the document
+        // still gets a full snapshot — that is the `Arrived` handshake, and it
+        // is unaffected.
         if changed {
-            let data = self.state.save();
-            self.collab_manager.send(CollabRequest::SyncCRDT { data });
+            self.broadcast_doc_delta();
         }
     }
 
@@ -2707,10 +2677,32 @@ impl App {
         match switched {
             Some(id) => {
                 self.collab_manager = CollaborationManager::for_record(&id);
+                if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
+                    eprintln!(
+                        "[app] checked out record {}; collab connected={}",
+                        id.as_str(),
+                        self.collab_manager.is_connected()
+                    );
+                }
                 // The freshly-adopted document has not been through `sync`,
                 // and the widget's caches still describe the outgoing one.
                 self.needs_sync = true;
                 self.layout_dirty = true;
+                // Re-announce arrival on the channel we just moved to.
+                //
+                // `Arrived` is what asks the peers already holding this
+                // document to reply with a full snapshot, and the scope was
+                // announced once, before the loop started, on the connection
+                // this checkout has just replaced. Without re-announcing, a
+                // window that opens a file someone else is already editing
+                // hears only the edits made from then on and never the text
+                // that was already there.
+                if let Some(scope) = self.presence_broadcast_scope.clone() {
+                    self.broadcast_presence(
+                        scope,
+                        crate::collaboration::PresencePayload::Arrived,
+                    );
+                }
                 true
             }
             None => false,
@@ -4476,6 +4468,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // the diffed subset here too.
         app.broadcast_view_presence();
 
+        // Check out the record the root widget names, on the idle tick as
+        // well as on paint.
+        //
+        // The record is the collaboration address: until the checkout runs,
+        // this app is still announcing the pre-record channel, and a peer
+        // that has checked out is announcing the file's. Two windows on one
+        // document then sit on two channels and no edit crosses.
+        //
+        // Doing it only in `RedrawRequested` tied the address to painting,
+        // which is the one thing a collaborating window cannot be relied on
+        // to do: a background tab is not painted, and neither is a window
+        // whose first frame is still behind a shader compile. Both keep
+        // running this tick, so both settle on the right channel.
+        if app.record_tick() {
+            window.request_redraw();
+        }
+
         // Keep syncing on idle frames while a collab app is still seeding
         // or adopting the shared document. Without this a first peer with
         // no input never re-runs `sync` to seed its doc after the grace
@@ -4768,13 +4777,73 @@ mod pointer_broadcast_tests {
         );
     }
 
+    /// A committed edit must still be on the wire as a delta afterwards.
+    ///
+    /// `commit_action` used to serialise the whole document here, and
+    /// `AutoCommit::save` advances the save cursor — so the
+    /// `broadcast_doc_delta` that runs later in the same idle tick found
+    /// nothing to send. Every editor marks its edits with `needs_commit`,
+    /// so for every editor the incremental path was dead and each keystroke
+    /// shipped a whole-document snapshot instead.
     #[test]
-    fn default_scope_is_none_so_broadcast_is_opt_in() {
-        // A fresh App must not broadcast pointer presence by default —
-        // the headless tests and `quick-ui` examples rely on that.
+    fn a_commit_leaves_the_edit_for_the_incremental_broadcast() {
+        use automerge::transaction::Transactable;
+
         let state = State::new();
         let root = Box::new(crate::widget::Text::new("t"));
-        let app = App::new(state, root);
+        let mut app = App::new(state, root);
+        // Drain the baseline so what the assertion sees is this edit alone.
+        let _ = app.state.save_incremental();
+
+        app.state
+            .doc
+            .put(&automerge::ROOT, "body", "the quarterly report")
+            .expect("put on the root object");
+        app.commit_action();
+
+        assert!(
+            !app.state.save_incremental().is_empty(),
+            "the committed edit must survive as an incremental delta; an \
+             intervening full save() would have advanced the save cursor and \
+             left broadcast_doc_delta with nothing to send"
+        );
+    }
+
+    /// An app launched into a workspace publishes presence with no
+    /// app-side code.
+    ///
+    /// This replaces an earlier test that pinned the opposite contract
+    /// ("default None so broadcast is opt-in"). Opt-in was the defect: the
+    /// scope is what sends `Arrived`, so an app that never set one never
+    /// announced itself and never received the state written before it
+    /// opened — and 44 of 46 apps never set one.
+    #[test]
+    #[serial_test::serial]
+    fn an_app_in_a_workspace_publishes_presence_without_being_asked() {
+        let room = "40fc5b85-22d7-4294-a9df-ecc8a391cfce";
+        // SAFETY: serialised against the sibling env test below.
+        unsafe { std::env::set_var("QOS_WORKSPACE_ID", room) };
+        let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
+        assert_eq!(
+            app.presence_broadcast_scope(),
+            Some(&PresenceKey::Workspace { id: room.to_string() }),
+            "a workspace in the environment is a scope, with no app-side call"
+        );
+        unsafe { std::env::remove_var("QOS_WORKSPACE_ID") };
+    }
+
+    /// Outside a session there is no room to publish into, so nothing is
+    /// published. The nil cluster addresses nobody; announcing under it
+    /// would be announcing into a room no one can be in.
+    #[test]
+    #[serial_test::serial]
+    fn an_app_with_no_workspace_publishes_nothing() {
+        // SAFETY: see above.
+        unsafe {
+            std::env::remove_var("QOS_WORKSPACE_ID");
+            std::env::remove_var("QUICK_CLUSTER_ID");
+        }
+        let app = App::new(State::new(), Box::new(crate::widget::Text::new("t")));
         assert!(app.presence_broadcast_scope().is_none());
     }
 

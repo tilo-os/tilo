@@ -139,6 +139,31 @@ pub(crate) fn pill_appearance(
     PillAppearance { fill, border, inner_glow, scale }
 }
 
+/// Whether a pill paints its close `×` this frame.
+///
+/// The `×` is a control that lives *inside* the pill, so it is gated on the
+/// pill having a body for it to sit inside: [`PillAppearance::fill`] is opaque
+/// exactly when the tab is active, hovered, or pressed. Deriving the gate from
+/// the same struct the body is filled from makes "a `×` is never painted
+/// without a container around it" true by construction, rather than by two
+/// call sites happening to agree.
+///
+/// Without this, an idle inactive pill — transparent body, no border — still
+/// painted its `×`, and because the pill reserves width for the close, search
+/// and maximize chips, the glyph landed a long way right of the title with
+/// nothing visibly joining the two. The row then read as one pill plus a set
+/// of bare labels trailed by loose `×` marks instead of one family of tabs.
+/// This puts close on the same paint rule its two sibling chips (search,
+/// maximize) already follow, so all three appear together with the pill body
+/// that hosts them.
+///
+/// Paint-only: the close hit rect is unchanged, matching the existing contract
+/// for the search / maximize chips, which are likewise hover-painted but
+/// always hit-testable (see `press_on_inactive_tab_search_icon_fires_on_first_click`).
+pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -> bool {
+    !is_pinned && look.fill.a() > 0
+}
+
 /// A tab whose close button was clicked and is now fading out. Kept
 /// in `TabBar::closing_tabs` alongside the still-live `tabs` vec so the
 /// pill keeps rendering at a declining alpha + shrinking scale for
@@ -436,16 +461,7 @@ impl TabBar {
 
         let is_active = t.id == self.active_id;
         let is_hover = !suppress_hover && Some(i) == self.hover_idx;
-        // Pressed tracks the press-source pill across the entire press →
-        // (optional drag) → release lifecycle. `press_origin` only clears
-        // on Released, so the press-scale composes with the source-dim
-        // during a drag-in-flight, satisfying the spec's "drag-in-flight
-        // still respects this".
-        let is_pressed = !suppress_hover
-            && self
-                .press_origin
-                .is_some_and(|(j, _)| j == i);
-        let look = pill_appearance(theme, is_active, is_hover, is_pressed);
+        let look = self.pill_look(i, theme, suppress_hover);
         // Apply the press scale-down around the pill's centre. Affects
         // every paint call below (shadow, body, border, glow, icon, text)
         // so the whole chrome compresses uniformly. `1.0` short-circuits
@@ -611,8 +627,10 @@ impl TabBar {
         //
         // Suppressed on pinned tabs — those render icon-only and don't
         // expose a × at all (close-press hit-test in `handle_event`
-        // also filters them out).
-        if !is_pinned {
+        // also filters them out) — and on idle inactive pills, which have
+        // no body for the glyph to sit inside. See
+        // [`close_affordance_visible`].
+        if close_affordance_visible(&look, is_pinned) {
             let close_r = self.close_rects[i] + vello::kurbo::Vec2::new(dx, dy);
             let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
             let (close_chip_color, close_chip_visible) = if close_hover {
@@ -1192,20 +1210,52 @@ impl TabBar {
         }
     }
 
+    /// Resolve tab `idx`'s body appearance for one frame. The single place
+    /// the active / hover / pressed inputs are read, so `draw_pill_inner`
+    /// and anything that needs to know how a pill will look this frame
+    /// cannot drift apart.
+    ///
+    /// Pressed tracks the press-source pill across the entire press →
+    /// (optional drag) → release lifecycle. `press_origin` only clears on
+    /// Released, so the press-scale composes with the source-dim during a
+    /// drag-in-flight, satisfying the spec's "drag-in-flight still respects
+    /// this". `suppress_hover` is set by the drag-ghost pass, which paints a
+    /// simplified pill that never picks up the source's hover state.
+    fn pill_look(&self, idx: usize, theme: &Theme, suppress_hover: bool) -> PillAppearance {
+        let is_active = self.tabs.get(idx).is_some_and(|t| t.id == self.active_id);
+        let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
+        let is_pressed =
+            !suppress_hover && self.press_origin.is_some_and(|(j, _)| j == idx);
+        pill_appearance(theme, is_active, is_hover, is_pressed)
+    }
+
+    /// Whether tab `idx`'s close `×` paints this frame, resolved through the
+    /// exact predicate + appearance the draw pass uses.
+    #[cfg(test)]
+    pub(crate) fn close_affordance_visible_for_tests(&self, idx: usize, theme: &Theme) -> bool {
+        let Some(t) = self.tabs.get(idx) else {
+            return false;
+        };
+        close_affordance_visible(
+            &self.pill_look(idx, theme, false),
+            self.pinned_ids.contains(&t.id),
+        )
+    }
+
     /// Test hook: returns the close-chip fill color `draw_pill_inner`
     /// would paint for tab `idx` under the current theme + hover state,
-    /// or `None` when the chip wouldn't paint at all (neither the tab
-    /// nor the close glyph is hovered). Pairs with
-    /// `close_glyph_color_for_tests` so the red-500/80 hover parity
-    /// with the concept (`hover:bg-red-500/80`) is exercised without a
-    /// GPU draw.
+    /// or `None` when the chip wouldn't paint at all (the close affordance
+    /// is hidden, or neither the tab nor the close glyph is hovered).
+    /// Pairs with `close_glyph_color_for_tests` so the red-500/80 hover
+    /// parity with the concept (`hover:bg-red-500/80`) is exercised
+    /// without a GPU draw.
     #[cfg(test)]
     pub(crate) fn close_chip_color_for_tests(
         &self,
         idx: usize,
         theme: &Theme,
     ) -> Option<vello::peniko::Color> {
-        if idx >= self.tabs.len() {
+        if !self.close_affordance_visible_for_tests(idx, theme) {
             return None;
         }
         let close_hover = Some(idx) == self.hover_close_idx;
@@ -1220,16 +1270,17 @@ impl TabBar {
     }
 
     /// Test hook: returns the glyph color `draw_pill_inner` would use
-    /// for the close `×` icon on tab `idx`. Mirrors the concept's
-    /// `hover:text-white` — close-hover always yields opaque white;
-    /// otherwise idle/active states fall back to theme text colors.
+    /// for the close `×` icon on tab `idx`, or `None` when the pill does
+    /// not paint a `×` at all. Mirrors the concept's `hover:text-white` —
+    /// close-hover always yields opaque white; otherwise idle/active
+    /// states fall back to theme text colors.
     #[cfg(test)]
     pub(crate) fn close_glyph_color_for_tests(
         &self,
         idx: usize,
         theme: &Theme,
     ) -> Option<vello::peniko::Color> {
-        if idx >= self.tabs.len() {
+        if !self.close_affordance_visible_for_tests(idx, theme) {
             return None;
         }
         let close_hover = Some(idx) == self.hover_close_idx;
@@ -4013,6 +4064,95 @@ mod tests {
             (255, 255, 255, 255),
             "close-hover glyph must be opaque white (concept: hover:text-white)",
         );
+    }
+
+    /// A `×` is never painted without a pill body behind it.
+    ///
+    /// The row used to draw the active tab as a pill with its close glyph
+    /// inside, while every inactive tab was a bare label trailed by a `×`
+    /// floating out in the gap the transparent pill still reserves for its
+    /// chip cluster. Nothing visibly joined label to glyph, so the bar read
+    /// as one pill plus a set of loose annotations instead of one family of
+    /// tabs. Close now follows the same paint rule as its sibling chips.
+    #[test]
+    fn close_glyph_only_paints_on_pills_that_have_a_body() {
+        let theme = Theme::dark();
+        let mut b = bar(); // tabs A(1) B(2) C(3), active = A.
+
+        assert!(
+            b.close_affordance_visible_for_tests(0, &theme),
+            "the active pill has a body, so it keeps its ×",
+        );
+        for idle in [1usize, 2] {
+            assert!(
+                !b.close_affordance_visible_for_tests(idle, &theme),
+                "idle inactive tab {idle} has a transparent body — a × there \
+                 would float with no container around it",
+            );
+            assert!(
+                b.close_glyph_color_for_tests(idle, &theme).is_none(),
+                "no × painted ⇒ no glyph colour for tab {idle}",
+            );
+        }
+
+        // Hover raises an inactive pill to a visible body, and the × comes
+        // back with it — the affordance is reachable, just not permanent.
+        b.hover_idx = Some(1);
+        assert!(
+            b.close_affordance_visible_for_tests(1, &theme),
+            "a hovered pill has a surface_white_5 body to host the ×",
+        );
+        assert!(
+            !b.close_affordance_visible_for_tests(2, &theme),
+            "hovering one tab must not reveal another tab's ×",
+        );
+
+        // Pressing does the same, so the glyph never blinks out mid-click.
+        b.hover_idx = None;
+        b.press_origin = Some((2, Point::ZERO));
+        assert!(
+            b.close_affordance_visible_for_tests(2, &theme),
+            "a pressed pill paints the active-tier body, so it shows its ×",
+        );
+    }
+
+    /// The gate is derived from the body fill, so the two can never
+    /// disagree: a painted `×` implies a painted body, for every state
+    /// combination the appearance resolver can produce.
+    #[test]
+    fn close_visibility_tracks_the_pill_body_in_every_state() {
+        let theme = Theme::dark();
+        for is_active in [false, true] {
+            for is_hover in [false, true] {
+                for is_pressed in [false, true] {
+                    let look = pill_appearance(&theme, is_active, is_hover, is_pressed);
+                    assert_eq!(
+                        close_affordance_visible(&look, false),
+                        look.fill.a() > 0,
+                        "close visibility must equal body visibility \
+                         (active={is_active} hover={is_hover} pressed={is_pressed})",
+                    );
+                    assert!(
+                        !close_affordance_visible(&look, true),
+                        "a pinned pill is icon-only and never paints a ×",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pinned tabs stay icon-only even while active — the compact 28-px
+    /// slot has no room for a `×`, and the press hit-test filters them out.
+    #[test]
+    fn pinned_active_tab_still_paints_no_close_glyph() {
+        let theme = Theme::dark();
+        let mut b = bar();
+        b.pin(1); // tab A is both pinned and active.
+        assert!(
+            !b.close_affordance_visible_for_tests(0, &theme),
+            "a pinned tab never shows a ×, active or not",
+        );
+        assert!(b.close_chip_color_for_tests(0, &theme).is_none());
     }
 
     /// Regression for B-6 (Family Cache-Stale): on `MouseInput::Pressed`,
