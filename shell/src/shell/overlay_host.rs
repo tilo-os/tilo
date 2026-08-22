@@ -738,6 +738,14 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
 /// window; the gap reads as separation between canvas chrome and content.
 const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
 
+/// Wallpaper gutter at the far edge of a display, matching
+/// [`WHEEL_TO_STRIP_GAP_PX`] on the near edge. Without it a full-width
+/// group ended exactly on the last column of the output, so the card's
+/// right border, its rounded corners and its drop shadow all fell off the
+/// screen and the window read as cut off by the bezel rather than as a
+/// window resting on a desktop.
+const STRIP_TRAILING_GUTTER_PX: f64 = 28.0;
+
 /// One display the compositor is painting across, in its combined
 /// coordinate space. The compositor renders a single scene spanning the
 /// bounding box of every output (see `compositor::backend::Output`), so the
@@ -1646,7 +1654,7 @@ impl ShellOverlayHost {
             .filter(|o| o.width > 0.0)
             .map(|o| {
                 let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
-                let reserved = if hosts_chrome && self.sidebar.is_some() {
+                let leading = if hosts_chrome && self.sidebar.is_some() {
                     sidebar_width_for_viewport(o.height as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
                 } else {
                     0.0
@@ -1654,7 +1662,7 @@ impl ShellOverlayHost {
                 OutputSpan {
                     x: o.x,
                     width: o.width,
-                    usable: (o.width - reserved).max(1.0),
+                    usable: (o.width - leading - STRIP_TRAILING_GUTTER_PX).max(1.0),
                 }
             })
             .collect()
@@ -10425,6 +10433,49 @@ mod overview_transition_tests {
         // Dummy content widget — `Container::new()` produces an empty
         // layout node which is enough for the transition state tests.
         ShellOverlayHost::new(Box::new(Container::new()))
+    }
+
+    /// A window as wide as the strip allows still has to end before the
+    /// display does. Its border, its rounded corners and its drop shadow
+    /// all live in the last few pixels of the card, so a group that
+    /// resolves flush to the output's right edge loses every one of them
+    /// and reads as clipped by the bezel instead of as a window on a
+    /// desktop. The near edge already reserves a wallpaper gutter beside
+    /// the wheel disc; this asserts the far edge reserves one too.
+    #[test]
+    fn a_full_width_window_stops_short_of_both_screen_edges() {
+        let mut h = host().with_sidebar(Box::new(Container::new()));
+        h.set_output_geometry(&[OutputGeometry {
+            x: 0.0,
+            width: 1600.0,
+            height: 900.0,
+        }]);
+
+        let spans = h.strip_output_spans();
+        assert_eq!(spans.len(), 1, "one output in, one span out");
+        let span = spans[0];
+
+        // Where the strip starts placing groups: past the wheel slot.
+        let leading = sidebar_width_for_viewport(900.0) as f64 + WHEEL_TO_STRIP_GAP_PX;
+        // The widest a group can be, and therefore where the widest one ends.
+        let widest = ui::widget::WIDTH_MAX_PERMILLE as f64 / 1000.0 * span.usable;
+        let right_edge = leading + widest;
+
+        assert!(
+            right_edge < span.x + span.width,
+            "the widest window reaches x={right_edge} on a {}px display — it \
+             has to stop short of the edge or its border and corners fall off \
+             the screen",
+            span.width,
+        );
+        // And the gap it leaves should match the one on the other side, so
+        // the window looks centred in its canvas rather than shoved right.
+        let trailing = span.x + span.width - right_edge;
+        assert!(
+            (trailing - WHEEL_TO_STRIP_GAP_PX).abs() < 1.0,
+            "trailing gutter is {trailing}px against a {WHEEL_TO_STRIP_GAP_PX}px \
+             gutter beside the wheel; they should read as the same margin",
+        );
     }
 
     #[test]
