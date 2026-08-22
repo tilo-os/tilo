@@ -1007,6 +1007,7 @@ pub fn catalogue() -> Vec<Scenario> {
         notes_click_and_type(),
         two_notes_tabs_keep_their_own_text(),
         cycle_all_tabs(),
+        word_processor_tile(),
         room_activity_from_palette(),
         window_open_beside_selection(),
         window_open_into_tabbed_group(),
@@ -1628,6 +1629,29 @@ fn cycle_all_tabs() -> Scenario {
             Action::ClickAt(Point::new(744.0, 103.0)),
             Action::Wait(2),
             Action::Snapshot("04-browser-active"),
+        ],
+    }
+}
+
+/// Activate the group's "Document" tab so the word processor is the tile on
+/// screen.
+///
+/// The default four-tab group opens on Notes, and every other scenario leaves
+/// it there, so the whole catalogue judged the window frame against apps that
+/// paint dark. The word processor paints a light page — the case where an edge
+/// derived from the wrong assumption stops being subtle and starts being a
+/// white line drawn around the window. A frame is only as good as its worst
+/// ground, so the catalogue needs one scene standing on the other one.
+fn word_processor_tile() -> Scenario {
+    Scenario {
+        name: "word_processor_tile",
+        description: "Activate the Document tab so the light-chrome word processor is on screen.",
+        actions: vec![
+            Action::Snapshot("01-notes-active"),
+            // The "Document" pill, in the group's opening layout.
+            Action::ClickAt(Point::new(717.0, 104.0)),
+            Action::Wait(2),
+            Action::Snapshot("02-document-active"),
         ],
     }
 }
