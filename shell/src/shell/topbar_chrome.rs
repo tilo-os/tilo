@@ -19,7 +19,7 @@ use vello::peniko::{Brush, ColorStop, Extend, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::color_compat::ColorCompat;
-use ui::presence::{PresenceCtx, parse_hex_color, user_color};
+use ui::presence::{PresenceCtx, user_color};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -387,15 +387,18 @@ impl TopBarChrome {
             .unwrap_or((0, String::from("Workspace")));
         self.workspace_index = idx;
         self.workspace_name = name;
-        // Roster source: prefer the active workspace's own collaborators
-        // (per-workspace seed in `WorkspaceTree::bootstrap_default`), and
-        // fall back to the tree-level roster only when the active workspace
-        // carries no peers — mirrors the precedence applied by
+        // Roster source: prefer the active workspace's own collaborators,
+        // and fall back to the tree-level roster only when the active
+        // workspace carries no peers — mirrors the precedence applied by
         // `sidebar_wheel_chrome::sync_from_tree`. The local user (`id ==
         // "me"`) is filtered out of the avatar stack: the right cluster
         // shows *other* peers in the workspace, not the local user. Drop
         // collaborators whose name has no starting char and take at most
         // 3 — the rest flows into `collaborator_overflow`.
+        //
+        // Everyone on it arrived: an accepted invite or a presence frame
+        // off the wire is what puts a row here (`admit_collaborator_in_room`
+        // / `note_peer_present`). An empty stack means an empty room.
         let roster: &[crate::shell::state::Collaborator] = match active_ws {
             Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
             _ => &tree.collaborators,
@@ -406,15 +409,20 @@ impl TopBarChrome {
         // overflow chip and the wheel-disc active-card dot count always
         // agree (audit B-10).
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
+        // One colour per person, settled over the whole room, so a peer's
+        // avatar here is the colour their cursor is drawn in on the
+        // desktop. Colouring the avatar by the raw per-id hash instead
+        // gave the two surfaces different answers whenever the room had
+        // to break a tie.
+        let colors = crate::shell::state::roster_colors(roster);
         for c in roster.iter().filter(|c| c.id != "me").take(3) {
             let Some(ch) = c.name.chars().next() else {
                 continue;
             };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
-            let (r, g, b) = c
-                .cursor_color
-                .as_deref()
-                .and_then(parse_hex_color)
+            let (r, g, b) = colors
+                .get(&c.id)
+                .copied()
                 .unwrap_or_else(|| user_color(&c.id));
             self.collaborator_colors.push(Color::from_rgb8(r, g, b));
         }
