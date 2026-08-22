@@ -172,12 +172,29 @@ build_image() {
 # Rewrite the composefs digest inside the UKI the image already carries, as a layer
 # that touches nothing but /boot. $1 = the digest (no "sha512:" prefix).
 reseal_uki() {
-  podman build -t "$QOS_IMAGE" -f - "$QOS_OS_DIR/dev" <<EOF
+  # The script is bind-mounted rather than COPYed because the layer this adds
+  # must touch nothing outside /boot: /boot is the one tree excluded from the
+  # composefs digest, and a file landing anywhere else would move the digest
+  # this pass exists to converge on.
+  #
+  # It is staged into a scratch dir first. Under SELinux a bind mount of a file
+  # labelled user_home_t is unreadable from container_t, and the kernel's denial
+  # arrives as a bare "python3: can't open file ...: Permission denied" naming
+  # neither SELinux nor the label. `z` has podman relabel the source, so it is
+  # pointed at a copy: relabelling the tracked file would leave the repository
+  # carrying a container label as a side effect of imaging.
+  local stage rc
+  stage="$(mktemp -d "${TMPDIR:-/tmp}/qos-reseal.XXXXXX")" || return 1
+  cp "$QOS_OS_DIR/dev/uki-cmdline.py" "$stage/uki-cmdline.py" || { rm -rf "$stage"; return 1; }
+  podman build -t "$QOS_IMAGE" -f - "$stage" <<EOF
 FROM $QOS_IMAGE
-RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py \\
+RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \\
     python3 /run/uki-cmdline.py set "composefs=$1" \\
  && python3 /run/uki-cmdline.py show
 EOF
+  rc=$?
+  rm -rf "$stage"
+  return $rc
 }
 
 if [ "$QOS_SKIP_BUILD" = "1" ]; then
