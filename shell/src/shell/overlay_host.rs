@@ -7911,6 +7911,45 @@ fn tile_icon(tile: &crate::shell::state::TileContent) -> ui::icons::Icon {
     }
 }
 
+/// One tab, as the overview will show it: the tab's real title, the glyph
+/// for whatever it is hosting, and whether it is the tab in front.
+///
+/// Split out of the draw pass so the card's claims can be asserted
+/// directly. Everything here is read from the tab itself — the overview
+/// has no vocabulary for a window that is not in the tree.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowChipSpec {
+    pub label: String,
+    pub icon: ui::icons::Icon,
+    pub is_front: bool,
+}
+
+/// The chips a window group contributes, in tab order.
+pub fn window_chip_specs(group: &crate::shell::state::WindowGroup) -> Vec<WindowChipSpec> {
+    group
+        .tabs
+        .iter()
+        .map(|t| WindowChipSpec {
+            label: t.title.clone(),
+            icon: tile_icon(&t.tile),
+            is_front: t.id == group.active_tab,
+        })
+        .collect()
+}
+
+/// Every chip a workspace contributes, flattened across its strips in
+/// layout order. Empty for a workspace with nothing open — which is what
+/// the card then says, rather than drawing a window that isn't there.
+pub fn overview_workspace_chip_specs(
+    ws: &crate::shell::state::Workspace,
+) -> Vec<WindowChipSpec> {
+    ws.strips
+        .iter()
+        .flat_map(|s| s.window_groups.iter())
+        .flat_map(window_chip_specs)
+        .collect()
+}
+
 /// Paint one window group as a labelled frame inside the card's window
 /// strip.
 ///
@@ -7983,11 +8022,11 @@ fn draw_window_group(
     let mut row = 0_usize;
     let mut drawn = 0_usize;
 
-    for tab in &group.tabs {
-        let is_active_tab = tab.id == group.active_tab;
-        let lead = ChipLead::Glyph(tile_icon(&tab.tile));
+    let specs = window_chip_specs(group);
+    for spec in &specs {
+        let lead = ChipLead::Glyph(spec.icon);
         let natural =
-            Chip::natural_width_at(&tab.title, chip_h, lead, theme, text_renderer).min(inner_w);
+            Chip::natural_width_at(&spec.label, chip_h, lead, theme, text_renderer).min(inner_w);
 
         // Wrap when this chip would overrun the frame.
         if x + natural > rect.x1 - pad && drawn > 0 {
@@ -7999,7 +8038,7 @@ fn draw_window_group(
             y += chip_h + gap;
         }
 
-        let style = if is_active_tab && is_current_workspace {
+        let style = if spec.is_front && is_current_workspace {
             ChipStyle::tinted(accent)
         } else {
             ChipStyle::quiet()
@@ -8008,7 +8047,7 @@ fn draw_window_group(
             scene,
             transform,
             Rect::new(x, y, x + natural, y + chip_h),
-            &tab.title,
+            &spec.label,
             lead,
             style,
             theme,
@@ -8045,7 +8084,7 @@ fn draw_window_group(
         }
     }
 
-    let hidden = group.tabs.len().saturating_sub(drawn);
+    let hidden = specs.len().saturating_sub(drawn);
     if hidden > 0 {
         let label = format!("+{hidden}");
         let w = Chip::natural_width_at(&label, chip_h, ChipLead::None, theme, text_renderer);
@@ -10768,6 +10807,339 @@ impl ShellOverlayHost {
         let row_y = r.y0 + 280.0;
         let row_h = 48.0;
         Rect::new(r.x0 + 16.0, row_y, r.x1 - 16.0, row_y + row_h)
+    }
+}
+
+#[cfg(test)]
+mod overview_grid_tests {
+    //! The overview answers three questions at a glance: what workspaces
+    //! exist, what is in each one, and which one you are in. These pin the
+    //! parts of that which are geometry or data rather than pixels.
+    //!
+    //! Every assertion runs against the same helpers `draw_overview` calls
+    //! — `overview_cell_rect` is the grid the cards are painted into and
+    //! the grid `hit_test_overview` clicks against, and
+    //! `window_chip_specs` is the list the tab chips are built from.
+
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::{AppKind, TileContent, WorkspaceTree};
+    use ui::widget::Container;
+
+    /// A host laid out over a desktop-sized viewport with the overview
+    /// settled open, matching what the shots harness and the live binary
+    /// both produce.
+    fn host_with(tree: WorkspaceTree) -> ShellOverlayHost {
+        let chrome = ChromeState::new(tree);
+        chrome.borrow_mut().overlays.overview = true;
+        let mut host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome);
+        host.rect = Rect::new(0.0, 0.0, 1600.0, 900.0);
+        host.force_overview_settled(true);
+        host
+    }
+
+    fn host() -> ShellOverlayHost {
+        host_with(WorkspaceTree::bootstrap_default())
+    }
+
+    /// The header promised workspaces "side by side" while stacking them
+    /// down the screen. They are a grid now: neighbours in a row share a
+    /// baseline and advance along x.
+    #[test]
+    fn cards_in_a_row_share_a_baseline_and_advance_horizontally() {
+        let h = host();
+        assert!(
+            h.overview_grid_cols() >= 2,
+            "a 1600 px viewport has room for at least two columns; got {}",
+            h.overview_grid_cols()
+        );
+        let a = h.overview_cell_rect(0);
+        let b = h.overview_cell_rect(1);
+        assert!(
+            (a.y0 - b.y0).abs() < f64::EPSILON && (a.y1 - b.y1).abs() < f64::EPSILON,
+            "the first two cards must sit on one baseline; got {a:?} and {b:?}"
+        );
+        assert!(
+            b.x0 > a.x1,
+            "the second card must sit to the right of the first, not below it; \
+             got {a:?} then {b:?}"
+        );
+        assert!(
+            (b.x0 - a.x1 - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
+            "cards in a row are separated by exactly one grid gap"
+        );
+    }
+
+    /// The grid fills the column exactly — no card overhangs the content
+    /// measure and no unexplained gutter is left at the right edge.
+    #[test]
+    fn a_full_row_spans_the_column_exactly() {
+        let h = host();
+        let col = h.overview_column_rect();
+        let cols = h.overview_grid_cols();
+        let first = h.overview_cell_rect(0);
+        let last = h.overview_cell_rect(cols - 1);
+        assert!(
+            (first.x0 - col.x0).abs() < 0.5,
+            "the row starts at the column's left edge"
+        );
+        assert!(
+            (last.x1 - col.x1).abs() < 0.5,
+            "the row ends at the column's right edge; got {} vs {}",
+            last.x1,
+            col.x1
+        );
+    }
+
+    /// Past the last column the grid wraps: back to the left edge, one
+    /// card height plus a gap further down.
+    #[test]
+    fn the_grid_wraps_after_the_last_column() {
+        let h = host();
+        let cols = h.overview_grid_cols();
+        let first = h.overview_cell_rect(0);
+        let wrapped = h.overview_cell_rect(cols);
+        assert!(
+            (wrapped.x0 - first.x0).abs() < 0.5,
+            "the wrapped card returns to the left edge"
+        );
+        assert!(
+            (wrapped.y0 - first.y0 - OVERVIEW_CARD_HEIGHT_PX - OVERVIEW_GRID_GAP_PX).abs() < 0.5,
+            "the wrapped card drops exactly one row"
+        );
+    }
+
+    /// The create affordance used to be a short strip below the list,
+    /// which on a full screen meant below the fold. It is a grid cell
+    /// like any other card, in the slot right after the last workspace.
+    #[test]
+    fn the_add_tile_is_a_peer_cell_in_the_grid() {
+        let h = host();
+        let n = h.chrome.as_ref().unwrap().borrow().tree().workspaces.len();
+        let add = h.overview_add_workspace_rect_for(n);
+        assert_eq!(
+            add,
+            h.overview_cell_rect(n),
+            "the add tile occupies the grid slot after the last workspace"
+        );
+        let card = h.overview_cell_rect(0);
+        assert!(
+            (add.height() - card.height()).abs() < f64::EPSILON
+                && (add.width() - card.width()).abs() < f64::EPSILON,
+            "the add tile is the same size as a workspace card, not a \
+             short strip: card {card:?} vs add {add:?}"
+        );
+    }
+
+    /// With three workspaces and a four-wide grid everything lands in one
+    /// row, so nothing is clipped and nothing scrolls. The old vertical
+    /// list needed three row-heights for the same tree and ran off the
+    /// bottom of a 900 px screen.
+    #[test]
+    fn three_workspaces_fit_one_row_with_nothing_to_scroll() {
+        let h = host();
+        assert_eq!(
+            h.overview_grid_rows_for(3),
+            1,
+            "three workspaces plus the add tile fit one row of a four-wide grid"
+        );
+        assert_eq!(
+            h.overview_max_scroll_y(),
+            0.0,
+            "a grid that fits its band has nothing to scroll"
+        );
+        let col = h.overview_column_rect();
+        let last = h.overview_cell_rect(3);
+        assert!(
+            last.y1 <= col.y1,
+            "no card may extend past the bottom of the content column: \
+             card ends at {} , column at {}",
+            last.y1,
+            col.y1
+        );
+    }
+
+    /// Enough workspaces to overflow the band do scroll, and the draw path
+    /// is told to paint the overflow cue.
+    #[test]
+    fn an_overflowing_grid_reports_scrollable_content() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for i in 0..12 {
+            tree.append_empty_workspace(&format!("Extra {i}"));
+        }
+        let h = host_with(tree);
+        assert!(
+            h.overview_content_height() > h.overview_viewport_height(),
+            "fifteen workspaces overflow the band"
+        );
+        assert!(
+            h.overview_max_scroll_y() > 0.0,
+            "an overflowing grid must be scrollable, and paints the bottom fade"
+        );
+    }
+
+    /// A click lands on the card the grid drew there. `hit_test_overview`
+    /// and the draw pass share one geometry oracle, so this catches a
+    /// draw/hit-test drift that a pixel diff would not.
+    #[test]
+    fn hit_test_agrees_with_the_grid_the_cards_are_drawn_into() {
+        let h = host();
+        for i in 0..3 {
+            let r = h.overview_cell_rect(i);
+            assert_eq!(
+                h.hit_test_overview(r.center()),
+                Some(i),
+                "clicking the centre of card {i} must select card {i}"
+            );
+        }
+        // A point in the gutter between two cards belongs to neither.
+        let a = h.overview_cell_rect(0);
+        let gutter = Point::new(a.x1 + OVERVIEW_GRID_GAP_PX / 2.0, a.center().y);
+        assert_eq!(
+            h.hit_test_overview(gutter),
+            None,
+            "the gap between cards is not a card"
+        );
+    }
+
+    /// The header line is derived from the tree, so it cannot claim a
+    /// layout or a count the cards below it contradict. The old subtitle
+    /// was the fixed string "Your workspaces, side by side" over a
+    /// vertical stack.
+    #[test]
+    fn the_header_summary_counts_and_names_the_current_workspace() {
+        assert_eq!(
+            overview_summary_label(3, Some("Home")),
+            "3 workspaces · you are in Home"
+        );
+        assert_eq!(
+            overview_summary_label(1, Some("Home")),
+            "1 workspace · you are in Home"
+        );
+        // No current workspace: say what is known and stop.
+        assert_eq!(overview_summary_label(2, None), "2 workspaces");
+        assert_eq!(overview_summary_label(2, Some("")), "2 workspaces");
+    }
+
+    /// The summary the draw path actually renders is the tree's own
+    /// count and active workspace, not a hardcoded one.
+    #[test]
+    fn the_rendered_summary_tracks_the_tree() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let n = tree.workspaces.len();
+        let active = tree.active_workspace().map(|w| w.name.clone()).unwrap();
+        let label = overview_summary_label(n, Some(active.as_str()));
+        assert!(
+            label.starts_with(&format!("{n} workspace")),
+            "summary must lead with the real workspace count; got {label:?}"
+        );
+        assert!(
+            label.ends_with(&active),
+            "summary must name the workspace the tree says is active; got {label:?}"
+        );
+    }
+
+    /// Each card names the windows in it, from the tabs themselves. The
+    /// old card drew one grey rectangle with four dots for exactly this
+    /// data.
+    #[test]
+    fn a_populated_card_names_every_window_in_tab_order() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let home = tree.active_workspace().expect("bootstrap seeds an active workspace");
+        let specs = overview_workspace_chip_specs(home);
+        let labels: Vec<&str> = specs.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Notes", "Files", "Terminal", "Document"],
+            "the card must name the real tabs, in the order the group holds them"
+        );
+        let front: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.is_front)
+            .map(|s| s.label.as_str())
+            .collect();
+        assert_eq!(
+            front,
+            vec!["Notes"],
+            "exactly the group's active tab is marked as the one in front"
+        );
+    }
+
+    /// A workspace with nothing open contributes nothing. No placeholder
+    /// window is invented to make the card look occupied.
+    #[test]
+    fn an_empty_workspace_contributes_no_windows() {
+        let tree = WorkspaceTree::bootstrap_default();
+        let empty = tree
+            .workspaces
+            .iter()
+            .find(|w| w.strips.iter().all(|s| s.window_groups.is_empty()))
+            .expect("bootstrap seeds an empty workspace");
+        assert!(
+            overview_workspace_chip_specs(empty).is_empty(),
+            "an empty workspace must produce no window chips"
+        );
+    }
+
+    /// The glyph on a chip comes from the kind the tile declares, so a
+    /// card cannot show an app it is not hosting.
+    #[test]
+    fn a_chip_glyph_follows_the_kind_the_tile_declares() {
+        assert_eq!(app_kind_icon(&AppKind::Terminal), ui::icons::Icon::Terminal);
+        assert_eq!(app_kind_icon(&AppKind::FileExplorer), ui::icons::Icon::Folder);
+        assert_eq!(app_kind_icon(&AppKind::Browser), ui::icons::Icon::Monitor);
+        assert_eq!(app_kind_icon(&AppKind::Settings), ui::icons::Icon::Settings);
+        assert_eq!(
+            app_kind_icon(&AppKind::Other("Notes".into())),
+            ui::icons::Icon::File,
+            "an app the shell has no glyph for gets the neutral mark, not a guess"
+        );
+        // A foreign Wayland client is an external window.
+        assert_eq!(
+            tile_icon(&TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 7,
+            }),
+            ui::icons::Icon::Monitor
+        );
+        // Stub and placeholder tiles resolve through their kind.
+        assert_eq!(
+            tile_icon(&TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Terminal".into(),
+            }),
+            ui::icons::Icon::Terminal
+        );
+    }
+
+    /// A narrow output drops to one column rather than shrinking cards
+    /// below the width at which they can name anything.
+    #[test]
+    fn a_narrow_viewport_drops_to_a_single_column() {
+        let mut h = host();
+        h.rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        assert_eq!(
+            h.overview_grid_cols(),
+            1,
+            "a 420 px viewport has room for one card, not two slivers"
+        );
+        assert!(
+            h.overview_cell_width() >= 1.0,
+            "the single column still has a positive width"
+        );
+    }
+
+    /// The column count is capped, so a very wide output gets bigger
+    /// gutters rather than a row of ever-thinner cards.
+    #[test]
+    fn a_very_wide_viewport_caps_the_column_count() {
+        let mut h = host();
+        h.rect = Rect::new(0.0, 0.0, 5120.0, 1440.0);
+        assert_eq!(h.overview_grid_cols(), OVERVIEW_GRID_MAX_COLS);
+        assert!(
+            h.overview_column_rect().width() <= OVERVIEW_MAX_WIDTH_PX + 0.5,
+            "the content column stays within its maximum measure"
+        );
     }
 }
 
