@@ -3530,6 +3530,21 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Whether the workspace wheel is currently summoned to the pointer.
+    ///
+    /// Read by the client-input filter alongside
+    /// [`Self::palette_visible`]: Escape is only taken from the focused
+    /// client while the shell has something up that Escape would
+    /// dismiss, and a summoned wheel is exactly that. Without it the
+    /// key would go to the app underneath and the wheel would have no
+    /// way to be dismissed from the keyboard.
+    pub fn wheel_summoned(&self) -> bool {
+        self.chrome
+            .as_ref()
+            .map(|c| c.borrow().wheel_summon().is_some())
+            .unwrap_or(false)
+    }
+
     /// Whether the last draw discovered that the layout it was handed is
     /// not the one it needs — the palette's filter band growing a row
     /// when the kind chips wrap, which only a paint can measure.
@@ -4695,29 +4710,52 @@ impl Widget for ShellOverlayHost {
             // strip's `scroll_x` so it pans in lock-step.
             //
             // group_row_ptrs only contains strips from the currently-
-            // active workspace (see `shell/mod.rs` build path), so
-            // picking the first strip's scroll_x is correct for the
-            // common single-strip case. Multi-strip workspaces aren't
-            // wired up yet; a future fix would pick the topmost
-            // visible strip, but for now any strip's scroll_x is the
-            // active workspace's pan offset.
-            let active_scroll_x: f64 = self
-                .group_row_ptrs
-                .values()
-                .next()
-                .map(|&ptr| {
-                    // SAFETY: same contract as the other group_row_ptrs
-                    // accessors — pointer captured from a `Box<GroupRow>`
-                    // we own through the content tree, host outlives
-                    // content, &mut self → unaliased read.
-                    unsafe { (&*ptr).scroll_x() }
+            // active workspace (see `shell/mod.rs` build path), but it
+            // is a HashMap, so iteration order is not the stacking
+            // order — on a multi-strip workspace "the first one" was
+            // whichever strip happened to hash first, and could differ
+            // between runs. Take the topmost strip in tree order
+            // instead, which is the one the wheel lines up beside.
+            let top_strip: Option<StripId> = self.chrome.as_ref().and_then(|c| {
+                let st = c.borrow();
+                let tree = st.tree();
+                tree.active_workspace()
+                    .and_then(|ws| ws.strips.first().map(|s| s.id))
+            });
+            let scroll_of = |id: Option<StripId>| -> Option<f64> {
+                let ptr = match id {
+                    Some(id) => self.group_row_ptrs.get(&id)?,
+                    None => return None,
+                };
+                // SAFETY: same contract as the other group_row_ptrs
+                // accessors — pointer captured from a `Box<GroupRow>`
+                // we own through the content tree, host outlives
+                // content, &mut self → unaliased read.
+                Some(unsafe { (&**ptr).scroll_x() })
+            };
+            let active_scroll_x: f64 = scroll_of(top_strip)
+                .or_else(|| {
+                    self.group_row_ptrs
+                        .values()
+                        .next()
+                        .map(|&ptr| unsafe { (&*ptr).scroll_x() })
                 })
                 .unwrap_or(0.0);
-            sidebar.apply_layout(
-                taffy,
-                *sidebar_child,
-                Point::new(self.rect.x0 - active_scroll_x, self.rect.y0),
-            );
+            // A summoned wheel has left the canvas: it places itself
+            // around the pointer, in screen space, so handing it the
+            // strip's pan would shift it back out from under the
+            // cursor by however far the strip happens to be scrolled.
+            let summoned = self
+                .chrome
+                .as_ref()
+                .map(|c| c.borrow().wheel_summon().is_some())
+                .unwrap_or(false);
+            let anchor_x = if summoned {
+                self.rect.x0
+            } else {
+                self.rect.x0 - active_scroll_x
+            };
+            sidebar.apply_layout(taffy, *sidebar_child, Point::new(anchor_x, self.rect.y0));
         }
         self.publish_strip_viewport();
     }
@@ -5744,6 +5782,33 @@ impl Widget for ShellOverlayHost {
                                     return;
                                 }
                             }
+                            // Super+S — call the workspace wheel to the
+                            // pointer. The wheel is docked at the left
+                            // edge of the strip's content and pans with
+                            // it, so working out at the right-hand end
+                            // of a strip leaves it off screen; without
+                            // this you would have to scroll the whole
+                            // strip home just to glance at the workspace
+                            // list. Pressing it again, Escape, or
+                            // picking a workspace sends it back.
+                            //
+                            // Gated on Super specifically, not on the
+                            // `is_mod` alias: Ctrl+S is save in every
+                            // app that has ever had a keyboard, and the
+                            // shell grabs its chords ahead of the
+                            // focused client.
+                            "s" | "S" if super_down => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    let next = match st.wheel_summon() {
+                                        Some(_) => None,
+                                        None => self.last_cursor,
+                                    };
+                                    st.set_wheel_summon(next);
+                                    *handled = true;
+                                    return;
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -5779,6 +5844,14 @@ impl Widget for ShellOverlayHost {
                 }
                 if let Some(chrome) = self.chrome.clone() {
                     let mut st = chrome.borrow_mut();
+                    // A summoned wheel is the most transient thing on
+                    // screen — it is up for one glance — so it goes
+                    // first, above even an in-flight name edit.
+                    if st.wheel_summon().is_some() {
+                        st.set_wheel_summon(None);
+                        *handled = true;
+                        return;
+                    }
                     if st.editing_workspace_name.is_some() {
                         st.editing_workspace_name = None;
                         st.bump();
@@ -12182,6 +12255,72 @@ mod tests {
             taffy,
             root_node: child,
         }
+    }
+
+    /// Super+S calls the wheel to wherever the pointer is, so the
+    /// workspace list is reachable from the right-hand end of a strip
+    /// without scrolling all the way back to its left edge.
+    #[test]
+    fn super_s_summons_the_wheel_to_the_pointer_and_toggles_back() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "the wheel starts docked"
+        );
+
+        let at = Point::new(1240.0, 610.0);
+        pump(&mut h, &cursor_moved_at(at), &sup);
+        assert!(
+            pump(&mut h, &key_press(Key::Character("s".into())), &sup),
+            "Super+S is handled by the shell"
+        );
+        assert_eq!(
+            h.chrome.borrow().wheel_summon(),
+            Some(at),
+            "the wheel is summoned to the pointer, not to a fixed spot"
+        );
+        assert!(
+            h.host.wheel_summoned(),
+            "the client-input filter has to see the summon so Escape reaches the shell"
+        );
+
+        // Pressing it again puts the wheel back.
+        assert!(pump(&mut h, &key_press(Key::Character("s".into())), &sup));
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "Super+S toggles the summon off"
+        );
+    }
+
+    /// Escape dismisses a summoned wheel, and takes priority over the
+    /// rest of the dismissal ladder because it is the most transient
+    /// thing the shell puts up.
+    #[test]
+    fn escape_dismisses_a_summoned_wheel_before_anything_else() {
+        let mut h = build_harness();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        let none = Modifiers::default();
+
+        pump(&mut h, &cursor_moved_at(Point::new(900.0, 400.0)), &sup);
+        pump(&mut h, &key_press(Key::Character("s".into())), &sup);
+        // Raise an overview too, so the test proves ordering rather
+        // than just "escape closes the only thing open".
+        {
+            let mut st = h.chrome.borrow_mut();
+            st.overlays.overview = true;
+            st.bump();
+        }
+
+        assert!(pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &none));
+        assert!(
+            h.chrome.borrow().wheel_summon().is_none(),
+            "Escape sends the wheel back to its dock"
+        );
+        assert!(
+            h.chrome.borrow().overlays.overview,
+            "and stops there — the overview behind it is untouched"
+        );
     }
 
     fn pump(h: &mut Harness, event: &WindowEvent, modifiers: &Modifiers) -> bool {
